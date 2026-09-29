@@ -260,6 +260,10 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// no catalog route, no provider-specific fetch.
 	es.Status.URL = r.statusURL(string(req.ClusterName), es.Name)
 	r.projectCatalog(es, string(req.ClusterName), def)
+	if es.Spec.Type != edgesv1alpha1.ServiceTypeRunner {
+		// A retyped Service must not keep a harness it no longer has.
+		es.Status.Harness = nil
+	}
 
 	// The CRD enum rejects unknown edge kinds, but keep the reconciler fail
 	// closed for objects that predate that validation or arrive through a bypass.
@@ -398,6 +402,14 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 		}
 		es.Status.Phase = "Ready"
 		setCondition(&es.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "service reachable")
+		// A runner's probe path IS its capabilities document, so the body that
+		// proved it reachable also says which harness it drives and whether that
+		// harness is ready. Reading it here is what lets a hub-side caller pick a
+		// ready runner from the published object alone — it holds no runner
+		// bearer and could not ask the runner itself.
+		if es.Spec.Type == edgesv1alpha1.ServiceTypeRunner && resp.StatusCode < http.StatusMultipleChoices {
+			stampRunnerHarness(es, resp.Body)
+		}
 		if token != "" && resp.StatusCode < http.StatusMultipleChoices {
 			setCondition(&es.Status.Conditions, "CredentialsValid", metav1.ConditionTrue, "Validated", "credentials accepted by the service")
 		} else {
@@ -453,6 +465,46 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	// backoff. The common case is a Service created seconds before its pod
 	// answers — a 502 from the agent's svc proxy — which must not wait a cycle.
 	return r.commit(ctx, c, orig, es, r.nextRetry(rkey))
+}
+
+// runnerCapabilities is the subset of github.com/railgrid/railgrid/pkg/runner's
+// Capabilities this provider reads. It is decoded into a local struct rather
+// than imported because providers/edges is its own Go module and must not
+// depend on the monorepo root; the field names and JSON tags are the contract.
+type runnerCapabilities struct {
+	Harnesses []struct {
+		Name    string   `json:"name"`
+		Version string   `json:"version"`
+		Ready   bool     `json:"ready"`
+		Reasons []string `json:"reasons,omitempty"`
+	} `json:"harnesses,omitempty"`
+	Ready   bool     `json:"ready"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// stampRunnerHarness records the harness a runner advertises on the Service.
+//
+// One runner process serves exactly ONE harness, so the capabilities response
+// carries a single entry and there is nothing to choose between. A response with
+// no entry at all still gets a harness status, carrying the runner's own
+// top-level readiness and reasons: "this runner has no usable harness" is the
+// answer a caller needs, and dropping the field would read as "not probed yet".
+func stampRunnerHarness(es *edgesv1alpha1.Service, body io.Reader) {
+	var caps runnerCapabilities
+	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&caps); err != nil {
+		return
+	}
+	harness := &edgesv1alpha1.ServiceHarnessStatus{Ready: caps.Ready, Reasons: caps.Reasons}
+	if len(caps.Harnesses) > 0 {
+		h := caps.Harnesses[0]
+		harness.Name = h.Name
+		harness.Version = h.Version
+		// The harness's own readiness, not the runner's: a runner answers the
+		// protocol and refuses every attempt when its harness is not ready.
+		harness.Ready = h.Ready
+		harness.Reasons = h.Reasons
+	}
+	es.Status.Harness = harness
 }
 
 // bodySnippet reads up to a small cap from an upstream response body and trims

@@ -54,11 +54,7 @@ func TestDefaultsAreTheCodexPath(t *testing.T) {
 // tested app-server protocol; Claude Code self-updates, so pinning it by
 // default would leave every runner unready out of the box.
 func TestCodexKeepsItsPinAndClaudeDoesNot(t *testing.T) {
-	claudeOpts := Options{
-		Harness:              HarnessClaude,
-		ClaudeCredentialFile: "/var/lib/railgrid/claude-credential",
-		ClaudeCredentialKind: "oauth-token",
-	}
+	claudeOpts := Options{Harness: HarnessClaude}
 	if err := claudeOpts.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -70,12 +66,7 @@ func TestCodexKeepsItsPinAndClaudeDoesNot(t *testing.T) {
 	}
 
 	// An explicit pin is honoured for either harness.
-	pinned := Options{
-		Harness:              HarnessClaude,
-		VersionPin:           "2.1.273",
-		ClaudeCredentialFile: "/var/lib/railgrid/claude-credential",
-		ClaudeCredentialKind: "api-key",
-	}
+	pinned := Options{Harness: HarnessClaude, VersionPin: "2.1.273"}
 	if err := pinned.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -84,25 +75,14 @@ func TestCodexKeepsItsPinAndClaudeDoesNot(t *testing.T) {
 	}
 }
 
-// TestClaudeRequiresACredential: without both the file and its kind there is
-// nothing to inject, and the runner would come up permanently unready. Refuse
-// at launch, where the operator can still see it.
-func TestClaudeRequiresACredential(t *testing.T) {
-	for name, opts := range map[string]Options{
-		"no file": {Harness: HarnessClaude, ClaudeCredentialKind: "oauth-token"},
-		"no kind": {Harness: HarnessClaude, ClaudeCredentialFile: "/var/lib/railgrid/cred"},
-		"relative file": {
-			Harness: HarnessClaude, ClaudeCredentialFile: "cred", ClaudeCredentialKind: "api-key",
-		},
-		"unknown kind": {
-			Harness: HarnessClaude, ClaudeCredentialFile: "/var/lib/railgrid/cred", ClaudeCredentialKind: "password",
-		},
-	} {
-		opts := opts
-		if err := opts.Validate(); err == nil {
-			t.Errorf("%s was accepted", name)
-		} else if !strings.Contains(err.Error(), "claude-credential") {
-			t.Errorf("%s: error should name the flag, got %v", name, err)
+// TestNoHarnessTakesACredentialFlag: the caller sends its own identity with
+// every attempt, so a runner that could be configured with one would be a
+// shared model account waiting to happen. Launching must need no credential.
+func TestNoHarnessTakesACredentialFlag(t *testing.T) {
+	for _, harnessName := range Harnesses {
+		opts := Options{Harness: harnessName}
+		if err := opts.Validate(); err != nil {
+			t.Errorf("%s needs configuration beyond its name: %v", harnessName, err)
 		}
 	}
 }
@@ -134,15 +114,11 @@ func TestAdapterSelectionUsesManagedPaths(t *testing.T) {
 		t.Fatalf("codex adapter: %v", err)
 	}
 
-	claudeOpts := Options{
-		Harness:              HarnessClaude,
-		ClaudeCredentialFile: filepath.Join(stateRoot, "claude-credential"),
-		ClaudeCredentialKind: "oauth-token",
-	}
-	if err := claudeOpts.Validate(); err != nil {
+	claudeAdapterOpts := Options{Harness: HarnessClaude}
+	if err := claudeAdapterOpts.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := claudeOpts.adapter(stateRoot)
+	adapter, err := claudeAdapterOpts.adapter(stateRoot)
 	if err != nil {
 		t.Fatalf("claude adapter: %v", err)
 	}

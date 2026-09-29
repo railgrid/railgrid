@@ -54,13 +54,20 @@ const (
 
 	// ConditionReachable reports whether GET {spec.baseURL}/models answered
 	// with the resolved key.
+	//
+	// A harness identity (provider claude-code / codex) has no endpoint and is
+	// never probed: nothing in this process ever calls it, and a `claude
+	// setup-token` value is not a bearer any chat API would accept. For those
+	// it reports True with a message saying so, so Ready stays the one
+	// conjunction every reader consults rather than growing a per-provider
+	// exception.
 	ConditionReachable = "Reachable"
 
 	// ConditionReady is True when both SecretResolved and Reachable are.
 	ConditionReady = "Ready"
 
 	// ConditionModelCredentialsReady is on an AGENT: every ModelCredential it
-	// references in spec.models and spec.modelFallbacks exists and is Ready.
+	// references under spec.backend.model exists and is Ready.
 	// It is separate from Validated because a credential going unready is not
 	// a defect in the agent's spec — the agent is correct and the model is
 	// unreachable, and conflating the two would make a rotated key read as a
@@ -166,17 +173,89 @@ const (
 	// ModelCredentialsReady=True.
 	ReasonModelCredentialsReady = "ModelCredentialsReady"
 
-	// ReasonUnknownModelCredential is a spec.models / spec.modelFallbacks
-	// entry naming a ModelCredential that does not exist in this workspace.
+	// ReasonUnknownModelCredential is a spec.backend.model.credentials /
+	// .fallbacks entry naming a ModelCredential that does not exist in this
+	// workspace.
 	ReasonUnknownModelCredential = "UnknownModelCredential"
 
 	// ReasonModelCredentialNotReady is a referenced ModelCredential that
 	// exists but whose Ready condition is not True.
 	ReasonModelCredentialNotReady = "ModelCredentialNotReady"
 
+	// ReasonModelCredentialsNotApplicable is a harness-backed Agent, which names
+	// no chat credential by design: its turns run on a coding harness under the
+	// identity in spec.backend.harness.credentialRef, which BackendReady checks.
+	//
+	// The condition stays present and True rather than disappearing, because a
+	// condition that vanishes reads as "not evaluated yet" to anything watching.
+	ReasonModelCredentialsNotApplicable = "NotApplicable"
+
 	// ReasonNoModelCredential is an Agent that names no model credential at
 	// all, so it cannot run.
 	ReasonNoModelCredential = "NoModelCredential"
+)
+
+// Conditions and reasons for an Agent's backend.
+//
+// BackendReady is separate from Validated for the same reason
+// ModelCredentialsReady is: a machine that is asleep, or a harness someone
+// uninstalled, is not a defect in the agent's spec. The agent is correct and the
+// thing it runs on is not there, and reporting that as a malformed agent would
+// send the reader to edit a file that is already right. It is ALSO not a run
+// failure: a run started against an unready backend fails with whatever the
+// runner says, which is late and opaque, so the readiness is published on the
+// object where a portal can grey out the button instead.
+const (
+	// ConditionBackendReady reports whether the agent's backend can actually
+	// execute a turn. For a model backend it is the conjunction of its
+	// credentials being Ready (ModelCredentialsReady already says that, so this
+	// mirrors it). For a harness backend it means: spec.backend.harness.edgeRef
+	// resolves to an edge in this workspace, the edges Service
+	// <edge>-<harness selector> discovered on it exists, and that Service's
+	// status.harness.ready is true.
+	ConditionBackendReady = "BackendReady"
+
+	// ReasonBackendReady accompanies BackendReady=True.
+	ReasonBackendReady = "BackendReady"
+
+	// ReasonUnknownEdgeRef is a spec.backend.harness.edgeRef naming an edge
+	// that does not exist in this workspace — or an edges API this workspace
+	// has not enabled, which reads the same way to a reader with one thing to
+	// fix.
+	ReasonUnknownEdgeRef = "UnknownEdgeRef"
+
+	// ReasonHarnessServiceMissing is an edge with no discovered runner Service
+	// for the harness the credential selects: the machine is joined but that
+	// harness is not installed or not enabled on it.
+	ReasonHarnessServiceMissing = "HarnessServiceMissing"
+
+	// ReasonHarnessNotReady is a runner Service whose status.harness.ready is
+	// false. The Service's own reasons are carried into the message, because
+	// they are the diagnosis (a version pin, a missing executable).
+	ReasonHarnessNotReady = "HarnessNotReady"
+
+	// ReasonUnsupportedHarnessCredential is a spec.backend.harness.credentialRef
+	// whose ModelCredential provider is a chat endpoint rather than a harness
+	// identity. Nothing downstream could pick a harness from it.
+	ReasonUnsupportedHarnessCredential = "UnsupportedHarnessCredential"
+
+	// ReasonBackendUnknown is a backend whose readiness could not be
+	// determined from this workspace — no cross-provider access is configured,
+	// so the edge and its Service cannot be read at all. It is False rather
+	// than absent because a reader has to be able to tell "not ready" from
+	// "nobody looked".
+	ReasonBackendUnknown = "BackendUnknown"
+)
+
+// Reasons for Validated that are specific to the backend block. They are
+// Validated rather than BackendReady because each one is a spec that cannot
+// mean anything, whatever the machine is doing.
+const (
+	// ReasonMeaninglessForHarness is a field that has no effect on a
+	// harness-backed agent: spec.tools (the harness owns its tools), a model
+	// purpose other than chat, or a fallback list. Rejected rather than
+	// ignored, because an ignored grant reads as a granted one.
+	ReasonMeaninglessForHarness = "MeaninglessForHarness"
 )
 
 // KnownToolFamilies are the grantable built-in tool families, the same set the

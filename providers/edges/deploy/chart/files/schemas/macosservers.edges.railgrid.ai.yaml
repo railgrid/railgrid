@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-91e6c6ad.macosservers.edges.railgrid.ai
+  name: v260928-76b9080b.macosservers.edges.railgrid.ai
 spec:
   group: edges.railgrid.ai
   names:
@@ -23,6 +23,9 @@ spec:
     - jsonPath: .status.lastHeartbeatTime
       name: Last Heartbeat
       type: date
+    - jsonPath: .spec.harness.mode
+      name: Harness
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -56,10 +59,63 @@ spec:
           type: object
         spec:
           description: |-
-            MacOSServerSpec contains macOS-specific desired settings. The initial
-            contract is intentionally empty: registration, tunnel access, and host-local
-            Service connectivity use the shared edge lifecycle, while installation and
-            process supervision stay with the macOS agent.
+            MacOSServerSpec contains macOS-specific desired settings. Registration,
+            tunnel access, and host-local Service connectivity use the shared edge
+            lifecycle, while installation and process supervision stay with the macOS
+            agent.
+          properties:
+            harness:
+              description: |-
+                Harness decides which coding harnesses this machine offers as local
+                runner services. Unset means the default, which is "auto": every harness
+                installed on the machine. Set mode "none" to turn the machine into a
+                plain edge again; the agent applies the change without a restart.
+              properties:
+                allowedTools:
+                  description: |-
+                    AllowedTools are harness tool patterns pre-approved on this machine, e.g.
+                    "Bash(git *)". They matter under acceptEdits, where a shell command is
+                    otherwise denied outright, and they are how a machine owner opens a
+                    specific door rather than all of them.
+                  items:
+                    type: string
+                  maxItems: 64
+                  type: array
+                enabled:
+                  description: |-
+                    Enabled names the harnesses to offer. It is required with mode
+                    "explicit" and rejected otherwise, so intent is never ambiguous: a list
+                    that is silently ignored under "auto" would be the worst outcome.
+                  items:
+                    enum:
+                    - claude
+                    - codex
+                    type: string
+                  maxItems: 8
+                  type: array
+                mode:
+                  default: auto
+                  description: Mode decides which harnesses this machine offers. Defaults
+                    to auto.
+                  enum:
+                  - auto
+                  - none
+                  - explicit
+                  type: string
+                permissionMode:
+                  default: acceptEdits
+                  description: |-
+                    PermissionMode is the most a harness on this machine may do without
+                    asking. Defaults to acceptEdits.
+
+                    It lives on the EDGE because the blast radius is the machine's: whoever
+                    installed the agent owns what a turn can reach, and a tenant asking for
+                    more cannot grant themselves more. A caller may ask for less.
+                  enum:
+                  - acceptEdits
+                  - bypassPermissions
+                  type: string
+              type: object
           type: object
         status:
           description: MacOSServerStatus contains the shared tunnel and registration
@@ -73,17 +129,6 @@ spec:
               description: AgentVersion is the version of the railgrid binary on the
                 agent.
               type: string
-            allowedAddons:
-              description: |-
-                AllowedAddons are the Addon types the machine owner opted this edge into
-                with the agent's --allow-addon flag, reported on every heartbeat. It is
-                what a portal shows BEFORE anyone creates an Addon: an edge missing the
-                type here will report Allowed=False on any Addon that names it, and
-                nothing will be materialized. Empty (the default) means the edge hosts no
-                add-ons.
-              items:
-                type: string
-              type: array
             conditions:
               description: Conditions represent the latest observations of state.
               items:
@@ -145,6 +190,61 @@ spec:
               description: Connected indicates whether the agent currently has an
                 active tunnel.
               type: boolean
+            harnesses:
+              description: |-
+                Harnesses are the coding harnesses this machine knows about, reported on
+                every heartbeat. It answers "which of my edges can run Claude Code" from
+                the edge itself, before anyone reads a Service, and it distinguishes a
+                harness that is installed but switched off from one that is not there.
+                Empty means the agent found none and none were asked for.
+              items:
+                description: |-
+                  HarnessStatus is one coding harness as the agent on the machine sees it.
+
+                  Detected and Enabled are separate facts on purpose. Detected says the
+                  executable is installed; Enabled says spec.harness asks for it. A harness
+                  that is detected but not enabled is the opt-out working; one that is enabled
+                  but not detected is a machine that needs the binary installed, and saying so
+                  is more useful than dropping it from the list.
+                properties:
+                  detected:
+                    description: Detected reports whether the executable was found
+                      on the machine.
+                    type: boolean
+                  enabled:
+                    description: Enabled reports whether spec.harness asks for this
+                      harness.
+                    type: boolean
+                  name:
+                    description: 'Name is the harness: "claude" or "codex".'
+                    type: string
+                  port:
+                    description: Port is the loopback port the runner for this harness
+                      listens on.
+                    format: int32
+                    type: integer
+                  ready:
+                    description: |-
+                      Ready reports whether the supervised runner answers runner/v1 with this
+                      harness ready. False while it is starting, and false for a harness that
+                      is not enabled.
+                    type: boolean
+                  reasons:
+                    description: Reasons say why Ready is false.
+                    items:
+                      type: string
+                    type: array
+                  version:
+                    description: Version is the harness executable's version, when
+                      known.
+                    type: string
+                required:
+                - detected
+                - enabled
+                - name
+                - ready
+                type: object
+              type: array
             hostname:
               description: Hostname is the hostname reported by the connected agent.
               type: string

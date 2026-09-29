@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-91e6c6ad.services.edges.railgrid.ai
+  name: v260926-76b9080b.services.edges.railgrid.ai
 spec:
   group: edges.railgrid.ai
   names:
@@ -19,6 +19,9 @@ spec:
       type: string
     - jsonPath: .spec.edgeRef.name
       name: Edge
+      type: string
+    - jsonPath: .status.harness.name
+      name: Harness
       type: string
     - jsonPath: .spec.port
       name: Port
@@ -204,6 +207,7 @@ spec:
               - pihole
               - unifi-network
               - unifi-protect
+              - runner
               - generic
               type: string
           required:
@@ -280,6 +284,40 @@ spec:
                 Discovered is true when this object was created or confirmed by the
                 discovery reconciler (as opposed to being purely user-declared).
               type: boolean
+            harness:
+              description: |-
+                Harness is the coding harness a "runner" Service drives, parsed from the
+                runner/v1 capabilities document the validation reconciler already fetches
+                for the probe. Nil for every other type.
+
+                It exists so a hub-side consumer can PICK a ready runner from the
+                published objects alone. Asking the runner itself would need the bearer
+                the agent keeps to itself, so without this the choice could only be made
+                by trying.
+              properties:
+                name:
+                  description: 'Name is the harness the runner advertises: "claude"
+                    or "codex".'
+                  maxLength: 64
+                  type: string
+                ready:
+                  description: Ready is the harness's own readiness.
+                  type: boolean
+                reasons:
+                  description: |-
+                    Reasons say why Ready is false — a version-pin mismatch, or a missing
+                    harness executable. Never a credential: the caller brings its own with
+                    every attempt, so the runner has none to be missing.
+                  items:
+                    type: string
+                  maxItems: 16
+                  type: array
+                version:
+                  description: Version is the harness executable's version, as probed
+                    on the host.
+                  maxLength: 64
+                  type: string
+              type: object
             installType:
               description: 'InstallType is how the service is installed: container|core|haos|supervised.'
               type: string

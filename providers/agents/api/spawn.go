@@ -17,6 +17,7 @@ import (
 	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
 )
@@ -78,25 +79,29 @@ var workerExcludedTools = map[string]bool{
 
 // workerRun marks a run as a spawned worker and carries the constraints its
 // parent imposed. Nil on every other kind of run.
+//
+// It is persisted in the run's checkpoint (see runCheckpoint.Worker) so a worker
+// that is recovered after its process died is rebuilt as the worker it was, not
+// as a top-level run of the same agent.
 type workerRun struct {
 	// Depth is 1 for a worker spawned by a top-level run.
-	Depth int
+	Depth int `json:"depth,omitempty"`
 	// Instructions is extra guidance from the parent, folded into the system
 	// context under the worker preamble.
-	Instructions string
+	Instructions string `json:"instructions,omitempty"`
 	// ParentTask is the larger task the worker's piece serves, quoted in the
 	// preamble as orientation only. A worker that knows nothing about the whole
 	// tends to answer a subtly different question than the one that was needed.
-	ParentTask string
+	ParentTask string `json:"parentTask,omitempty"`
 	// Families is the worker's effective tool grant, already intersected with
 	// the parent's own.
-	Families []string
+	Families []string `json:"families,omitempty"`
 	// ClassTrigger is the parent's trigger. The worker inherits its approval
 	// class, so a worker of an interactive run is gated like an interactive run
 	// rather than picking up the background grant's rules.
-	ClassTrigger string
+	ClassTrigger string `json:"classTrigger,omitempty"`
 	// MaxToolTurns bounds the worker's tool loop.
-	MaxToolTurns int
+	MaxToolTurns int `json:"maxToolTurns,omitempty"`
 }
 
 // spawnTask is one worker's slot: identity, lifecycle, and result. done is
@@ -311,9 +316,7 @@ func (c *spawnCoordinator) spawn(_ context.Context, req tools.SpawnRequest) (str
 		st.phase, st.started = store.RunPhaseRunning, time.Now().UTC()
 		st.mu.Unlock()
 
-		res, err := c.exec(c.runCtx, taskRun{
-			Creds: c.parent.Creds,
-			CR:    c.parent.CR,
+		child := taskRun{
 			// Same scope as the parent — same agent, same workspace. Usage
 			// therefore lands in the parent's own budget bucket with no explicit
 			// rollup (unlike delegation, whose child is a different agent);
@@ -327,12 +330,12 @@ func (c *spawnCoordinator) spawn(_ context.Context, req tools.SpawnRequest) (str
 			// is what the portal shows as the trigger source.
 			SourceName:  c.parent.Agent.Name,
 			ParentRunID: c.parent.RunID,
-			// The worker acts as the same caller for instance-backed tools. Edges
-			// is deliberately not inherited (see grantableWorkerFamilies).
-			ClusterID: c.parent.ClusterID,
-			HubToken:  c.parent.HubToken,
-			Worker:    worker,
-		})
+			Worker:      worker,
+		}
+		// The worker reaches what the run that spawned it could reach, edges
+		// excepted (see taskRun.inherited).
+		c.parent.inherited().applyTo(&child)
+		res, err := c.exec(c.runCtx, child)
 		if err != nil {
 			phase := store.RunPhaseFailed
 			if c.runCtx.Err() != nil {
@@ -357,7 +360,7 @@ func (t *spawnTask) succeed(res runResult) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.runID, t.finished = res.RunID, time.Now().UTC()
-	body, sources := splitSources(res.Content)
+	body, sources := backend.SplitSources(res.Content)
 	t.result, t.sources = body, sources
 	if res.Pending != nil {
 		// A worker cannot pause for a human: nobody is waiting on its inbox item
@@ -490,49 +493,6 @@ func (c *spawnCoordinator) resolve(ids []string) ([]*spawnTask, error) {
 // so a finished run leaves no worker writing to its tree — and so the run's
 // usage is complete when the budget is next checked.
 func (c *spawnCoordinator) wait() { c.wg.Wait() }
-
-// sourcesHeading is the marker the worker preamble asks for.
-const sourcesHeading = "sources:"
-
-// splitSources separates a trailing "Sources:" block from the body. Workers are
-// asked for it, so parse it into structure rather than leaving the parent to
-// re-read prose. A missing or malformed block is not an error: the body is
-// returned whole.
-func splitSources(content string) (body string, sources []string) {
-	lines := strings.Split(content, "\n")
-	// Find the LAST heading: a worker may quote the word earlier in its answer.
-	idx := -1
-	for i, l := range lines {
-		if strings.EqualFold(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(l), "**")), sourcesHeading) ||
-			strings.EqualFold(strings.TrimSpace(l), "**"+sourcesHeading+"**") {
-			idx = i
-		}
-	}
-	if idx < 0 {
-		return strings.TrimSpace(content), nil
-	}
-	for _, l := range lines[idx+1:] {
-		l = strings.TrimSpace(l)
-		l = strings.TrimPrefix(l, "-")
-		l = strings.TrimPrefix(l, "*")
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		// Keep only what looks like a locator; a worker sometimes trails prose
-		// after the list.
-		if !strings.HasPrefix(l, "http://") && !strings.HasPrefix(l, "https://") {
-			continue
-		}
-		if fields := strings.Fields(l); len(fields) > 0 {
-			l = fields[0]
-		}
-		if !slices.Contains(sources, l) {
-			sources = append(sources, l)
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines[:idx], "\n")), sources
-}
 
 // clipLine collapses whitespace and bounds a label to one readable line.
 func clipLine(s string, n int) string {

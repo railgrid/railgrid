@@ -17,6 +17,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -54,7 +55,8 @@ type usageResponse struct {
 // rollups over a rolling window (default 30 days, ?days= to override, capped at
 // 90). Everything is derived from the runs table — no separate telemetry store
 // — so it powers both the cost dashboard and the latency/error panel. Per-model
-// attribution uses the agent's CURRENT primary model (spec.models.chat), since
+// attribution uses the agent's CURRENT primary model
+// (spec.backend.model.credentials.chat), since
 // runs are recorded per agent; this is exact unless the agent's model changed
 // mid-window.
 //
@@ -90,7 +92,7 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	// with no assigned model is bucketed under "(unassigned)".
 	agentModel := map[string]string{}
 	if a, aerr := c.Agents().Get(r.Context(), agentName, metav1.GetOptions{}); aerr == nil {
-		agentModel[a.Name] = strings.TrimSpace(a.Spec.Models["chat"])
+		agentModel[a.Name] = a.Spec.ModelCredentialFor(llm.PurposeChat)
 	}
 
 	total := usageBucket{Key: "total"}

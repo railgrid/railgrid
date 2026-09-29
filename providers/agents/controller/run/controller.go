@@ -16,14 +16,16 @@
 // object IS the queue. This reconciler claims one by writing its own identity
 // to status.owner through the status subresource, and optimistic concurrency
 // settles the race — a loser sees a conflict and drops the run rather than
-// running it twice. Only then is it handed to the local worker pool.
+// running it twice. Only then is it handed to the provider to execute.
 //
-// That replaces an in-process channel. The channel lost every queued job on a
-// restart, so a schedule that fired seconds before a deploy simply never ran,
-// and an inbound webhook had to be answered with 503 + Retry-After whenever the
-// pool was saturated. Neither is true of an object: the watch re-delivers every
-// Run when the process starts, so unclaimed work is picked up by definition,
-// and a producer's job is done once the write returns.
+// That replaced an in-process channel, which is now gone outright — a claimed
+// run executes on a goroutine of its own, bounded by the deadline below rather
+// than by a pool. The channel lost every queued job on a restart, so a schedule
+// that fired seconds before a deploy simply never ran, and an inbound webhook
+// had to be answered with 503 + Retry-After whenever the pool was saturated.
+// Neither is true of an object: the watch re-delivers every Run when the process
+// starts, so unclaimed work is picked up by definition, and a producer's job is
+// done once the write returns.
 //
 // A claim is not a lease held open. Because only the leader reconciles, an
 // owner that is not this process is a PREVIOUS leader, and a run still sitting
@@ -128,10 +130,11 @@ type Reconciler struct {
 	// finalizer entirely rather than adding one nothing would ever clear.
 	PurgeData func(ctx context.Context, clusterID, agentName, runID string) error
 
-	// Dispatch hands a claimed run to the local worker pool. The reconciler has
+	// Dispatch hands a claimed run to the provider to execute. The reconciler has
 	// decided WHEN; everything about how a run executes — the virtual-workspace
 	// client, the agent's identity, the toolset — belongs to the provider and
-	// stays there.
+	// stays there. It must not block: a run takes minutes, and this is a watch
+	// worker.
 	//
 	// It is called only after the claim has been written and accepted, so an
 	// implementation may assume this process owns the run. nil leaves unattended
@@ -331,7 +334,7 @@ func (r *Reconciler) stranded(object *agentsv1alpha1.Run) (bool, time.Duration) 
 	return true, 0
 }
 
-// claimAndDispatch takes the run and hands it to the local pool.
+// claimAndDispatch takes the run and hands it to the provider to execute.
 //
 // The status write is the lock. It goes first and its conflict is the whole
 // concurrency story: two processes racing for the same run both write, one

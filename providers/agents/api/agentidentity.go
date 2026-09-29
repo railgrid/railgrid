@@ -60,10 +60,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
+
 	"github.com/railgrid/provider-sdk/identityclient"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/tools"
 )
 
@@ -234,6 +237,33 @@ func (a *agentIdentities) rulesFor(ctx context.Context, dyn dynamic.Interface, a
 		Verbs:         []string{"use"},
 	}}
 
+	// A harness-backed agent reaches one runner, and only through the edges
+	// provider's published Service. The same two clauses as an instance: see the
+	// object, then act on its verb subresource — both name-scoped to the ONE
+	// Service this agent's backend resolves to, so an identity minted for one
+	// agent cannot reach another machine's runner.
+	//
+	// Without these the dispatch fails with a 403 naming this provider's own
+	// ServiceAccount, because the provider's bootstrap credential has no rights
+	// in a tenant workspace: what does is the identity minted here from the
+	// requirements declared in manifest.yaml.
+	if services := harnessServiceNames(agent); len(services) > 0 {
+		rules = append(rules,
+			rbacv1.PolicyRule{
+				APIGroups:     []string{edgeref.GroupName},
+				Resources:     []string{edgeref.ResourceServices},
+				ResourceNames: services,
+				Verbs:         []string{"get"},
+			},
+			rbacv1.PolicyRule{
+				APIGroups:     []string{edgeref.GroupName},
+				Resources:     []string{edgeref.ResourceServices + "/" + edgeref.VerbProxy},
+				ResourceNames: services,
+				Verbs:         []string{"create"},
+			},
+		)
+	}
+
 	for _, resource := range sortedNames(instances) {
 		names := instances[resource]
 		if len(names) == 0 {
@@ -258,6 +288,33 @@ func (a *agentIdentities) rulesFor(ctx context.Context, dyn dynamic.Interface, a
 		}
 	}
 	return rules, nil
+}
+
+// harnessServiceFor is the runner Service a harness-backed agent dispatches to,
+// or "" for a model-backed one.
+//
+// It derives the name the same way the dispatcher does — edgeref.RunnerServiceName
+// over the edge name and the credential's SELECTOR — but from the spec alone,
+// without reading the credential: the identity has to be minted before the
+// dispatch, and a name-scoped grant for the wrong name is worse than none. The
+// selector cannot be read from the spec (it lives on the ModelCredential), so
+// BOTH harness names are granted. That is two names on one machine's own edge,
+// not a wildcard, and it is why the grant stays name-scoped.
+func harnessServiceNames(agent *agentsv1alpha1.Agent) []string {
+	if !agent.Spec.HarnessBacked() {
+		return nil
+	}
+	cfg := agent.Spec.Harness()
+	if cfg == nil || strings.TrimSpace(cfg.EdgeRef.Name) == "" {
+		return nil
+	}
+	var names []string
+	for _, selector := range runnerharness.Selectors {
+		if name := edgeref.RunnerServiceName(cfg.EdgeRef.Name, selector); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // agentInstances collects the Instances an agent can reach, as

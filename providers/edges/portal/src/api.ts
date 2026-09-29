@@ -9,7 +9,7 @@
 // host-owned transport (railgridContext.fetch) injects Authorization; the cluster
 // ID is the path segment.
 
-import type { Edge, EdgeDetail, EdgeType, ErrorResponse } from './types'
+import type { Edge, EdgeDetail, EdgeHarnessSpec, EdgeType, ErrorResponse, HarnessStatus } from './types'
 // Generated from internal/svccatalog by svccatalog_asset_test.go; never edited
 // by hand.
 import serviceCatalogAsset from './service-catalog.json'
@@ -284,6 +284,7 @@ interface RawEdgeObject extends KubeObject {
     lastHeartbeatTime?: string
     joinToken?: string
     workspacePath?: string
+    harnesses?: HarnessStatus[]
     conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string; observedGeneration?: number }>
   }
 }
@@ -330,6 +331,7 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
     generation: metadata.generation,
     annotations: metadata.annotations,
     spec,
+    harnesses: s.harnesses,
     observedGeneration: s.conditions?.reduce((max, condition) => Math.max(max, condition.observedGeneration ?? 0), 0) || undefined,
     statusURL: s.URL,
     joinToken: s.joinToken,
@@ -360,6 +362,38 @@ export async function createEdge(
     spec: type === 'kubernetes' && hasLabels ? { labels } : {},
   }
   await withKube((client) => client.create(ref, object))
+}
+
+// updateEdgeHarness merge-patches spec.harness — the one field that decides
+// which coding harnesses a host offers. It is an ordinary spec write as the
+// caller: no provider verb and no runner token, because the runner's bearer
+// never leaves the machine (docs/edge-harness.md).
+//
+// `enabled` is required with mode "explicit" and rejected otherwise, so a
+// non-explicit write clears it: a JSON merge patch deletes a field set to null.
+// Only LinuxServer and MacOSServer carry the field.
+export async function updateEdgeHarness(
+  name: string,
+  type: EdgeType,
+  harness: EdgeHarnessSpec,
+): Promise<void> {
+  const { ref } = edgeResource(type)
+  const mode = harness.mode ?? 'auto'
+  // permissionMode and allowedTools are written on EVERY harness patch, not
+  // only when they change. The card always sends the whole setting, so a
+  // toggle that omitted them would silently reset the machine's ceiling —
+  // turning the harness off and on again would quietly drop a pre-approval the
+  // machine's owner had granted.
+  await withKube((client) => client.patch(ref, name, {
+    spec: {
+      harness: {
+        mode,
+        enabled: mode === 'explicit' ? harness.enabled ?? [] : null,
+        permissionMode: harness.permissionMode ?? 'acceptEdits',
+        allowedTools: harness.allowedTools?.length ? harness.allowedTools : null,
+      },
+    },
+  }, { type: 'merge' }))
 }
 
 // EdgeProbe is the join-token + connection snapshot the wizard polls for.

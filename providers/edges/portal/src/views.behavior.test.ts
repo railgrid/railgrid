@@ -22,6 +22,7 @@ const api = vi.hoisted(() => ({
   getEdge: vi.fn(),
   deleteEdge: vi.fn(),
   listEdgeServices: vi.fn(),
+  updateEdgeHarness: vi.fn(),
   setToken: vi.fn(),
   setTenant: vi.fn(),
   setHostFetch: vi.fn(),
@@ -44,6 +45,7 @@ import Workloads from './Workloads.vue'
 import WorkloadCreate from './WorkloadCreate.vue'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
+import HarnessCard from './HarnessCard.vue'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import { edgeConnectPath } from './routes'
 
@@ -183,6 +185,23 @@ async function renderDetailMarkup(props: Record<string, unknown>): Promise<strin
   return renderToString(createSSRApp(Wrapper, props))
 }
 
+async function renderHarnessMarkup(props: Record<string, unknown>, expanded = false): Promise<string> {
+  const source = HarnessCard as unknown as {
+    setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
+    ssrRender: (...args: any[]) => unknown
+  }
+  const Wrapper = {
+    props: ['edgeName', 'edgeType', 'harness', 'harnesses', 'disabled'],
+    setup(wrapperProps: Record<string, unknown>, context: Record<string, unknown>) {
+      const state = source.setup(wrapperProps, context)
+      state.selectionExpanded.value = expanded
+      return state
+    },
+    ssrRender: source.ssrRender,
+  }
+  return renderToString(createSSRApp(Wrapper, props))
+}
+
 async function flush() {
   await Promise.resolve()
   await Promise.resolve()
@@ -227,6 +246,7 @@ beforeEach(() => {
   api.getEdge.mockResolvedValue(null)
   api.deleteEdge.mockResolvedValue(undefined)
   api.listEdgeServices.mockResolvedValue([])
+  api.updateEdgeHarness.mockResolvedValue(undefined)
   api.listWorkloads.mockResolvedValue([workload])
   api.listServicesPage.mockResolvedValue({ items: [service], continue: undefined })
   api.listWorkloadsPage.mockResolvedValue({ items: [workload], continue: undefined })
@@ -1530,6 +1550,317 @@ describe('edge detail actions', () => {
     } finally {
       mounted.unmount()
     }
+  })
+})
+
+// ─── Harness card ────────────────────────────────────────────────────
+// The card reads status.harnesses and writes spec.harness. detected, enabled
+// and ready stay three separate facts, an absent spec.harness is the CRD
+// default (auto), and a write never claims the MACHINE has applied anything.
+const harnessCardProps = (over: Record<string, unknown> = {}) => ({
+  edgeName: 'build-01',
+  edgeType: 'server',
+  harness: null,
+  harnesses: null,
+  disabled: false,
+  ...over,
+})
+const claudeRunning = { name: 'claude', detected: true, enabled: true, ready: true, version: '2.1.273', port: 8787 }
+const codexAbsent = { name: 'codex', detected: false, enabled: false, ready: false }
+
+describe('edge harness card', () => {
+  it('reads an absent spec.harness as auto instead of an empty state', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({ harnesses: [claudeRunning, codexAbsent] }))
+    try {
+      const state = mounted.instance.setupState
+      expect(state.mode).toBe('auto')
+      expect(state.harnessOn).toBe(true)
+      expect(state.switchHelp).toBe('Every harness installed on the machine is offered.')
+      // auto means "everything installed", so the per-harness list starts with
+      // every box ticked: an unticked box is what makes the choice explicit.
+      expect(state.selection).toEqual(['claude', 'codex'])
+      expect(state.selectionDirty).toBe(false)
+      expect(state.awaitingAgent).toBe(false)
+      expect(api.updateEdgeHarness).not.toHaveBeenCalled()
+    } finally {
+      mounted.unmount()
+    }
+
+    const rendered = await renderHarnessMarkup(harnessCardProps({ harnesses: [claudeRunning, codexAbsent] }))
+    expect(rendered).toContain('Run coding harnesses on this machine')
+    expect(rendered).toContain('Every harness installed on the machine is offered.')
+    expect(rendered).toContain('Coding agents this machine offers as a local runner, such as Claude Code.')
+    expect(rendered).not.toContain('Off — no harness runs on this machine')
+    expect(rendered).not.toContain('has not reported a harness yet')
+  })
+
+  it('switches every harness off in one write and does not pretend the machine has confirmed', async () => {
+    const changed = vi.fn()
+    const mounted = await mount(HarnessCard, harnessCardProps({
+      harnesses: [claudeRunning, codexAbsent],
+      onChanged: changed,
+    }))
+    try {
+      const state = mounted.instance.setupState
+      await state.onToggle({ target: { checked: false } } as unknown as Event)
+      await flush()
+
+      expect(api.updateEdgeHarness).toHaveBeenCalledTimes(1)
+      expect(api.updateEdgeHarness).toHaveBeenCalledWith('build-01', 'server', { mode: 'none', permissionMode: 'acceptEdits', allowedTools: [] })
+      expect(changed).toHaveBeenCalledTimes(1)
+      expect(state.harnessOn).toBe(false)
+      // The spec write landed; the agent still reports claude enabled, so the
+      // card says the machine has not confirmed rather than faking it.
+      expect(state.awaitingAgent).toBe(true)
+      expect(state.rows[0].state).toBe('Running')
+      expect(state.writeError).toBeNull()
+    } finally {
+      mounted.unmount()
+    }
+
+    // Expanded, because the per-harness rows are behind the disclosure.
+    const off = await renderHarnessMarkup(harnessCardProps({
+      harness: { mode: 'none' },
+      harnesses: [{ ...claudeRunning, enabled: false, ready: false }, codexAbsent],
+    }), true)
+    expect(off).toContain('Off — no harness runs on this machine')
+    expect(off).toContain('No harness runs on this machine.')
+    expect(off).toContain('Switched off')
+  })
+
+  it('switches harnesses back on as auto and keeps the control where the write failed', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({
+      harness: { mode: 'none' },
+      harnesses: [{ ...claudeRunning, enabled: false, ready: false }],
+    }))
+    try {
+      const state = mounted.instance.setupState
+      await state.onToggle({ target: { checked: true } } as unknown as Event)
+      await flush()
+      expect(api.updateEdgeHarness).toHaveBeenCalledWith('build-01', 'server', { mode: 'auto', permissionMode: 'acceptEdits', allowedTools: [] })
+      expect(state.harnessOn).toBe(true)
+
+      api.updateEdgeHarness.mockRejectedValueOnce({ reason: 'HTTPError', message: 'harness update forbidden' })
+      await state.onToggle({ target: { checked: false } } as unknown as Event)
+      await flush()
+      // A refused write reverts to the object's own value rather than leaving
+      // the control showing something the hub never accepted.
+      expect(state.writeError).toBe('harness update forbidden')
+      expect(state.mode).toBe('none')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('writes an explicit list when a harness is unticked', async () => {
+    const changed = vi.fn()
+    const mounted = await mount(HarnessCard, harnessCardProps({
+      harnesses: [claudeRunning, { ...codexAbsent, detected: true, enabled: true }],
+      onChanged: changed,
+    }))
+    try {
+      const state = mounted.instance.setupState
+      state.selectionExpanded = true
+      state.selection = ['claude']
+      await flush()
+      expect(state.selectionDirty).toBe(true)
+
+      await state.onSaveSelection()
+      await flush()
+      expect(api.updateEdgeHarness).toHaveBeenCalledWith('build-01', 'server', { mode: 'explicit', enabled: ['claude'], permissionMode: 'acceptEdits', allowedTools: [] })
+      expect(changed).toHaveBeenCalledTimes(1)
+      expect(state.switchHelp).toBe('Only Claude Code is offered, whether or not anything else is installed.')
+      expect(state.awaitingAgent).toBe(true)
+    } finally {
+      mounted.unmount()
+    }
+
+    const rendered = await renderHarnessMarkup(harnessCardProps({
+      harness: { mode: 'explicit', enabled: ['claude'] },
+      harnesses: [claudeRunning, { ...codexAbsent, detected: true }],
+    }), true)
+    expect(rendered).toContain('Harnesses offered')
+    expect(rendered).toContain('Save harness choice')
+    expect(rendered).toContain('type="checkbox"')
+  })
+
+  it('saves every harness ticked as auto rather than pinning a list that cannot grow', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({
+      harness: { mode: 'explicit', enabled: ['claude'] },
+      harnesses: [claudeRunning, { ...codexAbsent, detected: true }],
+    }))
+    try {
+      const state = mounted.instance.setupState
+      expect(state.selection).toEqual(['claude'])
+      state.selection = ['claude', 'codex']
+      await flush()
+      await state.onSaveSelection()
+      await flush()
+      expect(api.updateEdgeHarness).toHaveBeenCalledWith('build-01', 'server', { mode: 'auto', permissionMode: 'acceptEdits', allowedTools: [] })
+
+      // No harness ticked is the opt-out, not an explicit empty list.
+      state.selection = []
+      await flush()
+      await state.onSaveSelection()
+      await flush()
+      expect(api.updateEdgeHarness).toHaveBeenLastCalledWith('build-01', 'server', { mode: 'none', permissionMode: 'acceptEdits', allowedTools: [] })
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps detected, enabled and ready as four distinguishable row states', async () => {
+    const working = await renderHarnessMarkup(harnessCardProps({
+      harnesses: [claudeRunning, { name: 'codex', detected: true, enabled: false, ready: false }],
+    }), true)
+    expect(working).toContain('Running')
+    expect(working).toContain('v2.1.273')
+    expect(working).toContain('Answering runner/v1 on port 8787.')
+    expect(working).toContain('Switched off')
+    expect(working).toContain('Installed on this machine and not offered to this workspace.')
+
+    const broken = await renderHarnessMarkup(harnessCardProps({
+      harness: { mode: 'explicit', enabled: ['claude', 'codex'] },
+      harnesses: [
+        { name: 'claude', detected: false, enabled: true, ready: false },
+        { name: 'codex', detected: true, enabled: true, ready: false, reasons: ['runner exited: exec format error'] },
+      ],
+    }), true)
+    expect(broken).toContain('Not installed')
+    expect(broken).toContain('Switched on here, but the executable is not on this machine. Install it on the host to make it available.')
+    expect(broken).toContain('Starting')
+    expect(broken).toContain('runner exited: exec format error')
+
+    const quiet = await renderHarnessMarkup(harnessCardProps(), true)
+    expect(quiet).toContain('Not reported')
+    // The "nothing reported" line is card-level, so it shows either way.
+    expect(quiet).toContain('This machine has not reported a harness yet.')
+    const quietCollapsed = await renderHarnessMarkup(harnessCardProps())
+    expect(quietCollapsed).toContain('This machine has not reported a harness yet.')
+  })
+
+  // The machine's ceiling: what a turn may do without asking. It is the machine
+  // owner's decision, so it lives on the edge — a caller cannot raise it — and
+  // the UI has to be able to set it, which is what a live user asked for after
+  // a harness turn was silently denied web access with nobody able to approve.
+  it('sets the permission ceiling and the always-allow list from the card', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({ harnesses: [claudeRunning, codexAbsent] }))
+    try {
+      const state = mounted.instance.setupState
+      expect(state.permissionMode).toBe('acceptEdits')
+      expect(state.limitsDirty).toBe(false)
+
+      state.permissionMode = 'bypassPermissions'
+      // A pattern may contain spaces, so lines and commas separate them, never
+      // whitespace alone.
+      state.allowedToolsText = 'WebSearch\nBash(git *), WebFetch\n\n'
+      await flush()
+      expect(state.limitsDirty).toBe(true)
+      await state.onSaveLimits()
+      await flush()
+
+      expect(api.updateEdgeHarness).toHaveBeenLastCalledWith('build-01', 'server', {
+        mode: 'auto',
+        permissionMode: 'bypassPermissions',
+        allowedTools: ['WebSearch', 'Bash(git *)', 'WebFetch'],
+      })
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  // Turning the harness off and on again must not quietly reset a pre-approval
+  // the machine's owner granted: every write carries the whole setting.
+  it('keeps the ceiling when the harness is switched off and on', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({
+      harness: { mode: 'auto', permissionMode: 'bypassPermissions', allowedTools: ['WebSearch'] },
+      harnesses: [claudeRunning, codexAbsent],
+    }))
+    try {
+      const state = mounted.instance.setupState
+      await state.onToggle({ target: { checked: false } } as unknown as Event)
+      await flush()
+      expect(api.updateEdgeHarness).toHaveBeenLastCalledWith('build-01', 'server', {
+        mode: 'none',
+        permissionMode: 'bypassPermissions',
+        allowedTools: ['WebSearch'],
+      })
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  // A poll landing mid-edit must not throw away what somebody is typing.
+  it('does not overwrite the ceiling controls while they are being edited', async () => {
+    const mounted = await mount(HarnessCard, harnessCardProps({ harnesses: [claudeRunning] }))
+    try {
+      const state = mounted.instance.setupState
+      state.limitsExpanded = true
+      state.allowedToolsText = 'WebSearch'
+      await flush()
+      mounted.instance.props.harness = { mode: 'auto', allowedTools: ['SomethingElse'] }
+      await flush()
+      expect(state.allowedToolsText).toBe('WebSearch')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  // The button says "Hide harnesses". Hiding a label style while leaving the
+  // list of harnesses on screen answers a different question than the one the
+  // button was asked, so the disclosure governs the whole block: the rows, their
+  // states, the legend, the hint and the save action.
+  it('hides the whole per-harness block when the disclosure is closed', async () => {
+    const props = harnessCardProps({ harnesses: [claudeRunning, codexAbsent] })
+
+    const collapsed = await renderHarnessMarkup(props)
+    // Not "Claude Code" — the card's own description names it, so it is a poor
+    // witness. These strings exist only inside the per-harness block.
+    for (const gone of [
+      'Harnesses offered',
+      'v2.1.273',
+      'Answering runner/v1 on port 8787.',
+      'Save harness choice',
+      'Ticking every harness is the same as offering every installed one',
+    ]) {
+      expect(collapsed).not.toContain(gone)
+    }
+    // What the collapsed card summarises with instead: the switch and its help.
+    expect(collapsed).toContain('Run coding harnesses on this machine')
+
+    const expanded = await renderHarnessMarkup(props, true)
+    for (const shown of ['Harnesses offered', 'v2.1.273', 'Answering runner/v1 on port 8787.', 'Save harness choice']) {
+      expect(expanded).toContain(shown)
+    }
+  })
+
+  it('offers the card on Linux and macOS hosts and never on a Kubernetes cluster edge', async () => {
+    const hostDetail = {
+      ...edgeDetail,
+      name: 'build-01',
+      type: 'server',
+      kind: 'LinuxServer',
+      connected: true,
+      phase: 'Ready',
+      spec: { sshPort: 22 },
+      harnesses: [claudeRunning, codexAbsent],
+    }
+    api.getEdge.mockResolvedValue(hostDetail)
+    api.listEdgeServices.mockResolvedValue([])
+    const linux = await renderDetailMarkup({ name: hostDetail.name, type: hostDetail.type, cluster: null, token: null })
+    expect(linux).toContain('id="edge-harness"')
+    expect(linux).toContain('Run coding harnesses on this machine')
+
+    const macDetail = { ...hostDetail, name: 'mac-mini', type: 'macos', kind: 'MacOSServer', spec: {} }
+    api.getEdge.mockResolvedValue(macDetail)
+    const macos = await renderDetailMarkup({ name: macDetail.name, type: macDetail.type, cluster: null, token: null })
+    expect(macos).toContain('id="edge-harness"')
+
+    // A cluster edge would need a Deployment rather than a supervised child.
+    api.getEdge.mockResolvedValue(edgeDetail)
+    const kube = await renderDetailMarkup({ name: edgeDetail.name, type: edgeDetail.type, cluster: null, token: null })
+    expect(kube).not.toContain('id="edge-harness"')
+    expect(kube).not.toContain('Run coding harnesses on this machine')
   })
 })
 

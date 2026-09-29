@@ -18,15 +18,12 @@ writes the enrollment JSON, generates the bearer token, prepares the Codex home,
 and starts the process themselves. Use it for a local fixture, an unmanaged
 host, or when debugging.
 
-The **managed** path is an [edge add-on](edge-addons.md). A tenant declares an
-`edges.railgrid.ai` `Addon` of type `runner`, and the agent already on the host
-renders the same enrollment, generates the token, materializes the Codex
-session from a Secret, supervises the process as a dedicated non-root account,
-and publishes the `Service` a Factory Worker enrols. Nothing on this page is
-done by hand. It requires the machine owner to have installed the agent with
-`--allow-addon=runner` (and, on Linux, `--addon-user`), so a tenant cannot turn
-a machine into a code-execution host on their own — see
-[edge-addons.md](edge-addons.md) for the trust model.
+The **managed** path is the default and needs none of this page. An edge's
+`spec.harness` defaults to `auto`, so the agent already on the host detects
+every installed harness, renders the same enrollment, generates the token,
+supervises the process as a dedicated non-root account, and publishes the
+`Service` a caller reaches. Nothing here is done by hand. See
+[edge-harness.md](edge-harness.md).
 
 Prefer the managed path on any host that already runs a railgrid agent.
 
@@ -331,28 +328,26 @@ receipts — is unchanged; only the harness differs.
 
 ### Credentials
 
-Claude Code headless authenticates through an **environment variable**, not
-through an on-disk session as Codex does. The runner therefore reads the value
-from an owner-only file and injects it into the harness child alone. Two kinds
-are supported:
+**The runner holds none.** There is no credential flag, no credential file and
+no login on the host. Every `runner/v1` start and resume carries the CALLER's
+harness identity, and the adapter puts it in front of the child for exactly one
+turn:
 
-| `--claude-credential-kind` | Environment variable | Where it comes from |
+| `harnessCredential.kind` | How the child receives it | Where the caller gets it |
 | --- | --- | --- |
-| `oauth-token` | `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` (requires a Claude subscription) |
-| `api-key` | `ANTHROPIC_API_KEY` | an Anthropic API key |
+| `claude-oauth` | `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token` (requires a Claude subscription) |
+| `claude-apikey` | `ANTHROPIC_API_KEY` | an Anthropic API key |
+| `codex-auth` | written as the home's `auth.json` for the length of one launch, then removed | a `codex login` session file |
 
-Mint a long-lived token on a machine you control, then install it for the
-runner account:
+A start with no credential, or one of a kind this harness cannot use, is refused
+with `invalid_request` and starts nothing. There is no fallback to anything on
+the machine, deliberately: a runner that had one would be a shared billable
+identity. The value never reaches the runner's durable journal, an event, a
+blocker, a log line or a command line.
 
-```sh
-claude setup-token                       # prints the token; do not echo it into a shell history
-install -m 600 /path/to/token-file /absolute/path/claude-credential
-```
-
-The runner refuses a credential file that is not absolute, not a regular file,
-readable by other accounts, empty, oversized, or containing a newline. It is
-re-read on every probe and every turn, so rotating the file takes effect on the
-next turn without restarting the runner.
+Because it is held only in memory, a runner restart parks an in-flight attempt
+as `needs_input`, and the resume that revives it must carry the credential
+again.
 
 ### Start the runner
 
@@ -360,8 +355,6 @@ next turn without restarting the runner.
 railgrid runner run \
   --config <absolute-runner-config.json> \
   --harness claude \
-  --claude-credential-file /absolute/path/claude-credential \
-  --claude-credential-kind oauth-token \
   --claude-binary <claude-executable> \
   --claude-model sonnet
 ```

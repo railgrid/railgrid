@@ -47,10 +47,11 @@ type launchdInstallOptions struct {
 	InsecureSkipTLS bool
 	SvcAllowCIDRs   []string
 	SvcPolicy       string
-	// AllowAddons renders --allow-addon into the daemon's program arguments.
-	// There is deliberately no --addon-user here: the LaunchDaemon already runs
-	// as the non-root worker account, so an add-on child runs as that account.
-	AllowAddons []string
+	// Harness renders --harness into the daemon's program arguments, and is
+	// empty for the default (auto). There is deliberately no --runner-user here:
+	// the LaunchDaemon already runs as the non-root worker account, so a harness
+	// runner runs as that account.
+	Harness     string
 	WorkerUser  string
 	WorkerHome  string
 	WorkerGroup string
@@ -216,8 +217,8 @@ func launchdProgramArgs(opts launchdInstallOptions) []string {
 	if opts.SvcPolicy != "" && opts.SvcPolicy != string(tunnel.DefaultSvcPolicy) {
 		args = append(args, "--svc-policy", opts.SvcPolicy)
 	}
-	for _, addonType := range opts.AllowAddons {
-		args = append(args, "--allow-addon", addonType)
+	if opts.Harness != "" {
+		args = append(args, "--harness", opts.Harness)
 	}
 	return args
 }
@@ -377,11 +378,11 @@ func agentJoinMacOS(opts *agent.Options, workerUser, plistPath string, dryRun bo
 	if err != nil {
 		return fmt.Errorf("resolving binary symlinks: %w", err)
 	}
-	// A macOS daemon runs as the non-root worker account, so the type allow
-	// list is all that has to be carried; --addon-user has no meaning here.
-	allowedAddons, err := agent.NormalizeAllowedAddons(opts.AllowedAddons)
+	// A macOS daemon runs as the non-root worker account, so the harness
+	// selection is all that has to be carried; --runner-user has no meaning here.
+	harness, err := validateHarnessInstall(opts.Harness)
 	if err != nil {
-		return fmt.Errorf("--allow-addon: %w", err)
+		return err
 	}
 	return installLaunchdAgent(launchdInstallOptions{
 		BinaryPath:      binaryPath,
@@ -394,7 +395,7 @@ func agentJoinMacOS(opts *agent.Options, workerUser, plistPath string, dryRun bo
 		InsecureSkipTLS: opts.InsecureSkipTLSVerify,
 		SvcAllowCIDRs:   opts.SvcAllowedCIDRs,
 		SvcPolicy:       opts.SvcPolicy,
-		AllowAddons:     allowedAddons,
+		Harness:         harness,
 		WorkerUser:      workerUser,
 		PlistPath:       plistPath,
 		DryRun:          dryRun,

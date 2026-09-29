@@ -4,10 +4,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentConfig from '../views/AgentConfig.vue'
 import AgentCreate from '../views/AgentCreate.vue'
-import type { AgentPatch, Connection } from '../types'
+import type { Agent, AgentPatch, Connection, Edge } from '../types'
 import { familiesForConns } from '../conn-defs'
 import { clearToasts, subscribeToasts } from '../ui/toast'
-import { agentFixture, makeStore, stubApi } from './helpers'
+import { agentFixture, makeStore, modelBackend, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
 
 const mounted: MountedVue[] = []
@@ -19,15 +19,23 @@ async function settle(passes = 4): Promise<void> {
   await settleVue(passes, 1)
 }
 
-async function mountConfig(spec: Record<string, unknown> = {}, credentials: Array<{ name: string; model?: string }> = []) {
+async function mountConfig(
+  spec: Partial<Agent['spec']> = {},
+  credentials: Array<{ name: string; model?: string; provider?: string }> = [],
+  edges: Edge[] = [],
+  status?: Agent['status'],
+) {
   const patchAgent = vi.fn().mockImplementation((_n: string, body: AgentPatch) => Promise.resolve({ metadata: { name: 'scout' }, spec: body }))
   const api = stubApi({ patchAgent })
   const store = makeStore(api)
-  store.agents.data = [agentFixture('scout', spec)]
+  store.agents.data = [{ ...agentFixture('scout', spec), ...(status ? { status } : {}) }]
   store.agents.loaded = true
   store.credentials.data = credentials
   store.credentials.loaded = true
   store.credentials.hasSnapshot = true
+  store.edges.data = edges
+  store.edges.loaded = true
+  store.edges.hasSnapshot = true
   store.toolsets.loaded = true
   store.toolsets.hasSnapshot = true
   store.connections.loaded = true
@@ -49,7 +57,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-async function mountDeferredConfig(spec: Record<string, unknown> = {}, credentials: Array<{ name: string; model?: string }> = []) {
+async function mountDeferredConfig(spec: Partial<Agent['spec']> = {}, credentials: Array<{ name: string; model?: string; provider?: string }> = []) {
   const pending = deferred<ReturnType<typeof agentFixture>>()
   let store!: ReturnType<typeof makeStore>
   const patchAgent = vi.fn().mockImplementation(() => pending.promise)
@@ -73,7 +81,7 @@ async function mountDeferredConfig(spec: Record<string, unknown> = {}, credentia
 describe('agent config', () => {
   it('uses the PortalKit form selector for primary and fallback models', async () => {
     const { el, patchAgent } = await mountConfig(
-      { models: { chat: 'main' } },
+      { backend: modelBackend('main') },
       [{ name: 'main', model: 'gpt-5' }, { name: 'backup', model: 'claude' }],
     )
     const selectors = [...el.querySelectorAll('[data-form-select]')]
@@ -98,7 +106,7 @@ describe('agent config', () => {
   })
 
   it('uses the canonical square action for removing a model fallback', async () => {
-    const { el } = await mountConfig({ models: { chat: 'main' }, modelFallbacks: ['backup'] })
+    const { el } = await mountConfig({ backend: modelBackend('main', ['backup']) })
     const remove = el.querySelector<HTMLButtonElement>('.agents-chip-x')!
 
     expect(remove).not.toBeNull()
@@ -189,7 +197,7 @@ describe('agent config', () => {
   })
 
   it('marks a fallback-only model edit as dirty', async () => {
-    const { el } = await mountConfig({ models: { chat: 'main' }, modelFallbacks: ['backup'] }, [
+    const { el } = await mountConfig({ backend: modelBackend('main', ['backup']) }, [
       { name: 'main', model: 'gpt-5' },
       { name: 'backup', model: 'claude' },
     ])
@@ -202,7 +210,7 @@ describe('agent config', () => {
 
   it('only announces newer model edits made after submitting the draft', async () => {
     const { el, pending } = await mountDeferredConfig(
-      { models: { chat: 'main' }, modelFallbacks: ['backup'] },
+      { backend: modelBackend('main', ['backup']) },
       [{ name: 'main', model: 'gpt-5' }, { name: 'backup', model: 'claude' }],
     )
     el.querySelector<HTMLButtonElement>('.agents-chip-x')!.click()
@@ -220,7 +228,7 @@ describe('agent config', () => {
     await settle()
     expect(text(feedback)).toContain('Newer edits remain unsaved')
 
-    pending.resolve(agentFixture('scout', { models: { chat: 'main' }, modelFallbacks: [] }))
+    pending.resolve(agentFixture('scout', { backend: modelBackend('main', []) }))
     await settle(8)
   })
 
@@ -792,7 +800,7 @@ describe('agent config', () => {
   })
 
   it('keeps stale dependency data and unrelated drafts visible through a failed refresh', async () => {
-    const { el, store } = await mountConfig({ description: 'server draft', models: { chat: 'main' } }, [{ name: 'main', model: 'gpt-5' }])
+    const { el, store } = await mountConfig({ description: 'server draft', backend: modelBackend('main') }, [{ name: 'main', model: 'gpt-5' }])
     store.toolsets.data = [{ metadata: { name: 'ops' }, spec: { displayName: 'Ops' } }]
     store.connections.data = [
       { metadata: { name: 'github' }, spec: { type: 'github', displayName: 'GitHub' } },
@@ -1330,5 +1338,360 @@ describe('visualization capability', () => {
     await settle(4)
     expect(patchAgent.mock.calls[0][1].interactiveFamilies).toContain('visualization')
     expect(patchAgent.mock.calls[0][1].backgroundFamilies || []).not.toContain('visualization')
+  })
+})
+
+// The backend is spec.backend, and the two blocks under it are mutually
+// exclusive: the API rejects the one that does not match spec.backend.type. What
+// these assert is that the pane never offers a combination the object refuses,
+// and never claims readiness the object has not confirmed.
+// The create wizard could only ever make a model-backed agent: its chat
+// credential was required and its submit button was disabled whenever the
+// workspace had none, so the harness backend was unreachable from here however
+// it was configured. Reported by a user: "create agent should allow to create
+// and pick edge backed mode".
+describe('agent creation backend choice', () => {
+  const CHAT = { name: 'main', provider: 'openai-compatible', model: 'gpt-5' }
+  const CLAUDE = { name: 'claude', provider: 'claude-code' }
+  const EDGES = [
+    { kind: 'LinuxServer', name: 'build-01', connected: true },
+    { kind: 'KubernetesCluster', name: 'prod', connected: true },
+  ]
+
+  async function mountWizard(over: { credentials?: unknown[]; edges?: unknown[] } = {}) {
+    const createAgent = vi.fn().mockResolvedValue({ metadata: { name: 'coder' }, spec: {} })
+    const api = stubApi({ createAgent })
+    const store = makeStore(api)
+    store.credentials.data = (over.credentials ?? [CHAT, CLAUDE]) as never
+    store.credentials.loaded = true
+    store.credentials.hasSnapshot = true
+    store.edges.data = (over.edges ?? EDGES) as never
+    store.edges.loaded = true
+    store.edges.hasSnapshot = true
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const view = await mountVue(AgentCreate, { store, api })
+    mounted.push(view)
+    await settle(3)
+    return { el: view.element as HTMLElement, createAgent }
+  }
+
+  function backendRadio(el: HTMLElement, value: string): HTMLInputElement {
+    return [...el.querySelectorAll<HTMLInputElement>('input[name="agent-create-backend"]')].find(i => i.value === value)!
+  }
+  function typeName(el: HTMLElement, value: string): void {
+    const input = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  /** selectOption opens a portalled FormSelect and clicks the option that matches. */
+  async function selectOption(el: HTMLElement, labelledby: string, match: string): Promise<void> {
+    const select = [...el.querySelectorAll<HTMLElement>('[data-form-select]')]
+      .find(c => c.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes(labelledby))!
+    select.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+    await settle()
+    ;[...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(o => (o.textContent || '').includes(match))!.click()
+    await settle()
+  }
+  async function submitForm(el: HTMLElement): Promise<void> {
+    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle(4)
+  }
+  const primary = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.k-create-actions .k-btn--primary')!
+
+  it('creates a harness-backed agent from the machine and identity, with no chat credential and no tool grants', async () => {
+    const { el, createAgent } = await mountWizard()
+    typeName(el, 'coder')
+    // Ticked BEFORE switching backend: they must still not be sent, because the
+    // API refuses spec.tools on a harness-backed agent.
+    el.querySelectorAll<HTMLInputElement>('.agents-cap input[type=checkbox]').forEach(box => {
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    backendRadio(el, 'harness').click()
+    await settle(2)
+    await selectOption(el, 'agent-create-edge-label', 'build-01')
+    await selectOption(el, 'agent-create-harnesscred-label', 'claude')
+    await submitForm(el)
+
+    expect(createAgent).toHaveBeenCalledTimes(1)
+    const body = createAgent.mock.calls[0][0]
+    expect(body).toMatchObject({
+      name: 'coder',
+      backendType: 'harness',
+      harness: {
+        edgeRef: { kind: 'LinuxServer', name: 'build-01' },
+        credentialRef: 'claude',
+        workspace: 'persistent',
+      },
+    })
+    expect(body).not.toHaveProperty('modelCredential')
+    expect(body).not.toHaveProperty('interactiveFamilies')
+    expect(body).not.toHaveProperty('backgroundFamilies')
+  })
+
+  it('does not ask a harness-backed agent for a chat credential', async () => {
+    // No chat credential in the workspace at all: the old wizard disabled its
+    // submit button outright in this state.
+    const { el, createAgent } = await mountWizard({ credentials: [CLAUDE] })
+    backendRadio(el, 'harness').click()
+    await settle(2)
+    expect(primary(el).disabled).toBe(false)
+    typeName(el, 'coder')
+    await selectOption(el, 'agent-create-edge-label', 'build-01')
+    await selectOption(el, 'agent-create-harnesscred-label', 'claude')
+    await submitForm(el)
+    expect(createAgent).toHaveBeenCalledTimes(1)
+    expect(text(el)).not.toContain('Add a model credential before creating the agent')
+  })
+
+  it('refuses a harness agent with no machine or no identity, naming each field', async () => {
+    const { el, createAgent } = await mountWizard()
+    typeName(el, 'coder')
+    backendRadio(el, 'harness').click()
+    await settle(2)
+    await submitForm(el)
+    expect(createAgent).not.toHaveBeenCalled()
+    expect(text(el.querySelector('#agent-create-edge-error'))).toContain('machine')
+    expect(text(el.querySelector('#agent-create-harnesscred-error'))).toContain('identity')
+  })
+
+  it('never offers a Kubernetes cluster as a harness machine', async () => {
+    const { el } = await mountWizard()
+    backendRadio(el, 'harness').click()
+    await settle(2)
+    const select = [...el.querySelectorAll<HTMLElement>('[data-form-select]')]
+      .find(c => c.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes('agent-create-edge-label'))!
+    select.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+    await settle()
+    const labels = [...document.querySelectorAll<HTMLElement>('[role="option"]')].map(o => o.textContent?.trim() || '')
+    expect(labels.some(l => l.includes('build-01'))).toBe(true)
+    expect(labels.some(l => l.includes('prod'))).toBe(false)
+  })
+
+  it('hides tool grants for a harness backend and says why', async () => {
+    const { el } = await mountWizard()
+    expect(text(el)).toContain('Read the web')
+    backendRadio(el, 'harness').click()
+    await settle(2)
+    expect(text(el)).not.toContain('Read the web')
+    expect(text(el)).toContain('a harness brings its own tools')
+  })
+
+  it('tells each missing prerequisite apart', async () => {
+    const noEdges = await mountWizard({ edges: [] })
+    backendRadio(noEdges.el, 'harness').click()
+    await settle(2)
+    expect(text(noEdges.el)).toContain('No Linux or macOS machine in this workspace yet')
+    expect(primary(noEdges.el).disabled).toBe(true)
+
+    const noIdentity = await mountWizard({ credentials: [CHAT] })
+    backendRadio(noIdentity.el, 'harness').click()
+    await settle(2)
+    expect(text(noIdentity.el)).toContain('No harness identities yet')
+    expect(primary(noIdentity.el).disabled).toBe(true)
+  })
+
+  it('still creates a model-backed agent exactly as before', async () => {
+    const { el, createAgent } = await mountWizard()
+    typeName(el, 'scout')
+    await selectOption(el, 'agent-create-model-label', 'main')
+    await submitForm(el)
+    const body = createAgent.mock.calls[0][0]
+    expect(body).toMatchObject({ name: 'scout', modelCredential: 'main' })
+    expect(body).not.toHaveProperty('backendType')
+    expect(body).not.toHaveProperty('harness')
+  })
+})
+
+describe('agent backend', () => {
+  const EDGES: Edge[] = [
+    { kind: 'LinuxServer', name: 'build-01', connected: true },
+    { kind: 'MacOSServer', name: 'mini-02', connected: true },
+  ]
+  const CREDS = [
+    { name: 'gpt', model: 'gpt-5', provider: 'openai' },
+    { name: 'local', model: 'llama', provider: 'openai-compatible' },
+    { name: 'my-claude', provider: 'claude-code' },
+    { name: 'my-codex', provider: 'codex' },
+  ]
+
+  /** optionLabels opens a portalled FormSelect and reads what it offers. */
+  async function optionLabels(el: HTMLElement, labelledby: string): Promise<string[]> {
+    const select = [...el.querySelectorAll<HTMLElement>('[data-form-select]')]
+      .find(candidate => candidate.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes(labelledby))!
+    select.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+    await settle()
+    const labels = [...document.querySelectorAll<HTMLElement>('[role="option"]')].map(option => option.textContent?.trim() || '')
+    select.querySelector<HTMLButtonElement>('[role="combobox"]')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    )
+    await settle()
+    return labels
+  }
+
+  function backendRadio(el: HTMLElement, value: string): HTMLInputElement {
+    return [...el.querySelectorAll<HTMLInputElement>('input[name="backend-type"]')].find(input => input.value === value)!
+  }
+
+  it('renders an agent with no spec.backend at all as model-backed', async () => {
+    // An object written before spec.backend existed has no type and IS a
+    // model-backed agent — that is what it always was. Rendering it as an empty
+    // state would invite someone to re-pick a backend it already has.
+    const { el } = await mountConfig({ backend: undefined }, CREDS)
+    expect(backendRadio(el, 'model').checked).toBe(true)
+    expect(backendRadio(el, 'harness').checked).toBe(false)
+    expect(el.querySelector('#agent-model-heading')).not.toBeNull()
+    expect(el.querySelector('#agent-harness-edge-label')).toBeNull()
+  })
+
+  it('offers only chat endpoints to a model-backed agent', async () => {
+    // A `claude setup-token` value is not a bearer any chat API would accept, so
+    // a harness identity here would save cleanly and then fail at the first turn.
+    const { el } = await mountConfig({ backend: modelBackend('gpt') }, CREDS)
+    const labels = await optionLabels(el, 'agent-model-credential-label')
+    expect(labels).toContain('gpt (gpt-5)')
+    expect(labels).toContain('local (llama)')
+    expect(labels.join(' ')).not.toContain('my-claude')
+    expect(labels.join(' ')).not.toContain('my-codex')
+  })
+
+  it('offers only harness identities to a harness-backed agent, and names the harness each one selects', async () => {
+    // The harness is NOT chosen here: it is derived from the credential's
+    // provider, because a second field could disagree with the credential and
+    // the credential is the thing that actually has to work.
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      EDGES,
+    )
+    const labels = await optionLabels(el, 'agent-harness-credential-label')
+    expect(labels).toContain('my-claude (Claude Code)')
+    expect(labels).toContain('my-codex (Codex)')
+    expect(labels.join(' ')).not.toContain('gpt')
+    expect(labels.join(' ')).not.toContain('local')
+  })
+
+  it('never offers a KubernetesCluster as a harness machine', async () => {
+    // A runner is a process on a machine, so a cluster edge can never host one.
+    // The Edge projection has no such kind, which is what makes it unofferable
+    // rather than a filter someone can forget — see resources.listEdges.
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      [...EDGES, { kind: 'KubernetesCluster', name: 'prod-cluster' } as unknown as Edge],
+    )
+    const labels = await optionLabels(el, 'agent-harness-edge-label')
+    expect(labels).toContain('build-01 (Linux)')
+    expect(labels).toContain('mini-02 (macOS)')
+    expect(labels.join(' ')).not.toContain('prod-cluster')
+  })
+
+  it('hides the model fields the moment harness is chosen, because the API rejects the block that does not match', async () => {
+    const { el } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES)
+    expect(el.querySelector('#agent-model-heading')).not.toBeNull()
+    backendRadio(el, 'harness').click()
+    await settle()
+    expect(el.querySelector('#agent-model-heading')).toBeNull()
+    expect(el.querySelector('#agent-harness-edge-label')).not.toBeNull()
+  })
+
+  it('refuses a harness save with no machine or no credential rather than letting the apiserver say it', async () => {
+    const { el, patchAgent } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES)
+    backendRadio(el, 'harness').click()
+    await settle()
+    sectionButton(el, 'Save backend').click()
+    await settle()
+    expect(text(el.querySelector('#agent-backend-error'))).toContain('Pick the machine')
+    expect(patchAgent).not.toHaveBeenCalled()
+  })
+
+  it('writes the harness block and the type together', async () => {
+    const { el, patchAgent } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex', workspace: 'ephemeral' } } },
+      CREDS,
+      EDGES,
+    )
+    sectionButton(el, 'Save backend').click()
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledWith('scout', {
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex', workspace: 'ephemeral' },
+    })
+  })
+
+  it('says the harness a credential selects rather than asking for one', async () => {
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      EDGES,
+    )
+    expect(text(el.querySelector('#agent-backend-heading')?.closest('section'))).toContain('Runs Claude Code')
+  })
+
+  it('shows BackendReady=False with its reason instead of looking fine until the first run fails', async () => {
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      EDGES,
+      {
+        conditions: [{
+          type: 'BackendReady',
+          status: 'False',
+          reason: 'HarnessNotReady',
+          message: 'runner service build-01-claude-code is not ready: claude executable not found',
+        }],
+      },
+    )
+    const card = el.querySelector('#agent-backend-heading')?.closest('section')
+    expect(text(card)).toContain('Not ready')
+    expect(text(card)).toContain('HarnessNotReady')
+    expect(text(card)).toContain('claude executable not found')
+    expect(text(card)).not.toContain('Backend ready')
+  })
+
+  it('reports an unobserved backend as unobserved rather than as ready', async () => {
+    // No optimism the object has not confirmed: readiness comes from status.
+    const { el } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES)
+    const card = el.querySelector('#agent-backend-heading')?.closest('section')
+    expect(text(card)).toContain('Not reported yet')
+    expect(text(card)).not.toContain('Backend ready')
+  })
+
+  it('reports a ready backend with the harness the edge advertises', async () => {
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      EDGES,
+      {
+        conditions: [{ type: 'BackendReady', status: 'True', reason: 'BackendReady' }],
+        backend: { type: 'harness', service: 'build-01-claude-code', harness: { name: 'claude-code', version: '2.1.0' } },
+      },
+    )
+    const card = el.querySelector('#agent-backend-heading')?.closest('section')
+    expect(text(card)).toContain('Backend ready')
+    expect(text(card)).toContain('claude-code 2.1.0')
+  })
+
+  it('disables the tool grants for a harness-backed agent instead of silently ignoring them', async () => {
+    // The API REJECTS spec.tools on a harness-backed agent, and an ignored grant
+    // reads as a granted one.
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      EDGES,
+    )
+    const note = el.querySelector('[data-tools-disabled]')
+    expect(note).not.toBeNull()
+    expect(text(note)).toContain('brings its own tools')
+    expect(el.querySelector('#agent-tools-heading')?.closest('section')?.querySelector('input[type="checkbox"]')).toBeNull()
+  })
+
+  it('states what the choice means in one line', async () => {
+    const { el } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES)
+    const copy = text(el.querySelector('.agents-backend-copy'))
+    expect(copy).toContain('runs its turns here in the provider and uses the hub')
+    expect(copy).toContain('tool grants below do not apply')
   })
 })

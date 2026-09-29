@@ -48,14 +48,26 @@ limitations under the License.
 //	                              model edit files inside the worktree without asking;
 //	                              bypassPermissions additionally allows every tool,
 //	                              including arbitrary shell, and is for sandboxed hosts
-//	--permission-prompts none     anything that would still prompt is DENIED, not asked
+//	--permission-prompts none     nobody to ask: anything that would still prompt is
+//	                              DENIED. Used when Launch.Permissions is nil.
+//	--permission-prompts host     somebody CAN be asked, and the request goes to the
+//	                              --permission-prompt-tool below. The permission mode
+//	                              still decides everything else; this widens nothing,
+//	                              it only replaces a silent denial with a question.
+//	--permission-prompt-tool      the one-tool MCP server this adapter hosts on
+//	                              loopback for the child; see permission.go
 //	--allowedTools <list>         Config.AllowedTools: tool patterns granted up front
 //	                              (e.g. "Bash(git *)") so acceptEdits can run tests
 //	--safe-mode                   disables CLAUDE.md, skills, plugins, hooks, MCP servers,
 //	                              custom commands/agents, output styles, workflows — i.e.
 //	                              every project-controlled code and config path. Auth,
 //	                              model selection, built-in tools and permissions still work.
-//	--strict-mcp-config           with no --mcp-config, no MCP server is loaded at all
+//	                              It is passed ONLY when there is nobody to ask: measured
+//	                              against 2.1.281, --safe-mode disables --mcp-config
+//	                              servers too, so it and a permission prompt tool cannot
+//	                              both exist. See the trade documented on args().
+//	--strict-mcp-config           no MCP server but the permission prompt one, and with
+//	                              no --mcp-config at all, none whatsoever
 //	--disable-slash-commands      no skills
 //	--no-chrome                   no browser integration
 //	--setting-sources ""          no user, project or local settings files
@@ -84,7 +96,7 @@ limitations under the License.
 //
 // The privilege boundary for an add-on-managed runner is therefore the
 // dedicated non-root account the agent supervises it under, not this adapter.
-// See docs/edge-addons.md.
+// See docs/edge-harness.md.
 package claude
 
 import (
@@ -120,35 +132,6 @@ const (
 	processStopTimeout = 2 * time.Second
 )
 
-// CredentialKind selects which environment variable carries the credential.
-type CredentialKind string
-
-const (
-	// CredentialOAuthToken injects CLAUDE_CODE_OAUTH_TOKEN, the long-lived
-	// token `claude setup-token` mints for a Claude subscription.
-	CredentialOAuthToken CredentialKind = "oauth-token"
-	// CredentialAPIKey injects ANTHROPIC_API_KEY.
-	CredentialAPIKey CredentialKind = "api-key"
-)
-
-// CredentialKinds are the accepted spellings, for flag and API validation.
-var CredentialKinds = []string{string(CredentialOAuthToken), string(CredentialAPIKey)} //nolint:gochecknoglobals
-
-// EnvVar returns the environment variable a credential kind is injected as.
-func (k CredentialKind) EnvVar() string {
-	switch k {
-	case CredentialOAuthToken:
-		return "CLAUDE_CODE_OAUTH_TOKEN"
-	case CredentialAPIKey:
-		return "ANTHROPIC_API_KEY"
-	default:
-		return ""
-	}
-}
-
-// Valid reports whether k is a supported credential kind.
-func (k CredentialKind) Valid() bool { return k.EnvVar() != "" }
-
 // A Claude Code home may hold session state and the config the adapter itself
 // pins, but never anything that would execute project-controlled code. These
 // entries are refused outright rather than ignored: their presence means the
@@ -170,8 +153,8 @@ var unsafeHomeEntries = map[string]struct{}{ //nolint:gochecknoglobals // immuta
 
 var versionPattern = regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+)`) //nolint:gochecknoglobals
 
-// Config selects the Claude Code executable, its isolated home and the single
-// credential the child is given.
+// Config selects the Claude Code executable and its isolated home. The
+// credential is NOT configuration: it arrives with each launch.
 type Config struct {
 	Binary string
 	// Home is a runner-owned CLAUDE_CONFIG_DIR. It must be dedicated to the
@@ -184,12 +167,6 @@ type Config struct {
 	Model string
 	// ExpectedVersion, when set, produces a readiness Reason on mismatch.
 	ExpectedVersion string
-	// CredentialFile is an absolute, runner-owned 0600 file holding the raw
-	// credential value. It is read on every Probe and Run so a rotated
-	// credential is picked up without recreating the adapter.
-	CredentialFile string
-	// CredentialKind selects the environment variable the value is injected as.
-	CredentialKind CredentialKind
 	// PermissionMode is what the model may do without asking. Empty means
 	// PermissionAcceptEdits. A coding runner cannot work under "dontAsk": with
 	// prompts denied, every file edit is refused and each turn ends with no
@@ -244,9 +221,12 @@ func New(cfg Config) harness.Adapter {
 	return &Adapter{cfg: cfg}
 }
 
-// Probe checks the executable's version and that a credential is present,
-// without making a model call. It never prints, returns or logs the credential
-// itself — only whether one could be read.
+// Probe checks the executable and its version without making a model call.
+//
+// It deliberately does NOT check authentication: the credential arrives with
+// each launch, so there is nothing to check here, and a runner that reported
+// itself unready until one showed up would never accept the attempt that
+// carries it. An unusable credential is a per-attempt needs_input outcome.
 func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 	info := harness.Info{Name: HarnessName}
 	if err := a.ensureHome(); err != nil {
@@ -263,16 +243,14 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 	if _, err := a.permissionMode(); err != nil {
 		info.Reasons = append(info.Reasons, err.Error())
 	}
-	if _, err := a.readCredential(); err != nil {
-		// The reason is the CLASS of failure, never the path's contents.
-		info.Reasons = append(info.Reasons, "Claude Code authentication is not configured: "+err.Error())
-	}
 	info.Ready = len(info.Reasons) == 0
 	return info, nil
 }
 
 func (a *Adapter) probeVersion(ctx context.Context) (string, error) {
-	credential, _ := a.readCredential()
+	// No credential: --version makes no model call, and the probe must work on
+	// a runner that has not been given one yet.
+	var credential credential
 	cmd := exec.CommandContext(ctx, a.cfg.Binary, "--version")
 	cmd.Env = a.childEnv(credential)
 	output, err := cmd.CombinedOutput()
@@ -304,19 +282,32 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	if _, err := a.permissionMode(); err != nil {
 		return result, err
 	}
-	credential, err := a.readCredential()
+	credential, err := credentialFor(launch)
 	if err != nil {
 		if emit != nil {
-			_ = emit(harness.Event{Type: "auth_failure", Message: "Claude Code authentication is not configured"})
+			_ = emit(harness.Event{Type: "auth_failure", Message: "Claude Code authentication is not usable"})
 		}
 		return harness.Result{
 			Phase:     "needs_input",
 			SessionID: launch.SessionID,
-			Blocker:   "Claude Code authentication is not configured: " + err.Error(),
+			Blocker:   "Claude Code authentication is not usable: " + err.Error(),
 		}, nil
 	}
 
-	cmd := exec.Command(a.cfg.Binary, a.args(launch)...) //nolint:gosec // the binary is operator-configured enrollment, never request data
+	// The permission server exists only when there is somebody to ask AND the
+	// mode still has something to ask about. Under bypassPermissions nothing
+	// ever prompts, so hosting one would be a port and a secret for a question
+	// that is never asked.
+	var permissions *permissionServer
+	if mode, _ := a.permissionMode(); launch.Permissions != nil && mode != PermissionBypass {
+		permissions, err = startPermissionServer(launch.Permissions, launch.AttemptID, a.cfg.Home)
+		if err != nil {
+			return result, err
+		}
+		defer func() { _ = permissions.Close() }()
+	}
+
+	cmd := exec.Command(a.cfg.Binary, a.args(launch, permissions)...) //nolint:gosec // the binary is operator-configured enrollment, never request data
 	cmd.Env = a.childEnv(credential)
 	cmd.Dir = launch.Workdir
 	proc.Configure(cmd)
@@ -372,20 +363,49 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 // args builds the headless command line. See the package comment for what each
 // flag is protecting against; the ordering is stable so contract tests can pin
 // it.
-func (a *Adapter) args(launch harness.Launch) []string {
+func (a *Adapter) args(launch harness.Launch, permissions *permissionServer) []string {
 	mode, _ := a.permissionMode()
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
+		"--permission-mode", string(mode),
+	}
+	if permissions == nil {
 		// Nothing may prompt: the mode decides what is pre-approved, and "none"
 		// means a request that would still have prompted is denied outright
 		// rather than parked.
-		"--permission-mode", string(mode),
-		"--permission-prompts", "none",
+		args = append(args, "--permission-prompts", "none")
 		// Every project-controlled execution path off.
-		"--safe-mode",
-		"--strict-mcp-config",
+		args = append(args, "--safe-mode", "--strict-mcp-config")
+	} else {
+		// Somebody can be asked, so ask: "host" routes anything the mode does
+		// not pre-approve to the permission prompt tool instead of denying it.
+		// The mode still decides everything else — this widens nothing.
+		args = append(args,
+			"--permission-prompts", "host",
+			"--permission-prompt-tool", permissionToolRef,
+			"--mcp-config", permissions.ConfigPath(),
+		)
+		// --safe-mode is NOT passed here, and it is not an oversight.
+		// Measured against 2.1.281: --safe-mode disables MCP servers including
+		// ones given with --mcp-config, so the permission prompt tool is not
+		// found and every launch fails outright. The flags that remain were
+		// measured to still cover the execution paths that matter: with
+		// --setting-sources "" a project .claude/settings.json hook does not
+		// run, and with --strict-mcp-config a project .mcp.json server is not
+		// started. What --safe-mode ALSO removed and these do not is
+		// project-supplied PROMPT text — ./CLAUDE.md and .claude/agents — which
+		// the model now reads. That is text, not code: it can steer the model,
+		// and every action it steers the model into that the mode does not
+		// pre-approve now stops at a human instead of being silently denied.
+		//
+		// --strict-mcp-config still applies and now carries more weight: it is
+		// what keeps the permission prompt server the ONLY MCP server the child
+		// can reach, rather than one of however many a project asked for.
+		args = append(args, "--strict-mcp-config")
+	}
+	args = append(args,
 		"--disable-slash-commands",
 		"--no-chrome",
 		// An empty source list means "load no user, project or local settings
@@ -396,7 +416,7 @@ func (a *Adapter) args(launch harness.Launch) []string {
 		// silently loading settings — which is the safe direction for a flag
 		// whose job is to remove a project-controlled input.
 		"--setting-sources", "",
-	}
+	)
 	if launch.SessionID != "" {
 		args = append(args, "--resume", launch.SessionID)
 	} else if launch.AttemptID != "" && isUUID(launch.AttemptID) {

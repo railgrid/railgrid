@@ -29,6 +29,7 @@ type MemoryStore struct {
 	usage           map[string]Usage          // key: scope|agent|windowStart
 	tenants         map[string]TenantRef      // key: clusterID
 	summaries       map[string]SessionSummary // key: scope|session
+	harness         map[string]HarnessSession // key: scope|session
 	messageSequence int64
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
 	// mirroring the org/workspace columns the Postgres rows carry.
@@ -46,6 +47,7 @@ func NewMemoryStore() *MemoryStore {
 		usage:     map[string]Usage{},
 		tenants:   map[string]TenantRef{},
 		summaries: map[string]SessionSummary{},
+		harness:   map[string]HarnessSession{},
 		runScopes: map[string]Scope{},
 	}
 }
@@ -281,7 +283,64 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	delete(m.summaries, sessionKey(scope, sessionID))
+	// The harness session belongs to the conversation that was just wiped. A
+	// "/new" that kept it would chain the next turn onto a harness session
+	// holding the transcript the user asked to be rid of.
+	delete(m.harness, sessionKey(scope, sessionID))
 	return nil
+}
+
+func (m *MemoryStore) NextHarnessTurn(_ context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error) {
+	if err := scope.withAgent(); err != nil {
+		return HarnessSession{}, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return HarnessSession{}, fmt.Errorf("session ID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := sessionKey(scope, sessionID)
+	row := m.harness[key]
+	row.SessionID = sessionID
+	row.Turns++
+	row.UpdatedAt = now.UTC()
+	m.harness[key] = row
+	return row, nil
+}
+
+func (m *MemoryStore) PutHarnessSession(_ context.Context, scope Scope, s HarnessSession) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.SessionID) == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := sessionKey(scope, s.SessionID)
+	row := m.harness[key]
+	row.SessionID = s.SessionID
+	if strings.TrimSpace(s.HarnessSessionID) != "" {
+		row.HarnessSessionID = s.HarnessSessionID
+	}
+	// Turns only ever moves forward: a writer recording the session id it
+	// observed must not roll the epoch back to whatever it read earlier.
+	if s.Turns > row.Turns {
+		row.Turns = s.Turns
+	}
+	row.UpdatedAt = s.UpdatedAt.UTC()
+	m.harness[key] = row
+	return nil
+}
+
+func (m *MemoryStore) GetHarnessSession(_ context.Context, scope Scope, sessionID string) (HarnessSession, bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return HarnessSession{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.harness[sessionKey(scope, sessionID)]
+	return row, ok, nil
 }
 
 func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
@@ -649,6 +708,11 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 	for k := range m.summaries {
 		if hasPrefix(k, msgPrefix) {
 			delete(m.summaries, k)
+		}
+	}
+	for k := range m.harness {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.harness, k)
 		}
 	}
 	for k, run := range m.runs {

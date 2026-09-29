@@ -81,6 +81,11 @@ const (
 	ProviderOpenAI           = agentsv1alpha1.ModelProviderOpenAI
 	ProviderGoogle           = "google"
 
+	// The harness identities. They are named here so this package can REFUSE
+	// them by name (see BuildModel); nothing in llm ever uses one.
+	ProviderClaudeCode = agentsv1alpha1.ModelProviderClaudeCode
+	ProviderCodex      = agentsv1alpha1.ModelProviderCodex
+
 	// DefaultBaseURL is what an empty spec.baseURL falls back to. The CRD
 	// requires one, so this only covers an object written before the schema
 	// did.
@@ -178,11 +183,24 @@ func LoadCredential(ctx context.Context, c CredentialResolver, name string) (Pro
 	return ProfileFor(ctx, c, cred)
 }
 
+// ErrHarnessCredential means a harness identity was handed to something that
+// wanted a chat model. Callers match on it rather than on the message.
+var ErrHarnessCredential = errors.New("this model credential is a coding-harness identity, not a chat endpoint")
+
 // BuildModel constructs an Eino chat model from a profile. Only the
 // OpenAI-compatible path is implemented; Gemini and other native providers are
 // added later.
+//
+// A harness identity is REFUSED before anything else, including the empty-key
+// and empty-model checks, because it is the one failure whose cause is not
+// visible downstream: a `claude setup-token` value posted to
+// /chat/completions comes back as an upstream 401, and the reader is then
+// looking for a rotated key instead of a mis-pointed agent.
 func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error) {
 	p = p.normalized()
+	if agentsv1alpha1.IsHarnessProvider(p.Provider) {
+		return nil, fmt.Errorf("%w: provider %q runs on an edge harness, so point the agent at it with spec.backend.harness.credentialRef instead of spec.backend.model.credentials", ErrHarnessCredential, p.Provider)
+	}
 	if p.APIKey == "" {
 		return nil, ErrNotConfigured
 	}

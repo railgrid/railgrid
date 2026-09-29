@@ -36,8 +36,7 @@ upgrade response: base64 of
   "provider": "edges", "clusterID": "2hx82dl9ncmepp5l",
   "resource": "linuxservers", "name": "edge-1",
   "refreshPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/agent-token",
-  "sshCredentialsPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh-credentials",
-  "addonCredentialsPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/addon-credentials"
+  "sshCredentialsPath": "/clusters/2hx82dl9ncmepp5l/apis/edges.railgrid.ai/v1alpha1/linuxservers/edge-1/ssh-credentials"
 }
 ```
 
@@ -132,64 +131,31 @@ That is why the agent holds no core-group access at all any more, and why the
 provider keeps its `secrets`/`namespaces` claims: the write did not disappear,
 it moved to the side of the boundary that can be held accountable for it.
 
-## A managed runner's credential
+## A managed runner needs no credential
 
-The same rule, and the same solution, in both directions.
+Worth stating, because it used to need two and the machinery for that was
+substantial.
 
-An `Addon` of type `runner` needs two Secrets in the tenant workspace. The
-tenant supplies one — the harness credential, a Codex `auth.json` or a Claude
-Code token — and points `spec.runner.{codex,claude}.authSecretRef` at it. The
-agent generates the other: the runner's own bearer, which the edges `Service`
-derived from the Addon presents on every call.
+An edge that hosts a coding harness (see [edge-harness.md](./edge-harness.md))
+supervises a runner and publishes it as a `Service`. Neither half of that
+involves a tenant credential any more:
 
-The agent used to read the first and write the second **itself**, with the core
-`secrets` grant it no longer has. After the scoped-identity migration a managed
-runner therefore failed in exactly the way the design says it should:
+- **The harness credential is gone from the host.** It used to be a tenant
+  Secret named by an `Addon`, read by the provider on the agent's behalf through
+  a declared `addon-credentials` verb and written to a `0600` file on the
+  machine. Now the CALLER sends its own identity with every `runner/v1` start
+  and resume, held in memory for the length of one attempt. Nothing on the
+  machine authenticates to a model provider, so there is nothing to deliver,
+  rotate or revoke here.
+- **The runner's own bearer never leaves the host.** The agent generates it and
+  injects it into requests arriving for its own loopback runner ports, so the
+  published `Service` carries `auth: none` and no Secret is written into the
+  tenant workspace at all.
 
-```
-ClaudeAuthMissing: reading auth Secret default/dev-edge-server-1-runner-claude-auth:
-  secrets "…" is forbidden: User "system:serviceaccount:default:railgrid-si-…" cannot get
-  resource "secrets" in API group ""
-Published through Edges: waiting for the agent to publish Secret default/…-runner-token
-```
-
-Both halves are one declared, gated verb on the edge kinds that can host an
-add-on (`linuxservers`, `macosservers`):
-
-| Direction | Body | Answer |
-| --- | --- | --- |
-| read the harness credential | `{"addon": "<name>", "authSecretRef": {"name", "namespace"}}` | a `Secret` carrying only the keys that harness can use |
-| publish the runner token | `{"addon": "<name>", "uid": "<addon uid>", "token": "<bearer>"}` | `204`, the token Secret written |
-
-The verb is `{resource}/addon-credentials`, and which half runs is decided by
-which member the body carries. It runs the ordinary gate for the agent, and
-then **one more check that is the point of the design**: the named `Addon` must
-have a `spec.edgeRef` pointing back at the edge in the path. The agent names an
-add-on and nothing else — not a namespace, not a key; the auth reference it
-sends must match the one the Addon's own spec records, or the call is refused.
-Everything the provider touches it derives from that Addon's own spec:
-
-- the read half reads the Secret `spec.runner.<harness>.authSecretRef` names and
-  returns **only** the keys that harness can use (`auth.json` for Codex,
-  `oauthToken`/`apiKey` for Claude Code), so a Secret that also carries
-  unrelated material never hands that material to a code-execution host. An
-  add-on that is not on this edge gets the same `404` as one that does not
-  exist, so the verb cannot be used to enumerate the workspace.
-- the publish half writes `default/<addon>-runner-token` (key `token`) with
-  `railgrid.ai/owner: edges` — without which the provider could not read back
-  its own write, because kcp filters the label-scoped `secrets` claim out of
-  LIST/WATCH and answers a GET with `404` — and the `ownerReference` to the
-  `Addon` that makes deleting the add-on delete its credential.
-
-The tenant's own Secret needs that label too, and for the same reason: the
-consumer is **edges**, not whoever wrote it. Factory's managed-runner form
-stamps it (`providers/factory/portal/src/workers/enrollment.ts`); a
-hand-written Secret must carry it as well, which is the tenant saying "this one
-is for edges".
-
-The agent re-reads through `addon-credentials` on **every** reconcile and caches
-nothing, so a rotated credential takes effect on the next resync — the
-credential's digest, never the credential, feeds the child's restart hash.
+The `addon-credentials` verb, its subresource shell, and the `secrets` half of
+the provider's claim that existed to serve it are all deleted. The SSH
+credentials path above is unchanged and is now the only credential the agent
+sends the provider.
 
 ## Revocation
 
@@ -209,11 +175,11 @@ exports, so the hub admits the request whole:
 | Rule | Scope |
 |---|---|
 | `get` on `{resource}` | this edge only (the gate's visibility review) |
-| `*` on `{resource}/{addon-credentials,agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (kcp's RBAC on the verb subresource; `*` because kcp maps the HTTP method onto the verb) |
+| `*` on `{resource}/{agent-token,k8s,mcp,proxy,ssh,ssh-credentials}` | this edge only (kcp's RBAC on the verb subresource; `*` because kcp maps the HTTP method onto the verb) |
 | `get,update,patch` on `{resource}/status` | this edge only |
 | `list,watch` on `{resource}` | kind-wide — RBAC cannot name-scope a collection request |
 | `get,list,watch,update,patch` on `placements(/status)` | workload plane |
-| `get,list,watch` on `workloads(/status)`, `addons` | read-only |
-| `get,update,patch` on `addons/status` | an agent reports on an add-on, never creates one |
+| `get,list,watch` on `workloads(/status)` | read-only |
+
 
 No core group. No wildcards. No unnamed write outside the two collection reads.

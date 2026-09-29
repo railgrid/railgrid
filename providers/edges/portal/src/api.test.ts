@@ -21,6 +21,7 @@ import {
   probeEdge,
   setTenant,
   setToken,
+  updateEdgeHarness,
   updateEdgeService,
   updateEdgeServiceInstructions,
 } from './api'
@@ -303,6 +304,59 @@ describe('unchanged edge fleet and CRUD contracts', () => {
       spec: {},
     })
     expect(calls.map((call) => call.path)).toEqual([`${MACOS}/mac-mini`])
+  })
+
+  it('reads reported harnesses off a host edge and leaves an absent spec.harness absent', async () => {
+    route(() => response({
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
+      kind: 'LinuxServer',
+      metadata: { name: 'build-01' },
+      spec: { sshPort: 22 },
+      status: {
+        connected: true,
+        phase: 'Ready',
+        conditions: [],
+        harnesses: [
+          { name: 'claude', detected: true, enabled: true, ready: true, version: '2.1.273', port: 8787 },
+          { name: 'codex', detected: false, enabled: false, ready: false },
+        ],
+      },
+    }))
+
+    const edge = await getEdge('build-01', 'server')
+    // An absent spec.harness is the CRD default (auto); the client must not
+    // invent a value for it.
+    expect(edge.spec.harness).toBeUndefined()
+    expect(edge.harnesses).toEqual([
+      { name: 'claude', detected: true, enabled: true, ready: true, version: '2.1.273', port: 8787 },
+      { name: 'codex', detected: false, enabled: false, ready: false },
+    ])
+  })
+
+  it('writes spec.harness as a merge patch that clears enabled outside explicit mode', async () => {
+    const calls = route(() => response({
+      apiVersion: 'edges.railgrid.ai/v1alpha1',
+      kind: 'LinuxServer',
+      metadata: { name: 'build-01' },
+    }))
+
+    await updateEdgeHarness('build-01', 'server', { mode: 'none' })
+    await updateEdgeHarness('build-01', 'server', { mode: 'auto' })
+    await updateEdgeHarness('build-01', 'server', { mode: 'explicit', enabled: ['claude'] })
+    await updateEdgeHarness('mac-mini', 'macos', { mode: 'none' })
+
+    expect(calls.map((call) => [call.method, call.path, call.contentType])).toEqual([
+      ['PATCH', `${SERVERS}/build-01`, 'application/merge-patch+json'],
+      ['PATCH', `${SERVERS}/build-01`, 'application/merge-patch+json'],
+      ['PATCH', `${SERVERS}/build-01`, 'application/merge-patch+json'],
+      ['PATCH', `${MACOS}/mac-mini`, 'application/merge-patch+json'],
+    ])
+    // enabled is required with explicit and rejected otherwise, so a merge
+    // patch must delete it (null) on the way out of explicit mode.
+    expect(calls[0]?.body).toEqual({ spec: { harness: { mode: 'none', enabled: null, permissionMode: 'acceptEdits', allowedTools: null } } })
+    expect(calls[1]?.body).toEqual({ spec: { harness: { mode: 'auto', enabled: null, permissionMode: 'acceptEdits', allowedTools: null } } })
+    expect(calls[2]?.body).toEqual({ spec: { harness: { mode: 'explicit', enabled: ['claude'], permissionMode: 'acceptEdits', allowedTools: null } } })
+    expect(calls[3]?.body).toEqual({ spec: { harness: { mode: 'none', enabled: null, permissionMode: 'acceptEdits', allowedTools: null } } })
   })
 
   it('reports a confirmed missing edge as NotFound', async () => {

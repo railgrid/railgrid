@@ -7,7 +7,7 @@ import { hashFor, type Route } from '../router'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
-import type { Agent } from '../types'
+import { agentHarness, agentHarnessBacked, agentModelCredential, harnessLabel, type Agent } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
@@ -50,6 +50,24 @@ function scheduleCount(agent: Agent): number {
 function triggerCount(agent: Agent): number {
   revision.value
   return props.store.triggers.data.filter(trigger => trigger.spec.agentRef === agent.metadata.name).length
+}
+
+/**
+ * backendSummary is the one line under an agent's name: what its turns run on.
+ *
+ * A harness-backed agent has no chat credential and needs none, so the old
+ * "no model — pick one in Config" would have been a lie about a correctly
+ * configured agent. `configured` is what the warning tone keys off.
+ */
+function backendSummary(agent: Agent): { label: string; configured: boolean } {
+  if (agentHarnessBacked(agent)) {
+    const harness = agentHarness(agent)
+    if (!harness?.edgeRef?.name) return { label: 'harness — no machine picked yet', configured: false }
+    const named = harnessLabel(props.store.credentials.data.find(c => c.name === harness.credentialRef)?.provider)
+    return { label: `${named || 'harness'} on ${harness.edgeRef.name}`, configured: true }
+  }
+  const credential = agentModelCredential(agent)
+  return { label: credential || 'no model — pick one in Config', configured: Boolean(credential) }
 }
 
 function primaryChannel(agent: Agent): string {
@@ -129,8 +147,8 @@ function primaryChannel(agent: Agent): string {
             <div class="agents-card-glyph"><Bot aria-hidden="true" /></div>
             <div class="agents-card-body">
               <h3>{{ agent.spec?.displayName || agent.metadata.name }}</h3>
-              <p :class="['agents-card-model', { warn: !agent.spec?.models?.chat }]">
-                {{ agent.spec?.models?.chat || 'no model — pick one in Config' }}
+              <p :class="['agents-card-model', { warn: !backendSummary(agent).configured }]">
+                {{ backendSummary(agent).label }}
               </p>
             </div>
             <div class="agents-card-foot">

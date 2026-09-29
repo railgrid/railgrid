@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
@@ -158,7 +159,7 @@ func TestSplitSources(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			body, sources := splitSources(tc.content)
+			body, sources := backend.SplitSources(tc.content)
 			if body != tc.wantBody {
 				t.Fatalf("body = %q, want %q", body, tc.wantBody)
 			}

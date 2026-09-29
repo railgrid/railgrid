@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Brain, CornerDownRight, Eye, Link2, Plus, Trash2, Wrench } from 'lucide-vue-next'
+import { ArrowLeft, Brain, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
@@ -11,7 +11,7 @@ import ModelConnectionEditor from './ModelConnectionEditor.vue'
 import type { CreateSuccessDetail, Route } from '../router'
 import type { AppStore } from '../store'
 import { toast } from '../ui/toast'
-import { fmtTokens, fmtUSD, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo, type UsagePoint, type UsageResponse } from '../types'
+import { agentHarness, agentModelCredential, agentModelFallbacks, fmtTokens, fmtUSD, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo, type UsagePoint, type UsageResponse } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
@@ -119,8 +119,12 @@ function missingCatalogLabel(): string {
   if (!catalogHasSnapshot.value) return catalogError.value ? 'catalog unavailable — pricing unknown' : 'catalog loading — pricing unknown'
   return catalogError.value ? 'not in last loaded catalog — pricing unknown' : 'not in catalog — no pricing'
 }
-function primaryOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => agent.spec?.models?.chat === credential.name) }
-function fallbackOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => agent.spec?.models?.chat !== credential.name && (agent.spec?.modelFallbacks || []).includes(credential.name)) }
+// "Which agents use this credential?" now has two answers, because a credential
+// is either a chat endpoint a model-backed agent reasons with or the identity a
+// harness-backed agent's harness runs as. Both are a primary use of it.
+function primaryName(agent: Agent): string { return agentHarness(agent)?.credentialRef || agentModelCredential(agent) }
+function primaryOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => primaryName(agent) === credential.name) }
+function fallbackOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => primaryName(agent) !== credential.name && agentModelFallbacks(agent).includes(credential.name)) }
 function fmtCtx(value: number): string { return value >= 1e6 ? `${value / 1e6}M ctx` : value >= 1e3 ? `${Math.round(value / 1e3)}k ctx` : `${value} ctx` }
 function setMap<K, V>(source: Map<K, V>, key: K, value: V): Map<K, V> { return new Map(source).set(key, value) }
 function credentialAction(name: string): CredentialAction | undefined { return credentialActions.value.get(name) }
@@ -139,6 +143,19 @@ function statusTone(credential: Credential): 'success' | 'danger' | 'muted' {
   return 'muted'
 }
 function credentialIsBusy(name: string): boolean { return credentialActions.value.has(name) }
+// A harness identity has no endpoint and no model, so on a card built to show
+// both it would otherwise read as a broken chat credential: an empty model, an
+// "Endpoint: Provider default" it does not have, a pricing line for tokens it
+// does not bill through us, and a Test button with nothing to call. Every one
+// of those is answered by the family, so the card says which family it is and
+// then says the true thing in each slot.
+function harnessCredential(credential: Credential): boolean { return isHarnessProvider(credential.provider) }
+function familyModel(credential: Credential): string {
+  return harnessCredential(credential) ? `${harnessLabel(credential.provider)} identity` : credential.model || '—'
+}
+function familyEndpoint(credential: Credential): string {
+  return harnessCredential(credential) ? 'none — runs on an edge harness' : credential.baseURL || ''
+}
 function invalidateProbe(name: string): void {
   probeGenerations.set(name, (probeGenerations.get(name) || 0) + 1)
   if (testing.value.has(name)) {
@@ -221,12 +238,16 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     if (probe) tested.value = setMap(tested.value, body.name, probe)
     await authority.store.load('credentials')
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
-    // A credential saved without a model is half a job, and deliberately so:
-    // "which models does this endpoint serve?" is a verb on the SAVED
+    // A CHAT credential saved without a model is half a job, and deliberately
+    // so: "which models does this endpoint serve?" is a verb on the SAVED
     // credential, so the first save is what makes the question askable. Keep
     // the editor open on the object that now exists, rather than closing on a
     // credential no agent can run.
-    if (!edited && !(body.model ?? '').trim()) {
+    //
+    // A harness identity is whole on its first save — it has no model to pick
+    // and no endpoint to ask — so holding the form open on "Find models to pick
+    // one" would be an instruction it cannot follow.
+    if (!edited && !isHarnessProvider(body.provider) && !(body.model ?? '').trim()) {
       editingCredential.value = credentials.value.data.find(item => item.name === body.name) ?? { ...result }
       editName.value = body.name
       creating.value = false
@@ -235,7 +256,7 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
       return
     }
     cancelEditorAfterSave()
-    toast('ok', edited ? 'Model updated.' : 'Model connected.')
+    toast('ok', edited ? 'Credential updated.' : isHarnessProvider(body.provider) ? 'Harness identity added.' : 'Model connected.')
     if (!edited && props.routeOwned) emit('create-success', { resource: 'model', name: body.name, item: result, ...fence })
   } catch (error) {
     if (authorityIsCurrent(authority) && fence.createSession === props.createSession) saveError.value = (error as Error).message
@@ -264,7 +285,7 @@ defineExpose({ loadCatalog, loadUsage })
   <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'agents-panel agents-route-panel agents-models-page'">
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
-      <header class="k-create-header"><h1 class="k-create-title">{{ editingCredential ? 'Edit model' : 'Connect model' }}</h1><p class="k-create-description">Configure a workspace model connection.</p></header>
+      <header class="k-create-header"><h1 class="k-create-title">{{ editingCredential ? (harnessCredential(editingCredential) ? 'Edit harness identity' : 'Edit model') : 'Connect model' }}</h1><p class="k-create-description">{{ editingCredential && harnessCredential(editingCredential) ? 'The login a coding harness on an edge runs as.' : 'Configure a workspace model connection.' }}</p></header>
       <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" />
     </template>
     <template v-else>
@@ -277,16 +298,22 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-if="credentials.hasSnapshot" class="k-model-grid">
-        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
+        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="familyModel(credential)" :endpoint="familyEndpoint(credential)" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credential.name) ? 'Testing…' : tested.get(credential.name)?.ok ? `Test passed · ${tested.get(credential.name)?.latencyMS} ms` : tested.has(credential.name) ? 'Test failed' : statusLabel(credential)"
           :test-tone="tested.get(credential.name)?.ok ? 'success' : tested.has(credential.name) ? 'danger' : statusTone(credential)">
+          <template v-if="harnessCredential(credential)">
+            <div class="agents-model-chips"><span class="agents-chip"><Terminal :stroke-width="1.75" aria-hidden="true" /> Harness identity</span></div>
+            <p class="agents-hint">No endpoint and no chat model: this is the login a {{ harnessLabel(credential.provider) }} harness on an edge runs as, and turns bill to the account it belongs to.</p>
+          </template>
+          <template v-else>
           <div v-if="lookupModel(credential.model || '')" class="agents-model-chips"><template v-if="lookupModel(credential.model || '')"><span v-if="lookupModel(credential.model || '')?.contextWindow" class="agents-chip">{{ fmtCtx(lookupModel(credential.model || '')!.contextWindow!) }}</span><span v-if="lookupModel(credential.model || '')?.vision" class="agents-chip"><Eye :stroke-width="1.75" aria-hidden="true" /> vision</span><span v-if="lookupModel(credential.model || '')?.toolCall" class="agents-chip"><Wrench :stroke-width="1.75" aria-hidden="true" /> tools</span><span v-if="lookupModel(credential.model || '')?.reasoning" class="agents-chip"><Brain :stroke-width="1.75" aria-hidden="true" /> reasoning</span></template></div>
           <p v-if="lookupModel(credential.model || '')" class="agents-hint">${{ lookupModel(credential.model || '')?.inputPer1M }} input · ${{ lookupModel(credential.model || '')?.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="agents-hint">{{ missingCatalogLabel() }}</p>
+          </template>
           <div class="agents-model-assign"><span v-for="agent in primaryOf(credential)" :key="`p-${agent.metadata.name}`" class="agents-chip agents-chip-primary"><Link2 :stroke-width="1.75" aria-hidden="true" /> Primary: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-for="agent in fallbackOf(credential)" :key="`f-${agent.metadata.name}`" class="agents-chip agents-chip-fallback"><CornerDownRight :stroke-width="1.75" aria-hidden="true" /> Fallback: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-if="!primaryOf(credential).length && !fallbackOf(credential).length" class="muted agents-assign-none">Not assigned to any agent</span></div>
           <p v-if="tested.get(credential.name)?.error" class="k-error" role="alert">{{ tested.get(credential.name)?.error }}</p>
           <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">{{ credential.statusMessage }}</p>
-          <p v-if="credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
-          <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="toggleEdit(credential)">Edit</button><button class="k-btn k-btn--ghost" :disabled="testing.has(credential.name) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credential.name}…` : `Delete ${credential.name}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
+          <p v-if="!harnessCredential(credential) && credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
+          <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="toggleEdit(credential)">Edit</button><button v-if="!harnessCredential(credential)" class="k-btn k-btn--ghost" :disabled="testing.has(credential.name) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credential.name}…` : `Delete ${credential.name}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
         </ModelConnectionCard>
       </div>
       <ModelUsageSection provider="Agents" available>

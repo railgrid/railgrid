@@ -282,46 +282,6 @@ func TestCredentialStoreRejectedFallsBackToTheJoinToken(t *testing.T) {
 	}
 }
 
-func TestAddonCredentialsDiscoversRouteFromRefresh(t *testing.T) {
-	calls := []string{}
-	var hub string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls = append(calls, r.URL.Path)
-		switch r.URL.Path {
-		case "/refresh":
-			if r.Header.Get("Authorization") != "Bearer saved" {
-				t.Error("refresh used wrong identity")
-			}
-			_ = json.NewEncoder(w).Encode(Credential{Token: "renewed", ExpiresAt: time.Now().Add(time.Hour), HubURL: hub, RefreshPath: "/refresh", AddonCredentialsPath: "/declared-addon-route"})
-		case "/declared-addon-route":
-			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer renewed" {
-				t.Error("exchange did not use renewed identity")
-			}
-			var body map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["addon"] != "runner" {
-				t.Error("incorrect add-on request")
-			}
-			_, _ = w.Write([]byte(`{"result":"ok"}`))
-		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
-			w.WriteHeader(404)
-		}
-	}))
-	defer srv.Close()
-	hub = srv.URL
-	store := &CredentialStore{}
-	if err := store.Adopt(Credential{Token: "saved", ExpiresAt: time.Now().Add(time.Hour), HubURL: hub, RefreshPath: "/refresh"}); err != nil {
-		t.Fatal(err)
-	}
-	var result map[string]string
-	if err := store.AddonCredentials(context.Background(), map[string]string{"addon": "runner"}, &result); err != nil {
-		t.Fatal(err)
-	}
-	if len(calls) != 2 || result["result"] != "ok" {
-		t.Fatalf("calls=%v result=%v", calls, result)
-	}
-}
-
 // The agent hands ONE tls.Config to its HTTPS clients and to the WebSocket
 // dialer. net/http enables HTTP/2 by appending "h2" to the NextProtos of the
 // config it is given, and gorilla/websocket then refuses to dial with

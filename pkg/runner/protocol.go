@@ -157,29 +157,77 @@ type RepositorySource struct {
 	Token string `json:"token,omitempty"`
 }
 
+// HarnessCredential is the caller's harness identity for one attempt.
+//
+// Like RepositorySource it is DISPATCH DATA, not approved attempt input: Start
+// and Resume strip it before the request is fingerprinted or persisted, so it
+// never reaches the runner's durable journal and a retry carrying a freshly
+// minted value is still the same request. The runner holds it in memory for the
+// life of the attempt and hands it to the adapter for each launch.
+//
+// A runner has no identity of its own. Every start must carry one, which is
+// what keeps a machine that hosts a harness from being a shared model account.
+type HarnessCredential struct {
+	// Kind is one of the harness.Credential kinds: claude-oauth,
+	// claude-apikey, codex-auth.
+	Kind string `json:"kind"`
+	// Value is the credential itself. It is never logged, never written to
+	// disk by the runner, and never placed on a command line.
+	Value string `json:"value"`
+}
+
 // StartRequest is the approved execution envelope accepted by Start.
+//
+// There are two shapes. A REPOSITORY attempt names RepositoryID and BaseCommit
+// and runs in a fresh task clone at that commit; this is what a coding
+// coordinator sends. A WORKSPACE attempt names WorkspaceID instead and runs in a
+// directory the runner keeps across attempts; this is what a conversational
+// agent sends, where there is no commit to pin and the working files are the
+// point. The two are mutually exclusive.
 type StartRequest struct {
-	ProtocolVersion        string                   `json:"protocolVersion,omitempty"`
-	RequestID              string                   `json:"requestID"`
-	TaskID                 string                   `json:"taskID"`
-	AttemptID              string                   `json:"attemptID"`
-	AttemptEpoch           uint64                   `json:"attemptEpoch"`
-	RepositoryID           string                   `json:"repositoryID"`
-	BaseCommit             string                   `json:"baseCommit"`
-	Instructions           string                   `json:"instructions"`
-	Model                  string                   `json:"model,omitempty"`
-	ApprovedInput          json.RawMessage          `json:"approvedInput,omitempty"`
-	RequiredCapabilities   []string                 `json:"requiredCapabilities,omitempty"`
-	RequiredToolchains     []string                 `json:"requiredToolchains,omitempty"`
-	RequiredEnvironment    []string                 `json:"requiredEnvironment,omitempty"`
-	RequiredHarness        string                   `json:"requiredHarness,omitempty"`
-	RequiredHarnessVersion string                   `json:"requiredHarnessVersion,omitempty"`
-	ExportGitResult        bool                     `json:"exportGitResult,omitempty"`
-	Limits                 ExecutionLimits          `json:"limits,omitempty"`
-	Verification           VerificationRequirements `json:"verification,omitempty"`
-	Resources              []ResourceRequest        `json:"resources,omitempty"`
-	Artifacts              []ArtifactSpec           `json:"artifacts,omitempty"`
-	Repository             *RepositorySource        `json:"repository,omitempty"`
+	ProtocolVersion string `json:"protocolVersion,omitempty"`
+	RequestID       string `json:"requestID"`
+	TaskID          string `json:"taskID"`
+	AttemptID       string `json:"attemptID"`
+	AttemptEpoch    uint64 `json:"attemptEpoch"`
+	// RepositoryID and BaseCommit are required unless WorkspaceID is set.
+	RepositoryID string `json:"repositoryID,omitempty"`
+	BaseCommit   string `json:"baseCommit,omitempty"`
+	// WorkspaceID names a directory the runner owns and keeps across
+	// attempts, under its managed worktree root. Mutually exclusive with
+	// RepositoryID: a workspace has no approved commit to verify.
+	WorkspaceID string `json:"workspaceID,omitempty"`
+	// SessionID continues an existing harness session in a NEW attempt, which
+	// is how consecutive turns of one conversation stay one session. Resuming
+	// a parked attempt uses ResumeRequest instead.
+	SessionID string `json:"sessionID,omitempty"`
+	// HarnessCredential is the identity this attempt runs as. Required, and
+	// stripped before anything durable is derived from the request.
+	HarnessCredential      *HarnessCredential `json:"harnessCredential,omitempty"`
+	Instructions           string             `json:"instructions"`
+	Model                  string             `json:"model,omitempty"`
+	ApprovedInput          json.RawMessage    `json:"approvedInput,omitempty"`
+	RequiredCapabilities   []string           `json:"requiredCapabilities,omitempty"`
+	RequiredToolchains     []string           `json:"requiredToolchains,omitempty"`
+	RequiredEnvironment    []string           `json:"requiredEnvironment,omitempty"`
+	RequiredHarness        string             `json:"requiredHarness,omitempty"`
+	RequiredHarnessVersion string             `json:"requiredHarnessVersion,omitempty"`
+	// AskPermission opts this attempt into the permission round-trip: a tool
+	// call the harness's permission mode does not pre-approve becomes a
+	// needs_input on the attempt, carrying Receipt.Permission, instead of being
+	// denied where nobody can see it. The resume answers it with a verdict.
+	//
+	// It is opt-in because answering one is work a coordinator has to do. A
+	// coordinator that does not send it — or an older one that has never heard
+	// of the field — gets exactly the behaviour it had before: anything that
+	// would have prompted is denied and the turn carries on.
+	AskPermission   bool                     `json:"askPermission,omitempty"`
+	ExportGitResult bool                     `json:"exportGitResult,omitempty"`
+	Limits          ExecutionLimits          `json:"limits,omitempty"`
+	Verification    VerificationRequirements `json:"verification,omitempty"`
+	Resources       []ResourceRequest        `json:"resources,omitempty"`
+	Artifacts       []ArtifactSpec           `json:"artifacts,omitempty"`
+	Repository      *RepositorySource        `json:"repository,omitempty"`
 }
 
 // CancelRequest requests cancellation of an active attempt.
@@ -192,17 +240,34 @@ type CancelRequest struct {
 }
 
 // ResumeRequest continues a needs-input attempt in its existing session.
+//
+// It carries the harness credential again rather than relying on one the runner
+// kept: a resume may arrive after a runner restart, and nothing about the
+// caller's identity survives on the host.
 type ResumeRequest struct {
-	ProtocolVersion string          `json:"protocolVersion,omitempty"`
-	RequestID       string          `json:"requestID"`
-	TaskID          string          `json:"taskID"`
-	AttemptID       string          `json:"attemptID"`
-	AttemptEpoch    uint64          `json:"attemptEpoch"`
-	SessionID       string          `json:"sessionID,omitempty"`
-	ClarificationID string          `json:"clarificationID,omitempty"`
-	ApprovedInput   json.RawMessage `json:"approvedInput,omitempty"`
-	Resolution      string          `json:"resolution,omitempty"`
-	Instructions    string          `json:"instructions,omitempty"`
+	ProtocolVersion   string             `json:"protocolVersion,omitempty"`
+	RequestID         string             `json:"requestID"`
+	TaskID            string             `json:"taskID"`
+	AttemptID         string             `json:"attemptID"`
+	AttemptEpoch      uint64             `json:"attemptEpoch"`
+	SessionID         string             `json:"sessionID,omitempty"`
+	ClarificationID   string             `json:"clarificationID,omitempty"`
+	ApprovedInput     json.RawMessage    `json:"approvedInput,omitempty"`
+	Resolution        string             `json:"resolution,omitempty"`
+	Instructions      string             `json:"instructions,omitempty"`
+	HarnessCredential *HarnessCredential `json:"harnessCredential,omitempty"`
+	// PermissionID answers an outstanding Receipt.Permission, and must equal
+	// its ID. It is the fence: a verdict that names a different request is
+	// refused rather than applied to whatever the harness is waiting on now.
+	PermissionID string `json:"permissionID,omitempty"`
+	// PermissionDecision is the verdict, PermissionAllow or PermissionDeny. It
+	// is required whenever PermissionID is set, and forbidden otherwise.
+	//
+	// A permission resume does NOT relaunch the harness: the tool call is still
+	// open on a child that never stopped, so the verdict is handed to it and
+	// the SAME turn continues. Resolution, when present, is the human's own
+	// words and is passed to the harness as the reason for a denial.
+	PermissionDecision string `json:"permissionDecision,omitempty"`
 }
 
 // Error describes a structured protocol failure.
@@ -222,6 +287,32 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 type Clarification struct {
 	ID   string `json:"id"`
 	Text string `json:"text"`
+}
+
+// PermissionDecision values are the verdicts a resume may carry. They are
+// spelled out rather than being a bool so that "no decision" is a distinct,
+// refusable state: a resume that forgot to say must not silently allow.
+const (
+	PermissionAllow = "allow"
+	PermissionDeny  = "deny"
+)
+
+// PermissionRequest is a harness permission prompt waiting on a human.
+//
+// It is NOT a Clarification, and a caller must not treat it as one. A
+// clarification is a product question answered with text, which becomes the
+// next turn's instructions. A permission request is a named tool call, with the
+// input the harness is holding, waiting on a verdict that is delivered back
+// into the call that is still open — so the same turn continues.
+//
+// Its ID is stable for one session and one tool call and must be echoed by the
+// matching resume, exactly as a Clarification's is.
+type PermissionRequest struct {
+	ID   string `json:"id"`
+	Tool string `json:"tool"`
+	// Input is a bounded JSON rendering of the tool's input, and it is what the
+	// verdict authorizes: that call, those arguments.
+	Input string `json:"input,omitempty"`
 }
 
 // Event is an ordered, durable attempt event. Data is bounded by the runner
@@ -257,11 +348,15 @@ type Receipt struct {
 	Cursor          uint64         `json:"cursor"`
 	Blocker         string         `json:"blocker,omitempty"`
 	Clarification   *Clarification `json:"clarification,omitempty"`
-	Resources       []string       `json:"resources,omitempty"`
-	LastError       *Error         `json:"lastError,omitempty"`
-	Artifacts       []Artifact     `json:"artifacts,omitempty"`
-	AcceptedAt      time.Time      `json:"acceptedAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
+	// Permission is set when the attempt is parked on a permission prompt
+	// rather than on a question. At most one of Clarification and Permission is
+	// ever set: they are answered differently and a caller has to know which.
+	Permission *PermissionRequest `json:"permission,omitempty"`
+	Resources  []string           `json:"resources,omitempty"`
+	LastError  *Error             `json:"lastError,omitempty"`
+	Artifacts  []Artifact         `json:"artifacts,omitempty"`
+	AcceptedAt time.Time          `json:"acceptedAt"`
+	UpdatedAt  time.Time          `json:"updatedAt"`
 }
 
 // ArtifactResponse contains immutable artifact metadata and bytes are served

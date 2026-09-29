@@ -10,26 +10,20 @@ package engine
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/railgrid/provider-agents/backend"
 )
 
 // InterruptError is returned by a tool executor to pause the run instead of
 // producing an observation — the durable human-in-the-loop gate. The engine
 // stops the loop, and the caller persists the returned Checkpoint so the run
 // can resume in place once the user decides.
-type InterruptError struct {
-	// Tool and Args identify the gated call exactly as the model requested it.
-	Tool string
-	Args string
-	// RequestID references the approval request (inbox item) awaiting the user.
-	RequestID string
-}
-
-func (e *InterruptError) Error() string {
-	return fmt.Sprintf("tool %q requires user approval (request %s)", e.Tool, e.RequestID)
-}
+//
+// The gate is the provider's mechanism rather than this loop's, so the type
+// lives at the seam (see backend.GateError) and this is its name here.
+type InterruptError = backend.GateError
 
 // Interrupt is the engine's paused state: why it stopped plus the Checkpoint
 // needed to resume.

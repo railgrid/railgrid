@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import type { ApiClient, RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
-import { fmtDuration, fmtTime, fmtTokens, fmtUSD, type InboxItem, type RunPhase, type RunSummary } from '../types'
+import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import type { ResourceTableChange, TableFilterDefinition, TableFilterState, TablePageInfo } from '../portalkit/table'
@@ -105,7 +105,17 @@ const columns = computed(() => [
   { key: 'usage', label: 'Usage', align: 'end' as const },
   { key: 'when', label: 'Created', align: 'end' as const },
 ])
-const tableRows = computed(() => runs.value.map(run => ({ ...run, input: run.inputPreview || '—', when: run.createdAt })))
+const tableRows = computed(() => runs.value.map(run => ({ ...run, input: run.inputPreview || '—', when: run.createdAt, run })))
+
+/**
+ * ranOnHarness marks only the rows that say so. A run with no recorded backend
+ * recorded nothing, so it gets no marker at all rather than a confident
+ * "model" — and an all-model workspace stays unmarked, which is the point: the
+ * badge is here to make the harness-backed rows findable.
+ */
+function ranOnHarness(row: Record<string, unknown>): boolean {
+  return runHarnessBacked(row.run as RunSummary)
+}
 
 function runFilter(cursor: string | null = tableCursor.value, limit = tablePageSize.value): RunFilter {
   const hours = RANGES.find(candidate => candidate.id === tableFilters.value.range)?.hours || 0
@@ -324,7 +334,7 @@ onBeforeUnmount(() => {
       </template>
       <template #trigger="{ row }">
         <span class="agents-run-cell">
-          <span class="mono">{{ row.trigger }}</span>
+          <span><span class="mono">{{ row.trigger }}</span><span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span></span>
           <span class="agents-run-secondary">{{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
         </span>
       </template>

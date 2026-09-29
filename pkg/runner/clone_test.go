@@ -95,16 +95,17 @@ func TestTheCloneCredentialIsNeitherPersistedNorFingerprinted(t *testing.T) {
 	defer func() { _ = r.Close() }()
 
 	request := StartRequest{
-		ProtocolVersion: ProtocolVersion,
-		RequestID:       "start-credential",
-		TaskID:          "task-credential",
-		AttemptID:       "attempt-credential",
-		AttemptEpoch:    1,
-		RepositoryID:    "repo",
-		BaseCommit:      commit,
-		Instructions:    "work",
-		ApprovedInput:   json.RawMessage(`{"provenance":{"source":"test"}}`),
-		Repository:      &RepositorySource{RemoteURL: "https://github.example/owner/repo.git", Username: "x-access-token", Token: "first-secret"},
+		ProtocolVersion:   ProtocolVersion,
+		RequestID:         "start-credential",
+		TaskID:            "task-credential",
+		AttemptID:         "attempt-credential",
+		AttemptEpoch:      1,
+		RepositoryID:      "repo",
+		BaseCommit:        commit,
+		Instructions:      "work",
+		ApprovedInput:     json.RawMessage(`{"provenance":{"source":"test"}}`),
+		Repository:        &RepositorySource{RemoteURL: "https://github.example/owner/repo.git", Username: "x-access-token", Token: "first-secret"},
+		HarnessCredential: testHarnessCredential(),
 	}
 	receipt, err := r.Start(context.Background(), request)
 	if err != nil {

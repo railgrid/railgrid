@@ -1,9 +1,8 @@
 # edges provider
 
-Connectivity core for railgrid. Owns `edges.railgrid.ai` and its seven kinds:
+Connectivity core for railgrid. Owns `edges.railgrid.ai` and its six kinds:
 the `KubernetesCluster`, `LinuxServer` and `MacOSServer` edges, the agent
-reverse tunnel, `Service` connectors, `Workload` / `Placement` scheduling, and
-`Addon` for per-edge add-on installs.
+reverse tunnel, `Service` connectors, and `Workload` / `Placement` scheduling.
 
 An **edge** is a cluster or host you connect to railgrid. The agent you install
 there dials *out* to the platform and holds open a WebSocket reverse tunnel
@@ -100,8 +99,8 @@ tenant logical cluster) is a controller-free multicluster manager that runs on
 every replica and only ever reads.
 
 **Reconcilers: the leader only.** The token/RBAC/lifecycle/version
-reconcilers, the Workload scheduler and status aggregator, the Service
-discovery/validation reconcilers and the Addon publisher run under a `Lease`
+reconcilers, the Workload scheduler and status aggregator and the Service
+discovery/validation reconcilers run under a `Lease`
 (`edges-controllers`, `default` namespace of the provider workspace) and are
 rebuilt on each leadership term, so every tenant CR has exactly one writer.
 A replica that is not leader keeps serving the tunnel, the data plane, MCP and

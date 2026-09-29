@@ -88,10 +88,7 @@ func TestRules(t *testing.T) {
 							t.Errorf("verb %q does not belong to %s", resource, k.gvr.Resource)
 						}
 					}
-					want := make([]string, 0, len(DataPlaneVerbs)+1)
-					if k.gvr.Resource == "macosservers" || k.gvr.Resource == "linuxservers" {
-						want = append(want, k.gvr.Resource+"/addon-credentials")
-					}
+					want := make([]string, 0, len(DataPlaneVerbs))
 					for _, verb := range DataPlaneVerbs {
 						want = append(want, k.gvr.Resource+"/"+verb)
 					}

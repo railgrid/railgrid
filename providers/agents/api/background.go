@@ -48,6 +48,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,7 +93,16 @@ type vwShard struct {
 type background struct {
 	server *Server
 	base   *rest.Config
-	exec   executor.Executor
+	// ctx is the provider's own lifetime, which every run this process executes
+	// hangs off: a dispatched run outlives the reconcile that claimed it, but not
+	// the process, so shutdown stops it.
+	ctx context.Context
+
+	// slots bounds how many runs this replica executes at once. See
+	// maxConcurrentRuns and tryAcquireSlot: a run that finds no slot is handed
+	// BACK to the queue rather than queued here or refused, which is the whole
+	// reason the object is the queue.
+	slots chan struct{}
 
 	// mu guards shards + clusterShard: the discovery tick rebuilds them while
 	// HTTP handlers (webhooks, OAuth callbacks) and Discord gateway callbacks
@@ -149,11 +160,9 @@ func (s *Server) StartBackground(ctx context.Context) {
 		identities = newAgentIdentities(client)
 	}
 
-	bg := &background{server: s, base: base, key: s.webhookKeyBytes(), identities: identities,
-		seen: newInboundDedup(inboundDedupTTL, inboundDedupMax)}
-	bg.exec = executor.NewInProcess(bg.handle, 4, 10*time.Minute)
+	bg := &background{server: s, base: base, ctx: ctx, key: s.webhookKeyBytes(), identities: identities,
+		seen: newInboundDedup(inboundDedupTTL, inboundDedupMax), slots: newRunSlots()}
 	bg.discord = newDiscordGateway(bg)
-	_ = bg.exec.Start(ctx)
 	s.bg = bg
 	go bg.run(ctx)
 	log.Printf("background executor started")
@@ -396,6 +405,23 @@ func (b *background) scoped(ctx context.Context, clusterID string) (dynamic.Inte
 	return dynamic.NewForConfig(c)
 }
 
+// agentAccess is the tenant access unattended work executes with: the agent's
+// own ServiceAccount through the APIExport virtual workspace, plus its
+// hub-minted identity for instance-backed tools.
+//
+// Failing to mint the identity is not fatal — the run proceeds without
+// instance-backed tools, which report that per tool, rather than losing a
+// scheduled run over a search backend it may never touch. Edges is absent by
+// construction: it acts as the calling user, and there is none.
+func (b *background) agentAccess(ctx context.Context, dyn dynamic.Interface, clusterID, agentName string) runAccess {
+	return runAccess{
+		Creds:     vwSecrets{dyn},
+		CR:        vwCR{dyn},
+		ClusterID: clusterID,
+		HubToken:  b.agentToken(ctx, dyn, clusterID, agentName),
+	}
+}
+
 // vwSecrets adapts a scoped dynamic client to llm.CredentialResolver so
 // background runs resolve a model credential — the ModelCredential object and
 // the Secret it points at — through the APIExport virtual workspace. An
@@ -508,14 +534,10 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 			return fmt.Errorf("recording the resume attempt: %w", serr)
 		}
 	}
-	rd := resumeDeps{
-		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, ClusterID: clusterID,
-		HubToken: b.agentToken(ctx, dyn, clusterID, sr.Run.AgentName),
-	}
-	// Detached: the resume outlives this tick, and its own timeout bounds it.
-	go b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID, rd, resumeIntent{
-		FromPhase: store.RunPhaseRunning,
-	})
+	// Detached: the resume outlives this reconcile, and its own timeout bounds it.
+	go b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID,
+		b.agentAccess(ctx, dyn, clusterID, sr.Run.AgentName),
+		resumeIntent{FromPhase: store.RunPhaseRunning})
 	return nil
 }
 
@@ -526,7 +548,7 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 //
 // It writes a Pending Run object and returns. That is the whole submission:
 // the OBJECT is the queue, and the Run reconciler is what claims one and hands
-// it to this process's worker pool.
+// it back to this process to execute.
 //
 // What that changed. Submission used to be a push onto an in-process channel,
 // with a Pending row recorded first so a lost job could at least be reported.
@@ -538,10 +560,10 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 //     run, because re-deriving a fire from a timer that had already passed was
 //     guesswork. The watch re-delivers every Pending Run when a process starts,
 //     so unclaimed work is picked up by definition.
-//   - A saturated pool made Submit fail. Inbound webhook handlers mapped
-//     ErrQueueFull to 503 + Retry-After and leaned on the sender to redeliver,
-//     which Slack and Telegram do on their own schedule and GitHub does not.
-//     A write that returns is now the end of the producer's responsibility.
+//   - A saturated pool made Submit fail. Inbound webhook handlers turned that
+//     into 503 + Retry-After and leaned on the sender to redeliver, which Slack
+//     and Telegram do on their own schedule and GitHub does not. A write that
+//     returns is now the end of the producer's responsibility.
 //
 // A cancel requested while the run is still queued is honoured the same way it
 // always was: the claim path checks the row before starting.
@@ -610,10 +632,108 @@ func (b *background) DispatchRun(ctx context.Context, clusterID string, object *
 		job.ReplyTarget = d.ReplyTarget
 		job.NotifyChannel = d.NotifyChannel
 	}
-	// The pool is a concurrency limit now, not a queue of record: the run is
-	// already durable and already claimed, so a pool that is momentarily full
-	// only delays this dispatch. The reconciler retries it.
-	return b.exec.Submit(ctx, job)
+	// Take a slot BEFORE the run is told it is executing. A run that cannot get
+	// one is left exactly as it was — claimed, Pending, undelivered — and the
+	// reconciler brings it back; the alternative is a replica that accepts every
+	// run it is handed and then thrashes.
+	if !b.tryAcquireSlot() {
+		return fmt.Errorf("dispatching run %s: %w", object.Name, errNoRunSlot)
+	}
+	b.execute(job)
+	return nil
+}
+
+// execute runs one claimed job, detached and panic-isolated.
+//
+// There is no queue in front of this, and no worker pool. The Run OBJECT is the
+// queue: it is claimed before it gets here, so an in-process channel could only
+// ever refuse — or lose, on a restart — work the provider had already accepted.
+// What bounds a run's LIFETIME is its own deadline, written on the object when
+// it starts and enforced by the Run reconciler through StopRun, rather than a
+// second watchdog here that would disagree with it.
+//
+// What bounds the NUMBER of them is the slot this takes. An agent turn holds an
+// LLM connection, a store connection and a transcript in memory for as long as
+// it runs, so a hundred schedules coming due in the same second must not become
+// a hundred simultaneous turns on one replica. The caller has already checked
+// there is a slot; execute releases it when the run ends.
+//
+// It runs on the provider's context, not the reconcile's: a run outlives the
+// reconcile that claimed it, but not the process.
+func (b *background) execute(job executor.Job) {
+	go func() {
+		defer b.releaseSlot()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("background: job %s %s/%s panicked: %v", job.Kind, job.ClusterID, job.SourceName, r)
+			}
+		}()
+		if err := b.handle(b.ctx, job); err != nil {
+			log.Printf("background: job %s %s/%s failed: %v", job.Kind, job.ClusterID, job.SourceName, err)
+		}
+	}()
+}
+
+// defaultMaxConcurrentRuns is how many turns one replica executes at once.
+//
+// A turn holds an LLM connection, a store connection and a transcript for its
+// whole duration, and a schedule sweep can make a hundred runs due in the same
+// second. The number is a resource ceiling, not a throughput target: runs that
+// do not fit wait in the queue they are already in, and more replicas raise it.
+const defaultMaxConcurrentRuns = 16
+
+// newRunSlots sizes the ceiling. AGENTS_MAX_CONCURRENT_RUNS overrides it, and 0
+// or a negative value removes it entirely for an operator who would rather have
+// no ceiling than the wrong one.
+func newRunSlots() chan struct{} {
+	size := defaultMaxConcurrentRuns
+	if raw := strings.TrimSpace(os.Getenv("AGENTS_MAX_CONCURRENT_RUNS")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			log.Printf("background: AGENTS_MAX_CONCURRENT_RUNS=%q is not a number; using %d", raw, defaultMaxConcurrentRuns)
+		} else if parsed <= 0 {
+			log.Printf("background: AGENTS_MAX_CONCURRENT_RUNS=%d removes the concurrent-run ceiling", parsed)
+			return nil
+		} else {
+			size = parsed
+		}
+	}
+	log.Printf("background: executing at most %d runs at once", size)
+	return make(chan struct{}, size)
+}
+
+// errNoRunSlot means this replica is already running as many turns as it will.
+//
+// It is deliberately a retryable error and NOT a refusal: the run stays claimed
+// or is handed back to Pending, and the reconciler's own rate limiting brings it
+// round again. Nothing is lost and nobody is told "try later" — the difference
+// between this and the 64-slot channel that used to sit here, which answered a
+// burst with 503.
+var errNoRunSlot = errors.New("this replica is at its concurrent-run ceiling")
+
+// tryAcquireSlot takes a slot without waiting. Blocking here would stall the
+// reconcile worker that is holding the claim, which is the one thing a watch
+// worker must not do.
+func (b *background) tryAcquireSlot() bool {
+	if b.slots == nil {
+		return true
+	}
+	select {
+	case b.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *background) releaseSlot() {
+	if b.slots == nil {
+		return
+	}
+	select {
+	case <-b.slots:
+	default:
+	}
 }
 
 // RecoverRun picks up a run that was executing on a process that is gone.
@@ -724,8 +844,8 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 			}
 		}
 	}
-	res, runErr := b.server.executeTask(ctx, taskRun{
-		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent, RunID: job.RunID,
+	tr := taskRun{
+		Scope: scope, Agent: agent, RunID: job.RunID,
 		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
 		// Recorded on the run so a crash mid-flight can still be reported to
@@ -733,13 +853,11 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// restart destroys.
 		ReplyTarget:  job.ReplyTarget,
 		DeliveryKind: string(job.Kind),
-		// There is no user to act as here, so the run acts as the AGENT's own
-		// ServiceAccount. Failing to mint one is not fatal: the run proceeds
-		// without instance-backed tools, exactly as it did before, rather than
-		// losing a scheduled run over a search backend it may never touch.
-		ClusterID: job.ClusterID,
-		HubToken:  b.agentToken(ctx, dyn, job.ClusterID, agent.Name),
-	})
+	}
+	// There is no user to act as here, so the run acts as the AGENT's own
+	// ServiceAccount through the virtual workspace.
+	b.agentAccess(ctx, dyn, job.ClusterID, agent.Name).applyTo(&tr)
+	res, runErr := b.server.executeTask(ctx, tr)
 
 	b.recordOutcome(ctx, job, res.RunID, runErr)
 

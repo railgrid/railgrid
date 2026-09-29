@@ -32,7 +32,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
-func TestProbeUsesVersionAndAccountReadWithoutModelCall(t *testing.T) {
+func TestProbeUsesVersionAndHandshakeWithoutModelCall(t *testing.T) {
 	binary := fakeCodexBinary(t, "probe")
 	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
 
@@ -44,7 +44,7 @@ func TestProbeUsesVersionAndAccountReadWithoutModelCall(t *testing.T) {
 		t.Fatalf("unexpected probe info: %+v", info)
 	}
 	methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
-	want := []string{"initialize", "initialized", "account/read"}
+	want := []string{"initialize", "initialized"}
 	if strings.Join(methods, ",") != strings.Join(want, ",") {
 		t.Fatalf("probe methods = %v, want %v", methods, want)
 	}
@@ -71,50 +71,6 @@ func TestProbeMarksConfiguredVersionMismatchNotReady(t *testing.T) {
 	}
 }
 
-func TestProbeAccountReadAuthenticationState(t *testing.T) {
-	tests := []struct {
-		name       string
-		scenario   string
-		wantReady  bool
-		wantReason bool
-	}{
-		{name: "chatgpt account", scenario: "auth-chatgpt", wantReady: true},
-		{name: "api key account", scenario: "auth-api-key", wantReady: true},
-		{name: "missing account", scenario: "auth-missing", wantReason: true},
-		{name: "null account", scenario: "auth-null", wantReason: true},
-		{name: "malformed account", scenario: "auth-malformed", wantReason: true},
-		{name: "malformed account without auth requirement", scenario: "auth-malformed-noauth", wantReason: true},
-		{name: "missing auth requirement", scenario: "auth-missing-flag", wantReason: true},
-		{name: "malformed auth requirement", scenario: "auth-wrong-type-flag", wantReason: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			binary := fakeCodexBinary(t, tc.scenario)
-			adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
-
-			info, err := adapter.Probe(context.Background())
-			if err != nil {
-				t.Fatalf("Probe: %v", err)
-			}
-			if info.Ready != tc.wantReady {
-				t.Fatalf("ready = %v, want %v (info = %+v)", info.Ready, tc.wantReady, info)
-			}
-			if (len(info.Reasons) > 0) != tc.wantReason {
-				t.Fatalf("reasons = %v, want reason presence %v", info.Reasons, tc.wantReason)
-			}
-			infoData, err := json.Marshal(info)
-			if err != nil {
-				t.Fatalf("marshal probe info: %v", err)
-			}
-			for _, secret := range []string{"user@example.com", "sk-test-secret", "access-token-secret"} {
-				if strings.Contains(string(infoData), secret) {
-					t.Fatalf("probe info exposed account data %q: %+v", secret, info)
-				}
-			}
-		})
-	}
-}
-
 func TestRunLifecycleStartsSessionBeforeTurnAndSanitizesEnvironment(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), "env.json")
 	binary := fakeCodexBinaryWithEnvFile(t, "success", envFile)
@@ -134,6 +90,7 @@ func TestRunLifecycleStartsSessionBeforeTurnAndSanitizesEnvironment(t *testing.T
 		AttemptID:    "attempt-1",
 		Workdir:      t.TempDir(),
 		Instructions: "say hello",
+		Credential:   testCredential(),
 	}, func(event harness.Event) error {
 		events = append(events, event)
 		return nil
@@ -199,6 +156,7 @@ func TestRunEnablesDefaultModeRequestUserInputForStartAndResume(t *testing.T) {
 				Workdir:      t.TempDir(),
 				SessionID:    tc.sessionID,
 				Instructions: "continue the approved work",
+				Credential:   testCredential(),
 			}, nil)
 			if err != nil || result.Phase != "completed" {
 				t.Fatalf("Run = %+v, %v", result, err)
@@ -229,6 +187,7 @@ func TestRunResumeMissingThreadNeedsInputWithoutStartingNewThread(t *testing.T) 
 		Workdir:      t.TempDir(),
 		SessionID:    "missing-thread",
 		Instructions: "continue",
+		Credential:   testCredential(),
 	}, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -250,6 +209,7 @@ func TestRunApprovalRequestNeedsInputWithoutAutoApproval(t *testing.T) {
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
 		Instructions: "run command",
+		Credential:   testCredential(),
 	}, func(event harness.Event) error {
 		events = append(events, event)
 		return nil
@@ -286,6 +246,7 @@ func TestRunAuthRequestNeedsInputWithoutAnswering(t *testing.T) {
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
 		Instructions: "authenticate",
+		Credential:   testCredential(),
 	}, func(event harness.Event) error {
 		events = append(events, event)
 		return nil
@@ -315,6 +276,7 @@ func TestRunRequestUserInputProducesBoundedStableClarification(t *testing.T) {
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
 		Instructions: "choose the approved option",
+		Credential:   testCredential(),
 	}, func(event harness.Event) error {
 		events = append(events, event)
 		return nil
@@ -348,6 +310,7 @@ func TestRunCancellationInterruptsAndStopsProcess(t *testing.T) {
 		result, err := adapter.Run(ctx, harness.Launch{
 			Workdir:      t.TempDir(),
 			Instructions: "wait",
+			Credential:   testCredential(),
 		}, func(event harness.Event) error {
 			if event.Type == "turn_started" {
 				close(started)
@@ -377,6 +340,14 @@ func TestRunCancellationInterruptsAndStopsProcess(t *testing.T) {
 	methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
 	if !strings.Contains(strings.Join(methods, ","), "turn/interrupt") {
 		t.Fatalf("methods = %v, want turn/interrupt", methods)
+	}
+}
+
+// testCredential is the per-attempt Codex login session every launch carries.
+func testCredential() harness.Credential {
+	return harness.Credential{
+		Kind:  harness.CredentialCodexAuth,
+		Value: `{"tokens":{"access_token":"fake-access-token"}}`,
 	}
 }
 
@@ -450,47 +421,11 @@ func TestFakeAppServerProcess(t *testing.T) {
 		id := request["id"]
 		switch method {
 		case "initialize":
-			writeResponse(map[string]any{"id": id, "result": map[string]any{"userAgent": "fake", "codexHome": os.Getenv("CODEX_HOME"), "platformFamily": "unix", "platformOs": "linux"}})
-		case "account/read":
-			switch scenario {
-			case "auth":
+			if scenario == "auth" {
 				writeResponse(map[string]any{"id": id, "error": map[string]any{"code": 401, "message": "authentication required"}})
-			case "auth-chatgpt":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{
-					"account":            map[string]any{"type": "chatgpt", "email": "user@example.com", "planType": "pro"},
-					"requiresOpenaiAuth": true,
-				}})
-			case "auth-api-key":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{
-					"account":            map[string]any{"type": "apiKey"},
-					"requiresOpenaiAuth": true,
-				}})
-			case "auth-missing":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{"requiresOpenaiAuth": true}})
-			case "auth-null":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{"account": nil, "requiresOpenaiAuth": true}})
-			case "auth-malformed":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{
-					"account":            map[string]any{"type": []string{"chatgpt"}, "token": "access-token-secret", "apiKey": "sk-test-secret"},
-					"requiresOpenaiAuth": true,
-				}})
-			case "auth-missing-flag":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{
-					"account": map[string]any{"type": "chatgpt", "email": "user@example.com"},
-				}})
-			case "auth-wrong-type-flag":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{
-					"account":            map[string]any{"type": "chatgpt", "email": "user@example.com"},
-					"requiresOpenaiAuth": "true",
-				}})
-			case "auth-malformed-noauth":
-				writeResponse(map[string]any{"id": id, "result": map[string]any{
-					"account":            []string{"not-an-account"},
-					"requiresOpenaiAuth": false,
-				}})
-			default:
-				writeResponse(map[string]any{"id": id, "result": map[string]any{"account": nil, "requiresOpenaiAuth": false}})
+				continue
 			}
+			writeResponse(map[string]any{"id": id, "result": map[string]any{"userAgent": "fake", "codexHome": os.Getenv("CODEX_HOME"), "platformFamily": "unix", "platformOs": "linux"}})
 		case "thread/start":
 			writeResponse(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "thread-1"}}})
 		case "thread/resume":

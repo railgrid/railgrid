@@ -88,8 +88,7 @@ type AgentCredential struct {
 	RefreshPath string `json:"refreshPath"`
 	// SSHCredentialsPath is the route a host agent hands its SSH credentials
 	// to, empty for a kind that has no SSH data plane.
-	SSHCredentialsPath   string `json:"sshCredentialsPath,omitempty"`
-	AddonCredentialsPath string `json:"addonCredentialsPath,omitempty"`
+	SSHCredentialsPath string `json:"sshCredentialsPath,omitempty"`
 }
 
 // Encode renders the bundle for the upgrade header.
@@ -170,9 +169,6 @@ func (p *Server) mintAgentCredential(ctx context.Context, gvr schema.GroupVersio
 	}
 	if verbServed(gvr.Resource, VerbSSHCredentials) {
 		credential.SSHCredentialsPath = p.publicVerbPath(cluster, gvr.Resource, name, VerbSSHCredentials)
-	}
-	if verbServed(gvr.Resource, VerbAddonCredentials) {
-		credential.AddonCredentialsPath = p.publicVerbPath(cluster, gvr.Resource, name, VerbAddonCredentials)
 	}
 	return credential, nil
 }

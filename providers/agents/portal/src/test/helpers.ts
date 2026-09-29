@@ -24,6 +24,7 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     listSchedules: empty,
     listTriggers: empty,
     listCredentials: empty,
+    listEdges: empty,
     listInbox: empty,
     listSessions: empty,
     listMessages: empty,
@@ -37,8 +38,21 @@ export function makeStore(api: ApiClient): AppStore {
   return new AppStore(api)
 }
 
+/**
+ * agentFixture builds an Agent the way kcp serves one. The default is a
+ * MODEL-backed agent with a chat credential, which is what spec.backend says
+ * now — the old spec.models / spec.modelFallbacks no longer exist on the CRD.
+ */
 export function agentFixture(name = 'scout', spec: Partial<Agent['spec']> = {}): Agent {
-  return { metadata: { name }, spec: { displayName: name, models: { chat: 'openai' }, ...spec } }
+  return {
+    metadata: { name },
+    spec: { displayName: name, backend: { type: 'model', model: { credentials: { chat: 'openai' } } }, ...spec },
+  }
+}
+
+/** modelBackend is the spec.backend of a model-backed agent, for a fixture. */
+export function modelBackend(chat: string, fallbacks?: string[]): Agent['spec']['backend'] {
+  return { type: 'model', model: { credentials: { chat }, ...(fallbacks ? { fallbacks } : {}) } }
 }
 
 // mount creates the element, assigns properties, appends it and waits for the

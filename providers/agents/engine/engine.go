@@ -6,10 +6,16 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package engine runs the agent chat loop on Eino. This milestone implements a
-// streaming single-turn completion (system prompt + history + user message);
-// the tool-call loop, checkpoints, and sub-agent delegation build on this in
-// later milestones. The package is provider-agnostic and SDK-portable.
+// Package engine runs the agent chat loop on Eino: a streaming tool-call turn
+// (system prompt + history + user message, tools, checkpoints, approval
+// interrupts) over a chat model.
+//
+// It is ONE implementation of the backend seam, not the vocabulary itself. The
+// conversation, tool, progress and gate types below are declared as aliases of
+// the ones in provider-agents/backend, so a toolset the provider assembles and
+// the progress it records reach this loop without being copied — and so nothing
+// Eino-shaped can reach the provider by accident. What remains the engine's own
+// is the loop's internal state: its Checkpoint, Interrupt, Result and Callbacks.
 package engine
 
 import (
@@ -25,102 +31,52 @@ import (
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
+
+	"github.com/railgrid/provider-agents/backend"
 )
 
 // Role constants for engine messages (aligned with Eino's schema roles).
 const (
-	RoleSystem    = "system"
-	RoleUser      = "user"
-	RoleAssistant = "assistant"
-	RoleTool      = "tool"
+	RoleSystem    = backend.RoleSystem
+	RoleUser      = backend.RoleUser
+	RoleAssistant = backend.RoleAssistant
+	RoleTool      = backend.RoleTool
 )
 
-// Message is a role-tagged turn in the conversation the engine runs over.
-type Message struct {
-	Role       string            `json:"role"`
-	Content    string            `json:"content,omitempty"`
-	ToolCalls  []schema.ToolCall `json:"toolCalls,omitempty"`
-	ToolCallID string            `json:"toolCallID,omitempty"`
-	Name       string            `json:"name,omitempty"`
-	ID         string            `json:"id,omitempty"`
-	Sequence   int64             `json:"sequence,omitempty"`
-	// Ephemeral marks engine-generated context that has no durable transcript
-	// identity, such as a tool-returned image follow-up. It must not become a
-	// durable user request or enter a session replacement checkpoint.
-	Ephemeral bool `json:"ephemeral,omitempty"`
-}
-
-// Param describes one tool parameter (a pragmatic subset of JSON schema).
-type Param struct {
-	Type     string // "string" | "integer" | "number" | "boolean"
-	Desc     string
-	Required bool
-	Enum     []string
-}
-
-// Tool is one callable function exposed to the model. Exactly one of Params or
-// JSONSchema describes the arguments: Params for the built-in families,
-// JSONSchema (a raw JSON-schema document) for pass-through tools like MCP.
-type Tool struct {
-	Name       string
-	Desc       string
-	Params     map[string]Param
-	JSONSchema map[string]any
-	// Exec runs the tool with the model-provided JSON arguments and returns
-	// the text observation fed back to the model. An error is also fed back (as
-	// an error observation) rather than aborting the run. Set this for text-only
-	// tools; tools that can return images set ExecRich instead.
-	Exec func(ctx context.Context, argsJSON string) (string, error)
-	// ExecRich, when non-nil, is used in preference to Exec and may return
-	// images (e.g. a camera snapshot) alongside text. The engine feeds the text
-	// back as the tool observation and the images as a follow-up user message so
-	// vision-capable models can actually see them.
-	ExecRich func(ctx context.Context, argsJSON string) (Observation, error)
-}
-
-// ToolImage is binary image output from a tool (e.g. a UniFi Protect camera
-// snapshot), carried back to the model as vision input. Data is the raw,
-// un-encoded image bytes; the engine base64-encodes them for the model.
-type ToolImage struct {
-	MIMEType string // e.g. "image/jpeg"; defaults to image/jpeg when empty
-	Data     []byte
-}
-
-// Observation is a rich tool result: a text observation plus any images.
-type Observation struct {
-	Text   string
-	Images []ToolImage
-}
+// The turn vocabulary the engine speaks is the seam's. See the package comment:
+// these are aliases, not conversions, so nothing is translated at the boundary.
+type (
+	// Message is a role-tagged turn in the conversation the engine runs over.
+	Message = backend.Message
+	// Param describes one tool parameter.
+	Param = backend.Param
+	// Tool is one callable function exposed to the model.
+	Tool = backend.Tool
+	// ToolImage is binary image output from a tool (e.g. a UniFi Protect camera
+	// snapshot), carried back to the model as vision input. The engine
+	// base64-encodes the bytes for the model.
+	ToolImage = backend.Image
+	// Observation is a rich tool result: a text observation plus any images.
+	Observation = backend.Observation
+	// ToolEvent reports a completed tool invocation to the caller (for SSE/UI +
+	// audit). ID is the model's tool-call id, correlating with OnToolStart.
+	ToolEvent = backend.ToolEvent
+	// AssistantMessage is one model response attempt in a tool-call turn. The
+	// callback is deliberately emitted only after a successful streamed response
+	// has been concatenated, because only then is HasToolCalls authoritative. A
+	// failed stream still emits an attempt with Complete=false so callers can
+	// account for the model time without classifying partial deltas as a final
+	// answer. Duration is the active model time for this response; callers that
+	// need a whole-turn duration can accumulate it with ToolEvent.Duration.
+	AssistantMessage = backend.AssistantMessage
+	// Usage reports token consumption for a completed turn, when the provider
+	// returns it.
+	Usage = backend.Tokens
+)
 
 // maxTurnImages caps how many tool-returned images are fed back to the model in
 // a single turn, so a fan-out of snapshot calls can't blow the token budget.
 const maxTurnImages = 8
-
-// ToolEvent reports a completed tool invocation to the caller (for SSE/UI +
-// audit). ID is the model's tool-call id, correlating with OnToolStart.
-type ToolEvent struct {
-	ID       string
-	Name     string
-	Args     string // raw JSON arguments from the model
-	Result   string // observation (or error text)
-	Err      bool
-	Duration time.Duration
-}
-
-// AssistantMessage is one model response attempt in a tool-call turn. The
-// callback is deliberately emitted only after a successful streamed response
-// has been concatenated, because only then is HasToolCalls authoritative. A
-// failed stream still emits an attempt with Complete=false so callers can
-// account for the model time without classifying partial deltas as a final
-// answer. Duration is the active model time for this response; callers that
-// need a whole-turn duration can accumulate it with ToolEvent.Duration.
-type AssistantMessage struct {
-	Content      string
-	HasToolCalls bool
-	ToolCalls    []schema.ToolCall
-	Complete     bool
-	Duration     time.Duration
-}
 
 // ContextCompactionFunc replaces an over-budget model history. The estimate
 // includes the bound tool schemas as well as all messages. The returned history
@@ -205,13 +161,6 @@ type TurnConfig struct {
 	// CheckpointEvery is how many iterations pass between OnCheckpoint offers.
 	// 0 disables periodic checkpointing.
 	CheckpointEvery int
-}
-
-// Usage reports token consumption for a completed turn, when the provider
-// returns it.
-type Usage struct {
-	InputTokens  int64
-	OutputTokens int64
 }
 
 // Result is the outcome of a streaming turn. When Interrupt is non-nil the
@@ -326,7 +275,14 @@ func (e *Engine) ResumeTurnWithTools(
 	content.WriteString(ck.Content)
 	usage := ck.Usage
 	pending := ck.Pending
-	dec := &decision{approve: approve, note: denyNote}
+	// A verdict answers the FIRST PENDING CALL of the checkpoint. A recovery
+	// snapshot has none (see Callbacks.OnCheckpoint), so there is nothing to
+	// decide and the loop simply re-asks the model — without a verdict nobody
+	// gave being applied to whatever it calls next.
+	var dec *decision
+	if len(pending) > 0 {
+		dec = &decision{approve: approve, note: denyNote}
+	}
 	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg, ck.Iter, &content, &usage, pending, dec, cb)
 }
 

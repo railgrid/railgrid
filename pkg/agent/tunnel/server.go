@@ -57,7 +57,7 @@ func setupRouter(downstream *rest.Config, sshPort int, svc SvcProxyOptions) *mux
 
 	// Agent management API — provider-pulled service discovery (and future host
 	// facts). Available in both server and kubernetes modes.
-	router.HandleFunc("/api/v1/services", newServicesHandler()).Methods("GET")
+	router.HandleFunc("/api/v1/services", newServicesHandler(svc.Runners)).Methods("GET")
 
 	// Generic HTTP service proxy. The provider computes the target (from a
 	// Service CR) and sets X-Railgrid-Svc-Target per request. Loopback and the

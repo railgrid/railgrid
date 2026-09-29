@@ -60,9 +60,18 @@ type Runner struct {
 	state   persistedState
 	lock    *processLock
 
-	mu           sync.Mutex
-	running      map[string]context.CancelFunc
-	subscribers  map[string]map[chan Event]struct{}
+	mu          sync.Mutex
+	running     map[string]context.CancelFunc
+	subscribers map[string]map[chan Event]struct{}
+	// credentials holds each live attempt's harness identity, by attempt ID.
+	// It is deliberately NOT part of persistedState: a credential belongs to
+	// the caller, not to this machine, so it lives only as long as the process
+	// and a resume after a restart must present it again.
+	credentials map[string]harness.Credential
+	// permissions holds each live attempt's permission gate, by attempt ID.
+	// Like credentials it is in-process only: it is the waiting state of a
+	// running child, and a restart takes the child with it.
+	permissions  map[string]*permissionGate
 	wg           sync.WaitGroup
 	listener     net.Listener
 	closed       bool
@@ -154,6 +163,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities := append([]string(nil), cfg.Verification...)
 	verificationCapabilities = appendUnique(verificationCapabilities, gitResultCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
+	verificationCapabilities = appendUnique(verificationCapabilities, permissionPromptCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
 	// The runner fetches for itself now: it either refreshes the enrolled
 	// checkout or maintains its own clone of a remote it is given, so the
@@ -179,6 +189,8 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		lock:         lock,
 		running:      map[string]context.CancelFunc{},
 		subscribers:  map[string]map[chan Event]struct{}{},
+		credentials:  map[string]harness.Credential{},
+		permissions:  map[string]*permissionGate{},
 		closeDone:    make(chan struct{}),
 		shutdown:     map[string]struct{}{},
 		capabilities: capabilities,
@@ -307,12 +319,17 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if err := validateStartRequest(request); err != nil {
 		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
 	}
-	// The clone source is dispatch data and is deliberately removed here,
-	// before anything durable is derived from the request: it holds a
-	// short-lived credential, and a retry that mints a fresh one must remain
-	// the same request rather than an idempotency conflict.
+	// The clone source and the harness credential are dispatch data and are
+	// deliberately removed here, before anything durable is derived from the
+	// request: both hold a credential, and a retry that mints a fresh one must
+	// remain the same request rather than an idempotency conflict.
 	dispatched := request.Repository
 	request.Repository = nil
+	credential, err := harnessCredentialOf(request.HarnessCredential)
+	if err != nil {
+		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
+	}
+	request.HarnessCredential = nil
 	fingerprint := fingerprintOf(request)
 	opKey := operationKey("start", request.TaskID, request.AttemptID, request.AttemptEpoch, request.RequestID)
 	r.mu.Lock()
@@ -326,6 +343,11 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 			return Receipt{}, protocolError(ErrorIdempotencyConflict, false, "request ID was already used with different content", &priorReceipt)
 		}
 		if attempt := r.state.Attempts[prior.AttemptID]; attempt != nil && attempt.Receipt.Phase == PhaseAccepted && !attempt.CancelPending {
+			// A retry carries a freshly minted credential for the same
+			// request. Take it: the old one may already have expired, and
+			// the request is identical by fingerprint precisely because the
+			// credential was stripped before fingerprinting.
+			r.credentials[prior.AttemptID] = credential
 			if err := r.startExecutionLocked(prior.AttemptID, attempt.Start.Instructions, attempt.Start.Model); err != nil {
 				return Receipt{}, protocolError(ErrorUnavailable, true, "persist starting attempt: "+err.Error(), &attempt.Receipt)
 			}
@@ -371,10 +393,12 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 		Resources:     resourceNames(request.Resources),
 		ArtifactSpecs: append([]ArtifactSpec(nil), request.Artifacts...),
 	}
+	r.credentials[request.AttemptID] = credential
 	r.state.Operations[opKey] = operationRecord{Fingerprint: fingerprint, AttemptID: request.AttemptID}
 	if _, err := r.appendEventLocked(request.AttemptID, EventAccepted, "attempt accepted", nil); err != nil {
 		delete(r.state.Operations, opKey)
 		delete(r.state.Attempts, request.AttemptID)
+		delete(r.credentials, request.AttemptID)
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
 		return Receipt{}, err
 	}
@@ -468,6 +492,14 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 	if request.ProtocolVersion != ProtocolVersion {
 		return Receipt{}, protocolError(ErrorUnsupportedVersion, false, "protocolVersion must be runner/v1", nil)
 	}
+	// Dispatch data, stripped before fingerprinting for the same reason as on
+	// Start. A resume may be the first request after a runner restart, so it
+	// carries the credential rather than expecting one to have survived here.
+	credential, err := harnessCredentialOf(request.HarnessCredential)
+	if err != nil {
+		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
+	}
+	request.HarnessCredential = nil
 	fingerprint := fingerprintOf(request)
 	opKey := operationKey("resume", request.TaskID, request.AttemptID, request.AttemptEpoch, request.RequestID)
 	r.mu.Lock()
@@ -500,6 +532,14 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 			return Receipt{}, protocolError(ErrorInvalidRequest, false, "clarificationID is invalid", &attempt.Receipt)
 		}
 	}
+	// A permission verdict is answered here and RETURNS here: it is handed to a
+	// tool call that is still open on a child that never stopped, so the same
+	// turn continues. Nothing below this block applies to it — there is no new
+	// launch, no instructions to amend and no workspace to re-verify, because
+	// the attempt never stopped running in the first place.
+	if receipt, handled, err := r.resumePermissionLocked(attempt, request, opKey, fingerprint); handled {
+		return receipt, err
+	}
 	if outstanding := attempt.Receipt.Clarification; outstanding != nil {
 		if request.ClarificationID == "" || request.ClarificationID != outstanding.ID {
 			return Receipt{}, protocolError(ErrorCheckpointUnavailable, false, "resume clarification does not match the outstanding question", &attempt.Receipt)
@@ -529,6 +569,7 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 		return Receipt{}, err
 	}
 	r.state.Operations[opKey] = operationRecord{Fingerprint: fingerprint, AttemptID: request.AttemptID}
+	r.credentials[request.AttemptID] = credential
 	attempt.CancelPending = false
 	attempt.Receipt.Phase = PhaseAccepted
 	attempt.Receipt.Blocker = ""
@@ -546,6 +587,67 @@ func (r *Runner) Resume(ctx context.Context, request ResumeRequest) (Receipt, er
 		return Receipt{}, protocolError(ErrorUnavailable, true, "persist starting resume: "+err.Error(), &attempt.Receipt)
 	}
 	return receiptForResponse(attempt.Receipt), nil
+}
+
+// resumePermissionLocked handles a resume that carries a verdict on an
+// outstanding permission request, and reports whether it did.
+//
+// handled is false only when the resume names no permission AND the attempt is
+// not parked on one — the ordinary clarification-or-plain resume, which the
+// caller goes on to process. Every other combination is decided here, including
+// the mismatches, because answering the wrong request is exactly what the id is
+// there to prevent.
+func (r *Runner) resumePermissionLocked(attempt *attemptRecord, request ResumeRequest, opKey, fingerprint string) (Receipt, bool, error) {
+	outstanding := attempt.Receipt.Permission
+	if request.PermissionID == "" && outstanding == nil {
+		if request.PermissionDecision != "" {
+			return Receipt{}, true, protocolError(ErrorInvalidRequest, false, "permissionDecision requires permissionID", &attempt.Receipt)
+		}
+		return Receipt{}, false, nil
+	}
+	if outstanding == nil {
+		return Receipt{}, true, protocolError(ErrorCheckpointUnavailable, false, "attempt has no outstanding permission request", &attempt.Receipt)
+	}
+	if request.PermissionID == "" {
+		return Receipt{}, true, protocolError(ErrorCheckpointUnavailable, false, "resume must answer the outstanding permission request", &attempt.Receipt)
+	}
+	if !validClarificationID(request.PermissionID) {
+		return Receipt{}, true, protocolError(ErrorInvalidRequest, false, "permissionID is invalid", &attempt.Receipt)
+	}
+	// The fence. A verdict for another request is not a verdict for this one,
+	// however plausible it looks: the human who gave it was shown a different
+	// call.
+	if request.PermissionID != outstanding.ID {
+		return Receipt{}, true, protocolError(ErrorCheckpointUnavailable, false, "resume permission does not match the outstanding request", &attempt.Receipt)
+	}
+	if request.ClarificationID != "" {
+		return Receipt{}, true, protocolError(ErrorCheckpointUnavailable, false, "attempt has no outstanding clarification", &attempt.Receipt)
+	}
+	var verdict harness.PermissionVerdict
+	switch request.PermissionDecision {
+	case PermissionAllow:
+		verdict.Allow = true
+	case PermissionDeny:
+		verdict.Allow = false
+	default:
+		return Receipt{}, true, protocolError(ErrorInvalidRequest, false, "permissionDecision must be allow or deny", &attempt.Receipt)
+	}
+	// Resolution is the human's own words and the only thing they say that
+	// reaches the model. It is optional: a bare verdict is a complete answer.
+	verdict.Message = boundedMessage(strings.TrimSpace(request.Resolution))
+	if !verdict.Allow && verdict.Message == "" {
+		verdict.Message = "A human denied this tool call. Do not retry it; explain what you would have done, or take another route."
+	}
+	if err := r.answerPermissionLocked(attempt, request.PermissionID, verdict); err != nil {
+		return Receipt{}, true, protocolError(ErrorCheckpointUnavailable, false, err.Error(), &attempt.Receipt)
+	}
+	// Recorded only once the verdict is delivered, so a replay of the same
+	// request ID returns this receipt instead of being refused as a mismatch.
+	r.state.Operations[opKey] = operationRecord{Fingerprint: fingerprint, AttemptID: request.AttemptID}
+	if err := r.persistLocked(); err != nil {
+		return Receipt{}, true, protocolError(ErrorUnavailable, true, err.Error(), &attempt.Receipt)
+	}
+	return receiptForResponse(attempt.Receipt), true, nil
 }
 
 func (r *Runner) checkStartRequirementsLocked(request StartRequest) error {
@@ -676,29 +778,64 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 	if !ok {
 		return errors.New("attempt not found")
 	}
+	// The credential is in memory only. Absent means this process never
+	// received one for this attempt — a restart, almost always — and there is
+	// nothing to run as. Say so instead of launching a harness that would
+	// authenticate as nobody.
+	credential, ok := r.credentials[attemptID]
+	if !ok || credential.Empty() {
+		return errors.New("attempt has no harness credential in this process; resume it with one")
+	}
 	previousPhase := attempt.Receipt.Phase
 	previousBlocker := attempt.Receipt.Blocker
 	previousUpdatedAt := attempt.Receipt.UpdatedAt
-	execCtx := context.Background()
-	var cancel context.CancelFunc
-	if attempt.Start.Limits.MaxDurationSeconds > 0 {
-		execCtx, cancel = context.WithTimeout(execCtx, time.Duration(attempt.Start.Limits.MaxDurationSeconds)*time.Second)
-	} else {
-		execCtx, cancel = context.WithCancel(execCtx)
-	}
+	// The duration limit is enforced by a workClock rather than by
+	// context.WithTimeout, because an attempt parked on a permission prompt is
+	// waiting on a human, not working. A wall-clock deadline would kill a turn
+	// for taking an hour that it spent doing nothing but waiting to be allowed
+	// to continue. With no limit the clock is nil and cancellation is the only
+	// way the context ends, exactly as before.
+	execCtx, cancel := context.WithCancel(context.Background())
+	clock := newWorkClock(time.Duration(attempt.Start.Limits.MaxDurationSeconds)*time.Second, cancel)
 	r.running[attemptID] = cancel
+	r.permissions[attemptID] = &permissionGate{clock: clock}
 	attempt.Receipt.Phase = PhaseStarting
 	attempt.Receipt.Blocker = ""
 	attempt.Receipt.UpdatedAt = eventNow()
 	if err := r.persistLocked(); err != nil {
 		cancel()
+		clock.stop()
 		delete(r.running, attemptID)
+		delete(r.permissions, attemptID)
 		attempt.Receipt.Phase = previousPhase
 		attempt.Receipt.Blocker = previousBlocker
 		attempt.Receipt.UpdatedAt = previousUpdatedAt
 		return err
 	}
-	launch := harness.Launch{AttemptID: attemptID, Workdir: attempt.Receipt.Workdir, SessionID: attempt.Receipt.SessionID, Instructions: instructions, Model: model}
+	// Which session this turn continues, in precedence order: the session this
+	// ATTEMPT is already in (a resume), then the session the START asked to
+	// continue (the previous turn of the same conversation). The harness may
+	// answer with a different session id when it forks one, and the caller
+	// learns the real one from the receipt.
+	sessionID := attempt.Receipt.SessionID
+	if sessionID == "" {
+		sessionID = attempt.Start.SessionID
+	}
+	launch := harness.Launch{
+		AttemptID:    attemptID,
+		Workdir:      attempt.Receipt.Workdir,
+		SessionID:    sessionID,
+		Instructions: instructions,
+		Model:        model,
+		Credential:   credential,
+	}
+	if attempt.Start.AskPermission {
+		// The adapter reaches a human through the runner, which is the only
+		// thing here that knows what a human is. Left nil — the default, and
+		// what every coordinator that has not opted in gets — an adapter keeps
+		// its harness from prompting at all.
+		launch.Permissions = &attemptPermissions{runner: r, attemptID: attemptID}
+	}
 	r.wg.Add(1)
 	go r.execute(execCtx, launch, attemptID)
 	return nil
@@ -716,6 +853,18 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 	})
 	gate.close()
 	r.mu.Lock()
+	// The permission gate and its working clock belong to this execution. Take
+	// them down first: whatever the result turns out to be, the child is gone
+	// and nothing can be waiting on a verdict any more. Reading the clock here
+	// is also the only place that can still tell a duration overrun apart from
+	// any other cancellation, because the clock is what cancelled the context.
+	durationExceeded := false
+	if permissions := r.permissions[attemptID]; permissions != nil {
+		durationExceeded = permissions.clock.expired()
+		permissions.clock.stop()
+		permissions.close()
+		delete(r.permissions, attemptID)
+	}
 	attempt, ok := r.state.Attempts[attemptID]
 	if !ok {
 		delete(r.shutdown, attemptID)
@@ -754,9 +903,9 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 			result.Clarification = nil
 		}
 	}
-	if attempt.LimitExceeded || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if attempt.LimitExceeded || durationExceeded {
 		blocker := attempt.Receipt.Blocker
-		if blocker == "" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if blocker == "" && durationExceeded {
 			blocker = "harness exceeded the approved execution duration"
 		}
 		delete(r.running, attemptID)
@@ -1109,6 +1258,11 @@ func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker strin
 	if phase != PhaseNeedsInput {
 		attempt.Receipt.Clarification = nil
 	}
+	// A permission park is only ever live: it exists because a child process is
+	// blocked on a tool call, and finishLocked is called when that process is
+	// gone. Leaving one on the receipt would advertise a verdict nobody could
+	// deliver.
+	attempt.Receipt.Permission = nil
 	attempt.Receipt.UpdatedAt = eventNow()
 	if lastErr != nil && attempt.Receipt.LastError == nil {
 		attempt.Receipt.LastError = &Error{Code: ErrorUnavailable, Retryable: false, Message: lastErr.Error()}
@@ -1133,6 +1287,14 @@ func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker strin
 		_, _ = r.appendEventLocked(attempt.Receipt.AttemptID, eventType, blocker, nil)
 	}
 	r.releaseResourcesLocked(attempt.Receipt.AttemptID, resourceRequests(attempt.Resources))
+	if phase.IsTerminal() || phase == PhaseNeedsInput {
+		// The caller's identity is kept only while a turn is actually
+		// executing. A terminal attempt will never launch again, and a parked
+		// one is revived by a resume that carries the credential itself — so
+		// holding it here would only widen the window in which somebody else's
+		// credential sits in this process's memory.
+		delete(r.credentials, attempt.Receipt.AttemptID)
+	}
 	_ = r.persistLocked()
 }
 
@@ -1174,6 +1336,16 @@ func (r *Runner) recoverLocked() error {
 			changed = true
 			continue
 		}
+		// A permission park is the live state of a child process this runner no
+		// longer has. Nothing in the new process can deliver a verdict into it,
+		// so the request is dropped and the attempt is left waiting on an
+		// ordinary resume, which relaunches the harness.
+		if attempt.Receipt.Permission != nil {
+			attempt.Receipt.Permission = nil
+			attempt.Receipt.Blocker = "runner restarted while the harness was waiting on a permission verdict; resume to continue the session"
+			attempt.Receipt.UpdatedAt = eventNow()
+			changed = true
+		}
 		if _, migrated := r.state.migratedLegacyShutdown[attemptID]; migrated {
 			delete(r.state.migratedLegacyShutdown, attemptID)
 			if _, err := r.appendEventLocked(attemptID, EventNeedsInput, attempt.Receipt.Blocker, nil); err != nil {
@@ -1211,10 +1383,19 @@ func (r *Runner) receiptForAttemptLocked(attemptID string) (Receipt, error) {
 
 func (r *Runner) activeCountLocked() int {
 	count := 0
-	for _, attempt := range r.state.Attempts {
-		if !attempt.Receipt.Phase.IsTerminal() && attempt.Receipt.Phase != PhaseNeedsInput {
-			count++
+	for attemptID, attempt := range r.state.Attempts {
+		if attempt.Receipt.Phase.IsTerminal() {
+			continue
 		}
+		// A needs_input attempt ordinarily holds nothing: its harness turn
+		// ended and the resume launches a new one. An attempt parked on a
+		// PERMISSION prompt is the exception — its child is alive and blocked,
+		// so it is still occupying the machine and must still count against
+		// capacity.
+		if attempt.Receipt.Phase == PhaseNeedsInput && r.permissions[attemptID] == nil {
+			continue
+		}
+		count++
 	}
 	return count
 }
@@ -1226,16 +1407,43 @@ func validateStartRequest(request StartRequest) error {
 	if err := validateMutationIdentity(request.TaskID, request.AttemptID, request.AttemptEpoch, request.RequestID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(request.RepositoryID) == "" || strings.TrimSpace(request.BaseCommit) == "" {
-		return errors.New("repositoryID and baseCommit are required")
-	}
-	if !identifierPattern.MatchString(strings.TrimSpace(request.RepositoryID)) {
-		return errors.New("repositoryID is not a valid identifier")
-	}
-	if request.Repository != nil {
-		if _, err := validateCloneSource(*request.Repository); err != nil {
-			return err
+	// One of the two attempt shapes, never both. A workspace attempt has no
+	// commit to verify and a repository attempt has no directory to keep, so
+	// accepting both together would leave it ambiguous which one the runner is
+	// meant to guarantee.
+	workspaceID := strings.TrimSpace(request.WorkspaceID)
+	repositoryID := strings.TrimSpace(request.RepositoryID)
+	switch {
+	case workspaceID != "" && repositoryID != "":
+		return errors.New("workspaceID and repositoryID are mutually exclusive")
+	case workspaceID != "":
+		if !identifierPattern.MatchString(workspaceID) {
+			return errors.New("workspaceID is not a valid identifier")
 		}
+		if strings.TrimSpace(request.BaseCommit) != "" {
+			return errors.New("a workspace attempt cannot pin a base commit")
+		}
+		if request.Repository != nil {
+			return errors.New("a workspace attempt cannot name a repository source")
+		}
+		if request.ExportGitResult {
+			return errors.New("a workspace attempt cannot export a Git result")
+		}
+	default:
+		if repositoryID == "" || strings.TrimSpace(request.BaseCommit) == "" {
+			return errors.New("repositoryID and baseCommit are required unless workspaceID is set")
+		}
+		if !identifierPattern.MatchString(repositoryID) {
+			return errors.New("repositoryID is not a valid identifier")
+		}
+		if request.Repository != nil {
+			if _, err := validateCloneSource(*request.Repository); err != nil {
+				return err
+			}
+		}
+	}
+	if session := strings.TrimSpace(request.SessionID); session != "" && !identifierPattern.MatchString(session) {
+		return errors.New("sessionID is not a valid identifier")
 	}
 	if strings.TrimSpace(request.Instructions) == "" {
 		return errors.New("instructions are required")
@@ -1285,6 +1493,48 @@ func validateStartRequest(request StartRequest) error {
 		return errors.New("execution limits cannot be negative")
 	}
 	return nil
+}
+
+// maxHarnessCredentialBytes bounds a credential value. A Codex login session
+// is the largest shape, and it is a small JSON document.
+const maxHarnessCredentialBytes = 64 << 10
+
+// harnessCredentialOf validates the caller's harness identity and converts it
+// to the adapter-facing type.
+//
+// It is required on every start and resume. A runner that would fall back to
+// something on the host — an environment variable, a file somebody left in the
+// harness home — would be a shared billable identity, which is exactly what
+// per-attempt dispatch exists to prevent. There is no fallback.
+func harnessCredentialOf(value *HarnessCredential) (harness.Credential, error) {
+	if value == nil {
+		return harness.Credential{}, errors.New("harnessCredential is required")
+	}
+	kind := harness.CredentialKind(strings.TrimSpace(value.Kind))
+	switch kind {
+	case harness.CredentialClaudeOAuth, harness.CredentialClaudeAPIKey, harness.CredentialCodexAuth:
+	default:
+		return harness.Credential{}, fmt.Errorf("harnessCredential kind %q is not supported", value.Kind)
+	}
+	raw := strings.TrimSpace(value.Value)
+	if raw == "" {
+		return harness.Credential{}, errors.New("harnessCredential value is empty")
+	}
+	if len(raw) > maxHarnessCredentialBytes {
+		return harness.Credential{}, errors.New("harnessCredential value is oversized")
+	}
+	// A NUL cannot survive either channel the adapters use (an environment
+	// value or a JSON file), and a value carrying one would be silently
+	// truncated into something that authenticates as nobody. Newlines are
+	// legal inside a Codex session file and refused for the env-injected
+	// kinds, where they would truncate the variable.
+	if strings.ContainsRune(raw, 0) {
+		return harness.Credential{}, errors.New("harnessCredential value contains a NUL")
+	}
+	if kind != harness.CredentialCodexAuth && strings.ContainsAny(raw, "\r\n") {
+		return harness.Credential{}, errors.New("harnessCredential value contains invalid whitespace")
+	}
+	return harness.Credential{Kind: kind, Value: raw}, nil
 }
 
 func nonEmptyJSON(raw json.RawMessage) bool {
@@ -1350,6 +1600,11 @@ func fingerprintOf(value any) string {
 }
 
 func cloneStartRequest(request StartRequest) StartRequest {
+	// Belt and braces on a security property: the clone is what becomes
+	// durable state, and neither credential may ever reach it. Both callers
+	// already strip them, and this makes a future one that forgets harmless.
+	request.Repository = nil
+	request.HarnessCredential = nil
 	request.ApprovedInput = cloneRaw(request.ApprovedInput)
 	request.RequiredCapabilities = append([]string(nil), request.RequiredCapabilities...)
 	request.RequiredToolchains = append([]string(nil), request.RequiredToolchains...)
@@ -1365,6 +1620,7 @@ func receiptForResponse(receipt Receipt) Receipt {
 	receipt.Artifacts = append([]Artifact(nil), receipt.Artifacts...)
 	receipt.Resources = append([]string(nil), receipt.Resources...)
 	receipt.Clarification = cloneClarification(receipt.Clarification)
+	receipt.Permission = clonePermission(receipt.Permission)
 	if receipt.LastError != nil {
 		lastErr := *receipt.LastError
 		receipt.LastError = &lastErr

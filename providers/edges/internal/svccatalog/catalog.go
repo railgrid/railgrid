@@ -426,6 +426,31 @@ var catalog = map[string]Definition{
 			{"snapshot", "Current snapshot (JPEG) from a camera. Query {\"cameraId\":\"<id>\"} (optional {\"highQuality\":\"true\"}). Live capture: may 500 on a sleeping doorbell — retry or try another camera.", http.MethodGet, "/proxy/protect/integration/v1/cameras/{cameraId}/snapshot"},
 		},
 	},
+	// A coding harness the agent supervises on the machine, discovered rather
+	// than declared: there is no form to fill in, so the credential model is
+	// empty and nothing here is UI input.
+	//
+	// AuthNone is the whole point. The runner authenticates a bearer the AGENT
+	// generated and never published, and the agent injects it on the host side
+	// of the tunnel — so the provider must send no Authorization of its own and
+	// must not expect one from the caller. Anything else would either be a
+	// credential the hub does not have or one it would have to be given.
+	//
+	// No Tools, deliberately: a hub-side caller speaks runner/v1 over the proxy
+	// verb, not MCP. Advertising MCP tools here would claim a surface the runner
+	// does not implement.
+	"runner": {
+		Type: "runner", DisplayName: "Coding runner", Category: "Other",
+		Description: "A coding harness (Claude Code, Codex) the edge agent supervises on loopback, speaking runner/v1.",
+		DefaultPort: 8787, DefaultScheme: "http",
+		Auth:       AuthNone,
+		Credential: CredentialModel{Optional: true, Hint: "None: the edge agent injects the runner's own bearer on the host side."},
+		// The capabilities document answers unauthenticated behind the agent's
+		// injection, and it is also what the validation reconciler parses to
+		// stamp status.harness — so this is a reachability probe whose BODY
+		// matters, not a credential check.
+		ProbePath: "/runner/v1/capabilities", ProbeMode: ProbeReachable,
+	},
 	"generic": {
 		Type: "generic", DisplayName: "Generic HTTP service", Category: "Other",
 		Description: "Any HTTP service — proxied through the tunnel, no MCP tools.",

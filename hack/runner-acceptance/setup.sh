@@ -68,7 +68,11 @@ PY
 printf 'Fixture base commit: %s\n' "$base_commit"
 printf 'Runner token file (keep private): %s/token\n' "$fixture_root"
 printf 'Copy the token locally into your Railgrid Service credential field. Do not send it in chat.\n'
-printf 'If the dedicated Codex home is not signed in, run:\n'
-printf '  CODEX_HOME="%s/codex-home" codex login\n' "$fixture_root"
 printf 'Then start or restart the runner with:\n'
 printf '  "%s" --config "%s/runner.json" --codex-home "%s/codex-home"\n' "$runner_binary" "$fixture_root" "$fixture_root"
+printf '\n'
+printf 'The runner holds NO model credential. Every runner/v1 start must carry the\n'
+printf 'callers own harness identity in harnessCredential; a start without one is\n'
+printf 'refused with invalid_request and nothing is executed. For a hand-driven\n'
+printf 'fixture, put a codex-auth (an auth.json produced by codex login on a machine\n'
+printf 'you control) or a claude-oauth value in the start request you post.\n'

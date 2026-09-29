@@ -7,6 +7,7 @@ import { MACOS_MASKED_JOIN_TOKEN, macosJoinSnippet } from './macos'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
+import HarnessCard from './HarnessCard.vue'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
@@ -22,7 +23,7 @@ import {
   type LatestRefreshController,
   type ResourceRefreshMode,
 } from './refresh'
-import { edgeTypeLabel as edgeTypeName, type EdgeDetail, type EdgeService, type EdgeType, type ErrorResponse } from './types'
+import { edgeSupportsHarness, edgeTypeLabel as edgeTypeName, type EdgeDetail, type EdgeService, type EdgeType, type ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
 const emit = defineEmits<{ back: []; deleted: []; addService: [] }>()
@@ -145,6 +146,10 @@ const joinDisplay = computed(() => props.type === 'macos'
 const joinCommand = computed(() => props.type === 'macos'
   ? macosJoinCommand.value
   : `railgrid agent join --edge-name ${props.name} --type ${props.type} --token ${edge.value?.joinToken ?? ''}`)
+
+// Only the two host kinds run a supervised harness child; a Kubernetes cluster
+// edge would need a Deployment and that is deliberately not built.
+const harnessSupported = computed(() => edgeSupportsHarness(props.type))
 
 const edgeTypeLabel = computed(() => edgeTypeName(props.type))
 const edgeDeleteLabel = computed(() => `${edgeTypeName(props.type)} edge`)
@@ -681,6 +686,17 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                 </details>
               </div>
             </ResourceSectionCard>
+
+            <!-- Harness: which coding agents this host offers. Writes spec.harness. -->
+            <HarnessCard
+              v-if="edge && harnessSupported"
+              :edge-name="edge.name"
+              :edge-type="type"
+              :harness="edge.spec.harness ?? null"
+              :harnesses="edge.harnesses ?? null"
+              :disabled="deleting"
+              @changed="load('background')"
+            />
 
             <ResourceSectionCard id="edge-services" eyebrow="Provider services" title="Services" :description="type === 'server' ? 'Services discovered on or declared for this host, such as a local runner. Attach a token to let AI agents control them.' : type === 'macos' ? 'Services declared on this host. Host connectivity and Service readiness are reported separately.' : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.'">
               <template #actions>

@@ -157,7 +157,7 @@ func newCompactFixture(t *testing.T, msgs, bodyChars int, modelID string) *compa
 	}
 	f.agent = &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "scout"}}
 	f.agent.Spec.SystemPrompt = "You are scout."
-	f.agent.Spec.Models = map[string]string{"chat": "main"}
+	f.agent.Spec.Backend.Model = &agentsv1alpha1.AgentModelBackend{Credentials: map[string]string{"chat": "main"}}
 	f.creds = credsFor(f.llm.srv.URL, map[string]string{"main": modelID})
 
 	base := time.Now().UTC().Add(-time.Duration(msgs) * time.Minute)

@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/railgrid/pkg/agent/harnessplane"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
@@ -120,12 +121,11 @@ func TestSendHeartbeatHonoursParentCancellation(t *testing.T) {
 	}
 }
 
-// TestHeartbeatPublishesAllowedAddons: a portal needs to know what a machine
-// will accept BEFORE anyone creates an Addon for it, so the agent's local
-// --allow-addon list rides on every heartbeat. The empty case matters just as
-// much: dropping the key would leave a stale advertisement on an edge whose
-// owner has revoked the opt-in.
-func TestHeartbeatPublishesAllowedAddons(t *testing.T) {
+// TestHeartbeatPublishesHarnesses: "which of my edges can run Claude Code" has
+// to be one field on the edge, before anyone reads a Service. The empty case
+// matters just as much: dropping the key would leave a stale advertisement on a
+// machine whose harnesses were switched off.
+func TestHeartbeatPublishesHarnesses(t *testing.T) {
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -142,19 +142,29 @@ func TestHeartbeatPublishesAllowedAddons(t *testing.T) {
 	reporter := NewEdgeReporter("build-01", testGVR, railgridclient.NewFromDynamic(dyn), nil, 0)
 	logger := klog.Background()
 
-	reporter.SetAllowedAddons([]string{"runner"})
+	reporter.SetHarnessSource(func() []harnessplane.HarnessStatus {
+		return []harnessplane.HarnessStatus{
+			{Name: "claude", Detected: true, Enabled: true, Ready: true, Version: "2.1.273", Port: 8787},
+			{Name: "codex", Detected: true, Enabled: false, Reasons: []string{"spec.harness does not ask for codex"}},
+		}
+	})
 	reporter.sendHeartbeat(context.Background(), logger)
 
-	reporter.SetAllowedAddons(nil)
+	// A machine that stopped offering anything: the field is still sent.
+	reporter.SetHarnessSource(func() []harnessplane.HarnessStatus { return nil })
 	reporter.sendHeartbeat(context.Background(), logger)
 
 	if len(bodies) != 2 {
 		t.Fatalf("expected two heartbeats, got %d", len(bodies))
 	}
-	if !strings.Contains(bodies[0], `"allowedAddons":["runner"]`) {
-		t.Errorf("first heartbeat does not advertise the allowed add-on: %s", bodies[0])
+	for _, want := range []string{
+		`"name":"claude"`, `"detected":true`, `"enabled":true`, `"ready":true`, `"version":"2.1.273"`, `"port":8787`,
+	} {
+		if !strings.Contains(bodies[0], want) {
+			t.Errorf("first heartbeat is missing %s: %s", want, bodies[0])
+		}
 	}
-	if !strings.Contains(bodies[1], `"allowedAddons":[]`) {
-		t.Errorf("revoking the opt-in must clear the advertisement, got: %s", bodies[1])
+	if !strings.Contains(bodies[1], `"harnesses":[]`) {
+		t.Errorf("switching every harness off must clear the advertisement, got: %s", bodies[1])
 	}
 }

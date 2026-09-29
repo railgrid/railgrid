@@ -1,13 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ArrowLeft, Bot, Check, Clock } from 'lucide-vue-next'
-import FormSelect from '../portalkit/FormSelect.vue'
+import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
 import type { CreateSuccessDetail, Route } from '../router'
-import type { Agent, AgentCreate as AgentCreateBody } from '../types'
+import {
+  AGENT_BACKEND_HARNESS,
+  AGENT_BACKEND_MODEL,
+  HARNESS_EDGE_KINDS,
+  WORKSPACE_MODES,
+  edgeKey,
+  harnessLabel,
+  splitEdgeKey,
+  type Agent,
+  type AgentBackendType,
+  type AgentCreate as AgentCreateBody,
+  type HarnessWorkspace,
+} from '../types'
 import { useStoreRevision } from '../vue/runtime'
 
 const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
@@ -24,8 +36,21 @@ const emit = defineEmits<{
 }>()
 const revision = useStoreRevision(() => props.store)
 
+// The backend choice, with the same two labels and blurbs the Config pane
+// shows. One decision described one way, or a person meets it twice and reads
+// it as two.
+const BACKENDS: { id: AgentBackendType; label: string; blurb: string }[] = [
+  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Turns run here, against a chat credential, with the tools granted below.' },
+  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Turns run on one of your machines, with that harness’s own tools. Tool grants do not apply.' },
+]
+
 const name = ref('')
+const backendType = ref<AgentBackendType>(AGENT_BACKEND_MODEL)
 const modelCredential = ref('')
+const harnessEdge = ref('')
+const harnessCredential = ref('')
+const harnessModel = ref('')
+const harnessWorkspace = ref<HarnessWorkspace>('persistent')
 const systemPrompt = ref('')
 const channel = ref('')
 const web = ref(false)
@@ -45,8 +70,38 @@ const nameInput = ref<HTMLInputElement | null>(null)
 
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
+const isHarness = computed(() => backendType.value === AGENT_BACKEND_HARNESS)
+// Two credential families, and the API rejects one where the other belongs: a
+// chat endpoint cannot drive a coding harness, and a `claude setup-token` value
+// is not a bearer any chat API would accept. So each picker offers only its own.
+const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
+const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
+const edgeSlice = computed(() => { revision.value; return { ...props.store.edges } })
+// A runner is a process on a machine, so a KubernetesCluster edge can never host
+// one. It is filtered here as well as refused by the write path: an option that
+// cannot work should not be offered, not merely rejected after being picked.
+const hostEdges = computed(() => edgeSlice.value.data.filter(edge => HARNESS_EDGE_KINDS.includes(edge.kind)))
+const edgeOptions = computed<FormSelectOption[]>(() => [
+  { value: '', label: '— pick a machine —' },
+  ...hostEdges.value.map(edge => ({
+    value: edgeKey(edge.kind, edge.name),
+    label: `${edge.name} (${edge.kind === 'MacOSServer' ? 'macOS' : 'Linux'}${edge.connected === false ? ', offline' : ''})`,
+  })),
+])
+const harnessCredentialOptions = computed<FormSelectOption[]>(() => [
+  { value: '', label: '— pick a harness credential —' },
+  ...harnessCredentials.value.map(credential => ({
+    value: credential.name,
+    label: `${credential.name} (${harnessLabel(credential.provider)})`,
+  })),
+])
+const workspaceOptions = computed<FormSelectOption[]>(() => WORKSPACE_MODES.map(mode => ({ value: mode.id, label: mode.label })))
+// The harness is NOT chosen here: it is derived from the credential's provider.
+const selectedHarness = computed(() => harnessLabel(
+  harnessCredentials.value.find(credential => credential.name === harnessCredential.value)?.provider,
+))
 const channels = computed(() => { revision.value; return props.store.channelConnections() })
-const credentialOptions = computed(() => credentials.value.data.map(item => ({
+const credentialOptions = computed(() => chatCredentials.value.map(item => ({
   value: item.name,
   label: `${item.name}${item.model ? ` (${item.model})` : ''}`,
 })))
@@ -57,11 +112,48 @@ const channelOptions = computed(() => [
     label: `${item.spec.displayName || item.metadata.name} (${item.spec.type})`,
   })),
 ])
-const capabilities = computed(() => [
+const capabilities = computed(() => isHarness.value ? 'The harness’s own tools' : [
   visualization.value ? `charts${visualizationBackground.value ? ' (+background)' : ''}` : '',
   web.value ? `web${webBackground.value ? ' (+background)' : ''}` : '',
   fanOut.value ? `fan-out${fanOutBackground.value ? ' (+background)' : ''}` : '',
 ].filter(Boolean).join(', ') || 'Core only')
+
+// What the guidance panel promises, per backend. A harness-backed agent's
+// prerequisite is a machine and an identity, not a model credential — telling
+// somebody to add one would send them to fix a thing that is not missing.
+const prerequisites = computed(() => isHarness.value
+  ? [
+    hostEdges.value.length
+      ? 'A Linux or macOS machine is joined to this workspace.'
+      : 'Join a Linux or macOS machine before creating the agent.',
+    harnessCredentials.value.length
+      ? 'A Claude Code or Codex identity is available in this workspace.'
+      : 'Add a Claude Code or Codex identity under Models before creating the agent.',
+  ]
+  : [
+    credentialOptions.value.length
+      ? 'A model credential is available in this workspace.'
+      : 'Add a model credential before creating the agent.',
+    'Optional channel connections can be added now or attached later from Config.',
+  ])
+const summaryValues = computed(() => [
+  { label: 'Agent name', value: name.value.trim() || 'Not entered yet', technical: true },
+  ...(isHarness.value
+    ? [
+      { label: 'Machine', value: splitEdgeKey(harnessEdge.value).name || 'Not selected', technical: true },
+      { label: 'Harness', value: selectedHarness.value || 'Not selected', technical: true },
+      { label: 'Identity', value: harnessCredential.value || 'Not selected', technical: true },
+    ]
+    : [{ label: 'Model', value: modelCredential.value || 'Not selected', technical: true }]),
+  { label: 'Primary channel', value: channel.value || 'None', technical: true },
+  { label: 'Capabilities', value: capabilities.value },
+])
+// Whether the form can be submitted at all, which is a different question per
+// backend: the old condition was "a chat credential exists", which made the
+// harness backend unreachable however it was configured.
+const canSubmit = computed(() => isHarness.value
+  ? hostEdges.value.length > 0 && harnessCredentials.value.length > 0
+  : credentialOptions.value.length > 0)
 
 onMounted(() => { void nextTick(() => nameInput.value?.focus()) })
 
@@ -85,27 +177,46 @@ async function submit(): Promise<void> {
   if (!normalizedName) errors.name = 'A name is required.'
   else if (!NAME_RE.test(normalizedName)) errors.name = 'Lowercase letters, digits and dashes only.'
   else if (agents.value.data.some(agent => agent.metadata.name === normalizedName)) errors.name = 'An agent with that name already exists.'
-  if (!modelCredential.value) errors.modelCredential = 'Pick the model this agent reasons with.'
+  if (isHarness.value) {
+    // A harness-backed agent needs a machine and an identity, and needs NO chat
+    // credential. Requiring one here was the bug: it blocked the whole backend.
+    if (!harnessEdge.value) errors.harnessEdge = 'Pick the machine this agent runs its turns on.'
+    if (!harnessCredential.value) errors.harnessCredential = 'Pick the harness identity its turns run as.'
+  } else if (!modelCredential.value) {
+    errors.modelCredential = 'Pick the model this agent reasons with.'
+  }
   if (Object.keys(errors).length) return
 
-  const body: AgentCreateBody = {
-    name: normalizedName,
-    displayName: normalizedName,
-    modelCredential: modelCredential.value,
+  const body: AgentCreateBody = { name: normalizedName, displayName: normalizedName }
+  if (isHarness.value) {
+    const edge = splitEdgeKey(harnessEdge.value)
+    body.backendType = AGENT_BACKEND_HARNESS
+    body.harness = {
+      edgeRef: { kind: edge.kind as 'LinuxServer' | 'MacOSServer', name: edge.name },
+      credentialRef: harnessCredential.value,
+      ...(harnessModel.value.trim() ? { model: harnessModel.value.trim() } : {}),
+      workspace: harnessWorkspace.value,
+    }
+  } else {
+    body.modelCredential = modelCredential.value
   }
   const prompt = systemPrompt.value.trim()
   if (prompt) body.systemPrompt = prompt
   if (channel.value) body.channels = [{ name: 'primary', connectionRef: channel.value, primary: true }]
-  const families = ['core']
-  if (visualization.value) families.push('visualization')
-  if (web.value) families.push('web')
-  if (fanOut.value) families.push('spawn')
-  if (families.length > 1) body.interactiveFamilies = families
-  const background = ['core']
-  if (visualization.value && visualizationBackground.value) background.push('visualization')
-  if (web.value && webBackground.value) background.push('web')
-  if (fanOut.value && fanOutBackground.value) background.push('spawn')
-  if (background.length > 1) body.backgroundFamilies = background
+  // Tool grants only for a model backend: the API refuses spec.tools on a
+  // harness-backed agent, so sending them would fail the create outright.
+  if (!isHarness.value) {
+    const families = ['core']
+    if (visualization.value) families.push('visualization')
+    if (web.value) families.push('web')
+    if (fanOut.value) families.push('spawn')
+    if (families.length > 1) body.interactiveFamilies = families
+    const background = ['core']
+    if (visualization.value && visualizationBackground.value) background.push('visualization')
+    if (web.value && webBackground.value) background.push('web')
+    if (fanOut.value && fanOutBackground.value) background.push('spawn')
+    if (background.length > 1) body.backgroundFamilies = background
+  }
 
   busy.value = true
   let result: Agent | undefined
@@ -184,7 +295,78 @@ async function submit(): Promise<void> {
               <span id="agent-create-name-hint" class="agents-hint">A short id you'll reference from schedules and triggers.</span>
             </label>
 
-            <label id="agent-create-model-label">
+            <fieldset class="agents-cap-fs">
+              <legend>Backend <span class="agents-hint">— where this agent’s turns execute</span></legend>
+              <div class="agents-radiocards">
+                <label v-for="option in BACKENDS" :key="option.id" class="agents-radiocard" :class="{ sel: option.id === backendType }">
+                  <input v-model="backendType" type="radio" name="agent-create-backend" :value="option.id" :disabled="busy" />
+                  <span class="agents-radiocard-t">{{ option.label }}</span><span class="agents-radiocard-b">{{ option.blurb }}</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <template v-if="isHarness">
+              <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
+                Could not load machines. {{ edgeSlice.error }}
+                <button class="k-btn k-btn--ghost secondary" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">Retry</button>
+              </div>
+              <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status">Loading machines…</div>
+              <template v-else>
+                <label id="agent-create-edge-label">
+                  Machine *
+                  <FormSelect
+                    id="agent-create-edge"
+                    v-model="harnessEdge"
+                    name="harnessEdge"
+                    :options="edgeOptions"
+                    :disabled="busy"
+                    :invalid="Boolean(errors.harnessEdge)"
+                    labelledby="agent-create-edge-label"
+                    :describedby="errors.harnessEdge ? 'agent-create-edge-hint agent-create-edge-error' : 'agent-create-edge-hint'"
+                  />
+                  <span v-if="errors.harnessEdge" id="agent-create-edge-error" class="agents-fielderr" role="alert">{{ errors.harnessEdge }}</span>
+                  <span id="agent-create-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
+                  <span v-if="hostEdges.length === 0" class="agents-hint">
+                    No Linux or macOS machine in this workspace yet — join one under Edges first.
+                  </span>
+                </label>
+
+                <label id="agent-create-harnesscred-label">
+                  Harness credential *
+                  <FormSelect
+                    id="agent-create-harnesscred"
+                    v-model="harnessCredential"
+                    name="harnessCredential"
+                    :options="harnessCredentialOptions"
+                    :disabled="busy"
+                    :invalid="Boolean(errors.harnessCredential)"
+                    labelledby="agent-create-harnesscred-label"
+                    :describedby="errors.harnessCredential ? 'agent-create-harnesscred-hint agent-create-harnesscred-error' : 'agent-create-harnesscred-hint'"
+                  />
+                  <span v-if="errors.harnessCredential" id="agent-create-harnesscred-error" class="agents-fielderr" role="alert">{{ errors.harnessCredential }}</span>
+                  <span id="agent-create-harnesscred-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
+                  <span v-if="harnessCredentials.length === 0" class="agents-hint">
+                    No harness identities yet —
+                    <button type="button" class="k-dashboard-action" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
+                      add a Claude Code or Codex one under Models
+                    </button>
+                    first.
+                  </span>
+                </label>
+
+                <label>
+                  Model <span class="agents-hint">optional — blank leaves the harness’s own default</span>
+                  <input v-model="harnessModel" class="k-input" placeholder="sonnet" :disabled="busy" />
+                </label>
+
+                <label id="agent-create-workspace-label">
+                  Working directory
+                  <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" :disabled="busy" labelledby="agent-create-workspace-label" />
+                </label>
+              </template>
+            </template>
+
+            <label v-else id="agent-create-model-label">
               Model credential *
               <FormSelect
                 id="agent-create-model"
@@ -220,7 +402,12 @@ async function submit(): Promise<void> {
               <FormSelect v-model="channel" :options="channelOptions" :disabled="busy" labelledby="agent-create-channel-label" />
             </label>
 
-            <fieldset class="agents-cap-fs">
+            <p v-if="isHarness" class="agents-hint">
+              Tool grants do not apply: a harness brings its own tools, and the API refuses them on a
+              harness-backed agent. Its machine and identity above are what decide what it can do.
+            </p>
+
+            <fieldset v-else class="agents-cap-fs">
               <legend>Can do <span class="agents-hint">— changeable later</span></legend>
               <div class="agents-cap-row">
                 <label class="agents-cap k-checkbox-hit">
@@ -255,16 +442,8 @@ async function submit(): Promise<void> {
           <CreateGuidance
             title="Prepare a usable agent"
             description="Choose the identity Railgrid will create and the model it can use immediately."
-            :prerequisites="[
-              credentialOptions.length ? 'A model credential is available in this workspace.' : 'Add a model credential before creating the agent.',
-              'Optional channel connections can be added now or attached later from Config.',
-            ]"
-            :values="[
-              { label: 'Agent name', value: name.trim() || 'Not entered yet', technical: true },
-              { label: 'Model', value: modelCredential || 'Not selected', technical: true },
-              { label: 'Primary channel', value: channel || 'None', technical: true },
-              { label: 'Capabilities', value: capabilities },
-            ]"
+            :prerequisites="prerequisites"
+            :values="summaryValues"
             :next-steps="[
               'Railgrid creates the agent and opens its Config workspace.',
               'Start a conversation to verify the model and instructions.',
@@ -277,7 +456,7 @@ async function submit(): Promise<void> {
 
         <div class="k-create-actions">
           <button type="button" class="k-btn k-btn--ghost secondary" :disabled="busy" @click="cancel">Cancel</button>
-          <button class="k-btn k-btn--primary" type="submit" :disabled="busy || credentialOptions.length === 0">
+          <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">
             <Check aria-hidden="true" /> {{ busy ? 'Creating…' : 'Create agent' }}
           </button>
         </div>

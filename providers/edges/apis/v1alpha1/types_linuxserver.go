@@ -43,6 +43,7 @@ import (
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Connected",type="boolean",JSONPath=".status.connected"
 // +kubebuilder:printcolumn:name="Last Heartbeat",type="date",JSONPath=".status.lastHeartbeatTime"
+// +kubebuilder:printcolumn:name="Harness",type="string",JSONPath=".spec.harness.mode"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Agent Version",type="string",JSONPath=".status.agentVersion",priority=1
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -110,6 +111,13 @@ type LinuxServerSpec struct {
 	// +kubebuilder:default=strict
 	// +optional
 	SSHHostKeyPolicy edgeapi.SSHHostKeyPolicy `json:"sshHostKeyPolicy,omitempty"`
+
+	// Harness decides which coding harnesses this machine offers as local
+	// runner services. Unset means the default, which is "auto": every harness
+	// installed on the machine. Set mode "none" to turn the machine into a
+	// plain edge again; the agent applies the change without a restart.
+	// +optional
+	Harness *EdgeHarnessSpec `json:"harness,omitempty"`
 }
 
 // LinuxServerStatus defines the observed state of a LinuxServer.
