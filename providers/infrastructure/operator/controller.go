@@ -131,6 +131,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		WorkspacePath:        workspacePath,
 		APIExportName:        APIExportName,
 		CodingSandboxEnabled: cr.Spec.CodingSandbox.Enabled,
+		// The export declares instances/<verb> subresources, so bootstrap must
+		// publish a DataPlaneEndpointSlice for kcp to reverse-proxy them to.
+		// Operator mode has no CatalogEntry file to read the address from, so it
+		// names the serve Service it creates below.
+		DataPlaneURL: ServeBaseURL(&cr),
 	}); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "BootstrapFailed", err)
 	}

@@ -82,10 +82,7 @@ func EnsureProviderServe(
 	// ServiceAccount (in-cluster) instead of a mounted runtime kubeconfig.
 	inCluster := len(runtimeKubeconfig) == 0
 
-	port := cr.Spec.Provider.Port
-	if port == 0 {
-		port = 8081
-	}
+	port := servePort(cr)
 	replicas := cr.Spec.Provider.Replicas
 	if replicas == 0 {
 		replicas = 1
@@ -367,6 +364,28 @@ func ensureServeRBAC(ctx context.Context, cs kubernetes.Interface, saName string
 		}
 	}
 	return nil
+}
+
+// servePort is the port the serve Deployment listens on and its Service
+// publishes.
+func servePort(cr *v1alpha1.InfrastructureProvider) int32 {
+	if port := cr.Spec.Provider.Port; port != 0 {
+		return port
+	}
+	return 8081
+}
+
+// ServeBaseURL is the in-cluster address of the serve Service this operator
+// creates. It is what the hub proxies /services/providers/infrastructure/* to,
+// and the same address kcp reverse-proxies a custom subresource request to, so
+// bootstrap publishes it in the provider's DataPlaneEndpointSlice.
+//
+// The chart's CatalogEntry carries the identical URL, but only the init-container
+// path mounts that file (RAILGRID_CATALOGENTRY_FILE); the image bakes
+// deploy/chart/files, which does not include the templated CatalogEntry. Operator
+// mode therefore derives the URL from the Service it owns rather than reading it.
+func ServeBaseURL(cr *v1alpha1.InfrastructureProvider) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", cr.Name, ServeNamespace, servePort(cr))
 }
 
 func ensureServeService(ctx context.Context, cs kubernetes.Interface, name string, labels map[string]string, port int32) error {
