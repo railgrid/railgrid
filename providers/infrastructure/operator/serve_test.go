@@ -18,6 +18,7 @@ package operator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -396,5 +397,48 @@ users:
 	want := "https://kcp.example/clusters/root:railgrid:providers:infrastructure"
 	if !strings.Contains(string(secret.Data["kubeconfig"]), want) {
 		t.Fatalf("replicated kubeconfig = %s, want server %s", secret.Data["kubeconfig"], want)
+	}
+}
+
+// The serve Service the operator creates is the provider's data plane: the hub
+// proxies /services/providers/infrastructure/* there, and kcp reverse-proxies
+// instances/<verb> there through the DataPlaneEndpointSlice bootstrap
+// publishes. Operator mode has no CatalogEntry file to read that address from,
+// so the URL must match the Service this same code creates.
+func TestServeBaseURLMatchesTheServeService(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		port int32
+		want string
+	}{
+		{name: "default port", port: 0, want: "http://test-infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8081"},
+		{name: "explicit port", port: 9090, want: "http://test-infrastructure.railgrid-infrastructure-provider.svc.cluster.local:9090"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &v1alpha1.InfrastructureProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
+				Spec: v1alpha1.InfrastructureProviderSpec{
+					Provider: v1alpha1.ProviderServeSpec{
+						Image: v1alpha1.ImageSpec{Repository: "example.test/infrastructure", Tag: "test"},
+						Port:  tc.port,
+					},
+				},
+			}
+			if got := ServeBaseURL(provider); got != tc.want {
+				t.Fatalf("ServeBaseURL = %q, want %q", got, tc.want)
+			}
+
+			client := fake.NewSimpleClientset()
+			if err := EnsureProviderServe(context.Background(), client, provider, []byte("provider-kubeconfig"), nil, nil); err != nil {
+				t.Fatalf("EnsureProviderServe: %v", err)
+			}
+			svc, err := client.CoreV1().Services(ServeNamespace).Get(context.Background(), provider.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get serve Service: %v", err)
+			}
+			if addr := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, svc.Spec.Ports[0].Port); addr != tc.want {
+				t.Fatalf("serve Service address %q, want %q — ServeBaseURL has drifted from the Service", addr, tc.want)
+			}
+		})
 	}
 }
