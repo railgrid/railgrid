@@ -88,11 +88,21 @@ jobs:
       - name: Run infrastructure provider e2e
         run: make e2e-infra-provider
 
+      # e2e-provider-all is e2e-provider plus e2e-provider-flags. The flags
+      # suite guards --providers validation and costs ~14s; it had no CI
+      # caller, so it never ran despite copilot-instructions.md naming it a
+      # suite reviewers must not weaken.
       - name: Run quickstart provider e2e
-        run: make e2e-provider
+        run: make e2e-provider-all
 
       - name: Run kuery provider e2e
         run: make e2e-kuery-provider
+
+      # Added in #769 with a working target and no CI caller — the coverage
+      # guard in this PR caught it. Shares etcd :2380, so it runs here in the
+      # sequential job rather than as its own.
+      - name: Run hub scoped-identity e2e
+        run: make e2e-identity
 
       - name: Run edges provider e2e
         run: make e2e-edges
