@@ -41,6 +41,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
+	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
@@ -53,7 +54,7 @@ import (
 // runnerDialer builds a dispatcher for one enrolled runner. It is a field on the
 // Server so a test can substitute a fake runner without standing up kcp, an
 // edges Service proxy and a machine.
-type runnerDialer func(ctx context.Context, ref runnerclient.ServiceRef, token string) (backendharness.Dispatcher, error)
+type runnerDialer func(ctx context.Context, ref runnerclient.ServiceRef, token string) (dispatch.Runner, error)
 
 // dialRunner is the real dialer: the shared typed client for runner/v1, over the
 // edges provider's published Service proxy, with this provider's own credential.
@@ -65,7 +66,7 @@ type runnerDialer func(ctx context.Context, ref runnerclient.ServiceRef, token s
 // data-plane grammar. So what this has to supply is a config addressing that
 // front door with a credential of its own — the provider's, the identity the
 // edges.railgrid.ai claims in manifest.yaml are declared under.
-func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, token string) (backendharness.Dispatcher, error) {
+func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, token string) (dispatch.Runner, error) {
 	cfg, err := s.runnerRESTConfig(ref.Cluster, token)
 	if err != nil {
 		return nil, err
@@ -85,7 +86,7 @@ func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, toke
 	if err != nil {
 		return nil, err
 	}
-	return backendharness.Wrap(c), nil
+	return dispatch.Wrap(c), nil
 }
 
 // runnerRESTConfig is the provider's own credential aimed at one tenant
@@ -234,7 +235,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	}
 
 	b := backendharness.New(backendharness.Config{
-		Dispatcher: dispatcher,
+		Runner: dispatcher,
 		// session → task, run → attempt, turn number → epoch.
 		TaskID:    harnessTaskID(agent.Name, sessionID),
 		AttemptID: runID,
