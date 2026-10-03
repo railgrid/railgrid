@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"time"
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -190,5 +192,26 @@ func TestObserveConversationCarriesReviewsAndComments(t *testing.T) {
 	}
 	if len(pr.Status.Comments) != 2 || pr.Status.Comments[0].AuthorType != "Bot" || len(pr.Status.Comments[1].Body) != maxBody || pr.Status.CommentsTruncated {
 		t.Fatalf("comments = %+v truncated=%t", pr.Status.Comments, pr.Status.CommentsTruncated)
+	}
+}
+
+// An open pull request is re-read on the interval the coordinator set, five
+// minutes when unset, and never more often than the floor.
+func TestObserveIntervalDefaultsAndFloors(t *testing.T) {
+	cases := map[string]struct {
+		spec *metav1.Duration
+		want time.Duration
+	}{
+		"unset":      {nil, defaultObserveInterval},
+		"zero":       {&metav1.Duration{}, defaultObserveInterval},
+		"configured": {&metav1.Duration{Duration: 2 * time.Minute}, 2 * time.Minute},
+		"too short":  {&metav1.Duration{Duration: time.Second}, minObserveInterval},
+	}
+	for name, tc := range cases {
+		pr := resource(nil)
+		pr.Spec.ObserveInterval = tc.spec
+		if got := observeInterval(pr); got != tc.want {
+			t.Errorf("%s: observeInterval = %s, want %s", name, got, tc.want)
+		}
 	}
 }

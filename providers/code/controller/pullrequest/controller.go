@@ -30,6 +30,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -41,8 +42,13 @@ import (
 )
 
 const (
-	// observeOpen is how often an open pull request is re-read.
-	observeOpen = time.Minute
+	// defaultObserveInterval is how often an open pull request is re-read
+	// when spec.observeInterval is unset; minObserveInterval is the floor.
+	// Every read is a dozen or more forge requests (the pull request, the
+	// checks, the reviews and their comments, the conversation), so the
+	// interval is the one knob that bounds this controller's rate budget.
+	defaultObserveInterval = 5 * time.Minute
+	minObserveInterval     = 30 * time.Second
 	// Bounds on what the status carries of the conversation.
 	maxReviews  = 64
 	maxComments = 128
@@ -62,10 +68,22 @@ type Reconciler struct {
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
+	// Only a spec change re-triggers a reconcile. Every pass writes the
+	// status (at least lastObserved), and without this filter that write
+	// would re-enqueue the object at once: a hot loop against the forge
+	// that burns the whole rate budget, with the timer below never reached.
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("code-pullrequests").
-		For(&codev1alpha1.PullRequest{}).
+		For(&codev1alpha1.PullRequest{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
+}
+
+// observeInterval is how long to wait before re-reading pr from the forge.
+func observeInterval(pr *codev1alpha1.PullRequest) time.Duration {
+	if pr.Spec.ObserveInterval == nil || pr.Spec.ObserveInterval.Duration <= 0 {
+		return defaultObserveInterval
+	}
+	return max(pr.Spec.ObserveInterval.Duration, minObserveInterval)
 }
 
 func (r *Reconciler) now() time.Time {
@@ -167,7 +185,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
-		return ctrl.Result{RequeueAfter: observeOpen}, nil
+		return ctrl.Result{RequeueAfter: observeInterval(&pr)}, nil
 	}
 	if observed.Head != pr.Spec.Branch || observed.Base != pr.Spec.Base || !strings.EqualFold(observed.HeadRepository, observed.Repository) {
 		return ctrl.Result{}, r.fail(ctx, c, &pr, "the pull request on the forge is not the one this resource describes")
@@ -215,7 +233,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if next.Status.Phase == codev1alpha1.PullRequestPhaseOpen || !applied {
-		return ctrl.Result{RequeueAfter: observeOpen}, nil
+		return ctrl.Result{RequeueAfter: observeInterval(&pr)}, nil
 	}
 	logger.V(3).Info("pull request settled", "phase", next.Status.Phase)
 	return ctrl.Result{}, nil

@@ -92,6 +92,15 @@ type PullRequestSpec struct {
 	// first result exists; then every revision is a new value here.
 	// +optional
 	DesiredHead *PullRequestHead `json:"desiredHead,omitempty"`
+	// ObserveInterval is how often Code re-reads an open pull request from
+	// the forge: its head, state, reviews and comments. The coordinator sets
+	// it per line, because forges and review flows differ in how fast they
+	// move and how much of a rate budget each read costs. Unset means five
+	// minutes; values under thirty seconds are raised to thirty seconds.
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	ObserveInterval *metav1.Duration `json:"observeInterval,omitempty"`
 }
 
 // PullRequestHead identifies one staged, verified snapshot commit.

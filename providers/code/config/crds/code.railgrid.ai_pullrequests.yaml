@@ -123,6 +123,15 @@ spec:
                 - commit
                 - tree
                 type: object
+              observeInterval:
+                description: |-
+                  ObserveInterval is how often Code re-reads an open pull request from
+                  the forge: its head, state, reviews and comments. The coordinator sets
+                  it per line, because forges and review flows differ in how fast they
+                  move and how much of a rate budget each read costs. Unset means five
+                  minutes; values under thirty seconds are raised to thirty seconds.
+                pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                type: string
               repositoryRef:
                 description: |-
                   RepositoryRef names the Repository (same workspace) the pull request
