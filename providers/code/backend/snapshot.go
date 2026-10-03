@@ -17,6 +17,11 @@ type Snapshot struct {
 	Commit     string `json:"commit"`
 	Tree       string `json:"tree"`
 	Bundle     []byte `json:"bundle"`
+	// Message is the one-line subject the snapshot commit must carry, chosen
+	// by the coordinator that dispatched the attempt. Empty means the
+	// canonical message. It is verified byte for byte, so a commit that says
+	// anything else — anything a model might have written — is refused.
+	Message string `json:"message,omitempty"`
 }
 
 // SnapshotPublisher validates Git objects before an optional atomic ref update.
