@@ -75,7 +75,7 @@ spec:
       crd: {}
   - group: edges.railgrid.ai
     name: services
-    schema: v260926-76b9080b.services.edges.railgrid.ai
+    schema: v261002-91de94e2.services.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai

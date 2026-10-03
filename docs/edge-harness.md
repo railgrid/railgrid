@@ -132,6 +132,19 @@ carries `auth: none`.
 
 `status.harness` is copied from the runner's own capabilities response, so a
 portal or a consuming provider can pick a ready runner without holding a token.
+`status.runner` is the other half of that document — the **machine**: the
+toolchains the runner detected on its host (`git`, `node`, …), its environment
+and verification capabilities, and its capacity. A consumer that must match a
+job to a machine — Factory refuses to assign a job that requires `git` to a
+runner that does not advertise it — reads it here and never probes the runner.
+
+The toolchains are **detected, not declared**. A hand-written `runner.json`
+used to list them; a supervised runner's config is written by nobody, so the
+agent resolves a short, named table of executables (`pkg/agent/harnessplane`
+`knownToolchains`) the way the runner itself resolves a harness — `PATH`, then
+the well-known install directories a service account's `PATH` lacks — and
+advertises what it found. A runner that clones with git while advertising no
+toolchains was reporting a machine that could not do what it was doing.
 
 A runner exposes **no MCP tools** deliberately: a caller speaks `runner/v1`, not
 MCP.
@@ -186,6 +199,28 @@ dispatch refused for a harness mismatch that did not exist.
 test that checks it against what the adapters actually report, so a harness that
 renames itself breaks a test rather than breaking dispatch. Use it rather than
 writing the mapping again.
+
+## One lifecycle, shared
+
+Reaching a runner is `pkg/runner/client`. What happens between a dispatch and
+its answer is `pkg/runner/dispatch`, and it exists because that part had been
+written twice — once in the agents provider, once in Factory — and the copies
+drifted: one learned that a terminal *event* can arrive before the terminal
+*receipt*, the other still believed the event; one refused a receipt whose
+session id had changed, the other knew a harness forks its session on a resume.
+
+`dispatch` holds the rules and nothing else: it follows an attempt from a
+cursor to the end or to a park, reads the harness's stream into text, tool
+calls and cost, tells a **question** (answered with words) from a **permission
+prompt** (answered with a verdict on a named call), reconciles a dropped cursor
+through `inspect` instead of failing, and does not report a cancel until the
+receipt says `cancelled`. It persists nothing, decides nothing about who may
+answer a park, and holds no credential past the call it was handed. A product
+plugs in an `Observer` for the stream and keeps what is its own — an agent's
+transcript and inbox, Factory's approved envelope and delivery.
+
+The agents provider's harness backend is now an adapter over it. Factory
+follows.
 
 ## Two attempt shapes
 
