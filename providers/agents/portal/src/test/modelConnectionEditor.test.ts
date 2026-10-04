@@ -113,6 +113,97 @@ describe('focused model connection editor', () => {
   expect(save).not.toHaveBeenCalled()
   expect(el.textContent).toContain('paste only the key')
  })
+
+ it('links validation messages to the field they describe without blaming other fields', async () => {
+  const chat = await mountVue(Editor, { api: stubApi(), busy: false, onSave: vi.fn() })
+  expect(chat.element.querySelector('form')?.noValidate).toBe(true)
+  await input(chat.element, 'name', 'Invalid Name')
+  await input(chat.element, 'apiKey', 'sk-valid')
+  button(chat.element, 'Connect model').click(); await settleVue()
+  const chatName = chat.element.querySelector<HTMLInputElement>('#model-display-name')!
+  const chatKey = chat.element.querySelector<HTMLInputElement>('[name="apiKey"]')!
+  expect(chatName.getAttribute('aria-invalid')).toBe('true')
+  expect(chatName.getAttribute('aria-describedby')).toBe('model-display-name-error')
+  expect(chat.element.querySelector('[id="model-display-name-error"][role="alert"]')?.textContent).toContain('lowercase')
+  expect(chatKey.getAttribute('aria-invalid')).toBe('false')
+
+  await input(chat.element, 'name', 'valid-name')
+  await input(chat.element, 'apiKey', '')
+  expect(button(chat.element, 'Connect model').disabled).toBe(true)
+  await submitForm(chat.element)
+  expect(chat.element.querySelector<HTMLInputElement>('[name="apiKey"]')!.getAttribute('aria-invalid')).toBe('true')
+  expect(chat.element.querySelector('#model-credential-help')?.textContent).toContain('Enter an API key')
+
+  await selectProvider(chat.element, 'custom')
+  await input(chat.element, 'name', 'endpoint')
+  await input(chat.element, 'baseURL', 'not an endpoint')
+  await input(chat.element, 'apiKey', 'sk-valid')
+  button(chat.element, 'Connect model').click(); await settleVue()
+  const endpoint = chat.element.querySelector<HTMLInputElement>('#model-base-url')!
+  expect(endpoint.getAttribute('aria-invalid')).toBe('true')
+  expect(chat.element.querySelector<HTMLInputElement>('[name="apiKey"]')!.getAttribute('aria-invalid')).toBe('false')
+
+  await selectProvider(chat.element, 'claude-code')
+  expect(chat.element.querySelector('form')?.noValidate).toBe(true)
+  await input(chat.element, 'name', 'valid-name')
+  expect(button(chat.element, 'Add identity').disabled).toBe(true)
+  await submitForm(chat.element)
+  const missingSecret = chat.element.querySelector<HTMLInputElement>('#harness-secret')!
+  expect(missingSecret.getAttribute('aria-invalid')).toBe('true')
+  expect(missingSecret.getAttribute('aria-describedby')).toBe('harness-secret-error')
+  expect(chat.element.querySelector('[id="harness-secret-error"][role="alert"]')?.textContent).toContain('Enter the selected credential')
+  await input(chat.element, 'name', 'Invalid Name')
+  await field(chat.element, 'oauthToken', 'sk-ant-oat01-valid')
+  await submitForm(chat.element)
+  const harnessName = chat.element.querySelector<HTMLInputElement>('#model-display-name')!
+  const harnessSecret = chat.element.querySelector<HTMLInputElement>('#harness-secret')!
+  expect(harnessName.getAttribute('aria-describedby')).toBe('model-display-name-error')
+  expect(chat.element.querySelector('[id="model-display-name-error"][role="alert"]')?.textContent).toContain('lowercase')
+  expect(harnessSecret.getAttribute('aria-invalid')).toBe('false')
+  expect(harnessSecret.getAttribute('aria-describedby')).toBe('model-credential-help')
+ })
+
+ it('keeps focus on the provider selector when the family replaces its form', async () => {
+  const focused = await mountVue(Editor, { api: stubApi(), busy: false })
+  const oldSelect = focused.element.querySelector<HTMLSelectElement>('#model-provider')!
+  oldSelect.focus()
+  oldSelect.value = 'claude-code'
+  oldSelect.dispatchEvent(new Event('change', { bubbles: true }))
+  await settleVue()
+  const replacement = focused.element.querySelector<HTMLSelectElement>('#model-provider')!
+  expect(replacement).not.toBe(oldSelect)
+  expect(document.activeElement).toBe(replacement)
+
+  replacement.value = 'openrouter'
+  replacement.dispatchEvent(new Event('change', { bubbles: true }))
+  await settleVue()
+  const chatReplacement = focused.element.querySelector<HTMLSelectElement>('#model-provider')!
+  expect(chatReplacement).not.toBe(replacement)
+  expect(document.activeElement).toBe(chatReplacement)
+  expect(chatReplacement.value).toBe('openrouter')
+  expect(focused.element.textContent).toContain('https://openrouter.ai/api/v1')
+
+  chatReplacement.value = 'claude-code'
+  chatReplacement.dispatchEvent(new Event('change', { bubbles: true }))
+  await settleVue()
+  const harnessReplacement = focused.element.querySelector<HTMLSelectElement>('#model-provider')!
+  expect(document.activeElement).toBe(harnessReplacement)
+  harnessReplacement.value = 'custom'
+  harnessReplacement.dispatchEvent(new Event('change', { bubbles: true }))
+  await settleVue()
+  expect(document.activeElement).toBe(focused.element.querySelector('#model-provider'))
+  expect(focused.element.querySelector<HTMLInputElement>('#model-base-url')?.value).toBe('')
+  focused.unmount()
+
+  const elsewhere = await mountVue(Editor, { api: stubApi(), busy: false })
+  const name = elsewhere.element.querySelector<HTMLInputElement>('#model-display-name')!
+  const select = elsewhere.element.querySelector<HTMLSelectElement>('#model-provider')!
+  name.focus()
+  select.value = 'claude-code'
+  select.dispatchEvent(new Event('change', { bubbles: true }))
+  await settleVue()
+  expect(document.activeElement).not.toBe(elsewhere.element.querySelector('#model-provider'))
+ })
  it('will not save a stored credential without a model, and reports a failed probe', async () => {
   const testCredential = vi.fn().mockResolvedValue({ ok: false, error: 'Model permission denied' })
   const { element: el } = await mountVue(Editor, { api: stubApi({ testCredential }), credential, busy: false })
@@ -313,8 +404,9 @@ describe('focused model connection editor', () => {
   expect(el.querySelector('#model-id')).toBeNull()
   expect(labels(el)).not.toContain('Find models')
   expect(labels(el)).not.toContain('Test connection')
-  expect(el.textContent).toContain('Nothing to test')
-  expect(el.textContent).toContain('conditions')
+  expect(el.textContent).toContain('After saving, we check its format')
+  expect(el.textContent).toContain('first run confirms that the runner can use it')
+  expect(el.textContent).toContain('stored as a workspace secret and never returned to the browser')
   expect(el.textContent).not.toContain('may incur a charge')
   expect(discoverCredential).not.toHaveBeenCalled()
   expect(testCredential).not.toHaveBeenCalled()
@@ -340,7 +432,7 @@ describe('focused model connection editor', () => {
   await field(el, 'auth.json', 'sk-ant-oat01-pasted-in-the-wrong-box')
   await submitForm(el)
   expect(saveCredential).not.toHaveBeenCalled()
-  expect(el.textContent).toContain('auth.json that `codex login` wrote')
+  expect(el.textContent).toContain('auth.json file created by codex login')
 
   await field(el, 'auth.json', '{"tokens":{"access_token":"a"}}')
   await submitForm(el, 8)
@@ -357,7 +449,8 @@ describe('focused model connection editor', () => {
   const stored = { name: 'my-claude', provider: 'claude-code', model: '', ready: true, secretResolved: true }
   const { element: el } = await mountVue(Editor, { api: stubApi(), credential: stored, busy: false, onSave: save })
   expect(el.querySelector<HTMLInputElement>('input[name="name"]')!.disabled).toBe(true)
-  expect(el.textContent).toContain('Leave blank to keep the stored credential')
+  expect(el.textContent).toContain('Leave blank to keep the current login')
+  expect(el.textContent).toContain('stored as a workspace secret and never returned to the browser')
   expect(button(el, 'Save changes').disabled).toBe(false)
   await submitForm(el)
   expect(save).toHaveBeenCalledWith({ name: 'my-claude', provider: 'claude-code' })

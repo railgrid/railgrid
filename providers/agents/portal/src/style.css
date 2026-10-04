@@ -143,11 +143,8 @@ railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle svg { wid
 railgrid-provider-agents .agents-workbench-header { min-width: 0; }
 railgrid-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 100%; }
 railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
-/* The one line of copy explaining what the backend choice means. Wraps at phone
-   width like every other paragraph in a section card. */
-railgrid-provider-agents .agents-backend-copy { margin: 0 0 4px; font-size: 13px; line-height: 1.5; }
-
-railgrid-provider-agents input[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
+railgrid-provider-agents input[aria-invalid="true"],
+railgrid-provider-agents textarea[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
 /* Glow-means-alive: only the solid accent (primary) button emits light. Every
  * other button-shaped control opts back out (the :is() keeps this rule's
  * specificity level with button:hover so it also suppresses the hover glow). */
@@ -170,10 +167,18 @@ railgrid-provider-agents .agents-panel form, railgrid-provider-agents .agents-ob
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 railgrid-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
-:where(railgrid-provider-agents) label:not(.agents-model-create label) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
-railgrid-provider-agents .agents-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+:where(railgrid-provider-agents) label:not(:where(.agents-model-create label)) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+railgrid-provider-agents .agents-grid2 {
+  display: grid;
+  /* Keep two columns at most, and stack before either field shrinks below 20rem. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(20rem, calc((100% - 12px) / 2))), 1fr));
+  align-items: start; gap: 12px;
+}
 railgrid-provider-agents .agents-check { flex-direction: row !important; align-items: center; gap: 8px !important; font-size: 13px; }
 railgrid-provider-agents .agents-check input { width: auto; }
+railgrid-provider-agents .agents-check-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+railgrid-provider-agents .agents-check:has(.agents-check-copy) { align-items: flex-start; }
+railgrid-provider-agents .agents-check:has(.agents-check-copy) > input { flex: none; margin-top: 3px; }
 railgrid-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 railgrid-provider-agents .agents-form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 railgrid-provider-agents .agents-hint { font-size: 12px; color: var(--color-text-muted, inherit); font-weight: 400; }
@@ -272,13 +277,19 @@ railgrid-provider-agents .agents-spinner {
 }
 
 /* --- capability toggles (create wizard) --- */
-railgrid-provider-agents .agents-cap-fs { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; }
-railgrid-provider-agents .agents-cap-fs legend {
-  padding: 0; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--color-text-muted, #5d5f78);
+railgrid-provider-agents .agents-cap-fs { min-width: 0; margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; }
+/* A choice group's legend has the same role as the neighboring field label.
+ * Section headings keep their separate, compact typography. */
+railgrid-provider-agents .agents-cap-fs > legend {
+  max-width: 100%; padding: 0; margin-bottom: 8px; font-size: 13px; font-weight: 400;
+  text-transform: none; letter-spacing: normal; color: var(--color-text-primary, inherit);
 }
-railgrid-provider-agents .agents-cap-row { display: flex; flex-direction: row; align-items: center; gap: 10px; }
-railgrid-provider-agents .agents-cap-row .agents-cap { flex: 1 1 auto; }
+railgrid-provider-agents .agents-model-create .agents-cap-fs > legend {
+  font-size: 11px; font-weight: 500; color: var(--color-text-secondary, inherit);
+}
+railgrid-provider-agents .agents-cap-row { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px; }
+railgrid-provider-agents .agents-cap-row .agents-cap { flex: 1 1 16rem; min-width: 0; }
+railgrid-provider-agents .agents-cap-row > .agents-bg-toggle { margin-inline-start: auto; }
 railgrid-provider-agents .agents-cap {
   /* flex-direction is not optional here: `label` is globally a COLUMN flex
      (see the base rule above), and a column flex with align-items:center
@@ -293,6 +304,8 @@ railgrid-provider-agents .agents-cap:has(input:checked) {
   border-color: var(--color-accent, #8b6bff); background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
 }
 railgrid-provider-agents .agents-cap input { flex: none; }
+railgrid-provider-agents .agents-cap:has(.agents-check-copy) { align-items: flex-start; }
+railgrid-provider-agents .agents-cap:has(.agents-check-copy) > input { margin-top: 3px; }
 railgrid-provider-agents .agents-cap strong { font-weight: 620; }
 railgrid-provider-agents .agents-cap .muted { font-size: 12px; }
 

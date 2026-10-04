@@ -39,6 +39,8 @@ const props = defineProps<{
   secret: string
   secretRequired?: boolean
   secretHint: string
+  nameError?: string | null
+  secretError?: string | null
   formError?: string | null
   saveDisabled?: boolean
   busy?: boolean
@@ -60,7 +62,7 @@ const emit = defineEmits<{
 const KEY_COPY: Record<HarnessSecretKey, { label: string; blurb: string }> = {
   [HARNESS_SECRET_KEY_OAUTH_TOKEN]: {
     label: 'Setup token',
-    blurb: 'A `claude setup-token` value — long-lived, tied to a Claude subscription.',
+    blurb: 'A long-lived token from the Claude Code setup-token command, tied to a Claude subscription.',
   },
   [HARNESS_SECRET_KEY_API_KEY]: {
     label: 'Anthropic API key',
@@ -68,7 +70,7 @@ const KEY_COPY: Record<HarnessSecretKey, { label: string; blurb: string }> = {
   },
   [HARNESS_SECRET_KEY_CODEX_AUTH]: {
     label: 'Codex auth.json',
-    blurb: 'The login session file `codex login` wrote on a machine you control.',
+    blurb: 'The login session file created when you run codex login on a machine you control.',
   },
 }
 
@@ -88,6 +90,7 @@ function isLocked(): boolean {
     :class="{ 'k-create-surface--wide': wide }"
     aria-label="Harness identity form"
     :aria-busy="isLocked()"
+    novalidate
     @submit.prevent="emit('save')"
   >
     <div class="k-create-body">
@@ -103,14 +106,16 @@ function isLocked(): boolean {
           required
           :disabled="isLocked() || nameDisabled"
           aria-required="true"
-          aria-describedby="model-display-name-hint"
+          :aria-invalid="Boolean(nameError)"
+          :aria-describedby="nameError ? 'model-display-name-error' : 'model-display-name-hint'"
           @input="emit('update:name', ($event.target as HTMLInputElement).value)"
         >
-        <span id="model-display-name-hint" class="k-model-form-hint">Choose a recognizable lowercase name for model pickers.</span>
+        <span v-if="nameError" id="model-display-name-error" class="k-model-form-hint text-danger" role="alert">{{ nameError }}</span>
+        <span v-else id="model-display-name-hint" class="k-model-form-hint">Choose a recognizable lowercase name for this identity.</span>
       </label>
 
       <section class="k-model-form-section" aria-labelledby="model-provider-heading">
-        <h5 id="model-provider-heading" class="k-model-form-heading">Connection</h5>
+        <h5 id="model-provider-heading" class="k-model-form-heading">Harness</h5>
         <label class="k-model-form-field">
           <span :id="providerLabelId">Provider</span>
           <select
@@ -134,13 +139,13 @@ function isLocked(): boolean {
 
         <!-- Two keys is a real choice: claude-code carries EXACTLY ONE of them,
              and which one it carries is what the harness is handed. -->
-        <div v-if="secretKeys.length > 1" class="agents-fieldset">
-          <span id="harness-secret-key-label" class="agents-fieldset-legend">Credential type</span>
-          <div class="agents-radiocards" role="radiogroup" aria-labelledby="harness-secret-key-label">
+        <fieldset v-if="secretKeys.length > 1" class="agents-cap-fs">
+          <legend id="harness-secret-key-label" class="agents-fieldset-legend">Credential type</legend>
+          <div class="agents-radiocards">
             <label
               v-for="key in secretKeys"
               :key="key"
-              class="agents-radiocard"
+              class="agents-radiocard k-checkbox-hit"
               :class="{ sel: key === secretKey }"
             >
               <input
@@ -155,7 +160,7 @@ function isLocked(): boolean {
               <span class="agents-radiocard-b">{{ copyFor(key).blurb }}</span>
             </label>
           </div>
-        </div>
+        </fieldset>
 
         <label for="harness-secret" class="k-model-form-field">
           {{ copyFor(secretKey).label }}
@@ -164,7 +169,7 @@ function isLocked(): boolean {
             id="harness-secret"
             :name="secretKey"
             :value="secret"
-            class="k-input font-mono text-[12px]"
+            :class="['k-input', 'font-mono', 'text-[12px]', { 'border-danger': secretError }]"
             rows="6"
             spellcheck="false"
             autocomplete="off"
@@ -172,7 +177,8 @@ function isLocked(): boolean {
             :required="secretRequired"
             :disabled="isLocked()"
             :aria-required="secretRequired"
-            aria-describedby="model-credential-help"
+            :aria-invalid="Boolean(secretError)"
+            :aria-describedby="secretError ? 'harness-secret-error' : 'model-credential-help'"
             @input="emit('update:secret', ($event.target as HTMLTextAreaElement).value)"
           ></textarea>
           <input
@@ -180,26 +186,26 @@ function isLocked(): boolean {
             id="harness-secret"
             :name="secretKey"
             :value="secret"
-            class="k-input h-10"
+            :class="['k-input', 'h-10', { 'border-danger': secretError }]"
             type="password"
             autocomplete="new-password"
             :placeholder="editing ? `${copyFor(secretKey).label} (leave blank to keep current)` : copyFor(secretKey).label"
             :required="secretRequired"
             :disabled="isLocked()"
             :aria-required="secretRequired"
-            aria-describedby="model-credential-help"
+            :aria-invalid="Boolean(secretError)"
+            :aria-describedby="secretError ? 'harness-secret-error' : 'model-credential-help'"
             @input="emit('update:secret', ($event.target as HTMLInputElement).value)"
           >
+          <p v-if="secretError" id="harness-secret-error" class="k-model-form-hint text-danger" role="alert">{{ secretError }}</p>
           <p id="model-credential-help" class="k-model-form-hint">{{ secretHint }}</p>
         </label>
         <p v-if="origin" class="k-model-form-hint">{{ origin }}</p>
       </section>
 
       <p v-if="formError" class="k-inline-notification k-inline-notification--error" role="alert">{{ formError }}</p>
-      <!-- There is no Test button and no honest way to have one: nothing here
-           has an endpoint to call. What DOES check this credential says so. -->
       <p v-else class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite">
-        Nothing to test: a harness identity has no endpoint. The provider checks this Secret’s shape and reports the result on this credential’s conditions.
+        This login has no endpoint to test. After saving, we check its format. A successful first run confirms that the runner can use it.
       </p>
     </div>
 

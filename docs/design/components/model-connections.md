@@ -54,6 +54,17 @@ providers. Test results are session-local, not persisted health guarantees.
 
 ## Content
 
+Harness identities use the same form and card geometry with provider-owned
+credential controls. Their create and edit headings name the identity rather
+than a model connection. On a saved identity, set the card's `resourceLabel` to
+“Harness identity” and `endpointLabel` to “Runs on,” with “Edge machine” as the
+value. Chat connections retain the default “Model” and “Endpoint” labels.
+Keep credential format validation separate from runner readiness: a checked
+credential has not yet verified a connection on a machine. Associate validation
+errors with the field requiring correction and keep request errors at form level.
+AgentKit owns the danger tone of field hints announced as alerts, so inline
+validation stays visible in both themes without depending on host utilities.
+
 Use “Connect model,” “Edit,” “Test connection,” and “Find models.” State input
 and output prices separately as USD per million tokens and label them catalog
 estimates. Both providers use `provider-sdk/modelcatalog`; its existing rates

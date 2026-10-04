@@ -42,6 +42,7 @@ const createBusy = ref(false)
 const editorGeneration = ref(0)
 const editor = ref<{ cancel: () => Promise<void>; locked: boolean } | null>(null)
 const editingCredential = ref<Credential>()
+const editorFamily = ref<'chat' | 'harness'>('chat')
 const saveError = ref<string | null>(null)
 const showBreakdown = ref(false)
 let catalogGeneration = 0
@@ -86,7 +87,7 @@ function resetUsageRead(): void {
 
 watch([() => props.store, () => props.api], () => { resetCatalogRead(); void loadCatalog() }, { immediate: true })
 watch([() => props.store, () => props.api, windowDays], () => { resetUsageRead(); void loadUsage() }, { immediate: true })
-watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
+watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = 'chat'; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
 async function loadUsage(): Promise<void> {
   const generation = ++usageGeneration
@@ -133,6 +134,11 @@ function credentialAction(name: string): CredentialAction | undefined { return c
 // looked yet, which is a different statement from "looked and it is broken" —
 // so it reads as "Checking…", not as a failure.
 function statusLabel(credential: Credential): string {
+  if (harnessCredential(credential)) {
+    if (credential.ready === true) return 'Credential checked'
+    if (credential.ready === false) return 'Needs attention'
+    return 'Checking credential…'
+  }
   if (credential.ready === true) return 'Ready'
   if (credential.ready === false) return credential.secretResolved === false ? 'Needs credential' : 'Not reachable'
   return 'Checking…'
@@ -154,8 +160,17 @@ function familyModel(credential: Credential): string {
   return harnessCredential(credential) ? `${harnessLabel(credential.provider)} identity` : credential.model || '—'
 }
 function familyEndpoint(credential: Credential): string {
-  return harnessCredential(credential) ? 'none — runs on an edge harness' : credential.baseURL || ''
+  return harnessCredential(credential) ? 'Edge machine' : credential.baseURL || ''
 }
+const editorIsHarness = computed(() => editingCredential.value
+  ? harnessCredential(editingCredential.value)
+  : editorFamily.value === 'harness')
+const editorTitle = computed(() => editorIsHarness.value
+  ? editingCredential.value ? 'Edit harness identity' : 'Add harness identity'
+  : editingCredential.value ? 'Edit model' : 'Connect model')
+const editorDescription = computed(() => editorIsHarness.value
+  ? 'The login a coding harness on an edge runs as.'
+  : 'Configure a workspace model connection.')
 function invalidateProbe(name: string): void {
   probeGenerations.set(name, (probeGenerations.get(name) || 0) + 1)
   if (testing.value.has(name)) {
@@ -211,6 +226,7 @@ function clearProbeState(name: string): void { clearTest(name) }
 function toggleEdit(credential: Credential): void {
   if (credentialActions.value.size) return
   editingCredential.value = { ...credential }
+  editorFamily.value = harnessCredential(credential) ? 'harness' : 'chat'
   editName.value = credential.name
   saveError.value = null
 }
@@ -219,6 +235,7 @@ function cancelCreate(): void {
   editingCredential.value = undefined
   editName.value = null
   creating.value = false
+  editorFamily.value = 'chat'
   saveError.value = null
   if (props.createRoute) emit('create-cancel', { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession })
 }
@@ -262,7 +279,7 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     if (authorityIsCurrent(authority) && fence.createSession === props.createSession) saveError.value = (error as Error).message
   } finally { if (authorityIsCurrent(authority) && fence.createSession === props.createSession) createBusy.value = false }
 }
-function cancelEditorAfterSave(): void { editingCredential.value = undefined; editName.value = null; creating.value = false }
+function cancelEditorAfterSave(): void { editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = 'chat' }
 function sparkPoints(series: UsagePoint[]): string {
   const values = series.map(item => item.usdMicros); if (values.length < 2 || Math.max(...values) === 0) return ''
   const max = Math.max(...values); const step = 260 / (values.length - 1)
@@ -285,8 +302,8 @@ defineExpose({ loadCatalog, loadUsage })
   <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'agents-panel agents-route-panel agents-models-page'">
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
-      <header class="k-create-header"><h1 class="k-create-title">{{ editingCredential ? (harnessCredential(editingCredential) ? 'Edit harness identity' : 'Edit model') : 'Connect model' }}</h1><p class="k-create-description">{{ editingCredential && harnessCredential(editingCredential) ? 'The login a coding harness on an edge runs as.' : 'Configure a workspace model connection.' }}</p></header>
-      <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" />
+      <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>
+      <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
       <div class="agents-panel-head"><h3>Models</h3><button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect model</button></div><p class="muted">Connect and manage models for your agents.</p>
@@ -298,12 +315,12 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-if="credentials.hasSnapshot" class="k-model-grid">
-        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="familyModel(credential)" :endpoint="familyEndpoint(credential)" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
+        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="familyModel(credential)" :endpoint="familyEndpoint(credential)" :endpoint-label="harnessCredential(credential) ? 'Runs on' : 'Endpoint'" :resource-label="harnessCredential(credential) ? 'Harness identity' : 'Model'" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credential.name) ? 'Testing…' : tested.get(credential.name)?.ok ? `Test passed · ${tested.get(credential.name)?.latencyMS} ms` : tested.has(credential.name) ? 'Test failed' : statusLabel(credential)"
           :test-tone="tested.get(credential.name)?.ok ? 'success' : tested.has(credential.name) ? 'danger' : statusTone(credential)">
           <template v-if="harnessCredential(credential)">
             <div class="agents-model-chips"><span class="agents-chip"><Terminal :stroke-width="1.75" aria-hidden="true" /> Harness identity</span></div>
-            <p class="agents-hint">No endpoint and no chat model: this is the login a {{ harnessLabel(credential.provider) }} harness on an edge runs as, and turns bill to the account it belongs to.</p>
+            <p class="agents-hint">Credential check validates the login format. A successful first run confirms the edge runner can use it. Usage is billed to its account.</p>
           </template>
           <template v-else>
           <div v-if="lookupModel(credential.model || '')" class="agents-model-chips"><template v-if="lookupModel(credential.model || '')"><span v-if="lookupModel(credential.model || '')?.contextWindow" class="agents-chip">{{ fmtCtx(lookupModel(credential.model || '')!.contextWindow!) }}</span><span v-if="lookupModel(credential.model || '')?.vision" class="agents-chip"><Eye :stroke-width="1.75" aria-hidden="true" /> vision</span><span v-if="lookupModel(credential.model || '')?.toolCall" class="agents-chip"><Wrench :stroke-width="1.75" aria-hidden="true" /> tools</span><span v-if="lookupModel(credential.model || '')?.reasoning" class="agents-chip"><Brain :stroke-width="1.75" aria-hidden="true" /> reasoning</span></template></div>

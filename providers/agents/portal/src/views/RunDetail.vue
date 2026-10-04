@@ -110,6 +110,14 @@ const harnessCoordinates = computed(() => {
   if (!ranOnHarness.value || !(harness?.attemptID || harness?.sessionID)) return null
   return harness
 })
+const harnessCoordinateGuidance = computed(() => {
+  const harness = harnessCoordinates.value
+  if (!harness) return ''
+  const lookups: string[] = []
+  if (harness.attemptID) lookups.push('the runner attempt ID in the edge runner logs')
+  if (harness.sessionID) lookups.push('the harness session ID in the harness logs')
+  return `This turn ran on a coding harness on an edge machine. Use ${lookups.join(' and ')} to find it.`
+})
 
 const fanOutGranted = computed(() => {
   void revision.value
@@ -595,7 +603,7 @@ onBeforeUnmount(() => {
                   <div v-if="run.attempt && run.attempt > 1" class="agents-runmeta-cell"><span class="agents-runmeta-k">attempt</span><span class="agents-runmeta-v">{{ run.attempt }}</span></div>
                   <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
                 </div>
-                <p v-if="harnessCoordinates" class="agents-hint">This turn ran on a coding harness on an edge machine — look the attempt up on the runner, and the session in the harness.</p>
+                <p v-if="harnessCoordinates" class="agents-hint">{{ harnessCoordinateGuidance }}</p>
                 <div v-if="run.input" class="agents-runinput"><span class="agents-runmeta-k">input</span><pre>{{ run.input }}</pre></div>
               </section>
 

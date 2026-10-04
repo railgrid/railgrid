@@ -287,15 +287,46 @@ describe('assisted setup flow', () => {
       { providers: ['infrastructure'] },
       [agentFixture('scout'), agentFixture('ranger')],
     )
+    const form = el.querySelector<HTMLFormElement>('.agents-conn-form')!
     const trigger = el.querySelector<HTMLButtonElement>('.k-form-select__trigger')!
+    expect(form.noValidate).toBe(true)
+    expect(trigger.getAttribute('aria-required')).toBe('true')
+    expect(text(trigger.closest('label'))).toContain('Agent *')
     expect(trigger.getAttribute('aria-labelledby')?.split(' ')).toContain('assisted-search-agent-label')
 
-    el.querySelector<HTMLFormElement>('.agents-conn-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 4)
 
     expect(trigger.getAttribute('aria-invalid')).toBe('true')
     expect(trigger.getAttribute('aria-describedby')).toBe('assisted-search-agent-error')
     expect(el.querySelector('#assisted-search-agent-error')?.getAttribute('role')).toBe('alert')
+  })
+
+  it('marks connection and instance names required and lets inline validation own submission', async () => {
+    const createConnection = vi.fn()
+    const { el } = await mountAssistedPage({ providers: ['infrastructure'] }, [agentFixture('scout')], { createConnection })
+    const form = el.querySelector<HTMLFormElement>('.agents-conn-form')!
+    const connection = form.querySelector<HTMLInputElement>('input[name="connName"]')!
+    const instance = form.querySelector<HTMLInputElement>('input[name="instance"]')!
+
+    expect(form.noValidate).toBe(true)
+    expect(connection.required).toBe(true)
+    expect(connection.getAttribute('aria-required')).toBe('true')
+    expect(text(connection.closest('label'))).toContain('Connection name *')
+    expect(instance.required).toBe(true)
+    expect(instance.getAttribute('aria-required')).toBe('true')
+    expect(text(instance.closest('label'))).toContain('Instance name *')
+
+    connection.value = ''
+    connection.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    instance.value = ''
+    instance.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle(el, 4)
+
+    expect(createConnection).not.toHaveBeenCalled()
+    expect(el.querySelector('#assisted-search-connection-name-error')).not.toBeNull()
+    expect(el.querySelector('#assisted-search-instance-name-error')).not.toBeNull()
   })
 
   it('creates the connection naming the instance, hands off the prompt and navigates to the agent', async () => {

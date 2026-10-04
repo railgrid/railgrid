@@ -1476,7 +1476,7 @@ describe('agent creation backend choice', () => {
     backendRadio(el, 'harness').click()
     await settle(2)
     expect(text(el)).not.toContain('Read the web')
-    expect(text(el)).toContain('a harness brings its own tools')
+    expect(text(el)).toContain('A coding harness uses its own tools')
   })
 
   it('tells each missing prerequisite apart', async () => {
@@ -1491,6 +1491,32 @@ describe('agent creation backend choice', () => {
     await settle(2)
     expect(text(noIdentity.el)).toContain('No harness identities yet')
     expect(primary(noIdentity.el).disabled).toBe(true)
+  })
+
+  it('marks required runner selectors and relates their empty and error states', async () => {
+    const { el, createAgent } = await mountWizard({ credentials: [], edges: [] })
+    backendRadio(el, 'harness').click()
+    await settle(2)
+
+    const machine = el.querySelector<HTMLButtonElement>('#agent-create-edge')!
+    expect(el.querySelector('#agent-create-edge-label')?.tagName).toBe('SPAN')
+    expect(machine.getAttribute('aria-labelledby')).toContain('agent-create-edge-label')
+    expect(machine.getAttribute('aria-labelledby')).not.toContain('agent-create-edge-hint')
+    expect(machine.getAttribute('aria-required')).toBe('true')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-create-edge-hint')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-create-edge-empty')
+
+    const credential = el.querySelector<HTMLButtonElement>('#agent-create-harnesscred')!
+    expect(el.querySelector('#agent-create-harnesscred-label')?.tagName).toBe('SPAN')
+    expect(credential.getAttribute('aria-labelledby')).toContain('agent-create-harnesscred-label')
+    expect(credential.getAttribute('aria-required')).toBe('true')
+    expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-hint')
+    expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-empty')
+
+    await submitForm(el)
+    expect(createAgent).not.toHaveBeenCalled()
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-create-edge-error')
+    expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-error')
   })
 
   it('still creates a model-backed agent exactly as before', async () => {
@@ -1544,6 +1570,51 @@ describe('agent backend', () => {
     expect(backendRadio(el, 'harness').checked).toBe(false)
     expect(el.querySelector('#agent-model-heading')).not.toBeNull()
     expect(el.querySelector('#agent-harness-edge-label')).toBeNull()
+  })
+
+  it('groups backend choices and marks runner requirements and empty states', async () => {
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'missing' } } },
+      [],
+      [],
+    )
+    const group = [...el.querySelectorAll('fieldset')].find(fieldset => fieldset.querySelector('input[name="backend-type"]'))!
+    expect(group.querySelector('legend')?.textContent).toBe('Execution backend')
+    expect(group.querySelectorAll('input[name="backend-type"]')).toHaveLength(2)
+    expect([...group.querySelectorAll('label')].every(label => label.classList.contains('k-checkbox-hit'))).toBe(true)
+
+    const machine = el.querySelector<HTMLButtonElement>('[aria-labelledby~="agent-harness-edge-label"]')!
+    expect(machine.getAttribute('aria-required')).toBe('true')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-harness-edge-hint')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-harness-edge-empty')
+    expect(machine.getAttribute('aria-labelledby')).toContain('agent-harness-edge-label')
+
+    const credential = el.querySelector<HTMLButtonElement>('[aria-labelledby~="agent-harness-credential-label"]')!
+    expect(credential.getAttribute('aria-required')).toBe('true')
+    expect(credential.getAttribute('aria-describedby')).toContain('agent-harness-credential-hint')
+    expect(credential.getAttribute('aria-describedby')).toContain('agent-harness-credential-empty')
+  })
+
+  it('uses shared notifications for runner machine read failures and stale snapshots', async () => {
+    const { el, store } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      CREDS,
+      EDGES,
+    )
+
+    store.edges.error = 'machine read failed'
+    store.edges.hasSnapshot = false
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    const error = el.querySelector('.k-inline-notification--error[role="alert"]')
+    expect(error?.textContent).toContain('Could not load machines. machine read failed')
+
+    store.edges.error = 'machine refresh failed'
+    store.edges.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    const warning = el.querySelector('.k-inline-notification--warning[role="status"]')
+    expect(warning?.textContent).toContain('Showing the last loaded machines. machine refresh failed')
   })
 
   it('offers only chat endpoints to a model-backed agent', async () => {
@@ -1605,6 +1676,12 @@ describe('agent backend', () => {
     await settle()
     expect(text(el.querySelector('#agent-backend-error'))).toContain('Pick the machine')
     expect(patchAgent).not.toHaveBeenCalled()
+    const machine = el.querySelector<HTMLButtonElement>('[aria-labelledby~="agent-harness-edge-label"]')!
+    const credential = el.querySelector<HTMLButtonElement>('[aria-labelledby~="agent-harness-credential-label"]')!
+    expect(machine.getAttribute('aria-invalid')).toBe('true')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-backend-error')
+    expect(credential.getAttribute('aria-invalid')).toBeNull()
+    expect(credential.getAttribute('aria-describedby')).not.toContain('agent-backend-error')
   })
 
   it('writes the harness block and the type together', async () => {
@@ -1645,17 +1722,26 @@ describe('agent backend', () => {
       },
     )
     const card = el.querySelector('#agent-backend-heading')?.closest('section')
-    expect(text(card)).toContain('Not ready')
+    expect(text(card)).toContain('cannot start a turn')
     expect(text(card)).toContain('HarnessNotReady')
     expect(text(card)).toContain('claude executable not found')
     expect(text(card)).not.toContain('Backend ready')
+    expect(text(card)).toContain('Saved backend readiness')
+    backendRadio(el, 'model').click()
+    await settle()
+    expect(text(card)).toContain('HarnessNotReady')
+    expect(text(card)).toContain('Saved backend readiness')
   })
 
-  it('reports an unobserved backend as unobserved rather than as ready', async () => {
+  it('labels pending readiness for the saved backend without guessing from the draft', async () => {
     // No optimism the object has not confirmed: readiness comes from status.
     const { el } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES)
     const card = el.querySelector('#agent-backend-heading')?.closest('section')
-    expect(text(card)).toContain('Not reported yet')
+    backendRadio(el, 'harness').click()
+    await settle()
+    expect(text(card)).toContain('Waiting for the backend readiness check.')
+    expect(text(card)).toContain('Saved backend readiness')
+    expect(text(card)).not.toContain('runner readiness check')
     expect(text(card)).not.toContain('Backend ready')
   })
 
@@ -1671,6 +1757,8 @@ describe('agent backend', () => {
     )
     const card = el.querySelector('#agent-backend-heading')?.closest('section')
     expect(text(card)).toContain('Backend ready')
+    expect(card?.querySelector('.k-badge--success')?.textContent).toContain('Backend ready')
+    expect(card?.querySelector('.k-badge__dot--success')).not.toBeNull()
     expect(text(card)).toContain('claude-code 2.1.0')
   })
 
@@ -1684,14 +1772,19 @@ describe('agent backend', () => {
     )
     const note = el.querySelector('[data-tools-disabled]')
     expect(note).not.toBeNull()
-    expect(text(note)).toContain('brings its own tools')
+    expect(text(note)).toContain('coding harness’s own tools')
+    expect(text(note)).toContain('switch to Model')
+    expect(text(note)).not.toContain('API refuses')
     expect(el.querySelector('#agent-tools-heading')?.closest('section')?.querySelector('input[type="checkbox"]')).toBeNull()
   })
 
-  it('states what the choice means in one line', async () => {
+  it('explains the backend outcomes in the choice cards', async () => {
     const { el } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES)
-    const copy = text(el.querySelector('.agents-backend-copy'))
-    expect(copy).toContain('runs its turns here in the provider and uses the hub')
-    expect(copy).toContain('tool grants below do not apply')
+    const card = el.querySelector('#agent-backend-heading')?.closest('section')
+    expect(text(card)).toContain('Choose where this agent runs its turns.')
+    expect(text(card)).toContain('Uses a model connection and the tools configured for this agent.')
+    expect(text(card)).toContain('uses its own tools')
+    expect(text(card)).not.toContain('provider')
+    expect(text(card)).not.toContain('hub')
   })
 })

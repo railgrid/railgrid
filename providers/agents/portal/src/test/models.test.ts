@@ -154,6 +154,20 @@ describe('models view on an empty workspace', () => {
     expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
   })
 
+  it.each(['claude-code', 'codex'])('updates the create heading when %s is selected', async provider => {
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, createRoute: true })
+    const heading = () => el.querySelector('h1.k-create-title')?.textContent?.trim()
+    expect(heading()).toBe('Connect model')
+
+    const select = el.querySelector<HTMLSelectElement>('#model-provider')!
+    select.value = provider
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue()
+
+    expect(heading()).toBe('Add harness identity')
+  })
+
   it('tells the two credential families apart in the list', async () => {
     // A harness identity has no endpoint and no model, so on a card built to
     // show both it read as a broken chat credential: a blank model, an
@@ -163,19 +177,27 @@ describe('models view on an empty workspace', () => {
     const store = makeStore(api)
     store.credentials.data = [
       { name: 'chatty', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o' },
-      { name: 'my-claude', provider: 'claude-code', model: '' },
+      { name: 'my-claude', provider: 'claude-code', model: '', ready: true },
+      { name: 'my-codex', provider: 'codex', model: '', ready: false },
     ]
     store.credentials.loaded = store.credentials.hasSnapshot = true
     const { element: el } = await mountVue(Models, { store, api })
 
     const cards = [...el.querySelectorAll('.k-model-connection')]
-    const harness = cards.find(card => card.getAttribute('aria-label') === 'Model my-claude')!
+    const harness = cards.find(card => card.getAttribute('aria-label') === 'Harness identity my-claude')!
+    const codex = cards.find(card => card.getAttribute('aria-label') === 'Harness identity my-codex')!
     const chat = cards.find(card => card.getAttribute('aria-label') === 'Model chatty')!
     expect(harness.textContent).toContain('Harness identity')
     expect(harness.textContent).toContain('Claude Code identity')
-    expect(harness.textContent).toContain('none — runs on an edge harness')
+    expect(harness.textContent).toContain('Runs on')
+    expect(harness.textContent).toContain('Edge machine')
+    expect(harness.textContent).toContain('Credential checked')
+    expect(harness.textContent).toContain('first run confirms the edge runner can use it')
     expect(harness.textContent).not.toContain('Provider default')
     expect(harness.textContent).not.toContain('pricing unknown')
+    expect(harness.textContent).not.toContain('Not reachable')
+    expect(codex.textContent).toContain('Needs attention')
+    expect(codex.textContent).not.toContain('Not reachable')
     expect([...harness.querySelectorAll('button')].map(b => b.textContent?.trim())).not.toContain('Test connection')
     // The chat card is untouched: endpoint, model, catalog verdict, Test.
     expect(chat.textContent).toContain('https://api.openai.com/v1')
