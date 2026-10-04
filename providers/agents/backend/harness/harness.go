@@ -333,11 +333,31 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	// the snapshot cursor, then trust the receipt. This keeps events emitted after
 	// the last checkpoint and uses the restored transcript for the rest.
 	if receipt.Phase.IsTerminal() {
+		turnState.clarification = nil
+		turnState.clarificationFromReceipt = false
 		return b.follow(ctx, receipt, sink, state.Spent, turnState)
 	}
 	if receipt.Phase != runner.PhaseNeedsInput {
 		// Still executing. Re-join it rather than resuming: a resume would be
 		// refused (the attempt is not waiting) and the work is not lost.
+		// The snapshot's clarification was answered before this process
+		// recovered; it is no longer an outstanding question on the runner.
+		turnState.clarification = nil
+		turnState.clarificationFromReceipt = false
+		return b.follow(ctx, receipt, sink, state.Spent, turnState)
+	}
+	if answerTargetsDifferentPark(state, receipt) {
+		// A stale inbox answer is tied to the park that produced State. If the
+		// runner is now waiting on another call or question, rejoin and surface
+		// that current park without applying the old decision to it.
+		turnState.clarification = nil
+		turnState.clarificationFromReceipt = false
+		return b.follow(ctx, receipt, sink, state.Spent, turnState)
+	}
+	if !answer.Decided && permissionID(receipt, state) == "" {
+		// Recovery has no answer for a clarification. Re-join the waiting attempt
+		// and surface its current question; sending an empty resolution is rejected
+		// by the runner and would strand a recoverable park as a failed run.
 		return b.follow(ctx, receipt, sink, state.Spent, turnState)
 	}
 
@@ -383,6 +403,11 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("resuming the harness turn", err)
 	}
 	b.observe(resumed)
+	// A successful resume consumed the question in this state. The resumed
+	// attempt may ask a different question without a structured clarification;
+	// keeping the answered text/id would then report and answer the old one.
+	turnState.clarification = nil
+	turnState.clarificationFromReceipt = false
 	return b.follow(ctx, resumed, sink, state.Spent, turnState)
 }
 
@@ -475,9 +500,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 	// this follower attached. The receipt's session ID establishes that its
 	// subsequent tokenUsage updates belong to an active attempt.
 	state.turnStarted = state.turnStarted || receipt.SessionID != ""
-	if receipt.Clarification != nil {
-		state.clarification = receipt.Clarification
-	}
+	updateReceiptClarification(state, receipt)
 	attemptID := receipt.AttemptID
 	// caughtUp bounds retries when Inspect says the attempt is terminal but its
 	// cursor is still ahead of the last event we received. Every cursor through
@@ -516,9 +539,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 					return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
 						incompleteHistoryError(state, reconciled.Cursor)
 				}
-				if reconciled.Clarification != nil {
-					state.clarification = reconciled.Clarification
-				}
+				updateReceiptClarification(state, reconciled)
 				if reconciled.Phase.IsTerminal() || reconciled.Phase == runner.PhaseNeedsInput {
 					return b.outcomeFor(ctx, reconciled, state, prior)
 				}
@@ -532,6 +553,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 					dispatchError("reading the finished attempt", ierr)
 			}
 			b.observe(final)
+			updateReceiptClarification(state, final)
 			// A terminal EVENT and a terminal RECEIPT are two facts, and the
 			// event can arrive first: the runner publishes to subscribers while
 			// it is still settling the attempt. Believing the event over the
@@ -568,6 +590,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 					dispatchError("checking on the harness turn", ierr)
 			}
 			b.observe(current)
+			updateReceiptClarification(state, current)
 			if current.Phase.IsTerminal() || current.Phase == runner.PhaseNeedsInput {
 				if current.Cursor > state.cursor {
 					if caughtUp {
@@ -592,6 +615,21 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 			}
 		}
 	}
+}
+
+// updateReceiptClarification applies the latest receipt's clarification
+// authority. When a later receipt no longer carries one, release that
+// authority so retained needs_input events can supply the current fallback.
+func updateReceiptClarification(state *turnState, receipt runner.Receipt) {
+	if receipt.Clarification != nil {
+		state.clarification = receipt.Clarification
+		state.clarificationFromReceipt = true
+		return
+	}
+	if state.clarificationFromReceipt {
+		state.clarification = nil
+	}
+	state.clarificationFromReceipt = false
 }
 
 // drain consumes one stream. quiet reports the ordinary end-of-stream the runner
@@ -776,6 +814,10 @@ func (b *Backend) outcomeFor(ctx context.Context, receipt runner.Receipt, s *tur
 		// and is answered with words. Reporting either as the other gives a
 		// person a control that cannot mean anything.
 		if permission := receipt.Permission; permission != nil {
+			// A permission is a verdict on a tool call, never a product
+			// clarification. Do not persist its blocker as a question fallback.
+			s.clarification = nil
+			s.clarificationFromReceipt = false
 			raw, err := json.Marshal(b.state(s, "", permission.ID, prior))
 			if err != nil {
 				return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
@@ -1021,6 +1063,19 @@ func permissionID(receipt runner.Receipt, state State) string {
 		return receipt.Permission.ID
 	}
 	return state.PermissionID
+}
+
+// answerTargetsDifferentPark reports a visible request that differs from the
+// park whose state accompanied the user's answer. Never send that answer to a
+// newer clarification or tool call; Continue will rejoin and surface it.
+func answerTargetsDifferentPark(state State, receipt runner.Receipt) bool {
+	if receipt.Permission != nil {
+		return state.PermissionID != receipt.Permission.ID || state.ClarificationID != ""
+	}
+	if receipt.Clarification != nil {
+		return state.PermissionID != "" || state.ClarificationID != receipt.Clarification.ID
+	}
+	return false
 }
 
 // ---- error classification ----------------------------------------------------

@@ -12,14 +12,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/railgrid/railgrid/pkg/runner"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -233,3 +238,79 @@ func TestHarnessRecoveryBillsUsageSinceLastParkNotSinceCheckpoint(t *testing.T) 
 		t.Fatalf("recovery before first park omitted usage: %+v", delta)
 	}
 }
+
+func TestSessionWriteFailureStopsParkedHarness(t *testing.T) {
+	for _, failWrite := range []bool{false, true} {
+		t.Run(fmt.Sprint(failWrite), func(t *testing.T) {
+			ctx := context.Background()
+			dispatcher := &parkedHarnessDispatcher{receipt: runner.Receipt{AttemptID: "attempt", AttemptEpoch: 1, SessionID: "thread", Phase: runner.PhaseNeedsInput, Permission: &runner.PermissionRequest{ID: "permission", Tool: "Bash", Input: `{"command":"true"}`}}}
+			b := backendharness.New(backendharness.Config{Dispatcher: dispatcher, TaskID: "task", AttemptID: "attempt", Epoch: 1, WorkspaceID: "workspace", Credential: llm.HarnessIdentity{Kind: "codex-auth-json", Value: `{}`}})
+			run := &backend.Run{ID: "run"}
+			out, err := b.Turn(ctx, run, backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}}}, parkedHarnessSink{})
+			if err != nil || out.Parked == nil {
+				t.Fatalf("park harness: %+v, %v", out, err)
+			}
+			var st store.Store = store.NewMemoryStore()
+			failure := errors.New("session storage unavailable")
+			if failWrite {
+				st = failingHarnessSessionStore{Store: st, err: failure}
+			}
+			s := &Server{store: st}
+			h := &harnessTurn{backend: b, Session: store.HarnessSession{SessionID: "chat", Turns: 1, BackendKey: "edge"}}
+			// Cleanup must work even if the HTTP request has already been cancelled.
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			err = s.persistHarnessTurn(cancelled, store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}, h, run, out, time.Now())
+			if failWrite {
+				if !errors.Is(err, failure) {
+					t.Fatalf("persistence error = %v", err)
+				}
+				if dispatcher.cancels != 1 || dispatcher.receipt.Phase != runner.PhaseCancelled {
+					t.Fatalf("failed run left remote approval active: %+v", dispatcher)
+				}
+			} else if err != nil || dispatcher.cancels != 0 {
+				t.Fatalf("successful park unexpectedly stopped: cancels=%d, err=%v", dispatcher.cancels, err)
+			}
+		})
+	}
+}
+
+type parkedHarnessDispatcher struct {
+	backendharness.Dispatcher
+	receipt runner.Receipt
+	cancels int
+}
+
+func (d *parkedHarnessDispatcher) Start(context.Context, runner.StartRequest) (runner.Receipt, error) {
+	return d.receipt, nil
+}
+func (d *parkedHarnessDispatcher) Inspect(context.Context, string) (runner.Receipt, error) {
+	return d.receipt, nil
+}
+func (d *parkedHarnessDispatcher) Events(context.Context, string, uint64) (backendharness.Stream, error) {
+	return emptyHarnessStream{}, nil
+}
+func (d *parkedHarnessDispatcher) Cancel(ctx context.Context, req runner.CancelRequest) (runner.Receipt, error) {
+	if err := ctx.Err(); err != nil {
+		return runner.Receipt{}, err
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		return runner.Receipt{}, errors.New("cleanup has no deadline")
+	}
+	if req.AttemptID != d.receipt.AttemptID || req.AttemptEpoch != d.receipt.AttemptEpoch {
+		return runner.Receipt{}, errors.New("cleanup targets wrong attempt")
+	}
+	d.cancels++
+	d.receipt.Phase = runner.PhaseCancelled
+	return d.receipt, nil
+}
+
+type emptyHarnessStream struct{}
+
+func (emptyHarnessStream) Next(context.Context) (runner.Event, error) { return runner.Event{}, io.EOF }
+func (emptyHarnessStream) Close() error                               { return nil }
+
+type parkedHarnessSink struct{ backend.EventSink }
+
+func (parkedHarnessSink) Aborted(context.Context) error { return nil }
+func (parkedHarnessSink) Checkpoint(json.RawMessage)    {}

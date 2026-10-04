@@ -963,7 +963,7 @@ func (a *Agent) shouldRegisterEdge() bool {
 }
 
 func (a *Agent) shouldSetupSSHCredentials() bool {
-	return a.agentType == AgentTypeServer && a.opts.Token == ""
+	return a.agentType == AgentTypeServer && (a.opts.Token == "" || a.hasIssuedCredential())
 }
 
 // runServerMode is the host mode: no downstream Kubernetes API. LinuxServer
@@ -997,8 +997,10 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// service-only by default and must not depend on sshd or upload credentials.
 	// SSH credentials are independent of the agent identity, so an already-
 	// enrolled agent can use its issued credential to submit operator rotations.
-	// In join-token mode the token is not a valid kcp credential, so skip
-	// credential setup — the hub manages SSH credentials server-side.
+	// During bootstrap-only join-token enrollment the token is not a valid kcp
+	// credential, so skip setup and let the hub manage SSH credentials. If this
+	// restart already has an issued credential, it takes precedence even when
+	// the bootstrap token is still present in the service arguments.
 	if a.shouldSetupSSHCredentials() {
 		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
 			return fmt.Errorf("setting up SSH credentials: %w", err)

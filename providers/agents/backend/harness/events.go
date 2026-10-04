@@ -56,7 +56,8 @@ type turnState struct {
 	cursor     uint64
 	recovering bool
 	// clarification is what the harness is asking, when it asked.
-	clarification *runner.Clarification
+	clarification            *runner.Clarification
+	clarificationFromReceipt bool
 }
 
 type toolInFlight struct {
@@ -269,11 +270,19 @@ func codexSessionStarted(data json.RawMessage) bool {
 }
 
 func (s *turnState) observeClarification(event runner.Event) {
+	if s.clarificationFromReceipt {
+		// Inspect's current receipt outranks retained needs_input events, which
+		// may include earlier questions when recovery starts before their cursor.
+		return
+	}
+	// A needs_input event replaces an earlier event-derived fallback. Recovery
+	// can replay several parks after an old checkpoint; the last one is current.
+	s.clarification = nil
 	if c, ok := clarificationOf(event.Data); ok {
 		s.clarification = c
 		return
 	}
-	if msg := strings.TrimSpace(event.Message); msg != "" && s.clarification == nil {
+	if msg := strings.TrimSpace(event.Message); msg != "" {
 		s.clarification = &runner.Clarification{Text: msg}
 	}
 }

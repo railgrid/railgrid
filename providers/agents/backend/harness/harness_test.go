@@ -392,6 +392,78 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	}
 }
 
+func TestAnsweredClarificationDoesNotReplaceANewQuestion(t *testing.T) {
+	first := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "the first question"}},
+		events: []runner.Event{event(1, runner.EventNeedsInput, "the first question", "")},
+	}
+	parked, err := New(testConfig(first, 1, "")).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}}}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("initial turn: %v", err)
+	}
+	firstState := parkedState(t, parked)
+	if firstState.Snapshot == nil || firstState.Snapshot.Clarification == nil || firstState.Snapshot.Clarification.ID != "clar-1" {
+		t.Fatalf("saved clarification = %+v, want the first question in the snapshot", firstState.Snapshot)
+	}
+
+	continued := &fakeRunner{
+		// Some runner versions may only retain the blocker on the receipt. The
+		// state ID remains the fallback needed to answer the first question.
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1", Blocker: "the first question"},
+		phases:  []runner.Phase{runner.PhaseNeedsInput, runner.PhaseNeedsInput},
+		events:  []runner.Event{event(2, runner.EventNeedsInput, "the new question", "")},
+	}
+	continuedSink := &recordingSink{}
+	answer := backend.Answer{State: parked.Parked.State, Decided: true, Note: "the answer"}
+	second, err := New(testConfig(continued, 1, "sess-1")).Continue(context.Background(), testRun(), answer, continuedSink)
+	if err != nil {
+		t.Fatalf("continue to second question: %v", err)
+	}
+	if len(continued.resumes) != 1 || continued.resumes[0].ClarificationID != "clar-1" {
+		t.Fatalf("resume = %+v, want the answered clarification ID", continued.resumes)
+	}
+	if second.Status != backend.StatusParked || second.Parked == nil || second.Parked.Question != "the new question" {
+		t.Fatalf("second park = %+v, want the new question", second.Parked)
+	}
+	secondState := parkedState(t, second)
+	if secondState.ClarificationID != "" {
+		t.Fatalf("second clarification ID = %q, want no stale ID for the new blocker", secondState.ClarificationID)
+	}
+}
+
+func TestRejoiningRunningAttemptDropsAnsweredClarification(t *testing.T) {
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		Snapshot: &StateSnapshot{
+			Version:       stateSnapshotVersion,
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "the answered question"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseRunning, SessionID: "sess-1", Blocker: "the new question"},
+		phases:  []runner.Phase{runner.PhaseRunning, runner.PhaseNeedsInput},
+		events:  []runner.Event{event(2, runner.EventNeedsInput, "the new question", "")},
+	}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("rejoin running attempt: %v", err)
+	}
+	if len(f.resumes) != 0 {
+		t.Fatalf("resumes = %d, want to rejoin the already-running attempt", len(f.resumes))
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Question != "the new question" {
+		t.Fatalf("rejoined park = %+v, want the new question", out.Parked)
+	}
+	if got := parkedState(t, out).ClarificationID; got != "" {
+		t.Fatalf("clarification ID = %q, want no stale ID", got)
+	}
+}
+
 func TestSpentAccumulatesAcrossMultipleParksAndSkipsReplayedEvents(t *testing.T) {
 	first := &fakeRunner{
 		receipt: runner.Receipt{
@@ -1081,6 +1153,210 @@ func TestRecoveryDrainsPastAnOldNeedsInputEventWhenReceiptIsTerminal(t *testing.
 			if out.Status != backend.StatusCompleted || out.Final != "the approved command finished" {
 				t.Fatalf("recovered outcome = status %s, final %q; want the answer after the old %s event", out.Status, out.Final, oldTerminal)
 			}
+		})
+	}
+}
+
+func TestRecoveryUsesNewestNeedsInputEventInTheTail(t *testing.T) {
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		Snapshot: &StateSnapshot{Version: stateSnapshotVersion, Text: "saved prefix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Blocker: "the second question",
+		},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "saved prefix", ""),
+			event(2, runner.EventNeedsInput, "the first question", ""),
+			event(3, runner.EventAccepted, "resume accepted", ""),
+			event(4, runner.EventProgress, "working", ""),
+			event(5, runner.EventNeedsInput, "the second question", ""),
+		},
+	}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: state, Decided: true, Note: "answer to the current blocker",
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("continue from the older checkpoint: %v", err)
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Question != "the second question" {
+		t.Fatalf("recovered park = %+v, want the second question", out.Parked)
+	}
+	if got := parkedState(t, out).ClarificationID; got != "" {
+		t.Fatalf("clarification ID = %q, want no stale ID", got)
+	}
+}
+
+func TestUndecidedRecoveryOfClarificationParkDoesNotAnswerIt(t *testing.T) {
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 3,
+		ClarificationID: "clar-2",
+		Snapshot: &StateSnapshot{
+			Version: stateSnapshotVersion,
+			Text:    "saved prefix\n",
+			Clarification: &runner.Clarification{
+				ID: "clar-2", Text: "Which version should I release?",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Blocker:       "the harness is waiting for an answer",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "Which version should I release?"},
+		},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "saved prefix", ""),
+			event(2, runner.EventProgress, "the question was filed", ""),
+			event(3, runner.EventNeedsInput, "the harness is waiting for an answer", ""),
+		},
+	}
+	sink := &recordingSink{}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: state,
+	}, sink)
+	if err != nil {
+		t.Fatalf("recover clarification park: %v", err)
+	}
+	if len(f.resumes) != 0 {
+		t.Fatalf("resumes = %+v, want the unanswered clarification left parked", f.resumes)
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Question != "Which version should I release?" {
+		t.Fatalf("recovered outcome = %+v, want the current question parked again", out)
+	}
+	recovered := parkedState(t, out)
+	if recovered.ClarificationID != "clar-2" || recovered.Cursor != 3 {
+		t.Fatalf("recovered state = %+v, want the same clarification at cursor 3", recovered)
+	}
+	if len(sink.deltas) != 0 {
+		t.Fatalf("recovery deltas = %q, want no replayed progress from the saved cursor", sink.deltas)
+	}
+}
+
+func TestContinueDoesNotApplyAnOldAnswerToANewerPark(t *testing.T) {
+	tests := []struct {
+		name  string
+		state State
+		rcpt  runner.Receipt
+		check func(*testing.T, backend.Outcome, State)
+	}{
+		{
+			name: "permission",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				PermissionID: "permission-old", Snapshot: &StateSnapshot{Version: stateSnapshotVersion},
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:    "the runner is asking permission for a new call",
+				Permission: &runner.PermissionRequest{ID: "permission-new", Tool: "Bash", Input: `{"command":"new call"}`},
+			},
+			check: func(t *testing.T, out backend.Outcome, state State) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Tool != "Bash" {
+					t.Fatalf("parked outcome = %+v, want the new Bash permission", out.Parked)
+				}
+				if got := parkedState(t, out).PermissionID; got != "permission-new" {
+					t.Fatalf("permission ID = %q, want permission-new", got)
+				}
+			},
+		},
+		{
+			name: "clarification",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				ClarificationID: "clarification-old", Snapshot: &StateSnapshot{Version: stateSnapshotVersion},
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:       "the new question",
+				Clarification: &runner.Clarification{ID: "clarification-new", Text: "the new question"},
+			},
+			check: func(t *testing.T, out backend.Outcome, state State) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Question != "the new question" {
+					t.Fatalf("parked outcome = %+v, want the new question", out.Parked)
+				}
+				if got := parkedState(t, out).ClarificationID; got != "clarification-new" {
+					t.Fatalf("clarification ID = %q, want clarification-new", got)
+				}
+			},
+		},
+		{
+			name: "permission to clarification",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				PermissionID: "permission-old", Snapshot: &StateSnapshot{Version: stateSnapshotVersion},
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:       "a new question",
+				Clarification: &runner.Clarification{ID: "clarification-new", Text: "a new question"},
+			},
+			check: func(t *testing.T, out backend.Outcome, _ State) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Question != "a new question" {
+					t.Fatalf("parked outcome = %+v, want the new question", out.Parked)
+				}
+				if got := parkedState(t, out).ClarificationID; got != "clarification-new" {
+					t.Fatalf("clarification ID = %q, want clarification-new", got)
+				}
+			},
+		},
+		{
+			name: "clarification to permission",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				ClarificationID: "clarification-old", Snapshot: &StateSnapshot{Version: stateSnapshotVersion},
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:    "the runner is asking permission for a new call",
+				Permission: &runner.PermissionRequest{ID: "permission-new", Tool: "Bash", Input: `{"command":"new call"}`},
+			},
+			check: func(t *testing.T, out backend.Outcome, _ State) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Tool != "Bash" {
+					t.Fatalf("parked outcome = %+v, want the new Bash permission", out.Parked)
+				}
+				if got := parkedState(t, out).PermissionID; got != "permission-new" {
+					t.Fatalf("permission ID = %q, want permission-new", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeRunner{
+				receipt: tc.rcpt,
+				events:  []runner.Event{event(2, runner.EventNeedsInput, tc.rcpt.Blocker, "")},
+			}
+			out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+				State: raw, Decided: true, Approved: true, Note: "approval for the old request",
+			}, &recordingSink{})
+			if err != nil {
+				t.Fatalf("Continue: %v", err)
+			}
+			if len(f.resumes) != 0 {
+				t.Fatalf("resumes = %+v, want the newer park left unanswered", f.resumes)
+			}
+			if out.Status != backend.StatusParked {
+				t.Fatalf("status = %s, want parked for the newer request", out.Status)
+			}
+			tc.check(t, out, tc.state)
 		})
 	}
 }

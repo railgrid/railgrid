@@ -31,7 +31,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/url"
 	"strconv"
@@ -184,6 +183,32 @@ func (s *Server) persistHarnessSession(ctx context.Context, scope store.Scope, s
 		return fmt.Errorf("persisting the harness session for the next turn: %w", err)
 	}
 	return nil
+}
+
+// persistHarnessTurn must not abandon a live permission gate when saving its
+// session fails. The lifecycle will mark the run failed without filing an inbox
+// item, so first stop the attempt that otherwise waits indefinitely for it.
+func (s *Server) persistHarnessTurn(ctx context.Context, scope store.Scope, h *harnessTurn, run *backend.Run, out backend.Outcome, at time.Time) error {
+	err := s.persistHarnessSession(ctx, scope, h.Session, h.backend.Observed(), at)
+	if err == nil || out.Parked == nil {
+		return err
+	}
+	if stopErr := stopHarnessTurn(ctx, h, run); stopErr != nil {
+		err = errors.Join(err, fmt.Errorf("stopping the harness after the session could not be saved: %w", stopErr))
+	}
+	return err
+}
+
+// stopHarnessTurn asks the remote attempt to stop with a bounded context that
+// survives request cancellation. It is used when a parked turn cannot be made
+// durable, and by the run lifecycle's cancellation path.
+func stopHarnessTurn(ctx context.Context, h *harnessTurn, run *backend.Run) error {
+	if h == nil || h.backend == nil {
+		return nil
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
+	defer cancel()
+	return h.backend.Cancel(stopCtx, run)
 }
 
 // unbilledHarnessUsage includes consumption recovered from an in-flight
@@ -418,7 +443,7 @@ func shortDigest(raw string) string {
 // something nobody can see is a run nobody can finish. The item is a QUESTION,
 // not an approval — what resolves it is an answer, and answering it is what
 // resumes the run (see resolveInboxItem).
-func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question string) string {
+func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question string) (string, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
 		question = "the harness is waiting for input"
@@ -435,14 +460,13 @@ func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question 
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
-		log.Printf("run %s: filing the harness's question: %v", run.RunID, err)
-		return ""
+		return "", fmt.Errorf("filing the harness's question: %w", err)
 	}
 	s.events.publish(wsScope, "inbox", map[string]any{
 		"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID, "kind": "question",
 	})
 	s.notifyInboxQuestion(ctx, run, question)
-	return id
+	return id, nil
 }
 
 // postHarnessApproval files the inbox item a harness PERMISSION prompt parks
@@ -452,7 +476,7 @@ func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question 
 // It is the sibling of postHarnessQuestion and exists for the same reason — the
 // backend cannot reach the store — but it files the other kind, because what
 // resolves it is a verdict on a named call rather than an answer in words.
-func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, args string) string {
+func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, args string) (string, error) {
 	tool = strings.TrimSpace(tool)
 	if tool == "" {
 		tool = "a tool"
@@ -470,15 +494,14 @@ func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, arg
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
-		log.Printf("run %s: filing the harness's permission request: %v", run.RunID, err)
-		return ""
+		return "", fmt.Errorf("filing the harness's permission request: %w", err)
 	}
 	s.events.publish(wsScope, "inbox", map[string]any{
 		"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID,
 		"kind": "approval", "tool": tool,
 	})
 	s.notifyInboxApproval(ctx, run, tool)
-	return id
+	return id, nil
 }
 
 // approvableArgs keeps the stored disclosure a JSON object.

@@ -74,6 +74,10 @@ func TestRestartWithSavedCredentialUsesItBeforeEdgeRegistration(t *testing.T) {
 	options := NewOptions()
 	options.EdgeName = edgeName
 	options.HubURL = hubURL
+	// Installed service arguments may retain the bootstrap token after the
+	// first successful enrollment. The saved scoped credential takes precedence
+	// on restart, so it must still be usable for operator credential rotation.
+	options.Token = "stale-bootstrap-token"
 	options.Type = AgentTypeServer
 	options.SSHUser = "rotation-user"
 	options.SSHPassword = "rotated-on-restart"

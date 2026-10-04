@@ -533,19 +533,40 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// backend is not, because whoever asked for the cancel may be the turn's own
 	// loop (see cancelCheck) and must not wait on a round trip to the thing it is
 	// stopping.
+	var stopOnce sync.Once
+	stopRemote := func() {
+		stopOnce.Do(func() {
+			go func() {
+				// Bounded, and detached from the context just cancelled: a backend
+				// that cannot be reached must not leave a goroutine waiting on it.
+				stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
+				defer stop()
+				if err := b.Cancel(stopCtx, brun); err != nil {
+					log.Printf("run %s: stopping the turn: %v", runID, err)
+				}
+			}()
+		})
+	}
+	// A run context can end because its caller cancelled it or because the
+	// agent's timeout expired. Those paths must stop work on the runner too.
+	// Stop the callback before the lifecycle's own deferred cancel so a
+	// successful park does not cancel its deliberately waiting permission.
+	stopOnContextDone := context.AfterFunc(ctx, stopRemote)
 	s.liveRuns.register(runID, func() {
 		cancel()
-		go func() {
-			// Bounded, and detached from the context just cancelled: a backend that
-			// cannot be reached must not leave a goroutine waiting on it.
-			stopCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
-			defer stop()
-			if err := b.Cancel(stopCtx, brun); err != nil {
-				log.Printf("run %s: stopping the turn: %v", runID, err)
-			}
-		}()
+		stopRemote()
 	})
 	defer s.liveRuns.unregister(runID)
+	defer func() {
+		// Unregister the callback first, then check the context: if cancellation
+		// raced the unregister, this catches it; if the callback already began,
+		// stopRemote's once guard deduplicates the call.
+		stopOnContextDone()
+		if ctx.Err() != nil {
+			stopRemote()
+		}
+		cancel()
+	}()
 
 	// Assemble the agent's tools for this trigger class (policy + approvals +
 	// audit + delegation); MCP sessions are released when the run ends.
@@ -652,9 +673,50 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// Save the receipt's session even on a park or cancellation so a later
 		// turn can resume the actual Codex thread instead of replaying history
 		// into a new one. A failed write must not be reported as success.
-		if sessionErr := s.persistHarnessSession(ctx, scope, harnessT.Session, harnessT.backend.Observed(), end); sessionErr != nil {
+		if sessionErr := s.persistHarnessTurn(ctx, scope, harnessT, brun, out, end); sessionErr != nil {
 			err = errors.Join(err, sessionErr)
 		}
+	}
+	// A backend can return useful usage together with an error (for example, a
+	// runner event stream can fail after reporting token usage). Bill that work
+	// and retain the run total on every terminal path, including cancellation.
+	if harnessT != nil && cont != nil {
+		// A continuation can fail before the backend restores its snapshot
+		// (for example, an Inspect failure), and then report no usage at all.
+		// The parked run's stored totals are still authoritative in that case.
+		out.Usage.Total.InputTokens = max(out.Usage.Total.InputTokens, cont.Billed.InputTokens)
+		out.Usage.Total.OutputTokens = max(out.Usage.Total.OutputTokens, cont.Billed.OutputTokens)
+		out.Usage.Total.CostMicros = max(out.Usage.Total.CostMicros, cont.Billed.CostMicros)
+		out.Usage.Billed = unbilledHarnessUsage(out.Usage.Total, cont.Billed)
+	}
+	usageCtx, cancelUsage := boundedPersistContext(ctx)
+	window, usageErr := s.store.AddUsage(usageCtx, scope, agent.Name,
+		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, 30*24*time.Hour)
+	cancelUsage()
+	if usageErr != nil {
+		log.Printf("run %s: recording usage: %v", runID, usageErr)
+	}
+
+	finishFailedTurn := func(cause error) (runResult, error) {
+		phase := store.RunPhaseFailed
+		if out.Status == backend.StatusCancelled {
+			phase = store.RunPhaseAborted
+		}
+		persistCtx, cancelPersist := boundedPersistContext(ctx)
+		defer cancelPersist()
+		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
+		s.finishRun(persistCtx, scope, runID, runOutcome{
+			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
+			CostMicros: out.Usage.Total.CostMicros, WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
+		}, end)
+		s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
+		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
+		res := runResult{RunID: runID, Content: tracker.partialText(), Phase: phase,
+			StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}
+		res.Usage.InputTokens = out.Usage.Total.InputTokens
+		res.Usage.OutputTokens = out.Usage.Total.OutputTokens
+		res.Usage.USDMicros = out.Usage.Total.CostMicros
+		return res, cause
 	}
 
 	// A model the upstream refuses on Chat Completions (a responses-only
@@ -662,36 +724,18 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// provider's own sentence is kept; what is added is which credential owns
 	// the model id and where to change it.
 	if err = llm.ExplainChatCompletionsRefusal(err, credentialNameForPurpose(agent, purpose)); err != nil {
-		// A turn the backend reports as cancelled — a user's cancel, the run's
-		// own timeout — is the person's decision, recorded as Aborted rather
-		// than as a fault.
-		phase := store.RunPhaseFailed
-		if out.Status == backend.StatusCancelled {
-			phase = store.RunPhaseAborted
-		}
-		persistCtx, cancelPersist := boundedPersistContext(ctx)
-		defer cancelPersist()
-		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), err.Error())
-		s.finishRun(persistCtx, scope, runID, runOutcome{Phase: phase, Message: err.Error(), WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT}, end)
-		s.recordAgentRun(persistCtx, run.CR, agent, end, nil)
-		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
-		return runResult{RunID: runID, Content: tracker.partialText(), Phase: phase, StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}, err
+		return finishFailedTurn(err)
 	}
-
-	// Charge the rolling window what this turn added. On a resume that is the
-	// delta: the pre-pause portion was billed when the run paused, while the
-	// totals below keep the run record truthful.
-	if harnessT != nil && cont != nil {
-		out.Usage.Billed = unbilledHarnessUsage(out.Usage.Total, cont.Billed)
-	}
-	window, _ := s.store.AddUsage(ctx, scope, agent.Name,
-		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, 30*24*time.Hour)
 
 	// Parked on an approval gate, or on a question the turn itself asked: persist
 	// the checkpoint and stop here — resolving the inbox item continues the run in
 	// place.
 	if out.Parked != nil {
-		return s.parkRun(ctx, run, sessionID, startedAt, end, tracker, harnessT, out), nil
+		res, parkErr := s.parkRun(ctx, run, sessionID, startedAt, end, tracker, harnessT, out)
+		if parkErr != nil {
+			return finishFailedTurn(parkErr)
+		}
+		return res, nil
 	}
 
 	finalContent := tracker.finalText(out.Final)
@@ -705,6 +749,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhaseFailed), "", writeErr.Error())
 		s.finishRun(persistCtx, scope, runID, runOutcome{
 			Phase: store.RunPhaseFailed, Message: writeErr.Error(),
+			Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
 			WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
 		}, end)
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
@@ -735,9 +780,23 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 // parkRun records a turn that stopped for a human: the checkpoint it resumes
 // from, the waiting phase on the run and in the transcript, and the pending
 // details a caller shows the user.
-func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, startedAt, end time.Time, tracker *turnProgressTracker, harnessT *harnessTurn, out backend.Outcome) runResult {
+func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, startedAt, end time.Time, tracker *turnProgressTracker, harnessT *harnessTurn, out backend.Outcome) (runResult, error) {
 	scope, runID := run.Scope, run.RunID
+	if out.Parked == nil {
+		return runResult{}, errors.New("cannot park a run without backend resume state")
+	}
 	requestID := out.Parked.RequestID
+	ck := runCheckpoint{
+		Tool: out.Parked.Tool, Args: out.Parked.Args,
+		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
+		WorkedDurationMS: tracker.durationMS(),
+	}
+	// The backend's resume state is opaque across the seam; the api layer only
+	// stores it, in the field this run's backend resumes from. Do this before
+	// making a new inbox item visible so malformed state cannot strand a gate.
+	if err := ck.setBackendState(run.Agent.Spec.BackendType(), out.Parked.State); err != nil {
+		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, err)
+	}
 	if requestID == "" {
 		// A park with no request behind it came from the turn itself rather
 		// than from a gate the provider wrapped, so there is no inbox item yet
@@ -750,35 +809,42 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		// files an approval; one that does not is a question and files a
 		// question. A harness produces both — its own request-user-input, and
 		// now its permission prompts.
+		var err error
 		if strings.TrimSpace(out.Parked.Tool) != "" {
-			requestID = s.postHarnessApproval(ctx, run, out.Parked.Tool, out.Parked.Args)
+			requestID, err = s.postHarnessApproval(ctx, run, out.Parked.Tool, out.Parked.Args)
 		} else {
-			requestID = s.postHarnessQuestion(ctx, run, out.Parked.Question)
+			requestID, err = s.postHarnessQuestion(ctx, run, out.Parked.Question)
+		}
+		if err != nil {
+			return runResult{}, s.failPark(ctx, run, sessionID, harnessT, "", err)
 		}
 	}
-	ck := runCheckpoint{
-		Tool: out.Parked.Tool, Args: out.Parked.Args, InboxID: requestID,
-		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
-		WorkedDurationMS: tracker.durationMS(),
+	ck.InboxID = requestID
+	ckJSON, err := json.Marshal(ck)
+	if err != nil {
+		cause := fmt.Errorf("encoding the run's resume checkpoint: %w", err)
+		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, cause)
 	}
-	// The backend's resume state is opaque across the seam; the api layer only
-	// stores it, in the field this run's backend resumes from.
-	if err := ck.setBackendState(run.Agent.Spec.BackendType(), out.Parked.State); err != nil {
-		log.Printf("run %s: storing the turn's resume state: %v", runID, err)
+	persistCtx, cancelPersist := boundedPersistContext(ctx)
+	defer cancelPersist()
+	stored, err := s.store.GetRun(persistCtx, scope, runID)
+	if err != nil {
+		cause := fmt.Errorf("reading run %s before saving its approval checkpoint: %w", runID, err)
+		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, cause)
 	}
-	ckJSON, _ := json.Marshal(ck)
-	if stored, gerr := s.store.GetRun(ctx, scope, runID); gerr == nil {
-		stored.Phase = store.RunPhasePendingApproval
-		stored.Checkpoint = ckJSON
-		applyHarnessObservation(&stored, harnessT)
-		stored.InputTokens = out.Usage.Total.InputTokens
-		stored.OutputTokens = out.Usage.Total.OutputTokens
-		stored.USDMicros = out.Usage.Total.CostMicros
-		stored.WorkedDurationMS = tracker.workedDurationMS()
-		stored.UpdatedAt = end
-		_ = s.saveRun(ctx, scope, stored)
+	stored.Phase = store.RunPhasePendingApproval
+	stored.Checkpoint = ckJSON
+	applyHarnessObservation(&stored, harnessT)
+	stored.InputTokens = out.Usage.Total.InputTokens
+	stored.OutputTokens = out.Usage.Total.OutputTokens
+	stored.USDMicros = out.Usage.Total.CostMicros
+	stored.WorkedDurationMS = tracker.workedDurationMS()
+	stored.UpdatedAt = end
+	if err := s.saveRun(persistCtx, scope, stored); err != nil {
+		cause := fmt.Errorf("saving run %s's approval checkpoint: %w", runID, err)
+		return runResult{}, s.failPark(ctx, run, sessionID, harnessT, requestID, cause)
 	}
-	s.appendTurnTerminal(ctx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
+	s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePendingApproval), "", "")
 	s.publishRunEvent(scope, runEvent{ID: runID, Agent: run.Agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
 
 	res := runResult{RunID: runID, Content: out.Text, Phase: store.RunPhasePendingApproval,
@@ -787,7 +853,39 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 	res.Usage.InputTokens = out.Usage.Total.InputTokens
 	res.Usage.OutputTokens = out.Usage.Total.OutputTokens
 	res.Usage.USDMicros = out.Usage.Total.CostMicros
-	return res
+	return res, nil
+}
+
+// failPark closes the remote attempt and any inbox item created for a
+// checkpoint that could not be made durable. Returning this error lets the
+// lifecycle mark the run terminal instead of claiming it is waiting for an
+// approval nobody can safely resume.
+func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, harnessT *harnessTurn, requestID string, cause error) error {
+	cleanupCtx, cancel := boundedPersistContext(ctx)
+	defer cancel()
+	if requestID != "" {
+		wsScope := store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}
+		item, err := s.store.GetInboxItem(cleanupCtx, wsScope, requestID)
+		if err != nil {
+			cause = errors.Join(cause, fmt.Errorf("checking inbox item %s after park failure: %w", requestID, err))
+		} else if item.RunID == run.RunID && item.AgentName == run.Agent.Name && item.State == store.InboxStatePending {
+			state, response := store.InboxStateDenied, "The run could not save its checkpoint and was stopped."
+			if item.Kind == store.InboxKindQuestion {
+				state = store.InboxStateAnswered
+			}
+			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC()); err != nil {
+				cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+			} else {
+				s.events.publish(wsScope, "inbox", map[string]any{
+					"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
+				})
+			}
+		}
+	}
+	if err := stopHarnessTurn(cleanupCtx, harnessT, &backend.Run{ID: run.RunID, SessionID: sessionID, Agent: run.Agent.Name, Trigger: run.Trigger}); err != nil {
+		cause = errors.Join(cause, fmt.Errorf("stopping the harness after the run could not be parked: %w", err))
+	}
+	return cause
 }
 
 // executeTask runs a fresh turn: the lifecycle with nothing to continue from.
