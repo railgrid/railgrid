@@ -419,7 +419,7 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./hack/apigen.sh --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
-	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
+	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages pullrequests; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.railgrid.ai.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.railgrid.ai.yaml; \
 	done

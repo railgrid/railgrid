@@ -37,8 +37,11 @@ const (
 	gitResultJSONName   = "git-result.json"
 	gitResultRef        = "refs/heads/runner-result"
 	gitResultMessage    = "Implementation snapshot"
-	gitResultName       = "Railgrid Runner"
-	gitResultEmail      = "runner@localhost"
+	// maxCommitMessageBytes bounds the coordinator's commit subject: a line,
+	// not a document, and one Code verifies byte for byte.
+	maxCommitMessageBytes = 200
+	gitResultName         = "Railgrid Runner"
+	gitResultEmail        = "runner@localhost"
 )
 
 // gitResultDate stamps the snapshot with the moment it was taken. The identity
@@ -268,7 +271,7 @@ func exportGitResult(ctx context.Context, cfg Config, request StartRequest, work
 	var bundlePath string
 	if !document.NoChanges {
 		document.Tree = tree
-		commit, err := createGitResultCommit(ctx, workdir, tree, baseCommit)
+		commit, err := createGitResultCommit(ctx, workdir, tree, baseCommit, commitMessageFor(request))
 		if err != nil {
 			return gitResultExport{}, err
 		}
@@ -433,7 +436,36 @@ func inspectGitResultPath(workdir, path string) (string, os.FileInfo, error) {
 	return "", nil, errors.New("git path is empty")
 }
 
-func createGitResultCommit(ctx context.Context, workdir, tree, baseCommit string) (string, error) {
+// commitMessageFor is the subject the snapshot commit carries: the
+// coordinator's, when it named one, else the canonical message.
+func commitMessageFor(request StartRequest) string {
+	if message := strings.TrimSpace(request.CommitMessage); message != "" {
+		return message
+	}
+	return gitResultMessage
+}
+
+// validateCommitMessage admits one line of printable text within the bound.
+// A multi-line body, a control character or an over-long subject is refused
+// at the request, before anything runs, because Code will refuse the commit
+// it would produce.
+func validateCommitMessage(message string) error {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return nil
+	}
+	if len(trimmed) > maxCommitMessageBytes || trimmed != message && strings.ContainsAny(message, "\n\r") {
+		return errors.New("commitMessage must be one line of at most 200 bytes")
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("commitMessage must not contain control characters")
+		}
+	}
+	return nil
+}
+
+func createGitResultCommit(ctx context.Context, workdir, tree, baseCommit, message string) (string, error) {
 	date := gitResultDate(time.Now())
 	env := map[string]string{
 		"GIT_AUTHOR_NAME":     gitResultName,
@@ -443,7 +475,7 @@ func createGitResultCommit(ctx context.Context, workdir, tree, baseCommit string
 		"GIT_COMMITTER_EMAIL": gitResultEmail,
 		"GIT_COMMITTER_DATE":  date,
 	}
-	commit, err := gitResultCommand(ctx, workdir, env, strings.NewReader(gitResultMessage+"\n"), "commit-tree", tree, "-p", baseCommit)
+	commit, err := gitResultCommand(ctx, workdir, env, strings.NewReader(message+"\n"), "commit-tree", tree, "-p", baseCommit)
 	if err != nil {
 		return "", fmt.Errorf("create Git result commit: %w", err)
 	}

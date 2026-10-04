@@ -292,9 +292,45 @@ type ServiceStatus struct {
 	// +optional
 	Harness *ServiceHarnessStatus `json:"harness,omitempty"`
 
+	// Runner is the machine half of the same capabilities document: what the
+	// host offers a job beyond the harness. Nil for every other type.
+	// +optional
+	Runner *ServiceRunnerStatus `json:"runner,omitempty"`
+
 	// Conditions: Detected, CredentialsValid, Ready.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ServiceRunnerStatus is the MACHINE half of a runner's capabilities response:
+// what the host offers beyond the harness itself.
+//
+// It exists for the same reason Harness does: so a hub-side consumer can match a
+// job to a runner from the published object alone. Factory refuses to assign a
+// job that requires git to a runner that does not advertise it, and it reads
+// that here rather than probing the runner — it holds no runner bearer and the
+// edge agent that supervises the runner already probes it for this object.
+type ServiceRunnerStatus struct {
+	// Toolchains are the executables the runner detected on its host, by the
+	// names a job requires them under: git, go, node, …
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Toolchains []string `json:"toolchains,omitempty"`
+
+	// Environment are the environment capabilities the runner advertises.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Environment []string `json:"environment,omitempty"`
+
+	// Verification are the verification capabilities the runner advertises.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	Verification []string `json:"verification,omitempty"`
+
+	// Capacity is how many attempts the runner executes at once. A supervised
+	// runner reports 1: one launch is one turn.
+	// +optional
+	Capacity int `json:"capacity,omitempty"`
 }
 
 // ServiceHarnessStatus is the harness half of a runner's capabilities response.

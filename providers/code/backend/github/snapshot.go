@@ -39,7 +39,7 @@ func (b *Backend) PublishSnapshot(ctx context.Context, conn *api.Connection, cre
 	})
 }
 func (b *Backend) withSnapshot(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, input backend.Snapshot, apply func(context.Context, *snapshotGit, string) error) error {
-	if !objectID.MatchString(input.BaseCommit) || !objectID.MatchString(input.Commit) || !objectID.MatchString(input.Tree) || input.BaseCommit == input.Commit || len(input.Bundle) == 0 || len(input.Bundle) > MaxSnapshotBundleBytes {
+	if !objectID.MatchString(input.BaseCommit) || !objectID.MatchString(input.Commit) || !objectID.MatchString(input.Tree) || input.BaseCommit == input.Commit || len(input.Bundle) == 0 || len(input.Bundle) > MaxSnapshotBundleBytes || !validSnapshotMessage(input.Message) {
 		return errors.New("invalid bounded Git snapshot")
 	}
 	if _, err := b.collaborationClient(ctx, conn, cred, repo); err != nil {
@@ -97,7 +97,7 @@ func (g *snapshotGit) verify(ctx context.Context, input backend.Snapshot) error 
 	if err != nil {
 		return errors.New("snapshot commit unavailable")
 	}
-	if err := verifySnapshotCommit(raw, input.Tree, input.BaseCommit, time.Now()); err != nil {
+	if err := verifySnapshotCommit(raw, input.Tree, input.BaseCommit, input.Message, time.Now()); err != nil {
 		return err
 	}
 	tree, err := g.run(ctx, "rev-parse", input.Commit+"^{tree}")
@@ -110,13 +110,16 @@ func (g *snapshotGit) verify(ctx context.Context, input backend.Snapshot) error 
 // The public Railgrid Runner snapshot format. A snapshot commit is verified
 // header by header: exactly one parent (the approved base), the tree the
 // runner reported, a fixed public identity, no other headers (nothing signed,
-// merged or re-encoded can ride along) and a fixed message. The one value the
-// runner chooses is the time it took the snapshot, which must be the same for
-// author and committer and fall in a window that rules out a fabricated past
-// or future without failing an honest clock.
+// merged or re-encoded can ride along) and a message that is exactly the one
+// the coordinator named — the canonical one when it named none. The one
+// value the runner chooses is the time it took the snapshot, which must be
+// the same for author and committer and fall in a window that rules out a
+// fabricated past or future without failing an honest clock.
 const (
 	snapshotIdentity = "Railgrid Runner <runner@localhost>"
 	snapshotMessage  = "Implementation snapshot\n"
+	// maxSnapshotMessageBytes bounds a coordinator's subject line.
+	maxSnapshotMessageBytes = 200
 	// snapshotClockSkew is how far ahead of this host a worker's clock may be.
 	snapshotClockSkew = time.Hour
 )
@@ -124,10 +127,31 @@ const (
 // snapshotNotBefore is the earliest a snapshot can honestly have been taken.
 var snapshotNotBefore = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-func verifySnapshotCommit(raw, tree, base string, now time.Time) error {
+// validSnapshotMessage admits an empty subject (canonical) or one printable
+// line within the bound.
+func validSnapshotMessage(message string) bool {
+	if message == "" {
+		return true
+	}
+	if len(message) > maxSnapshotMessageBytes || strings.TrimSpace(message) != message {
+		return false
+	}
+	for _, r := range message {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func verifySnapshotCommit(raw, tree, base, subject string, now time.Time) error {
 	invalid := errors.New("snapshot must contain one parent and canonical public metadata")
+	expected := snapshotMessage
+	if subject != "" {
+		expected = subject + "\n"
+	}
 	headers, message, ok := strings.Cut(raw, "\n\n")
-	if !ok || message != snapshotMessage {
+	if !ok || message != expected {
 		return invalid
 	}
 	lines := strings.Split(headers, "\n")

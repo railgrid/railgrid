@@ -49,6 +49,7 @@ import (
 	"github.com/railgrid/provider-code/controller/connection"
 	"github.com/railgrid/provider-code/controller/deploykey"
 	"github.com/railgrid/provider-code/controller/packages"
+	"github.com/railgrid/provider-code/controller/pullrequest"
 	"github.com/railgrid/provider-code/controller/repository"
 	"github.com/railgrid/provider-code/controller/repositorybuildstatus"
 	"github.com/railgrid/provider-code/controller/repositorycheckout"
@@ -74,7 +75,7 @@ const controllerLeaseName = "code-controllers"
 // (built in runServe so the HTTP packages handler shares it). A nil config
 // means "skip the manager, run REST/MCP-only". ready, when set, reports the
 // multicluster provider's watch state for the duration of each term.
-func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store, ready *vwhealth.Readiness) error {
+func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store, snapshotDir string, ready *vwhealth.Readiness) error {
 	if config == nil {
 		return errControllerDisabled
 	}
@@ -103,7 +104,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 			Namespace: leaderelection.DefaultNamespace,
 			Name:      controllerLeaseName,
 		}, func(termCtx context.Context) {
-			if err := runControllerManager(termCtx, config, registry, bundles, ready); err != nil {
+			if err := runControllerManager(termCtx, config, registry, bundles, snapshotDir, ready); err != nil {
 				log.Printf("controller manager exited: %v", err)
 			}
 		}); err != nil {
@@ -122,7 +123,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 // hub's BackendHealthy) and the heartbeat say whether tenant workspaces are
 // actually being watched. Without that, a watcher that failed to start left
 // every signal green while no Repository ever got a status.
-func runControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store, ready *vwhealth.Readiness) error {
+func runControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store, snapshotDir string, ready *vwhealth.Readiness) error {
 	scheme := codescheme.NewScheme()
 
 	provider, err := apiexportprovider.New(config, endpointSliceName, apiexportprovider.Options{Scheme: scheme})
@@ -168,6 +169,9 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 	}
 	if err := (&repositorybuildstatus.Reconciler{Backends: registry}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("repositorybuildstatus controller: %w", err)
+	}
+	if err := (&pullrequest.Reconciler{Backends: registry, SnapshotDir: snapshotDir}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("pullrequest controller: %w", err)
 	}
 
 	log.Printf("code controller manager starting (backends=%v, endpointSlice=%s)", registry.Names(), endpointSliceName)
