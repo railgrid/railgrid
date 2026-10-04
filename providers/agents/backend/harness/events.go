@@ -38,9 +38,12 @@ type turnState struct {
 	tools map[string]toolInFlight
 	// Codex reports a whole-turn duration and completed command items report
 	// their own durations. The assistant segment gets only the remainder so
-	// adding its time and the tool times does not count the same work twice.
+	// adding its time and the current Codex turn's tool times does not count the
+	// same work twice. A clarification resume starts a new Codex turn; a
+	// permission verdict resumes the existing one.
 	toolDuration time.Duration
 	turnDuration time.Duration
+	codexTurnID  string
 	turnStarted  bool
 	// Codex tokenUsage.total is cumulative for its native thread. Track the
 	// latest total snapshot so an identical update does not add tokenUsage.last
@@ -114,6 +117,16 @@ func (s *turnState) observe(event runner.Event) (terminal bool) {
 }
 
 func (s *turnState) progress(event runner.Event) {
+	if turnID, ok := codexTurnStarted(event.Data); ok && turnID != s.codexTurnID {
+		// A clarification resume launches a new native Codex turn in the same
+		// attempt. Previous tool results have already been reported to the sink,
+		// so only tools from this turn belong in the duration subtraction. A
+		// permission verdict keeps the child and its current turn alive and does
+		// not produce another turn/started event.
+		s.codexTurnID = turnID
+		s.toolDuration = 0
+		s.turnDuration = 0
+	}
 	s.observeCodexTurn(event.Data)
 	// Some harnesses emit usage as a separate progress update rather than on
 	// the final result record (Codex reports tokenUsage this way).
@@ -371,6 +384,31 @@ func (s *turnState) observeCodexTurn(data json.RawMessage) {
 			s.turnDuration = duration
 		}
 	}
+}
+
+// codexTurnStarted recognizes the event payload the Codex adapter emits for
+// turn/started. The runner flattens its type to progress, so the thread, turn id
+// and in-progress status are the remaining marker. Repeated in-progress records
+// for the same turn do not reset duration accounting.
+func codexTurnStarted(data json.RawMessage) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	var rec struct {
+		ThreadID string `json:"threadId"`
+		Turn     struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(data, &rec) != nil || strings.TrimSpace(rec.ThreadID) == "" {
+		return "", false
+	}
+	if !strings.EqualFold(strings.TrimSpace(rec.Turn.Status), "inProgress") {
+		return "", false
+	}
+	turnID := strings.TrimSpace(rec.Turn.ID)
+	return turnID, turnID != ""
 }
 
 // harnessItem is one tool call as a harness reported it.

@@ -91,11 +91,21 @@ func TestCodexPermissionRequestUsesExactCallCoordinates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codexPermissionRequest: %v", err)
 	}
-	if request.ID != stablePermissionID("attempt-1", msg.Method, "thread-1", "turn-2", "item-3") || request.Tool != "Edit" {
+	if request.ID != stablePermissionID("attempt-1", msg.Method, "thread-1", "turn-2", "item-3", "") || request.Tool != "Edit" {
 		t.Fatalf("permission request = %+v", request)
 	}
 	if !json.Valid([]byte(request.Input)) || !strings.Contains(request.Input, `"diff":"patch"`) {
 		t.Fatalf("permission input = %q", request.Input)
+	}
+	legacyReplay, err := codexPermissionRequest("attempt-1", "thread-1", "turn-2", msg)
+	if err != nil {
+		t.Fatalf("replayed approval without approvalId: %v", err)
+	}
+	if request.ID != "permission-29afa1d181daf667b1f2629555282168470fe97d697f5a70292ea377358359d1" {
+		t.Fatalf("approval without approvalId changed the legacy ID: %q", request.ID)
+	}
+	if request.ID != legacyReplay.ID {
+		t.Fatalf("approval without approvalId changed across replay: %q != %q", request.ID, legacyReplay.ID)
 	}
 	if _, err := codexPermissionRequest("attempt-1", "thread-other", "turn-2", msg); err == nil {
 		t.Fatal("accepted a request from a different session")
@@ -105,6 +115,41 @@ func TestCodexPermissionRequestUsesExactCallCoordinates(t *testing.T) {
 	}
 	if codexApprovalTool("item/permissions/requestApproval") != "" {
 		t.Fatal("native sandbox permission profiles must not be mapped to a boolean command verdict")
+	}
+}
+
+func TestCodexCommandApprovalIDSeparatesSubcommandCallbacks(t *testing.T) {
+	requestFor := func(approvalID string) harness.PermissionRequest {
+		t.Helper()
+		params, err := json.Marshal(map[string]string{
+			"threadId":   "thread-1",
+			"turnId":     "turn-2",
+			"itemId":     "command-item-1",
+			"approvalId": approvalID,
+			"command":    "bash -lc 'read -r reply'",
+			"cwd":        "/workspace/project",
+		})
+		if err != nil {
+			t.Fatalf("marshal command approval: %v", err)
+		}
+		request, err := codexPermissionRequest("attempt-1", "thread-1", "turn-2", wireMessage{
+			ID:     json.RawMessage(`7`),
+			Method: "item/commandExecution/requestApproval",
+			Params: params,
+		})
+		if err != nil {
+			t.Fatalf("codexPermissionRequest: %v", err)
+		}
+		if request.Tool != "Bash" {
+			t.Fatalf("command permission tool = %q, want Bash", request.Tool)
+		}
+		return request
+	}
+
+	first := requestFor("stdin-write-1")
+	second := requestFor("stdin-write-2")
+	if first.ID == second.ID {
+		t.Fatalf("distinct Codex command callbacks share permission ID %q", first.ID)
 	}
 }
 

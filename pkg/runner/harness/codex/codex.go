@@ -993,15 +993,16 @@ func codexPermissionRequest(attemptID, expectedSessionID, expectedTurnID string,
 		return harness.PermissionRequest{}, errors.New("codex approval request payload exceeds the permission input limit")
 	}
 	var params struct {
-		ThreadID string `json:"threadId"`
-		TurnID   string `json:"turnId"`
-		ItemID   string `json:"itemId"`
+		ThreadID   string `json:"threadId"`
+		TurnID     string `json:"turnId"`
+		ItemID     string `json:"itemId"`
+		ApprovalID string `json:"approvalId"`
 	}
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
 		return harness.PermissionRequest{}, errors.New("codex approval request payload is malformed")
 	}
 	if params.ThreadID == "" || params.TurnID == "" || params.ItemID == "" ||
-		len(params.ThreadID) > maxClarificationField || len(params.TurnID) > maxClarificationField || len(params.ItemID) > maxClarificationField {
+		len(params.ThreadID) > maxClarificationField || len(params.TurnID) > maxClarificationField || len(params.ItemID) > maxClarificationField || len(params.ApprovalID) > maxClarificationField {
 		return harness.PermissionRequest{}, errors.New("codex approval request payload is missing its session identity")
 	}
 	if expectedSessionID != "" && expectedSessionID != params.ThreadID {
@@ -1015,7 +1016,7 @@ func codexPermissionRequest(attemptID, expectedSessionID, expectedTurnID string,
 		return harness.PermissionRequest{}, errors.New("codex approval request method is unsupported")
 	}
 	return harness.PermissionRequest{
-		ID:    stablePermissionID(attemptID, msg.Method, params.ThreadID, params.TurnID, params.ItemID),
+		ID:    stablePermissionID(attemptID, msg.Method, params.ThreadID, params.TurnID, params.ItemID, params.ApprovalID),
 		Tool:  tool,
 		Input: string(input),
 	}, nil

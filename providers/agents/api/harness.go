@@ -45,6 +45,7 @@ import (
 	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/channels"
 	"github.com/railgrid/provider-agents/internal/edgeref"
@@ -183,6 +184,20 @@ func (s *Server) persistHarnessSession(ctx context.Context, scope store.Scope, s
 		return fmt.Errorf("persisting the harness session for the next turn: %w", err)
 	}
 	return nil
+}
+
+// unbilledHarnessUsage includes consumption recovered from an in-flight
+// checkpoint. Only usage persisted on the run at an earlier park has already
+// been charged; the backend's saved cursor and Spent are observation boundaries,
+// not billing boundaries.
+func unbilledHarnessUsage(total, billed backend.Cost) backend.Cost {
+	return backend.Cost{
+		Tokens: backend.Tokens{
+			InputTokens:  max(0, total.InputTokens-billed.InputTokens),
+			OutputTokens: max(0, total.OutputTokens-billed.OutputTokens),
+		},
+		CostMicros: max(0, total.CostMicros-billed.CostMicros),
+	}
 }
 
 // harnessBackendFor resolves a harness-backed agent's turn.

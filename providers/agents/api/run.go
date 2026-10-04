@@ -415,11 +415,14 @@ func (r taskRun) delivery() *store.RunDelivery {
 // and the turn simply carries on.
 type continuation struct {
 	Checkpoint runCheckpoint
-	StartedAt  time.Time
-	Tracker    *turnProgressTracker
-	Decided    bool
-	Approved   bool
-	Note       string
+	// Billed is the usage durably recorded at the last approval park. A running
+	// checkpoint can include additional consumption that has not been charged.
+	Billed    backend.Cost
+	StartedAt time.Time
+	Tracker   *turnProgressTracker
+	Decided   bool
+	Approved  bool
+	Note      string
 }
 
 // turnPurpose picks the model role a turn runs on. A spawned worker resolves the
@@ -678,6 +681,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// Charge the rolling window what this turn added. On a resume that is the
 	// delta: the pre-pause portion was billed when the run paused, while the
 	// totals below keep the run record truthful.
+	if harnessT != nil && cont != nil {
+		out.Usage.Billed = unbilledHarnessUsage(out.Usage.Total, cont.Billed)
+	}
 	window, _ := s.store.AddUsage(ctx, scope, agent.Name,
 		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, 30*24*time.Hour)
 

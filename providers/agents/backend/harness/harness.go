@@ -179,17 +179,22 @@ const stateSnapshotVersion = 1
 // so the snapshot stores usage deduplication markers but not a second copy of
 // its billable cost.
 type StateSnapshot struct {
-	Version          int                     `json:"version"`
-	Text             string                  `json:"text,omitempty"`
-	Final            string                  `json:"final,omitempty"`
-	Tools            map[string]ToolSnapshot `json:"tools,omitempty"`
-	ToolDurationNS   int64                   `json:"toolDurationNS,omitempty"`
-	TurnDurationNS   int64                   `json:"turnDurationNS,omitempty"`
-	TurnStarted      bool                    `json:"turnStarted,omitempty"`
-	CodexTotalTokens int64                   `json:"codexTotalTokens,omitempty"`
-	CodexTotalSeen   bool                    `json:"codexTotalSeen,omitempty"`
-	CodexLast        string                  `json:"codexLast,omitempty"`
-	Clarification    *runner.Clarification   `json:"clarification,omitempty"`
+	Version int                     `json:"version"`
+	Text    string                  `json:"text,omitempty"`
+	Final   string                  `json:"final,omitempty"`
+	Tools   map[string]ToolSnapshot `json:"tools,omitempty"`
+	// ToolDurationNS is scoped to CodexTurnID because only tools in that
+	// native turn are already included in TurnDurationNS.
+	ToolDurationNS int64 `json:"toolDurationNS,omitempty"`
+	TurnDurationNS int64 `json:"turnDurationNS,omitempty"`
+	// CodexTurnID distinguishes a clarification resume's new turn from a
+	// permission resume, which keeps the current turn alive.
+	CodexTurnID      string                `json:"codexTurnID,omitempty"`
+	TurnStarted      bool                  `json:"turnStarted,omitempty"`
+	CodexTotalTokens int64                 `json:"codexTotalTokens,omitempty"`
+	CodexTotalSeen   bool                  `json:"codexTotalSeen,omitempty"`
+	CodexLast        string                `json:"codexLast,omitempty"`
+	Clarification    *runner.Clarification `json:"clarification,omitempty"`
 }
 
 // ToolSnapshot records the dedupe state for a tool item already observed.
@@ -474,11 +479,10 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 		state.clarification = receipt.Clarification
 	}
 	attemptID := receipt.AttemptID
-	// caughtUp guards the ONE catch-up pass a terminal receipt is allowed: the
-	// receipt's cursor can be ahead of ours when the phase changed during a quiet
-	// stream, and the events in between are worth one more read. Without the flag
-	// a runner whose cursor stays ahead — because the events it counted have
-	// already been dropped — would be re-read forever.
+	// caughtUp bounds retries when Inspect says the attempt is terminal but its
+	// cursor is still ahead of the last event we received. Every cursor through
+	// that receipt must be drained before returning; a quiet stream that still
+	// cannot supply them means the outcome is incomplete.
 	caughtUp := false
 	for {
 		if err := sink.Aborted(ctx); err != nil {
@@ -492,12 +496,15 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 		before := state.cursor
 		terminal, quiet, err := b.drain(ctx, stream, state, prior)
 		_ = stream.Close()
+		if state.cursor > before {
+			caughtUp = false
+		}
 		switch {
 		case err != nil:
-			// A cursor the runner no longer holds means our view is incomplete,
-			// and Inspect is the only thing that can restore it. Reconciling and
-			// carrying on is the whole point of SnapshotRequired; failing the run
-			// over a dropped event would throw away a turn that is still working.
+			// Inspect can tell whether the receipt is already covered by the
+			// events we observed, but it cannot reconstruct missing content. If
+			// the receipt cursor advanced, report the incomplete history instead
+			// of returning a partial answer or usage total.
 			if snapshotRequired(err) {
 				reconciled, ierr := b.cfg.Dispatcher.Inspect(ctx, attemptID)
 				if ierr != nil {
@@ -505,11 +512,10 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 						dispatchError("reconciling after a cursor gap", ierr)
 				}
 				b.observe(reconciled)
-				if state.recovering && reconciled.Cursor > state.cursor {
+				if reconciled.Cursor > state.cursor {
 					return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-						fmt.Errorf("cannot recover harness attempt: event history is incomplete after saved cursor %d (runner cursor %d)", state.cursor, reconciled.Cursor)
+						incompleteHistoryError(state, reconciled.Cursor)
 				}
-				state.cursor = reconciled.Cursor
 				if reconciled.Clarification != nil {
 					state.clarification = reconciled.Clarification
 				}
@@ -541,6 +547,15 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 				}
 				continue
 			}
+			// A retained terminal or needs-input event can predate the
+			// receipt we just inspected. This happens when recovery attaches
+			// after an approval was answered: the old park event is still in
+			// the log, while the receipt already describes the completed run.
+			// Keep reading until the receipt's event cursor is represented in
+			// our normalized state so its answer and usage are not lost.
+			if final.Cursor > state.cursor {
+				continue
+			}
 			return b.outcomeFor(ctx, final, state, prior)
 		case quiet:
 			// The runner closed a quiet stream. Offer a checkpoint here — this is
@@ -554,10 +569,14 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 			}
 			b.observe(current)
 			if current.Phase.IsTerminal() || current.Phase == runner.PhaseNeedsInput {
-				if current.Cursor > state.cursor && !caughtUp {
+				if current.Cursor > state.cursor {
+					if caughtUp {
+						return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
+							incompleteHistoryError(state, current.Cursor)
+					}
 					// Events were produced between our last read and the phase
-					// change; pick them up before concluding. Once only — see
-					// caughtUp.
+					// change; pick them up before concluding. If another quiet
+					// read cannot provide them, the journal is incomplete.
 					caughtUp = true
 					continue
 				}
@@ -628,6 +647,7 @@ func snapshot(s *turnState) *StateSnapshot {
 		Tools:            tools,
 		ToolDurationNS:   int64(s.toolDuration),
 		TurnDurationNS:   int64(s.turnDuration),
+		CodexTurnID:      s.codexTurnID,
 		TurnStarted:      s.turnStarted,
 		CodexTotalTokens: s.codexTotalTokens,
 		CodexTotalSeen:   s.codexTotalSeen,
@@ -659,6 +679,7 @@ func (b *Backend) restoreState(ctx context.Context, state State, sink backend.Ev
 	restored.cursor = state.Cursor
 	restored.toolDuration = time.Duration(snapshot.ToolDurationNS)
 	restored.turnDuration = time.Duration(snapshot.TurnDurationNS)
+	restored.codexTurnID = snapshot.CodexTurnID
 	restored.turnStarted = snapshot.TurnStarted
 	restored.codexTotalTokens = snapshot.CodexTotalTokens
 	restored.codexTotalSeen = snapshot.CodexTotalSeen
@@ -1023,6 +1044,17 @@ func snapshotRequired(err error) bool {
 		return false
 	}
 	return protocol.SnapshotRequired || protocol.Code == runner.ErrorCursorExpired
+}
+
+func incompleteHistoryError(state *turnState, runnerCursor uint64) error {
+	cursorKind := "observed"
+	verb := "follow"
+	if state.recovering {
+		cursorKind = "saved"
+		verb = "recover"
+	}
+	return fmt.Errorf("cannot %s harness attempt: event history is incomplete after %s cursor %d (runner cursor %d)",
+		verb, cursorKind, state.cursor, runnerCursor)
 }
 
 // terminalProtocolError reports a cancel that had nothing to cancel: an attempt

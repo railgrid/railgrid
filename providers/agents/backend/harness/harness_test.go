@@ -625,14 +625,15 @@ func TestContinueRejectsAChangedBackendKeyBeforeInspect(t *testing.T) {
 	}
 }
 
-func TestToolDurationAccumulatesAcrossMultipleParks(t *testing.T) {
+func TestCodexToolDurationResetsForClarificationResume(t *testing.T) {
 	first := &fakeRunner{
 		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
 			Clarification: &runner.Clarification{ID: "clar-1", Text: "continue?"}},
 		events: []runner.Event{
-			event(1, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
-			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
-			event(3, runner.EventNeedsInput, "first question", ""),
+			event(1, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(3, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(4, runner.EventNeedsInput, "first question", ""),
 		},
 	}
 	firstOut, err := New(testConfig(first, 1, "")).Turn(context.Background(), testRun(), backend.Input{
@@ -642,20 +643,22 @@ func TestToolDurationAccumulatesAcrossMultipleParks(t *testing.T) {
 		t.Fatalf("initial turn: %v", err)
 	}
 	firstState := parkedState(t, firstOut)
-	if firstState.Snapshot == nil || firstState.Snapshot.ToolDurationNS != int64(400*time.Millisecond) {
-		t.Fatalf("first park duration snapshot = %+v, want 400ms", firstState.Snapshot)
+	if firstState.Snapshot == nil || firstState.Snapshot.ToolDurationNS != int64(400*time.Millisecond) || firstState.Snapshot.CodexTurnID != "turn-1" {
+		t.Fatalf("first park duration snapshot = %+v, want turn-1 with 400ms of tools", firstState.Snapshot)
 	}
 
 	second := &fakeRunner{
 		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
 			Clarification: &runner.Clarification{ID: "clar-2", Text: "continue again?"}},
 		events: []runner.Event{
-			event(1, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
-			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
-			event(3, runner.EventNeedsInput, "first question", ""),
-			event(4, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
-			event(5, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
-			event(6, runner.EventNeedsInput, "second question", ""),
+			event(1, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(3, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(4, runner.EventNeedsInput, "first question", ""),
+			event(5, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"inProgress"}}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(7, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(8, runner.EventNeedsInput, "second question", ""),
 		},
 	}
 	secondOut, err := New(testConfig(second, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
@@ -665,8 +668,8 @@ func TestToolDurationAccumulatesAcrossMultipleParks(t *testing.T) {
 		t.Fatalf("continue to second park: %v", err)
 	}
 	secondState := parkedState(t, secondOut)
-	if secondState.Snapshot == nil || secondState.Snapshot.ToolDurationNS != int64(900*time.Millisecond) {
-		t.Fatalf("second park duration snapshot = %+v, want 900ms of cumulative tools", secondState.Snapshot)
+	if secondState.Snapshot == nil || secondState.Snapshot.ToolDurationNS != int64(500*time.Millisecond) || secondState.Snapshot.CodexTurnID != "turn-2" {
+		t.Fatalf("second park duration snapshot = %+v, want turn-2 with 500ms of tools", secondState.Snapshot)
 	}
 
 	third := &fakeRunner{
@@ -674,15 +677,18 @@ func TestToolDurationAccumulatesAcrossMultipleParks(t *testing.T) {
 			Clarification: &runner.Clarification{ID: "clar-2", Text: "continue again?"}},
 		phases: []runner.Phase{runner.PhaseNeedsInput, runner.PhaseCompleted},
 		events: []runner.Event{
-			event(1, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
-			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
-			event(3, runner.EventNeedsInput, "first question", ""),
-			event(4, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
-			event(5, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
-			event(6, runner.EventNeedsInput, "second question", ""),
-			event(7, runner.EventProgress, "completed", `{"turn":{"id":"turn-1","status":"completed","durationMs":1500}}`),
-			event(8, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Done.","phase":"final_answer"}}`),
-			event(9, runner.EventCompleted, "", ""),
+			event(1, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(3, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(4, runner.EventNeedsInput, "first question", ""),
+			event(5, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"inProgress"}}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(7, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(8, runner.EventNeedsInput, "second question", ""),
+			event(9, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-3","status":"inProgress"}}`),
+			event(10, runner.EventProgress, "completed", `{"turn":{"id":"turn-3","status":"completed","durationMs":1500}}`),
+			event(11, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Done.","phase":"final_answer"}}`),
+			event(12, runner.EventCompleted, "", ""),
 		},
 	}
 	thirdSink := &recordingSink{}
@@ -695,8 +701,61 @@ func TestToolDurationAccumulatesAcrossMultipleParks(t *testing.T) {
 	if completed.Status != backend.StatusCompleted {
 		t.Fatalf("final status = %s, want completed", completed.Status)
 	}
-	if len(thirdSink.assistants) != 1 || thirdSink.assistants[0].Duration != 600*time.Millisecond {
-		t.Fatalf("assistant duration = %+v, want 600ms after subtracting both parks' tools from 1500ms", thirdSink.assistants)
+	if len(thirdSink.assistants) != 1 || thirdSink.assistants[0].Duration != 1500*time.Millisecond {
+		t.Fatalf("assistant duration = %+v, want 1500ms from turn-3 without subtracting tools from earlier turns", thirdSink.assistants)
+	}
+}
+
+func TestCodexApprovalResumeKeepsCurrentTurnTiming(t *testing.T) {
+	permission := &runner.PermissionRequest{ID: "permission-9", Tool: "Bash", Input: `{"command":"second"}`}
+	first := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1", Permission: permission},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(3, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(4, runner.EventNeedsInput, "permission required", ""),
+		},
+	}
+	firstOut, err := New(testConfig(first, 1, "sess-1")).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "run the command"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("initial permission park: %v", err)
+	}
+	state := parkedState(t, firstOut)
+	if state.Snapshot == nil || state.Snapshot.CodexTurnID != "turn-1" || state.Snapshot.ToolDurationNS != int64(400*time.Millisecond) {
+		t.Fatalf("permission snapshot = %+v, want turn-1 with its 400ms tool", state.Snapshot)
+	}
+
+	continued := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1", Permission: permission},
+		phases:  []runner.Phase{runner.PhaseNeedsInput, runner.PhaseCompleted},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(3, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(4, runner.EventNeedsInput, "permission required", ""),
+			event(5, runner.EventProgress, "permission granted", ""),
+			event(6, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(7, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(8, runner.EventProgress, "completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","durationMs":1500}}`),
+			event(9, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Done.","phase":"final_answer"}}`),
+			event(10, runner.EventCompleted, "", ""),
+		},
+	}
+	sink := &recordingSink{}
+	completed, err := New(testConfig(continued, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: firstOut.Parked.State, Decided: true, Approved: true,
+	}, sink)
+	if err != nil {
+		t.Fatalf("approve and continue: %v", err)
+	}
+	if completed.Status != backend.StatusCompleted {
+		t.Fatalf("status = %s, want completed", completed.Status)
+	}
+	if len(sink.assistants) != 1 || sink.assistants[0].Duration != 600*time.Millisecond {
+		t.Fatalf("assistant duration = %+v, want 600ms after subtracting both tools from the same Codex turn", sink.assistants)
 	}
 }
 
@@ -974,9 +1033,9 @@ func TestCodexCommandNonzeroExitCodeIsFailure(t *testing.T) {
 	}
 }
 
-// A cursor the runner no longer holds is reconciled with Inspect and the turn
-// carries on, rather than failing over a dropped event.
-func TestCursorGapReconcilesInsteadOfFailing(t *testing.T) {
+// A cursor the runner no longer holds cannot be reconciled from the receipt
+// alone: the missing events may contain the complete answer and usage.
+func TestFreshCursorGapDoesNotReturnAnEmptyCompletion(t *testing.T) {
 	f := &gappyRunner{fakeRunner: fakeRunner{
 		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, Cursor: 9},
 		phases:  []runner.Phase{runner.PhaseCompleted},
@@ -985,11 +1044,70 @@ func TestCursorGapReconcilesInsteadOfFailing(t *testing.T) {
 	cfg.Dispatcher = f
 	out, err := New(cfg).Turn(context.Background(), testRun(),
 		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "hi"}}}, &recordingSink{})
-	if err != nil {
-		t.Fatalf("Turn: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after observed cursor 0") {
+		t.Fatalf("Turn error = %v, want an explicit failure for the missing event history", err)
 	}
-	if out.Status != backend.StatusCompleted {
-		t.Fatalf("status = %s, want the reconciled completion", out.Status)
+	if out.Status != backend.StatusFailed {
+		t.Fatalf("status = %s, want failed after the event history was lost", out.Status)
+	}
+}
+
+func TestRecoveryDrainsPastAnOldNeedsInputEventWhenReceiptIsTerminal(t *testing.T) {
+	for _, oldTerminal := range []string{runner.EventNeedsInput, runner.EventCompleted} {
+		t.Run(oldTerminal, func(t *testing.T) {
+			f := &fakeRunner{
+				receipt: runner.Receipt{
+					AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1",
+				},
+				events: []runner.Event{
+					event(1, runner.EventProgress, "already observed", ""),
+					event(2, oldTerminal, "", ""),
+					event(3, runner.EventProgress, "", `{"type":"result","subtype":"success","is_error":false,"result":"the approved command finished"}`),
+					event(4, runner.EventCompleted, "", ""),
+				},
+			}
+			state, err := json.Marshal(State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				PermissionID: "permission-9",
+				Snapshot:     &StateSnapshot{Version: stateSnapshotVersion, Text: "already observed\n"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+			if err != nil {
+				t.Fatalf("Continue: %v", err)
+			}
+			if out.Status != backend.StatusCompleted || out.Final != "the approved command finished" {
+				t.Fatalf("recovered outcome = status %s, final %q; want the answer after the old %s event", out.Status, out.Final, oldTerminal)
+			}
+		})
+	}
+}
+
+func TestRecoveryFailsWhenQuietStreamsCannotReachTerminalReceiptCursor(t *testing.T) {
+	f := &quietRunner{fakeRunner: fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "saved prefix", ""),
+			event(4, runner.EventCompleted, "", ""),
+		},
+	}}
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		Snapshot: &StateSnapshot{Version: stateSnapshotVersion, Text: "saved prefix\n"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(&f.fakeRunner, 1, "sess-1")
+	cfg.Dispatcher = f
+	out, err := New(cfg).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
+		t.Fatalf("Continue error = %v, want an explicit error for the unavailable terminal tail", err)
+	}
+	if out.Status != backend.StatusFailed {
+		t.Fatalf("status = %s, want failed instead of a partial completion", out.Status)
 	}
 }
 
@@ -1025,6 +1143,12 @@ func TestRecoveredSnapshotFailsWhenPostCheckpointEventsExpired(t *testing.T) {
 type gappyRunner struct {
 	fakeRunner
 	served bool
+}
+
+type quietRunner struct{ fakeRunner }
+
+func (q *quietRunner) Events(context.Context, string, uint64) (Stream, error) {
+	return &sliceStream{}, nil
 }
 
 func (g *gappyRunner) Events(ctx context.Context, attemptID string, after uint64) (Stream, error) {

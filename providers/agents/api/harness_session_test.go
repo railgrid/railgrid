@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -185,5 +188,48 @@ func TestHarnessSessionWriteFailureIsReturned(t *testing.T) {
 		store.HarnessSession{SessionID: "chat", Turns: 1}, backendharness.Observed{SessionID: "thread"}, time.Now())
 	if !errors.Is(err, want) {
 		t.Fatalf("session write failure = %v, want %v", err, want)
+	}
+}
+
+func TestHarnessRecoveryBillsUsageSinceLastParkNotSinceCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	s := &Server{store: st}
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
+	now := time.Now().UTC()
+	// The first park billed 100 input tokens. A later running checkpoint has
+	// observed 250; that additional 150 was never charged before the crash.
+	if _, err := st.AddUsage(ctx, scope, "coder", 100, 10, 20, now, 30*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveRun(ctx, scope, store.Run{ID: "run", AgentName: "coder", Phase: store.RunPhaseRunning, InputTokens: 100, OutputTokens: 10, USDMicros: 20, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(backendharness.State{AttemptID: "attempt", Epoch: 1, Cursor: 5, Spent: backend.Cost{Tokens: backend.Tokens{InputTokens: 250, OutputTokens: 25}, CostMicros: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.checkpointRecorder(ctx, taskRun{Scope: scope, Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder"}}, RunID: "run"}, "chat", agentsv1alpha1.AgentBackendHarness)(raw)
+	saved, err := st.GetRun(ctx, scope, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := backend.Cost{Tokens: backend.Tokens{InputTokens: 300, OutputTokens: 30}, CostMicros: 60}
+	delta := unbilledHarnessUsage(total, backend.Cost{Tokens: backend.Tokens{InputTokens: saved.InputTokens, OutputTokens: saved.OutputTokens}, CostMicros: saved.USDMicros})
+	if delta.InputTokens != 200 || delta.OutputTokens != 20 || delta.CostMicros != 40 {
+		t.Fatalf("recovered charge = %+v, want 200/20 tokens and 40 micros", delta)
+	}
+	usage, err := st.AddUsage(ctx, scope, "coder", delta.InputTokens, delta.OutputTokens, delta.CostMicros, now, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 300 || usage.OutputTokens != 30 || usage.USDMicros != 60 {
+		t.Fatalf("rolling usage = %+v", usage)
+	}
+	if delta := unbilledHarnessUsage(total, total); delta != (backend.Cost{}) {
+		t.Fatalf("already billed park charged again: %+v", delta)
+	}
+	if delta := unbilledHarnessUsage(total, backend.Cost{}); delta != total {
+		t.Fatalf("recovery before first park omitted usage: %+v", delta)
 	}
 }
