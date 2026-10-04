@@ -45,8 +45,9 @@ type fakeRunner struct {
 	// runner ends a quiet stream.
 	events []runner.Event
 
-	startErr error
-	inspects int
+	startErr         error
+	eventsErrorAfter uint64
+	inspects         int
 }
 
 func (f *fakeRunner) Start(_ context.Context, req runner.StartRequest) (runner.Receipt, error) {
@@ -100,9 +101,12 @@ func (f *fakeRunner) Events(_ context.Context, _ string, after uint64) (Stream, 
 	defer f.mu.Unlock()
 	var out []runner.Event
 	for _, e := range f.events {
-		if e.Cursor > after {
+		if e.Cursor > after && (f.eventsErrorAfter == 0 || e.Cursor <= f.eventsErrorAfter) {
 			out = append(out, e)
 		}
+	}
+	if f.eventsErrorAfter > after {
+		return &failingSliceStream{sliceStream: sliceStream{events: out}, err: errors.New("simulated stream loss")}, nil
 	}
 	return &sliceStream{events: out}, nil
 }
@@ -125,6 +129,19 @@ func (s *sliceStream) Next(ctx context.Context) (runner.Event, error) {
 }
 
 func (s *sliceStream) Close() error { return nil }
+
+type failingSliceStream struct {
+	sliceStream
+	err error
+}
+
+func (s *failingSliceStream) Next(ctx context.Context) (runner.Event, error) {
+	event, err := s.sliceStream.Next(ctx)
+	if err != nil {
+		return runner.Event{}, s.err
+	}
+	return event, nil
+}
 
 // ---- a sink that records ----------------------------------------------------
 
@@ -456,6 +473,233 @@ func TestSpentAccumulatesAcrossMultipleParksAndSkipsReplayedEvents(t *testing.T)
 	}
 }
 
+func TestCheckpointRecoveryRestoresTranscriptToolsAndUsageAtTerminalReceipt(t *testing.T) {
+	initial := &fakeRunner{
+		receipt:          runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseRunning, SessionID: "sess-1"},
+		eventsErrorAfter: 6,
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"turn":{"status":"inProgress"}}`),
+			event(2, runner.EventProgress, "The result is done.", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"The result is done."}`),
+			event(3, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":600,"outputTokens":10},"total":{"inputTokens":600,"outputTokens":10}}}`),
+			event(4, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"go test ./...","status":"inProgress"}}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"The result is done.","phase":"final_answer"}}`),
+			event(6, runner.EventCheckpoint, "", ""),
+		},
+	}
+	initialSink := &recordingSink{}
+	cfg := testConfig(initial, 1, "")
+	cfg.BackendKey = "sha256:runner-a"
+	first := New(cfg)
+	_, err := first.Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "run tests"}},
+	}, initialSink)
+	if err == nil || !strings.Contains(err.Error(), "simulated stream loss") {
+		t.Fatalf("Turn error = %v, want the simulated loss after its checkpoint", err)
+	}
+	if len(initialSink.checkpoints) != 1 {
+		t.Fatalf("checkpoints = %d, want the complete cursor-6 snapshot", len(initialSink.checkpoints))
+	}
+	var checkpoint State
+	if err := json.Unmarshal(initialSink.checkpoints[0], &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Cursor != 6 || checkpoint.BackendKey != "sha256:runner-a" || checkpoint.Spent.InputTokens != 600 {
+		t.Fatalf("checkpoint coordinates = %+v, want cursor 6, runner key and 600 spent input tokens", checkpoint)
+	}
+	if checkpoint.Snapshot == nil || checkpoint.Snapshot.Text != "The result is done." || checkpoint.Snapshot.Final != "The result is done." || checkpoint.Snapshot.Tools["exec-1"].Ended {
+		t.Fatalf("checkpoint snapshot = %+v, want normalized text, canonical final and an open tool", checkpoint.Snapshot)
+	}
+
+	// The runner is already terminal when a new process resumes. The stored
+	// snapshot must supply the prefix while the stream supplies only the tail.
+	recovered := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"turn":{"status":"inProgress"}}`),
+			event(2, runner.EventProgress, "The result is done.", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"The result is done."}`),
+			event(3, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":600,"outputTokens":10},"total":{"inputTokens":600,"outputTokens":10}}}`),
+			event(4, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"go test ./...","status":"inProgress"}}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"The result is done.","phase":"final_answer"}}`),
+			event(6, runner.EventCheckpoint, "", ""),
+			event(7, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":600,"outputTokens":10},"total":{"inputTokens":600,"outputTokens":10}}}`),
+			event(8, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"go test ./...","status":"completed","durationMs":850,"aggregatedOutput":"ok"}}`),
+			event(9, runner.EventProgress, "completed", `{"turn":{"id":"turn-1","status":"completed","durationMs":1340}}`),
+			event(10, runner.EventCompleted, "", ""),
+		},
+	}
+	resumeCfg := testConfig(recovered, 1, "sess-1")
+	resumeCfg.BackendKey = "sha256:runner-a"
+	recoveredSink := &recordingSink{}
+	out, err := New(resumeCfg).Continue(context.Background(), testRun(), backend.Answer{State: initialSink.checkpoints[0]}, recoveredSink)
+	if err != nil {
+		t.Fatalf("Continue from terminal receipt: %v", err)
+	}
+	if out.Status != backend.StatusCompleted || out.Text != "The result is done." || out.Final != "The result is done." {
+		t.Fatalf("recovered outcome = status %s, text %q, final %q", out.Status, out.Text, out.Final)
+	}
+	if len(recoveredSink.deltas) != 0 {
+		t.Fatalf("recovered deltas = %q, want no duplicate deltas from the saved canonical answer", recoveredSink.deltas)
+	}
+	if len(recoveredSink.toolStarts) != 0 || len(recoveredSink.toolEnds) != 1 || recoveredSink.toolEnds[0].ID != "exec-1" {
+		t.Fatalf("recovered tool events = starts %q ends %+v, want one end and no duplicate start", recoveredSink.toolStarts, recoveredSink.toolEnds)
+	}
+	if got := out.Usage; got.Total.InputTokens != 600 || got.Total.OutputTokens != 10 || got.Billed.InputTokens != 0 || got.Billed.OutputTokens != 0 {
+		t.Fatalf("recovered usage = %+v, want 600/10 total and no duplicate billing", got)
+	}
+	if len(recoveredSink.assistants) != 1 || recoveredSink.assistants[0].Duration != 490*time.Millisecond {
+		t.Fatalf("recovered assistant messages = %+v, want 490ms after subtracting the restored 850ms tool", recoveredSink.assistants)
+	}
+}
+
+func TestLegacyResumeReplaysPrefixSilentlyAndResetsReplayCost(t *testing.T) {
+	legacy, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 3,
+		Spent: backend.Cost{Tokens: backend.Tokens{InputTokens: 20, OutputTokens: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"turn":{"status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":20,"outputTokens":2},"total":{"inputTokens":20,"outputTokens":2}}}`),
+			event(3, runner.EventProgress, "old ", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"old "}`),
+			event(4, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":20,"outputTokens":2},"total":{"inputTokens":20,"outputTokens":2}}}`),
+			event(5, runner.EventProgress, "tail", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"tail"}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"old tail","phase":"final_answer"}}`),
+			event(7, runner.EventCompleted, "", ""),
+		},
+	}
+	sink := &recordingSink{}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: legacy}, sink)
+	if err != nil {
+		t.Fatalf("Continue legacy state: %v", err)
+	}
+	if out.Text != "old tail" || out.Final != "old tail" {
+		t.Fatalf("legacy recovery text/final = %q / %q, want the replayed prefix plus tail", out.Text, out.Final)
+	}
+	if len(sink.deltas) != 1 || sink.deltas[0] != "tail" {
+		t.Fatalf("legacy recovery deltas = %q, want only the post-cursor tail", sink.deltas)
+	}
+	if out.Usage.Total.InputTokens != 20 || out.Usage.Total.OutputTokens != 2 || out.Usage.Billed != (backend.Cost{}) {
+		t.Fatalf("legacy recovery usage = %+v, want replayed spend once and no second bill", out.Usage)
+	}
+}
+
+func TestLegacyResumeFailsWhenTheSavedPrefixIsIncomplete(t *testing.T) {
+	legacy, err := json.Marshal(State{TaskID: "task-1", AttemptID: "run-1", Epoch: 1, Cursor: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events:  []runner.Event{event(2, runner.EventProgress, "partial", "")},
+	}
+	sink := &recordingSink{}
+	if _, err := New(testConfig(f, 1, "")).Continue(context.Background(), testRun(), backend.Answer{State: legacy}, sink); err == nil || !strings.Contains(err.Error(), "expected event 1, got cursor 2") {
+		t.Fatalf("Continue error = %v, want a clear incomplete-prefix recovery error", err)
+	}
+	if len(sink.deltas) != 0 {
+		t.Fatalf("incomplete prefix emitted %q before refusing recovery", sink.deltas)
+	}
+}
+
+func TestContinueRejectsAChangedBackendKeyBeforeInspect(t *testing.T) {
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, BackendKey: "sha256:runner-a",
+		Snapshot: &StateSnapshot{Version: stateSnapshotVersion},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted}}
+	cfg := testConfig(f, 1, "")
+	cfg.BackendKey = "sha256:runner-b"
+	_, err = New(cfg).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+	if err == nil || !strings.Contains(err.Error(), "different harness backend") {
+		t.Fatalf("Continue error = %v, want changed backend identity rejection", err)
+	}
+	if f.inspects != 0 {
+		t.Fatalf("Inspect calls = %d, want zero after rejecting the saved backend key", f.inspects)
+	}
+}
+
+func TestToolDurationAccumulatesAcrossMultipleParks(t *testing.T) {
+	first := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "continue?"}},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(3, runner.EventNeedsInput, "first question", ""),
+		},
+	}
+	firstOut, err := New(testConfig(first, 1, "")).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("initial turn: %v", err)
+	}
+	firstState := parkedState(t, firstOut)
+	if firstState.Snapshot == nil || firstState.Snapshot.ToolDurationNS != int64(400*time.Millisecond) {
+		t.Fatalf("first park duration snapshot = %+v, want 400ms", firstState.Snapshot)
+	}
+
+	second := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "continue again?"}},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(3, runner.EventNeedsInput, "first question", ""),
+			event(4, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(6, runner.EventNeedsInput, "second question", ""),
+		},
+	}
+	secondOut, err := New(testConfig(second, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: firstOut.Parked.State, Note: "yes",
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("continue to second park: %v", err)
+	}
+	secondState := parkedState(t, secondOut)
+	if secondState.Snapshot == nil || secondState.Snapshot.ToolDurationNS != int64(900*time.Millisecond) {
+		t.Fatalf("second park duration snapshot = %+v, want 900ms of cumulative tools", secondState.Snapshot)
+	}
+
+	third := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "continue again?"}},
+		phases: []runner.Phase{runner.PhaseNeedsInput, runner.PhaseCompleted},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+			event(3, runner.EventNeedsInput, "first question", ""),
+			event(4, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(6, runner.EventNeedsInput, "second question", ""),
+			event(7, runner.EventProgress, "completed", `{"turn":{"id":"turn-1","status":"completed","durationMs":1500}}`),
+			event(8, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Done.","phase":"final_answer"}}`),
+			event(9, runner.EventCompleted, "", ""),
+		},
+	}
+	thirdSink := &recordingSink{}
+	completed, err := New(testConfig(third, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: secondOut.Parked.State, Note: "yes",
+	}, thirdSink)
+	if err != nil {
+		t.Fatalf("continue to completion: %v", err)
+	}
+	if completed.Status != backend.StatusCompleted {
+		t.Fatalf("final status = %s, want completed", completed.Status)
+	}
+	if len(thirdSink.assistants) != 1 || thirdSink.assistants[0].Duration != 600*time.Millisecond {
+		t.Fatalf("assistant duration = %+v, want 600ms after subtracting both parks' tools from 1500ms", thirdSink.assistants)
+	}
+}
+
 func parkedState(t *testing.T, out backend.Outcome) State {
 	t.Helper()
 	if out.Status != backend.StatusParked || out.Parked == nil {
@@ -749,6 +993,33 @@ func TestCursorGapReconcilesInsteadOfFailing(t *testing.T) {
 	}
 }
 
+func TestRecoveredSnapshotFailsWhenPostCheckpointEventsExpired(t *testing.T) {
+	raw, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		Snapshot: &StateSnapshot{Version: stateSnapshotVersion, Text: "saved prefix", Final: "saved prefix"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &gappyRunner{fakeRunner: fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "already saved", ""),
+			event(2, runner.EventCompleted, "", ""),
+		},
+	}}
+	cfg := testConfig(&f.fakeRunner, 1, "sess-1")
+	cfg.Dispatcher = f
+	sink := &recordingSink{}
+	_, err = New(cfg).Continue(context.Background(), testRun(), backend.Answer{State: raw}, sink)
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
+		t.Fatalf("Continue error = %v, want an explicit error for the expired post-checkpoint tail", err)
+	}
+	if len(sink.deltas) != 0 {
+		t.Fatalf("recovery emitted deltas %q despite missing post-checkpoint history", sink.deltas)
+	}
+}
+
 // gappyRunner answers the first stream with a cursor-expired error carrying
 // SnapshotRequired, the way the shared client reports a gap.
 type gappyRunner struct {
@@ -910,7 +1181,7 @@ func TestPermissionApprovalResumesWithAVerdict(t *testing.T) {
 func TestContinueKeepsObservedEpochWhenConfigIsAheadAcrossPermissionParks(t *testing.T) {
 	initialState, err := json.Marshal(State{
 		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1",
-		Cursor: 10, PermissionID: "permission-1",
+		Cursor: 10, PermissionID: "permission-1", Snapshot: &StateSnapshot{Version: stateSnapshotVersion},
 	})
 	if err != nil {
 		t.Fatal(err)

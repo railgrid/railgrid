@@ -50,7 +50,8 @@ type turnState struct {
 	codexLast        string
 	// cursor is the last event cursor consumed, which is where a reconnect
 	// resumes and what a checkpoint records.
-	cursor uint64
+	cursor     uint64
+	recovering bool
 	// clarification is what the harness is asking, when it asked.
 	clarification *runner.Clarification
 }

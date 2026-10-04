@@ -988,6 +988,10 @@ func codexPermissionRequest(attemptID, expectedSessionID, expectedTurnID string,
 	if len(msg.Params) == 0 || len(msg.Params) > maxEventData || !json.Valid(msg.Params) {
 		return harness.PermissionRequest{}, errors.New("codex approval request payload is invalid or oversized")
 	}
+	input := bytes.TrimSpace(msg.Params)
+	if len(input) > harness.MaxPermissionInputBytes {
+		return harness.PermissionRequest{}, errors.New("codex approval request payload exceeds the permission input limit")
+	}
 	var params struct {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
@@ -1013,7 +1017,7 @@ func codexPermissionRequest(attemptID, expectedSessionID, expectedTurnID string,
 	return harness.PermissionRequest{
 		ID:    stablePermissionID(attemptID, msg.Method, params.ThreadID, params.TurnID, params.ItemID),
 		Tool:  tool,
-		Input: string(bytes.TrimSpace(msg.Params)),
+		Input: string(input),
 	}, nil
 }
 

@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 func TestRPCConnRoutesServerRequestBeforeMatchingResponseID(t *testing.T) {
@@ -104,4 +106,58 @@ func TestCodexPermissionRequestUsesExactCallCoordinates(t *testing.T) {
 	if codexApprovalTool("item/permissions/requestApproval") != "" {
 		t.Fatal("native sandbox permission profiles must not be mapped to a boolean command verdict")
 	}
+}
+
+func TestOversizedApprovalRequestDeclinesWithoutAsking(t *testing.T) {
+	params, err := json.Marshal(map[string]any{
+		"threadId": "thread-1",
+		"turnId":   "turn-1",
+		"itemId":   "item-1",
+		"command":  strings.Repeat("x", harness.MaxPermissionInputBytes),
+	})
+	if err != nil {
+		t.Fatalf("marshal approval params: %v", err)
+	}
+
+	var output bytes.Buffer
+	asker := &permissionAskerSpy{}
+	state := runState{
+		attemptID:   "attempt-1",
+		sessionID:   "thread-1",
+		turnID:      "turn-1",
+		permissions: asker,
+		conn:        &rpcConn{stdin: &output},
+	}
+	err = state.handleApprovalRequest(wireMessage{
+		ID:     json.RawMessage(`"approval-1"`),
+		Method: "item/commandExecution/requestApproval",
+		Params: params,
+	})
+	if err == nil {
+		t.Fatal("oversized approval request was accepted as valid")
+	}
+	if asker.calls != 0 {
+		t.Fatalf("PermissionAsker calls = %d, want 0", asker.calls)
+	}
+
+	var response struct {
+		Result struct {
+			Decision string `json:"decision"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &response); err != nil {
+		t.Fatalf("decode approval response: %v", err)
+	}
+	if response.Result.Decision != "decline" {
+		t.Fatalf("approval decision = %q, want decline", response.Result.Decision)
+	}
+}
+
+type permissionAskerSpy struct {
+	calls int
+}
+
+func (s *permissionAskerSpy) AskPermission(context.Context, harness.PermissionRequest) (harness.PermissionVerdict, error) {
+	s.calls++
+	return harness.PermissionVerdict{Allow: true}, nil
 }

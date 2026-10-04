@@ -34,6 +34,7 @@ import (
 	"log"
 	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -172,6 +173,9 @@ func (s *Server) persistHarnessSession(ctx context.Context, scope store.Scope, s
 		return nil
 	}
 	session.HarnessSessionID = observed.SessionID
+	// Turns is the epoch of this receipt. Do not carry forward the row's
+	// ObservedEpoch, which may belong to a previous attempt.
+	session.ObservedEpoch = session.Turns
 	session.UpdatedAt = at
 	persistCtx, cancel := boundedPersistContext(ctx)
 	defer cancel()
@@ -211,6 +215,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		return harnessTurn{}, fmt.Errorf("model credential %q has provider %q, which is not a harness identity; a harness-backed agent needs %q or %q",
 			credName, cred.Spec.Provider, agentsv1alpha1.ModelProviderClaudeCode, agentsv1alpha1.ModelProviderCodex)
 	}
+	backendKey := harnessBackendKey(run.ClusterID, cfg.EdgeRef.Kind, cfg.EdgeRef.Name, advertised)
 	identity, err := llm.LoadHarnessIdentity(ctx, run.Creds, credName)
 	if err != nil {
 		return harnessTurn{}, err
@@ -246,7 +251,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	// is the protection that makes two replicas answering one message safe, and
 	// only works if the number is not derived from something either replica could
 	// read as equal.
-	session, err := s.harnessSessionFor(ctx, run.Scope, sessionID, cont)
+	session, err := s.harnessSessionFor(ctx, run.Scope, sessionID, backendKey, cont)
 	if err != nil {
 		return harnessTurn{}, fmt.Errorf("claiming this turn's number for session %s: %w", sessionID, err)
 	}
@@ -260,6 +265,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		// What an EARLIER turn's receipt reported, which is what makes
 		// consecutive turns one conversation.
 		SessionID:       session.HarnessSessionID,
+		BackendKey:      backendKey,
 		WorkspaceID:     harnessWorkspaceID(agent, sessionID, runID),
 		RequiredHarness: advertised,
 		Model:           strings.TrimSpace(cfg.Model),
@@ -277,9 +283,21 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 // A continuation addresses the attempt already running on the edge. Allocating
 // another epoch would make its second approval obsolete and could let an older
 // receipt overwrite a newer turn's saved session.
-func (s *Server) harnessSessionFor(ctx context.Context, scope store.Scope, sessionID string, cont *continuation) (store.HarnessSession, error) {
+func (s *Server) harnessSessionFor(ctx context.Context, scope store.Scope, sessionID, backendKey string, cont *continuation) (store.HarnessSession, error) {
 	if cont == nil {
-		return s.store.NextHarnessTurn(ctx, scope, sessionID, time.Now().UTC())
+		session, err := s.store.NextHarnessTurn(ctx, scope, sessionID, time.Now().UTC())
+		if err != nil {
+			return store.HarnessSession{}, err
+		}
+		// Legacy rows and sessions observed on a different runner remain in the
+		// store for history, but this dispatch must start a fresh native session.
+		// Keep the durable pair intact until a receipt from this backend replaces
+		// it, so a failed dispatch does not destroy the last working continuity.
+		if session.BackendKey != backendKey {
+			session.HarnessSessionID = ""
+		}
+		session.BackendKey = backendKey
+		return session, nil
 	}
 	raw, err := cont.Checkpoint.backendState()
 	if err != nil {
@@ -293,9 +311,23 @@ func (s *Server) harnessSessionFor(ctx context.Context, scope store.Scope, sessi
 		return store.HarnessSession{}, errors.New("the harness checkpoint carries an invalid attempt epoch")
 	}
 	return store.HarnessSession{
-		SessionID: sessionID, HarnessSessionID: state.SessionID,
-		Turns: int64(state.Epoch), UpdatedAt: time.Now().UTC(),
+		SessionID: sessionID, HarnessSessionID: state.SessionID, BackendKey: backendKey,
+		Turns: int64(state.Epoch), ObservedEpoch: int64(state.Epoch), UpdatedAt: time.Now().UTC(),
 	}, nil
+}
+
+// harnessBackendKey binds a native session to the runner that reported it.
+// Length-prefixing each component keeps the encoding unambiguous even if a
+// future coordinate admits punctuation used by another component.
+func harnessBackendKey(clusterID, edgeKind, edgeName, advertisedHarness string) string {
+	var identity strings.Builder
+	for _, part := range []string{clusterID, edgeKind, edgeName, advertisedHarness} {
+		identity.WriteString(strconv.Itoa(len(part)))
+		identity.WriteByte(':')
+		identity.WriteString(part)
+	}
+	sum := sha256.Sum256([]byte(identity.String()))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // harnessTaskID is the conversation's identity on the runner.
@@ -437,11 +469,10 @@ func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, arg
 // approvableArgs keeps the stored disclosure a JSON object.
 //
 // An approval may only be GRANTED when its arguments can be read back as an
-// object (approvalDisclosureAvailable), which is what stops a person approving
-// something nobody can show them. A harness renders its tool input as JSON and
-// the runner bounds it, so a large input arrives truncated and no longer parses
-// — and the approval would become deny-only. Wrapping it keeps the disclosure
-// honest about what it is: the harness's rendering, verbatim, under one key.
+// object (approvalDisclosureAvailable), which stops a person approving
+// something nobody can show them. Older/plain-text inputs are wrapped under an
+// explicit input key so the disclosure remains a JSON object; oversized Codex
+// permission inputs are rejected before the runner can truncate them.
 func approvableArgs(args string) string {
 	args = strings.TrimSpace(args)
 	var object map[string]json.RawMessage

@@ -962,6 +962,10 @@ func (a *Agent) shouldRegisterEdge() bool {
 	return a.opts.Token == "" && !a.opts.UsingSavedKubeconfig && !a.hasIssuedCredential()
 }
 
+func (a *Agent) shouldSetupSSHCredentials() bool {
+	return a.agentType == AgentTypeServer && a.opts.Token == ""
+}
+
 // runServerMode is the host mode: no downstream Kubernetes API. LinuxServer
 // hosts additionally expose SSH; MacOSServer hosts use the same reverse tunnel
 // and Service proxy without requiring sshd.
@@ -991,20 +995,16 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 
 	// Set up SSH credentials only for LinuxServer edges. A macOS worker is
 	// service-only by default and must not depend on sshd or upload credentials.
+	// SSH credentials are independent of the agent identity, so an already-
+	// enrolled agent can use its issued credential to submit operator rotations.
 	// In join-token mode the token is not a valid kcp credential, so skip
-	// credential setup — the hub manages SSH credentials server-side. A saved
-	// issued credential is restricted to already-enrolled operations, so it
-	// must not repeat enrollment-time setup either.
-	if a.agentType == AgentTypeServer && a.opts.Token == "" && !a.hasIssuedCredential() {
+	// credential setup — the hub manages SSH credentials server-side.
+	if a.shouldSetupSSHCredentials() {
 		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
 			return fmt.Errorf("setting up SSH credentials: %w", err)
 		}
 	} else if a.agentType == AgentTypeServer {
-		if a.opts.Token != "" {
-			logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
-		} else {
-			logger.Info("Using saved agent credential: skipping SSH credential setup")
-		}
+		logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
 	}
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.

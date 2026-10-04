@@ -18,7 +18,7 @@ func testScope() Scope {
 	return Scope{OrgUUID: "org1", WorkspaceUUID: "ws1", AgentName: "helper"}
 }
 
-func TestMemoryStore_HarnessSessionIgnoresLateOlderTurn(t *testing.T) {
+func TestMemoryStore_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()
 	sc := testScope()
@@ -33,26 +33,42 @@ func TestMemoryStore_HarnessSessionIgnoresLateOlderTurn(t *testing.T) {
 		t.Fatalf("claim second turn: %v", err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: second.Turns, HarnessSessionID: "newer-thread", UpdatedAt: now.Add(2 * time.Second),
+		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		HarnessSessionID: "first-thread", UpdatedAt: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist first completed turn after second allocation: %v", err)
+	}
+	got, ok, err := s.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || got.Turns != second.Turns || got.ObservedEpoch != first.Turns ||
+		got.HarnessSessionID != "first-thread" || got.BackendKey != "backend-a" {
+		t.Fatalf("first receipt after later allocation = %+v, ok=%v, err=%v; want allocated epoch %d and observed first-thread/backend-a at epoch %d",
+			got, ok, err, second.Turns, first.Turns)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, BackendKey: "backend-b",
+		HarnessSessionID: "newer-thread", UpdatedAt: now.Add(3 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist second turn: %v", err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: first.Turns, HarnessSessionID: "older-thread", UpdatedAt: now.Add(3 * time.Second),
+		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		HarnessSessionID: "older-thread", UpdatedAt: now.Add(4 * time.Second),
 	}); err != nil {
-		t.Fatalf("persist late first turn: %v", err)
+		t.Fatalf("persist late first receipt: %v", err)
 	}
 	// An empty receipt is not allowed to clear the session, even when it comes
 	// from the latest turn.
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: second.Turns, UpdatedAt: now.Add(4 * time.Second),
+		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, UpdatedAt: now.Add(5 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist empty receipt: %v", err)
 	}
 
-	got, ok, err := s.GetHarnessSession(ctx, sc, "chat")
-	if err != nil || !ok || got.Turns != second.Turns || got.HarnessSessionID != "newer-thread" {
-		t.Fatalf("session after late writes = %+v, ok=%v, err=%v; want epoch %d and newer-thread", got, ok, err, second.Turns)
+	got, ok, err = s.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || got.Turns != second.Turns || got.ObservedEpoch != second.Turns ||
+		got.HarnessSessionID != "newer-thread" || got.BackendKey != "backend-b" {
+		t.Fatalf("session after late writes = %+v, ok=%v, err=%v; want allocated epoch %d, observed epoch %d and newer-thread/backend-b",
+			got, ok, err, second.Turns, second.Turns)
 	}
 	third, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second))
 	if err != nil || third.Turns != 3 || third.HarnessSessionID != "newer-thread" {

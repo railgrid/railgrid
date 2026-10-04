@@ -78,6 +78,11 @@ type Config struct {
 	// TaskID identifies the CONVERSATION on the runner. Every turn of one
 	// session is a new dispatch of this task.
 	TaskID string
+	// BackendKey identifies the runner selected for this attempt. It is opaque
+	// to this package; carrying it in resume state prevents a parked attempt from
+	// being continued against a different runner after the agent configuration
+	// changes.
+	BackendKey string
 	// AttemptID identifies this turn's attempt. The provider passes the run id,
 	// so an attempt and a run are the same thing on both sides of the seam.
 	AttemptID string
@@ -134,15 +139,15 @@ type Observed struct {
 }
 
 // State is this backend's resume state, opaque to the provider, persisted with
-// the run and handed back as Answer.State.
-//
-// It is the coordinates of a conversation in flight, not a snapshot of it: the
-// harness holds the transcript, and re-joining is addressing the same attempt at
-// the same cursor rather than replaying anything.
+// the run and handed back as Answer.State. It contains the coordinates for
+// re-joining an attempt and a normalized snapshot of what the provider has
+// already observed through that cursor. The harness holds the transcript, but
+// the snapshot is needed to reconstruct this provider's outcome after recovery.
 type State struct {
-	TaskID    string `json:"taskID"`
-	AttemptID string `json:"attemptID"`
-	Epoch     uint64 `json:"epoch"`
+	TaskID     string `json:"taskID"`
+	AttemptID  string `json:"attemptID"`
+	Epoch      uint64 `json:"epoch"`
+	BackendKey string `json:"backendKey,omitempty"`
 	// SessionID is the session the receipt reported, which a resume re-states
 	// and the next turn chains onto.
 	SessionID string `json:"sessionID,omitempty"`
@@ -161,6 +166,37 @@ type State struct {
 	// Spent is what this attempt had already consumed when it parked, so a
 	// resumed turn bills only the delta.
 	Spent backend.Cost `json:"spent,omitzero"`
+	// Snapshot carries normalized transcript and deduplication state through
+	// Cursor. Older states omit it; Continue reconstructs those by silently
+	// replaying the retained event prefix, and fails if that prefix is incomplete.
+	Snapshot *StateSnapshot `json:"snapshot,omitempty"`
+}
+
+const stateSnapshotVersion = 1
+
+// StateSnapshot is the part of a turn that cannot be recovered from the
+// attempt coordinates alone. Spent already includes everything through Cursor,
+// so the snapshot stores usage deduplication markers but not a second copy of
+// its billable cost.
+type StateSnapshot struct {
+	Version          int                     `json:"version"`
+	Text             string                  `json:"text,omitempty"`
+	Final            string                  `json:"final,omitempty"`
+	Tools            map[string]ToolSnapshot `json:"tools,omitempty"`
+	ToolDurationNS   int64                   `json:"toolDurationNS,omitempty"`
+	TurnDurationNS   int64                   `json:"turnDurationNS,omitempty"`
+	TurnStarted      bool                    `json:"turnStarted,omitempty"`
+	CodexTotalTokens int64                   `json:"codexTotalTokens,omitempty"`
+	CodexTotalSeen   bool                    `json:"codexTotalSeen,omitempty"`
+	CodexLast        string                  `json:"codexLast,omitempty"`
+	Clarification    *runner.Clarification   `json:"clarification,omitempty"`
+}
+
+// ToolSnapshot records the dedupe state for a tool item already observed.
+type ToolSnapshot struct {
+	Name  string `json:"name,omitempty"`
+	Args  string `json:"args,omitempty"`
+	Ended bool   `json:"ended,omitempty"`
 }
 
 // New builds a Backend for one turn.
@@ -249,7 +285,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("starting the harness turn", err)
 	}
 	b.observe(receipt)
-	return b.follow(ctx, receipt, sink, backend.Cost{}, 0)
+	return b.follow(ctx, receipt, sink, backend.Cost{}, newTurnState(sink))
 }
 
 // Continue picks a parked turn back up.
@@ -272,6 +308,9 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	if state.AttemptID == "" {
 		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn's resume state names no attempt")
 	}
+	if state.BackendKey != "" && b.cfg.BackendKey != "" && state.BackendKey != b.cfg.BackendKey {
+		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn's resume state belongs to a different harness backend")
+	}
 	if err := sink.Aborted(ctx); err != nil {
 		return backend.Outcome{Status: backend.StatusCancelled}, err
 	}
@@ -281,15 +320,20 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("inspecting the parked attempt", err)
 	}
 	b.observe(receipt)
-	// Already finished while nobody was watching: the receipt is the answer, and
-	// resuming it would be a second dispatch of work that is done.
+	turnState, err := b.restoreState(ctx, state, sink)
+	if err != nil {
+		return backend.Outcome{Status: b.statusFor(ctx)}, err
+	}
+	// Already finished while nobody was watching: follow the retained tail after
+	// the snapshot cursor, then trust the receipt. This keeps events emitted after
+	// the last checkpoint and uses the restored transcript for the rest.
 	if receipt.Phase.IsTerminal() {
-		return b.outcomeFor(ctx, receipt, newTurnState(sink), state.Spent)
+		return b.follow(ctx, receipt, sink, state.Spent, turnState)
 	}
 	if receipt.Phase != runner.PhaseNeedsInput {
 		// Still executing. Re-join it rather than resuming: a resume would be
 		// refused (the attempt is not waiting) and the work is not lost.
-		return b.follow(ctx, receipt, sink, state.Spent, state.Cursor)
+		return b.follow(ctx, receipt, sink, state.Spent, turnState)
 	}
 
 	approved, err := b.approvedInput(r)
@@ -334,7 +378,7 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("resuming the harness turn", err)
 	}
 	b.observe(resumed)
-	return b.follow(ctx, resumed, sink, state.Spent, state.Cursor)
+	return b.follow(ctx, resumed, sink, state.Spent, turnState)
 }
 
 const (
@@ -417,13 +461,15 @@ func (b *Backend) Cancel(ctx context.Context, _ *backend.Run) error {
 // length of a coding turn. Each reconnect is also where the two things that must
 // not be skipped happen: the durable cancel flag is consulted, and the receipt is
 // re-read in case the attempt ended during the quiet.
-func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backend.EventSink, prior backend.Cost, after uint64) (backend.Outcome, error) {
-	state := newTurnState(sink)
-	state.cursor = after
+func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backend.EventSink, prior backend.Cost, state *turnState) (backend.Outcome, error) {
+	if state == nil {
+		state = newTurnState(sink)
+	}
+	state.sink = sink
 	// A resumed or re-joined Codex thread may have emitted turn/started before
 	// this follower attached. The receipt's session ID establishes that its
 	// subsequent tokenUsage updates belong to an active attempt.
-	state.turnStarted = receipt.SessionID != ""
+	state.turnStarted = state.turnStarted || receipt.SessionID != ""
 	if receipt.Clarification != nil {
 		state.clarification = receipt.Clarification
 	}
@@ -459,6 +505,10 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 						dispatchError("reconciling after a cursor gap", ierr)
 				}
 				b.observe(reconciled)
+				if state.recovering && reconciled.Cursor > state.cursor {
+					return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
+						fmt.Errorf("cannot recover harness attempt: event history is incomplete after saved cursor %d (runner cursor %d)", state.cursor, reconciled.Cursor)
+				}
 				state.cursor = reconciled.Cursor
 				if reconciled.Clarification != nil {
 					state.clarification = reconciled.Clarification
@@ -558,6 +608,119 @@ func (b *Backend) checkpoint(sink backend.EventSink, state *turnState, prior bac
 	sink.Checkpoint(raw)
 }
 
+// snapshot captures the normalized state through the cursor. Its accumulated
+// cost is already represented by State.Spent, while these markers let resumed
+// events be deduplicated against the prefix.
+func snapshot(s *turnState) *StateSnapshot {
+	tools := make(map[string]ToolSnapshot, len(s.tools))
+	for id, tool := range s.tools {
+		tools[id] = ToolSnapshot{Name: tool.name, Args: tool.args, Ended: tool.ended}
+	}
+	var clarification *runner.Clarification
+	if s.clarification != nil {
+		copy := *s.clarification
+		clarification = &copy
+	}
+	return &StateSnapshot{
+		Version:          stateSnapshotVersion,
+		Text:             s.text.String(),
+		Final:            s.final,
+		Tools:            tools,
+		ToolDurationNS:   int64(s.toolDuration),
+		TurnDurationNS:   int64(s.turnDuration),
+		TurnStarted:      s.turnStarted,
+		CodexTotalTokens: s.codexTotalTokens,
+		CodexTotalSeen:   s.codexTotalSeen,
+		CodexLast:        s.codexLast,
+		Clarification:    clarification,
+	}
+}
+
+// restoreState rebuilds the normalizer state through State.Cursor. New states
+// carry a complete snapshot and require no historical runner events. Legacy
+// states are replayed into a silent sink; if the runner has already expired any
+// part of that prefix, recovery fails explicitly instead of returning a
+// truncated answer.
+func (b *Backend) restoreState(ctx context.Context, state State, sink backend.EventSink) (*turnState, error) {
+	if state.Snapshot == nil {
+		return b.replayLegacyState(ctx, state, sink)
+	}
+	snapshot := state.Snapshot
+	if snapshot.Version != stateSnapshotVersion {
+		return nil, fmt.Errorf("the turn's resume state uses unsupported snapshot version %d", snapshot.Version)
+	}
+	if snapshot.ToolDurationNS < 0 || snapshot.TurnDurationNS < 0 {
+		return nil, errors.New("the turn's resume state contains a negative duration")
+	}
+	restored := newTurnState(sink)
+	restored.recovering = true
+	restored.text.WriteString(snapshot.Text)
+	restored.final = snapshot.Final
+	restored.cursor = state.Cursor
+	restored.toolDuration = time.Duration(snapshot.ToolDurationNS)
+	restored.turnDuration = time.Duration(snapshot.TurnDurationNS)
+	restored.turnStarted = snapshot.TurnStarted
+	restored.codexTotalTokens = snapshot.CodexTotalTokens
+	restored.codexTotalSeen = snapshot.CodexTotalSeen
+	restored.codexLast = snapshot.CodexLast
+	if snapshot.Clarification != nil {
+		copy := *snapshot.Clarification
+		restored.clarification = &copy
+	}
+	for id, tool := range snapshot.Tools {
+		restored.tools[id] = toolInFlight{name: tool.Name, args: tool.Args, ended: tool.Ended}
+	}
+	return restored, nil
+}
+
+func (b *Backend) replayLegacyState(ctx context.Context, state State, sink backend.EventSink) (*turnState, error) {
+	replayed := newTurnState(silentSink{})
+	replayed.recovering = true
+	// The session receipt is also the signal that Codex usage notifications
+	// belong to an active native thread. Restore it before consuming a legacy
+	// prefix, just as follow does for a current receipt.
+	replayed.turnStarted = state.SessionID != ""
+	if state.Cursor == 0 {
+		replayed.sink = sink
+		return replayed, nil
+	}
+	stream, err := b.cfg.Dispatcher.Events(ctx, state.AttemptID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("rebuilding legacy resume state through cursor %d: %w", state.Cursor, err)
+	}
+	defer func() { _ = stream.Close() }()
+	for cursor := uint64(1); cursor <= state.Cursor; cursor++ {
+		if err := sink.Aborted(ctx); err != nil {
+			return nil, err
+		}
+		event, err := stream.Next(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("rebuilding legacy resume state through cursor %d at event %d: %w", state.Cursor, cursor, err)
+		}
+		if event.Cursor != cursor {
+			return nil, fmt.Errorf("rebuilding legacy resume state through cursor %d: expected event %d, got cursor %d", state.Cursor, cursor, event.Cursor)
+		}
+		replayed.observe(event)
+	}
+	// All usage observed during replay is already in State.Spent. Keep the
+	// deduplication markers and normalized output, but only bill events after the
+	// saved cursor.
+	replayed.cost = backend.Cost{}
+	replayed.sink = sink
+	return replayed, nil
+}
+
+// silentSink reconstructs legacy state without re-emitting already recorded
+// deltas, assistant messages, or tool events to the provider.
+type silentSink struct{}
+
+func (silentSink) Delta(string)                       {}
+func (silentSink) Assistant(backend.AssistantMessage) {}
+func (silentSink) ToolStart(string, string, string)   {}
+func (silentSink) ToolEnd(backend.ToolEvent)          {}
+func (silentSink) Checkpoint(json.RawMessage)         {}
+func (silentSink) Aborted(ctx context.Context) error  { return ctx.Err() }
+
 // state renders the resume coordinates.
 func (b *Backend) state(s *turnState, clarificationID, permissionID string, prior backend.Cost) State {
 	observed := b.Observed()
@@ -569,11 +732,13 @@ func (b *Backend) state(s *turnState, clarificationID, permissionID string, prio
 		TaskID:          b.cfg.TaskID,
 		AttemptID:       firstNonEmpty(observed.AttemptID, b.cfg.AttemptID),
 		Epoch:           epoch,
+		BackendKey:      b.cfg.BackendKey,
 		SessionID:       firstNonEmpty(observed.SessionID, b.cfg.SessionID),
 		Cursor:          s.cursor,
 		ClarificationID: clarificationID,
 		PermissionID:    permissionID,
 		Spent:           addCost(prior, s.cost),
+		Snapshot:        snapshot(s),
 	}
 }
 
