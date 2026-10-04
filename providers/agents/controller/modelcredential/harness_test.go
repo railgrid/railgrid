@@ -121,8 +121,53 @@ func TestClaudeCodeCredentialWithBothKeysIsNotReady(t *testing.T) {
 	}
 }
 
-// A harness credential whose Secret holds nothing usable is not Ready, and the
-// message names the keys rather than the endpoint.
+// A Codex Secret must hold a JSON object. Every other top-level JSON shape is
+// refused through SecretResolved without copying credential bytes into status.
+func TestCodexCredentialWithNonObjectSessionIsNotReady(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		auth  string
+		leaks string
+	}{{
+		name: "null",
+		auth: `null`,
+	}, {
+		name: "array",
+		auth: `[]`,
+	}, {
+		name:  "string",
+		auth:  `"session-secret-marker"`,
+		leaks: "session-secret-marker",
+	}, {
+		name: "number",
+		auth: `42`,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, c := newReconciler(t, refuseProbe(t),
+				harnessCredential(agentsv1alpha1.ModelProviderCodex),
+				secret(true, map[string][]byte{"auth.json": []byte(tc.auth)}))
+			reconcileOnce(t, r)
+			got := read(t, c)
+
+			resolved := condition(t, got, agentsv1alpha1.ConditionSecretResolved)
+			if resolved.Status != metav1.ConditionFalse || resolved.Reason != agentsv1alpha1.ReasonSecretIncomplete {
+				t.Fatalf("SecretResolved = %s (%s), want False/%s", resolved.Status, resolved.Reason, agentsv1alpha1.ReasonSecretIncomplete)
+			}
+			if !strings.Contains(resolved.Message, "JSON object") {
+				t.Fatalf("the message does not describe the required auth.json shape: %q", resolved.Message)
+			}
+			if tc.leaks != "" && strings.Contains(resolved.Message, tc.leaks) {
+				t.Fatalf("the status message leaked auth.json contents: %q", resolved.Message)
+			}
+			if cond := condition(t, got, agentsv1alpha1.ConditionReady); cond.Status != metav1.ConditionFalse {
+				t.Fatalf("Ready = %s, want False for a non-object session", cond.Status)
+			}
+		})
+	}
+}
+
+// Malformed JSON is refused as incomplete too, and the diagnostic names the
+// key rather than echoing the supplied bytes.
 func TestCodexCredentialWithUnparseableSessionIsNotReady(t *testing.T) {
 	r, c := newReconciler(t, refuseProbe(t),
 		harnessCredential(agentsv1alpha1.ModelProviderCodex),
@@ -131,8 +176,8 @@ func TestCodexCredentialWithUnparseableSessionIsNotReady(t *testing.T) {
 	got := read(t, c)
 
 	resolved := condition(t, got, agentsv1alpha1.ConditionSecretResolved)
-	if resolved.Status != metav1.ConditionFalse {
-		t.Fatalf("SecretResolved = %s, want False", resolved.Status)
+	if resolved.Status != metav1.ConditionFalse || resolved.Reason != agentsv1alpha1.ReasonSecretIncomplete {
+		t.Fatalf("SecretResolved = %s (%s), want False/%s", resolved.Status, resolved.Reason, agentsv1alpha1.ReasonSecretIncomplete)
 	}
 	if !strings.Contains(resolved.Message, llm.ProviderCodex) && !strings.Contains(resolved.Message, "auth.json") {
 		t.Fatalf("the message does not name the key to fix: %q", resolved.Message)

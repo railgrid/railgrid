@@ -80,6 +80,10 @@ import (
 type Config struct {
 	// Runner reaches the enrolled runner. dispatch.Wrap adapts the shared client.
 	Runner dispatch.Runner
+	// BackendKey binds a parked attempt to the runner selected for it. A
+	// continuation that resolves to another runner cannot safely resume the
+	// original attempt.
+	BackendKey string
 
 	// TaskID identifies the CONVERSATION on the runner. Every turn of one
 	// session is a new dispatch of this task.
@@ -142,13 +146,13 @@ type Observed struct {
 // State is this backend's resume state, opaque to the provider, persisted with
 // the run and handed back as Answer.State.
 //
-// It is the coordinates of a conversation in flight, not a snapshot of it: the
-// harness holds the transcript, and re-joining is addressing the same attempt at
-// the same cursor rather than replaying anything.
+// The runner holds the transcript, while the serialized dispatch snapshot keeps
+// the normalized event state needed to continue observing it after recovery.
 type State struct {
-	TaskID    string `json:"taskID"`
-	AttemptID string `json:"attemptID"`
-	Epoch     uint64 `json:"epoch"`
+	TaskID     string `json:"taskID"`
+	AttemptID  string `json:"attemptID"`
+	Epoch      uint64 `json:"epoch"`
+	BackendKey string `json:"backendKey,omitempty"`
 	// SessionID is the session the receipt reported, which a resume re-states
 	// and the next turn chains onto.
 	SessionID string `json:"sessionID,omitempty"`
@@ -167,7 +171,21 @@ type State struct {
 	// Spent is what this attempt had already consumed when it parked, so a
 	// resumed turn bills only the delta.
 	Spent backend.Cost `json:"spent,omitzero"`
+	// ParkType records which kind of prompt this state belongs to even when a
+	// clarification has no ID. A stale answer may only resolve the same kind of
+	// park and, where present, the same ID.
+	ParkType string `json:"parkType,omitempty"`
+	// Snapshot is the shared dispatch normalizer at Cursor. It carries the
+	// accumulated transcript, usage markers, timing and open tool calls. Raw
+	// JSON lets this backend read the earlier v1 shape, whose fields are now the
+	// inner state of dispatch.Snapshot.
+	Snapshot json.RawMessage `json:"snapshot,omitempty"`
 }
+
+const (
+	parkTypeQuestion   = "question"
+	parkTypePermission = "permission"
+)
 
 // position renders the state as the lifecycle's coordinates.
 func (s State) position() dispatch.Position {
@@ -266,7 +284,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 	if err != nil {
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("starting the harness turn", err)
 	}
-	out, err := dispatch.Follow(ctx, b.cfg.Runner, receipt, b.start(), b.observer(sink, backend.Cost{}))
+	out, err := dispatch.FollowSnapshot(ctx, b.cfg.Runner, receipt, dispatch.Snapshot{Position: b.start()}, b.observer(sink))
 	return b.outcome(ctx, out, err, backend.Cost{})
 }
 
@@ -291,14 +309,21 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	if state.AttemptID == "" {
 		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn's resume state names no attempt")
 	}
+	if state.BackendKey != "" && b.cfg.BackendKey != "" && state.BackendKey != b.cfg.BackendKey {
+		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn's resume state belongs to a different harness backend")
+	}
 	if err := sink.Aborted(ctx); err != nil {
 		return backend.Outcome{Status: backend.StatusCancelled}, err
 	}
 	pos := state.position()
-	obs := b.observer(sink, state.Spent)
+	snapshot, err := b.dispatchSnapshot(ctx, state, sink)
+	if err != nil {
+		return backend.Outcome{Status: b.statusFor(ctx)}, err
+	}
+	obs := b.observer(sink)
 
 	if !answer.Decided {
-		out, err := dispatch.Rejoin(ctx, b.cfg.Runner, pos, obs)
+		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
 		return b.outcome(ctx, out, err, state.Spent)
 	}
 
@@ -313,7 +338,14 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	// executing: the park was answered by events, so re-join it. Only a receipt
 	// genuinely waiting on input takes the answer.
 	if receipt.Phase != runner.PhaseNeedsInput {
-		out, err := dispatch.Rejoin(ctx, b.cfg.Runner, pos, obs)
+		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
+		return b.outcome(ctx, out, err, state.Spent)
+	}
+	if answerTargetsDifferentPark(state, receipt) {
+		// The inbox answer belongs to the park persisted with State. If the
+		// runner has already moved on, surface its current park without applying
+		// an old verdict or answer to it.
+		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
 		return b.outcome(ctx, out, err, state.Spent)
 	}
 	approved, err := b.approvedInput(r)
@@ -329,7 +361,7 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		Resolution: resolution(answer, receipt.Permission != nil),
 		Allow:      answer.Approved,
 	}, approved, &credential)
-	out, err := dispatch.Resume(ctx, b.cfg.Runner, resume, pos, obs)
+	out, err := dispatch.ResumeSnapshot(ctx, b.cfg.Runner, resume, snapshot, obs)
 	return b.outcome(ctx, out, err, state.Spent)
 }
 
@@ -391,11 +423,20 @@ func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, 
 		return backend.Outcome{Status: status, Usage: usage}, err
 	}
 	if parked := out.Parked; parked != nil {
-		raw, merr := json.Marshal(b.state(out.Position, prior, out.Summary.Usage))
+		parkType := parkTypeQuestion
+		if parked.Permission != nil {
+			parkType = parkTypePermission
+		}
+		resumeState, merr := b.state(out.Snapshot, parkType)
 		if merr != nil {
 			// Without resumable state the park would strand the run: no answer
 			// could ever continue it. Fail it instead, which at least ends it
 			// where a person can see it.
+			return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
+				fmt.Errorf("recording the turn's resume state: %w", merr)
+		}
+		raw, merr := json.Marshal(resumeState)
+		if merr != nil {
 			return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
 				fmt.Errorf("recording the turn's resume state: %w", merr)
 		}
@@ -427,30 +468,41 @@ func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, 
 }
 
 // state renders the resume coordinates the provider persists.
-func (b *Backend) state(pos dispatch.Position, prior backend.Cost, spent dispatch.Usage) State {
+func (b *Backend) state(snapshot dispatch.Snapshot, parkType string) (State, error) {
+	pos := snapshot.Position
+	epoch := pos.Epoch
+	if epoch == 0 {
+		epoch = b.cfg.Epoch
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return State{}, err
+	}
 	return State{
 		TaskID:          firstNonEmpty(pos.TaskID, b.cfg.TaskID),
 		AttemptID:       firstNonEmpty(pos.AttemptID, b.cfg.AttemptID),
-		Epoch:           maxEpoch(pos.Epoch, b.cfg.Epoch),
+		Epoch:           epoch,
+		BackendKey:      b.cfg.BackendKey,
 		SessionID:       firstNonEmpty(pos.SessionID, b.cfg.SessionID),
 		Cursor:          pos.Cursor,
 		ClarificationID: pos.ClarificationID,
 		PermissionID:    pos.PermissionID,
-		Spent:           usage(spent, prior).Total,
-	}
+		Spent:           cost(snapshot.Usage),
+		ParkType:        parkType,
+		Snapshot:        snapshotJSON,
+	}, nil
 }
 
 // observer wires the lifecycle's observations onto the seam. No field is
 // translated beyond naming: the stream's prose is a delta, its tool calls are
 // the seam's tool events, and its checkpoints become this backend's State.
-func (b *Backend) observer(sink backend.EventSink, prior backend.Cost) dispatch.Observer {
-	return &sinkObserver{b: b, sink: sink, prior: prior}
+func (b *Backend) observer(sink backend.EventSink) dispatch.Observer {
+	return &sinkObserver{b: b, sink: sink}
 }
 
 type sinkObserver struct {
-	b     *Backend
-	sink  backend.EventSink
-	prior backend.Cost
+	b    *Backend
+	sink backend.EventSink
 }
 
 func (o *sinkObserver) Text(delta string)                 { o.sink.Delta(delta) }
@@ -458,20 +510,114 @@ func (o *sinkObserver) ToolStart(id, name, args string)   { o.sink.ToolStart(id,
 func (o *sinkObserver) Aborted(ctx context.Context) error { return o.sink.Aborted(ctx) }
 
 func (o *sinkObserver) ToolEnd(t dispatch.ToolResult) {
-	o.sink.ToolEnd(backend.ToolEvent{ID: t.ID, Name: t.Name, Args: t.Args, Result: t.Result, Err: t.Failed})
+	o.sink.ToolEnd(backend.ToolEvent{ID: t.ID, Name: t.Name, Args: t.Args, Result: t.Result, Err: t.Failed, Duration: t.Duration})
 }
 
-// Checkpoint persists where this turn can be re-joined. The state is ours, not
-// the harness's: a harness-backed run is recovered by addressing the same
-// attempt at the same cursor, so what has to survive is the coordinates.
+func (o *sinkObserver) Assistant(a dispatch.AssistantResult) {
+	o.sink.Assistant(backend.AssistantMessage{Content: a.Content, Complete: a.Complete, Duration: a.Duration})
+}
+
+// Checkpoint persists the coordinates and normalized event state needed to
+// reconstruct this backend's outcome after a process restart.
 func (o *sinkObserver) Checkpoint(snap dispatch.Snapshot) {
-	raw, err := json.Marshal(o.b.state(snap.Position, o.prior, snap.Usage))
+	state, err := o.b.state(snap, "")
+	if err != nil {
+		return
+	}
+	raw, err := json.Marshal(state)
 	if err != nil {
 		// A checkpoint that cannot be serialized costs recoverability, which is
 		// strictly better than failing a working turn over it.
 		return
 	}
 	o.sink.Checkpoint(raw)
+}
+
+func (b *Backend) dispatchSnapshot(ctx context.Context, state State, sink backend.EventSink) (dispatch.Snapshot, error) {
+	if len(state.Snapshot) == 0 {
+		// The main-branch checkpoint format stored coordinates only. Rebuild its
+		// normalized prefix through the saved cursor so recovery can preserve the
+		// final answer, usage markers and in-flight tool state. State.Spent is
+		// the durable billing value, so keep it as the accumulator baseline even
+		// if retained event accounting differs from what the checkpoint saved.
+		snapshot, err := dispatch.RestoreSnapshot(ctx, b.cfg.Runner, state.position(), abortObserver{sink: sink})
+		if err != nil {
+			return snapshot, err
+		}
+		snapshot.Usage = dispatchUsage(state.Spent)
+		return snapshot, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(state.Snapshot, &fields); err != nil {
+		return dispatch.Snapshot{}, fmt.Errorf("reading the turn's dispatch snapshot: %w", err)
+	}
+	// Earlier agents snapshots were the normalizer state itself (`version`,
+	// `text`, `tools`, and Codex accounting markers). The shared normalizer
+	// deliberately uses that shape as its opaque State, so migration requires
+	// only adding the outer cursor and cumulative usage.
+	if _, current := fields["Position"]; !current {
+		if _, current = fields["position"]; !current {
+			return dispatch.Snapshot{
+				Position: state.position(), Usage: dispatchUsage(state.Spent), State: state.Snapshot,
+			}, nil
+		}
+	}
+	var snapshot dispatch.Snapshot
+	if err := json.Unmarshal(state.Snapshot, &snapshot); err != nil {
+		return dispatch.Snapshot{}, fmt.Errorf("reading the turn's dispatch snapshot: %w", err)
+	}
+	snapshot.Position = state.position()
+	if snapshot.Usage == (dispatch.Usage{}) && state.Spent != (backend.Cost{}) {
+		snapshot.Usage = dispatchUsage(state.Spent)
+	}
+	return snapshot, nil
+}
+
+type abortObserver struct {
+	dispatch.Noop
+	sink backend.EventSink
+}
+
+func (o abortObserver) Aborted(ctx context.Context) error { return o.sink.Aborted(ctx) }
+
+func cost(usage dispatch.Usage) backend.Cost {
+	return backend.Cost{
+		Tokens:     backend.Tokens{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		CostMicros: usage.CostMicros,
+	}
+}
+
+func dispatchUsage(cost backend.Cost) dispatch.Usage {
+	return dispatch.Usage{
+		InputTokens: cost.InputTokens, OutputTokens: cost.OutputTokens, CostMicros: cost.CostMicros,
+	}
+}
+
+func answerTargetsDifferentPark(state State, receipt runner.Receipt) bool {
+	want := state.ParkType
+	if want == "" {
+		switch {
+		case state.PermissionID != "":
+			want = parkTypePermission
+		case state.ClarificationID != "":
+			want = parkTypeQuestion
+		default:
+			// Legacy states did not include ParkType. Permission parks always
+			// carried an ID, so an anonymous old park is a question. It still
+			// matches only a current anonymous question.
+			return receipt.Permission != nil || receipt.Clarification != nil && receipt.Clarification.ID != ""
+		}
+	}
+	if receipt.Permission != nil {
+		return want != parkTypePermission || state.PermissionID == "" || state.PermissionID != receipt.Permission.ID
+	}
+	if want != parkTypeQuestion {
+		return true
+	}
+	if receipt.Clarification == nil || receipt.Clarification.ID == "" {
+		return state.ClarificationID != ""
+	}
+	return state.ClarificationID != receipt.Clarification.ID
 }
 
 // usage prices what the lifecycle saw against what the run had already spent.
@@ -616,11 +762,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func maxEpoch(a, b uint64) uint64 {
-	if a > b {
-		return a
-	}
-	return b
 }

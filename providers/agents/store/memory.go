@@ -315,13 +315,32 @@ func (m *MemoryStore) PutHarnessSession(_ context.Context, scope Scope, s Harnes
 	if strings.TrimSpace(s.SessionID) == "" {
 		return fmt.Errorf("session ID is required")
 	}
+	if strings.TrimSpace(s.HarnessSessionID) != "" {
+		if strings.TrimSpace(s.BackendKey) == "" {
+			return fmt.Errorf("backend key is required when a harness session ID is observed")
+		}
+		if s.ObservedEpoch <= 0 {
+			return fmt.Errorf("observed harness session epoch must be positive")
+		}
+	} else {
+		s.HarnessSessionID = ""
+		s.BackendKey = ""
+		s.ObservedEpoch = 0
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := sessionKey(scope, s.SessionID)
 	row := m.harness[key]
 	row.SessionID = s.SessionID
-	if strings.TrimSpace(s.HarnessSessionID) != "" {
+	// A slower earlier turn must not replace the session reported by a newer
+	// observed receipt. Allocation is independent: a completed earlier turn may
+	// report its native session after a later turn has already claimed an epoch.
+	// A write from the same epoch is allowed so a retry can record its receipt;
+	// an empty ID never clears the saved identity.
+	if strings.TrimSpace(s.HarnessSessionID) != "" && s.ObservedEpoch >= row.ObservedEpoch {
 		row.HarnessSessionID = s.HarnessSessionID
+		row.BackendKey = s.BackendKey
+		row.ObservedEpoch = s.ObservedEpoch
 	}
 	// Turns only ever moves forward: a writer recording the session id it
 	// observed must not roll the epoch back to whatever it read earlier.

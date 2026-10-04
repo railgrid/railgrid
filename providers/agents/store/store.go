@@ -250,23 +250,31 @@ func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
 }
 
 // HarnessSession is the harness-side identity of one conversational session:
-// which harness session its turns run in, and how many turns have been
-// dispatched.
+// which native session its turns run in, which backend that session belongs
+// to, and the allocated and observed turn epochs.
 //
-// Both halves are durable because both are protocol requirements rather than
-// bookkeeping. The session id is what makes consecutive turns ONE conversation
+// These coordinates are durable because they are protocol requirements rather
+// than bookkeeping. The session id is what makes consecutive turns ONE conversation
 // (a start that carries it continues the harness session an earlier attempt
-// created). The turn count is the attempt EPOCH, and the runner refuses a start
-// whose epoch does not advance past the task's highest — which is exactly the
-// protection wanted, and only works if the count survives a restart.
+// created). Turns is the highest allocated attempt epoch; ObservedEpoch is the
+// highest epoch whose receipt supplied a native session id. They are separate
+// because allocating a later attempt must not discard an earlier attempt's
+// completed receipt. BackendKey is persisted with HarnessSessionID so changing
+// edge or harness identity never resumes a native session on the wrong runner.
 type HarnessSession struct {
 	SessionID string `json:"sessionID"`
 	// HarnessSessionID is empty until the first turn's receipt reported one.
 	HarnessSessionID string `json:"harnessSessionID,omitempty"`
+	// BackendKey identifies the cluster, edge and advertised harness that
+	// reported HarnessSessionID. It is empty when there is no saved session.
+	BackendKey string `json:"backendKey,omitempty"`
 	// Turns is how many turns have been dispatched for this session, and
 	// therefore what the next epoch must exceed.
-	Turns     int64     `json:"turns"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Turns int64 `json:"turns"`
+	// ObservedEpoch is the greatest turn epoch that supplied the currently saved
+	// HarnessSessionID. A later allocation does not advance it.
+	ObservedEpoch int64     `json:"observedEpoch,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // Memory is a long-term note the agent writes and later recalls. Body is
@@ -435,8 +443,9 @@ type Store interface {
 	// Harness sessions. NextHarnessTurn claims the next turn number for a
 	// session and returns the row as it then stands, so two replicas answering
 	// the same message cannot dispatch the same epoch; PutHarnessSession records
-	// the harness session id a receipt reported. GetHarnessSession reports
-	// ok=false for a session no harness turn has run in.
+	// the native session and backend identity reported by a receipt, gated by the
+	// highest observed epoch rather than the highest allocated epoch.
+	// GetHarnessSession reports ok=false for a session no harness turn has run in.
 	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error)
 	PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error
 	GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error)

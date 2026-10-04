@@ -248,3 +248,51 @@ func TestPostgres_LegacyHistoryUpgradeAndCheckpointSequencePersistence(t *testin
 		t.Fatalf("tool-call pairing changed in persisted checkpoint: %+v", persisted.Checkpoint.ReplacementHistory)
 	}
 }
+
+func TestPostgres_LegacyHarnessSessionUpgradeBackfillsObservedEpochOnce(t *testing.T) {
+	ctx := context.Background()
+	ps, _ := openLegacyHistorySchema(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := ps.db.ExecContext(ctx, `
+		CREATE TABLE agents_harness_sessions (
+			org_uuid TEXT NOT NULL,
+			workspace_uuid TEXT NOT NULL,
+			agent_name TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			harness_session_id TEXT NOT NULL DEFAULT '',
+			turns BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
+		)`); err != nil {
+		t.Fatalf("create legacy harness sessions table: %v", err)
+	}
+	scope := Scope{OrgUUID: "org-legacy", WorkspaceUUID: "ws-legacy", AgentName: "helper"}
+	if _, err := ps.db.ExecContext(ctx, `
+		INSERT INTO agents_harness_sessions
+			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, turns, updated_at)
+		VALUES ($1,$2,$3,'chat','legacy-thread',5,$4)`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, now); err != nil {
+		t.Fatalf("seed legacy harness session: %v", err)
+	}
+
+	if err := ps.EnsureSchema(ctx); err != nil {
+		t.Fatalf("upgrade legacy harness schema: %v", err)
+	}
+	upgraded, ok, err := ps.GetHarnessSession(ctx, scope, "chat")
+	if err != nil || !ok || upgraded.HarnessSessionID != "legacy-thread" || upgraded.BackendKey != "" ||
+		upgraded.Turns != 5 || upgraded.ObservedEpoch != 5 {
+		t.Fatalf("legacy harness row after upgrade = %+v, ok=%v, err=%v", upgraded, ok, err)
+	}
+
+	allocated, err := ps.NextHarnessTurn(ctx, scope, "chat", now.Add(time.Second))
+	if err != nil || allocated.Turns != 6 || allocated.ObservedEpoch != 5 {
+		t.Fatalf("allocated legacy session turn = %+v, err=%v", allocated, err)
+	}
+	if err := ps.EnsureSchema(ctx); err != nil {
+		t.Fatalf("repeat harness schema upgrade: %v", err)
+	}
+	still, ok, err := ps.GetHarnessSession(ctx, scope, "chat")
+	if err != nil || !ok || still.ObservedEpoch != 5 || still.Turns != 6 {
+		t.Fatalf("repeated upgrade advanced observation from allocation: %+v, ok=%v, err=%v", still, ok, err)
+	}
+}

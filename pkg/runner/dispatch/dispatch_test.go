@@ -155,6 +155,7 @@ type recorder struct {
 	toolStarts  []string
 	toolEnds    []ToolResult
 	checkpoints []Snapshot
+	assistants  []AssistantResult
 	abort       error
 }
 
@@ -162,6 +163,7 @@ func (r *recorder) Text(delta string)            { r.text = append(r.text, delta
 func (r *recorder) ToolStart(id, name, _ string) { r.toolStarts = append(r.toolStarts, id+":"+name) }
 func (r *recorder) ToolEnd(t ToolResult)         { r.toolEnds = append(r.toolEnds, t) }
 func (r *recorder) Checkpoint(s Snapshot)        { r.checkpoints = append(r.checkpoints, s) }
+func (r *recorder) Assistant(a AssistantResult)  { r.assistants = append(r.assistants, a) }
 func (r *recorder) Aborted(context.Context) error {
 	return r.abort
 }
@@ -223,6 +225,106 @@ func TestFollowReadsTextToolsAndCostOffTheStream(t *testing.T) {
 	}
 	if out.Position.Cursor != 6 || out.Position.SessionID != "sess-1" {
 		t.Errorf("position = %+v", out.Position)
+	}
+}
+
+func TestFollowNormalizesCodexAppServerEvents(t *testing.T) {
+	const answer = "Here is the result.\n"
+	f := &fakeRunner{
+		receipt: receipt(runner.PhaseCompleted),
+		events: []runner.Event{
+			event(1, runner.EventStarted, "", ""),
+			event(2, runner.EventProgress, "Codex session ready", `{"thread":{"id":"thread-1"}}`),
+			event(3, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(4, runner.EventProgress, answer, `{"delta":"Here is the result.\n"}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"echo ok","status":"inProgress"}}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"echo ok","status":"completed","aggregatedOutput":"ok\n","durationMs":200}}`),
+			event(7, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":40,"outputTokens":4},"total":{"inputTokens":100,"outputTokens":10}}}`),
+			event(8, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":40,"outputTokens":4},"total":{"inputTokens":100,"outputTokens":10}}}`),
+			event(9, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":50,"outputTokens":5},"total":{"inputTokens":150,"outputTokens":15}}}`),
+			event(10, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":50,"outputTokens":5},"total":{"inputTokens":150,"outputTokens":15}}}`),
+			event(11, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Here is the result.\n","phase":"final_answer"}}`),
+			event(12, runner.EventProgress, "completed", `{"turn":{"id":"turn-1","status":"completed","durationMs":700}}`),
+			event(13, runner.EventCompleted, "", ""),
+		},
+	}
+	rec := &recorder{}
+	out, err := Follow(ctxWithTimeout(t), f, receipt(runner.PhaseCompleted), Position{AttemptID: "attempt-1"}, rec)
+	if err != nil {
+		t.Fatalf("Follow: %v", err)
+	}
+	if got := strings.Join(rec.text, ""); got != answer {
+		t.Errorf("streamed text = %q, want byte-exact delta %q", got, answer)
+	}
+	if out.Summary.Text != strings.TrimSpace(answer) || out.Summary.Final != strings.TrimSpace(answer) {
+		t.Errorf("summary = %+v, want one canonical answer", out.Summary)
+	}
+	if got := out.Summary.Usage; got.InputTokens != 90 || got.OutputTokens != 9 || got.CostMicros != 0 {
+		t.Errorf("Codex usage = %+v, want two distinct model-call deltas", got)
+	}
+	if len(rec.toolStarts) != 1 || len(rec.toolEnds) != 1 || rec.toolEnds[0].Duration != 200*time.Millisecond || rec.toolEnds[0].Result != "ok\n" {
+		t.Errorf("tool events = %v / %+v", rec.toolStarts, rec.toolEnds)
+	}
+	if len(rec.assistants) != 1 || rec.assistants[0].Content != strings.TrimSpace(answer) || !rec.assistants[0].Complete || rec.assistants[0].Duration != 500*time.Millisecond {
+		t.Errorf("assistant timing = %+v, want 500ms after subtracting tool time", rec.assistants)
+	}
+}
+
+func TestToolItemNonzeroExitIsFailure(t *testing.T) {
+	item, ok := toolItem(json.RawMessage(`{"item":{"id":"exec-2","type":"commandExecution","status":"completed","exitCode":1,"aggregatedOutput":"permission denied"}}`))
+	if !ok || !item.Done || !item.Failed || item.Result != "permission denied" {
+		t.Fatalf("tool item = %+v, %v; want a completed failed call with its output", item, ok)
+	}
+}
+
+func TestResumeSnapshotPreservesTranscriptAndBillsOnlyNewUsage(t *testing.T) {
+	f := &fakeRunner{
+		receipt: runner.Receipt{ProtocolVersion: runner.ProtocolVersion, TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "session-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "before park", `{"usage":{"input_tokens":100}}`),
+			event(2, runner.EventNeedsInput, "", `{"clarification":{"id":"q-1","text":"Continue?"}}`),
+		},
+	}
+	first, err := FollowSnapshot(ctxWithTimeout(t), f, f.receipt, Snapshot{Position: Position{TaskID: "task-1", AttemptID: "attempt-1", Epoch: 1}}, &recorder{})
+	if err != nil {
+		t.Fatalf("initial FollowSnapshot: %v", err)
+	}
+	if first.Parked == nil || first.Snapshot.Position.Cursor != 2 || first.Snapshot.Usage.InputTokens != 100 {
+		t.Fatalf("parked result = %+v, want cursor 2 and saved usage 100", first)
+	}
+	f.events = append(f.events,
+		event(3, runner.EventProgress, "after park", `{"usage":{"input_tokens":25}}`),
+		event(4, runner.EventCompleted, "", ""),
+	)
+	f.receipt = runner.Receipt{ProtocolVersion: runner.ProtocolVersion, TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 2, Phase: runner.PhaseCompleted, SessionID: "session-forked"}
+	out, err := ResumeSnapshot(ctxWithTimeout(t), f, runner.ResumeRequest{TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 1, ClarificationID: "q-1"}, first.Snapshot, &recorder{})
+	if err != nil {
+		t.Fatalf("ResumeSnapshot: %v", err)
+	}
+	if out.Summary.Text != "before park\nafter park" || out.Position.SessionID != "session-forked" {
+		t.Errorf("resumed text=%q session=%q; want accumulated text and authoritative forked session", out.Summary.Text, out.Position.SessionID)
+	}
+	if out.Summary.Usage.InputTokens != 25 || out.Snapshot.Usage.InputTokens != 125 {
+		t.Errorf("resumed usage = delta %+v, snapshot %+v; want 25 new and 125 cumulative", out.Summary.Usage, out.Snapshot.Usage)
+	}
+}
+
+func TestRejoinSnapshotRejectsUnavailableHistory(t *testing.T) {
+	f := &fakeRunner{
+		receipt: receipt(runner.PhaseCompleted),
+		gapAt:   3,
+		events: []runner.Event{
+			event(1, runner.EventProgress, "saved", ""),
+			event(2, runner.EventProgress, "missing", ""),
+			event(3, runner.EventCompleted, "", ""),
+		},
+	}
+	s := newStream(Noop{}, 0)
+	s.observe(event(1, runner.EventProgress, "saved", ""))
+	snap := s.snapshot(Position{TaskID: "task-1", AttemptID: "attempt-1", Epoch: 1})
+	out, err := RejoinSnapshot(ctxWithTimeout(t), f, snap, &recorder{})
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
+		t.Fatalf("RejoinSnapshot error = %v, outcome %+v; want an explicit incomplete-history error", err, out)
 	}
 }
 

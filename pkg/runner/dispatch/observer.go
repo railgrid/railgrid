@@ -16,7 +16,10 @@ limitations under the License.
 
 package dispatch
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Observer receives what an attempt's stream says, as it says it.
 //
@@ -60,6 +63,24 @@ type ToolResult struct {
 	Args   string
 	Result string
 	Failed bool
+	// Duration is the elapsed time reported by the harness, when available.
+	Duration time.Duration
+}
+
+// AssistantResult is the completed assistant response and its active model
+// time. It is an optional observer extension for consumers that bill or render
+// model timing separately from tool timing.
+type AssistantResult struct {
+	Content  string
+	Complete bool
+	Duration time.Duration
+}
+
+// AssistantObserver is an optional Observer extension. It is called only when
+// the receipt confirms successful completion; incomplete assistant output is
+// already available through Text.
+type AssistantObserver interface {
+	Assistant(AssistantResult)
 }
 
 // Noop satisfies Observer and does nothing. Embed it to implement a subset.
@@ -70,5 +91,6 @@ func (Noop) ToolStart(string, string, string) {}
 func (Noop) ToolEnd(ToolResult)               {}
 func (Noop) Checkpoint(Snapshot)              {}
 func (Noop) Aborted(context.Context) error    { return nil }
+func (Noop) Assistant(AssistantResult)        {}
 
 var _ Observer = Noop{}

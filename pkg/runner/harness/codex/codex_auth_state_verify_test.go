@@ -32,7 +32,7 @@ func TestProbeStaysReadyWithoutACodexLogin(t *testing.T) {
 	// The credential arrives per attempt, so a host that has never signed in
 	// must still probe ready or the runner would be permanently unready.
 	binary := fakeCodexBinary(t, "auth")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 
 	info, err := adapter.Probe(context.Background())
 	if err != nil {
@@ -54,7 +54,7 @@ func TestRunMaterializesCredentialAsAuthSessionAndRemovesIt(t *testing.T) {
 	session := `{"tokens":{"access_token":"` + secret + `"},"last_refresh":"2026-01-01T00:00:00Z"}`
 	binary := fakeCodexBinary(t, "success")
 	home := t.TempDir()
-	adapter := New(Config{Binary: binary, Home: home, ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: home, ExpectedVersion: "0.155.1"})
 	authPath := filepath.Join(home, codexAuthFileName)
 
 	var events []harness.Event
@@ -142,7 +142,7 @@ func TestRunRefusesUnusableCredentialWithoutStartingAProcess(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			binary := fakeCodexBinary(t, "success")
 			home := t.TempDir()
-			adapter := New(Config{Binary: binary, Home: home, ExpectedVersion: "0.147.0"})
+			adapter := New(Config{Binary: binary, Home: home, ExpectedVersion: "0.155.1"})
 			var events []harness.Event
 			result, err := adapter.Run(context.Background(), harness.Launch{
 				AttemptID:    "attempt-no-credential",
@@ -185,7 +185,7 @@ func TestRunRefusesAuthSessionPathThatIsNotARegularFile(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(home, codexAuthFileName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	adapter := New(Config{Binary: binary, Home: home, ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: home, ExpectedVersion: "0.155.1"})
 	_, err := adapter.Run(context.Background(), harness.Launch{
 		AttemptID:    "attempt-bad-auth-path",
 		Workdir:      t.TempDir(),

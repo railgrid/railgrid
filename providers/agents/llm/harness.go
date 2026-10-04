@@ -109,9 +109,9 @@ type HarnessSecretProblem string
 //     harness differently (CLAUDE_CODE_OAUTH_TOKEN vs ANTHROPIC_API_KEY), so
 //     picking one silently would mean the credential a person rotated is not
 //     necessarily the one their turns bill against.
-//   - codex carries auth.json, and it must parse as JSON. A truncated or
-//     half-pasted login file otherwise fails on the host, several minutes and
-//     one machine away from the person who pasted it.
+//   - codex carries auth.json, and it must be one JSON object. A truncated or
+//     half-pasted login file, or any other JSON value, otherwise fails on the
+//     host, several minutes and one machine away from the person who pasted it.
 func ReadHarnessSecret(provider string, sec *corev1.Secret) (HarnessIdentity, HarnessSecretProblem) {
 	read := func(key string) (string, bool) {
 		if sec == nil {
@@ -153,9 +153,10 @@ func ReadHarnessSecret(provider string, sec *corev1.Secret) (HarnessIdentity, Ha
 				"secret %q has no %q key; a %s credential is the Codex login session file saved under that key",
 				secretName(sec), agentsv1alpha1.HarnessSecretKeyCodexAuth, ProviderCodex))
 		}
-		if !json.Valid([]byte(auth)) {
+		var authSession map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(auth), &authSession); err != nil || authSession == nil {
 			return HarnessIdentity{}, HarnessSecretProblem(fmt.Sprintf(
-				"secret %q key %q is not valid JSON; it must be the Codex login session file verbatim",
+				"secret %q key %q is not a JSON object; it must be the Codex login session file verbatim",
 				secretName(sec), agentsv1alpha1.HarnessSecretKeyCodexAuth))
 		}
 		return HarnessIdentity{Kind: string(runnerharness.CredentialCodexAuth), Value: auth}, ""
