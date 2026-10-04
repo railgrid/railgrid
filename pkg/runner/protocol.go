@@ -221,13 +221,19 @@ type StartRequest struct {
 	// coordinator that does not send it — or an older one that has never heard
 	// of the field — gets exactly the behaviour it had before: anything that
 	// would have prompted is denied and the turn carries on.
-	AskPermission   bool                     `json:"askPermission,omitempty"`
-	ExportGitResult bool                     `json:"exportGitResult,omitempty"`
-	Limits          ExecutionLimits          `json:"limits,omitempty"`
-	Verification    VerificationRequirements `json:"verification,omitempty"`
-	Resources       []ResourceRequest        `json:"resources,omitempty"`
-	Artifacts       []ArtifactSpec           `json:"artifacts,omitempty"`
-	Repository      *RepositorySource        `json:"repository,omitempty"`
+	AskPermission   bool `json:"askPermission,omitempty"`
+	ExportGitResult bool `json:"exportGitResult,omitempty"`
+	// CommitMessage is the subject the exported git result's snapshot commit
+	// is stamped with: one line of coordinator-authored public text, such as
+	// the ticket's title or "Address review on #7". It is the coordinator's
+	// to choose and the coordinator's to verify downstream — nothing the model
+	// wrote reaches git metadata. Empty keeps the canonical message.
+	CommitMessage string                   `json:"commitMessage,omitempty"`
+	Limits        ExecutionLimits          `json:"limits,omitempty"`
+	Verification  VerificationRequirements `json:"verification,omitempty"`
+	Resources     []ResourceRequest        `json:"resources,omitempty"`
+	Artifacts     []ArtifactSpec           `json:"artifacts,omitempty"`
+	Repository    *RepositorySource        `json:"repository,omitempty"`
 }
 
 // CancelRequest requests cancellation of an active attempt.

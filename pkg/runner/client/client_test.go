@@ -182,7 +182,6 @@ func TestNewRequiresTheEnrolledClusterAndAnUnweakenedTransport(t *testing.T) {
 		{"client key", func(c *rest.Config, _ *ServiceRef) { c.KeyFile = "/tmp/key.pem" }},
 		{"no credential", func(c *rest.Config, _ *ServiceRef) { c.BearerToken = "" }},
 		{"cluster edge kind", func(_ *rest.Config, ref *ServiceRef) { ref.EdgeKind = "KubernetesCluster" }},
-		{"empty runner", func(_ *rest.Config, ref *ServiceRef) { ref.RunnerID = "" }},
 		{"traversal service", func(_ *rest.Config, ref *ServiceRef) { ref.Service = "../secrets" }},
 	}
 	for _, tt := range tests {
@@ -761,5 +760,33 @@ func writeSSEFrame(w http.ResponseWriter, event runner.Event) {
 	_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Type, encoded)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
+	}
+}
+
+// An enrollment without a RunnerID pins the runner by the Service alone: the
+// caller trusts what the edge published under that name, so whichever runner
+// answers there is the one. The protocol check is not relaxed with it.
+func TestAnEnrollmentWithoutARunnerIDAcceptsTheServicesRunner(t *testing.T) {
+	ref := testRef()
+	ref.RunnerID = ""
+	dial := func(caps runner.Capabilities) *Client {
+		t.Helper()
+		f := &fixture{service: serviceObject(testService, testEdge, testEdgeKind, proxyBase()), caps: caps}
+		server := httptest.NewTLSServer(f.handler())
+		t.Cleanup(server.Close)
+		client, err := New(tenantConfig(server), ref)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return client
+	}
+	caps, err := dial(runner.Capabilities{ProtocolVersion: runner.ProtocolVersion, RunnerID: "whatever-the-edge-published", Ready: true}).Capabilities(context.Background())
+	if err != nil || caps.RunnerID != "whatever-the-edge-published" {
+		t.Fatalf("caps = %+v, err = %v; the Service's runner must be accepted as is", caps, err)
+	}
+	_, err = dial(runner.Capabilities{ProtocolVersion: "runner/v2", RunnerID: "whatever-the-edge-published"}).Capabilities(context.Background())
+	var identity *IdentityError
+	if !errors.As(err, &identity) || identity.Protocol != "runner/v2" {
+		t.Fatalf("err = %v, want the protocol mismatch still refused", err)
 	}
 }

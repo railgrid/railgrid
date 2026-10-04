@@ -138,3 +138,44 @@ func (s *Server) loadSnapshot(caller dataplane.ProxiedIdentity, cluster string, 
 	}
 	return snapshot, nil
 }
+
+// FindStaged finds a snapshot the stage-snapshot verb stored for this
+// cluster, whichever caller staged it: the ref is the content's digest, so
+// the same bytes are the same snapshot wherever they were put. It is how a
+// controller reconciling a PullRequest's desired head reaches the bundle the
+// coordinator staged for it.
+func FindStaged(dir, cluster, ref string) (backend.Snapshot, error) {
+	var snapshot backend.Snapshot
+	if dir == "" || cluster == "" || !snapshotDigest.MatchString(ref) {
+		return snapshot, errors.New("invalid snapshot reference")
+	}
+	tenant := sha256.Sum256([]byte(cluster))
+	tenantRoot := filepath.Join(dir, hex.EncodeToString(tenant[:]))
+	entries, err := os.ReadDir(tenantRoot)
+	if err != nil {
+		return snapshot, errors.New("snapshot unavailable or expired")
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(tenantRoot, entry.Name(), ref+".json")
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || time.Since(info.ModTime()) > snapshotTTL || info.Size() > MaxInputBytes {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != ref {
+			continue
+		}
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return backend.Snapshot{}, err
+		}
+		return snapshot, nil
+	}
+	return snapshot, errors.New("snapshot unavailable or expired")
+}

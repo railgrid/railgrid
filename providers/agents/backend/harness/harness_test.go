@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner"
+	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/llm"
@@ -95,7 +96,7 @@ func (f *fakeRunner) current() runner.Receipt {
 	return r
 }
 
-func (f *fakeRunner) Events(_ context.Context, _ string, after uint64) (Stream, error) {
+func (f *fakeRunner) Events(_ context.Context, _ string, after uint64) (dispatch.Stream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []runner.Event
@@ -160,7 +161,7 @@ func event(cursor uint64, typ, message string, data string) runner.Event {
 func testConfig(f *fakeRunner, epoch uint64, session string) Config {
 	ids := 0
 	return Config{
-		Dispatcher:      f,
+		Runner:          f,
 		TaskID:          "agent-scout-chat",
 		AttemptID:       "run-1",
 		Epoch:           epoch,
@@ -504,7 +505,7 @@ func TestCursorGapReconcilesInsteadOfFailing(t *testing.T) {
 		phases:  []runner.Phase{runner.PhaseCompleted},
 	}}
 	cfg := testConfig(&f.fakeRunner, 1, "")
-	cfg.Dispatcher = f
+	cfg.Runner = f
 	out, err := New(cfg).Turn(context.Background(), testRun(),
 		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "hi"}}}, &recordingSink{})
 	if err != nil {
@@ -522,7 +523,7 @@ type gappyRunner struct {
 	served bool
 }
 
-func (g *gappyRunner) Events(ctx context.Context, attemptID string, after uint64) (Stream, error) {
+func (g *gappyRunner) Events(ctx context.Context, attemptID string, after uint64) (dispatch.Stream, error) {
 	if !g.served {
 		g.served = true
 		return &erroringStream{err: &runner.Error{
@@ -630,9 +631,6 @@ func TestPermissionApprovalResumesWithAVerdict(t *testing.T) {
 		{"approved", backend.Answer{Decided: true, Approved: true}, runner.PermissionAllow, ""},
 		{"approved with a note", backend.Answer{Decided: true, Approved: true, Note: "only this once"}, runner.PermissionAllow, "only this once"},
 		{"denied", backend.Answer{Decided: true, Approved: false, Note: "not on production"}, runner.PermissionDeny, "not on production"},
-		// A recovery resume decided nothing. A call still waiting cannot be
-		// treated as approved by default.
-		{"undecided", backend.Answer{}, runner.PermissionDeny, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeRunner{
@@ -670,6 +668,39 @@ func TestPermissionApprovalResumesWithAVerdict(t *testing.T) {
 				t.Fatalf("resume epoch = %d; a resume addresses the SAME attempt", resume.AttemptEpoch)
 			}
 		})
+	}
+}
+
+// A recovery resume decided nothing, and it must not decide now either. The
+// provider died somewhere between the harness asking and the inbox recording
+// it; the call is still open on the runner and the person still gets to
+// answer. It used to be denied on recovery — "nothing was approved, so no" —
+// which threw away the prompt a person was about to see. A re-join that finds
+// the attempt waiting parks it AGAIN, with the same call, and sends nothing.
+func TestUndecidedRecoveryOnAPermissionParkParksAgain(t *testing.T) {
+	parked := runner.Receipt{
+		AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+		Permission: &runner.PermissionRequest{ID: "permission-9", Tool: "Bash", Input: `{"command":"ls"}`},
+	}
+	f := &fakeRunner{receipt: parked, phases: []runner.Phase{runner.PhaseNeedsInput}}
+	b := New(testConfig(f, 1, "sess-1"))
+	state, err := json.Marshal(State{TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", PermissionID: "permission-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if len(f.resumes) != 0 {
+		t.Fatalf("resumes = %d; a recovery must not answer a prompt nobody has seen", len(f.resumes))
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Tool != "Bash" {
+		t.Fatalf("outcome = %+v, want the same permission park again", out)
+	}
+	var again State
+	if err := json.Unmarshal(out.Parked.State, &again); err != nil || again.PermissionID != "permission-9" || again.ClarificationID != "" {
+		t.Fatalf("re-parked state = %+v (%v); the verdict must still address permission-9", again, err)
 	}
 }
 

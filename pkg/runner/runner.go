@@ -1442,6 +1442,9 @@ func validateStartRequest(request StartRequest) error {
 			}
 		}
 	}
+	if err := validateCommitMessage(request.CommitMessage); err != nil {
+		return err
+	}
 	if session := strings.TrimSpace(request.SessionID); session != "" && !identifierPattern.MatchString(session) {
 		return errors.New("sessionID is not a valid identifier")
 	}

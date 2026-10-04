@@ -17,6 +17,8 @@ limitations under the License.
 package servicectrl
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +83,9 @@ func TestStampRunnerHarnessReadsTheCapabilitiesDocument(t *testing.T) {
 	  "os": "darwin",
 	  "architecture": "arm64",
 	  "harnesses": [{"name": "claude", "version": "2.1.273", "ready": true}],
+	  "toolchains": ["git", "node"],
+	  "environment": ["linux"],
+	  "verificationCapabilities": ["go-test"],
 	  "capacity": {"maximum": 1, "used": 0},
 	  "ready": true
 	}`
@@ -91,6 +96,34 @@ func TestStampRunnerHarnessReadsTheCapabilitiesDocument(t *testing.T) {
 	}
 	if es.Status.Harness.Name != "claude" || es.Status.Harness.Version != "2.1.273" || !es.Status.Harness.Ready {
 		t.Fatalf("harness status = %+v, want claude 2.1.273 ready", es.Status.Harness)
+	}
+	// The MACHINE half of the same document, so a job that requires git can be
+	// matched to this runner from the published object alone.
+	if es.Status.Runner == nil {
+		t.Fatal("no runner status was stamped")
+	}
+	r := es.Status.Runner
+	if len(r.Toolchains) != 2 || r.Toolchains[0] != "git" || r.Toolchains[1] != "node" ||
+		len(r.Environment) != 1 || r.Environment[0] != "linux" ||
+		len(r.Verification) != 1 || r.Verification[0] != "go-test" ||
+		r.Capacity != 1 {
+		t.Fatalf("runner status = %+v, want toolchains [git node], environment [linux], verification [go-test], capacity 1", r)
+	}
+}
+
+// A runner is somebody else's machine, and the lists it answers with are
+// bounded before they reach the API: an answer that would make the Service
+// unwritable is clipped, not refused.
+func TestStampRunnerHarnessBoundsTheMachineLists(t *testing.T) {
+	names := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		names = append(names, fmt.Sprintf("tool-%02d", i))
+	}
+	raw, _ := json.Marshal(map[string]any{"toolchains": names, "ready": true})
+	es := &edgesv1alpha1.Service{}
+	stampRunnerHarness(es, strings.NewReader(string(raw)))
+	if es.Status.Runner == nil || len(es.Status.Runner.Toolchains) != 32 {
+		t.Fatalf("toolchains = %d entries, want clipped to 32", len(es.Status.Runner.Toolchains))
 	}
 }
 

@@ -63,6 +63,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CollaboratorList{},
 		&Package{},
 		&PackageList{},
+		&PullRequest{},
+		&PullRequestList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

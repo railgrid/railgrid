@@ -193,3 +193,53 @@ func TestTheRunnerClonesACommitNoBranchPointsAt(t *testing.T) {
 		t.Fatalf("worktree HEAD = %s, want the pull-request head %s", got, head)
 	}
 }
+
+// A follow-up on a pull request is based on the branch's head, which no
+// branch of the remote points at — and the agent still needs the base
+// branch in its checkout, because its sandbox cannot fetch: reconciling the
+// branch with a main that moved on is a thing reviewers ask for. The branches
+// are refreshed on every attempt, so the clone shows main as it is now, not
+// as it was when the repository was first cached.
+func TestTheWorktreeCarriesTheRemoteBranchesAsTheyAreNow(t *testing.T) {
+	remote, base := testGitSource(t)
+	stateDir := t.TempDir()
+	first, err := prepareWorkspace(context.Background(), Config{StateDir: stateDir},
+		StartRequest{TaskID: "task-1", AttemptID: "attempt-1", RepositoryID: "repo", BaseCommit: base},
+		&RepositorySource{RemoteURL: remote})
+	if err != nil {
+		t.Fatalf("prepareWorkspace: %v", err)
+	}
+	if got := strings.TrimSpace(string(runGit(t, first, "rev-parse", "origin/main"))); got != base {
+		t.Fatalf("first worktree origin/main = %s, want %s", got, base)
+	}
+
+	// main moves on, and a pull-request head appears that no branch names.
+	if err := os.WriteFile(filepath.Join(remote, "MAIN.md"), []byte("main moved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, remote, "add", "MAIN.md")
+	runGit(t, remote, "commit", "-m", "main moved on")
+	main := strings.TrimSpace(string(runGit(t, remote, "rev-parse", "HEAD")))
+	runGit(t, remote, "checkout", "--detach", base)
+	if err := os.WriteFile(filepath.Join(remote, "CHANGE.md"), []byte("proposed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, remote, "add", "CHANGE.md")
+	runGit(t, remote, "commit", "-m", "proposed change")
+	head := strings.TrimSpace(string(runGit(t, remote, "rev-parse", "HEAD")))
+	runGit(t, remote, "update-ref", "refs/pull/1/head", head)
+	runGit(t, remote, "checkout", "main")
+
+	second, err := prepareWorkspace(context.Background(), Config{StateDir: stateDir},
+		StartRequest{TaskID: "task-2", AttemptID: "attempt-2", RepositoryID: "repo", BaseCommit: head},
+		&RepositorySource{RemoteURL: remote})
+	if err != nil {
+		t.Fatalf("prepareWorkspace: %v", err)
+	}
+	if got := strings.TrimSpace(string(runGit(t, second, "rev-parse", "HEAD"))); got != head {
+		t.Fatalf("worktree HEAD = %s, want the pull-request head %s", got, head)
+	}
+	if got := strings.TrimSpace(string(runGit(t, second, "rev-parse", "origin/main"))); got != main {
+		t.Fatalf("worktree origin/main = %s, want main as it is now %s", got, main)
+	}
+}

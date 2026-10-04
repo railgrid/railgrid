@@ -252,21 +252,32 @@ func managedClone(ctx context.Context, cfg Config, repositoryID, remote string, 
 	default:
 		return "", false, fmt.Errorf("inspect repository cache: %w", err)
 	}
+	// The branches are refreshed on every attempt, not only when the base is
+	// missing. A follow-up on a pull request is based on the branch's own
+	// head, which is reachable by commit alone — and the agent still needs
+	// the base branch: to see what main has become, and to reconcile the
+	// branch with it when a reviewer asks. The worktree is a clone of this
+	// cache, so it carries them as origin/<branch>; the agent's sandbox
+	// cannot fetch for itself.
+	//
+	// A base the cache already holds does not need the remote at all, so a
+	// refresh that fails then is logged and the attempt goes on with the
+	// branches as last seen, exactly as it did before the refresh existed.
+	refreshErr := fetchRefspec(ctx, dir, remote, credential, "+refs/heads/*:refs/heads/*")
 	if sourceHas(ctx, dir, baseCommit) {
+		if refreshErr != nil {
+			log.Printf("repository cache %s could not refresh its branches from the remote: %v", dir, refreshErr)
+		}
 		return dir, true, nil
 	}
-	// Asking for the commit by ID is what reaches a pull-request head, which
-	// no branch points at. A remote that refuses it still serves the branches,
-	// which is where an approved base normally lives.
+	if refreshErr != nil {
+		return "", false, fmt.Errorf("refresh repository branches: %w", refreshErr)
+	}
+	// Asking for the commit by ID is what reaches a pull-request head that no
+	// branch points at.
 	pinned := "refs/railgrid/commits/" + baseCommit
-	err = fetchRefspec(ctx, dir, remote, credential, "+"+baseCommit+":"+pinned)
-	if err != nil || !sourceHas(ctx, dir, baseCommit) {
-		if branchErr := fetchRefspec(ctx, dir, remote, credential, "+refs/heads/*:refs/heads/*"); branchErr != nil {
-			if err == nil {
-				err = branchErr
-			}
-			return "", false, err
-		}
+	if err := fetchRefspec(ctx, dir, remote, credential, "+"+baseCommit+":"+pinned); err != nil {
+		return "", false, err
 	}
 	if !sourceHas(ctx, dir, baseCommit) {
 		return "", false, errors.New("base commit is not available from the repository remote")

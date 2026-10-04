@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260926-76b9080b.services.edges.railgrid.ai
+  name: v261002-91de94e2.services.edges.railgrid.ai
 spec:
   group: edges.railgrid.ai
   names:
@@ -336,6 +336,39 @@ spec:
             phase:
               description: Phase is one of "" | Detected | Ready | Unreachable.
               type: string
+            runner:
+              description: |-
+                Runner is the machine half of the same capabilities document: what the
+                host offers a job beyond the harness. Nil for every other type.
+              properties:
+                capacity:
+                  description: |-
+                    Capacity is how many attempts the runner executes at once. A supervised
+                    runner reports 1: one launch is one turn.
+                  type: integer
+                environment:
+                  description: Environment are the environment capabilities the runner
+                    advertises.
+                  items:
+                    type: string
+                  maxItems: 32
+                  type: array
+                toolchains:
+                  description: |-
+                    Toolchains are the executables the runner detected on its host, by the
+                    names a job requires them under: git, go, node, …
+                  items:
+                    type: string
+                  maxItems: 32
+                  type: array
+                verification:
+                  description: Verification are the verification capabilities the
+                    runner advertises.
+                  items:
+                    type: string
+                  maxItems: 32
+                  type: array
+              type: object
             tools:
               description: |-
                 Tools are the MCP tools this service's type exposes, projected from the

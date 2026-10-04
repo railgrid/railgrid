@@ -246,7 +246,7 @@ func runServe() {
 		}
 	}()
 
-	if err := startControllerManager(ctx, kcpConfig, backends, bundles, vwState); err != nil {
+	if err := startControllerManager(ctx, kcpConfig, backends, bundles, codeActions.SnapshotDir, vwState); err != nil {
 		if errors.Is(err, errControllerDisabled) {
 			log.Printf("controller manager: disabled (no kubeconfig); set CODE_KUBECONFIG to enable")
 		} else {

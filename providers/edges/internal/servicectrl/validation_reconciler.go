@@ -478,6 +478,12 @@ type runnerCapabilities struct {
 		Ready   bool     `json:"ready"`
 		Reasons []string `json:"reasons,omitempty"`
 	} `json:"harnesses,omitempty"`
+	Toolchains   []string `json:"toolchains,omitempty"`
+	Environment  []string `json:"environment,omitempty"`
+	Verification []string `json:"verificationCapabilities,omitempty"`
+	Capacity     struct {
+		Maximum int `json:"maximum"`
+	} `json:"capacity"`
 	Ready   bool     `json:"ready"`
 	Reasons []string `json:"reasons,omitempty"`
 }
@@ -505,6 +511,28 @@ func stampRunnerHarness(es *edgesv1alpha1.Service, body io.Reader) {
 		harness.Reasons = h.Reasons
 	}
 	es.Status.Harness = harness
+	// The machine half, so a job can be matched to this runner without asking
+	// it: what the host has is as much a property of the published object as
+	// which harness it drives.
+	es.Status.Runner = &edgesv1alpha1.ServiceRunnerStatus{
+		Toolchains:   bounded(caps.Toolchains, 32),
+		Environment:  bounded(caps.Environment, 32),
+		Verification: bounded(caps.Verification, 32),
+		Capacity:     caps.Capacity.Maximum,
+	}
+}
+
+// bounded keeps a runner-supplied list within what the API admits. A runner is
+// somebody else's machine, and a list it answered with must not be able to
+// make the Service unwritable.
+func bounded(values []string, max int) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) > max {
+		values = values[:max]
+	}
+	return append([]string(nil), values...)
 }
 
 // bodySnippet reads up to a small cap from an upstream response body and trims

@@ -100,7 +100,10 @@ type ServiceRef struct {
 	// EdgeKind and EdgeName are the edge the Service must still point at.
 	EdgeKind string
 	EdgeName string
-	// RunnerID is the identity the runner must report for itself.
+	// RunnerID is the identity the runner must report for itself. Empty means
+	// the caller pins the runner by the Service alone — the object it reads and
+	// dials by name and UID — and accepts whichever runner the edge published
+	// there. The protocol version is checked either way.
 	RunnerID string
 }
 
@@ -167,9 +170,9 @@ func New(cfg *rest.Config, ref ServiceRef, opts ...Option) (*Client, error) {
 	if cfg == nil {
 		return nil, errors.New("runner client: a tenant rest.Config is required")
 	}
-	for _, value := range []string{ref.RunnerID, ref.Cluster, ref.Service, ref.EdgeName} {
+	for _, value := range []string{ref.Cluster, ref.Service, ref.EdgeName} {
 		if !identifier.MatchString(value) {
-			return nil, errors.New("runner client: enrollment requires valid runner, cluster, service, and edge identities")
+			return nil, errors.New("runner client: enrollment requires valid cluster, service, and edge identities")
 		}
 	}
 	if ref.EdgeKind != EdgeKindMacOSServer && ref.EdgeKind != EdgeKindLinuxServer {
@@ -316,7 +319,7 @@ func (c *Client) capabilities(ctx context.Context, base string) (runner.Capabili
 	if err := readJSON(resp, &caps); err != nil {
 		return runner.Capabilities{}, err
 	}
-	if caps.ProtocolVersion != runner.ProtocolVersion || caps.RunnerID != c.ref.RunnerID {
+	if caps.ProtocolVersion != runner.ProtocolVersion || (c.ref.RunnerID != "" && caps.RunnerID != c.ref.RunnerID) {
 		return runner.Capabilities{}, &IdentityError{Reported: caps.RunnerID, Enrolled: c.ref.RunnerID, Protocol: caps.ProtocolVersion}
 	}
 	return caps, nil
