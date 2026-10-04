@@ -73,13 +73,24 @@ func TestSnapshotVerifiesActualGitBundleAndCanonicalMetadata(t *testing.T) {
 		return "tree " + tree + "\nparent " + base + "\nauthor " + author + "\ncommitter " + committer + "\n\nImplementation snapshot\n"
 	}
 	now := time.Now().Unix()
-	for _, kind := range []string{"valid", "wrong tree", "wrong base", "wrong commit", "private metadata", "truncated bundle", "epoch date", "future date", "author and committer differ", "extra header"} {
+	for _, kind := range []string{"valid", "coordinator subject", "subject not the one named", "canonical commit under a named subject", "wrong tree", "wrong base", "wrong commit", "private metadata", "truncated bundle", "epoch date", "future date", "author and committer differ", "extra header"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			snapshotCommand(t, dir, "", "init", "--bare", ".")
 			snapshotCommand(t, dir, "", "fetch", source, base)
 			input := backend.Snapshot{BaseCommit: base, Commit: commit, Tree: tree, Bundle: bundle}
 			switch kind {
+			case "coordinator subject", "subject not the one named":
+				// The subject the coordinator named is what the commit must
+				// say; the same commit under a different named subject is
+				// private metadata, exactly as a model-written message is.
+				input.Commit, input.Bundle = rawCommit(t, source, "tree "+tree+"\nparent "+base+"\nauthor "+identity(now)+"\ncommitter "+identity(now)+"\n\nENG-4: test\n")
+				input.Message = "ENG-4: test"
+				if kind == "subject not the one named" {
+					input.Message = "ENG-5: something else"
+				}
+			case "canonical commit under a named subject":
+				input.Message = "ENG-4: test"
 			case "wrong tree":
 				input.Tree = strings.Repeat("1", 40)
 			case "wrong base":
@@ -109,10 +120,10 @@ func TestSnapshotVerifiesActualGitBundleAndCanonicalMetadata(t *testing.T) {
 				input.Commit, input.Bundle = rawCommit(t, source, object)
 			}
 			err := (&snapshotGit{dir: dir}).verify(context.Background(), input)
-			if kind == "valid" && err != nil {
+			if (kind == "valid" || kind == "coordinator subject") && err != nil {
 				t.Fatal(err)
 			}
-			if kind != "valid" && err == nil {
+			if kind != "valid" && kind != "coordinator subject" && err == nil {
 				t.Fatalf("accepted %s", kind)
 			}
 		})

@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/railgrid/railgrid/pkg/runner"
+	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
@@ -244,7 +245,7 @@ func TestSessionWriteFailureStopsParkedHarness(t *testing.T) {
 		t.Run(fmt.Sprint(failWrite), func(t *testing.T) {
 			ctx := context.Background()
 			dispatcher := &parkedHarnessDispatcher{receipt: runner.Receipt{AttemptID: "attempt", AttemptEpoch: 1, SessionID: "thread", Phase: runner.PhaseNeedsInput, Permission: &runner.PermissionRequest{ID: "permission", Tool: "Bash", Input: `{"command":"true"}`}}}
-			b := backendharness.New(backendharness.Config{Dispatcher: dispatcher, TaskID: "task", AttemptID: "attempt", Epoch: 1, WorkspaceID: "workspace", Credential: llm.HarnessIdentity{Kind: "codex-auth-json", Value: `{}`}})
+			b := backendharness.New(backendharness.Config{Runner: dispatcher, TaskID: "task", AttemptID: "attempt", Epoch: 1, WorkspaceID: "workspace", Credential: llm.HarnessIdentity{Kind: "codex-auth-json", Value: `{}`}})
 			run := &backend.Run{ID: "run"}
 			out, err := b.Turn(ctx, run, backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}}}, parkedHarnessSink{})
 			if err != nil || out.Parked == nil {
@@ -276,7 +277,7 @@ func TestSessionWriteFailureStopsParkedHarness(t *testing.T) {
 }
 
 type parkedHarnessDispatcher struct {
-	backendharness.Dispatcher
+	dispatch.Runner
 	receipt runner.Receipt
 	cancels int
 }
@@ -287,7 +288,7 @@ func (d *parkedHarnessDispatcher) Start(context.Context, runner.StartRequest) (r
 func (d *parkedHarnessDispatcher) Inspect(context.Context, string) (runner.Receipt, error) {
 	return d.receipt, nil
 }
-func (d *parkedHarnessDispatcher) Events(context.Context, string, uint64) (backendharness.Stream, error) {
+func (d *parkedHarnessDispatcher) Events(context.Context, string, uint64) (dispatch.Stream, error) {
 	return emptyHarnessStream{}, nil
 }
 func (d *parkedHarnessDispatcher) Cancel(ctx context.Context, req runner.CancelRequest) (runner.Receipt, error) {

@@ -249,6 +249,10 @@ func (c *child) renderConfig() ([]byte, error) {
 		StateDir:        c.runnerState(),
 		TokenFile:       c.tokenPath(),
 		MaximumCapacity: 1,
+		// What this machine has, detected rather than declared: nobody writes
+		// a supervised runner's config, and a caller matching a job to a
+		// machine reads these (see knownToolchains).
+		Toolchains: detectToolchains(),
 		// No repositories: the caller names a clone URL with each attempt and
 		// the runner keeps its own clone under its state directory, so nothing
 		// has to be staged on this host.

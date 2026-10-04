@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner"
+	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
@@ -96,7 +97,7 @@ func TestFailedResumedHarnessTurnKeepsPriorUsageAndBillsOnlyDelta(t *testing.T) 
 					run.Agent.Spec.Harness().EdgeRef.Kind, run.Agent.Spec.Harness().EdgeRef.Name,
 					llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)),
 				Spent:    prior,
-				Snapshot: &backendharness.StateSnapshot{Version: 1, TurnStarted: true},
+				Snapshot: json.RawMessage(`{"version":1,"turnStarted":true}`),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -166,7 +167,7 @@ func (d *accountingHarnessDispatcher) Inspect(_ context.Context, attemptID strin
 	return runner.Receipt{AttemptID: attemptID, AttemptEpoch: 1, SessionID: "thread", Phase: runner.PhaseRunning}, nil
 }
 
-func (d *accountingHarnessDispatcher) Events(_ context.Context, _ string, after uint64) (backendharness.Stream, error) {
+func (d *accountingHarnessDispatcher) Events(_ context.Context, _ string, after uint64) (dispatch.Stream, error) {
 	var events []runner.Event
 	for _, event := range d.events {
 		if event.Cursor > after {

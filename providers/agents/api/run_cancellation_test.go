@@ -30,9 +30,9 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/runner"
 	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
+	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
-	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -178,7 +178,7 @@ func assertDetachedRunLifecycleCancel(t *testing.T, call runLifecycleCancelCall,
 	}
 }
 
-func newHarnessRunLifecycleFixture(t *testing.T, dispatcher backendharness.Dispatcher, timeoutSeconds int32) (*Server, taskRun) {
+func newHarnessRunLifecycleFixture(t *testing.T, dispatcher dispatch.Runner, timeoutSeconds int32) (*Server, taskRun) {
 	t.Helper()
 
 	identityServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +207,7 @@ func newHarnessRunLifecycleFixture(t *testing.T, dispatcher backendharness.Dispa
 		bg:       &background{identities: newAgentIdentities(identityClient), scopedFn: func(context.Context, string) (dynamic.Interface, error) { return dyn, nil }},
 		liveRuns: newRunRegistry(),
 		events:   newEventBus(),
-		runners: func(_ context.Context, _ runnerclient.ServiceRef, _ string) (backendharness.Dispatcher, error) {
+		runners: func(_ context.Context, _ runnerclient.ServiceRef, _ string) (dispatch.Runner, error) {
 			return dispatcher, nil
 		},
 	}
@@ -287,7 +287,7 @@ func (d *blockingRunLifecycleDispatcher) Inspect(_ context.Context, attemptID st
 	return runner.Receipt{AttemptID: attemptID, AttemptEpoch: 1, Phase: runner.PhaseRunning, SessionID: "thread"}, nil
 }
 
-func (d *blockingRunLifecycleDispatcher) Events(context.Context, string, uint64) (backendharness.Stream, error) {
+func (d *blockingRunLifecycleDispatcher) Events(context.Context, string, uint64) (dispatch.Stream, error) {
 	return &blockingRunLifecycleStream{opened: d.eventsOpened, release: d.releaseStream}, nil
 }
 
@@ -336,7 +336,7 @@ func (d *parkedRunLifecycleDispatcher) Inspect(context.Context, string) (runner.
 	return d.receipt, nil
 }
 
-func (*parkedRunLifecycleDispatcher) Events(context.Context, string, uint64) (backendharness.Stream, error) {
+func (*parkedRunLifecycleDispatcher) Events(context.Context, string, uint64) (dispatch.Stream, error) {
 	return emptyRunLifecycleStream{}, nil
 }
 
@@ -347,6 +347,6 @@ func (emptyRunLifecycleStream) Next(context.Context) (runner.Event, error) {
 }
 func (emptyRunLifecycleStream) Close() error { return nil }
 
-var _ backendharness.Dispatcher = (*blockingRunLifecycleDispatcher)(nil)
-var _ backendharness.Dispatcher = (*parkedRunLifecycleDispatcher)(nil)
-var _ backendharness.Stream = (*blockingRunLifecycleStream)(nil)
+var _ dispatch.Runner = (*blockingRunLifecycleDispatcher)(nil)
+var _ dispatch.Runner = (*parkedRunLifecycleDispatcher)(nil)
+var _ dispatch.Stream = (*blockingRunLifecycleStream)(nil)

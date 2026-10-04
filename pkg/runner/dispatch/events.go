@@ -1,36 +1,47 @@
-// Copyright 2026 The Railgrid Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
+/*
+Copyright 2026 The Railgrid Authors.
 
-package harness
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package dispatch
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner"
-
-	"github.com/railgrid/provider-agents/backend"
 )
 
-// turnState accumulates what one attempt's event stream said, so the terminal
+// stream accumulates what one attempt's event stream said, so the terminal
 // receipt only has to supply the phase.
 //
-// Three things are accumulated, and they are three because the seam asks for
-// three: everything the turn produced (Outcome.Text), the presentation answer
-// (Outcome.Final), and what it cost (Outcome.Usage).
-type turnState struct {
-	sink backend.EventSink
+// Three things are accumulated because a caller asks for three: everything the
+// attempt produced (Summary.Text), the presentation answer (Summary.Final), and
+// what it cost (Summary.Usage).
+type stream struct {
+	obs Observer
 
 	text  strings.Builder
 	final string
-	cost  backend.Cost
+	usage Usage
+	// usageAtStart is the accumulated usage in a restored checkpoint. Summary
+	// reports only the delta observed after that checkpoint; Snapshot reports
+	// the total through its cursor.
+	usageAtStart Usage
 
 	// tools tracks tool-call ids already announced, so a payload seen twice
 	// (started then completed) produces one ToolStart and one ToolEnd rather
@@ -66,38 +77,136 @@ type toolInFlight struct {
 	ended bool
 }
 
-func newTurnState(sink backend.EventSink) *turnState {
-	return &turnState{sink: sink, tools: map[string]toolInFlight{}}
+const streamSnapshotVersion = 1
+
+type toolSnapshot struct {
+	Name  string `json:"name,omitempty"`
+	Args  string `json:"args,omitempty"`
+	Ended bool   `json:"ended,omitempty"`
 }
 
-// observe maps one protocol event onto the sink and the accumulators, and
+type streamSnapshot struct {
+	Version                  int                     `json:"version"`
+	Text                     string                  `json:"text,omitempty"`
+	Final                    string                  `json:"final,omitempty"`
+	Tools                    map[string]toolSnapshot `json:"tools,omitempty"`
+	ToolDurationNS           int64                   `json:"toolDurationNS,omitempty"`
+	TurnDurationNS           int64                   `json:"turnDurationNS,omitempty"`
+	CodexTurnID              string                  `json:"codexTurnID,omitempty"`
+	TurnStarted              bool                    `json:"turnStarted,omitempty"`
+	CodexTotalTokens         int64                   `json:"codexTotalTokens,omitempty"`
+	CodexTotalSeen           bool                    `json:"codexTotalSeen,omitempty"`
+	CodexLast                string                  `json:"codexLast,omitempty"`
+	Clarification            *runner.Clarification   `json:"clarification,omitempty"`
+	ClarificationFromReceipt bool                    `json:"clarificationFromReceipt,omitempty"`
+}
+
+func newStream(obs Observer, cursor uint64) *stream {
+	if obs == nil {
+		obs = Noop{}
+	}
+	return &stream{obs: obs, tools: map[string]toolInFlight{}, cursor: cursor}
+}
+
+func restoreStream(obs Observer, snap Snapshot) (*stream, error) {
+	s := newStream(obs, snap.Position.Cursor)
+	s.usage = snap.Usage
+	s.usageAtStart = snap.Usage
+	if len(snap.State) == 0 {
+		return s, nil
+	}
+	var restored streamSnapshot
+	if err := json.Unmarshal(snap.State, &restored); err != nil {
+		return nil, fmt.Errorf("restoring dispatch snapshot: %w", err)
+	}
+	if restored.Version != streamSnapshotVersion {
+		return nil, fmt.Errorf("restoring dispatch snapshot: unsupported version %d", restored.Version)
+	}
+	s.text.WriteString(restored.Text)
+	s.final = restored.Final
+	s.tools = make(map[string]toolInFlight, len(restored.Tools))
+	for id, tool := range restored.Tools {
+		s.tools[id] = toolInFlight{name: tool.Name, args: tool.Args, ended: tool.Ended}
+	}
+	s.toolDuration = time.Duration(restored.ToolDurationNS)
+	s.turnDuration = time.Duration(restored.TurnDurationNS)
+	s.codexTurnID = restored.CodexTurnID
+	s.turnStarted = restored.TurnStarted
+	s.codexTotalTokens = restored.CodexTotalTokens
+	s.codexTotalSeen = restored.CodexTotalSeen
+	s.codexLast = restored.CodexLast
+	s.clarification = restored.Clarification
+	s.clarificationFromReceipt = restored.ClarificationFromReceipt
+	s.recovering = true
+	return s, nil
+}
+
+func (s *stream) snapshot(pos Position) Snapshot {
+	tools := make(map[string]toolSnapshot, len(s.tools))
+	for id, tool := range s.tools {
+		tools[id] = toolSnapshot{Name: tool.name, Args: tool.args, Ended: tool.ended}
+	}
+	state := streamSnapshot{
+		Version: streamSnapshotVersion, Text: s.text.String(), Final: s.final, Tools: tools,
+		ToolDurationNS: int64(s.toolDuration), TurnDurationNS: int64(s.turnDuration),
+		CodexTurnID: s.codexTurnID, TurnStarted: s.turnStarted,
+		CodexTotalTokens: s.codexTotalTokens, CodexTotalSeen: s.codexTotalSeen,
+		CodexLast: s.codexLast, Clarification: s.clarification,
+		ClarificationFromReceipt: s.clarificationFromReceipt,
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		// All fields above are JSON primitives or runner protocol structs. Keep a
+		// valid versioned state even if that contract changes unexpectedly.
+		raw = json.RawMessage("{}")
+	}
+	return Snapshot{Position: s.position(pos), Usage: s.usage, State: raw}
+}
+
+func usageDelta(total, start Usage) Usage {
+	delta := Usage{
+		InputTokens:  total.InputTokens - start.InputTokens,
+		OutputTokens: total.OutputTokens - start.OutputTokens,
+		CostMicros:   total.CostMicros - start.CostMicros,
+	}
+	if delta.InputTokens < 0 {
+		delta.InputTokens = 0
+	}
+	if delta.OutputTokens < 0 {
+		delta.OutputTokens = 0
+	}
+	if delta.CostMicros < 0 {
+		delta.CostMicros = 0
+	}
+	return delta
+}
+
+// observe maps one protocol event onto the observer and the accumulators, and
 // reports whether it was terminal.
 //
 // The mapping is limited by what the wire carries, deliberately and not as a
-// simplification. The runner records an adapter event as
-// (type, message, data) and collapses every type it does not itself define onto
-// `progress` (pkg/runner/runner.go handleHarnessEvent), so Claude Code's
-// `message` and `tool_use` events arrive in the SAME shape: a progress event
-// with a string. There is no field left that would tell prose from a tool name,
-// so progress becomes a Delta unless its DATA names a tool item — which is what
-// Codex sends, and which is why the tool mapping exists at all rather than being
-// left out.
-func (s *turnState) observe(event runner.Event) (terminal bool) {
+// simplification. The runner records an adapter event as (type, message, data)
+// and collapses every type it does not itself define onto `progress`
+// (pkg/runner/runner.go handleHarnessEvent), so Claude Code's `message` and
+// `tool_use` events arrive in the SAME shape: a progress event with a string.
+// There is no field left that would tell prose from a tool name, so progress
+// becomes Text unless its DATA names a tool item — which is what Codex sends,
+// and which is why the tool mapping exists at all rather than being left out.
+func (s *stream) observe(event runner.Event) (terminal bool) {
 	s.cursor = event.Cursor
 	switch event.Type {
 	case runner.EventAccepted, runner.EventStarted, runner.EventArtifact:
-		// Lifecycle and artifact bookkeeping. A conversational turn exports no
-		// artifacts (a workspace attempt cannot export a Git result), so an
-		// artifact event is somebody else's attempt shape and is not progress to
-		// show.
+		// Lifecycle and artifact bookkeeping, not progress to show. Artifacts
+		// are named on the terminal receipt, which is where a caller that
+		// exports them reads them.
 		return false
 	case runner.EventProgress:
 		s.progress(event)
 		return false
 	case runner.EventCheckpoint:
-		// The state the provider persists is OURS — the attempt and session this
-		// turn can be re-joined at — not whatever the harness put in the event.
-		// The caller supplies it, so the recorder is wired in follow().
+		// The position a caller persists is its own — the attempt and cursor
+		// this follow can be re-joined at — not whatever the harness put in the
+		// event. Follow offers it through Observer.Checkpoint.
 		return false
 	case runner.EventNeedsInput:
 		s.observeClarification(event)
@@ -117,7 +226,20 @@ func (s *turnState) observe(event runner.Event) (terminal bool) {
 	}
 }
 
-func (s *turnState) progress(event runner.Event) {
+func (s *stream) observeReceipt(receipt runner.Receipt) {
+	s.turnStarted = s.turnStarted || receipt.SessionID != ""
+	if receipt.Clarification != nil {
+		s.clarification = receipt.Clarification
+		s.clarificationFromReceipt = true
+		return
+	}
+	if s.clarificationFromReceipt {
+		s.clarification = nil
+	}
+	s.clarificationFromReceipt = false
+}
+
+func (s *stream) progress(event runner.Event) {
 	if turnID, ok := codexTurnStarted(event.Data); ok && turnID != s.codexTurnID {
 		// A clarification resume launches a new native Codex turn in the same
 		// attempt. Previous tool results have already been reported to the sink,
@@ -133,8 +255,8 @@ func (s *turnState) progress(event runner.Event) {
 	// the final result record (Codex reports tokenUsage this way).
 	s.observeUsage(event.Data)
 	// A harness result record: the final answer plus, for Claude Code, the cost
-	// fields. Recognised by its own payload rather than by the event type, which
-	// the runner already flattened.
+	// fields. Recognised by its own payload rather than by the event type,
+	// which the runner already flattened.
 	if final, ok := resultRecord(event.Data); ok {
 		if text := strings.TrimSpace(final); text != "" {
 			s.final = text
@@ -184,7 +306,7 @@ func (s *turnState) progress(event runner.Event) {
 		}
 		if delta != "" {
 			s.text.WriteString(delta)
-			s.sink.Delta(delta)
+			s.obs.Text(delta)
 		}
 		return
 	}
@@ -193,7 +315,7 @@ func (s *turnState) progress(event runner.Event) {
 		if !strings.HasSuffix(text, "\n") {
 			s.text.WriteString("\n")
 		}
-		s.sink.Delta(text)
+		s.obs.Text(text)
 	}
 }
 
@@ -269,7 +391,7 @@ func codexSessionStarted(data json.RawMessage) bool {
 	return len(rec.Thread) > 0 && strings.TrimSpace(string(rec.Thread)) != "null"
 }
 
-func (s *turnState) observeClarification(event runner.Event) {
+func (s *stream) observeClarification(event runner.Event) {
 	if s.clarificationFromReceipt {
 		// Inspect's current receipt outranks retained needs_input events, which
 		// may include earlier questions when recovery starts before their cursor.
@@ -288,11 +410,11 @@ func (s *turnState) observeClarification(event runner.Event) {
 }
 
 // tool announces a tool item, once as a start and once as an end.
-func (s *turnState) tool(item harnessItem) {
+func (s *stream) tool(item harnessItem) {
 	seen, known := s.tools[item.ID]
 	if !known {
 		s.tools[item.ID] = toolInFlight{name: item.Name, args: item.Args}
-		s.sink.ToolStart(item.ID, item.Name, item.Args)
+		s.obs.ToolStart(item.ID, item.Name, item.Args)
 		seen = s.tools[item.ID]
 	}
 	if !item.Done || seen.ended {
@@ -301,24 +423,24 @@ func (s *turnState) tool(item harnessItem) {
 	seen.ended = true
 	s.tools[item.ID] = seen
 	s.toolDuration += item.Duration
-	s.sink.ToolEnd(backend.ToolEvent{
+	s.obs.ToolEnd(ToolResult{
 		ID: item.ID, Name: seen.name, Args: seen.args,
-		Result: item.Result, Err: item.Failed, Duration: item.Duration,
+		Result: item.Result, Failed: item.Failed, Duration: item.Duration,
 	})
 }
 
 // endOpenTools closes any tool the stream never reported finishing, so a
-// transcript does not keep a call open forever because the attempt ended between
-// an item's start and its completion.
-func (s *turnState) endOpenTools() {
+// transcript does not keep a call open forever because the attempt ended
+// between an item's start and its completion.
+func (s *stream) endOpenTools() {
 	for id, t := range s.tools {
 		if t.ended {
 			continue
 		}
 		t.ended = true
 		s.tools[id] = t
-		s.sink.ToolEnd(backend.ToolEvent{ID: id, Name: t.name, Args: t.args,
-			Result: "the attempt ended before this tool call reported a result", Err: true})
+		s.obs.ToolEnd(ToolResult{ID: id, Name: t.name, Args: t.args,
+			Result: "the attempt ended before this tool call reported a result", Failed: true})
 	}
 }
 
@@ -330,9 +452,8 @@ func (s *turnState) endOpenTools() {
 // grew a field would be worse than a turn whose progress was a little coarser.
 
 // resultRecord recognises a harness result record and returns its final text.
-// Claude Code's `result` record is the shape; `subtype` and `is_error` are read
-// only to avoid mistaking some other record that happens to carry a "result"
-// key.
+// Claude Code's `result` record is the shape; `type` is read only to avoid
+// mistaking some other record that happens to carry a "result" key.
 func resultRecord(data json.RawMessage) (string, bool) {
 	if len(data) == 0 {
 		return "", false
@@ -374,7 +495,7 @@ func turnCompletion(data json.RawMessage) bool {
 // turn duration. Tool durations are subtracted when the assistant boundary is
 // reported so the provider's worked-time accumulator does not double-count
 // command execution.
-func (s *turnState) observeCodexTurn(data json.RawMessage) {
+func (s *stream) observeCodexTurn(data json.RawMessage) {
 	if len(data) == 0 {
 		return
 	}
@@ -525,11 +646,9 @@ func clarificationOf(data json.RawMessage) (*runner.Clarification, bool) {
 // observeUsage adds whatever a payload reported spending.
 //
 // Claude Code's result record carries both tokens and a price it was charged;
-// Codex reports tokens and no price. Where there is no cost, the cost stays zero
-// — a number invented from a token count and a guessed rate would be wrong in a
-// billing column, and the agent is still bounded by its turn and duration limits
-// (see the budget check in api/run.go, which counts tokens as well as dollars).
-func (s *turnState) observeUsage(data json.RawMessage) {
+// Codex reports tokens and no price. Where there is no cost the cost stays
+// zero — see Usage.
+func (s *stream) observeUsage(data json.RawMessage) {
 	if len(data) == 0 {
 		return
 	}
@@ -552,8 +671,8 @@ func (s *turnState) observeUsage(data json.RawMessage) {
 		counts = rec.Turn.Usage
 	}
 	if counts != nil {
-		s.cost.InputTokens += counts.input()
-		s.cost.OutputTokens += counts.output()
+		s.usage.InputTokens += counts.input()
+		s.usage.OutputTokens += counts.output()
 	}
 	cost := rec.TotalCostUSD
 	if cost == nil {
@@ -563,14 +682,14 @@ func (s *turnState) observeUsage(data json.RawMessage) {
 		cost = rec.Turn.TotalCostUSD
 	}
 	if cost != nil && *cost > 0 && !math.IsInf(*cost, 0) && !math.IsNaN(*cost) {
-		s.cost.CostMicros += int64(math.Round(*cost * 1e6))
+		s.usage.CostMicros += int64(math.Round(*cost * 1e6))
 	}
 }
 
 // observeCodexUsage adds each distinct model-call update once. tokenUsage.last
 // is for one model call; total is cumulative across a native thread and is used
 // only to detect duplicate updates and identify a new call.
-func (s *turnState) observeCodexUsage(usage *tokenUsage) {
+func (s *stream) observeCodexUsage(usage *tokenUsage) {
 	if !s.turnStarted || usage == nil || usage.Last == nil {
 		return
 	}
@@ -588,8 +707,8 @@ func (s *turnState) observeCodexUsage(usage *tokenUsage) {
 		}
 		s.codexLast = string(raw)
 	}
-	s.cost.InputTokens += usage.Last.input()
-	s.cost.OutputTokens += usage.Last.output()
+	s.usage.InputTokens += usage.Last.input()
+	s.usage.OutputTokens += usage.Last.output()
 }
 
 type turnEnvelope struct {

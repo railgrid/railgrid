@@ -15,9 +15,16 @@
 // run, its budget, its transcript, its inbox, its cancellation and its recovery
 // are all still the provider's, and what changes is only where the turn happens.
 //
-// The protocol is runner/v1 (railgrid's pkg/runner), reached through the one
-// typed client for it (pkg/runner/client) over the edges provider's published
-// Service proxy. Three of its rules shape everything here:
+// What this package holds is only what makes a turn an AGENT'S turn: how a
+// conversation is rendered as the one prompt a launch takes, how a session's
+// turns are numbered so the runner refuses a double dispatch, what provenance
+// the dispatch carries, and how the seam's parks and verdicts map onto the
+// protocol's. The attempt lifecycle itself — following, parking, resuming,
+// cancelling, and reading a harness's stream into text, tools and cost — is
+// railgrid's pkg/runner/dispatch, shared with every other product that drives a
+// runner, so a rule learned once is learned for all of them.
+//
+// Three protocol rules shape what is here:
 //
 //   - A conversational turn is a WORKSPACE attempt: it names a workspaceID and
 //     runs in a directory the runner keeps across attempts. It pins no commit,
@@ -54,7 +61,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -62,7 +68,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/railgrid/railgrid/pkg/runner"
-	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
+	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/llm"
@@ -72,17 +78,16 @@ import (
 // resolves it per turn, the same way it resolves a chat model per turn: the
 // credential, the epoch and the session all change from one turn to the next.
 type Config struct {
-	// Dispatcher reaches the enrolled runner.
-	Dispatcher Dispatcher
+	// Runner reaches the enrolled runner. dispatch.Wrap adapts the shared client.
+	Runner dispatch.Runner
+	// BackendKey binds a parked attempt to the runner selected for it. A
+	// continuation that resolves to another runner cannot safely resume the
+	// original attempt.
+	BackendKey string
 
 	// TaskID identifies the CONVERSATION on the runner. Every turn of one
 	// session is a new dispatch of this task.
 	TaskID string
-	// BackendKey identifies the runner selected for this attempt. It is opaque
-	// to this package; carrying it in resume state prevents a parked attempt from
-	// being continued against a different runner after the agent configuration
-	// changes.
-	BackendKey string
 	// AttemptID identifies this turn's attempt. The provider passes the run id,
 	// so an attempt and a run are the same thing on both sides of the seam.
 	AttemptID string
@@ -139,10 +144,10 @@ type Observed struct {
 }
 
 // State is this backend's resume state, opaque to the provider, persisted with
-// the run and handed back as Answer.State. It contains the coordinates for
-// re-joining an attempt and a normalized snapshot of what the provider has
-// already observed through that cursor. The harness holds the transcript, but
-// the snapshot is needed to reconstruct this provider's outcome after recovery.
+// the run and handed back as Answer.State.
+//
+// The runner holds the transcript, while the serialized dispatch snapshot keeps
+// the normalized event state needed to continue observing it after recovery.
 type State struct {
 	TaskID     string `json:"taskID"`
 	AttemptID  string `json:"attemptID"`
@@ -166,42 +171,28 @@ type State struct {
 	// Spent is what this attempt had already consumed when it parked, so a
 	// resumed turn bills only the delta.
 	Spent backend.Cost `json:"spent,omitzero"`
-	// Snapshot carries normalized transcript and deduplication state through
-	// Cursor. Older states omit it; Continue reconstructs those by silently
-	// replaying the retained event prefix, and fails if that prefix is incomplete.
-	Snapshot *StateSnapshot `json:"snapshot,omitempty"`
+	// ParkType records which kind of prompt this state belongs to even when a
+	// clarification has no ID. A stale answer may only resolve the same kind of
+	// park and, where present, the same ID.
+	ParkType string `json:"parkType,omitempty"`
+	// Snapshot is the shared dispatch normalizer at Cursor. It carries the
+	// accumulated transcript, usage markers, timing and open tool calls. Raw
+	// JSON lets this backend read the earlier v1 shape, whose fields are now the
+	// inner state of dispatch.Snapshot.
+	Snapshot json.RawMessage `json:"snapshot,omitempty"`
 }
 
-const stateSnapshotVersion = 1
+const (
+	parkTypeQuestion   = "question"
+	parkTypePermission = "permission"
+)
 
-// StateSnapshot is the part of a turn that cannot be recovered from the
-// attempt coordinates alone. Spent already includes everything through Cursor,
-// so the snapshot stores usage deduplication markers but not a second copy of
-// its billable cost.
-type StateSnapshot struct {
-	Version int                     `json:"version"`
-	Text    string                  `json:"text,omitempty"`
-	Final   string                  `json:"final,omitempty"`
-	Tools   map[string]ToolSnapshot `json:"tools,omitempty"`
-	// ToolDurationNS is scoped to CodexTurnID because only tools in that
-	// native turn are already included in TurnDurationNS.
-	ToolDurationNS int64 `json:"toolDurationNS,omitempty"`
-	TurnDurationNS int64 `json:"turnDurationNS,omitempty"`
-	// CodexTurnID distinguishes a clarification resume's new turn from a
-	// permission resume, which keeps the current turn alive.
-	CodexTurnID      string                `json:"codexTurnID,omitempty"`
-	TurnStarted      bool                  `json:"turnStarted,omitempty"`
-	CodexTotalTokens int64                 `json:"codexTotalTokens,omitempty"`
-	CodexTotalSeen   bool                  `json:"codexTotalSeen,omitempty"`
-	CodexLast        string                `json:"codexLast,omitempty"`
-	Clarification    *runner.Clarification `json:"clarification,omitempty"`
-}
-
-// ToolSnapshot records the dedupe state for a tool item already observed.
-type ToolSnapshot struct {
-	Name  string `json:"name,omitempty"`
-	Args  string `json:"args,omitempty"`
-	Ended bool   `json:"ended,omitempty"`
+// position renders the state as the lifecycle's coordinates.
+func (s State) position() dispatch.Position {
+	return dispatch.Position{
+		TaskID: s.TaskID, AttemptID: s.AttemptID, Epoch: s.Epoch, SessionID: s.SessionID,
+		Cursor: s.Cursor, ClarificationID: s.ClarificationID, PermissionID: s.PermissionID,
+	}
 }
 
 // New builds a Backend for one turn.
@@ -221,21 +212,25 @@ func (b *Backend) Observed() Observed {
 	return b.observed
 }
 
-func (b *Backend) observe(receipt runner.Receipt) {
+func (b *Backend) observe(pos dispatch.Position) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if receipt.AttemptID != "" {
-		b.observed.AttemptID = receipt.AttemptID
+	if pos.AttemptID != "" {
+		b.observed.AttemptID = pos.AttemptID
 	}
-	// The receipt's session id is AUTHORITATIVE: the harness may fork the
-	// session on a resume, and chaining the next turn onto what we sent would
-	// then continue a conversation nobody is having.
-	if receipt.SessionID != "" {
-		b.observed.SessionID = receipt.SessionID
+	// The receipt's session id is AUTHORITATIVE — see the package comment —
+	// and Position carries what the receipt said.
+	if pos.SessionID != "" {
+		b.observed.SessionID = pos.SessionID
 	}
-	if receipt.AttemptEpoch != 0 {
-		b.observed.Epoch = receipt.AttemptEpoch
+	if pos.Epoch != 0 {
+		b.observed.Epoch = pos.Epoch
 	}
+}
+
+// start is where this turn begins, before anything was observed.
+func (b *Backend) start() dispatch.Position {
+	return dispatch.Position{TaskID: b.cfg.TaskID, AttemptID: b.cfg.AttemptID, Epoch: b.cfg.Epoch, SessionID: b.cfg.SessionID}
 }
 
 // Turn dispatches a fresh turn and follows it to a terminal phase.
@@ -285,23 +280,24 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 	if strings.TrimSpace(req.Instructions) == "" {
 		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn has nothing to ask the harness")
 	}
-	receipt, err := b.cfg.Dispatcher.Start(ctx, req)
+	receipt, err := b.cfg.Runner.Start(ctx, req)
 	if err != nil {
-		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("starting the harness turn", err)
+		return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("starting the harness turn", err)
 	}
-	b.observe(receipt)
-	return b.follow(ctx, receipt, sink, backend.Cost{}, newTurnState(sink))
+	out, err := dispatch.FollowSnapshot(ctx, b.cfg.Runner, receipt, dispatch.Snapshot{Position: b.start()}, b.observer(sink))
+	return b.outcome(ctx, out, err, backend.Cost{})
 }
 
 // Continue picks a parked turn back up.
 //
 // Two shapes arrive here, and they are not the same call. A DECIDED answer is
-// the user's resolution of a question the harness asked, and it is a resume:
-// the clarification id is echoed and the resolution is handed to the session. An
-// UNDECIDED answer is a run whose process died, and there is nothing to resolve
-// — the attempt may well still be executing on the machine — so it is a
-// RE-JOIN: reconcile with Inspect and keep tailing from the cursor, and only
-// resume if the runner is genuinely waiting for input.
+// the user's resolution of a question the harness asked, or their verdict on a
+// permission prompt, and it is a resume. An UNDECIDED answer is a run whose
+// process died, and there is nothing to resolve — the attempt may well still be
+// executing on the machine — so it is a RE-JOIN: reconcile with Inspect and
+// keep tailing from the cursor. A re-joined attempt found waiting on input is
+// parked AGAIN rather than answered with nothing: the provider died between the
+// park and recording it, and the person still gets to answer.
 func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.Answer, sink backend.EventSink) (backend.Outcome, error) {
 	if err := b.validate(); err != nil {
 		return backend.Outcome{Status: backend.StatusFailed}, err
@@ -319,616 +315,325 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	if err := sink.Aborted(ctx); err != nil {
 		return backend.Outcome{Status: backend.StatusCancelled}, err
 	}
-
-	receipt, err := b.cfg.Dispatcher.Inspect(ctx, state.AttemptID)
-	if err != nil {
-		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("inspecting the parked attempt", err)
-	}
-	b.observe(receipt)
-	turnState, err := b.restoreState(ctx, state, sink)
+	pos := state.position()
+	snapshot, err := b.dispatchSnapshot(ctx, state, sink)
 	if err != nil {
 		return backend.Outcome{Status: b.statusFor(ctx)}, err
 	}
-	// Already finished while nobody was watching: follow the retained tail after
-	// the snapshot cursor, then trust the receipt. This keeps events emitted after
-	// the last checkpoint and uses the restored transcript for the rest.
-	if receipt.Phase.IsTerminal() {
-		turnState.clarification = nil
-		turnState.clarificationFromReceipt = false
-		return b.follow(ctx, receipt, sink, state.Spent, turnState)
-	}
-	if receipt.Phase != runner.PhaseNeedsInput {
-		// Still executing. Re-join it rather than resuming: a resume would be
-		// refused (the attempt is not waiting) and the work is not lost.
-		// The snapshot's clarification was answered before this process
-		// recovered; it is no longer an outstanding question on the runner.
-		turnState.clarification = nil
-		turnState.clarificationFromReceipt = false
-		return b.follow(ctx, receipt, sink, state.Spent, turnState)
-	}
-	if answerTargetsDifferentPark(state, receipt) {
-		// A stale inbox answer is tied to the park that produced State. If the
-		// runner is now waiting on another call or question, rejoin and surface
-		// that current park without applying the old decision to it.
-		turnState.clarification = nil
-		turnState.clarificationFromReceipt = false
-		return b.follow(ctx, receipt, sink, state.Spent, turnState)
-	}
-	if !answer.Decided && permissionID(receipt, state) == "" {
-		// Recovery has no answer for a clarification. Re-join the waiting attempt
-		// and surface its current question; sending an empty resolution is rejected
-		// by the runner and would strand a recoverable park as a failed run.
-		return b.follow(ctx, receipt, sink, state.Spent, turnState)
+	obs := b.observer(sink)
+
+	if !answer.Decided {
+		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
+		return b.outcome(ctx, out, err, state.Spent)
 	}
 
+	receipt, err := b.cfg.Runner.Inspect(ctx, state.AttemptID)
+	if err != nil {
+		return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("inspecting the parked attempt", err)
+	}
+	pos.Observe(receipt)
+	b.observe(pos)
+	// Already finished while nobody was watching: the receipt is the answer, and
+	// resuming it would be a second dispatch of work that is done. Still
+	// executing: the park was answered by events, so re-join it. Only a receipt
+	// genuinely waiting on input takes the answer.
+	if receipt.Phase != runner.PhaseNeedsInput {
+		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
+		return b.outcome(ctx, out, err, state.Spent)
+	}
+	if answerTargetsDifferentPark(state, receipt) {
+		// The inbox answer belongs to the park persisted with State. If the
+		// runner has already moved on, surface its current park without applying
+		// an old verdict or answer to it.
+		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
+		return b.outcome(ctx, out, err, state.Spent)
+	}
 	approved, err := b.approvedInput(r)
 	if err != nil {
 		return backend.Outcome{Status: backend.StatusFailed}, err
 	}
 	credential := b.credential()
-	resume := runner.ResumeRequest{
-		RequestID:    b.newID(),
-		TaskID:       state.TaskID,
-		AttemptID:    state.AttemptID,
-		AttemptEpoch: state.Epoch,
-		SessionID:    firstNonEmpty(receipt.SessionID, state.SessionID),
-		// The id the harness gave the question. Echoing it is what makes the
-		// answer an answer to THAT question rather than a new instruction.
-		ClarificationID:   clarificationID(receipt, state),
-		Resolution:        resolution(answer),
-		ApprovedInput:     approved,
-		HarnessCredential: &credential,
-	}
-	// A permission park is answered with a VERDICT on a named call, not with
-	// text, and the two are mutually exclusive on the wire. Setting the verdict
-	// clears the clarification id so a resume never claims to be both.
-	if id := permissionID(receipt, state); id != "" {
-		resume.ClarificationID = ""
-		resume.PermissionID = id
-		resume.PermissionDecision = runner.PermissionDeny
-		// An undecided resume is a recovery, not a verdict — the run was picked
-		// up after its process died. Nothing was approved, so the honest answer
-		// to a call still waiting is no.
-		if answer.Decided && answer.Approved {
-			resume.PermissionDecision = runner.PermissionAllow
-		}
-		// Resolution is the person's own words and reaches the model as the
-		// reason. On an approval the stock "Approved. Continue." is an
-		// instruction for a NEW turn and means nothing to a waiting tool call,
-		// so only a real note is passed on.
-		resume.Resolution = strings.TrimSpace(answer.Note)
-	}
-	resumed, err := b.cfg.Dispatcher.Resume(ctx, resume)
-	if err != nil {
-		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("resuming the harness turn", err)
-	}
-	b.observe(resumed)
-	// A successful resume consumed the question in this state. The resumed
-	// attempt may ask a different question without a structured clarification;
-	// keeping the answered text/id would then report and answer the old one.
-	turnState.clarification = nil
-	turnState.clarificationFromReceipt = false
-	return b.follow(ctx, resumed, sink, state.Spent, turnState)
+	// A permission park takes a VERDICT and the person's own note as the
+	// reason; a question takes the resolution rendered for it. A denial is
+	// phrased as one so the harness reacts to a refusal rather than to an empty
+	// answer. The lifecycle picks the field the park is answered through.
+	resume := dispatch.ResumeRequest(b.newID(), receipt, pos, dispatch.Answer{
+		Resolution: resolution(answer, receipt.Permission != nil),
+		Allow:      answer.Approved,
+	}, approved, &credential)
+	out, err := dispatch.ResumeSnapshot(ctx, b.cfg.Runner, resume, snapshot, obs)
+	return b.outcome(ctx, out, err, state.Spent)
 }
 
-const (
-	// cancelPoll is how often the terminal receipt is re-read after a cancel was
-	// posted. The runner stops a harness child and waits for it, so the gap
-	// between "cancelling" and "cancelled" is real but short.
-	cancelPoll = 250 * time.Millisecond
-
-	// quietPoll spaces reconnects when a stream ends with nothing new on it.
-	// Ordinarily the runner holds a stream open for 30 seconds before ending it,
-	// so a reconnect costs one round trip a minute — but nothing in the protocol
-	// PROMISES that, and a runner that answered every stream immediately would
-	// otherwise be hammered by a tight loop.
-	quietPoll = 250 * time.Millisecond
-)
-
 // Cancel stops a turn executing on the runner, and then OBSERVES that it
-// stopped.
-//
-// The observation is the point. The provider calls this from whoever asked for
-// the cancel, having already cancelled the run's context — so the local half is
-// done either way, and what is left is the half that is not local: an attempt on
-// somebody else's machine, which is `cancelling` until its harness child has
-// actually been reaped and its terminal receipt says `cancelled`. Returning nil
-// before that would report a cancellation nobody has seen, and the next thing
-// that read the attempt would find it still running.
-//
-// The provider bounds this call; when the bound runs out the error says the
-// attempt is still cancelling, which is the truth and is what gets logged.
+// stopped. The provider calls this from whoever asked for the cancel, having
+// already cancelled the run's context — so the local half is done either way,
+// and what is left is the half on somebody else's machine. The provider bounds
+// this call; when the bound runs out the error says the attempt is still
+// cancelling, which is the truth and is what gets logged.
 func (b *Backend) Cancel(ctx context.Context, _ *backend.Run) error {
-	if b.cfg.Dispatcher == nil {
-		return errors.New("no runner dispatcher configured")
+	if b.cfg.Runner == nil {
+		return errors.New("no runner configured")
 	}
-	attemptID := b.Observed().AttemptID
+	observed := b.Observed()
+	attemptID := observed.AttemptID
 	if attemptID == "" {
 		attemptID = b.cfg.AttemptID
 	}
 	if attemptID == "" {
 		return nil // nothing was ever dispatched
 	}
-	epoch := b.Observed().Epoch
+	epoch := observed.Epoch
 	if epoch == 0 {
 		epoch = b.cfg.Epoch
 	}
-	receipt, err := b.cfg.Dispatcher.Cancel(ctx, runner.CancelRequest{
+	receipt, err := dispatch.Cancel(ctx, b.cfg.Runner, runner.CancelRequest{
 		RequestID:    b.newID(),
 		TaskID:       b.cfg.TaskID,
 		AttemptID:    attemptID,
 		AttemptEpoch: epoch,
 	})
-	if err != nil {
-		// An attempt the runner has never heard of, or one already terminal, is
-		// not a failure to cancel: there is nothing running.
-		if terminalProtocolError(err) {
-			return nil
-		}
-		return dispatchError("cancelling the harness turn", err)
+	if receipt != nil {
+		pos := dispatch.Position{}
+		pos.Observe(*receipt)
+		b.observe(pos)
 	}
-	for !receipt.Phase.IsTerminal() {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("attempt %s is %s, not cancelled: %w", attemptID, receipt.Phase, ctx.Err())
-		case <-time.After(cancelPoll):
-		}
-		receipt, err = b.cfg.Dispatcher.Inspect(ctx, attemptID)
-		if err != nil {
-			return dispatchError("observing the cancelled attempt", err)
-		}
-	}
-	b.observe(receipt)
-	return nil
+	return err
 }
 
-// follow tails an attempt's events to a terminal phase, mapping them onto the
-// sink, and then reads the receipt — which is the authority on how it ended.
+// outcome maps what the lifecycle reported onto the seam.
 //
-// The loop reconnects, and that is not a retry loop: the runner ends a stream
-// itself after 30 seconds of silence (pkg/runner/http.go serveEvents) so a
-// caller resumes from its cursor rather than holding a connection open for the
-// length of a coding turn. Each reconnect is also where the two things that must
-// not be skipped happen: the durable cancel flag is consulted, and the receipt is
-// re-read in case the attempt ended during the quiet.
-func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backend.EventSink, prior backend.Cost, state *turnState) (backend.Outcome, error) {
-	if state == nil {
-		state = newTurnState(sink)
+// prior is what the run had spent before this turn began — zero for a fresh
+// turn, the checkpoint's accumulator for a resumed one. Total is the run's
+// cumulative consumption and Billed is what THIS turn added.
+func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, prior backend.Cost) (backend.Outcome, error) {
+	b.observe(out.Position)
+	usage := usage(out.Summary.Usage, prior)
+	if err != nil {
+		// A turn stopped on purpose is not a fault. The lifecycle reports a
+		// cancelled receipt as an error carrying the runner's words; the seam
+		// records it as aborted rather than failed.
+		status := b.statusFor(ctx)
+		switch out.Receipt.Phase {
+		case runner.PhaseCancelled:
+			status = backend.StatusCancelled
+		case runner.PhaseFailed:
+			status = backend.StatusFailed
+		}
+		return backend.Outcome{Status: status, Usage: usage}, err
 	}
-	state.sink = sink
-	// A resumed or re-joined Codex thread may have emitted turn/started before
-	// this follower attached. The receipt's session ID establishes that its
-	// subsequent tokenUsage updates belong to an active attempt.
-	state.turnStarted = state.turnStarted || receipt.SessionID != ""
-	updateReceiptClarification(state, receipt)
-	attemptID := receipt.AttemptID
-	// caughtUp bounds retries when Inspect says the attempt is terminal but its
-	// cursor is still ahead of the last event we received. Every cursor through
-	// that receipt must be drained before returning; a quiet stream that still
-	// cannot supply them means the outcome is incomplete.
-	caughtUp := false
-	for {
-		if err := sink.Aborted(ctx); err != nil {
-			return backend.Outcome{Status: backend.StatusCancelled, Usage: b.usage(state, prior)}, err
+	if parked := out.Parked; parked != nil {
+		parkType := parkTypeQuestion
+		if parked.Permission != nil {
+			parkType = parkTypePermission
 		}
-		stream, err := b.cfg.Dispatcher.Events(ctx, attemptID, state.cursor)
-		if err != nil {
-			return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-				dispatchError("following the harness turn", err)
+		resumeState, merr := b.state(out.Snapshot, parkType)
+		if merr != nil {
+			// Without resumable state the park would strand the run: no answer
+			// could ever continue it. Fail it instead, which at least ends it
+			// where a person can see it.
+			return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
+				fmt.Errorf("recording the turn's resume state: %w", merr)
 		}
-		before := state.cursor
-		terminal, quiet, err := b.drain(ctx, stream, state, prior)
-		_ = stream.Close()
-		if state.cursor > before {
-			caughtUp = false
+		raw, merr := json.Marshal(resumeState)
+		if merr != nil {
+			return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
+				fmt.Errorf("recording the turn's resume state: %w", merr)
 		}
-		switch {
-		case err != nil:
-			// Inspect can tell whether the receipt is already covered by the
-			// events we observed, but it cannot reconstruct missing content. If
-			// the receipt cursor advanced, report the incomplete history instead
-			// of returning a partial answer or usage total.
-			if snapshotRequired(err) {
-				reconciled, ierr := b.cfg.Dispatcher.Inspect(ctx, attemptID)
-				if ierr != nil {
-					return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-						dispatchError("reconciling after a cursor gap", ierr)
-				}
-				b.observe(reconciled)
-				if reconciled.Cursor > state.cursor {
-					return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-						incompleteHistoryError(state, reconciled.Cursor)
-				}
-				updateReceiptClarification(state, reconciled)
-				if reconciled.Phase.IsTerminal() || reconciled.Phase == runner.PhaseNeedsInput {
-					return b.outcomeFor(ctx, reconciled, state, prior)
-				}
-				continue
-			}
-			return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)}, err
-		case terminal:
-			final, ierr := b.cfg.Dispatcher.Inspect(ctx, attemptID)
-			if ierr != nil {
-				return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-					dispatchError("reading the finished attempt", ierr)
-			}
-			b.observe(final)
-			updateReceiptClarification(state, final)
-			// A terminal EVENT and a terminal RECEIPT are two facts, and the
-			// event can arrive first: the runner publishes to subscribers while
-			// it is still settling the attempt. Believing the event over the
-			// receipt failed the turn with "neither finished nor waiting" —
-			// reported from a live run — on work that had in fact completed.
-			// The receipt is the authority, so go round again and ask it once
-			// more rather than concluding from the event.
-			if !final.Phase.IsTerminal() && final.Phase != runner.PhaseNeedsInput {
-				select {
-				case <-ctx.Done():
-					return backend.Outcome{Status: backend.StatusCancelled, Usage: b.usage(state, prior)}, ctx.Err()
-				case <-time.After(quietPoll):
-				}
-				continue
-			}
-			// A retained terminal or needs-input event can predate the
-			// receipt we just inspected. This happens when recovery attaches
-			// after an approval was answered: the old park event is still in
-			// the log, while the receipt already describes the completed run.
-			// Keep reading until the receipt's event cursor is represented in
-			// our normalized state so its answer and usage are not lost.
-			if final.Cursor > state.cursor {
-				continue
-			}
-			return b.outcomeFor(ctx, final, state, prior)
-		case quiet:
-			// The runner closed a quiet stream. Offer a checkpoint here — this is
-			// a point where nothing is half-consumed — and ask the receipt whether
-			// the attempt ended while we were not listening.
-			b.checkpoint(sink, state, prior)
-			current, ierr := b.cfg.Dispatcher.Inspect(ctx, attemptID)
-			if ierr != nil {
-				return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-					dispatchError("checking on the harness turn", ierr)
-			}
-			b.observe(current)
-			updateReceiptClarification(state, current)
-			if current.Phase.IsTerminal() || current.Phase == runner.PhaseNeedsInput {
-				if current.Cursor > state.cursor {
-					if caughtUp {
-						return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
-							incompleteHistoryError(state, current.Cursor)
-					}
-					// Events were produced between our last read and the phase
-					// change; pick them up before concluding. If another quiet
-					// read cannot provide them, the journal is incomplete.
-					caughtUp = true
-					continue
-				}
-				return b.outcomeFor(ctx, current, state, prior)
-			}
-			if state.cursor == before {
-				// Nothing new and still running: wait before asking again.
-				select {
-				case <-ctx.Done():
-					return backend.Outcome{Status: backend.StatusCancelled, Usage: b.usage(state, prior)}, ctx.Err()
-				case <-time.After(quietPoll):
-				}
-			}
+		if parked.Permission != nil {
+			// Tool and Args make it an approval, with Approve and Deny. Args is
+			// the harness's own rendering of the call's input, already bounded
+			// by the runner: it is what the person is shown and what their
+			// approval authorizes — that call, those arguments.
+			return backend.Outcome{
+				Status: backend.StatusParked, Text: out.Summary.Text, Usage: usage,
+				Parked: &backend.Parked{Tool: parked.Permission.Tool, Args: parked.Permission.Input, State: raw},
+			}, nil
 		}
+		// No Tool/Args: nothing was gated. The harness asked a question, and
+		// what resolves it is an answer rather than a verdict on a call.
+		return backend.Outcome{
+			Status: backend.StatusParked, Text: out.Summary.Text, Usage: usage,
+			Parked: &backend.Parked{Question: parked.Question.Text, State: raw},
+		}, nil
 	}
+	text := out.Summary.Text
+	output, sources := backend.SplitSources(text)
+	return backend.Outcome{
+		Status: backend.StatusCompleted,
+		Text:   text, Output: output, Sources: sources,
+		Final: out.Summary.Final,
+		Usage: usage,
+	}, nil
 }
 
-// updateReceiptClarification applies the latest receipt's clarification
-// authority. When a later receipt no longer carries one, release that
-// authority so retained needs_input events can supply the current fallback.
-func updateReceiptClarification(state *turnState, receipt runner.Receipt) {
-	if receipt.Clarification != nil {
-		state.clarification = receipt.Clarification
-		state.clarificationFromReceipt = true
+// state renders the resume coordinates the provider persists.
+func (b *Backend) state(snapshot dispatch.Snapshot, parkType string) (State, error) {
+	pos := snapshot.Position
+	epoch := pos.Epoch
+	if epoch == 0 {
+		epoch = b.cfg.Epoch
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return State{}, err
+	}
+	return State{
+		TaskID:          firstNonEmpty(pos.TaskID, b.cfg.TaskID),
+		AttemptID:       firstNonEmpty(pos.AttemptID, b.cfg.AttemptID),
+		Epoch:           epoch,
+		BackendKey:      b.cfg.BackendKey,
+		SessionID:       firstNonEmpty(pos.SessionID, b.cfg.SessionID),
+		Cursor:          pos.Cursor,
+		ClarificationID: pos.ClarificationID,
+		PermissionID:    pos.PermissionID,
+		Spent:           cost(snapshot.Usage),
+		ParkType:        parkType,
+		Snapshot:        snapshotJSON,
+	}, nil
+}
+
+// observer wires the lifecycle's observations onto the seam. No field is
+// translated beyond naming: the stream's prose is a delta, its tool calls are
+// the seam's tool events, and its checkpoints become this backend's State.
+func (b *Backend) observer(sink backend.EventSink) dispatch.Observer {
+	return &sinkObserver{b: b, sink: sink}
+}
+
+type sinkObserver struct {
+	b    *Backend
+	sink backend.EventSink
+}
+
+func (o *sinkObserver) Text(delta string)                 { o.sink.Delta(delta) }
+func (o *sinkObserver) ToolStart(id, name, args string)   { o.sink.ToolStart(id, name, args) }
+func (o *sinkObserver) Aborted(ctx context.Context) error { return o.sink.Aborted(ctx) }
+
+func (o *sinkObserver) ToolEnd(t dispatch.ToolResult) {
+	o.sink.ToolEnd(backend.ToolEvent{ID: t.ID, Name: t.Name, Args: t.Args, Result: t.Result, Err: t.Failed, Duration: t.Duration})
+}
+
+func (o *sinkObserver) Assistant(a dispatch.AssistantResult) {
+	o.sink.Assistant(backend.AssistantMessage{Content: a.Content, Complete: a.Complete, Duration: a.Duration})
+}
+
+// Checkpoint persists the coordinates and normalized event state needed to
+// reconstruct this backend's outcome after a process restart.
+func (o *sinkObserver) Checkpoint(snap dispatch.Snapshot) {
+	state, err := o.b.state(snap, "")
+	if err != nil {
 		return
 	}
-	if state.clarificationFromReceipt {
-		state.clarification = nil
-	}
-	state.clarificationFromReceipt = false
-}
-
-// drain consumes one stream. quiet reports the ordinary end-of-stream the runner
-// sends after a silent interval, as opposed to a terminal event.
-func (b *Backend) drain(ctx context.Context, stream Stream, state *turnState, prior backend.Cost) (terminal, quiet bool, err error) {
-	for {
-		event, err := stream.Next(ctx)
-		switch {
-		case errors.Is(err, io.EOF):
-			return false, true, nil
-		case err != nil:
-			return false, false, err
-		}
-		if state.observe(event) {
-			return true, false, nil
-		}
-		if event.Type == runner.EventCheckpoint {
-			b.checkpoint(state.sink, state, prior)
-		}
-	}
-}
-
-// checkpoint persists where this turn can be re-joined. The state is ours, not
-// the harness's: a harness-backed run is recovered by addressing the same
-// attempt at the same cursor, so what has to survive is the coordinates.
-func (b *Backend) checkpoint(sink backend.EventSink, state *turnState, prior backend.Cost) {
-	raw, err := json.Marshal(b.state(state, "", "", prior))
+	raw, err := json.Marshal(state)
 	if err != nil {
 		// A checkpoint that cannot be serialized costs recoverability, which is
 		// strictly better than failing a working turn over it.
 		return
 	}
-	sink.Checkpoint(raw)
+	o.sink.Checkpoint(raw)
 }
 
-// snapshot captures the normalized state through the cursor. Its accumulated
-// cost is already represented by State.Spent, while these markers let resumed
-// events be deduplicated against the prefix.
-func snapshot(s *turnState) *StateSnapshot {
-	tools := make(map[string]ToolSnapshot, len(s.tools))
-	for id, tool := range s.tools {
-		tools[id] = ToolSnapshot{Name: tool.name, Args: tool.args, Ended: tool.ended}
-	}
-	var clarification *runner.Clarification
-	if s.clarification != nil {
-		copy := *s.clarification
-		clarification = &copy
-	}
-	return &StateSnapshot{
-		Version:          stateSnapshotVersion,
-		Text:             s.text.String(),
-		Final:            s.final,
-		Tools:            tools,
-		ToolDurationNS:   int64(s.toolDuration),
-		TurnDurationNS:   int64(s.turnDuration),
-		CodexTurnID:      s.codexTurnID,
-		TurnStarted:      s.turnStarted,
-		CodexTotalTokens: s.codexTotalTokens,
-		CodexTotalSeen:   s.codexTotalSeen,
-		CodexLast:        s.codexLast,
-		Clarification:    clarification,
-	}
-}
-
-// restoreState rebuilds the normalizer state through State.Cursor. New states
-// carry a complete snapshot and require no historical runner events. Legacy
-// states are replayed into a silent sink; if the runner has already expired any
-// part of that prefix, recovery fails explicitly instead of returning a
-// truncated answer.
-func (b *Backend) restoreState(ctx context.Context, state State, sink backend.EventSink) (*turnState, error) {
-	if state.Snapshot == nil {
-		return b.replayLegacyState(ctx, state, sink)
-	}
-	snapshot := state.Snapshot
-	if snapshot.Version != stateSnapshotVersion {
-		return nil, fmt.Errorf("the turn's resume state uses unsupported snapshot version %d", snapshot.Version)
-	}
-	if snapshot.ToolDurationNS < 0 || snapshot.TurnDurationNS < 0 {
-		return nil, errors.New("the turn's resume state contains a negative duration")
-	}
-	restored := newTurnState(sink)
-	restored.recovering = true
-	restored.text.WriteString(snapshot.Text)
-	restored.final = snapshot.Final
-	restored.cursor = state.Cursor
-	restored.toolDuration = time.Duration(snapshot.ToolDurationNS)
-	restored.turnDuration = time.Duration(snapshot.TurnDurationNS)
-	restored.codexTurnID = snapshot.CodexTurnID
-	restored.turnStarted = snapshot.TurnStarted
-	restored.codexTotalTokens = snapshot.CodexTotalTokens
-	restored.codexTotalSeen = snapshot.CodexTotalSeen
-	restored.codexLast = snapshot.CodexLast
-	if snapshot.Clarification != nil {
-		copy := *snapshot.Clarification
-		restored.clarification = &copy
-	}
-	for id, tool := range snapshot.Tools {
-		restored.tools[id] = toolInFlight{name: tool.Name, args: tool.Args, ended: tool.Ended}
-	}
-	return restored, nil
-}
-
-func (b *Backend) replayLegacyState(ctx context.Context, state State, sink backend.EventSink) (*turnState, error) {
-	replayed := newTurnState(silentSink{})
-	replayed.recovering = true
-	// The session receipt is also the signal that Codex usage notifications
-	// belong to an active native thread. Restore it before consuming a legacy
-	// prefix, just as follow does for a current receipt.
-	replayed.turnStarted = state.SessionID != ""
-	if state.Cursor == 0 {
-		replayed.sink = sink
-		return replayed, nil
-	}
-	stream, err := b.cfg.Dispatcher.Events(ctx, state.AttemptID, 0)
-	if err != nil {
-		return nil, fmt.Errorf("rebuilding legacy resume state through cursor %d: %w", state.Cursor, err)
-	}
-	defer func() { _ = stream.Close() }()
-	for cursor := uint64(1); cursor <= state.Cursor; cursor++ {
-		if err := sink.Aborted(ctx); err != nil {
-			return nil, err
-		}
-		event, err := stream.Next(ctx)
+func (b *Backend) dispatchSnapshot(ctx context.Context, state State, sink backend.EventSink) (dispatch.Snapshot, error) {
+	if len(state.Snapshot) == 0 {
+		// The main-branch checkpoint format stored coordinates only. Rebuild its
+		// normalized prefix through the saved cursor so recovery can preserve the
+		// final answer, usage markers and in-flight tool state. State.Spent is
+		// the durable billing value, so keep it as the accumulator baseline even
+		// if retained event accounting differs from what the checkpoint saved.
+		snapshot, err := dispatch.RestoreSnapshot(ctx, b.cfg.Runner, state.position(), abortObserver{sink: sink})
 		if err != nil {
-			return nil, fmt.Errorf("rebuilding legacy resume state through cursor %d at event %d: %w", state.Cursor, cursor, err)
+			return snapshot, err
 		}
-		if event.Cursor != cursor {
-			return nil, fmt.Errorf("rebuilding legacy resume state through cursor %d: expected event %d, got cursor %d", state.Cursor, cursor, event.Cursor)
-		}
-		replayed.observe(event)
+		snapshot.Usage = dispatchUsage(state.Spent)
+		return snapshot, nil
 	}
-	// All usage observed during replay is already in State.Spent. Keep the
-	// deduplication markers and normalized output, but only bill events after the
-	// saved cursor.
-	replayed.cost = backend.Cost{}
-	replayed.sink = sink
-	return replayed, nil
-}
-
-// silentSink reconstructs legacy state without re-emitting already recorded
-// deltas, assistant messages, or tool events to the provider.
-type silentSink struct{}
-
-func (silentSink) Delta(string)                       {}
-func (silentSink) Assistant(backend.AssistantMessage) {}
-func (silentSink) ToolStart(string, string, string)   {}
-func (silentSink) ToolEnd(backend.ToolEvent)          {}
-func (silentSink) Checkpoint(json.RawMessage)         {}
-func (silentSink) Aborted(ctx context.Context) error  { return ctx.Err() }
-
-// state renders the resume coordinates.
-func (b *Backend) state(s *turnState, clarificationID, permissionID string, prior backend.Cost) State {
-	observed := b.Observed()
-	epoch := observed.Epoch
-	if epoch == 0 {
-		epoch = b.cfg.Epoch
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(state.Snapshot, &fields); err != nil {
+		return dispatch.Snapshot{}, fmt.Errorf("reading the turn's dispatch snapshot: %w", err)
 	}
-	return State{
-		TaskID:          b.cfg.TaskID,
-		AttemptID:       firstNonEmpty(observed.AttemptID, b.cfg.AttemptID),
-		Epoch:           epoch,
-		BackendKey:      b.cfg.BackendKey,
-		SessionID:       firstNonEmpty(observed.SessionID, b.cfg.SessionID),
-		Cursor:          s.cursor,
-		ClarificationID: clarificationID,
-		PermissionID:    permissionID,
-		Spent:           addCost(prior, s.cost),
-		Snapshot:        snapshot(s),
-	}
-}
-
-// outcomeFor maps a terminal (or parked) receipt plus what the stream said onto
-// the seam.
-func (b *Backend) outcomeFor(ctx context.Context, receipt runner.Receipt, s *turnState, prior backend.Cost) (backend.Outcome, error) {
-	usage := b.usage(s, prior)
-	switch receipt.Phase {
-	case runner.PhaseNeedsInput:
-		// Two parks arrive on this phase and they are not interchangeable. A
-		// PERMISSION request is a named tool call waiting on a verdict, and the
-		// provider already knows how to file one of those: Tool and Args make
-		// it an approval, with Approve and Deny. A QUESTION has no call at all
-		// and is answered with words. Reporting either as the other gives a
-		// person a control that cannot mean anything.
-		if permission := receipt.Permission; permission != nil {
-			// A permission is a verdict on a tool call, never a product
-			// clarification. Do not persist its blocker as a question fallback.
-			s.clarification = nil
-			s.clarificationFromReceipt = false
-			raw, err := json.Marshal(b.state(s, "", permission.ID, prior))
-			if err != nil {
-				return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
-					fmt.Errorf("recording the turn's resume state: %w", err)
-			}
-			return backend.Outcome{
-				Status: backend.StatusParked,
-				Text:   runnerharness.StripClarification(s.text.String()),
-				Usage:  usage,
-				// Args is the harness's own rendering of the call's input,
-				// already bounded by the runner. It is what the person is shown
-				// and what their approval authorizes — that call, those
-				// arguments.
-				Parked: &backend.Parked{Tool: permission.Tool, Args: permission.Input, State: raw},
+	// Earlier agents snapshots were the normalizer state itself (`version`,
+	// `text`, `tools`, and Codex accounting markers). The shared normalizer
+	// deliberately uses that shape as its opaque State, so migration requires
+	// only adding the outer cursor and cumulative usage.
+	if _, current := fields["Position"]; !current {
+		if _, current = fields["position"]; !current {
+			return dispatch.Snapshot{
+				Position: state.position(), Usage: dispatchUsage(state.Spent), State: state.Snapshot,
 			}, nil
 		}
-		clarification := s.clarification
-		if receipt.Clarification != nil {
-			clarification = receipt.Clarification
-		}
-		question := strings.TrimSpace(receipt.Blocker)
-		id := ""
-		if clarification != nil {
-			id = clarification.ID
-			if text := strings.TrimSpace(clarification.Text); text != "" {
-				question = text
-			}
-		}
-		if question == "" {
-			question = "the harness is waiting for input"
-		}
-		raw, err := json.Marshal(b.state(s, id, "", prior))
-		if err != nil {
-			// Without resumable state the park would strand the run: no answer
-			// could ever continue it. Fail it instead, which at least ends it
-			// where a person can see it.
-			return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
-				fmt.Errorf("recording the turn's resume state: %w", err)
-		}
-		return backend.Outcome{
-			Status: backend.StatusParked,
-			// The clarification block is protocol, not prose: the question is
-			// already carried as Parked.Question, and leaving the raw markers in
-			// the transcript showed a person the machinery instead of the
-			// question.
-			Text:  runnerharness.StripClarification(s.text.String()),
-			Usage: usage,
-			// No Tool/Args: nothing was gated. The harness asked a question, and
-			// what resolves it is an answer rather than a verdict on a call.
-			Parked: &backend.Parked{Question: question, State: raw},
-		}, nil
-	case runner.PhaseCancelled:
-		s.endOpenTools()
-		return backend.Outcome{Status: backend.StatusCancelled, Usage: usage}, cancelledError(receipt)
-	case runner.PhaseFailed:
-		s.endOpenTools()
-		return backend.Outcome{Status: backend.StatusFailed, Usage: usage}, failedError(receipt)
-	case runner.PhaseCompleted:
-		s.endOpenTools()
-		text := runnerharness.StripClarification(s.text.String())
-		final := runnerharness.StripClarification(s.final)
-		if strings.TrimSpace(final) == "" {
-			final = strings.TrimSpace(text)
-		}
-		if strings.TrimSpace(text) == "" {
-			text = final
-		}
-		if s.turnDuration > 0 {
-			// Codex's duration is for the whole turn. ToolEnd already accounts
-			// for commandExecution durations, so attribute only the remainder to
-			// the completed assistant segment.
-			assistantDuration := s.turnDuration - s.toolDuration
-			if assistantDuration < 0 {
-				assistantDuration = 0
-			}
-			s.sink.Assistant(backend.AssistantMessage{
-				Content: final, Complete: true, Duration: assistantDuration,
-			})
-		}
-		output, sources := backend.SplitSources(text)
-		return backend.Outcome{
-			Status: backend.StatusCompleted,
-			Text:   text, Output: output, Sources: sources,
-			Final: final,
-			Usage: usage,
-		}, nil
-	default:
-		// Not terminal and not parked: the caller only reaches this with a
-		// receipt it believed was one of the two, so say so rather than
-		// reporting a phase as an answer.
-		return backend.Outcome{Status: b.statusFor(ctx), Usage: usage},
-			fmt.Errorf("attempt %s is %s, which is neither finished nor waiting", receipt.AttemptID, receipt.Phase)
 	}
+	var snapshot dispatch.Snapshot
+	if err := json.Unmarshal(state.Snapshot, &snapshot); err != nil {
+		return dispatch.Snapshot{}, fmt.Errorf("reading the turn's dispatch snapshot: %w", err)
+	}
+	snapshot.Position = state.position()
+	if snapshot.Usage == (dispatch.Usage{}) && state.Spent != (backend.Cost{}) {
+		snapshot.Usage = dispatchUsage(state.Spent)
+	}
+	return snapshot, nil
 }
 
-// usage prices the turn. Total is the run's cumulative consumption and Billed is
-// what THIS turn added: equal on a fresh turn, and on a resume the totals include
-// what the attempt had spent before it parked (which was billed then).
-func (b *Backend) usage(s *turnState, prior backend.Cost) backend.Usage {
-	total := addCost(prior, s.cost)
-	return backend.Usage{Total: total, Billed: s.cost}
+type abortObserver struct {
+	dispatch.Noop
+	sink backend.EventSink
 }
 
-func addCost(a, b backend.Cost) backend.Cost {
+func (o abortObserver) Aborted(ctx context.Context) error { return o.sink.Aborted(ctx) }
+
+func cost(usage dispatch.Usage) backend.Cost {
 	return backend.Cost{
-		Tokens: backend.Tokens{
-			InputTokens:  a.InputTokens + b.InputTokens,
-			OutputTokens: a.OutputTokens + b.OutputTokens,
-		},
-		CostMicros: a.CostMicros + b.CostMicros,
+		Tokens:     backend.Tokens{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		CostMicros: usage.CostMicros,
 	}
+}
+
+func dispatchUsage(cost backend.Cost) dispatch.Usage {
+	return dispatch.Usage{
+		InputTokens: cost.InputTokens, OutputTokens: cost.OutputTokens, CostMicros: cost.CostMicros,
+	}
+}
+
+func answerTargetsDifferentPark(state State, receipt runner.Receipt) bool {
+	want := state.ParkType
+	if want == "" {
+		switch {
+		case state.PermissionID != "":
+			want = parkTypePermission
+		case state.ClarificationID != "":
+			want = parkTypeQuestion
+		default:
+			// Legacy states did not include ParkType. Permission parks always
+			// carried an ID, so an anonymous old park is a question. It still
+			// matches only a current anonymous question.
+			return receipt.Permission != nil || receipt.Clarification != nil && receipt.Clarification.ID != ""
+		}
+	}
+	if receipt.Permission != nil {
+		return want != parkTypePermission || state.PermissionID == "" || state.PermissionID != receipt.Permission.ID
+	}
+	if want != parkTypeQuestion {
+		return true
+	}
+	if receipt.Clarification == nil || receipt.Clarification.ID == "" {
+		return state.ClarificationID != ""
+	}
+	return state.ClarificationID != receipt.Clarification.ID
+}
+
+// usage prices what the lifecycle saw against what the run had already spent.
+func usage(spent dispatch.Usage, prior backend.Cost) backend.Usage {
+	billed := backend.Cost{
+		Tokens:     backend.Tokens{InputTokens: spent.InputTokens, OutputTokens: spent.OutputTokens},
+		CostMicros: spent.CostMicros,
+	}
+	total := backend.Cost{
+		Tokens: backend.Tokens{
+			InputTokens:  prior.InputTokens + billed.InputTokens,
+			OutputTokens: prior.OutputTokens + billed.OutputTokens,
+		},
+		CostMicros: prior.CostMicros + billed.CostMicros,
+	}
+	return backend.Usage{Total: total, Billed: billed}
 }
 
 // statusFor classifies an error the turn could not continue past. A turn stopped
@@ -943,8 +648,8 @@ func (b *Backend) statusFor(ctx context.Context) backend.Status {
 
 func (b *Backend) validate() error {
 	switch {
-	case b.cfg.Dispatcher == nil:
-		return errors.New("no runner dispatcher configured for this harness agent")
+	case b.cfg.Runner == nil:
+		return errors.New("no runner configured for this harness agent")
 	case strings.TrimSpace(b.cfg.TaskID) == "":
 		return errors.New("a harness turn needs a task id (the conversation)")
 	case strings.TrimSpace(b.cfg.AttemptID) == "":
@@ -988,9 +693,6 @@ func (b *Backend) approvedInput(r *backend.Run) (json.RawMessage, error) {
 		}
 	}
 	provenance["dispatcher"] = "agents.railgrid.ai"
-	if len(provenance) == 0 {
-		return nil, errors.New("a harness dispatch needs provenance")
-	}
 	raw, err := json.Marshal(map[string]any{"provenance": provenance})
 	if err != nil {
 		return nil, fmt.Errorf("building the dispatch provenance: %w", err)
@@ -1029,11 +731,16 @@ func instructions(messages []backend.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
-// resolution renders the user's answer for the resume. A denial is phrased as
-// one so the harness reacts to a refusal rather than to an empty answer.
-func resolution(answer backend.Answer) string {
+// resolution renders the user's decision for the resume.
+//
+// For a QUESTION the words are the answer, and a denial is phrased as one so the
+// harness reacts to a refusal rather than to an empty answer. For a PERMISSION
+// prompt only the person's own note is passed on: the verdict travels in its own
+// field, and the stock "Approved. Continue." is an instruction for a new turn
+// that means nothing to a tool call that is waiting.
+func resolution(answer backend.Answer, permission bool) string {
 	note := strings.TrimSpace(answer.Note)
-	if !answer.Decided {
+	if permission {
 		return note
 	}
 	if answer.Approved {
@@ -1048,101 +755,11 @@ func resolution(answer backend.Answer) string {
 	return "The user declined: " + note
 }
 
-func clarificationID(receipt runner.Receipt, state State) string {
-	if receipt.Clarification != nil && receipt.Clarification.ID != "" {
-		return receipt.Clarification.ID
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
 	}
-	return state.ClarificationID
-}
-
-// permissionID is the outstanding permission request to answer. The RECEIPT is
-// authoritative — it is what the runner is actually waiting on right now — and
-// the stored state is the fallback for a resume that could not re-read it.
-func permissionID(receipt runner.Receipt, state State) string {
-	if receipt.Permission != nil && receipt.Permission.ID != "" {
-		return receipt.Permission.ID
-	}
-	return state.PermissionID
-}
-
-// answerTargetsDifferentPark reports a visible request that differs from the
-// park whose state accompanied the user's answer. Never send that answer to a
-// newer clarification or tool call; Continue will rejoin and surface it.
-func answerTargetsDifferentPark(state State, receipt runner.Receipt) bool {
-	if receipt.Permission != nil {
-		return state.PermissionID != receipt.Permission.ID || state.ClarificationID != ""
-	}
-	if receipt.Clarification != nil {
-		return state.PermissionID != "" || state.ClarificationID != receipt.Clarification.ID
-	}
-	return false
-}
-
-// ---- error classification ----------------------------------------------------
-
-// dispatchError wraps a runner failure with what was being attempted, keeping
-// the original for errors.As: callers branch on *runner.Error's Code and on
-// *client.HTTPError's status, never on a message.
-func dispatchError(what string, err error) error {
-	var protocol *runner.Error
-	if errors.As(err, &protocol) {
-		return fmt.Errorf("%s: %s (%s): %w", what, protocol.Message, protocol.Code, err)
-	}
-	return fmt.Errorf("%s: %w", what, err)
-}
-
-// snapshotRequired reports a cursor the runner no longer holds: the caller's
-// view is incomplete and only Inspect can restore it.
-func snapshotRequired(err error) bool {
-	var protocol *runner.Error
-	if !errors.As(err, &protocol) {
-		return false
-	}
-	return protocol.SnapshotRequired || protocol.Code == runner.ErrorCursorExpired
-}
-
-func incompleteHistoryError(state *turnState, runnerCursor uint64) error {
-	cursorKind := "observed"
-	verb := "follow"
-	if state.recovering {
-		cursorKind = "saved"
-		verb = "recover"
-	}
-	return fmt.Errorf("cannot %s harness attempt: event history is incomplete after %s cursor %d (runner cursor %d)",
-		verb, cursorKind, state.cursor, runnerCursor)
-}
-
-// terminalProtocolError reports a cancel that had nothing to cancel: an attempt
-// the runner never heard of, or one whose epoch is already obsolete because it
-// finished.
-func terminalProtocolError(err error) bool {
-	var protocol *runner.Error
-	if !errors.As(err, &protocol) {
-		return false
-	}
-	switch protocol.Code {
-	case runner.ErrorStaleAttempt:
-		return protocol.Receipt != nil && protocol.Receipt.Phase.IsTerminal()
-	case runner.ErrorUnavailable:
-		return protocol.Receipt == nil
-	default:
-		return false
-	}
-}
-
-func cancelledError(receipt runner.Receipt) error {
-	if blocker := strings.TrimSpace(receipt.Blocker); blocker != "" {
-		return fmt.Errorf("the harness turn was stopped: %s", blocker)
-	}
-	return errors.New("the harness turn was stopped")
-}
-
-func failedError(receipt runner.Receipt) error {
-	if receipt.LastError != nil && strings.TrimSpace(receipt.LastError.Message) != "" {
-		return fmt.Errorf("the harness turn failed: %s (%s)", receipt.LastError.Message, receipt.LastError.Code)
-	}
-	if blocker := strings.TrimSpace(receipt.Blocker); blocker != "" {
-		return fmt.Errorf("the harness turn failed: %s", blocker)
-	}
-	return errors.New("the harness turn failed")
+	return ""
 }

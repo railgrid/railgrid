@@ -63,7 +63,7 @@ func TestParkRunPersistenceFailuresStopHarnessAndCloseInbox(t *testing.T) {
 				Permission: &runner.PermissionRequest{ID: "permission", Tool: "Bash", Input: `{"command":"true"}`},
 			}}
 			b := backendharness.New(backendharness.Config{
-				Dispatcher: dispatcher, TaskID: "task", AttemptID: "run-1", Epoch: 1,
+				Runner: dispatcher, TaskID: "task", AttemptID: "run-1", Epoch: 1,
 				WorkspaceID: "workspace", Credential: llm.HarnessIdentity{Kind: "codex-auth-json", Value: `{}`},
 			})
 			brun := &backend.Run{ID: "run-1", SessionID: "chat", Agent: "coder", Trigger: "chat"}
