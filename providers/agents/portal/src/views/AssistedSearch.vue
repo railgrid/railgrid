@@ -143,28 +143,28 @@ function dismiss(): void {
       <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button class="k-dashboard-action" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
       <p class="muted">Self-hosted search is already configured in this workspace.</p>
     </div>
-    <div v-else class="agents-create-page k-create-page">
+    <div v-else class="k-create-page">
       <ResourceBackLink :href="hashFor({ kind: 'menu', menu: 'connections' })" :disabled="busy" @back="cancel">Connections</ResourceBackLink>
       <header class="k-create-header"><h1 class="k-create-title">Set up assisted search</h1><p class="k-create-description">Create a private search connection and let an agent provision the supporting service.</p></header>
       <div v-if="connectionSlice.error" class="agents-stale" role="status">Showing the last loaded connections. {{ connectionSlice.error }} <button class="k-dashboard-action" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button></div>
-      <form class="agents-conn-form agents-guided-form k-create-surface" aria-label="Assisted search setup" :aria-busy="busy" @submit.prevent="submit">
+      <form class="agents-conn-form agents-guided-form k-create-surface" aria-label="Assisted search setup" novalidate :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body">
           <p class="muted">We create the web-search connection pointing at an instance name, then your agent provisions the <code>searxng</code> instance itself. Nothing to paste back: agents reach it over the platform's internal path, so it is never published and has no token.</p>
-          <label v-if="agents.length > 1"><span id="assisted-search-agent-label">Agent</span>
-            <FormSelect v-model="agent" :options="agentOptions" :disabled="busy" :invalid="!!errors.agent" labelledby="assisted-search-agent-label" :describedby="errors.agent ? 'assisted-search-agent-error' : undefined" @update:model-value="clearError('agent')" />
+          <label v-if="agents.length > 1"><span id="assisted-search-agent-label">Agent *</span>
+            <FormSelect v-model="agent" :options="agentOptions" required :disabled="busy" :invalid="!!errors.agent" labelledby="assisted-search-agent-label" :describedby="errors.agent ? 'assisted-search-agent-error' : undefined" @update:model-value="clearError('agent')" />
             <span v-if="errors.agent" id="assisted-search-agent-error" class="agents-fielderr" role="alert">{{ errors.agent }}</span>
           </label>
           <p v-else class="agents-hint">Driven by your agent <strong>{{ selectedAgent }}</strong>.</p>
-          <label for="assisted-search-connection-name">Connection name
-            <input id="assisted-search-connection-name" v-model="connName" class="k-input" name="connName" :disabled="busy" autocomplete="off" :aria-invalid="errors.connName ? 'true' : undefined" :aria-describedby="errors.connName ? 'assisted-search-connection-name-hint assisted-search-connection-name-error' : 'assisted-search-connection-name-hint'" @input="clearError('connName')" />
+          <label for="assisted-search-connection-name">Connection name *
+            <input id="assisted-search-connection-name" v-model="connName" class="k-input" name="connName" required aria-required="true" :disabled="busy" autocomplete="off" :aria-invalid="errors.connName ? 'true' : undefined" :aria-describedby="errors.connName ? 'assisted-search-connection-name-hint assisted-search-connection-name-error' : 'assisted-search-connection-name-hint'" @input="clearError('connName')" />
             <span id="assisted-search-connection-name-hint" class="agents-hint">What agents reference to search the web.</span><span v-if="errors.connName" id="assisted-search-connection-name-error" class="agents-fielderr" role="alert">{{ errors.connName }}</span>
           </label>
-          <label for="assisted-search-instance-name">Instance name
-            <input id="assisted-search-instance-name" class="k-input" name="instance" :value="instanceName" :disabled="busy" autocomplete="off" :aria-invalid="errors.instance ? 'true' : undefined" :aria-describedby="errors.instance ? 'assisted-search-instance-name-hint assisted-search-instance-name-error' : 'assisted-search-instance-name-hint'" @input="instanceTouched = true; instance = ($event.target as HTMLInputElement).value; clearError('instance')" />
+          <label for="assisted-search-instance-name">Instance name *
+            <input id="assisted-search-instance-name" class="k-input" name="instance" required aria-required="true" :value="instanceName" :disabled="busy" autocomplete="off" :aria-invalid="errors.instance ? 'true' : undefined" :aria-describedby="errors.instance ? 'assisted-search-instance-name-hint assisted-search-instance-name-error' : 'assisted-search-instance-name-hint'" @input="instanceTouched = true; instance = ($event.target as HTMLInputElement).value; clearError('instance')" />
             <span id="assisted-search-instance-name-hint" class="agents-hint">The infrastructure instance the agent provisions.</span><span v-if="errors.instance" id="assisted-search-instance-name-error" class="agents-fielderr" role="alert">{{ errors.instance }}</span>
           </label>
-          <fieldset class="agents-fieldset">
-            <legend class="agents-fieldset-legend">Size</legend>
+          <fieldset class="agents-cap-fs">
+            <legend>Size</legend>
             <div class="agents-modeseg">
               <button v-for="option in INSTANCE_SIZES" :key="option" type="button" :disabled="busy" :class="['k-btn k-btn--ghost agents-modebtn', { sel: option === size }]" :aria-pressed="option === size" @click="size = option">{{ option }}</button>
             </div>

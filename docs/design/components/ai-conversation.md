@@ -251,7 +251,7 @@ CSS is imported through Vite's `?inline` path and may be minified in the
 bundle; the authored canonical rules and synced source copies remain
 byte-identical. The current contracts are core PortalKit version 18 (from
 `RAILGRID_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`) and AgentKit
-style/runtime version 6 (from `AGENT_UI_VERSION` in
+style/runtime version 7 (from `AGENT_UI_VERSION` in
 `provider-sdk/agentkit/styles.ts`). Desktop rails stretch
 to the flex row's cross-axis so content-sized conversation frames retain a
 visible panel; mobile rails keep their absolute inset overlay geometry. Run
@@ -270,7 +270,7 @@ interactive/background grants, run evidence, and approval phases. Use
 [the distributed PortalKit asset index](portalkit-assets.md) for sync
 ownership.
 
-The workbench separator is `AIPaneDivider.vue` in both `AIWorkspace` (Agents) and App Studio. It occupies its own 6px track without negative margins; providers retain split geometry and resize events. Historical rendered evidence labels the separator as AgentKit stylesheet version 2; the current AgentKit stylesheet/runtime contract is version 6.
+The workbench separator is `AIPaneDivider.vue` in both `AIWorkspace` (Agents) and App Studio. It occupies its own 6px track without negative margins; providers retain split geometry and resize events. Historical rendered evidence labels the separator as AgentKit stylesheet version 2; the current AgentKit stylesheet/runtime contract is version 7.
 
 The shared `AIWorkbenchTabs` strip supplies close and new-tab controls and
 forwards selection and drag events. `AIWorkbenchLauncher` supplies the search,

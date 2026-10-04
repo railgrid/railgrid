@@ -96,7 +96,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseURL: '',
     modelHint: '',
     guidance: 'The login a Claude Code harness on an edge runs as. There is no endpoint: the value is handed to the harness for one turn.',
-    origin: '`claude setup-token` prints a long-lived token tied to a Claude subscription; an Anthropic API key bills that account instead.',
+    origin: 'Run claude setup-token to create a long-lived token tied to a Claude subscription. An Anthropic API key bills the Anthropic account instead.',
   },
   {
     id: 'codex',
@@ -106,7 +106,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseURL: '',
     modelHint: '',
     guidance: 'The login a Codex harness on an edge runs as. There is no endpoint: the value is handed to the harness for one turn.',
-    origin: '`codex login` on a machine you control writes an auth.json; paste its contents.',
+    origin: 'Run codex login on a machine you control, then paste the contents of its auth.json file.',
   },
 ]
 

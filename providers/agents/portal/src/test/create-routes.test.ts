@@ -38,7 +38,7 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function markAuthoritative(store: ReturnType<typeof makeStore>, ...keys: Array<'agents' | 'credentials' | 'connections' | 'toolsets'>): void {
+function markAuthoritative(store: ReturnType<typeof makeStore>, ...keys: Array<'agents' | 'credentials' | 'connections' | 'toolsets' | 'edges'>): void {
   for (const key of keys) {
     store[key].loaded = true
     store[key].hasSnapshot = true
@@ -56,7 +56,7 @@ describe('route-owned creation surfaces', () => {
     const events = mountedByElement.get(el)!.events
 
     expect(el.querySelector('.agents-overlay')).toBeNull()
-    expect(el.querySelector('.agents-create-page')).not.toBeNull()
+    expect(el.querySelector('.k-create-page')).not.toBeNull()
     expect(el.querySelector('[role="dialog"]')).toBeNull()
     expect(el.querySelector('.k-create-surface--guided')).not.toBeNull()
     expect(el.querySelector('.k-create-guidance')).not.toBeNull()
@@ -68,6 +68,47 @@ describe('route-owned creation surfaces', () => {
 
     expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'nova', modelCredential: 'main' }))
     expect(events['create-success']?.[0]).toEqual(expect.objectContaining({ resource: 'agent', name: 'nova', item: expect.anything() }))
+  })
+
+  it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'claude', provider: 'claude-code' }]
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    store.edges.error = 'edge refresh unavailable'
+    markAuthoritative(store, 'agents', 'credentials', 'edges')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
+
+    el.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    await settle(el, 2)
+
+    const machine = el.querySelector<HTMLButtonElement>('#agent-create-edge')!
+    expect(el.querySelector('#agent-create-edge-label')?.tagName).toBe('SPAN')
+    expect(machine.getAttribute('aria-labelledby')).toContain('agent-create-edge-label')
+    expect(machine.getAttribute('aria-required')).toBe('true')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-create-edge-hint')
+    expect(machine.getAttribute('aria-describedby')).toContain('agent-create-edge-stale')
+    const staleNotice = el.querySelector('#agent-create-edge-stale.k-inline-notification--warning[role="status"]')
+    expect(staleNotice?.textContent).toContain('Showing the last loaded machines')
+
+    const credential = el.querySelector<HTMLButtonElement>('#agent-create-harnesscred')!
+    expect(el.querySelector('#agent-create-harnesscred-label')?.tagName).toBe('SPAN')
+    expect(credential.getAttribute('aria-labelledby')).toContain('agent-create-harnesscred-label')
+    expect(credential.getAttribute('aria-required')).toBe('true')
+    expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-hint')
+
+    expect(el.querySelector('.k-create-description')?.textContent).toContain('where this agent’s turns run')
+    expect(el.querySelector('.k-create-guidance__description')?.textContent).toContain('machine and harness identity')
+    expect(el.querySelector('.k-create-guidance__description')?.textContent).not.toContain('model connection')
+    expect(el.querySelector('.k-create-guidance')?.textContent).toContain('Add schedules and triggers')
+
+    machine.click()
+    await settle(el)
+    expect([...document.querySelectorAll<HTMLElement>('.k-form-select__option')].some(option => option.textContent?.includes('build-01'))).toBe(true)
+
+    const loadEdges = vi.spyOn(store, 'load').mockResolvedValue()
+    el.querySelector<HTMLButtonElement>('#agent-create-edge-stale button')!.click()
+    expect(loadEdges).toHaveBeenCalledWith('edges')
   })
 
   it('announces agent validation and locks the create surface while submitting', async () => {
@@ -138,6 +179,28 @@ describe('route-owned creation surfaces', () => {
     expect(agentError.querySelector('.agents-state-error')?.textContent).toContain('Could not load existing agents')
     agentError.querySelector<HTMLButtonElement>('.agents-state-error button')!.click()
     expect(agentLoad).toHaveBeenCalledWith('agents')
+
+    const runnerLoadingStore = makeStore(api)
+    runnerLoadingStore.credentials.data = [{ name: 'claude', provider: 'claude-code' }]
+    markAuthoritative(runnerLoadingStore, 'agents', 'credentials')
+    const runnerLoading = await mount<AgentCreateWizard>('agents-agent-create', { store: runnerLoadingStore, api })
+    runnerLoading.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    await settle(runnerLoading, 2)
+    expect(runnerLoading.querySelector('.k-inline-notification--error[role="alert"]')).toBeNull()
+    expect(runnerLoading.querySelector('.k-create-guidance')?.textContent).toContain('Checking for available machines…')
+    expect(runnerLoading.querySelector('.k-create-guidance')?.textContent).not.toContain('Join a Linux or macOS machine')
+
+    const runnerErrorStore = makeStore(api)
+    runnerErrorStore.credentials.data = [{ name: 'claude', provider: 'claude-code' }]
+    markAuthoritative(runnerErrorStore, 'agents', 'credentials')
+    runnerErrorStore.edges.loaded = true
+    runnerErrorStore.edges.error = 'edge API unavailable'
+    const runnerError = await mount<AgentCreateWizard>('agents-agent-create', { store: runnerErrorStore, api })
+    runnerError.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    await settle(runnerError, 2)
+    expect(runnerError.querySelector('.k-inline-notification--error[role="alert"]')?.textContent).toContain('Could not load machines')
+    expect(runnerError.querySelector('.k-create-guidance')?.textContent).toContain('Retry loading machines before choosing a runner.')
+    expect(runnerError.querySelector('.k-create-guidance')?.textContent).not.toContain('Join a Linux or macOS machine')
   })
 
   it('renders an authoritative empty credential state with recovery to model creation', async () => {
@@ -187,6 +250,8 @@ describe('route-owned creation surfaces', () => {
     store.connections.loaded = true
     const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, createRoute: true, createType: 'github' })
     const oauthMode = [...el.querySelectorAll<HTMLButtonElement>('.agents-modebtn')].find(button => button.textContent?.includes('OAuth app'))!
+    expect(el.querySelector('.agents-cap-fs > legend')?.textContent).toBe('Authentication mode')
+    expect(oauthMode.closest('fieldset')?.tagName).toBe('FIELDSET')
     oauthMode.click()
     await settle(el, 2)
 
