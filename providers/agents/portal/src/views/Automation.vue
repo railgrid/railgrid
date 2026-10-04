@@ -405,7 +405,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
     </div>
   </ResourceSectionCard>
 
-  <div v-else class="agents-create-page k-create-page">
+  <div v-else class="k-create-page">
     <ResourceBackLink :href="hashFor({ kind: 'agent', name: agent, tab: 'automation' })" :disabled="formBusy" @back="returnToAutomation">Agent schedules &amp; triggers</ResourceBackLink>
     <header class="k-create-header">
       <h1 class="k-create-title">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
@@ -422,10 +422,10 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       <button v-if="slice.error && !slice.hasSnapshot" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
-    <form v-else class="agents-obj-form agents-guided-form k-create-surface" :aria-busy="formBusy" @submit.prevent="save">
+    <form v-else class="agents-obj-form agents-guided-form k-create-surface" novalidate :aria-busy="formBusy" @submit.prevent="save">
       <div class="k-create-body">
         <label v-if="!editing" :for="`automation-${kind}-name`">Name *
-          <input :id="`automation-${kind}-name`" v-model="draft.name" class="k-input" name="name" :placeholder="meta.namePlaceholder" autocomplete="off" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" />
+          <input :id="`automation-${kind}-name`" v-model="draft.name" class="k-input" name="name" required aria-required="true" :placeholder="meta.namePlaceholder" autocomplete="off" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" />
           <span v-if="nameError" :id="`automation-${kind}-name-error`" class="agents-fielderr" role="alert">{{ nameError }}</span>
         </label>
         <template v-if="kind === 'schedule'">

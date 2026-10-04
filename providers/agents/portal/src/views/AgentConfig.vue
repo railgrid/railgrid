@@ -964,8 +964,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </div>
           <div class="agents-grid2">
             <label>
-              Model <span class="agents-hint">optional — blank leaves the harness’s own default</span>
-              <input v-model="harnessModel" class="k-input" placeholder="Harness default" />
+              <span id="agent-harness-model-label">Model</span>
+              <input id="agent-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" aria-labelledby="agent-harness-model-label" aria-describedby="agent-harness-model-hint" />
+              <span id="agent-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
             </label>
             <label>
               <span id="agent-harness-workspace-label">Working directory</span>
@@ -1009,8 +1010,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
       <label v-if="credentialSlice.hasSnapshot">
         <span id="agent-model-credential-label">Model credential</span>
-        <FormSelect v-model="modelCredential" :options="credentialOptions" labelledby="agent-model-credential-label" />
-        <span v-if="credentials.length === 0" class="agents-hint">No models yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
+        <FormSelect v-model="modelCredential" :options="credentialOptions" labelledby="agent-model-credential-label" :describedby="credentials.length === 0 ? 'agent-model-credential-empty' : undefined" />
+        <span v-if="credentials.length === 0" id="agent-model-credential-empty" class="agents-hint">No models yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
       </label>
       <div v-if="credentialSlice.hasSnapshot" class="agents-fieldset">
         <span id="agent-fallbacks-label" class="agents-fieldset-legend">Fallbacks</span>
@@ -1020,8 +1021,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <button class="k-icon-action agents-chip-x" :aria-label="`Remove fallback ${fallback}`" type="button" @click="removeFallback(index)"><X :stroke-width="1.75" aria-hidden="true" /></button>
           </span>
         </div>
-        <span v-else class="agents-hint">None — a model failure fails the run.</span>
-        <FormSelect v-if="availableFallbacks.length" class="agents-addselect" :model-value="''" :options="fallbackOptions" labelledby="agent-fallbacks-label" @update:model-value="addFallback" />
+        <FormSelect v-if="availableFallbacks.length" class="agents-addselect" :model-value="''" :options="fallbackOptions" labelledby="agent-fallbacks-label" :describedby="fallbacks.length === 0 ? 'agent-fallbacks-empty' : undefined" @update:model-value="addFallback" />
+        <span v-if="fallbacks.length === 0" id="agent-fallbacks-empty" class="agents-hint">None — a model failure fails the run.</span>
       </div>
       <div v-if="credentialSlice.hasSnapshot" class="agents-form-actions">
         <button class="k-btn k-btn--primary" type="button" :disabled="saveState.model.status === 'pending'" :aria-busy="saveState.model.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('model', modelDirty)" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.model.status === 'pending' ? 'Saving model…' : 'Save model' }}</button>
@@ -1030,12 +1031,15 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
 
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-policy-heading" title="Autonomy &amp; budget" description="Autonomy decides which tool calls stop and wait for you. It is enforced on every run — a paused run shows up in Activity as PendingApproval.">
-      <div class="agents-radiocards">
-        <label v-for="mode in AUTONOMY_MODES" :key="mode.id" class="agents-radiocard" :class="{ sel: mode.id === autonomy }">
-          <input v-model="autonomy" type="radio" name="autonomy" :value="mode.id" />
-          <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
-        </label>
-      </div>
+      <fieldset class="agents-cap-fs">
+        <legend>Autonomy</legend>
+        <div class="agents-radiocards">
+          <label v-for="mode in AUTONOMY_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === autonomy }">
+            <input v-model="autonomy" type="radio" name="autonomy" :value="mode.id" />
+            <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
+          </label>
+        </div>
+      </fieldset>
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Budget</span>
         <div class="agents-grid2">
@@ -1046,8 +1050,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Limits</span>
         <div class="agents-grid2">
-          <label>Max tool turns<input v-model="maxToolTurns" class="k-input" inputmode="numeric" placeholder="blank = provider default" /><span class="agents-hint">How many tool-call rounds one run may take before it stops.</span></label>
-          <label>Run timeout (seconds)<input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" /><span class="agents-hint">Wall-clock bound on a run — it is aborted when this elapses.</span></label>
+          <label><span id="agent-max-tool-turns-label">Max tool turns</span><input v-model="maxToolTurns" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-max-tool-turns-label" aria-describedby="agent-max-tool-turns-hint" /><span id="agent-max-tool-turns-hint" class="agents-hint">How many tool-call rounds one run may take before it stops.</span></label>
+          <label><span id="agent-run-timeout-label">Run timeout (seconds)</span><input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-run-timeout-label" aria-describedby="agent-run-timeout-hint" /><span id="agent-run-timeout-hint" class="agents-hint">Wall-clock bound on a run — it is aborted when this elapses.</span></label>
         </div>
       </div>
       <div class="agents-form-actions">
@@ -1092,15 +1096,15 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <legend><Globe2 :stroke-width="1.75" aria-hidden="true" /> Built-in capabilities</legend>
         <p class="muted">Tools the agent has on its own, with nothing to wire up. Reading the web needs no connection; <strong>searching</strong> it needs a websearch tool granted below, and without one the agent can only read pages it is given a link to. Turning on fan-out also teaches the agent how to use it — you do not need to write that into the prompt.</p>
         <div class="agents-tool-row">
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, false)" /> Read the web <span class="muted">web_fetch{{ familyEnabled(agent, 'web') && !hasSearchTool(agent) ? ' — no search tool wired' : '' }}</span></label>
+          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, false)" /><span class="agents-check-copy"><span>Read the web</span><span class="muted">web_fetch{{ familyEnabled(agent, 'web') && !hasSearchTool(agent) ? ' — no search tool wired' : '' }}</span></span></label>
           <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'web', true)" :disabled="!familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
         </div>
         <div class="agents-tool-row">
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)" /> Research fan-out <span class="muted">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></label>
+          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)" /><span class="agents-check-copy"><span>Research fan-out</span><span class="muted">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></span></label>
           <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn', true)" :disabled="!familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
         </div>
         <div class="agents-tool-row">
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, false)" /> Visualize data <span class="muted">Create charts in chat from supplied data</span></label>
+          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, false)" /><span class="agents-check-copy"><span>Visualize data</span><span class="muted">Create charts in chat from supplied data</span></span></label>
           <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'visualization', true)" :disabled="!familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, true)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
         </div>
         <p v-if="familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web')" class="agents-hint agents-warn-inline"><Circle :stroke-width="1.75" aria-hidden="true" /> This agent can spawn workers but has no web access, so a worker inherits none either — a fan-out would answer from the model alone. Turn on <strong>Read the web</strong>, and wire a websearch tool for real searching.</p>
@@ -1119,7 +1123,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
           </div>
           <div v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-tool-row">
-            <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="linkedTools(agent).has(connection.metadata.name)" @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ connection.spec.displayName || connection.metadata.name }} <span class="muted">{{ connection.spec.type }}</span></label>
+            <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="linkedTools(agent).has(connection.metadata.name)" @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.spec.displayName || connection.metadata.name }}</span><span class="muted">{{ connection.spec.type }}</span></span></label>
             <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :checked="backgroundTools(agent).has(connection.metadata.name)" :disabled="!linkedTools(agent).has(connection.metadata.name)" @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><Clock :stroke-width="1.75" aria-hidden="true" /> background</label>
           </div>
           <p v-if="toolConnections.length === 0" class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>

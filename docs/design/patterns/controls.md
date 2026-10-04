@@ -17,6 +17,21 @@ input it supplies a minimum 44×44px target. A native checkbox keeps its
 apply `.k-checkbox-hit` to the associated checkbox or radio label so the label
 supplies the minimum 44×44px hit area while the native glyph remains compact.
 
+Fields use a consistent reading order: label, control, then help or validation.
+Keep a short required or optional marker with the label; put explanatory copy
+below the control and connect it with `aria-describedby`. Use a short label as
+the accessible name so a screen reader does not read the explanation twice.
+An error may replace the hint or precede it, but both stay below the control.
+Adjacent fields align at the top; a longer hint must not move a neighboring
+control down. Form-wide instructions can precede a group of fields.
+
+Use a native `fieldset` and `legend` for related radio or checkbox choices.
+The legend is a field label: match the size, weight, color, and sentence case
+of neighboring labels, rather than the uppercase treatment of a section
+heading. Put group help after the choices and associate it with the fieldset.
+An individual choice can carry a description beneath its title within the
+clickable label. Keep the native control aligned with that title.
+
 For a range input, no implementation is currently shipped. When needed, use a
 native `<input type="range">` with `accent-color` first. A custom variant is a
 2px `surface-overlay` track (`rounded-xs`), accent filled portion, and a

@@ -972,7 +972,11 @@ describe('Automation.vue', () => {
     view.element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
 
+    const form = view.element.querySelector<HTMLFormElement>('form')!
     const input = view.element.querySelector<HTMLInputElement>('input[placeholder="daily-digest"]')!
+    expect(form.noValidate).toBe(true)
+    expect(input.required).toBe(true)
+    expect(input.getAttribute('aria-required')).toBe('true')
     const error = view.element.querySelector('#automation-schedule-name-error')
     expect(input.getAttribute('aria-invalid')).toBe('true')
     expect(input.getAttribute('aria-describedby')).toBe('automation-schedule-name-error')

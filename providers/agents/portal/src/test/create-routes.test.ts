@@ -250,6 +250,8 @@ describe('route-owned creation surfaces', () => {
     store.connections.loaded = true
     const el = await mount<Connections>('agents-connections', { store, api, routeOwned: true, createRoute: true, createType: 'github' })
     const oauthMode = [...el.querySelectorAll<HTMLButtonElement>('.agents-modebtn')].find(button => button.textContent?.includes('OAuth app'))!
+    expect(el.querySelector('.agents-cap-fs > legend')?.textContent).toBe('Authentication mode')
+    expect(oauthMode.closest('fieldset')?.tagName).toBe('FIELDSET')
     oauthMode.click()
     await settle(el, 2)
 

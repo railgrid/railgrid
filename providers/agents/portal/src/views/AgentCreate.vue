@@ -309,14 +309,15 @@ async function submit(): Promise<void> {
               <span id="agent-create-name-hint" class="agents-hint">A short id you'll reference from schedules and triggers.</span>
             </label>
 
-            <fieldset class="agents-cap-fs">
-              <legend>Backend <span class="agents-hint">— where this agent’s turns execute</span></legend>
+            <fieldset class="agents-cap-fs" aria-describedby="agent-create-backend-hint">
+              <legend>Backend</legend>
               <div class="agents-radiocards">
                 <label v-for="option in BACKENDS" :key="option.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: option.id === backendType }">
                   <input v-model="backendType" type="radio" name="agent-create-backend" :value="option.id" :disabled="busy" />
                   <span class="agents-radiocard-t">{{ option.label }}</span><span class="agents-radiocard-b">{{ option.blurb }}</span>
                 </label>
               </div>
+              <span id="agent-create-backend-hint" class="agents-hint">Where this agent’s turns execute.</span>
             </fieldset>
 
             <template v-if="isHarness">
@@ -375,8 +376,9 @@ async function submit(): Promise<void> {
                 </label>
 
                 <label>
-                  Model <span class="agents-hint">optional — blank leaves the harness’s own default</span>
-                  <input v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" />
+                  <span id="agent-create-harness-model-label">Model</span>
+                  <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
+                  <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
                 </label>
 
                 <label>
@@ -412,9 +414,9 @@ async function submit(): Promise<void> {
             </label>
 
             <label>
-              System prompt
-              <span class="agents-hint">optional — persona and standing instructions, not mechanics</span>
-              <textarea v-model="systemPrompt" class="k-input" rows="3" placeholder="You are a concise assistant that…" :disabled="busy" />
+              <span id="agent-create-system-prompt-label">System prompt</span>
+              <textarea v-model="systemPrompt" class="k-input" rows="3" placeholder="You are a concise assistant that…" :disabled="busy" aria-labelledby="agent-create-system-prompt-label" aria-describedby="agent-create-system-prompt-hint" />
+              <span id="agent-create-system-prompt-hint" class="agents-hint">Optional — persona and standing instructions, not mechanics.</span>
             </label>
 
             <label>
@@ -427,12 +429,12 @@ async function submit(): Promise<void> {
               A coding harness uses its own tools; configure those on the selected machine. Agent tool grants do not apply.
             </p>
 
-            <fieldset v-else class="agents-cap-fs">
-              <legend>Can do <span class="agents-hint">— changeable later</span></legend>
+            <fieldset v-else class="agents-cap-fs" aria-describedby="agent-create-capabilities-hint">
+              <legend>Can do</legend>
               <div class="agents-cap-row">
                 <label class="agents-cap k-checkbox-hit">
                   <input v-model="web" type="checkbox" :disabled="busy" />
-                  <span><strong>Read the web</strong> <span class="muted">— fetch pages; search needs a websearch tool</span></span>
+                  <span class="agents-check-copy"><strong>Read the web</strong><span class="muted">Fetch pages; search needs a websearch tool.</span></span>
                 </label>
                 <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
                   <input v-model="webBackground" type="checkbox" :disabled="busy || !web" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
@@ -441,7 +443,7 @@ async function submit(): Promise<void> {
               <div class="agents-cap-row">
                 <label class="agents-cap k-checkbox-hit">
                   <input v-model="fanOut" type="checkbox" :disabled="busy" />
-                  <span><strong>Research fan-out</strong> <span class="muted">— work independent parts in parallel</span></span>
+                  <span class="agents-check-copy"><strong>Research fan-out</strong><span class="muted">Work independent parts in parallel.</span></span>
                 </label>
                 <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
                   <input v-model="fanOutBackground" type="checkbox" :disabled="busy || !fanOut" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
@@ -450,12 +452,13 @@ async function submit(): Promise<void> {
               <div class="agents-cap-row">
                 <label class="agents-cap k-checkbox-hit">
                   <input v-model="visualization" type="checkbox" :disabled="busy" />
-                  <span><strong>Visualize data</strong> <span class="muted">— create charts in chat from supplied data</span></span>
+                  <span class="agents-check-copy"><strong>Visualize data</strong><span class="muted">Create charts in chat from supplied data.</span></span>
                 </label>
                 <label class="agents-check agents-bg-toggle k-checkbox-hit">
                   <input v-model="visualizationBackground" type="checkbox" :disabled="busy || !visualization" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
                 </label>
               </div>
+              <span id="agent-create-capabilities-hint" class="agents-hint">Changeable later.</span>
             </fieldset>
           </div>
 

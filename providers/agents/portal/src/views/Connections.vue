@@ -248,7 +248,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
 </script>
 
 <template>
-  <div v-if="createRoute && !createType" class="agents-menu agents-create-page k-create-page">
+  <div v-if="createRoute && !createType" class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Connections</button>
     <header class="k-create-header"><h1 class="k-create-title">Create connection</h1><p class="k-create-description">Choose the tool, channel, or external service you want agents to use.</p></header>
     <div class="k-create-surface k-create-surface--wide"><div class="k-create-body"><div class="agents-conn-picker">
@@ -262,11 +262,11 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
   <div v-else-if="createRoute && createType === 'assisted-search'" class="agents-menu agents-create-page">
     <AssistedSearch :store="store" :api="api" page :authority-epoch="authorityEpoch" :create-session="createSession" @create-success="forwardCreate" @create-cancel="cancelCreate" />
   </div>
-  <div v-else-if="createRoute && !createDef" class="agents-create-page k-create-page">
+  <div v-else-if="createRoute && !createDef" class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Connections</button>
     <header class="k-create-header"><h1 class="k-create-title">Connection type unavailable</h1><p class="k-create-description">That connection type is not available in this version of the Agents provider.</p></header>
   </div>
-  <div v-else-if="createRoute && createDef" class="agents-menu agents-create-page k-create-page">
+  <div v-else-if="createRoute && createDef" class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Connections</button>
     <header class="k-create-header"><h1 class="k-create-title">Connect {{ createDef.label }}</h1><p class="k-create-description">{{ createDef.desc }}</p></header>
     <form class="agents-conn-form agents-guided-form k-create-surface k-create-surface--guided" :aria-busy="createBusy" @submit.prevent="create(createDef)">
@@ -274,7 +274,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
         <div class="agents-conn-formhead"><button type="button" class="k-btn k-btn--ghost agents-back" :disabled="createBusy" @click="emit('navigate', { kind: 'create', resource: 'connection' })"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> connection types</button></div>
         <details v-if="createDef.setup" class="agents-setup" open><summary>Before you start — setup steps</summary><ol><li v-for="step in createDef.setup" :key="step" v-html="step" /></ol></details>
         <label>Name *<input class="k-input" name="name" required pattern="[a-z0-9-]+" :placeholder="`my-${createDef.id}`" autocomplete="off" :value="createValues.name || ''" :disabled="createBusy" @input="setCreateValue('name', ($event.target as HTMLInputElement).value)" /><span class="agents-hint">A short id you'll reference from agents.</span></label>
-        <div v-if="createDef.modes" class="agents-modeseg" role="group" aria-label="Authentication mode"><button v-for="mode in createDef.modes" :key="mode.id" type="button" :class="['k-btn k-btn--ghost agents-modebtn', { sel: mode.id === activeMode(createDef)?.id }]" :disabled="createBusy" :aria-pressed="mode.id === activeMode(createDef)?.id" @click="connMode = mode.id">{{ mode.label }}</button></div>
+        <fieldset v-if="createDef.modes" class="agents-cap-fs"><legend>Authentication mode</legend><div class="agents-modeseg"><button v-for="mode in createDef.modes" :key="mode.id" type="button" :class="['k-btn k-btn--ghost agents-modebtn', { sel: mode.id === activeMode(createDef)?.id }]" :disabled="createBusy" :aria-pressed="mode.id === activeMode(createDef)?.id" @click="connMode = mode.id">{{ mode.label }}</button></div></fieldset>
         <div v-if="fieldsFor(createDef).some(field => field.key === 'clientID') === false && activeMode(createDef)?.fields.some(field => field.key === 'clientID') && store.oauthApps.has(createDef.id)" class="agents-platform-note"><Check :stroke-width="1.75" aria-hidden="true" /> Using the platform's {{ createDef.label }} OAuth app — no client id/secret needed. Create it, then click <strong>Connect</strong>.</div>
         <label v-for="field in fieldsFor(createDef)" :key="field.key">{{ field.label }}{{ field.required ? ' *' : '' }}<input class="k-input" :name="field.key" :type="field.password ? 'password' : 'text'" :placeholder="field.placeholder || ''" :required="field.required" autocomplete="off" :value="createValues[field.key] || ''" :disabled="createBusy" @input="setCreateValue(field.key, ($event.target as HTMLInputElement).value)" /><span v-if="field.hint" class="agents-hint">{{ field.hint }}</span></label>
         <details v-if="advancedFor(createDef).length" class="agents-adv"><summary>Advanced</summary><label v-for="field in advancedFor(createDef)" :key="field.key">{{ field.label }}{{ field.required ? ' *' : '' }}<input class="k-input" :name="field.key" :type="field.password ? 'password' : 'text'" :placeholder="field.placeholder || ''" :required="field.required" autocomplete="off" :value="createValues[field.key] || ''" :disabled="createBusy" @input="setCreateValue(field.key, ($event.target as HTMLInputElement).value)" /><span v-if="field.hint" class="agents-hint">{{ field.hint }}</span></label></details>
