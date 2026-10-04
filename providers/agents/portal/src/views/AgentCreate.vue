@@ -40,8 +40,8 @@ const revision = useStoreRevision(() => props.store)
 // shows. One decision described one way, or a person meets it twice and reads
 // it as two.
 const BACKENDS: { id: AgentBackendType; label: string; blurb: string }[] = [
-  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Turns run here, against a chat credential, with the tools granted below.' },
-  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Turns run on one of your machines, with that harness’s own tools. Tool grants do not apply.' },
+  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Uses a model connection and the tools configured for this agent.' },
+  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Runs on a Linux or macOS machine and uses its own tools. Agent tool grants do not apply.' },
 ]
 
 const name = ref('')
@@ -125,7 +125,11 @@ const prerequisites = computed(() => isHarness.value
   ? [
     hostEdges.value.length
       ? 'A Linux or macOS machine is joined to this workspace.'
-      : 'Join a Linux or macOS machine before creating the agent.',
+      : edgeSlice.value.error
+        ? 'Retry loading machines before choosing a runner.'
+        : edgeSlice.value.hasSnapshot
+          ? 'Join a Linux or macOS machine before creating the agent.'
+          : 'Checking for available machines…',
     harnessCredentials.value.length
       ? 'A Claude Code or Codex identity is available in this workspace.'
       : 'Add a Claude Code or Codex identity under Models before creating the agent.',
@@ -147,6 +151,16 @@ const summaryValues = computed(() => [
     : [{ label: 'Model', value: modelCredential.value || 'Not selected', technical: true }]),
   { label: 'Primary channel', value: channel.value || 'None', technical: true },
   { label: 'Capabilities', value: capabilities.value },
+])
+const guidanceDescription = computed(() => isHarness.value
+  ? 'Choose the machine and harness identity that will run the agent’s turns.'
+  : 'Choose the model connection the agent will use for its turns.')
+const guidanceNextSteps = computed(() => [
+  'Railgrid creates the agent and opens its Config workspace.',
+  'Start a conversation to make sure the agent responds as expected.',
+  ...(isHarness.value
+    ? ['Add schedules and triggers when you’re ready to automate it.']
+    : ['Attach toolsets, schedules, and triggers when the core behavior is ready.']),
 ])
 // Whether the form can be submitted at all, which is a different question per
 // backend: the old condition was "a chat credential exists", which made the
@@ -242,13 +256,13 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div class="agents-create-page k-create-page">
+  <div class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="busy" @click="cancel">
       <ArrowLeft aria-hidden="true" /> Agents
     </button>
     <header class="k-create-header">
       <h1 class="k-create-title">Create agent</h1>
-      <p class="k-create-description">Choose the model, instructions, and optional channel this agent starts with.</p>
+      <p class="k-create-description">Choose where this agent’s turns run, set its instructions, and optionally connect a channel.</p>
     </header>
 
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
@@ -298,7 +312,7 @@ async function submit(): Promise<void> {
             <fieldset class="agents-cap-fs">
               <legend>Backend <span class="agents-hint">— where this agent’s turns execute</span></legend>
               <div class="agents-radiocards">
-                <label v-for="option in BACKENDS" :key="option.id" class="agents-radiocard" :class="{ sel: option.id === backendType }">
+                <label v-for="option in BACKENDS" :key="option.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: option.id === backendType }">
                   <input v-model="backendType" type="radio" name="agent-create-backend" :value="option.id" :disabled="busy" />
                   <span class="agents-radiocard-t">{{ option.label }}</span><span class="agents-radiocard-b">{{ option.blurb }}</span>
                 </label>
@@ -306,46 +320,52 @@ async function submit(): Promise<void> {
             </fieldset>
 
             <template v-if="isHarness">
-              <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
-                Could not load machines. {{ edgeSlice.error }}
-                <button class="k-btn k-btn--ghost secondary" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">Retry</button>
+              <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
+                <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load machines. {{ edgeSlice.error }}</span></span>
+                <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">Retry</button>
               </div>
               <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status">Loading machines…</div>
               <template v-else>
-                <label id="agent-create-edge-label">
-                  Machine *
+                <div v-if="edgeSlice.error" id="agent-create-edge-stale" class="k-inline-notification k-inline-notification--warning" role="status">
+                  <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded machines. {{ edgeSlice.error }}</span></span>
+                  <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+                </div>
+                <label>
+                  <span id="agent-create-edge-label">Machine *</span>
                   <FormSelect
                     id="agent-create-edge"
                     v-model="harnessEdge"
                     name="harnessEdge"
                     :options="edgeOptions"
                     :disabled="busy"
+                    :required="true"
                     :invalid="Boolean(errors.harnessEdge)"
                     labelledby="agent-create-edge-label"
-                    :describedby="errors.harnessEdge ? 'agent-create-edge-hint agent-create-edge-error' : 'agent-create-edge-hint'"
+                    :describedby="['agent-create-edge-hint', hostEdges.length === 0 ? 'agent-create-edge-empty' : '', errors.harnessEdge ? 'agent-create-edge-error' : '', edgeSlice.error ? 'agent-create-edge-stale' : ''].filter(Boolean).join(' ')"
                   />
                   <span v-if="errors.harnessEdge" id="agent-create-edge-error" class="agents-fielderr" role="alert">{{ errors.harnessEdge }}</span>
                   <span id="agent-create-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
-                  <span v-if="hostEdges.length === 0" class="agents-hint">
+                  <span v-if="hostEdges.length === 0" id="agent-create-edge-empty" class="agents-hint">
                     No Linux or macOS machine in this workspace yet — join one under Edges first.
                   </span>
                 </label>
 
-                <label id="agent-create-harnesscred-label">
-                  Harness credential *
+                <label>
+                  <span id="agent-create-harnesscred-label">Harness credential *</span>
                   <FormSelect
                     id="agent-create-harnesscred"
                     v-model="harnessCredential"
                     name="harnessCredential"
                     :options="harnessCredentialOptions"
                     :disabled="busy"
+                    :required="true"
                     :invalid="Boolean(errors.harnessCredential)"
                     labelledby="agent-create-harnesscred-label"
-                    :describedby="errors.harnessCredential ? 'agent-create-harnesscred-hint agent-create-harnesscred-error' : 'agent-create-harnesscred-hint'"
+                    :describedby="['agent-create-harnesscred-hint', harnessCredentials.length === 0 ? 'agent-create-harnesscred-empty' : '', errors.harnessCredential ? 'agent-create-harnesscred-error' : ''].filter(Boolean).join(' ')"
                   />
                   <span v-if="errors.harnessCredential" id="agent-create-harnesscred-error" class="agents-fielderr" role="alert">{{ errors.harnessCredential }}</span>
                   <span id="agent-create-harnesscred-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
-                  <span v-if="harnessCredentials.length === 0" class="agents-hint">
+                  <span v-if="harnessCredentials.length === 0" id="agent-create-harnesscred-empty" class="agents-hint">
                     No harness identities yet —
                     <button type="button" class="k-dashboard-action" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
                       add a Claude Code or Codex one under Models
@@ -356,18 +376,18 @@ async function submit(): Promise<void> {
 
                 <label>
                   Model <span class="agents-hint">optional — blank leaves the harness’s own default</span>
-                  <input v-model="harnessModel" class="k-input" placeholder="sonnet" :disabled="busy" />
+                  <input v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" />
                 </label>
 
-                <label id="agent-create-workspace-label">
-                  Working directory
+                <label>
+                  <span id="agent-create-workspace-label">Working directory</span>
                   <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" :disabled="busy" labelledby="agent-create-workspace-label" />
                 </label>
               </template>
             </template>
 
-            <label v-else id="agent-create-model-label">
-              Model credential *
+            <label v-else>
+              <span id="agent-create-model-label">Model credential *</span>
               <FormSelect
                 id="agent-create-model"
                 v-model="modelCredential"
@@ -378,11 +398,11 @@ async function submit(): Promise<void> {
                 :disabled="busy"
                 :invalid="Boolean(errors.modelCredential)"
                 labelledby="agent-create-model-label"
-                :describedby="errors.modelCredential ? 'agent-create-model-hint agent-create-model-error' : 'agent-create-model-hint'"
+                :describedby="['agent-create-model-hint', credentialOptions.length === 0 ? 'agent-create-model-empty' : '', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
               />
               <span v-if="errors.modelCredential" id="agent-create-model-error" class="agents-fielderr" role="alert">{{ errors.modelCredential }}</span>
               <span id="agent-create-model-hint" class="agents-hint">The credential and model endpoint used for every turn.</span>
-              <span v-if="credentialOptions.length === 0" class="agents-hint">
+              <span v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
                 No model credentials yet —
                 <button type="button" class="k-dashboard-action" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
                   add one under Models
@@ -397,14 +417,14 @@ async function submit(): Promise<void> {
               <textarea v-model="systemPrompt" class="k-input" rows="3" placeholder="You are a concise assistant that…" :disabled="busy" />
             </label>
 
-            <label id="agent-create-channel-label">
-              Primary channel <span class="agents-hint">optional — where this agent messages you</span>
-              <FormSelect v-model="channel" :options="channelOptions" :disabled="busy" labelledby="agent-create-channel-label" />
+            <label>
+              <span id="agent-create-channel-label">Primary channel</span>
+              <FormSelect v-model="channel" :options="channelOptions" :disabled="busy" labelledby="agent-create-channel-label" describedby="agent-create-channel-hint" />
+              <span id="agent-create-channel-hint" class="agents-hint">Optional — where this agent messages you.</span>
             </label>
 
             <p v-if="isHarness" class="agents-hint">
-              Tool grants do not apply: a harness brings its own tools, and the API refuses them on a
-              harness-backed agent. Its machine and identity above are what decide what it can do.
+              A coding harness uses its own tools; configure those on the selected machine. Agent tool grants do not apply.
             </p>
 
             <fieldset v-else class="agents-cap-fs">
@@ -441,14 +461,10 @@ async function submit(): Promise<void> {
 
           <CreateGuidance
             title="Prepare a usable agent"
-            description="Choose the identity Railgrid will create and the model it can use immediately."
+            :description="guidanceDescription"
             :prerequisites="prerequisites"
             :values="summaryValues"
-            :next-steps="[
-              'Railgrid creates the agent and opens its Config workspace.',
-              'Start a conversation to verify the model and instructions.',
-              'Attach toolsets, schedules, and triggers when the core behavior is ready.',
-            ]"
+            :next-steps="guidanceNextSteps"
           >
             <template #icon><Bot aria-hidden="true" /></template>
           </CreateGuidance>

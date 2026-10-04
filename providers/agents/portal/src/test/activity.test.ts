@@ -518,7 +518,8 @@ describe('RunDetail.vue', () => {
     const mono = [...facts.querySelectorAll('.agents-runmeta-v.mono')].map(value => text(value))
     expect(mono).toContain('attempt-9f2c4b')
     expect(mono).toContain('harness-session-41')
-    expect(text(facts)).toContain('look the attempt up on the runner')
+    expect(text(facts)).toContain('runner attempt ID in the edge runner logs')
+    expect(text(facts)).toContain('harness session ID in the harness logs')
   })
 
   it('says where a harness-backed run ran without inventing coordinates it has not reported', async () => {
@@ -533,6 +534,17 @@ describe('RunDetail.vue', () => {
       expect(keys).not.toContain('harness session')
       expect(text(facts)).not.toContain('look the attempt up on the runner')
     }
+  })
+
+  it.each([
+    [{ attemptID: 'attempt-only' }, 'runner attempt ID in the edge runner logs', 'harness session ID'],
+    [{ sessionID: 'session-only' }, 'harness session ID in the harness logs', 'runner attempt ID'],
+  ])('gives lookup guidance only for the harness coordinate that exists', async (harness, included, omitted) => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ backend: 'harness', harness })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const facts = view.element.querySelector('.agents-run-inspector-section')!
+    expect(text(facts)).toContain(included)
+    expect(text(facts)).not.toContain(omitted)
   })
 
   it('leaves an in-process run and one with no recorded backend without harness treatment', async () => {

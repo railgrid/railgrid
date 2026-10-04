@@ -23,6 +23,7 @@ import { channelInbound } from '../conn-defs'
 import { mutate } from '../mutate'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../portalkit/toast'
 import type { Route } from '../router'
 import type { AppStore } from '../store'
@@ -64,8 +65,8 @@ const AUTONOMY_MODES: { id: Autonomy; label: string; blurb: string }[] = [
 // the tools granted below; a harness-backed agent's turns run on a machine and
 // use the harness's own tools, so no grant here applies to it.
 const BACKEND_MODES: { id: AgentBackendType; label: string; blurb: string }[] = [
-  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Turns run here, against a chat credential, with the tools granted below.' },
-  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Turns run on one of your machines, with that harness’s own tools. Tool grants do not apply.' },
+  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Uses a model connection and the tools configured for this agent.' },
+  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Runs on a Linux or macOS machine and uses its own tools. Agent tool grants do not apply.' },
 ]
 
 interface ChannelRow extends AgentChannel { key: number }
@@ -924,45 +925,47 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-backend-heading" title="Backend" description="Where this agent’s turns execute. An agent has exactly one backend.">
+    <ResourceSectionCard class="agents-config-sec" heading-id="agent-backend-heading" title="Backend" description="Choose where this agent runs its turns.">
       <template #actions><Server :stroke-width="1.75" aria-hidden="true" /></template>
-      <p class="muted agents-backend-copy">A <strong>model</strong>-backed agent runs its turns here in the provider and uses the hub’s tools; a <strong>harness</strong>-backed agent runs them on that machine and uses the harness’s own tools, so the tool grants below do not apply to it.</p>
-      <div class="agents-radiocards">
-        <label v-for="mode in BACKEND_MODES" :key="mode.id" class="agents-radiocard" :class="{ sel: mode.id === backendType }">
-          <input v-model="backendType" type="radio" name="backend-type" :value="mode.id" />
-          <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
-        </label>
-      </div>
+      <fieldset class="agents-cap-fs">
+        <legend>Execution backend</legend>
+        <div class="agents-radiocards">
+          <label v-for="mode in BACKEND_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === backendType }">
+            <input v-model="backendType" type="radio" name="backend-type" :value="mode.id" />
+            <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
+          </label>
+        </div>
+      </fieldset>
 
       <template v-if="backendType === 'harness'">
-        <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
-          <span>Could not load machines. {{ edgeSlice.error }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+        <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
+          <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load machines. {{ edgeSlice.error }}</span></span>
+          <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
         </div>
         <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading machines…</div>
         <template v-else>
-          <div v-if="edgeSlice.error" class="agents-stale" role="status">
-            Showing the last loaded machines. {{ edgeSlice.error }}
-            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+          <div v-if="edgeSlice.error" class="k-inline-notification k-inline-notification--warning" role="status">
+            <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded machines. {{ edgeSlice.error }}</span></span>
+            <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
           </div>
           <div class="agents-grid2">
             <label>
-              <span id="agent-harness-edge-label">Machine</span>
-              <FormSelect v-model="harnessEdge" :options="edgeOptions" labelledby="agent-harness-edge-label" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="harnessError ? 'agent-backend-error' : undefined" />
-              <span class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
-              <span v-if="hostEdges.length === 0" class="agents-hint">No Linux or macOS machine in this workspace yet — join one under Edges first.</span>
+              <span id="agent-harness-edge-label">Machine *</span>
+              <FormSelect v-model="harnessEdge" :options="edgeOptions" :required="true" labelledby="agent-harness-edge-label" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="['agent-harness-edge-hint', hostEdges.length === 0 ? 'agent-harness-edge-empty' : '', harnessError && !harnessEdge ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
+              <span id="agent-harness-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
+              <span v-if="hostEdges.length === 0" id="agent-harness-edge-empty" class="agents-hint">No Linux or macOS machine in this workspace yet — join one under Edges first.</span>
             </label>
             <label>
-              <span id="agent-harness-credential-label">Harness credential</span>
-              <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" labelledby="agent-harness-credential-label" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="harnessError ? 'agent-backend-error' : undefined" />
-              <span class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
-              <span v-if="harnessCredentials.length === 0" class="agents-hint">No harness credentials yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
+              <span id="agent-harness-credential-label">Harness credential *</span>
+              <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" labelledby="agent-harness-credential-label" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="['agent-harness-credential-hint', harnessCredentials.length === 0 ? 'agent-harness-credential-empty' : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
+              <span id="agent-harness-credential-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
+              <span v-if="harnessCredentials.length === 0" id="agent-harness-credential-empty" class="agents-hint">No harness credentials yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
             </label>
           </div>
           <div class="agents-grid2">
             <label>
               Model <span class="agents-hint">optional — blank leaves the harness’s own default</span>
-              <input v-model="harnessModel" class="k-input" placeholder="sonnet" />
+              <input v-model="harnessModel" class="k-input" placeholder="Harness default" />
             </label>
             <label>
               <span id="agent-harness-workspace-label">Working directory</span>
@@ -975,15 +978,16 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div v-if="harnessError" id="agent-backend-error" class="agents-fielderr" role="alert">{{ harnessError }}</div>
 
       <div class="agents-fieldset">
-        <span class="agents-fieldset-legend">Readiness</span>
-        <div v-if="!backendCondition" class="agents-hint" role="status">Not reported yet — nothing has observed this backend, which is not the same as it being fine.</div>
+        <span class="agents-fieldset-legend">Saved backend readiness</span>
+        <div v-if="!backendCondition" class="agents-hint" role="status">Waiting for the backend readiness check.</div>
         <template v-else-if="backendCondition.status === 'True'">
-          <span class="k-badge agents-badge agents-cat-channel">Backend ready</span>
+          <StatusBadge status="Backend ready" tone="success" />
           <span v-if="resolvedHarness" class="agents-hint">Turns will run on {{ resolvedHarness }}.</span>
         </template>
         <template v-else>
-          <p class="agents-hint agents-warn-inline" role="status"><Circle :stroke-width="1.75" aria-hidden="true" /> Not ready — <strong>{{ backendCondition.reason || 'unknown' }}</strong>. This agent cannot run a turn yet.</p>
-          <p v-if="backendCondition.message" class="agents-hint">{{ backendCondition.message }}</p>
+          <p class="agents-hint agents-warn-inline" role="status"><Circle :stroke-width="1.75" aria-hidden="true" /> This agent cannot start a turn because its backend is not ready.</p>
+          <p v-if="backendCondition.reason" class="agents-hint">Readiness reason: <strong>{{ backendCondition.reason }}</strong></p>
+          <p v-if="backendCondition.message" class="agents-hint">Details: {{ backendCondition.message }}</p>
         </template>
       </div>
 
@@ -1060,7 +1064,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
            the card is the honest version: an ignored grant reads as a granted
            one, and a card that vanished reads as a feature that went missing. -->
       <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-tools-disabled role="status">
-        <Circle :stroke-width="1.75" aria-hidden="true" /> This agent runs on a coding harness, which brings its own tools. Tool grants do not apply to it and the API refuses them — switch the backend to <strong>Model</strong> above to grant tools here.
+        <Circle :stroke-width="1.75" aria-hidden="true" /> This agent uses the coding harness’s own tools. Agent tool grants do not apply; switch to <strong>Model</strong> above to configure tools here.
       </p>
       <template v-else>
       <ConfigSaveFeedback id="agent-tools-save-feedback" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />

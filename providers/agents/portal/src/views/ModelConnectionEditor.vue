@@ -25,7 +25,7 @@
 // written, not spec.secretKey. It gets its own form (HarnessCredentialForm)
 // rather than a mode of this one, so the controls that cannot mean anything
 // are absent instead of disabled.
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import {
   HARNESS_SECRET_KEY_CODEX_AUTH,
@@ -47,8 +47,13 @@ import { confirmDialog } from '../portalkit/confirm'
 // passed in rather than fetched again, and it is optional: without it every
 // discovered model is simply "available" and the picker shows one flat group.
 const props = defineProps<{ api: ApiClient; credential?: Credential; busy: boolean; error?: string | null; catalog?: ModelInfo[] }>()
-const emit = defineEmits<{ save: [body: CredentialWrite, result?: CredentialTestResult]; cancel: [] }>()
+const emit = defineEmits<{
+  save: [body: CredentialWrite, result?: CredentialTestResult]
+  cancel: []
+  'family-change': [family: 'chat' | 'harness']
+}>()
 const name = ref(props.credential?.name || '')
+const editorForm = ref<{ $el: HTMLFormElement } | null>(null)
 // The preset IS the provider choice now: it carries spec.provider and the
 // family, so picking one changes which form exists rather than only which URL
 // is prefilled.
@@ -74,10 +79,15 @@ const discovering = ref(false)
 const testing = ref(false)
 const discoveryError = ref('')
 const testError = ref('')
-const validationError = ref('')
+const nameError = ref('')
+const endpointValidationError = ref('')
+const credentialError = ref('')
+const modelError = ref('')
+const harnessSecretError = ref('')
 const testedFingerprint = ref('')
 const testResult = ref<CredentialTestResult>({ ok: false, latencyMS: 0 })
 let generation = 0
+let providerFocusGeneration = 0
 
 // ---- harness identity ------------------------------------------------------
 //
@@ -99,7 +109,7 @@ const PICK_MODEL_NOTICE = 'Connection saved. Find models to see which chat model
 // id used to be exercised for the first time by the first agent run, which is
 // where the provider's "use the responses endpoint instead" 404 turned up.
 const TEST_MODEL_NOTICE = 'Test this model before saving. The endpoint listing a model is not a promise that it answers chat requests.'
-const CODEX_JSON_NOTICE = 'This is not a JSON object. Paste the contents of the auth.json that `codex login` wrote.'
+const CODEX_JSON_NOTICE = 'This is not a JSON object. Paste the contents of the auth.json file created by codex login.'
 
 const savedModel = computed(() => (props.credential?.model || '').trim())
 // A model that differs from what is stored is an unproven choice. Rotating the
@@ -112,7 +122,7 @@ const fingerprint = computed(() => JSON.stringify([
 ]))
 const baseline = fingerprint.value
 const verified = computed(() => testedFingerprint.value === fingerprint.value)
-const baseURLError = computed(() => preset.value === 'custom' && !baseURL.value.trim() ? 'Base URL is required.' : '')
+const baseURLError = computed(() => endpointValidationError.value || (preset.value === 'custom' && !baseURL.value.trim() ? 'Base URL is required.' : ''))
 const locked = computed(() => props.busy || testing.value || discovering.value)
 // status.models is already curated to the chat-capable subset by the provider
 // (llm.FilterChatModels), so nothing here has to hide anything — what is left
@@ -141,10 +151,32 @@ const providerGuidance = computed(() => current.value.guidance)
 const harnessProviderChanged = computed(() => !props.credential || provider.value !== (props.credential.provider || ''))
 const needsHarnessSecret = computed(() => harnessProviderChanged.value || props.credential?.secretResolved === false)
 const harnessHint = computed(() => {
-  if (props.credential && !needsHarnessSecret.value) return 'Leave blank to keep the stored credential. Typing one replaces it, and the type selected above is what it becomes.'
-  if (codex.value) return 'Stored in this workspace as a Secret under the key auth.json and never returned to the browser.'
-  return 'Stored in this workspace as a Secret and never returned to the browser.'
+  const storage = 'Your credential is stored as a workspace secret and never returned to the browser.'
+  if (props.credential && !needsHarnessSecret.value) return `${storage} Leave blank to keep the current login, or enter a new value to replace it.`
+  if (codex.value) return `${storage} Paste the auth.json contents created by codex login on a machine you control.`
+  return `${storage} Enter the selected credential type for this Claude Code identity.`
 })
+
+function updateProvider(nextPreset: string): void {
+  const activeSelect = document.activeElement instanceof HTMLSelectElement && document.activeElement.id === 'model-provider'
+    ? document.activeElement
+    : null
+  const currentForm = editorForm.value?.$el
+  const ownedSelectHadFocus = Boolean(activeSelect && currentForm?.contains(activeSelect))
+  const serial = ++providerFocusGeneration
+  const nextProvider = providerPreset(nextPreset)
+  if (nextProvider.family === 'chat') baseURL.value = nextProvider.baseURL
+  preset.value = nextPreset
+  if (!ownedSelectHadFocus) return
+
+  // Changing families replaces the whole form and its native select. Restore
+  // focus only when that select owned focus and Vue's replacement left focus
+  // on the document body; a later selection or user focus move wins.
+  void nextTick(() => {
+    if (serial !== providerFocusGeneration || preset.value !== nextPreset || document.activeElement !== document.body) return
+    editorForm.value?.$el.querySelector<HTMLSelectElement>('#model-provider')?.focus()
+  })
+}
 
 // The notice explains what the disabled buttons are waiting for, in the order
 // a person meets it: save, then choose a model.
@@ -167,37 +199,53 @@ const saveDisabled = computed(() => {
     (modelChanged.value && !verified.value)
 })
 
-watch(fingerprint, () => { generation++; testedFingerprint.value = ''; testError.value = ''; validationError.value = '' })
+watch(fingerprint, () => {
+  generation++
+  testedFingerprint.value = ''
+  testError.value = ''
+  endpointValidationError.value = ''
+  credentialError.value = ''
+  modelError.value = ''
+  harnessSecretError.value = ''
+})
+watch(name, () => { nameError.value = '' })
 // A changed endpoint or key means the discovered list belongs to something
 // else. A changed model does not: it was picked FROM that list.
 watch([baseURL, apiKey], () => { models.value = []; discoveryError.value = '' })
 // A secret is issued for ONE identity. Crossing between the families — an API
 // key for an endpoint and a login for a harness are not the same kind of thing
 // at all — must not carry the typed value across.
-watch(() => current.value.family, () => { apiKey.value = ''; harnessSecret.value = '' })
+watch(() => current.value.family, family => {
+  emit('family-change', family)
+  apiKey.value = ''
+  harnessSecret.value = ''
+}, { immediate: true })
 // Each harness provider accepts its own keys, so switching provider moves the
 // selection to a key this one actually has.
 watch(harnessKeys, keys => { if (keys.length && !keys.includes(harnessKey.value)) harnessKey.value = keys[0] })
 // Switching claude-code's credential type is a different identity too, so the
 // box starts empty rather than re-labelling what was typed for the other kind.
 watch(harnessKey, () => { harnessSecret.value = '' })
-onBeforeUnmount(() => { generation++; apiKey.value = ''; harnessSecret.value = '' })
+onBeforeUnmount(() => { generation++; providerFocusGeneration++; apiKey.value = ''; harnessSecret.value = '' })
 
 function valid(requireModel: boolean): boolean {
-  validationError.value = ''
+  endpointValidationError.value = ''
+  credentialError.value = ''
+  modelError.value = ''
+  let ok = true
   try { const url = new URL(baseURL.value); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error() }
-  catch { validationError.value = 'Enter a valid HTTP or HTTPS API endpoint.' }
-  if (!apiKey.value.trim() && needsKey.value) validationError.value = 'Enter an API key for this endpoint.'
+  catch { endpointValidationError.value = 'Enter a valid HTTP or HTTPS API endpoint.'; ok = false }
+  if (!apiKey.value.trim() && needsKey.value) { credentialError.value = 'Enter an API key for this endpoint.'; ok = false }
   // No API key format is known here (any OpenAI-compatible gateway), but none
   // contains whitespace. A pasted sentence — a copied error banner, a line of
   // a config file — is saved verbatim otherwise and only fails later as a 401.
-  else if (/\s/.test(apiKey.value.trim())) validationError.value = 'The API key contains spaces or line breaks; paste only the key.'
-  if (requireModel && !model.value.trim()) validationError.value = 'Choose or enter a model ID.'
+  else if (/\s/.test(apiKey.value.trim())) { credentialError.value = 'The API key contains spaces or line breaks; paste only the key.'; ok = false }
+  if (requireModel && !model.value.trim()) { modelError.value = 'Choose or enter a model ID.'; ok = false }
   // The button is disabled for this too, but a form can also be submitted with
   // Enter, and an unproven model is exactly what this change exists to stop
   // from being written.
-  else if (modelChanged.value && !verified.value) validationError.value = TEST_MODEL_NOTICE
-  return !validationError.value
+  else if (modelChanged.value && !verified.value) { modelError.value = TEST_MODEL_NOTICE; ok = false }
+  return ok
 }
 
 // validHarness checks the SHAPE of a harness login before anything is sent —
@@ -205,22 +253,22 @@ function valid(requireModel: boolean): boolean {
 // a half-pasted auth.json is a message under the box rather than a condition
 // on an object several minutes later.
 function validHarness(): boolean {
-  validationError.value = ''
+  harnessSecretError.value = ''
   const value = harnessSecret.value.trim()
   if (!value) {
     if (needsHarnessSecret.value) {
-      validationError.value = codex.value
-        ? 'Paste the contents of the auth.json that `codex login` wrote.'
-        : 'Enter the credential this identity runs as.'
+      harnessSecretError.value = codex.value
+        ? 'Paste the contents of the auth.json file created by codex login.'
+        : 'Enter the selected credential for this identity.'
     }
-    return !validationError.value
+    return !harnessSecretError.value
   }
   if (codex.value) {
-    if (!isJSONObject(value)) validationError.value = CODEX_JSON_NOTICE
+    if (!isJSONObject(value)) harnessSecretError.value = CODEX_JSON_NOTICE
   } else if (/\s/.test(value)) {
-    validationError.value = 'The credential contains spaces or line breaks; paste only the value.'
+    harnessSecretError.value = 'The credential contains spaces or line breaks; paste only the value.'
   }
-  return !validationError.value
+  return !harnessSecretError.value
 }
 
 // probe runs one of the two verbs against the SAVED credential. Neither takes
@@ -228,7 +276,7 @@ function validHarness(): boolean {
 // probe can never be pointed at an endpoint the saved credential does not have.
 async function probe(discover: boolean) {
   if (locked.value || !props.credential || harness.value) return
-  if (!discover && !model.value.trim()) { validationError.value = 'Choose or enter a model ID.'; return }
+  if (!discover && !model.value.trim()) { modelError.value = 'Choose or enter a model ID.'; return }
   const serial = ++generation
   const snapshot = fingerprint.value
   if (discover) { discovering.value = true; discoveryError.value = '' } else { testing.value = true; testError.value = ''; testedFingerprint.value = '' }
@@ -251,14 +299,18 @@ async function probe(discover: boolean) {
 
 function namedWell(): boolean {
   if (props.credential || /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name.value.trim())) return true
-  validationError.value = 'Use lowercase letters and numbers separated by hyphens for the name.'
+  nameError.value = name.value.trim()
+    ? 'Use lowercase letters and numbers separated by hyphens for the name.'
+    : 'Enter a name for this credential.'
   return false
 }
 
 function submit() {
   if (locked.value) return
   if (harness.value) {
-    if (!validHarness() || !namedWell()) return
+    const secretValid = validHarness()
+    const nameValid = namedWell()
+    if (!secretValid || !nameValid) return
     const value = harnessSecret.value.trim()
     // No baseURL and no model: the CRD's CEL rule asks for a URL only from a
     // chat provider, and there is no model to default. spec.secretKey is
@@ -270,7 +322,9 @@ function submit() {
     })
     return
   }
-  if (!valid(saved.value) || !namedWell()) return
+  const fieldsValid = valid(saved.value)
+  const nameValid = namedWell()
+  if (!fieldsValid || !nameValid) return
   emit('save', {
     name: name.value.trim(),
     provider: provider.value,
@@ -282,14 +336,17 @@ function submit() {
 
 async function cancel() {
   if (locked.value) return
-  if ((fingerprint.value !== baseline || name.value !== (props.credential?.name || '')) && !await confirmDialog({ title: 'Discard model changes?', message: 'Your unsaved model connection changes will be lost.', confirmLabel: 'Discard changes' })) return
+  const subject = harness.value ? 'harness identity' : 'model connection'
+  const title = harness.value ? 'Discard harness identity changes?' : 'Discard model changes?'
+  if ((fingerprint.value !== baseline || name.value !== (props.credential?.name || '')) && !await confirmDialog({ title, message: `Your unsaved ${subject} changes will be lost.`, confirmLabel: 'Discard changes' })) return
   emit('cancel')
 }
 defineExpose({ cancel, locked })
 </script>
 <template>
  <HarnessCredentialForm
-  v-if="harness"
+ v-if="harness"
+  ref="editorForm"
   class="agents-model-create"
   :name="name"
   :name-disabled="Boolean(credential)"
@@ -304,20 +361,23 @@ defineExpose({ cancel, locked })
   :secret="harnessSecret"
   :secret-required="needsHarnessSecret"
   :secret-hint="harnessHint"
-  :form-error="validationError || error"
+  :name-error="nameError"
+  :secret-error="harnessSecretError"
+  :form-error="error"
   :save-disabled="saveDisabled"
   :busy="busy"
   :editing="Boolean(credential)"
   wide
   @update:name="name = $event"
-  @update:provider="preset = $event"
+  @update:provider="updateProvider($event)"
   @update:secret-key="harnessKey = $event"
   @update:secret="harnessSecret = $event"
   @cancel="cancel"
   @save="submit"
  />
  <ModelConnectionForm
-  v-else
+ v-else
+  ref="editorForm"
   class="agents-model-create"
   :name="name"
   :name-disabled="Boolean(credential)"
@@ -328,13 +388,16 @@ defineExpose({ cancel, locked })
   :provider-guidance="providerGuidance"
   :base-u-r-l="baseURL"
   :base-u-r-l-error="baseURLError"
+  :name-error="nameError"
   :credential="apiKey"
   credential-label="API key"
+  :credential-error="credentialError"
   :credential-required="needsKey"
   :credential-placeholder="credential ? 'API key (leave blank to keep current)' : 'API key'"
   :credential-hint="credential ? 'The saved key can only be reused with the same provider endpoint.' : 'Stored in this workspace as a Secret and never returned to the browser.'"
   :model="model"
   model-hint="Use the exact model identifier shown by your provider."
+  :model-error="modelError"
   :discovered-models="discoveredModels"
   :discovery-loading="discovering"
   :discovery-error="discoveryError"
@@ -343,15 +406,16 @@ defineExpose({ cancel, locked })
   :testing="testing"
   :test-error="testError"
   :test-notice="notice"
-  :form-error="validationError || error"
+  :form-error="error"
   :connection-tested="verified"
   :test-disabled="!saved || !model.trim()"
   :save-disabled="saveDisabled"
   :busy="busy"
   :editing="Boolean(credential)"
+  novalidate
   wide
   @update:name="name = $event"
-  @update:provider="preset = $event; baseURL = providerPreset($event).family === 'chat' ? providerPreset($event).baseURL : baseURL"
+  @update:provider="updateProvider($event)"
   @update:base-u-r-l="baseURL = $event"
   @update:credential="apiKey = $event"
   @update:model="model = $event"

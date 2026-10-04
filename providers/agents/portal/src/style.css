@@ -143,11 +143,8 @@ railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle svg { wid
 railgrid-provider-agents .agents-workbench-header { min-width: 0; }
 railgrid-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 100%; }
 railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
-/* The one line of copy explaining what the backend choice means. Wraps at phone
-   width like every other paragraph in a section card. */
-railgrid-provider-agents .agents-backend-copy { margin: 0 0 4px; font-size: 13px; line-height: 1.5; }
-
-railgrid-provider-agents input[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
+railgrid-provider-agents input[aria-invalid="true"],
+railgrid-provider-agents textarea[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
 /* Glow-means-alive: only the solid accent (primary) button emits light. Every
  * other button-shaped control opts back out (the :is() keeps this rule's
  * specificity level with button:hover so it also suppresses the hover glow). */
