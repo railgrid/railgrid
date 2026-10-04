@@ -1007,12 +1007,13 @@ func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run tas
 // commentary; the final response is persisted by the lifecycle after the run
 // reaches a terminal phase, so it can carry authoritative timing.
 type turnSink struct {
-	s         *Server
-	ctx       context.Context
-	run       taskRun
-	sessionID string
-	startedAt time.Time
-	tracker   *turnProgressTracker
+	s           *Server
+	ctx         context.Context
+	run         taskRun
+	sessionID   string
+	startedAt   time.Time
+	tracker     *turnProgressTracker
+	backendType string
 	// record persists a mid-turn recovery checkpoint; abort reads the durable
 	// cancel flag. Both are built once so their throttling and closures live for
 	// the whole turn.
@@ -1035,6 +1036,7 @@ func (s *Server) turnSink(ctx context.Context, run taskRun, sessionID string, st
 	}
 	return &turnSink{
 		s: s, ctx: ctx, run: run, sessionID: sessionID, startedAt: startedAt, tracker: tracker,
+		backendType: backendType,
 		// Periodic checkpoints make a long run recoverable: if this replica dies,
 		// the Run reconciler resumes from the last one instead of losing the work.
 		// A resumed run keeps checkpointing too, so a replica that dies again picks
@@ -1082,6 +1084,24 @@ func (k *turnSink) ToolStart(id, name, args string) {
 
 func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 	k.tracker.tool(ev)
+	// Model tools are audited by wrapTool. Harness tools execute on the Edge,
+	// so their completion events are the provider's audit boundary.
+	if k.backendType == agentsv1alpha1.AgentBackendHarness {
+		outcome, errorText := "ok", ""
+		if ev.Err {
+			outcome, errorText = "error", safeTruncate(ev.Result, 4000)
+		}
+		persistCtx, cancel := boundedPersistContext(k.ctx)
+		err := k.s.store.AppendToolCall(persistCtx, k.run.Scope, store.ToolCall{
+			ID: uuid.NewString(), AgentName: k.run.Agent.Name, RunID: k.run.RunID, Trigger: k.run.Trigger,
+			Tool: ev.Name, Args: redactArgs(ev.Args), Result: safeTruncate(ev.Result, maxStoredResult),
+			Outcome: outcome, Error: errorText, DurationMS: ev.Duration.Milliseconds(), CreatedAt: time.Now().UTC(),
+		})
+		cancel()
+		if err != nil {
+			k.run.transcriptWrites.record(fmt.Errorf("persist harness tool audit %q: %w", ev.ID, err))
+		}
+	}
 	if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
 		ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
 		Role: "tool", Content: ev.Result,

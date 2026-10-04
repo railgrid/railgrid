@@ -151,6 +151,25 @@ func (r *Reconciler) validateBackend(ctx context.Context, c client.Client, agent
 	// What a run will get, published whether or not it is ready: a portal showing
 	// "claude-code 2.1.4, not ready" is more use than an empty box.
 	out.Harness = &agentsv1alpha1.AgentHarnessStatus{Name: harness.Name, Version: harness.Version}
+	// Discovery survives a disconnected tunnel. Its last harness probe cannot
+	// establish that the machine or the Service is reachable now.
+	connected, _, _ := unstructured.NestedBool(edge.Object, "status", "connected")
+	if !connected {
+		return agentsv1alpha1.ReasonHarnessNotReady, fmt.Sprintf(
+			"%s %q is disconnected", cfg.EdgeRef.Kind, cfg.EdgeRef.Name), out, nil
+	}
+	conditions, _, _ := unstructured.NestedSlice(service.Object, "status", "conditions")
+	serviceReady := false
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if ok && condition["type"] == "Ready" {
+			serviceReady = condition["status"] == string(metav1.ConditionTrue)
+			break
+		}
+	}
+	if !serviceReady {
+		return agentsv1alpha1.ReasonHarnessNotReady, fmt.Sprintf("runner Service %q is not Ready", serviceName), out, nil
+	}
 	if !harness.Ready {
 		detail := ""
 		if len(harness.Reasons) > 0 {
