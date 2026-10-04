@@ -18,6 +18,48 @@ func testScope() Scope {
 	return Scope{OrgUUID: "org1", WorkspaceUUID: "ws1", AgentName: "helper"}
 }
 
+func TestMemoryStore_HarnessSessionIgnoresLateOlderTurn(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	sc := testScope()
+	now := time.Now().UTC()
+
+	first, err := s.NextHarnessTurn(ctx, sc, "chat", now)
+	if err != nil {
+		t.Fatalf("claim first turn: %v", err)
+	}
+	second, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim second turn: %v", err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: second.Turns, HarnessSessionID: "newer-thread", UpdatedAt: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist second turn: %v", err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: first.Turns, HarnessSessionID: "older-thread", UpdatedAt: now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist late first turn: %v", err)
+	}
+	// An empty receipt is not allowed to clear the session, even when it comes
+	// from the latest turn.
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: second.Turns, UpdatedAt: now.Add(4 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist empty receipt: %v", err)
+	}
+
+	got, ok, err := s.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || got.Turns != second.Turns || got.HarnessSessionID != "newer-thread" {
+		t.Fatalf("session after late writes = %+v, ok=%v, err=%v; want epoch %d and newer-thread", got, ok, err, second.Turns)
+	}
+	third, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second))
+	if err != nil || third.Turns != 3 || third.HarnessSessionID != "newer-thread" {
+		t.Fatalf("next turn = %+v, err=%v; want epoch 3 resuming newer-thread", third, err)
+	}
+}
+
 func TestMemoryStore_MessagesRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()

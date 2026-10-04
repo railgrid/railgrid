@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"strings"
 	"time"
@@ -163,13 +164,30 @@ type harnessTurn struct {
 	Harness string
 }
 
+// persistHarnessSession records the thread the harness actually used. The
+// per-run record is useful for inspection, but only this session row is read
+// by NextHarnessTurn when dispatching the next chat message.
+func (s *Server) persistHarnessSession(ctx context.Context, scope store.Scope, session store.HarnessSession, observed backendharness.Observed, at time.Time) error {
+	if observed.SessionID == "" {
+		return nil
+	}
+	session.HarnessSessionID = observed.SessionID
+	session.UpdatedAt = at
+	persistCtx, cancel := boundedPersistContext(ctx)
+	defer cancel()
+	if err := s.store.PutHarnessSession(persistCtx, scope, session); err != nil {
+		return fmt.Errorf("persisting the harness session for the next turn: %w", err)
+	}
+	return nil
+}
+
 // harnessBackendFor resolves a harness-backed agent's turn.
 //
 // Everything it reads it reads with the run's own access (run.Creds), which is
 // the same identity that reads a model credential — a harness credential is a
 // ModelCredential, and an unattended run must be able to reach it without a
 // caller to borrow.
-func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, runID string) (harnessTurn, error) {
+func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, runID string, cont *continuation) (harnessTurn, error) {
 	agent := run.Agent
 	cfg := agent.Spec.Harness()
 	if cfg == nil {
@@ -228,7 +246,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	// is the protection that makes two replicas answering one message safe, and
 	// only works if the number is not derived from something either replica could
 	// read as equal.
-	session, err := s.store.NextHarnessTurn(ctx, run.Scope, sessionID, time.Now().UTC())
+	session, err := s.harnessSessionFor(ctx, run.Scope, sessionID, cont)
 	if err != nil {
 		return harnessTurn{}, fmt.Errorf("claiming this turn's number for session %s: %w", sessionID, err)
 	}
@@ -254,6 +272,30 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		MaxDurationSeconds: int(agent.Spec.Limits.TimeoutSeconds),
 	})
 	return harnessTurn{backend: b, Session: session, Service: service, Harness: advertised}, nil
+}
+
+// A continuation addresses the attempt already running on the edge. Allocating
+// another epoch would make its second approval obsolete and could let an older
+// receipt overwrite a newer turn's saved session.
+func (s *Server) harnessSessionFor(ctx context.Context, scope store.Scope, sessionID string, cont *continuation) (store.HarnessSession, error) {
+	if cont == nil {
+		return s.store.NextHarnessTurn(ctx, scope, sessionID, time.Now().UTC())
+	}
+	raw, err := cont.Checkpoint.backendState()
+	if err != nil {
+		return store.HarnessSession{}, err
+	}
+	var state backendharness.State
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return store.HarnessSession{}, fmt.Errorf("reading the harness attempt epoch: %w", err)
+	}
+	if state.Epoch == 0 || state.Epoch > math.MaxInt64 {
+		return store.HarnessSession{}, errors.New("the harness checkpoint carries an invalid attempt epoch")
+	}
+	return store.HarnessSession{
+		SessionID: sessionID, HarnessSessionID: state.SessionID,
+		Turns: int64(state.Epoch), UpdatedAt: time.Now().UTC(),
+	}, nil
 }
 
 // harnessTaskID is the conversation's identity on the runner.
@@ -305,7 +347,7 @@ func protocolIdentifier(raw string) string {
 		out = "x"
 	}
 	// A leading character outside [A-Za-z0-9] is not allowed.
-	if c := out[0]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+	if c := out[0]; (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 		out = "x" + out
 	}
 	if len(out) > protocolIdentifierMax {

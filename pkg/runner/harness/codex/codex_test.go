@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -34,13 +33,13 @@ import (
 
 func TestProbeUsesVersionAndHandshakeWithoutModelCall(t *testing.T) {
 	binary := fakeCodexBinary(t, "probe")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 
 	info, err := adapter.Probe(context.Background())
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	if !info.Ready || info.Version != "0.147.0" {
+	if !info.Ready || info.Version != "0.155.1" {
 		t.Fatalf("unexpected probe info: %+v", info)
 	}
 	methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
@@ -52,6 +51,12 @@ func TestProbeUsesVersionAndHandshakeWithoutModelCall(t *testing.T) {
 		if method == "thread/start" || method == "thread/resume" || method == "turn/start" {
 			t.Fatalf("probe unexpectedly called model method %q", method)
 		}
+	}
+	requests := readJSONLines(t, filepath.Join(filepath.Dir(binary), "requests"))
+	initializeParams := requests[0]["params"].(map[string]any)
+	capabilities := initializeParams["capabilities"].(map[string]any)
+	if capabilities["experimentalApi"] != true {
+		t.Fatalf("initialize capabilities = %v, want experimentalApi enabled for the pinned Codex protocol", capabilities)
 	}
 }
 
@@ -84,7 +89,7 @@ func TestRunLifecycleStartsSessionBeforeTurnAndSanitizesEnvironment(t *testing.T
 		_ = os.Setenv("GITHUB_TOKEN", oldGH)
 		_ = os.Setenv("GITHUB_ACTIONS", oldGitHub)
 	})
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), Model: "model-147", ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), Model: "model-155", ExpectedVersion: "0.155.1"})
 	var events []harness.Event
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		AttemptID:    "attempt-1",
@@ -151,7 +156,7 @@ func TestRunEnablesDefaultModeRequestUserInputForStartAndResume(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			binary := fakeCodexBinary(t, "success")
-			adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+			adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 			result, err := adapter.Run(context.Background(), harness.Launch{
 				Workdir:      t.TempDir(),
 				SessionID:    tc.sessionID,
@@ -182,7 +187,7 @@ func TestRunEnablesDefaultModeRequestUserInputForStartAndResume(t *testing.T) {
 
 func TestRunResumeMissingThreadNeedsInputWithoutStartingNewThread(t *testing.T) {
 	binary := fakeCodexBinary(t, "missing-resume")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
 		SessionID:    "missing-thread",
@@ -201,47 +206,101 @@ func TestRunResumeMissingThreadNeedsInputWithoutStartingNewThread(t *testing.T) 
 	}
 }
 
-func TestRunApprovalRequestNeedsInputWithoutAutoApproval(t *testing.T) {
+func TestRunApprovalRequestUsesPermissionAskerAndContinuesTheTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verdict harness.PermissionVerdict
+		want    string
+	}{
+		{name: "allow", verdict: harness.PermissionVerdict{Allow: true}, want: "accept"},
+		{name: "deny", verdict: harness.PermissionVerdict{Allow: false, Message: "not allowed"}, want: "decline"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decisionFile := filepath.Join(t.TempDir(), "decision")
+			binary := fakeCodexBinaryWithDecisionFile(t, "approval", decisionFile)
+			adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
+			asker := &testPermissionAsker{
+				requests: make(chan harness.PermissionRequest, 1),
+				verdicts: make(chan harness.PermissionVerdict, 1),
+			}
+			events := make(chan harness.Event, 8)
+			type runOutcome struct {
+				result harness.Result
+				err    error
+			}
+			run := make(chan runOutcome, 1)
+			go func() {
+				result, err := adapter.Run(context.Background(), harness.Launch{
+					AttemptID:    "attempt-approval",
+					Workdir:      t.TempDir(),
+					Instructions: "run command",
+					Credential:   testCredential(),
+					Permissions:  asker,
+				}, func(event harness.Event) error {
+					events <- event
+					return nil
+				})
+				run <- runOutcome{result: result, err: err}
+			}()
+
+			var request harness.PermissionRequest
+			select {
+			case request = <-asker.requests:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Codex approval request did not reach PermissionAsker")
+			}
+			if !strings.HasPrefix(request.ID, "permission-") || request.Tool != "Bash" {
+				t.Fatalf("permission request = %+v", request)
+			}
+			var input map[string]any
+			if err := json.Unmarshal([]byte(request.Input), &input); err != nil || input["command"] != "uname" {
+				t.Fatalf("permission input = %q, error = %v", request.Input, err)
+			}
+			asker.verdicts <- tc.verdict
+
+			select {
+			case outcome := <-run:
+				if outcome.err != nil || outcome.result.Phase != "completed" || outcome.result.SessionID != "thread-1" {
+					t.Fatalf("Run = %+v, %v", outcome.result, outcome.err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Codex turn did not continue after the permission verdict")
+			}
+			decision, err := os.ReadFile(decisionFile)
+			if err != nil || string(decision) != tc.want {
+				t.Fatalf("Codex decision = %q, %v; want %q", decision, err, tc.want)
+			}
+			close(events)
+			for event := range events {
+				if event.Type == "item/commandExecution/requestApproval" || event.Type == "needs_input" {
+					t.Fatalf("approval was exposed as an unhandled prompt event: %+v", event)
+				}
+			}
+		})
+	}
+}
+
+func TestRunApprovalRequestWithoutPermissionAskerDeclinesAndContinues(t *testing.T) {
 	decisionFile := filepath.Join(t.TempDir(), "decision")
 	binary := fakeCodexBinaryWithDecisionFile(t, "approval", decisionFile)
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
-	var events []harness.Event
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
 		Instructions: "run command",
 		Credential:   testCredential(),
-	}, func(event harness.Event) error {
-		events = append(events, event)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	}, nil)
+	if err != nil || result.Phase != "completed" {
+		t.Fatalf("Run = %+v, %v", result, err)
 	}
-	if result.Phase != "needs_input" {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	if result.Clarification != nil {
-		t.Fatalf("approval result became a product question: %+v", result.Clarification)
-	}
-	if len(events) != 2 || events[1].Type != "item/commandExecution/requestApproval" {
-		t.Fatalf("approval events = %+v", events)
-	}
-	var approval map[string]any
-	if err := json.Unmarshal(events[1].Data, &approval); err != nil {
-		t.Fatalf("decode approval data: %v", err)
-	}
-	wantApproval := map[string]any{"itemId": "item-1", "threadId": "thread-1", "turnId": "turn-1", "command": "uname"}
-	if !reflect.DeepEqual(approval, wantApproval) {
-		t.Fatalf("approval data = %s", events[1].Data)
-	}
-	if data, err := os.ReadFile(decisionFile); err == nil && len(data) != 0 {
-		t.Fatalf("adapter auto-approved request: %q", data)
+	decision, err := os.ReadFile(decisionFile)
+	if err != nil || string(decision) != "decline" {
+		t.Fatalf("Codex decision without an asker = %q, %v; want decline", decision, err)
 	}
 }
 
 func TestRunAuthRequestNeedsInputWithoutAnswering(t *testing.T) {
 	binary := fakeCodexBinary(t, "auth-request")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 	var events []harness.Event
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
@@ -271,7 +330,7 @@ func TestRunAuthRequestNeedsInputWithoutAnswering(t *testing.T) {
 
 func TestRunRequestUserInputProducesBoundedStableClarification(t *testing.T) {
 	binary := fakeCodexBinary(t, "clarification")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 	var events []harness.Event
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		Workdir:      t.TempDir(),
@@ -300,7 +359,7 @@ func TestRunRequestUserInputProducesBoundedStableClarification(t *testing.T) {
 
 func TestRunCancellationInterruptsAndStopsProcess(t *testing.T) {
 	binary := fakeCodexBinary(t, "cancel")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := make(chan struct{})
@@ -351,6 +410,25 @@ func testCredential() harness.Credential {
 	}
 }
 
+type testPermissionAsker struct {
+	requests chan harness.PermissionRequest
+	verdicts chan harness.PermissionVerdict
+}
+
+func (a *testPermissionAsker) AskPermission(ctx context.Context, request harness.PermissionRequest) (harness.PermissionVerdict, error) {
+	select {
+	case a.requests <- request:
+	case <-ctx.Done():
+		return harness.PermissionVerdict{Allow: false}, nil
+	}
+	select {
+	case verdict := <-a.verdicts:
+		return verdict, nil
+	case <-ctx.Done():
+		return harness.PermissionVerdict{Allow: false}, nil
+	}
+}
+
 func fakeCodexBinary(t *testing.T, scenario string) string {
 	return fakeCodexBinaryWithEnvFile(t, scenario, "")
 }
@@ -367,7 +445,7 @@ func fakeCodexBinaryWithEnvFile(t *testing.T, scenario, envFile string) string {
 	methodsFile := filepath.Join(dir, "methods")
 	requestsFile := filepath.Join(dir, "requests")
 	script := filepath.Join(dir, "codex")
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.147.0; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nRAILGRID_FAKE_CODEX_CHILD=1 exec %q -test.run=TestFakeAppServerProcess\n", filepath.Join(dir, "argv"), os.Args[0])
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.155.1; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nRAILGRID_FAKE_CODEX_CHILD=1 exec %q -test.run=TestFakeAppServerProcess\n", filepath.Join(dir, "argv"), os.Args[0])
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -406,15 +484,20 @@ func TestFakeAppServerProcess(t *testing.T) {
 	defer func() { _ = requests.Close() }()
 	scanner := bufio.NewScanner(os.Stdin)
 	approvalPending := false
-	sawApprovalDecision := false
 	for scanner.Scan() {
 		var request map[string]any
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			continue
 		}
 		method, _ := request["method"].(string)
-		if approvalPending {
-			sawApprovalDecision = true
+		if approvalPending && method == "" {
+			response, _ := request["result"].(map[string]any)
+			decision, _ := response["decision"].(string)
+			_ = os.WriteFile(os.Getenv("RAILGRID_FAKE_CODEX_DECISION_FILE"), []byte(decision), 0600)
+			writeNotification("item/agentMessage/delta", map[string]any{"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-2", "delta": "continued"})
+			writeNotification("turn/completed", map[string]any{"threadId": "thread-1", "turn": map[string]any{"id": "turn-1", "status": "completed", "error": nil}})
+			approvalPending = false
+			continue
 		}
 		_, _ = fmt.Fprintln(methods, method)
 		writeJSONLine(requests, request)
@@ -486,10 +569,6 @@ func TestFakeAppServerProcess(t *testing.T) {
 				writeResponse(map[string]any{"id": id, "result": map[string]any{}})
 			}
 		}
-	}
-	if scenario == "approval" && sawApprovalDecision {
-		// Any response after the approval request proves the adapter auto-approved it.
-		_ = os.WriteFile(os.Getenv("RAILGRID_FAKE_CODEX_DECISION_FILE"), []byte("decision"), 0600)
 	}
 	os.Exit(0)
 }

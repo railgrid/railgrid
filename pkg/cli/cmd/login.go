@@ -281,8 +281,13 @@ func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 	// running binary so both install modes work.
 	rewriteRailgridExecCommand(newConfig)
 
-	// Load the existing kubeconfig.
+	// Load and write the kubeconfig selected for the CLI. --kubeconfig has the
+	// same precedence here as it does for other commands; when omitted, the
+	// loading rules retain KUBECONFIG and ~/.kube/config behavior.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
 	existingConfig, err := loadingRules.GetStartingConfig()
 	if err != nil {
 		// If no existing config, just use the new one.

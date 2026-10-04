@@ -52,7 +52,7 @@ const (
 	HarnessName = "codex"
 
 	defaultBinary          = "codex"
-	defaultExpectedVersion = "0.147.0"
+	defaultExpectedVersion = "0.155.1"
 	maxEventData           = 64 << 10
 	maxWireLine            = 2 << 20
 	processStopGrace       = 750 * time.Millisecond
@@ -237,8 +237,15 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 		}
 	}()
 
-	state := &runState{emit: emit, sessionID: launch.SessionID}
 	conn := proc.conn
+	state := &runState{
+		emit:        emit,
+		sessionID:   launch.SessionID,
+		attemptID:   launch.AttemptID,
+		permissions: launch.Permissions,
+		ctx:         ctx,
+		conn:        conn,
+	}
 	if _, callErr := conn.call(ctx, "initialize", initializeParams(), state.handle); callErr != nil {
 		return resultForError(callErr, state), normalizeContextError(ctx, callErr)
 	}
@@ -448,6 +455,9 @@ func (a *Adapter) model(launch harness.Launch) string {
 
 func initializeParams() map[string]any {
 	return map[string]any{
+		"capabilities": map[string]any{
+			"experimentalApi": true,
+		},
 		"clientInfo": map[string]string{
 			"name":    "railgrid-runner",
 			"title":   "Railgrid Runner",
@@ -648,6 +658,20 @@ func (c *rpcConn) notify(method string, params any) error {
 	return c.send(map[string]any{"method": method, "params": params})
 }
 
+func (c *rpcConn) respond(id json.RawMessage, result any) error {
+	if !hasID(id) {
+		return errors.New("codex app-server request has no JSON-RPC id")
+	}
+	return c.send(map[string]any{"id": id, "result": result})
+}
+
+func (c *rpcConn) respondError(id json.RawMessage, code int, message string) error {
+	if !hasID(id) {
+		return errors.New("codex app-server request has no JSON-RPC id")
+	}
+	return c.send(map[string]any{"id": id, "error": map[string]any{"code": code, "message": message}})
+}
+
 func (c *rpcConn) call(ctx context.Context, method string, params any, handle func(wireMessage) error) (wireMessage, error) {
 	c.nextID++
 	id := c.nextID
@@ -659,16 +683,23 @@ func (c *rpcConn) call(ctx context.Context, method string, params any, handle fu
 		case <-ctx.Done():
 			return wireMessage{}, ctx.Err()
 		case msg := <-c.messages:
+			// Each peer allocates request IDs independently. A server-initiated
+			// request can therefore share an id with the call we are awaiting.
+			// Route method-bearing messages first so they cannot masquerade as
+			// that call's response.
+			if msg.Method != "" {
+				if handle != nil {
+					if err := handle(msg); err != nil {
+						return wireMessage{}, err
+					}
+				}
+				continue
+			}
 			if hasID(msg.ID) && string(bytes.TrimSpace(msg.ID)) == strconv.FormatUint(id, 10) {
 				if msg.Error != nil {
 					return msg, msg.Error
 				}
 				return msg, nil
-			}
-			if msg.Method != "" && handle != nil {
-				if err := handle(msg); err != nil {
-					return wireMessage{}, err
-				}
 			}
 		case err := <-c.errors:
 			if err == nil {
@@ -716,12 +747,16 @@ func needsInput(err error) bool {
 }
 
 type runState struct {
-	emit      harness.Emit
-	sessionID string
-	turnID    string
-	phase     string
-	blocker   string
-	done      bool
+	emit        harness.Emit
+	sessionID   string
+	turnID      string
+	attemptID   string
+	permissions harness.PermissionAsker
+	ctx         context.Context
+	conn        *rpcConn
+	phase       string
+	blocker     string
+	done        bool
 }
 
 func (s *runState) handle(msg wireMessage) error {
@@ -762,19 +797,7 @@ func (s *runState) handle(msg wireMessage) error {
 		return &needsInputError{method: msg.Method, message: "Codex requires user input", clarification: clarification}
 	}
 	if isApprovalRequest(msg.Method) {
-		if err := s.observeSessionID(threadIDFromParams(msg.Params)); err != nil {
-			return err
-		}
-		if err := s.emitEvent(harness.Event{
-			Type:      msg.Method,
-			SessionID: s.sessionID,
-			TurnID:    turnIDFromParams(msg.Params, s.turnID),
-			Message:   interactiveMessage(msg.Method, msg.Params),
-			Data:      boundedData(msg.Params),
-		}); err != nil {
-			return err
-		}
-		return &needsInputError{method: msg.Method, data: boundedData(msg.Params), message: "Codex requires user input"}
+		return s.handleApprovalRequest(msg)
 	}
 	if isAuthNotification(msg.Method) {
 		if err := s.observeSessionID(threadIDFromParams(msg.Params)); err != nil {
@@ -922,6 +945,87 @@ func (s *runState) emitEvent(event harness.Event) error {
 		return nil
 	}
 	return s.emit(event)
+}
+
+// handleApprovalRequest parks the live attempt on a permission verdict, then
+// sends that verdict to the server request so Codex can continue this turn.
+func (s *runState) handleApprovalRequest(msg wireMessage) error {
+	if s.conn == nil {
+		return errors.New("codex approval request has no app-server connection")
+	}
+	if !hasID(msg.ID) {
+		return errors.New("codex approval request has no JSON-RPC id")
+	}
+	if codexApprovalTool(msg.Method) == "" {
+		const message = "railgrid does not support this Codex approval request"
+		if err := s.conn.respondError(msg.ID, -32601, message); err != nil {
+			return err
+		}
+		return errors.New(message)
+	}
+	request, err := codexPermissionRequest(s.attemptID, s.sessionID, s.turnID, msg)
+	if err != nil {
+		if responseErr := s.conn.respond(msg.ID, map[string]string{"decision": "decline"}); responseErr != nil {
+			return errors.Join(err, responseErr)
+		}
+		return err
+	}
+	decision := "decline"
+	if s.permissions != nil {
+		ctx := s.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		verdict, askErr := s.permissions.AskPermission(ctx, request)
+		if askErr == nil && verdict.Allow {
+			decision = "accept"
+		}
+	}
+	return s.conn.respond(msg.ID, map[string]string{"decision": decision})
+}
+
+func codexPermissionRequest(attemptID, expectedSessionID, expectedTurnID string, msg wireMessage) (harness.PermissionRequest, error) {
+	if len(msg.Params) == 0 || len(msg.Params) > maxEventData || !json.Valid(msg.Params) {
+		return harness.PermissionRequest{}, errors.New("codex approval request payload is invalid or oversized")
+	}
+	var params struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		ItemID   string `json:"itemId"`
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return harness.PermissionRequest{}, errors.New("codex approval request payload is malformed")
+	}
+	if params.ThreadID == "" || params.TurnID == "" || params.ItemID == "" ||
+		len(params.ThreadID) > maxClarificationField || len(params.TurnID) > maxClarificationField || len(params.ItemID) > maxClarificationField {
+		return harness.PermissionRequest{}, errors.New("codex approval request payload is missing its session identity")
+	}
+	if expectedSessionID != "" && expectedSessionID != params.ThreadID {
+		return harness.PermissionRequest{}, errors.New("codex approval request referenced a foreign session")
+	}
+	if expectedTurnID != "" && expectedTurnID != params.TurnID {
+		return harness.PermissionRequest{}, errors.New("codex approval request referenced a foreign turn")
+	}
+	tool := codexApprovalTool(msg.Method)
+	if tool == "" {
+		return harness.PermissionRequest{}, errors.New("codex approval request method is unsupported")
+	}
+	return harness.PermissionRequest{
+		ID:    stablePermissionID(attemptID, msg.Method, params.ThreadID, params.TurnID, params.ItemID),
+		Tool:  tool,
+		Input: string(bytes.TrimSpace(msg.Params)),
+	}, nil
+}
+
+func codexApprovalTool(method string) string {
+	switch method {
+	case "item/commandExecution/requestApproval":
+		return "Bash"
+	case "item/fileChange/requestApproval":
+		return "Edit"
+	default:
+		return ""
+	}
 }
 
 func (s *runState) observeSessionID(sessionID string) error {
@@ -1125,13 +1229,6 @@ func isMissingThreadError(err error) bool {
 func authData(data json.RawMessage) bool {
 	message := strings.ToLower(string(data))
 	return strings.Contains(message, "auth") || strings.Contains(message, "unauthorized") || strings.Contains(message, "credential") || strings.Contains(message, "login")
-}
-
-func interactiveMessage(method string, params json.RawMessage) string {
-	if len(params) == 0 || bytes.Equal(bytes.TrimSpace(params), []byte("null")) {
-		return method
-	}
-	return method + " requires a user decision"
 }
 
 func boundedData(data json.RawMessage) json.RawMessage {

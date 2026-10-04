@@ -249,7 +249,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("starting the harness turn", err)
 	}
 	b.observe(receipt)
-	return b.follow(ctx, receipt, sink, backend.Cost{})
+	return b.follow(ctx, receipt, sink, backend.Cost{}, 0)
 }
 
 // Continue picks a parked turn back up.
@@ -289,7 +289,7 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	if receipt.Phase != runner.PhaseNeedsInput {
 		// Still executing. Re-join it rather than resuming: a resume would be
 		// refused (the attempt is not waiting) and the work is not lost.
-		return b.follow(ctx, receipt, sink, state.Spent)
+		return b.follow(ctx, receipt, sink, state.Spent, state.Cursor)
 	}
 
 	approved, err := b.approvedInput(r)
@@ -334,7 +334,7 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		return backend.Outcome{Status: b.statusFor(ctx)}, dispatchError("resuming the harness turn", err)
 	}
 	b.observe(resumed)
-	return b.follow(ctx, resumed, sink, state.Spent)
+	return b.follow(ctx, resumed, sink, state.Spent, state.Cursor)
 }
 
 const (
@@ -417,9 +417,13 @@ func (b *Backend) Cancel(ctx context.Context, _ *backend.Run) error {
 // length of a coding turn. Each reconnect is also where the two things that must
 // not be skipped happen: the durable cancel flag is consulted, and the receipt is
 // re-read in case the attempt ended during the quiet.
-func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backend.EventSink, prior backend.Cost) (backend.Outcome, error) {
+func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backend.EventSink, prior backend.Cost, after uint64) (backend.Outcome, error) {
 	state := newTurnState(sink)
-	state.cursor = 0
+	state.cursor = after
+	// A resumed or re-joined Codex thread may have emitted turn/started before
+	// this follower attached. The receipt's session ID establishes that its
+	// subsequent tokenUsage updates belong to an active attempt.
+	state.turnStarted = receipt.SessionID != ""
 	if receipt.Clarification != nil {
 		state.clarification = receipt.Clarification
 	}
@@ -440,7 +444,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 				dispatchError("following the harness turn", err)
 		}
 		before := state.cursor
-		terminal, quiet, err := b.drain(ctx, stream, state)
+		terminal, quiet, err := b.drain(ctx, stream, state, prior)
 		_ = stream.Close()
 		switch {
 		case err != nil:
@@ -492,7 +496,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 			// The runner closed a quiet stream. Offer a checkpoint here — this is
 			// a point where nothing is half-consumed — and ask the receipt whether
 			// the attempt ended while we were not listening.
-			b.checkpoint(sink, state)
+			b.checkpoint(sink, state, prior)
 			current, ierr := b.cfg.Dispatcher.Inspect(ctx, attemptID)
 			if ierr != nil {
 				return backend.Outcome{Status: b.statusFor(ctx), Usage: b.usage(state, prior)},
@@ -523,7 +527,7 @@ func (b *Backend) follow(ctx context.Context, receipt runner.Receipt, sink backe
 
 // drain consumes one stream. quiet reports the ordinary end-of-stream the runner
 // sends after a silent interval, as opposed to a terminal event.
-func (b *Backend) drain(ctx context.Context, stream Stream, state *turnState) (terminal, quiet bool, err error) {
+func (b *Backend) drain(ctx context.Context, stream Stream, state *turnState, prior backend.Cost) (terminal, quiet bool, err error) {
 	for {
 		event, err := stream.Next(ctx)
 		switch {
@@ -536,7 +540,7 @@ func (b *Backend) drain(ctx context.Context, stream Stream, state *turnState) (t
 			return true, false, nil
 		}
 		if event.Type == runner.EventCheckpoint {
-			b.checkpoint(state.sink, state)
+			b.checkpoint(state.sink, state, prior)
 		}
 	}
 }
@@ -544,8 +548,8 @@ func (b *Backend) drain(ctx context.Context, stream Stream, state *turnState) (t
 // checkpoint persists where this turn can be re-joined. The state is ours, not
 // the harness's: a harness-backed run is recovered by addressing the same
 // attempt at the same cursor, so what has to survive is the coordinates.
-func (b *Backend) checkpoint(sink backend.EventSink, state *turnState) {
-	raw, err := json.Marshal(b.state(state, "", ""))
+func (b *Backend) checkpoint(sink backend.EventSink, state *turnState, prior backend.Cost) {
+	raw, err := json.Marshal(b.state(state, "", "", prior))
 	if err != nil {
 		// A checkpoint that cannot be serialized costs recoverability, which is
 		// strictly better than failing a working turn over it.
@@ -555,17 +559,21 @@ func (b *Backend) checkpoint(sink backend.EventSink, state *turnState) {
 }
 
 // state renders the resume coordinates.
-func (b *Backend) state(s *turnState, clarificationID, permissionID string) State {
+func (b *Backend) state(s *turnState, clarificationID, permissionID string, prior backend.Cost) State {
 	observed := b.Observed()
+	epoch := observed.Epoch
+	if epoch == 0 {
+		epoch = b.cfg.Epoch
+	}
 	return State{
 		TaskID:          b.cfg.TaskID,
 		AttemptID:       firstNonEmpty(observed.AttemptID, b.cfg.AttemptID),
-		Epoch:           maxEpoch(observed.Epoch, b.cfg.Epoch),
+		Epoch:           epoch,
 		SessionID:       firstNonEmpty(observed.SessionID, b.cfg.SessionID),
 		Cursor:          s.cursor,
 		ClarificationID: clarificationID,
 		PermissionID:    permissionID,
-		Spent:           s.cost,
+		Spent:           addCost(prior, s.cost),
 	}
 }
 
@@ -582,7 +590,7 @@ func (b *Backend) outcomeFor(ctx context.Context, receipt runner.Receipt, s *tur
 		// and is answered with words. Reporting either as the other gives a
 		// person a control that cannot mean anything.
 		if permission := receipt.Permission; permission != nil {
-			raw, err := json.Marshal(b.state(s, "", permission.ID))
+			raw, err := json.Marshal(b.state(s, "", permission.ID, prior))
 			if err != nil {
 				return backend.Outcome{Status: backend.StatusFailed, Usage: usage},
 					fmt.Errorf("recording the turn's resume state: %w", err)
@@ -613,7 +621,7 @@ func (b *Backend) outcomeFor(ctx context.Context, receipt runner.Receipt, s *tur
 		if question == "" {
 			question = "the harness is waiting for input"
 		}
-		raw, err := json.Marshal(b.state(s, id, ""))
+		raw, err := json.Marshal(b.state(s, id, "", prior))
 		if err != nil {
 			// Without resumable state the park would strand the run: no answer
 			// could ever continue it. Fail it instead, which at least ends it
@@ -649,6 +657,18 @@ func (b *Backend) outcomeFor(ctx context.Context, receipt runner.Receipt, s *tur
 		if strings.TrimSpace(text) == "" {
 			text = final
 		}
+		if s.turnDuration > 0 {
+			// Codex's duration is for the whole turn. ToolEnd already accounts
+			// for commandExecution durations, so attribute only the remainder to
+			// the completed assistant segment.
+			assistantDuration := s.turnDuration - s.toolDuration
+			if assistantDuration < 0 {
+				assistantDuration = 0
+			}
+			s.sink.Assistant(backend.AssistantMessage{
+				Content: final, Complete: true, Duration: assistantDuration,
+			})
+		}
 		output, sources := backend.SplitSources(text)
 		return backend.Outcome{
 			Status: backend.StatusCompleted,
@@ -669,14 +689,18 @@ func (b *Backend) outcomeFor(ctx context.Context, receipt runner.Receipt, s *tur
 // what THIS turn added: equal on a fresh turn, and on a resume the totals include
 // what the attempt had spent before it parked (which was billed then).
 func (b *Backend) usage(s *turnState, prior backend.Cost) backend.Usage {
-	total := backend.Cost{
-		Tokens: backend.Tokens{
-			InputTokens:  prior.InputTokens + s.cost.InputTokens,
-			OutputTokens: prior.OutputTokens + s.cost.OutputTokens,
-		},
-		CostMicros: prior.CostMicros + s.cost.CostMicros,
-	}
+	total := addCost(prior, s.cost)
 	return backend.Usage{Total: total, Billed: s.cost}
+}
+
+func addCost(a, b backend.Cost) backend.Cost {
+	return backend.Cost{
+		Tokens: backend.Tokens{
+			InputTokens:  a.InputTokens + b.InputTokens,
+			OutputTokens: a.OutputTokens + b.OutputTokens,
+		},
+		CostMicros: a.CostMicros + b.CostMicros,
+	}
 }
 
 // statusFor classifies an error the turn could not continue past. A turn stopped
@@ -869,11 +893,4 @@ func failedError(receipt runner.Receipt) error {
 		return fmt.Errorf("the harness turn failed: %s", blocker)
 	}
 	return errors.New("the harness turn failed")
-}
-
-func maxEpoch(a, b uint64) uint64 {
-	if a > b {
-		return a
-	}
-	return b
 }

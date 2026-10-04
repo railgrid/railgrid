@@ -128,7 +128,7 @@ func TestManagedTrustProbeAndLaunchIsolation(t *testing.T) {
 	}
 	writeTrustConfig(t, home, fmt.Sprintf("[projects.%q]\ntrust_level = \"trusted\"\n[projects.%q]\ntrust_level = \"trusted\"\n", work, second))
 	binary := fakeCodexBinary(t, "probe")
-	a := &Adapter{cfg: Config{Home: home, WorktreeRoot: root, Binary: binary, ExpectedVersion: "0.147.0"}}
+	a := &Adapter{cfg: Config{Home: home, WorktreeRoot: root, Binary: binary, ExpectedVersion: "0.155.1"}}
 	for range 2 {
 		info, err := a.Probe(context.Background())
 		if err != nil || !info.Ready {

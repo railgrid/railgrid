@@ -320,7 +320,10 @@ func (m *MemoryStore) PutHarnessSession(_ context.Context, scope Scope, s Harnes
 	key := sessionKey(scope, s.SessionID)
 	row := m.harness[key]
 	row.SessionID = s.SessionID
-	if strings.TrimSpace(s.HarnessSessionID) != "" {
+	// A slower earlier turn must not replace the session reported by a newer
+	// turn. A write from the same turn is allowed so a retry can record its
+	// receipt, while an empty ID never clears the saved identity.
+	if strings.TrimSpace(s.HarnessSessionID) != "" && s.Turns >= row.Turns {
 		row.HarnessSessionID = s.HarnessSessionID
 	}
 	// Turns only ever moves forward: a writer recording the session id it

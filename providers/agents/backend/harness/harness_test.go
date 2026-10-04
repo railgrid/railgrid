@@ -130,14 +130,17 @@ func (s *sliceStream) Close() error { return nil }
 
 type recordingSink struct {
 	deltas      []string
+	assistants  []backend.AssistantMessage
 	toolStarts  []string
 	toolEnds    []backend.ToolEvent
 	checkpoints []json.RawMessage
 	abort       error
 }
 
-func (r *recordingSink) Delta(text string)                  { r.deltas = append(r.deltas, text) }
-func (r *recordingSink) Assistant(backend.AssistantMessage) {}
+func (r *recordingSink) Delta(text string) { r.deltas = append(r.deltas, text) }
+func (r *recordingSink) Assistant(message backend.AssistantMessage) {
+	r.assistants = append(r.assistants, message)
+}
 func (r *recordingSink) ToolStart(id, name, _ string) {
 	r.toolStarts = append(r.toolStarts, id+":"+name)
 }
@@ -372,6 +375,99 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	}
 }
 
+func TestSpentAccumulatesAcrossMultipleParksAndSkipsReplayedEvents(t *testing.T) {
+	first := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "first question"},
+		},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"usage":{"input_tokens":100,"output_tokens":10},"total_cost_usd":0.01}`),
+			event(2, runner.EventNeedsInput, "first question", ""),
+		},
+	}
+	firstOut, err := New(testConfig(first, 1, "")).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}}}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("initial turn: %v", err)
+	}
+	firstState := parkedState(t, firstOut)
+	if firstState.Cursor != 2 || firstState.Spent != (backend.Cost{Tokens: backend.Tokens{InputTokens: 100, OutputTokens: 10}, CostMicros: 10_000}) {
+		t.Fatalf("first parked state = %+v, want cursor 2 and cumulative 100/10 tokens, 10000 micros", firstState)
+	}
+
+	second := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "second question"},
+		},
+		// Cursors 1 and 2 are replayed history. Continue must start after the
+		// first park's cursor, so only the second model segment is newly billed.
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"usage":{"input_tokens":100,"output_tokens":10},"total_cost_usd":0.01}`),
+			event(2, runner.EventNeedsInput, "first question", ""),
+			event(3, runner.EventProgress, "", `{"usage":{"input_tokens":50,"output_tokens":5},"total_cost_usd":0.02}`),
+			event(4, runner.EventNeedsInput, "second question", ""),
+		},
+	}
+	secondOut, err := New(testConfig(second, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: firstOut.Parked.State, Note: "first answer",
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("continue to second park: %v", err)
+	}
+	secondState := parkedState(t, secondOut)
+	if secondState.Cursor != 4 || secondState.Spent != (backend.Cost{Tokens: backend.Tokens{InputTokens: 150, OutputTokens: 15}, CostMicros: 30_000}) {
+		t.Fatalf("second parked state = %+v, want cursor 4 and cumulative 150/15 tokens, 30000 micros", secondState)
+	}
+	if secondOut.Usage.Billed != (backend.Cost{Tokens: backend.Tokens{InputTokens: 50, OutputTokens: 5}, CostMicros: 20_000}) {
+		t.Fatalf("second park billed %+v, want only the second segment", secondOut.Usage.Billed)
+	}
+
+	third := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "second question"},
+		},
+		phases: []runner.Phase{runner.PhaseNeedsInput, runner.PhaseCompleted},
+		// All pre-cursor usage must be ignored after the second park.
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"usage":{"input_tokens":100,"output_tokens":10},"total_cost_usd":0.01}`),
+			event(2, runner.EventNeedsInput, "first question", ""),
+			event(3, runner.EventProgress, "", `{"usage":{"input_tokens":50,"output_tokens":5},"total_cost_usd":0.02}`),
+			event(4, runner.EventNeedsInput, "second question", ""),
+			event(5, runner.EventProgress, "", `{"usage":{"input_tokens":25,"output_tokens":3},"total_cost_usd":0.03}`),
+			event(6, runner.EventCompleted, "", ""),
+		},
+	}
+	completed, err := New(testConfig(third, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: secondOut.Parked.State, Note: "second answer",
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("continue to completion: %v", err)
+	}
+	if completed.Status != backend.StatusCompleted {
+		t.Fatalf("final status = %s, want completed", completed.Status)
+	}
+	wantBilled := backend.Cost{Tokens: backend.Tokens{InputTokens: 25, OutputTokens: 3}, CostMicros: 30_000}
+	wantTotal := backend.Cost{Tokens: backend.Tokens{InputTokens: 175, OutputTokens: 18}, CostMicros: 60_000}
+	if completed.Usage.Billed != wantBilled || completed.Usage.Total != wantTotal {
+		t.Fatalf("final usage = %+v, want only current segment billed %+v and cumulative total %+v", completed.Usage, wantBilled, wantTotal)
+	}
+}
+
+func parkedState(t *testing.T, out backend.Outcome) State {
+	t.Helper()
+	if out.Status != backend.StatusParked || out.Parked == nil {
+		t.Fatalf("outcome status = %s, parked = %v; want a parked outcome", out.Status, out.Parked)
+	}
+	var state State
+	if err := json.Unmarshal(out.Parked.State, &state); err != nil {
+		t.Fatalf("decode parked state: %v", err)
+	}
+	return state
+}
+
 // The rule the task states plainly: until the terminal receipt is observed the
 // attempt is Cancelling, not Cancelled, and Cancel must not claim otherwise.
 func TestCancelDoesNotReportCancelledUntilObserved(t *testing.T) {
@@ -467,6 +563,41 @@ func TestUsageComesFromWhatTheHarnessReported(t *testing.T) {
 	})
 }
 
+func TestCodexUsagePrefersCurrentTurnOverSessionTotal(t *testing.T) {
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "answer", `{"delta":"answer"}`),
+			event(2, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+			event(3, runner.EventProgress, "", `{"threadId":"thread-1","tokenUsage":{"total":{"totalTokens":9300,"inputTokens":9000,"cachedInputTokens":750,"outputTokens":300,"reasoningOutputTokens":20},"last":{"totalTokens":1245,"inputTokens":1200,"cachedInputTokens":900,"cacheWriteInputTokens":100,"outputTokens":45,"reasoningOutputTokens":10}}}`),
+			event(4, runner.EventProgress, "", `{"threadId":"thread-1","tokenUsage":{"total":{"totalTokens":9300,"inputTokens":9000,"cachedInputTokens":750,"outputTokens":300,"reasoningOutputTokens":20},"last":{"totalTokens":1245,"inputTokens":1200,"cachedInputTokens":900,"cacheWriteInputTokens":100,"outputTokens":45,"reasoningOutputTokens":10}}}`),
+			event(5, runner.EventProgress, "", `{"threadId":"thread-1","tokenUsage":{"total":{"totalTokens":9350,"inputTokens":9040,"cachedInputTokens":760,"outputTokens":310,"reasoningOutputTokens":22},"last":{"totalTokens":50,"inputTokens":40,"cachedInputTokens":10,"cacheWriteInputTokens":2,"outputTokens":10,"reasoningOutputTokens":2}}}`),
+			event(6, runner.EventCompleted, "", ""),
+		},
+	}
+	out, err := New(testConfig(f, 1, "thread-1")).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "continue"}}}, &recordingSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Usage.Total.InputTokens != 1240 || out.Usage.Total.OutputTokens != 55 {
+		t.Fatalf("tokens = %+v, want two distinct model-call updates only, without repeated totals or subset counters", out.Usage.Total.Tokens)
+	}
+}
+
+func TestCodexMessageDeltaRequiresMatchingMessageAndKeepsWhitespace(t *testing.T) {
+	sink := &recordingSink{}
+	state := newTurnState(sink)
+	state.progress(event(1, runner.EventProgress, "", `{"delta":"tool stdout"}`))
+	state.progress(event(2, runner.EventProgress, " ", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":" "}`))
+	if got := state.text.String(); got != " " {
+		t.Fatalf("text = %q, want the whitespace assistant delta only", got)
+	}
+	if len(sink.deltas) != 1 || sink.deltas[0] != " " {
+		t.Fatalf("deltas = %q, want the single whitespace assistant delta", sink.deltas)
+	}
+}
+
 // Progress becomes a Delta, and a payload that NAMES a tool item becomes a tool
 // call. See turnState.observe for why the first is all the wire allows for Claude
 // Code.
@@ -493,6 +624,109 @@ func TestProgressMapsOntoTheSinkAsThePayloadsAllow(t *testing.T) {
 	}
 	if len(sink.toolEnds) != 1 || sink.toolEnds[0].Result != "ok" || sink.toolEnds[0].Err {
 		t.Fatalf("toolEnds = %+v", sink.toolEnds)
+	}
+}
+
+// Codex's app-server sends assistant text as small JSON-RPC deltas, then
+// publishes the same answer as a completed agentMessage item. Its session
+// started notification also carries a human-readable lifecycle message. Keep
+// those protocol events out of the answer while preserving exact chunk
+// concatenation, the canonical final answer, and the app-server tokenUsage
+// report.
+func TestCodexAppServerEventsNormalizeToTheCanonicalAnswer(t *testing.T) {
+	const answer = "CODEX_EDGE_SMOKE_OK"
+	chunks := []string{"CODE", "X", "_EDGE", "_SM", "OKE", "_OK"}
+	events := []runner.Event{
+		event(1, runner.EventProgress, "Codex session ready", `{"thread":{"id":"thread-1"},"model":"gpt-6-astra"}`),
+		event(2, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+		event(3, runner.EventProgress, "", `{"item":{"type":"agentMessage","id":"msg-1","text":"","phase":"final_answer"},"threadId":"thread-1","turnId":"turn-1"}`),
+	}
+	for i, chunk := range chunks {
+		data, err := json.Marshal(map[string]string{
+			"threadId": "thread-1", "turnId": "turn-1", "itemId": "msg-1", "delta": chunk,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, runner.Event{
+			Cursor: uint64(4 + i), Type: runner.EventProgress, Message: chunk,
+			Data: data, AttemptEpoch: 1,
+		})
+	}
+	events = append(events,
+		event(10, runner.EventProgress, "", `{"item":{"type":"agentMessage","id":"msg-1","text":"CODEX_EDGE_SMOKE_OK","phase":"final_answer"},"threadId":"thread-1","turnId":"turn-1"}`),
+		event(11, runner.EventProgress, "", `{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":14661,"inputTokens":14651,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0},"last":{"totalTokens":14661,"inputTokens":14651,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0},"modelContextWindow":258400}}`),
+		event(12, runner.EventProgress, "", `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":23}}}`),
+		event(13, runner.EventProgress, "completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","durationMs":2790,"error":null}}`),
+		event(14, runner.EventCompleted, "", ""),
+	)
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events:  events,
+	}
+	sink := &recordingSink{}
+	out, err := New(testConfig(f, 1, "")).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "reply exactly"}}}, sink)
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if out.Text != answer {
+		t.Errorf("text = %q, want exact concatenated deltas %q", out.Text, answer)
+	}
+	if out.Final != answer {
+		t.Errorf("final = %q, want the canonical completed message %q", out.Final, answer)
+	}
+	if got := strings.Join(sink.deltas, ""); got != answer {
+		t.Errorf("streamed deltas joined = %q, want %q", got, answer)
+	}
+	if len(sink.deltas) != len(chunks) {
+		t.Errorf("streamed deltas = %v, want only the %d Codex text chunks", sink.deltas, len(chunks))
+	}
+	if got := out.Usage.Total; got.InputTokens != 14651 || got.OutputTokens != 10 || got.CostMicros != 0 {
+		t.Errorf("usage = %+v, want Codex's reported 14651 input / 10 output tokens and no invented cost", got)
+	}
+	if len(sink.assistants) != 1 || sink.assistants[0].Content != answer || sink.assistants[0].Duration != 2790*time.Millisecond {
+		t.Errorf("assistant completions = %+v, want the canonical answer and Codex's 2790ms turn duration", sink.assistants)
+	}
+}
+
+func TestCodexCommandExecutionKeepsAggregatedOutputAndAvoidsDoubleCountingDuration(t *testing.T) {
+	const commandOutput = "/home/crwilhit/.railgrid/runner/codex/state/worktrees/.workspaces/agent-codex-smoke-approval\n"
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"/usr/bin/zsh -lc pwd","status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"/usr/bin/zsh -lc pwd","status":"completed","aggregatedOutput":"/home/crwilhit/.railgrid/runner/codex/state/worktrees/.workspaces/agent-codex-smoke-approval\n","exitCode":0,"durationMs":850}}`),
+			event(3, runner.EventProgress, "finished", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"finished"}`),
+			event(4, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"finished","phase":"final_answer"}}`),
+			event(5, runner.EventProgress, "completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","durationMs":1340,"error":null}}`),
+			event(6, runner.EventCompleted, "", ""),
+		},
+	}
+	sink := &recordingSink{}
+	if _, err := New(testConfig(f, 1, "")).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "run pwd"}}}, sink); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if len(sink.toolEnds) != 1 {
+		t.Fatalf("tool ends = %+v, want the completed command execution", sink.toolEnds)
+	}
+	tool := sink.toolEnds[0]
+	if tool.Result != commandOutput {
+		t.Errorf("tool output = %q, want aggregated output %q", tool.Result, commandOutput)
+	}
+	if tool.Err || tool.Duration != 850*time.Millisecond {
+		t.Errorf("tool metadata = %+v, want successful exit and 850ms", tool)
+	}
+	if len(sink.assistants) != 1 || sink.assistants[0].Duration != 490*time.Millisecond {
+		t.Errorf("assistant completions = %+v, want 490ms after subtracting the 850ms command from the 1340ms turn", sink.assistants)
+	}
+}
+
+func TestCodexCommandNonzeroExitCodeIsFailure(t *testing.T) {
+	item, ok := toolItem(json.RawMessage(`{"item":{"id":"exec-2","type":"commandExecution","status":"completed","exitCode":1,"aggregatedOutput":"permission denied"}}`))
+	if !ok || !item.Done || !item.Failed || item.Result != "permission denied" {
+		t.Fatalf("item = %+v, recognized = %t; want completed failed command and captured output", item, ok)
 	}
 }
 
@@ -668,6 +902,76 @@ func TestPermissionApprovalResumesWithAVerdict(t *testing.T) {
 			}
 			if resume.AttemptEpoch != 1 {
 				t.Fatalf("resume epoch = %d; a resume addresses the SAME attempt", resume.AttemptEpoch)
+			}
+		})
+	}
+}
+
+func TestContinueKeepsObservedEpochWhenConfigIsAheadAcrossPermissionParks(t *testing.T) {
+	initialState, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1",
+		Cursor: 10, PermissionID: "permission-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumeAndPark := func(cursor uint64, state json.RawMessage) (*fakeRunner, backend.Outcome, *recordingSink) {
+		t.Helper()
+		f := &fakeRunner{
+			receipt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Permission: &runner.PermissionRequest{ID: "permission-1", Tool: "Bash", Input: `{"command":"printf ok"}`},
+			},
+			events: []runner.Event{
+				event(cursor+1, runner.EventProgress, "permission granted", ""),
+				event(cursor+2, runner.EventNeedsInput, "the harness is asking permission to use Bash", ""),
+			},
+		}
+		sink := &recordingSink{}
+		cfg := testConfig(f, 2, "sess-1") // A resumed API call can have a newer config epoch than the runner attempt.
+		out, err := New(cfg).Continue(context.Background(), testRun(), backend.Answer{
+			State: state, Decided: true, Approved: true,
+		}, sink)
+		if err != nil {
+			t.Fatalf("Continue from cursor %d: %v", cursor, err)
+		}
+		return f, out, sink
+	}
+
+	first, firstOut, firstSink := resumeAndPark(10, initialState)
+	if len(first.resumes) != 1 || first.resumes[0].AttemptEpoch != 1 {
+		t.Fatalf("first resume = %+v, want runner attempt epoch 1", first.resumes)
+	}
+	firstState := parkedState(t, firstOut)
+	if firstState.Epoch != 1 {
+		t.Fatalf("first re-park epoch = %d, want observed runner epoch 1 rather than config epoch 2", firstState.Epoch)
+	}
+	if len(firstSink.deltas) != 0 {
+		t.Fatalf("permission lifecycle deltas = %q, want no assistant transcript text", firstSink.deltas)
+	}
+
+	second, secondOut, secondSink := resumeAndPark(firstState.Cursor, firstOut.Parked.State)
+	if len(second.resumes) != 1 || second.resumes[0].AttemptEpoch != 1 {
+		t.Fatalf("second resume = %+v, want the same runner attempt epoch 1", second.resumes)
+	}
+	secondState := parkedState(t, secondOut)
+	if secondState.Epoch != 1 {
+		t.Fatalf("second re-park epoch = %d, want observed runner epoch 1", secondState.Epoch)
+	}
+	if len(secondSink.deltas) != 0 {
+		t.Fatalf("permission lifecycle deltas = %q, want no assistant transcript text", secondSink.deltas)
+	}
+}
+
+func TestPermissionLifecycleMessagesAreNotAssistantText(t *testing.T) {
+	for _, message := range []string{"permission granted", "permission denied", " Permission Granted "} {
+		t.Run(message, func(t *testing.T) {
+			sink := &recordingSink{}
+			state := newTurnState(sink)
+			state.progress(event(1, runner.EventProgress, message, ""))
+			if state.text.Len() != 0 || len(sink.deltas) != 0 {
+				t.Fatalf("message %q became assistant text %q / deltas %q", message, state.text.String(), sink.deltas)
 			}
 		})
 	}

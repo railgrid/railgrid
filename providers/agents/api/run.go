@@ -504,7 +504,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	)
 	if agent.Spec.HarnessBacked() {
 		var resolved harnessTurn
-		if resolved, err = s.harnessBackendFor(ctx, run, sessionID, runID); err != nil {
+		if resolved, err = s.harnessBackendFor(ctx, run, sessionID, runID, cont); err != nil {
 			return runResult{}, err
 		}
 		harnessT, b = &resolved, resolved.backend
@@ -644,6 +644,15 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		out, err = b.Continue(ctx, brun, answer, sink)
 	}
 	end := time.Now().UTC()
+	if harnessT != nil {
+		// The next chat reads the session row, not this run's display metadata.
+		// Save the receipt's session even on a park or cancellation so a later
+		// turn can resume the actual Codex thread instead of replaying history
+		// into a new one. A failed write must not be reported as success.
+		if sessionErr := s.persistHarnessSession(ctx, scope, harnessT.Session, harnessT.backend.Observed(), end); sessionErr != nil {
+			err = errors.Join(err, sessionErr)
+		}
+	}
 
 	// A model the upstream refuses on Chat Completions (a responses-only
 	// family, a retired snapshot) is a credential to edit, not a crash. The
@@ -1052,10 +1061,8 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 // applyHarnessObservation records what a harness turn learned: which attempt ran
 // and, authoritatively off the receipt, which harness session it ran in.
 //
-// The session id is the part that matters beyond this run. A harness may FORK a
-// session on resume, so the id the next turn must chain onto is the one that came
-// back, never the one that was sent — and the next turn reads it from the store,
-// which is why it is written here rather than only logged.
+// This is the run's presentation metadata. persistHarnessSession separately
+// writes the session row used to dispatch the next turn.
 func applyHarnessObservation(run *store.Run, h *harnessTurn) {
 	if h == nil || run == nil {
 		return

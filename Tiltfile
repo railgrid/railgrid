@@ -464,6 +464,7 @@ local_resource(
         'providers/agents/assets.go',
         'providers/agents/init_cmd.go',
         'providers/agents/api',
+        'providers/agents/backend',
         'providers/agents/channels',
         'providers/agents/apis',
         'providers/agents/client',

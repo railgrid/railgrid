@@ -546,9 +546,8 @@ func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessio
 	return out, nil
 }
 
-// PutHarnessSession records the harness session id a receipt reported. The turn
-// count only moves forward: a writer recording a session id must not roll the
-// epoch back to whatever it read before the turn.
+// PutHarnessSession records the session id a receipt reported unless it is from an older turn.
+// The stored turn count only moves forward, and empty session IDs never clear it.
 func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error {
 	if err := scope.withAgent(); err != nil {
 		return err
@@ -561,7 +560,8 @@ func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s Ha
 			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, turns, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
-			harness_session_id=CASE WHEN EXCLUDED.harness_session_id <> '' THEN EXCLUDED.harness_session_id
+			harness_session_id=CASE WHEN EXCLUDED.harness_session_id <> ''
+					AND EXCLUDED.turns >= agents_harness_sessions.turns THEN EXCLUDED.harness_session_id
 				ELSE agents_harness_sessions.harness_session_id END,
 			turns=GREATEST(agents_harness_sessions.turns, EXCLUDED.turns),
 			updated_at=EXCLUDED.updated_at`,

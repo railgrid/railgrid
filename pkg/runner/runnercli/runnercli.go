@@ -52,7 +52,7 @@ const (
 	DefaultCodexBinary = "codex"
 	// DefaultCodexVersionPin is the Codex version the adapter probes for. It
 	// applies ONLY to the Codex harness: Claude Code has no default pin.
-	DefaultCodexVersionPin = "0.147.0"
+	DefaultCodexVersionPin = "0.155.1"
 	// DefaultClaudeBinary is the Claude Code executable looked up on PATH.
 	DefaultClaudeBinary = "claude"
 )

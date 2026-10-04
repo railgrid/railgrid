@@ -596,6 +596,11 @@ func New(opts *Options) (*Agent, error) {
 		runners:      runners,
 	}
 	a.credentials = a.newCredentialStore()
+	if credential, ok := a.credentials.Current(); ok {
+		if err := a.configureHubFromCredential(credential); err != nil {
+			return nil, fmt.Errorf("configuring hub client from saved agent credential: %w", err)
+		}
+	}
 	// MacOSServer is intentionally service-only. Keep the shared server-mode
 	// tunnel but disable the SSH bridge even when the CLI's Linux-compatible
 	// default --ssh-proxy-port=22 was left in place.
@@ -691,12 +696,19 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	// Skip edge registration when:
 	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
 	// - saved kubeconfig mode: edge was already registered in a previous run
-	if a.opts.Token != "" {
-		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
-			"edgeName", a.opts.EdgeName)
-	} else if a.opts.UsingSavedKubeconfig {
-		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
-			"edgeName", a.opts.EdgeName)
+	// - saved issued-credential mode: this edge has already enrolled
+	if !a.shouldRegisterEdge() {
+		switch {
+		case a.opts.Token != "":
+			logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+				"edgeName", a.opts.EdgeName)
+		case a.opts.UsingSavedKubeconfig:
+			logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
+				"edgeName", a.opts.EdgeName)
+		default:
+			logger.Info("Using saved agent credential: skipping edge registration (already registered)",
+				"edgeName", a.opts.EdgeName)
+		}
 	} else {
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
@@ -750,8 +762,8 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	// bundle and the wait below would never end — taking the add-on plane, the
 	// status reporter and everything after them with it, on every restart. The
 	// hub client is still rebuilt from whichever credential the store holds.
-	if a.opts.Token != "" && !IsInCluster() {
-		if _, held := a.credentials.Current(); !held {
+	if !IsInCluster() && (a.opts.Token != "" || a.hasIssuedCredential()) {
+		if !a.hasIssuedCredential() {
 			logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
 			select {
 			case <-ctx.Done():
@@ -912,13 +924,42 @@ func (a *Agent) refreshHubClientFromCredential() (*railgridclient.Client, error)
 	if !ok {
 		return nil, fmt.Errorf("no agent credential has been issued yet")
 	}
-	newCfg := hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
-	dynClient, err := dynamic.NewForConfig(newCfg)
+	if err := a.configureHubFromCredential(credential); err != nil {
+		return nil, err
+	}
+	dynClient, err := dynamic.NewForConfig(a.hubConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating dynamic client from the agent credential: %w", err)
 	}
-	a.hubConfig = newCfg
 	return railgridclient.NewFromDynamic(dynClient), nil
+}
+
+// configureHubFromCredential makes the issued identity the active source for
+// both kcp requests and the reverse tunnel. On a restart this must happen
+// before either path starts: the bootstrap token may already have been
+// cleared, and the saved credential also carries the tenant cluster and CA.
+func (a *Agent) configureHubFromCredential(credential tunnel.Credential) error {
+	config := hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
+	tlsConfig, err := rest.TLSConfigFor(config)
+	if err != nil {
+		return fmt.Errorf("building TLS config from the agent credential: %w", err)
+	}
+	a.hubConfig = config
+	a.hubTLSConfig = tlsConfig
+	a.credentials.TLSConfig = tlsConfig
+	return nil
+}
+
+func (a *Agent) hasIssuedCredential() bool {
+	if a.credentials == nil {
+		return false
+	}
+	_, ok := a.credentials.Current()
+	return ok
+}
+
+func (a *Agent) shouldRegisterEdge() bool {
+	return a.opts.Token == "" && !a.opts.UsingSavedKubeconfig && !a.hasIssuedCredential()
 }
 
 // runServerMode is the host mode: no downstream Kubernetes API. LinuxServer
@@ -928,12 +969,19 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// Skip edge registration when:
 	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
 	// - saved kubeconfig mode: edge was already registered in a previous run
-	if a.opts.Token != "" {
-		logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
-			"edgeName", a.opts.EdgeName)
-	} else if a.opts.UsingSavedKubeconfig {
-		logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
-			"edgeName", a.opts.EdgeName)
+	// - saved issued-credential mode: this edge has already enrolled
+	if !a.shouldRegisterEdge() {
+		switch {
+		case a.opts.Token != "":
+			logger.Info("Join-token mode: skipping edge registration (edge pre-provisioned by admin)",
+				"edgeName", a.opts.EdgeName)
+		case a.opts.UsingSavedKubeconfig:
+			logger.Info("Using saved kubeconfig: skipping edge registration (already registered)",
+				"edgeName", a.opts.EdgeName)
+		default:
+			logger.Info("Using saved agent credential: skipping edge registration (already registered)",
+				"edgeName", a.opts.EdgeName)
+		}
 	} else {
 		if err := a.registerEdge(ctx, hubClient); err != nil {
 			return fmt.Errorf("registering edge: %w", err)
@@ -944,13 +992,19 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// Set up SSH credentials only for LinuxServer edges. A macOS worker is
 	// service-only by default and must not depend on sshd or upload credentials.
 	// In join-token mode the token is not a valid kcp credential, so skip
-	// credential setup — the hub manages SSH credentials server-side.
-	if a.agentType == AgentTypeServer && a.opts.Token == "" {
+	// credential setup — the hub manages SSH credentials server-side. A saved
+	// issued credential is restricted to already-enrolled operations, so it
+	// must not repeat enrollment-time setup either.
+	if a.agentType == AgentTypeServer && a.opts.Token == "" && !a.hasIssuedCredential() {
 		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
 			return fmt.Errorf("setting up SSH credentials: %w", err)
 		}
 	} else if a.agentType == AgentTypeServer {
-		logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
+		if a.opts.Token != "" {
+			logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
+		} else {
+			logger.Info("Using saved agent credential: skipping SSH credential setup")
+		}
 	}
 
 	// Determine the cluster name: explicit flag > kubeconfig Host URL > SA token.
@@ -1000,8 +1054,8 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// bundle and the wait below would never end — taking the add-on plane, the
 	// status reporter and everything after them with it, on every restart. The
 	// hub client is still rebuilt from whichever credential the store holds.
-	if a.opts.Token != "" && !IsInCluster() {
-		if _, held := a.credentials.Current(); !held {
+	if !IsInCluster() && (a.opts.Token != "" || a.hasIssuedCredential()) {
+		if !a.hasIssuedCredential() {
 			logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
 			select {
 			case <-ctx.Done():
