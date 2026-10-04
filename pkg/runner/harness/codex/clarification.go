@@ -151,6 +151,15 @@ func stableClarificationID(sessionID, turnID, itemID string) string {
 	return "clarification-" + hex.EncodeToString(digest[:])
 }
 
+func stablePermissionID(attemptID, method, sessionID, turnID, itemID, approvalID string) string {
+	identity := attemptID + "\x00" + method + "\x00" + sessionID + "\x00" + turnID + "\x00" + itemID
+	if approvalID != "" {
+		identity += "\x00" + approvalID
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return "permission-" + hex.EncodeToString(digest[:])
+}
+
 // normalizeAsyncQuestion recognizes Codex's structured asynchronous question
 // notification. Ordinary agent prose is never interpreted as a question.
 // A recognized but invalid item normalizes to an invalid payload, so the common

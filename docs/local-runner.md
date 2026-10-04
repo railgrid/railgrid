@@ -65,17 +65,18 @@ Install the Codex executable for this dedicated account. Create the runner's
 Codex home as a new owner-only directory, then use the supported Codex login
 flow with `CODEX_HOME` set to that directory. Do not copy an interactive
 developer home into it. The runner's default expected Codex version is
-`0.147.0`; override it only when the installed harness is intentionally pinned
+`0.155.1`; override it only when the installed harness is intentionally pinned
 to another version:
 
 ```sh
 ./bin/railgrid-runner --version-pin <codex-version> --help
 ```
 
-The runner probes the executable and its app-server authentication state during
-startup without making a model call. A failed version or authentication probe
-leaves capabilities unready, so a start request cannot be accepted until the
-host is repaired.
+The runner checks the executable version and app-server handshake during
+startup without making a model call. It checks the caller's Codex credential
+when each attempt starts. A failed version or handshake check leaves
+capabilities unready; an unusable caller credential is reported on that
+attempt.
 
 Generate one local bearer value, register that value with the tenant's existing
 Service credential flow, and provide the same value to the runner through an
@@ -365,7 +366,7 @@ the adapter refuses a home containing `settings.json`, `hooks`, `plugins`,
 `mcp.json`, `skills`, `agents`, `commands`, `output-styles` or any symlink.
 
 `--version-pin` applies to whichever harness is selected. Codex keeps its
-built-in pin of `0.147.0`; Claude Code has **no** default pin, because it
+built-in pin of `0.155.1`; Claude Code has **no** default pin, because it
 self-updates on a fast cadence and a stale constant would leave every runner
 unready. Set one explicitly if you want the version checked.
 

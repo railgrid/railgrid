@@ -58,12 +58,68 @@ func purgeTestScope(t *testing.T, ps *PostgresStore, orgUUID string) {
 	t.Helper()
 	ctx := context.Background()
 	for _, table := range []string{
-		"agents_messages", "agents_runs", "agents_memories", "agents_inbox",
+		"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_harness_sessions",
 		"agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_tenants",
 	} {
 		if _, err := ps.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE org_uuid=$1", orgUUID); err != nil {
 			t.Logf("cleanup: %s for %s: %v", table, orgUUID, err)
 		}
+	}
+}
+
+func TestPostgres_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC()
+
+	first, err := ps.NextHarnessTurn(ctx, sc, "chat", now)
+	if err != nil {
+		t.Fatalf("claim first turn: %v", err)
+	}
+	second, err := ps.NextHarnessTurn(ctx, sc, "chat", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim second turn: %v", err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		HarnessSessionID: "first-thread", UpdatedAt: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist first completed turn after second allocation: %v", err)
+	}
+	got, ok, err := ps.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || got.Turns != second.Turns || got.ObservedEpoch != first.Turns ||
+		got.HarnessSessionID != "first-thread" || got.BackendKey != "backend-a" {
+		t.Fatalf("first receipt after later allocation = %+v, ok=%v, err=%v; want allocated epoch %d and observed first-thread/backend-a at epoch %d",
+			got, ok, err, second.Turns, first.Turns)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, BackendKey: "backend-b",
+		HarnessSessionID: "newer-thread", UpdatedAt: now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist second turn: %v", err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		HarnessSessionID: "older-thread", UpdatedAt: now.Add(4 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist late first receipt: %v", err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, UpdatedAt: now.Add(5 * time.Second),
+	}); err != nil {
+		t.Fatalf("persist empty receipt: %v", err)
+	}
+
+	got, ok, err = ps.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || got.Turns != second.Turns || got.ObservedEpoch != second.Turns ||
+		got.HarnessSessionID != "newer-thread" || got.BackendKey != "backend-b" {
+		t.Fatalf("session after late writes = %+v, ok=%v, err=%v; want allocated epoch %d, observed epoch %d and newer-thread/backend-b",
+			got, ok, err, second.Turns, second.Turns)
+	}
+	third, err := ps.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second))
+	if err != nil || third.Turns != 3 || third.HarnessSessionID != "newer-thread" {
+		t.Fatalf("next turn = %+v, err=%v; want epoch 3 resuming newer-thread", third, err)
 	}
 }
 

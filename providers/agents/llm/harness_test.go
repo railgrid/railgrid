@@ -71,7 +71,27 @@ func TestReadHarnessSecretShapes(t *testing.T) {
 		name:        "codex with an unparseable session file",
 		provider:    ProviderCodex,
 		data:        map[string]string{"auth.json": `{"tokens":`},
-		wantProblem: "valid JSON",
+		wantProblem: "JSON object",
+	}, {
+		name:        "codex with null instead of an object",
+		provider:    ProviderCodex,
+		data:        map[string]string{"auth.json": `null`},
+		wantProblem: "JSON object",
+	}, {
+		name:        "codex with an array instead of an object",
+		provider:    ProviderCodex,
+		data:        map[string]string{"auth.json": `[]`},
+		wantProblem: "JSON object",
+	}, {
+		name:        "codex with a string instead of an object",
+		provider:    ProviderCodex,
+		data:        map[string]string{"auth.json": `"session-secret-marker"`},
+		wantProblem: "JSON object",
+	}, {
+		name:        "codex with a number instead of an object",
+		provider:    ProviderCodex,
+		data:        map[string]string{"auth.json": `42`},
+		wantProblem: "JSON object",
 	}, {
 		name:        "codex with no session file",
 		provider:    ProviderCodex,
@@ -91,6 +111,9 @@ func TestReadHarnessSecretShapes(t *testing.T) {
 				}
 				if !strings.Contains(string(problem), tc.wantProblem) {
 					t.Fatalf("refusal %q does not name %q", problem, tc.wantProblem)
+				}
+				if strings.Contains(string(problem), "session-secret-marker") {
+					t.Fatalf("refusal leaked auth.json contents: %q", problem)
 				}
 				if !identity.Empty() {
 					t.Fatal("a refused secret must yield no identity")

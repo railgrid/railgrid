@@ -32,6 +32,7 @@ import (
 	"github.com/google/uuid"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/channels"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
@@ -128,6 +129,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 
 	res, err := s.runTurn(ctx, tr, &continuation{
 		Checkpoint: ck, StartedAt: startedAt, Tracker: trackerForStored(run),
+		Billed:  backend.Cost{Tokens: backend.Tokens{InputTokens: run.InputTokens, OutputTokens: run.OutputTokens}, CostMicros: run.USDMicros},
 		Decided: intent.Approval, Approved: intent.Approve, Note: intent.Note,
 	})
 	if err != nil {

@@ -40,14 +40,14 @@ func TestNewUsesContractDefaultVersionPin(t *testing.T) {
 	if !ok {
 		t.Fatal("New did not return the Codex adapter")
 	}
-	if adapter.cfg.ExpectedVersion != "0.147.0" {
-		t.Fatalf("default expected Codex version = %q, want 0.147.0", adapter.cfg.ExpectedVersion)
+	if adapter.cfg.ExpectedVersion != "0.155.1" {
+		t.Fatalf("default expected Codex version = %q, want 0.155.1", adapter.cfg.ExpectedVersion)
 	}
 }
 
 func TestRunResumeUsesExactExistingSession(t *testing.T) {
 	binary := fakeCodexBinary(t, "success")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 	result, err := adapter.Run(context.Background(), harness.Launch{
 		AttemptID:    "attempt-resume",
 		Workdir:      t.TempDir(),
@@ -82,7 +82,7 @@ func TestRunResumeUsesExactExistingSession(t *testing.T) {
 func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
 	t.Run("resume response", func(t *testing.T) {
 		binary := fakeCodexBinary(t, "foreign-resume")
-		adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+		adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 		result, err := adapter.Run(context.Background(), harness.Launch{
 			AttemptID:    "attempt-foreign-resume",
 			Workdir:      t.TempDir(),
@@ -104,7 +104,7 @@ func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
 
 	t.Run("completion event", func(t *testing.T) {
 		binary := fakeCodexBinary(t, "foreign-completion")
-		adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.147.0"})
+		adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
 		result, err := adapter.Run(context.Background(), harness.Launch{
 			AttemptID:    "attempt-foreign-completion",
 			Workdir:      t.TempDir(),
@@ -345,7 +345,7 @@ func TestPluginCacheDoesNotEnableExtensions(t *testing.T) {
 	if err := os.WriteFile(marker, []byte("preserve cache"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	adapter := New(Config{Home: home, Binary: binary, ExpectedVersion: "0.147.0"})
+	adapter := New(Config{Home: home, Binary: binary, ExpectedVersion: "0.155.1"})
 	checkArgs := func() {
 		t.Helper()
 		raw, err := os.ReadFile(filepath.Join(filepath.Dir(binary), "argv"))

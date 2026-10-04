@@ -41,7 +41,7 @@ railgrid runner run [flags]
       --state-dir string                Durable runner state directory
       --token-file string               File containing the runner bearer token
       --version                         Print build and protocol metadata as JSON, then exit
-      --version-pin string              Expected harness version; empty uses the selected harness default (Codex 0.147.0; Claude Code unpinned)
+      --version-pin string              Expected harness version; empty uses the selected harness default (Codex 0.155.1; Claude Code unpinned)
 ```
 
 ### Options inherited from parent commands

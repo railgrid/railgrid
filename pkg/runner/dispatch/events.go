@@ -18,8 +18,10 @@ package dispatch
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner"
 )
@@ -36,16 +38,37 @@ type stream struct {
 	text  strings.Builder
 	final string
 	usage Usage
+	// usageAtStart is the accumulated usage in a restored checkpoint. Summary
+	// reports only the delta observed after that checkpoint; Snapshot reports
+	// the total through its cursor.
+	usageAtStart Usage
 
 	// tools tracks tool-call ids already announced, so a payload seen twice
 	// (started then completed) produces one ToolStart and one ToolEnd rather
 	// than two of either.
 	tools map[string]toolInFlight
+	// Codex reports a whole-turn duration and completed command items report
+	// their own durations. The assistant segment gets only the remainder so
+	// adding its time and the current Codex turn's tool times does not count the
+	// same work twice. A clarification resume starts a new Codex turn; a
+	// permission verdict resumes the existing one.
+	toolDuration time.Duration
+	turnDuration time.Duration
+	codexTurnID  string
+	turnStarted  bool
+	// Codex tokenUsage.total is cumulative for its native thread. Track the
+	// latest total snapshot so an identical update does not add tokenUsage.last
+	// twice; distinct cumulative snapshots identify distinct model calls.
+	codexTotalTokens int64
+	codexTotalSeen   bool
+	codexLast        string
 	// cursor is the last event cursor consumed, which is where a reconnect
 	// resumes and what a checkpoint records.
-	cursor uint64
+	cursor     uint64
+	recovering bool
 	// clarification is what the harness is asking, when it asked.
-	clarification *runner.Clarification
+	clarification            *runner.Clarification
+	clarificationFromReceipt bool
 }
 
 type toolInFlight struct {
@@ -54,11 +77,108 @@ type toolInFlight struct {
 	ended bool
 }
 
+const streamSnapshotVersion = 1
+
+type toolSnapshot struct {
+	Name  string `json:"name,omitempty"`
+	Args  string `json:"args,omitempty"`
+	Ended bool   `json:"ended,omitempty"`
+}
+
+type streamSnapshot struct {
+	Version                  int                     `json:"version"`
+	Text                     string                  `json:"text,omitempty"`
+	Final                    string                  `json:"final,omitempty"`
+	Tools                    map[string]toolSnapshot `json:"tools,omitempty"`
+	ToolDurationNS           int64                   `json:"toolDurationNS,omitempty"`
+	TurnDurationNS           int64                   `json:"turnDurationNS,omitempty"`
+	CodexTurnID              string                  `json:"codexTurnID,omitempty"`
+	TurnStarted              bool                    `json:"turnStarted,omitempty"`
+	CodexTotalTokens         int64                   `json:"codexTotalTokens,omitempty"`
+	CodexTotalSeen           bool                    `json:"codexTotalSeen,omitempty"`
+	CodexLast                string                  `json:"codexLast,omitempty"`
+	Clarification            *runner.Clarification   `json:"clarification,omitempty"`
+	ClarificationFromReceipt bool                    `json:"clarificationFromReceipt,omitempty"`
+}
+
 func newStream(obs Observer, cursor uint64) *stream {
 	if obs == nil {
 		obs = Noop{}
 	}
 	return &stream{obs: obs, tools: map[string]toolInFlight{}, cursor: cursor}
+}
+
+func restoreStream(obs Observer, snap Snapshot) (*stream, error) {
+	s := newStream(obs, snap.Position.Cursor)
+	s.usage = snap.Usage
+	s.usageAtStart = snap.Usage
+	if len(snap.State) == 0 {
+		return s, nil
+	}
+	var restored streamSnapshot
+	if err := json.Unmarshal(snap.State, &restored); err != nil {
+		return nil, fmt.Errorf("restoring dispatch snapshot: %w", err)
+	}
+	if restored.Version != streamSnapshotVersion {
+		return nil, fmt.Errorf("restoring dispatch snapshot: unsupported version %d", restored.Version)
+	}
+	s.text.WriteString(restored.Text)
+	s.final = restored.Final
+	s.tools = make(map[string]toolInFlight, len(restored.Tools))
+	for id, tool := range restored.Tools {
+		s.tools[id] = toolInFlight{name: tool.Name, args: tool.Args, ended: tool.Ended}
+	}
+	s.toolDuration = time.Duration(restored.ToolDurationNS)
+	s.turnDuration = time.Duration(restored.TurnDurationNS)
+	s.codexTurnID = restored.CodexTurnID
+	s.turnStarted = restored.TurnStarted
+	s.codexTotalTokens = restored.CodexTotalTokens
+	s.codexTotalSeen = restored.CodexTotalSeen
+	s.codexLast = restored.CodexLast
+	s.clarification = restored.Clarification
+	s.clarificationFromReceipt = restored.ClarificationFromReceipt
+	s.recovering = true
+	return s, nil
+}
+
+func (s *stream) snapshot(pos Position) Snapshot {
+	tools := make(map[string]toolSnapshot, len(s.tools))
+	for id, tool := range s.tools {
+		tools[id] = toolSnapshot{Name: tool.name, Args: tool.args, Ended: tool.ended}
+	}
+	state := streamSnapshot{
+		Version: streamSnapshotVersion, Text: s.text.String(), Final: s.final, Tools: tools,
+		ToolDurationNS: int64(s.toolDuration), TurnDurationNS: int64(s.turnDuration),
+		CodexTurnID: s.codexTurnID, TurnStarted: s.turnStarted,
+		CodexTotalTokens: s.codexTotalTokens, CodexTotalSeen: s.codexTotalSeen,
+		CodexLast: s.codexLast, Clarification: s.clarification,
+		ClarificationFromReceipt: s.clarificationFromReceipt,
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		// All fields above are JSON primitives or runner protocol structs. Keep a
+		// valid versioned state even if that contract changes unexpectedly.
+		raw = json.RawMessage("{}")
+	}
+	return Snapshot{Position: s.position(pos), Usage: s.usage, State: raw}
+}
+
+func usageDelta(total, start Usage) Usage {
+	delta := Usage{
+		InputTokens:  total.InputTokens - start.InputTokens,
+		OutputTokens: total.OutputTokens - start.OutputTokens,
+		CostMicros:   total.CostMicros - start.CostMicros,
+	}
+	if delta.InputTokens < 0 {
+		delta.InputTokens = 0
+	}
+	if delta.OutputTokens < 0 {
+		delta.OutputTokens = 0
+	}
+	if delta.CostMicros < 0 {
+		delta.CostMicros = 0
+	}
+	return delta
 }
 
 // observe maps one protocol event onto the observer and the accumulators, and
@@ -96,6 +216,7 @@ func (s *stream) observe(event runner.Event) (terminal bool) {
 			// A completed event carries the runner's own blocker field, which is
 			// empty on success; the answer arrived in the harness's result
 			// record. Cost, when the harness reported any, may be on either.
+			s.observeCodexTurn(event.Data)
 			s.observeUsage(event.Data)
 		}
 		return true
@@ -105,12 +226,38 @@ func (s *stream) observe(event runner.Event) (terminal bool) {
 	}
 }
 
+func (s *stream) observeReceipt(receipt runner.Receipt) {
+	s.turnStarted = s.turnStarted || receipt.SessionID != ""
+	if receipt.Clarification != nil {
+		s.clarification = receipt.Clarification
+		s.clarificationFromReceipt = true
+		return
+	}
+	if s.clarificationFromReceipt {
+		s.clarification = nil
+	}
+	s.clarificationFromReceipt = false
+}
+
 func (s *stream) progress(event runner.Event) {
+	if turnID, ok := codexTurnStarted(event.Data); ok && turnID != s.codexTurnID {
+		// A clarification resume launches a new native Codex turn in the same
+		// attempt. Previous tool results have already been reported to the sink,
+		// so only tools from this turn belong in the duration subtraction. A
+		// permission verdict keeps the child and its current turn alive and does
+		// not produce another turn/started event.
+		s.codexTurnID = turnID
+		s.toolDuration = 0
+		s.turnDuration = 0
+	}
+	s.observeCodexTurn(event.Data)
+	// Some harnesses emit usage as a separate progress update rather than on
+	// the final result record (Codex reports tokenUsage this way).
+	s.observeUsage(event.Data)
 	// A harness result record: the final answer plus, for Claude Code, the cost
 	// fields. Recognised by its own payload rather than by the event type,
 	// which the runner already flattened.
 	if final, ok := resultRecord(event.Data); ok {
-		s.observeUsage(event.Data)
 		if text := strings.TrimSpace(final); text != "" {
 			s.final = text
 			return
@@ -120,15 +267,47 @@ func (s *stream) progress(event runner.Event) {
 		}
 		return
 	}
-	// A turn-completion payload (Codex) carries usage and a status word, not
-	// prose. Its message is the phase name, which is not something to stream
-	// at a person.
+	// A turn-completion payload (Codex) carries a status word, not prose. Its
+	// message is the phase name, which is not something to stream at a person.
 	if turnCompletion(event.Data) {
-		s.observeUsage(event.Data)
+		return
+	}
+	// The runner records tool approval decisions as ordinary progress messages.
+	// They describe control flow, not assistant-authored transcript content.
+	if permissionLifecycleMessage(event.Message) {
+		return
+	}
+	// Codex's app-server exposes the final assistant message as a completed
+	// item after streaming its text through item/agentMessage/delta. Keep that
+	// canonical message for Outcome.Final, but do not stream or append it again:
+	// the deltas already make up the transcript text.
+	if text, ok := assistantMessageItem(event.Data); ok {
+		if text != "" {
+			s.final = text
+		}
 		return
 	}
 	if item, ok := toolItem(event.Data); ok {
 		s.tool(item)
+		return
+	}
+	// A Codex thread/start result is lifecycle data. Its human-readable message
+	// is useful to a runner log, but it is not assistant content.
+	if codexSessionStarted(event.Data) || strings.TrimSpace(event.Message) == "Codex session ready" {
+		return
+	}
+	// Codex sends the same text in Message and in Data.delta. The JSON-RPC
+	// payload identifies this as an app-server text delta, so concatenate it
+	// byte-for-byte instead of applying the line-oriented behavior used for
+	// generic harness progress.
+	if delta, ok := codexMessageDelta(event.Data); ok {
+		if event.Message != delta {
+			return
+		}
+		if delta != "" {
+			s.text.WriteString(delta)
+			s.obs.Text(delta)
+		}
 		return
 	}
 	if text := event.Message; strings.TrimSpace(text) != "" {
@@ -140,12 +319,92 @@ func (s *stream) progress(event runner.Event) {
 	}
 }
 
+func permissionLifecycleMessage(message string) bool {
+	switch strings.ToLower(strings.TrimSpace(message)) {
+	case "permission granted", "permission denied":
+		return true
+	default:
+		return false
+	}
+}
+
+// codexMessageDelta recognizes the data shape Codex's app-server emits for
+// item/agentMessage/delta. The type field was flattened to runner progress by
+// the adapter boundary, so this payload is how the normalizer distinguishes a
+// text fragment from ordinary progress prose.
+func codexMessageDelta(data json.RawMessage) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	var rec struct {
+		Delta *string `json:"delta"`
+	}
+	if json.Unmarshal(data, &rec) != nil || rec.Delta == nil {
+		return "", false
+	}
+	return *rec.Delta, true
+}
+
+// assistantMessageItem recognizes Codex's canonical completed assistant item.
+// It is retained as the answer boundary without being replayed as a second
+// delta. Codex uses phase=final_answer on this record; status is accepted for
+// app-server versions that report an explicit completed state instead.
+func assistantMessageItem(data json.RawMessage) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	var rec struct {
+		Item *struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Phase  string `json:"phase"`
+			Status string `json:"status"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(data, &rec) != nil || rec.Item == nil {
+		return "", false
+	}
+	if rec.Item.Type != "agentMessage" && rec.Item.Type != "assistant_message" && rec.Item.Type != "assistantMessage" {
+		return "", false
+	}
+	phase := strings.ToLower(strings.TrimSpace(rec.Item.Phase))
+	status := strings.ToLower(strings.TrimSpace(rec.Item.Status))
+	if phase != "final_answer" && phase != "finalanswer" && status != "completed" && status != "complete" {
+		return "", false
+	}
+	return rec.Item.Text, true
+}
+
+// codexSessionStarted recognizes the thread/start result in the Codex
+// app-server protocol. runner preserves its payload while normalizing the
+// adapter's lifecycle event to progress.
+func codexSessionStarted(data json.RawMessage) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var rec struct {
+		Thread json.RawMessage `json:"thread"`
+	}
+	if json.Unmarshal(data, &rec) != nil {
+		return false
+	}
+	return len(rec.Thread) > 0 && strings.TrimSpace(string(rec.Thread)) != "null"
+}
+
 func (s *stream) observeClarification(event runner.Event) {
+	if s.clarificationFromReceipt {
+		// Inspect's current receipt outranks retained needs_input events, which
+		// may include earlier questions when recovery starts before their cursor.
+		return
+	}
+	// A needs_input event replaces an earlier event-derived fallback. Recovery
+	// can replay several parks after an old checkpoint; the last one is current.
+	s.clarification = nil
 	if c, ok := clarificationOf(event.Data); ok {
 		s.clarification = c
 		return
 	}
-	if msg := strings.TrimSpace(event.Message); msg != "" && s.clarification == nil {
+	if msg := strings.TrimSpace(event.Message); msg != "" {
 		s.clarification = &runner.Clarification{Text: msg}
 	}
 }
@@ -163,9 +422,10 @@ func (s *stream) tool(item harnessItem) {
 	}
 	seen.ended = true
 	s.tools[item.ID] = seen
+	s.toolDuration += item.Duration
 	s.obs.ToolEnd(ToolResult{
 		ID: item.ID, Name: seen.name, Args: seen.args,
-		Result: item.Result, Failed: item.Failed,
+		Result: item.Result, Failed: item.Failed, Duration: item.Duration,
 	})
 }
 
@@ -223,10 +483,7 @@ func turnCompletion(data json.RawMessage) bool {
 		return false
 	}
 	var rec struct {
-		Turn *struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		} `json:"turn"`
+		Turn *turnEnvelope `json:"turn"`
 	}
 	if json.Unmarshal(data, &rec) != nil {
 		return false
@@ -234,14 +491,65 @@ func turnCompletion(data json.RawMessage) bool {
 	return rec.Turn != nil
 }
 
+// observeCodexTurn tracks the app-server turn boundary and its measured whole
+// turn duration. Tool durations are subtracted when the assistant boundary is
+// reported so the provider's worked-time accumulator does not double-count
+// command execution.
+func (s *stream) observeCodexTurn(data json.RawMessage) {
+	if len(data) == 0 {
+		return
+	}
+	var rec struct {
+		Turn *turnEnvelope `json:"turn"`
+	}
+	if json.Unmarshal(data, &rec) != nil || rec.Turn == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(rec.Turn.Status)) {
+	case "inprogress", "in_progress", "running", "started", "completed":
+		s.turnStarted = true
+	}
+	if strings.EqualFold(strings.TrimSpace(rec.Turn.Status), "completed") {
+		if duration := durationFromMillis(rec.Turn.DurationMS); duration > 0 {
+			s.turnDuration = duration
+		}
+	}
+}
+
+// codexTurnStarted recognizes the event payload the Codex adapter emits for
+// turn/started. The runner flattens its type to progress, so the thread, turn id
+// and in-progress status are the remaining marker. Repeated in-progress records
+// for the same turn do not reset duration accounting.
+func codexTurnStarted(data json.RawMessage) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	var rec struct {
+		ThreadID string `json:"threadId"`
+		Turn     struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(data, &rec) != nil || strings.TrimSpace(rec.ThreadID) == "" {
+		return "", false
+	}
+	if !strings.EqualFold(strings.TrimSpace(rec.Turn.Status), "inProgress") {
+		return "", false
+	}
+	turnID := strings.TrimSpace(rec.Turn.ID)
+	return turnID, turnID != ""
+}
+
 // harnessItem is one tool call as a harness reported it.
 type harnessItem struct {
-	ID     string
-	Name   string
-	Args   string
-	Result string
-	Done   bool
-	Failed bool
+	ID       string
+	Name     string
+	Args     string
+	Result   string
+	Duration time.Duration
+	Done     bool
+	Failed   bool
 }
 
 // toolItemTypes are the item types that ARE a tool call. Anything else an item
@@ -267,14 +575,17 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 	}
 	var rec struct {
 		Item *struct {
-			ID      string `json:"id"`
-			Type    string `json:"type"`
-			Name    string `json:"name"`
-			Tool    string `json:"tool"`
-			Command string `json:"command"`
-			Status  string `json:"status"`
-			Output  string `json:"output"`
-			Result  string `json:"result"`
+			ID               string `json:"id"`
+			Type             string `json:"type"`
+			Name             string `json:"name"`
+			Tool             string `json:"tool"`
+			Command          string `json:"command"`
+			Status           string `json:"status"`
+			Output           string `json:"output"`
+			Result           string `json:"result"`
+			AggregatedOutput string `json:"aggregatedOutput"`
+			ExitCode         *int64 `json:"exitCode"`
+			DurationMS       *int64 `json:"durationMs"`
 		} `json:"item"`
 	}
 	if json.Unmarshal(data, &rec) != nil || rec.Item == nil {
@@ -284,10 +595,11 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 		return harnessItem{}, false
 	}
 	item := harnessItem{
-		ID:     strings.TrimSpace(rec.Item.ID),
-		Name:   firstNonEmpty(rec.Item.Name, rec.Item.Tool, rec.Item.Type),
-		Args:   strings.TrimSpace(rec.Item.Command),
-		Result: firstNonEmpty(rec.Item.Output, rec.Item.Result),
+		ID:       strings.TrimSpace(rec.Item.ID),
+		Name:     firstNonEmpty(rec.Item.Name, rec.Item.Tool, rec.Item.Type),
+		Args:     strings.TrimSpace(rec.Item.Command),
+		Result:   firstNonBlank(rec.Item.AggregatedOutput, rec.Item.Output, rec.Item.Result),
+		Duration: durationFromMillis(rec.Item.DurationMS),
 	}
 	if item.ID == "" {
 		// Without an id there is nothing to correlate a start with an end, so
@@ -300,6 +612,9 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 	case "completed", "success", "succeeded", "done":
 		item.Done = true
 	case "failed", "error", "aborted":
+		item.Done, item.Failed = true, true
+	}
+	if rec.Item.ExitCode != nil && *rec.Item.ExitCode != 0 {
 		item.Done, item.Failed = true, true
 	}
 	return item, true
@@ -342,8 +657,13 @@ func (s *stream) observeUsage(data json.RawMessage) {
 		CostUSD      *float64      `json:"cost_usd"`
 		Usage        *tokenCounts  `json:"usage"`
 		Turn         *turnEnvelope `json:"turn"`
+		TokenUsage   *tokenUsage   `json:"tokenUsage"`
 	}
 	if json.Unmarshal(data, &rec) != nil {
+		return
+	}
+	if rec.TokenUsage != nil {
+		s.observeCodexUsage(rec.TokenUsage)
 		return
 	}
 	counts := rec.Usage
@@ -366,33 +686,81 @@ func (s *stream) observeUsage(data json.RawMessage) {
 	}
 }
 
+// observeCodexUsage adds each distinct model-call update once. tokenUsage.last
+// is for one model call; total is cumulative across a native thread and is used
+// only to detect duplicate updates and identify a new call.
+func (s *stream) observeCodexUsage(usage *tokenUsage) {
+	if !s.turnStarted || usage == nil || usage.Last == nil {
+		return
+	}
+	if total, ok := usage.Total.cumulativeTokens(); ok {
+		if s.codexTotalSeen && total <= s.codexTotalTokens {
+			return
+		}
+		s.codexTotalTokens, s.codexTotalSeen = total, true
+	} else {
+		// Older app-server versions may omit total. De-duplicate identical
+		// last-call reports rather than billing a repeated notification twice.
+		raw, err := json.Marshal(usage.Last)
+		if err != nil || string(raw) == s.codexLast {
+			return
+		}
+		s.codexLast = string(raw)
+	}
+	s.usage.InputTokens += usage.Last.input()
+	s.usage.OutputTokens += usage.Last.output()
+}
+
 type turnEnvelope struct {
+	Status       string       `json:"status"`
+	DurationMS   *int64       `json:"durationMs"`
 	Usage        *tokenCounts `json:"usage"`
 	TotalCostUSD *float64     `json:"total_cost_usd"`
 }
 
-// tokenCounts reads both spellings, because the two harnesses disagree: Claude
-// Code's stream is snake_case and Codex's JSON-RPC is camelCase.
+// tokenUsage is the Codex app-server's last-model-call report plus the
+// cumulative native-thread total. The normalizer bills each last-call update
+// once and uses total only to recognize a repeated update.
+type tokenUsage struct {
+	Last  *tokenCounts `json:"last"`
+	Total *tokenCounts `json:"total"`
+}
+
+// tokenCounts reads both spellings. Claude's snake_case cache fields are
+// additive to input_tokens; Codex's camelCase cached/reasoning fields are
+// subsets of inputTokens/outputTokens and are intentionally not added again.
 type tokenCounts struct {
+	TotalTokens       *int64 `json:"totalTokens"`
 	InputTokens       *int64 `json:"input_tokens"`
 	OutputTokens      *int64 `json:"output_tokens"`
 	InputTokensCamel  *int64 `json:"inputTokens"`
 	OutputTokensCamel *int64 `json:"outputTokens"`
 	// Cache reads and writes are input tokens the harness was charged for, so
 	// they are counted as input rather than dropped.
-	CacheCreation      *int64 `json:"cache_creation_input_tokens"`
-	CacheRead          *int64 `json:"cache_read_input_tokens"`
-	CachedInputCamel   *int64 `json:"cachedInputTokens"`
-	ReasoningOutputCam *int64 `json:"reasoningOutputTokens"`
+	CacheCreation *int64 `json:"cache_creation_input_tokens"`
+	CacheRead     *int64 `json:"cache_read_input_tokens"`
 }
 
 func (t *tokenCounts) input() int64 {
 	return deref(t.InputTokens) + deref(t.InputTokensCamel) +
-		deref(t.CacheCreation) + deref(t.CacheRead) + deref(t.CachedInputCamel)
+		deref(t.CacheCreation) + deref(t.CacheRead)
 }
 
 func (t *tokenCounts) output() int64 {
-	return deref(t.OutputTokens) + deref(t.OutputTokensCamel) + deref(t.ReasoningOutputCam)
+	return deref(t.OutputTokens) + deref(t.OutputTokensCamel)
+}
+
+func (t *tokenCounts) cumulativeTokens() (int64, bool) {
+	if t == nil {
+		return 0, false
+	}
+	if t.TotalTokens != nil && *t.TotalTokens >= 0 {
+		return *t.TotalTokens, true
+	}
+	if t.InputTokens != nil || t.OutputTokens != nil || t.InputTokensCamel != nil || t.OutputTokensCamel != nil {
+		return t.input() + t.output(), true
+	}
+	return 0, false
 }
 
 func deref(v *int64) int64 {
@@ -402,10 +770,32 @@ func deref(v *int64) int64 {
 	return *v
 }
 
+func durationFromMillis(value *int64) time.Duration {
+	if value == nil || *value <= 0 {
+		return 0
+	}
+	const maxDurationMillis = int64(1<<63-1) / int64(time.Millisecond)
+	if *value > maxDurationMillis {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Duration(*value) * time.Millisecond
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if s := strings.TrimSpace(v); s != "" {
 			return s
+		}
+	}
+	return ""
+}
+
+// firstNonBlank returns the original content so command output keeps its
+// leading and trailing whitespace, including a final newline.
+func firstNonBlank(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
 		}
 	}
 	return ""

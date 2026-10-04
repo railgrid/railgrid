@@ -224,10 +224,19 @@ var agentsSchema = []string{
 		agent_name TEXT NOT NULL,
 		session_id TEXT NOT NULL,
 		harness_session_id TEXT NOT NULL DEFAULT '',
+		backend_key TEXT NOT NULL DEFAULT '',
 		turns BIGINT NOT NULL DEFAULT 0,
+		observed_epoch BIGINT NOT NULL DEFAULT 0,
 		updated_at TIMESTAMPTZ NOT NULL,
 		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
 	)`,
+	`ALTER TABLE agents_harness_sessions ADD COLUMN IF NOT EXISTS backend_key TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_harness_sessions ADD COLUMN IF NOT EXISTS observed_epoch BIGINT NOT NULL DEFAULT 0`,
+	// Existing native sessions have no recorded receipt epoch. Backfill them
+	// once from the old allocation counter; future observations always write a
+	// positive epoch, so later allocations cannot advance this value on startup.
+	`UPDATE agents_harness_sessions SET observed_epoch=turns
+		WHERE observed_epoch=0 AND harness_session_id<>'' AND turns>0`,
 	// The sweep scans by phase + staleness across all tenants, so this index is
 	// the one that keeps it from being a full table scan as run history grows.
 	`CREATE INDEX IF NOT EXISTS agents_runs_phase_updated_idx
@@ -533,22 +542,22 @@ func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessio
 	out := HarnessSession{SessionID: sessionID}
 	row := p.db.QueryRowContext(ctx, `
 		INSERT INTO agents_harness_sessions
-			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, turns, updated_at)
-		VALUES ($1,$2,$3,$4,'',1,$5)
+			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at)
+		VALUES ($1,$2,$3,$4,'','',1,0,$5)
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
 			turns=agents_harness_sessions.turns+1, updated_at=EXCLUDED.updated_at
-		RETURNING harness_session_id, turns, updated_at`,
+		RETURNING harness_session_id, backend_key, turns, observed_epoch, updated_at`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, now.UTC())
-	if err := row.Scan(&out.HarnessSessionID, &out.Turns, &out.UpdatedAt); err != nil {
+	if err := row.Scan(&out.HarnessSessionID, &out.BackendKey, &out.Turns, &out.ObservedEpoch, &out.UpdatedAt); err != nil {
 		return HarnessSession{}, err
 	}
 	out.UpdatedAt = out.UpdatedAt.UTC()
 	return out, nil
 }
 
-// PutHarnessSession records the harness session id a receipt reported. The turn
-// count only moves forward: a writer recording a session id must not roll the
-// epoch back to whatever it read before the turn.
+// PutHarnessSession records the native session and backend key a receipt
+// reported unless a receipt from a newer observed epoch already won. The
+// allocated turn count only moves forward, and empty session IDs never clear it.
 func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error {
 	if err := scope.withAgent(); err != nil {
 		return err
@@ -556,17 +565,38 @@ func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s Ha
 	if strings.TrimSpace(s.SessionID) == "" {
 		return fmt.Errorf("session ID is required")
 	}
+	if strings.TrimSpace(s.HarnessSessionID) != "" {
+		if strings.TrimSpace(s.BackendKey) == "" {
+			return fmt.Errorf("backend key is required when a harness session ID is observed")
+		}
+		if s.ObservedEpoch <= 0 {
+			return fmt.Errorf("observed harness session epoch must be positive")
+		}
+	} else {
+		// A new row must never acquire a backend key or observation epoch without
+		// the native session ID they qualify.
+		s.HarnessSessionID = ""
+		s.BackendKey = ""
+		s.ObservedEpoch = 0
+	}
 	_, err := p.db.ExecContext(ctx, `
 		INSERT INTO agents_harness_sessions
-			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, turns, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
-			harness_session_id=CASE WHEN EXCLUDED.harness_session_id <> '' THEN EXCLUDED.harness_session_id
+			harness_session_id=CASE WHEN EXCLUDED.harness_session_id <> ''
+					AND EXCLUDED.observed_epoch >= agents_harness_sessions.observed_epoch THEN EXCLUDED.harness_session_id
 				ELSE agents_harness_sessions.harness_session_id END,
+			backend_key=CASE WHEN EXCLUDED.harness_session_id <> ''
+					AND EXCLUDED.observed_epoch >= agents_harness_sessions.observed_epoch THEN EXCLUDED.backend_key
+				ELSE agents_harness_sessions.backend_key END,
+			observed_epoch=CASE WHEN EXCLUDED.harness_session_id <> ''
+					AND EXCLUDED.observed_epoch >= agents_harness_sessions.observed_epoch THEN EXCLUDED.observed_epoch
+				ELSE agents_harness_sessions.observed_epoch END,
 			turns=GREATEST(agents_harness_sessions.turns, EXCLUDED.turns),
 			updated_at=EXCLUDED.updated_at`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID,
-		s.HarnessSessionID, s.Turns, s.UpdatedAt.UTC())
+		s.HarnessSessionID, s.BackendKey, s.Turns, s.ObservedEpoch, s.UpdatedAt.UTC())
 	return err
 }
 
@@ -576,11 +606,11 @@ func (p *PostgresStore) GetHarnessSession(ctx context.Context, scope Scope, sess
 	}
 	out := HarnessSession{SessionID: sessionID}
 	row := p.db.QueryRowContext(ctx, `
-		SELECT harness_session_id, turns, updated_at
+		SELECT harness_session_id, backend_key, turns, observed_epoch, updated_at
 		FROM agents_harness_sessions
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
-	err := row.Scan(&out.HarnessSessionID, &out.Turns, &out.UpdatedAt)
+	err := row.Scan(&out.HarnessSessionID, &out.BackendKey, &out.Turns, &out.ObservedEpoch, &out.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return HarnessSession{}, false, nil
 	}

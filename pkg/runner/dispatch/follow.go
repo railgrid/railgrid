@@ -18,6 +18,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,6 +91,10 @@ type Usage struct {
 type Snapshot struct {
 	Position Position
 	Usage    Usage
+	// State is the opaque, versioned state of the event normalizer. Callers that
+	// only need to rejoin the runner may omit it; callers that must preserve a
+	// transcript and dedupe state should persist the complete Snapshot.
+	State json.RawMessage
 }
 
 // Summary is what the stream said, accumulated, so a caller need not.
@@ -119,6 +124,9 @@ type Outcome struct {
 	Position Position
 	Summary  Summary
 	Parked   *Parked
+	// Snapshot is the complete normalizer state at Position. It is useful when
+	// the attempt parks before the next quiet-stream checkpoint.
+	Snapshot Snapshot
 }
 
 // Terminal reports whether the attempt is over.
@@ -191,6 +199,71 @@ func Rejoin(ctx context.Context, r Runner, pos Position, obs Observer) (Outcome,
 	return Follow(ctx, r, receipt, pos, obs)
 }
 
+// RejoinSnapshot restores normalized output and dedupe state, inspects the
+// attempt, and reads every retained event after the saved cursor. Unlike a
+// Position alone, this is sufficient for a caller that must return a complete
+// transcript and usage total after its process restarts.
+func RejoinSnapshot(ctx context.Context, r Runner, snap Snapshot, obs Observer) (Outcome, error) {
+	if snap.Position.AttemptID == "" {
+		return Outcome{Position: snap.Position, Snapshot: snap}, errors.New("re-joining an attempt needs its id")
+	}
+	s, err := restoreStream(obs, snap)
+	if err != nil {
+		return Outcome{Position: snap.Position, Snapshot: snap}, err
+	}
+	receipt, err := r.Inspect(ctx, snap.Position.AttemptID)
+	if err != nil {
+		return Outcome{Position: snap.Position, Summary: s.summary(), Snapshot: s.snapshot(snap.Position)}, Describe("inspecting the attempt", err)
+	}
+	if receipt.Phase != runner.PhaseNeedsInput && (snap.Position.ClarificationID != "" || snap.Position.PermissionID != "") {
+		s.clarification = nil
+		s.clarificationFromReceipt = false
+	}
+	return followStream(ctx, r, receipt, snap.Position, obs, s, true)
+}
+
+// RestoreSnapshot reconstructs the normalized event state through pos.Cursor
+// from the runner's retained journal. It is the migration path for older saved
+// states that stored only coordinates and cumulative usage. Replays are silent;
+// obs is consulted only for durable cancellation.
+func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) (Snapshot, error) {
+	if pos.AttemptID == "" {
+		return Snapshot{Position: pos}, errors.New("restoring an attempt needs its id")
+	}
+	if obs == nil {
+		obs = Noop{}
+	}
+	s := newStream(Noop{}, 0)
+	s.turnStarted = pos.SessionID != ""
+	s.recovering = true
+	if pos.Cursor == 0 {
+		return s.snapshot(pos), nil
+	}
+	stream, err := r.Events(ctx, pos.AttemptID, 0)
+	if err != nil {
+		return Snapshot{Position: pos}, Describe("rebuilding saved event state", err)
+	}
+	defer func() { _ = stream.Close() }()
+	for expected := uint64(1); expected <= pos.Cursor; {
+		if err := obs.Aborted(ctx); err != nil {
+			return s.snapshot(pos), err
+		}
+		event, err := stream.Next(ctx)
+		if err != nil {
+			return s.snapshot(pos), fmt.Errorf("rebuilding saved event state through cursor %d at event %d: %w", pos.Cursor, expected, err)
+		}
+		if event.Cursor <= s.cursor {
+			continue
+		}
+		if event.Cursor != expected {
+			return s.snapshot(pos), fmt.Errorf("rebuilding saved event state through cursor %d: expected event %d, got cursor %d", pos.Cursor, expected, event.Cursor)
+		}
+		s.observe(event)
+		expected++
+	}
+	return s.snapshot(pos), nil
+}
+
 // Follow tails an attempt's events from a position to a terminal phase or a
 // park, reporting them through obs, and then reads the receipt — which is the
 // authority on how it ended.
@@ -202,19 +275,50 @@ func Rejoin(ctx context.Context, r Runner, pos Position, obs Observer) (Outcome,
 // caller's cancel flag is consulted, and the receipt is re-read in case the
 // attempt ended during the quiet.
 func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position, obs Observer) (Outcome, error) {
+	return followStream(ctx, r, receipt, from, obs, newStream(obs, from.Cursor), false)
+}
+
+// FollowSnapshot continues from a persisted normalizer snapshot. The summary
+// includes prior text and final output; Summary.Usage is only the spend since
+// the saved cursor, while the returned Snapshot.Usage is cumulative.
+func FollowSnapshot(ctx context.Context, r Runner, receipt runner.Receipt, snap Snapshot, obs Observer) (Outcome, error) {
+	s, err := restoreStream(obs, snap)
+	if err != nil {
+		return Outcome{Position: snap.Position, Snapshot: snap}, err
+	}
+	return followStream(ctx, r, receipt, snap.Position, obs, s, true)
+}
+
+// ResumeSnapshot answers a park and continues with its accumulated normalized
+// state. The new receipt remains authoritative for the session and epoch.
+func ResumeSnapshot(ctx context.Context, r Runner, req runner.ResumeRequest, snap Snapshot, obs Observer) (Outcome, error) {
+	s, err := restoreStream(obs, snap)
+	if err != nil {
+		return Outcome{Position: snap.Position, Snapshot: snap}, err
+	}
+	receipt, err := r.Resume(ctx, req)
+	if err != nil {
+		return Outcome{Position: snap.Position, Summary: s.summary(), Snapshot: s.snapshot(snap.Position)}, Describe("resuming the attempt", err)
+	}
+	s.clarification = nil
+	s.clarificationFromReceipt = false
+	from := snap.Position
+	from.ClarificationID, from.PermissionID = "", ""
+	return followStream(ctx, r, receipt, from, obs, s, true)
+}
+
+func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Position, obs Observer, s *stream, strictHistory bool) (Outcome, error) {
 	if obs == nil {
 		obs = Noop{}
 	}
+	s.obs = obs
 	pos := from
 	pos.Observe(receipt)
 	attemptID := pos.AttemptID
 	if attemptID == "" {
-		return Outcome{Position: pos}, errors.New("following an attempt needs its id")
+		return Outcome{Position: pos, Snapshot: s.snapshot(pos)}, errors.New("following an attempt needs its id")
 	}
-	s := newStream(obs, from.Cursor)
-	if receipt.Clarification != nil {
-		s.clarification = receipt.Clarification
-	}
+	s.observeReceipt(receipt)
 	// caughtUp guards the ONE catch-up pass a terminal receipt is allowed: the
 	// receipt's cursor can be ahead of ours when the phase changed during a
 	// quiet stream, and the events in between are worth one more read. Without
@@ -223,16 +327,19 @@ func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position
 	caughtUp := false
 	for {
 		if err := obs.Aborted(ctx); err != nil {
-			return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()}, err
+			return s.outcome(receipt, pos), err
 		}
 		stream, err := r.Events(ctx, attemptID, s.cursor)
 		if err != nil {
-			return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()},
+			return s.outcome(receipt, pos),
 				Describe("following the attempt", err)
 		}
 		before := s.cursor
-		terminal, quiet, err := drain(ctx, stream, s)
+		terminal, quiet, err := drain(ctx, stream, s, strictHistory)
 		_ = stream.Close()
+		if s.cursor > before {
+			caughtUp = false
+		}
 		switch {
 		case err != nil:
 			// A cursor the runner no longer holds means our view is incomplete,
@@ -242,29 +349,31 @@ func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position
 			if IsSnapshotRequired(err) {
 				reconciled, ierr := r.Inspect(ctx, attemptID)
 				if ierr != nil {
-					return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()},
+					return s.outcome(receipt, pos),
 						Describe("reconciling after a cursor gap", ierr)
 				}
 				receipt = reconciled
 				pos.Observe(reconciled)
-				s.cursor = reconciled.Cursor
-				if reconciled.Clarification != nil {
-					s.clarification = reconciled.Clarification
+				if strictHistory && reconciled.Cursor > s.cursor {
+					return s.outcome(receipt, pos), incompleteHistoryError(s, reconciled.Cursor)
 				}
+				s.cursor = reconciled.Cursor
+				s.observeReceipt(reconciled)
 				if reconciled.Phase.IsTerminal() || reconciled.Phase == runner.PhaseNeedsInput {
 					return outcomeFor(reconciled, pos, s)
 				}
 				continue
 			}
-			return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()}, err
+			return s.outcome(receipt, pos), err
 		case terminal:
 			final, ierr := r.Inspect(ctx, attemptID)
 			if ierr != nil {
-				return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()},
+				return s.outcome(receipt, pos),
 					Describe("reading the finished attempt", ierr)
 			}
 			receipt = final
 			pos.Observe(final)
+			s.observeReceipt(final)
 			// A terminal EVENT and a terminal RECEIPT are two facts, and the
 			// event can arrive first: the runner publishes to subscribers while
 			// it is still settling the attempt. Believing the event over the
@@ -275,9 +384,16 @@ func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position
 			if !final.Phase.IsTerminal() && final.Phase != runner.PhaseNeedsInput {
 				select {
 				case <-ctx.Done():
-					return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()}, ctx.Err()
+					return s.outcome(receipt, pos), ctx.Err()
 				case <-time.After(quietPoll):
 				}
+				continue
+			}
+			if strictHistory && final.Cursor > s.cursor {
+				if caughtUp {
+					return s.outcome(receipt, pos), incompleteHistoryError(s, final.Cursor)
+				}
+				caughtUp = true
 				continue
 			}
 			return outcomeFor(final, pos, s)
@@ -285,14 +401,15 @@ func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position
 			// The runner closed a quiet stream. Offer a checkpoint here — this
 			// is a point where nothing is half-consumed — and ask the receipt
 			// whether the attempt ended while we were not listening.
-			obs.Checkpoint(Snapshot{Position: s.position(pos), Usage: s.usage})
+			obs.Checkpoint(s.snapshot(pos))
 			current, ierr := r.Inspect(ctx, attemptID)
 			if ierr != nil {
-				return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()},
+				return s.outcome(receipt, pos),
 					Describe("checking on the attempt", ierr)
 			}
 			receipt = current
 			pos.Observe(current)
+			s.observeReceipt(current)
 			if current.Phase.IsTerminal() || current.Phase == runner.PhaseNeedsInput {
 				if current.Cursor > s.cursor && !caughtUp {
 					// Events were produced between our last read and the phase
@@ -301,13 +418,16 @@ func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position
 					caughtUp = true
 					continue
 				}
+				if strictHistory && current.Cursor > s.cursor {
+					return s.outcome(receipt, pos), incompleteHistoryError(s, current.Cursor)
+				}
 				return outcomeFor(current, pos, s)
 			}
 			if s.cursor == before {
 				// Nothing new and still running: wait before asking again.
 				select {
 				case <-ctx.Done():
-					return Outcome{Receipt: receipt, Position: s.position(pos), Summary: s.summary()}, ctx.Err()
+					return s.outcome(receipt, pos), ctx.Err()
 				case <-time.After(quietPoll):
 				}
 			}
@@ -317,7 +437,7 @@ func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position
 
 // drain consumes one stream. quiet reports the ordinary end-of-stream the
 // runner sends after a silent interval, as opposed to a terminal event.
-func drain(ctx context.Context, st Stream, s *stream) (terminal, quiet bool, err error) {
+func drain(ctx context.Context, st Stream, s *stream, strictHistory bool) (terminal, quiet bool, err error) {
 	for {
 		event, err := st.Next(ctx)
 		switch {
@@ -326,11 +446,19 @@ func drain(ctx context.Context, st Stream, s *stream) (terminal, quiet bool, err
 		case err != nil:
 			return false, false, err
 		}
+		if strictHistory && event.Cursor <= s.cursor {
+			// Some runner adapters can replay their retained prefix. The cursor
+			// is the dedupe boundary; never count or report an event twice.
+			continue
+		}
+		if strictHistory && event.Cursor != s.cursor+1 {
+			return false, false, incompleteHistoryEventError(s, event.Cursor)
+		}
 		if s.observe(event) {
 			return true, false, nil
 		}
 		if event.Type == runner.EventCheckpoint {
-			s.obs.Checkpoint(Snapshot{Position: s.position(Position{}), Usage: s.usage})
+			s.obs.Checkpoint(s.snapshot(Position{}))
 		}
 	}
 }
@@ -373,7 +501,7 @@ func Cancel(ctx context.Context, r Runner, req runner.CancelRequest) (*runner.Re
 // an Outcome.
 func outcomeFor(receipt runner.Receipt, pos Position, s *stream) (Outcome, error) {
 	pos = s.position(pos)
-	out := Outcome{Receipt: receipt, Position: pos}
+	out := s.outcome(receipt, pos)
 	switch receipt.Phase {
 	case runner.PhaseNeedsInput:
 		// Two parks arrive on this phase and they are not interchangeable. A
@@ -386,6 +514,7 @@ func outcomeFor(receipt runner.Receipt, pos Position, s *stream) (Outcome, error
 			out.Position.ClarificationID = ""
 			out.Parked = &Parked{Permission: permission}
 			out.Summary = s.summary()
+			out.Snapshot = s.snapshot(out.Position)
 			return out, nil
 		}
 		question := s.clarification
@@ -407,20 +536,25 @@ func outcomeFor(receipt runner.Receipt, pos Position, s *stream) (Outcome, error
 		out.Position.PermissionID = ""
 		out.Parked = &Parked{Question: question}
 		out.Summary = s.summary()
+		out.Snapshot = s.snapshot(out.Position)
 		return out, nil
 	case runner.PhaseCancelled, runner.PhaseFailed:
 		s.endOpenTools()
 		out.Summary = s.summary()
+		out.Snapshot = s.snapshot(out.Position)
 		return out, Ended(receipt)
 	case runner.PhaseCompleted:
 		s.endOpenTools()
 		out.Summary = s.summary()
+		s.reportAssistant(out.Summary.Final)
+		out.Snapshot = s.snapshot(pos)
 		return out, nil
 	default:
 		// Not terminal and not parked: the caller only reaches this with a
 		// receipt it believed was one of the two, so say so rather than
 		// reporting a phase as an answer.
 		out.Summary = s.summary()
+		out.Snapshot = s.snapshot(out.Position)
 		return out, fmt.Errorf("attempt %s is %s, which is neither finished nor waiting", receipt.AttemptID, receipt.Phase)
 	}
 }
@@ -438,7 +572,47 @@ func (s *stream) summary() Summary {
 	if strings.TrimSpace(text) == "" {
 		text = final
 	}
-	return Summary{Text: text, Final: final, Usage: s.usage}
+	return Summary{Text: text, Final: final, Usage: usageDelta(s.usage, s.usageAtStart)}
+}
+
+func (s *stream) reportAssistant(content string) {
+	if s.turnDuration <= 0 {
+		return
+	}
+	duration := s.turnDuration - s.toolDuration
+	if duration < 0 {
+		duration = 0
+	}
+	if observer, ok := s.obs.(AssistantObserver); ok {
+		observer.Assistant(AssistantResult{Content: content, Complete: true, Duration: duration})
+	}
+}
+
+func incompleteHistoryError(s *stream, runnerCursor uint64) error {
+	cursorKind := "observed"
+	verb := "follow"
+	if s.recovering {
+		cursorKind = "saved"
+		verb = "recover"
+	}
+	return fmt.Errorf("cannot %s attempt: event history is incomplete after %s cursor %d (runner cursor %d)",
+		verb, cursorKind, s.cursor, runnerCursor)
+}
+
+func incompleteHistoryEventError(s *stream, nextCursor uint64) error {
+	cursorKind := "observed"
+	verb := "follow"
+	if s.recovering {
+		cursorKind = "saved"
+		verb = "recover"
+	}
+	return fmt.Errorf("cannot %s attempt: event history is incomplete after %s cursor %d (next event cursor %d)",
+		verb, cursorKind, s.cursor, nextCursor)
+}
+
+func (s *stream) outcome(receipt runner.Receipt, pos Position) Outcome {
+	pos = s.position(pos)
+	return Outcome{Receipt: receipt, Position: pos, Summary: s.summary(), Snapshot: s.snapshot(pos)}
 }
 
 // position folds the stream's cursor into a position.

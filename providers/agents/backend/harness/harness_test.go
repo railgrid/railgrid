@@ -41,13 +41,18 @@ type fakeRunner struct {
 	// the sequence Inspect walks through, one per call.
 	receipt runner.Receipt
 	phases  []runner.Phase
+	// inspectReceipts and resumeReceipt let recovery tests script transitions
+	// that happen while an answer is in flight.
+	inspectReceipts []runner.Receipt
+	resumeReceipt   *runner.Receipt
 
 	// events is the stream the backend tails. It ends in io.EOF, which is how the
 	// runner ends a quiet stream.
 	events []runner.Event
 
-	startErr error
-	inspects int
+	startErr         error
+	eventsErrorAfter uint64
+	inspects         int
 }
 
 func (f *fakeRunner) Start(_ context.Context, req runner.StartRequest) (runner.Receipt, error) {
@@ -64,6 +69,9 @@ func (f *fakeRunner) Resume(_ context.Context, req runner.ResumeRequest) (runner
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resumes = append(f.resumes, req)
+	if f.resumeReceipt != nil {
+		f.receipt = *f.resumeReceipt
+	}
 	return f.current(), nil
 }
 
@@ -85,6 +93,10 @@ func (f *fakeRunner) Inspect(_ context.Context, _ string) (runner.Receipt, error
 			f.phases = f.phases[1:]
 		}
 	}
+	if len(f.inspectReceipts) > 0 {
+		f.receipt = f.inspectReceipts[0]
+		f.inspectReceipts = f.inspectReceipts[1:]
+	}
 	return f.current(), nil
 }
 
@@ -101,9 +113,12 @@ func (f *fakeRunner) Events(_ context.Context, _ string, after uint64) (dispatch
 	defer f.mu.Unlock()
 	var out []runner.Event
 	for _, e := range f.events {
-		if e.Cursor > after {
+		if e.Cursor > after && (f.eventsErrorAfter == 0 || e.Cursor <= f.eventsErrorAfter) {
 			out = append(out, e)
 		}
+	}
+	if f.eventsErrorAfter > after {
+		return &failingSliceStream{sliceStream: sliceStream{events: out}, err: errors.New("simulated stream loss")}, nil
 	}
 	return &sliceStream{events: out}, nil
 }
@@ -127,18 +142,33 @@ func (s *sliceStream) Next(ctx context.Context) (runner.Event, error) {
 
 func (s *sliceStream) Close() error { return nil }
 
+type failingSliceStream struct {
+	sliceStream
+	err error
+}
+
+func (s *failingSliceStream) Next(ctx context.Context) (runner.Event, error) {
+	if s.i < len(s.events) {
+		return s.sliceStream.Next(ctx)
+	}
+	return runner.Event{}, s.err
+}
+
 // ---- a sink that records ----------------------------------------------------
 
 type recordingSink struct {
 	deltas      []string
 	toolStarts  []string
 	toolEnds    []backend.ToolEvent
+	assistants  []backend.AssistantMessage
 	checkpoints []json.RawMessage
 	abort       error
 }
 
-func (r *recordingSink) Delta(text string)                  { r.deltas = append(r.deltas, text) }
-func (r *recordingSink) Assistant(backend.AssistantMessage) {}
+func (r *recordingSink) Delta(text string) { r.deltas = append(r.deltas, text) }
+func (r *recordingSink) Assistant(msg backend.AssistantMessage) {
+	r.assistants = append(r.assistants, msg)
+}
 func (r *recordingSink) ToolStart(id, name, _ string) {
 	r.toolStarts = append(r.toolStarts, id+":"+name)
 }
@@ -178,6 +208,18 @@ func testConfig(f *fakeRunner, epoch uint64, session string) Config {
 
 func testRun() *backend.Run {
 	return &backend.Run{ID: "run-1", SessionID: "chat", Agent: "scout", Trigger: "chat"}
+}
+
+func parkedState(t *testing.T, out backend.Outcome) State {
+	t.Helper()
+	if out.Parked == nil {
+		t.Fatal("outcome is not parked")
+	}
+	var state State
+	if err := json.Unmarshal(out.Parked.State, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 // ---- the dispatch contract --------------------------------------------------
@@ -341,6 +383,9 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	if state.AttemptID != "run-1" || state.ClarificationID != "clar-7" || state.SessionID != "sess-1" {
 		t.Fatalf("resume state = %+v, want the coordinates the answer is sent to", state)
 	}
+	if state.ParkType != parkTypeQuestion || len(state.Snapshot) == 0 {
+		t.Fatalf("resume state park/snapshot = %q / %s, want a question and normalized snapshot", state.ParkType, state.Snapshot)
+	}
 
 	// Answering it resumes THAT question, in that session, at that epoch.
 	answered := &fakeRunner{
@@ -497,9 +542,10 @@ func TestProgressMapsOntoTheSinkAsThePayloadsAllow(t *testing.T) {
 	}
 }
 
-// A cursor the runner no longer holds is reconciled with Inspect and the turn
-// carries on, rather than failing over a dropped event.
-func TestCursorGapReconcilesInsteadOfFailing(t *testing.T) {
+// An agent outcome depends on its complete transcript and usage. If the runner
+// cannot supply a cursor gap, the adapter must fail instead of returning a
+// partial completion from the terminal receipt.
+func TestFreshCursorGapDoesNotReturnAnEmptyCompletion(t *testing.T) {
 	f := &gappyRunner{fakeRunner: fakeRunner{
 		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, Cursor: 9},
 		phases:  []runner.Phase{runner.PhaseCompleted},
@@ -508,11 +554,11 @@ func TestCursorGapReconcilesInsteadOfFailing(t *testing.T) {
 	cfg.Runner = f
 	out, err := New(cfg).Turn(context.Background(), testRun(),
 		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "hi"}}}, &recordingSink{})
-	if err != nil {
-		t.Fatalf("Turn: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete") {
+		t.Fatalf("Turn error = %v, want an explicit incomplete-history error", err)
 	}
-	if out.Status != backend.StatusCompleted {
-		t.Fatalf("status = %s, want the reconciled completion", out.Status)
+	if out.Status != backend.StatusFailed {
+		t.Fatalf("status = %s, want failed rather than a partial completion", out.Status)
 	}
 }
 
@@ -669,6 +715,811 @@ func TestPermissionApprovalResumesWithAVerdict(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestContinueDoesNotApplyAnOldAnswerToANewerPark(t *testing.T) {
+	tests := []struct {
+		name  string
+		state State
+		rcpt  runner.Receipt
+		check func(*testing.T, backend.Outcome)
+	}{
+		{
+			name: "new permission ID",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				PermissionID: "permission-old", ParkType: parkTypePermission,
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:    "permission for a new call",
+				Permission: &runner.PermissionRequest{ID: "permission-new", Tool: "Bash", Input: `{"command":"new call"}`},
+			},
+			check: func(t *testing.T, out backend.Outcome) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Tool != "Bash" {
+					t.Fatalf("parked outcome = %+v, want the new Bash permission", out.Parked)
+				}
+				var state State
+				if err := json.Unmarshal(out.Parked.State, &state); err != nil || state.PermissionID != "permission-new" {
+					t.Fatalf("re-parked state = %+v (%v), want permission-new", state, err)
+				}
+			},
+		},
+		{
+			name: "new clarification ID",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				ClarificationID: "clarification-old", ParkType: parkTypeQuestion,
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:       "the new question",
+				Clarification: &runner.Clarification{ID: "clarification-new", Text: "the new question"},
+			},
+			check: func(t *testing.T, out backend.Outcome) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Question != "the new question" {
+					t.Fatalf("parked outcome = %+v, want the new question", out.Parked)
+				}
+				var state State
+				if err := json.Unmarshal(out.Parked.State, &state); err != nil || state.ClarificationID != "clarification-new" {
+					t.Fatalf("re-parked state = %+v (%v), want clarification-new", state, err)
+				}
+			},
+		},
+		{
+			name: "same ID but a different park type",
+			state: State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				PermissionID: "same-id", ParkType: parkTypePermission,
+			},
+			rcpt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Blocker:       "a question with a colliding ID",
+				Clarification: &runner.Clarification{ID: "same-id", Text: "a question with a colliding ID"},
+			},
+			check: func(t *testing.T, out backend.Outcome) {
+				t.Helper()
+				if out.Parked == nil || out.Parked.Question != "a question with a colliding ID" {
+					t.Fatalf("parked outcome = %+v, want the current question", out.Parked)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.state.Snapshot) == 0 {
+				snapshot, err := json.Marshal(dispatch.Snapshot{
+					Position: tc.state.position(), State: json.RawMessage(`{"version":1}`),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.state.Snapshot = snapshot
+			}
+			f := &fakeRunner{
+				receipt: tc.rcpt,
+				events:  []runner.Event{event(2, runner.EventNeedsInput, tc.rcpt.Blocker, "")},
+			}
+			state, err := json.Marshal(tc.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+				State: state, Decided: true, Approved: true, Note: "answer for the old park",
+			}, &recordingSink{})
+			if err != nil {
+				t.Fatalf("Continue: %v", err)
+			}
+			if len(f.resumes) != 0 {
+				t.Fatalf("resumes = %+v, want the new park left unanswered", f.resumes)
+			}
+			if out.Status != backend.StatusParked {
+				t.Fatalf("status = %s, want parked", out.Status)
+			}
+			tc.check(t, out)
+		})
+	}
+}
+
+func TestLegacyAnonymousQuestionStillAcceptsItsAnswer(t *testing.T) {
+	state, err := marshalStateWithSnapshot(t, State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Blocker: "the harness is waiting for an answer",
+		},
+		events: []runner.Event{event(2, runner.EventNeedsInput, "the harness is waiting for an answer", "")},
+	}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: state, Decided: true, Approved: true, Note: "use the patch version",
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("Continue legacy anonymous question: %v", err)
+	}
+	if len(f.resumes) != 1 || f.resumes[0].ClarificationID != "" || f.resumes[0].Resolution != "use the patch version" {
+		t.Fatalf("resume = %+v, want the answer applied to the anonymous question", f.resumes)
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Question == "" {
+		t.Fatalf("outcome = %+v, want the runner's current question", out)
+	}
+}
+
+func TestContinueRejectsAStateFromAnotherRunner(t *testing.T) {
+	f := &fakeRunner{}
+	cfg := testConfig(f, 1, "sess-1")
+	cfg.BackendKey = "edge-b"
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, BackendKey: "edge-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(cfg).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+	if err == nil || !strings.Contains(err.Error(), "different harness backend") {
+		t.Fatalf("Continue error = %v, want a backend identity mismatch", err)
+	}
+	if f.inspects != 0 || len(f.resumes) != 0 {
+		t.Fatalf("runner calls after backend mismatch: inspections=%d resumes=%d", f.inspects, len(f.resumes))
+	}
+}
+
+func TestSpentAccumulatesAcrossParksAndSkipsAlreadyObservedEvents(t *testing.T) {
+	first := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "first question"},
+		},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"usage":{"input_tokens":100,"output_tokens":10},"total_cost_usd":0.01}`),
+			event(2, runner.EventNeedsInput, "first question", ""),
+		},
+	}
+	firstOut, err := New(testConfig(first, 1, "")).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}}}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("initial turn: %v", err)
+	}
+	firstState := parkedState(t, firstOut)
+	wantFirstSpent := backend.Cost{Tokens: backend.Tokens{InputTokens: 100, OutputTokens: 10}, CostMicros: 10_000}
+	if firstState.Cursor != 2 || firstState.Spent != wantFirstSpent {
+		t.Fatalf("first parked state = %+v, want cursor 2 and cumulative usage %+v", firstState, wantFirstSpent)
+	}
+
+	second := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "second question"},
+		},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"usage":{"input_tokens":100,"output_tokens":10},"total_cost_usd":0.01}`),
+			event(2, runner.EventNeedsInput, "first question", ""),
+			event(3, runner.EventProgress, "", `{"usage":{"input_tokens":50,"output_tokens":5},"total_cost_usd":0.02}`),
+			event(4, runner.EventNeedsInput, "second question", ""),
+		},
+	}
+	secondOut, err := New(testConfig(second, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: firstOut.Parked.State,
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("rejoin through second park: %v", err)
+	}
+	secondState := parkedState(t, secondOut)
+	wantSecondSpent := backend.Cost{Tokens: backend.Tokens{InputTokens: 150, OutputTokens: 15}, CostMicros: 30_000}
+	if secondState.Cursor != 4 || secondState.Spent != wantSecondSpent {
+		t.Fatalf("second parked state = %+v, want cursor 4 and cumulative usage %+v", secondState, wantSecondSpent)
+	}
+	if secondOut.Usage.Billed != (backend.Cost{Tokens: backend.Tokens{InputTokens: 50, OutputTokens: 5}, CostMicros: 20_000}) {
+		t.Fatalf("second park billed %+v, want only the new segment", secondOut.Usage.Billed)
+	}
+
+	third := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"usage":{"input_tokens":100,"output_tokens":10},"total_cost_usd":0.01}`),
+			event(2, runner.EventNeedsInput, "first question", ""),
+			event(3, runner.EventProgress, "", `{"usage":{"input_tokens":50,"output_tokens":5},"total_cost_usd":0.02}`),
+			event(4, runner.EventNeedsInput, "second question", ""),
+			event(5, runner.EventProgress, "", `{"usage":{"input_tokens":25,"output_tokens":3},"total_cost_usd":0.03}`),
+			event(6, runner.EventCompleted, "", ""),
+		},
+	}
+	completed, err := New(testConfig(third, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+		State: secondOut.Parked.State,
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("rejoin to completion: %v", err)
+	}
+	wantBilled := backend.Cost{Tokens: backend.Tokens{InputTokens: 25, OutputTokens: 3}, CostMicros: 30_000}
+	wantTotal := backend.Cost{Tokens: backend.Tokens{InputTokens: 175, OutputTokens: 18}, CostMicros: 60_000}
+	if completed.Usage.Billed != wantBilled || completed.Usage.Total != wantTotal {
+		t.Fatalf("final usage = %+v, want billed %+v and total %+v", completed.Usage, wantBilled, wantTotal)
+	}
+}
+
+func TestCheckpointRecoveryRestoresDispatchSnapshotAtTerminalReceipt(t *testing.T) {
+	initial := &fakeRunner{
+		receipt:          runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseRunning, SessionID: "sess-1"},
+		eventsErrorAfter: 6,
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"turn":{"status":"inProgress"}}`),
+			event(2, runner.EventProgress, "The result is done.", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"The result is done."}`),
+			event(3, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":600,"outputTokens":10},"total":{"inputTokens":600,"outputTokens":10}}}`),
+			event(4, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"go test ./...","status":"inProgress"}}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"The result is done.","phase":"final_answer"}}`),
+			event(6, runner.EventCheckpoint, "", ""),
+		},
+	}
+	initialSink := &recordingSink{}
+	cfg := testConfig(initial, 1, "")
+	cfg.BackendKey = "sha256:runner-a"
+	_, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "run tests"}},
+	}, initialSink)
+	if err == nil || !strings.Contains(err.Error(), "simulated stream loss") {
+		t.Fatalf("Turn error = %v, want the simulated loss after its checkpoint", err)
+	}
+	if len(initialSink.checkpoints) != 1 {
+		t.Fatalf("checkpoints = %d, want the cursor-6 snapshot", len(initialSink.checkpoints))
+	}
+	var checkpoint State
+	if err := json.Unmarshal(initialSink.checkpoints[0], &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Cursor != 6 || checkpoint.BackendKey != "sha256:runner-a" || checkpoint.Spent.InputTokens != 600 {
+		t.Fatalf("checkpoint = %+v, want cursor 6, runner key and 600 input tokens", checkpoint)
+	}
+	var saved dispatch.Snapshot
+	if err := json.Unmarshal(checkpoint.Snapshot, &saved); err != nil {
+		t.Fatal(err)
+	}
+	var normalized struct {
+		Text  string `json:"text"`
+		Final string `json:"final"`
+		Tools map[string]struct {
+			Ended bool `json:"ended"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(saved.State, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Text != "The result is done." || normalized.Final != "The result is done." || normalized.Tools["exec-1"].Ended {
+		t.Fatalf("normalized checkpoint = %+v, want text/final and open tool state", normalized)
+	}
+
+	// Rejoin after the process died. The snapshot supplies the normalized prefix
+	// while the runner supplies only the tail after cursor 6.
+	recovered := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"turn":{"status":"inProgress"}}`),
+			event(2, runner.EventProgress, "The result is done.", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"The result is done."}`),
+			event(3, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":600,"outputTokens":10},"total":{"inputTokens":600,"outputTokens":10}}}`),
+			event(4, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"go test ./...","status":"inProgress"}}`),
+			event(5, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"The result is done.","phase":"final_answer"}}`),
+			event(6, runner.EventCheckpoint, "", ""),
+			event(7, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":600,"outputTokens":10},"total":{"inputTokens":600,"outputTokens":10}}}`),
+			event(8, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"go test ./...","status":"completed","durationMs":850,"aggregatedOutput":"ok"}}`),
+			event(9, runner.EventProgress, "completed", `{"turn":{"id":"turn-1","status":"completed","durationMs":1340}}`),
+			event(10, runner.EventCompleted, "", ""),
+		},
+	}
+	resumeCfg := testConfig(recovered, 1, "sess-1")
+	resumeCfg.BackendKey = "sha256:runner-a"
+	recoveredSink := &recordingSink{}
+	out, err := New(resumeCfg).Continue(context.Background(), testRun(), backend.Answer{State: initialSink.checkpoints[0]}, recoveredSink)
+	if err != nil {
+		t.Fatalf("Continue from terminal receipt: %v", err)
+	}
+	if out.Status != backend.StatusCompleted || out.Text != "The result is done." || out.Final != "The result is done." {
+		t.Fatalf("recovered outcome = status %s, text %q, final %q", out.Status, out.Text, out.Final)
+	}
+	if len(recoveredSink.deltas) != 0 || len(recoveredSink.toolStarts) != 0 || len(recoveredSink.toolEnds) != 1 {
+		t.Fatalf("recovered events = deltas %q, starts %q, ends %+v", recoveredSink.deltas, recoveredSink.toolStarts, recoveredSink.toolEnds)
+	}
+	if recoveredSink.toolEnds[0].ID != "exec-1" || recoveredSink.toolEnds[0].Duration != 850*time.Millisecond {
+		t.Fatalf("recovered tool end = %+v, want the saved open call closed with its duration", recoveredSink.toolEnds[0])
+	}
+	if got := out.Usage; got.Total.InputTokens != 600 || got.Total.OutputTokens != 10 || got.Billed.InputTokens != 0 || got.Billed.OutputTokens != 0 {
+		t.Fatalf("recovered usage = %+v, want 600/10 total and no duplicate billing", got)
+	}
+	if len(recoveredSink.assistants) != 1 || recoveredSink.assistants[0].Duration != 490*time.Millisecond {
+		t.Fatalf("recovered assistant messages = %+v, want 490ms after subtracting the restored tool", recoveredSink.assistants)
+	}
+}
+
+func TestLegacyResumeReplaysPrefixSilentlyAndResetsReplayCost(t *testing.T) {
+	legacy, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 3,
+		Spent: backend.Cost{Tokens: backend.Tokens{InputTokens: 20, OutputTokens: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"turn":{"status":"inProgress"}}`),
+			event(2, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":20,"outputTokens":2},"total":{"inputTokens":20,"outputTokens":2}}}`),
+			event(3, runner.EventProgress, "old ", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"old "}`),
+			event(4, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":20,"outputTokens":2},"total":{"inputTokens":20,"outputTokens":2}}}`),
+			event(5, runner.EventProgress, "tail", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"tail"}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"old tail","phase":"final_answer"}}`),
+			event(7, runner.EventCompleted, "", ""),
+		},
+	}
+	sink := &recordingSink{}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: legacy}, sink)
+	if err != nil {
+		t.Fatalf("Continue legacy state: %v", err)
+	}
+	if out.Text != "old tail" || out.Final != "old tail" {
+		t.Fatalf("legacy recovery text/final = %q / %q, want the replayed prefix plus tail", out.Text, out.Final)
+	}
+	if len(sink.deltas) != 1 || sink.deltas[0] != "tail" {
+		t.Fatalf("legacy recovery deltas = %q, want only the post-cursor tail", sink.deltas)
+	}
+	if out.Usage.Total.InputTokens != 20 || out.Usage.Total.OutputTokens != 2 || out.Usage.Billed != (backend.Cost{}) {
+		t.Fatalf("legacy recovery usage = %+v, want replayed spend once and no second bill", out.Usage)
+	}
+}
+
+func TestLegacySnapshotMigratesWithoutReplayingAnExpiredPrefix(t *testing.T) {
+	legacySnapshot := json.RawMessage(`{"version":1,"text":"saved prefix ","final":"saved prefix ","codexTurnID":"turn-1","turnStarted":true,"codexTotalTokens":22,"codexTotalSeen":true,"codexLast":"same-call"}`)
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 3,
+		Spent: backend.Cost{Tokens: backend.Tokens{InputTokens: 20, OutputTokens: 2}}, Snapshot: legacySnapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &legacySnapshotRunner{fakeRunner: fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events: []runner.Event{
+			event(4, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":20,"outputTokens":2},"total":{"inputTokens":20,"outputTokens":2}}}`),
+			event(5, runner.EventProgress, "tail", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg-1","delta":"tail"}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"saved prefix tail","phase":"final_answer"}}`),
+			event(7, runner.EventCompleted, "", ""),
+		},
+	}}
+	sink := &recordingSink{}
+	cfg := testConfig(&f.fakeRunner, 1, "sess-1")
+	cfg.Runner = f
+	out, err := New(cfg).Continue(context.Background(), testRun(), backend.Answer{State: state}, sink)
+	if err != nil {
+		t.Fatalf("Continue v1 snapshot: %v", err)
+	}
+	if out.Text != "saved prefix tail" || out.Usage.Billed != (backend.Cost{}) {
+		t.Fatalf("migrated snapshot outcome = text %q, usage %+v", out.Text, out.Usage)
+	}
+	if len(sink.deltas) != 1 || sink.deltas[0] != "tail" {
+		t.Fatalf("v1 snapshot replayed deltas %q, want only the tail", sink.deltas)
+	}
+	if f.zeroCursorReads != 0 {
+		t.Fatalf("v1 snapshot made %d reads from cursor zero; its saved normalizer must survive expired prefix history", f.zeroCursorReads)
+	}
+}
+
+func TestRejoinUsesNewestClarificationFromTheTail(t *testing.T) {
+	state := State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		ClarificationID: "clarification-old", ParkType: parkTypeQuestion,
+	}
+	inner, err := json.Marshal(struct {
+		Version       int                   `json:"version"`
+		Text          string                `json:"text,omitempty"`
+		Clarification *runner.Clarification `json:"clarification,omitempty"`
+	}{Version: 1, Text: "saved prefix\n", Clarification: &runner.Clarification{ID: "clarification-old", Text: "the old question"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := json.Marshal(dispatch.Snapshot{Position: state.position(), State: inner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Snapshot = snapshot
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Blocker: "the newest question",
+		},
+		events: []runner.Event{
+			event(1, runner.EventNeedsInput, "the old question", `{"clarification":{"id":"clarification-old","text":"the old question"}}`),
+			event(2, runner.EventNeedsInput, "the middle question", `{"clarification":{"id":"clarification-middle","text":"the middle question"}}`),
+			event(3, runner.EventNeedsInput, "the newest question", `{"clarification":{"id":"clarification-new","text":"the newest question"}}`),
+		},
+	}
+	out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: raw}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Question != "the newest question" {
+		t.Fatalf("rejoined park = %+v, want the newest question", out.Parked)
+	}
+	if got := parkedState(t, out).ClarificationID; got != "clarification-new" {
+		t.Fatalf("rejoined clarification ID = %q, want clarification-new", got)
+	}
+}
+
+func TestAnsweredClarificationDoesNotReplaceANewerQuestion(t *testing.T) {
+	first := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "the first question"},
+		},
+		events: []runner.Event{
+			event(1, runner.EventNeedsInput, "the first question", `{"clarification":{"id":"clar-1","text":"the first question"}}`),
+		},
+	}
+	parked, err := New(testConfig(first, 1, "")).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("initial turn: %v", err)
+	}
+
+	oldPark := first.receipt
+	newPark := runner.Receipt{
+		AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+		Blocker:       "the new question",
+		Clarification: &runner.Clarification{ID: "clar-2", Text: "the new question"},
+	}
+	running := runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseRunning, SessionID: "sess-1"}
+	continued := &fakeRunner{
+		receipt:         newPark,
+		inspectReceipts: []runner.Receipt{oldPark, newPark},
+		resumeReceipt:   &running,
+		events: []runner.Event{
+			event(1, runner.EventNeedsInput, "the first question", `{"clarification":{"id":"clar-1","text":"the first question"}}`),
+			event(2, runner.EventAccepted, "resume accepted", ""),
+			event(3, runner.EventNeedsInput, "the new question", `{"clarification":{"id":"clar-2","text":"the new question"}}`),
+		},
+	}
+	answer := backend.Answer{State: parked.Parked.State, Decided: true, Note: "the answer"}
+	out, err := New(testConfig(continued, 1, "sess-1")).Continue(context.Background(), testRun(), answer, &recordingSink{})
+	if err != nil {
+		t.Fatalf("continue to second question: %v", err)
+	}
+	if len(continued.resumes) != 1 || continued.resumes[0].ClarificationID != "clar-1" {
+		t.Fatalf("resume = %+v, want the answered clarification ID", continued.resumes)
+	}
+	if out.Status != backend.StatusParked || out.Parked == nil || out.Parked.Question != "the new question" {
+		t.Fatalf("second park = %+v, want the new question", out.Parked)
+	}
+	if got := parkedState(t, out).ClarificationID; got != "clar-2" {
+		t.Fatalf("second clarification ID = %q, want clar-2", got)
+	}
+}
+
+func TestRecoveryDrainsPastAnOldNeedsInputEventWhenReceiptIsTerminal(t *testing.T) {
+	for _, oldTerminal := range []string{runner.EventNeedsInput, runner.EventCompleted} {
+		t.Run(oldTerminal, func(t *testing.T) {
+			inner := json.RawMessage(`{"version":1,"text":"already observed\n"}`)
+			state, err := json.Marshal(State{
+				TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+				Snapshot: inner,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeRunner{
+				receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+				events: []runner.Event{
+					event(1, runner.EventProgress, "already observed", ""),
+					event(2, oldTerminal, "", ""),
+					event(3, runner.EventProgress, "", `{"type":"result","subtype":"success","is_error":false,"result":"the approved command finished"}`),
+					event(4, runner.EventCompleted, "", ""),
+				},
+			}
+			out, err := New(testConfig(f, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+			if err != nil {
+				t.Fatalf("Continue: %v", err)
+			}
+			if out.Status != backend.StatusCompleted || out.Final != "the approved command finished" {
+				t.Fatalf("recovered outcome = status %s, final %q; want completion after old %s event", out.Status, out.Final, oldTerminal)
+			}
+		})
+	}
+}
+
+func TestRecoveryFailsWhenQuietStreamsCannotReachTerminalReceiptCursor(t *testing.T) {
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		Snapshot: json.RawMessage(`{"version":1,"text":"saved prefix\n"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &quietRunner{fakeRunner: fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1", Cursor: 4},
+	}}
+	out, err := New(testConfig(&f.fakeRunner, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{State: state}, &recordingSink{})
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
+		t.Fatalf("Continue error = %v, want an explicit error for the unavailable terminal tail", err)
+	}
+	if out.Status != backend.StatusFailed {
+		t.Fatalf("status = %s, want failed instead of a partial completion", out.Status)
+	}
+}
+
+func TestRecoveredSnapshotFailsWhenPostCheckpointEventsExpired(t *testing.T) {
+	state, err := json.Marshal(State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 1,
+		Snapshot: json.RawMessage(`{"version":1,"text":"saved prefix","final":"saved prefix"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &gappyRunner{fakeRunner: fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events: []runner.Event{
+			event(1, runner.EventProgress, "already saved", ""),
+			event(2, runner.EventCompleted, "", ""),
+		},
+	}}
+	cfg := testConfig(&f.fakeRunner, 1, "sess-1")
+	cfg.Runner = f
+	sink := &recordingSink{}
+	out, err := New(cfg).Continue(context.Background(), testRun(), backend.Answer{State: state}, sink)
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
+		t.Fatalf("Continue error = %v, want an explicit error for the expired post-checkpoint tail", err)
+	}
+	if out.Status != backend.StatusFailed || len(sink.deltas) != 0 {
+		t.Fatalf("outcome = %+v, deltas %q; want failure without partial transcript", out, sink.deltas)
+	}
+}
+
+func TestCodexResumeTimingResetsOnlyForClarification(t *testing.T) {
+	turnOne := []runner.Event{
+		event(1, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
+		event(2, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"inProgress"}}`),
+		event(3, runner.EventProgress, "", `{"item":{"id":"tool-1","type":"commandExecution","command":"first","status":"completed","durationMs":400}}`),
+	}
+	running := runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseRunning, SessionID: "sess-1"}
+	completedReceipt := runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"}
+
+	t.Run("clarification starts a new native turn", func(t *testing.T) {
+		firstPark := runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "continue?"},
+		}
+		initial := &fakeRunner{receipt: firstPark, events: append(append([]runner.Event{}, turnOne...),
+			event(4, runner.EventNeedsInput, "first question", ""),
+		)}
+		firstOut, err := New(testConfig(initial, 1, "")).Turn(context.Background(), testRun(), backend.Input{
+			Messages: []backend.Message{{Role: backend.RoleUser, Content: "start"}},
+		}, &recordingSink{})
+		if err != nil {
+			t.Fatalf("initial turn: %v", err)
+		}
+
+		secondPark := runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-2", Text: "continue again?"},
+		}
+		secondEvents := append(append([]runner.Event{}, turnOne...),
+			event(4, runner.EventNeedsInput, "first question", ""),
+			event(5, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"inProgress"}}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(7, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(8, runner.EventNeedsInput, "second question", `{"clarification":{"id":"clar-2","text":"continue again?"}}`),
+		)
+		resumeRunner := &fakeRunner{
+			receipt: secondPark, inspectReceipts: []runner.Receipt{firstPark, secondPark},
+			resumeReceipt: &running, events: secondEvents,
+		}
+		secondOut, err := New(testConfig(resumeRunner, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+			State: firstOut.Parked.State, Decided: true, Note: "yes",
+		}, &recordingSink{})
+		if err != nil {
+			t.Fatalf("continue to second park: %v", err)
+		}
+		secondState := parkedState(t, secondOut)
+		turn, tools := codexTimingSnapshot(t, secondState)
+		if turn != "turn-2" || tools != int64(500*time.Millisecond) {
+			t.Fatalf("second turn timing = %q / %s, want turn-2 and 500ms", turn, time.Duration(tools))
+		}
+
+		thirdEvents := []runner.Event{
+			event(9, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-3","status":"inProgress"}}`),
+			event(10, runner.EventProgress, "completed", `{"turn":{"id":"turn-3","status":"completed","durationMs":1500}}`),
+			event(11, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Done.","phase":"final_answer"}}`),
+			event(12, runner.EventCompleted, "", ""),
+		}
+		thirdRunner := &fakeRunner{
+			receipt: completedReceipt, inspectReceipts: []runner.Receipt{secondPark, completedReceipt},
+			resumeReceipt: &running, events: thirdEvents,
+		}
+		thirdSink := &recordingSink{}
+		completed, err := New(testConfig(thirdRunner, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+			State: secondOut.Parked.State, Decided: true, Note: "yes",
+		}, thirdSink)
+		if err != nil {
+			t.Fatalf("continue to completion: %v", err)
+		}
+		if completed.Status != backend.StatusCompleted || len(thirdSink.assistants) != 1 || thirdSink.assistants[0].Duration != 1500*time.Millisecond {
+			t.Fatalf("completed timing = status %s, assistants %+v; want a fresh 1500ms turn", completed.Status, thirdSink.assistants)
+		}
+	})
+
+	t.Run("permission verdict stays in the current native turn", func(t *testing.T) {
+		permission := &runner.PermissionRequest{ID: "permission-1", Tool: "Bash", Input: `{"command":"second"}`}
+		firstPark := runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1", Permission: permission,
+		}
+		initial := &fakeRunner{receipt: firstPark, events: append(append([]runner.Event{}, turnOne...),
+			event(4, runner.EventNeedsInput, "permission required", ""),
+		)}
+		firstOut, err := New(testConfig(initial, 1, "")).Turn(context.Background(), testRun(), backend.Input{
+			Messages: []backend.Message{{Role: backend.RoleUser, Content: "run the command"}},
+		}, &recordingSink{})
+		if err != nil {
+			t.Fatalf("initial permission park: %v", err)
+		}
+		firstState := parkedState(t, firstOut)
+		turn, tools := codexTimingSnapshot(t, firstState)
+		if turn != "turn-1" || tools != int64(400*time.Millisecond) {
+			t.Fatalf("permission timing = %q / %s, want turn-1 and 400ms", turn, time.Duration(tools))
+		}
+
+		tail := []runner.Event{
+			event(5, runner.EventProgress, "permission granted", ""),
+			event(6, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"inProgress"}}`),
+			event(7, runner.EventProgress, "", `{"item":{"id":"tool-2","type":"commandExecution","command":"second","status":"completed","durationMs":500}}`),
+			event(8, runner.EventProgress, "completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","durationMs":1500}}`),
+			event(9, runner.EventProgress, "", `{"item":{"id":"msg-1","type":"agentMessage","text":"Done.","phase":"final_answer"}}`),
+			event(10, runner.EventCompleted, "", ""),
+		}
+		events := append(append([]runner.Event{}, turnOne...), event(4, runner.EventNeedsInput, "permission required", ""))
+		events = append(events, tail...)
+		resumeRunner := &fakeRunner{
+			receipt: completedReceipt, inspectReceipts: []runner.Receipt{firstPark, completedReceipt},
+			resumeReceipt: &running, events: events,
+		}
+		sink := &recordingSink{}
+		out, err := New(testConfig(resumeRunner, 1, "sess-1")).Continue(context.Background(), testRun(), backend.Answer{
+			State: firstOut.Parked.State, Decided: true, Approved: true,
+		}, sink)
+		if err != nil {
+			t.Fatalf("approve and continue: %v", err)
+		}
+		if out.Status != backend.StatusCompleted || len(sink.assistants) != 1 || sink.assistants[0].Duration != 600*time.Millisecond {
+			t.Fatalf("completed timing = status %s, assistants %+v; want 600ms after both same-turn tools", out.Status, sink.assistants)
+		}
+	})
+}
+
+func codexTimingSnapshot(t *testing.T, state State) (string, int64) {
+	t.Helper()
+	var snapshot dispatch.Snapshot
+	if err := json.Unmarshal(state.Snapshot, &snapshot); err != nil {
+		t.Fatalf("decode dispatch snapshot: %v", err)
+	}
+	var normalized struct {
+		CodexTurnID    string `json:"codexTurnID"`
+		ToolDurationNS int64  `json:"toolDurationNS"`
+	}
+	if err := json.Unmarshal(snapshot.State, &normalized); err != nil {
+		t.Fatalf("decode normalizer snapshot: %v", err)
+	}
+	return normalized.CodexTurnID, normalized.ToolDurationNS
+}
+
+type quietRunner struct{ fakeRunner }
+
+func (q *quietRunner) Events(context.Context, string, uint64) (dispatch.Stream, error) {
+	return &sliceStream{}, nil
+}
+
+type legacySnapshotRunner struct {
+	fakeRunner
+	zeroCursorReads int
+}
+
+func (r *legacySnapshotRunner) Events(ctx context.Context, attemptID string, after uint64) (dispatch.Stream, error) {
+	if after == 0 {
+		r.zeroCursorReads++
+		return &erroringStream{err: &runner.Error{Code: runner.ErrorCursorExpired, SnapshotRequired: true, Message: "expired prefix"}}, nil
+	}
+	return r.fakeRunner.Events(ctx, attemptID, after)
+}
+
+func TestLegacyResumeFailsWhenTheSavedPrefixIsIncomplete(t *testing.T) {
+	state, err := json.Marshal(State{TaskID: "task-1", AttemptID: "run-1", Epoch: 1, Cursor: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted},
+		events:  []runner.Event{event(2, runner.EventProgress, "partial", "")},
+	}
+	sink := &recordingSink{}
+	if _, err := New(testConfig(f, 1, "")).Continue(context.Background(), testRun(), backend.Answer{State: state}, sink); err == nil || !strings.Contains(err.Error(), "expected event 1, got cursor 2") {
+		t.Fatalf("Continue error = %v, want an explicit incomplete-prefix error", err)
+	}
+	if len(sink.deltas) != 0 {
+		t.Fatalf("incomplete prefix emitted %q before refusing recovery", sink.deltas)
+	}
+}
+
+func TestContinueKeepsObservedEpochWhenConfigIsAheadAcrossPermissionParks(t *testing.T) {
+	firstState, err := marshalStateWithSnapshot(t, State{
+		TaskID: "task-1", AttemptID: "run-1", Epoch: 1, SessionID: "sess-1", Cursor: 10,
+		PermissionID: "permission-1", ParkType: parkTypePermission,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeAndPark := func(startCursor uint64, state json.RawMessage) (*fakeRunner, backend.Outcome, *recordingSink) {
+		t.Helper()
+		f := &fakeRunner{
+			receipt: runner.Receipt{
+				AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+				Permission: &runner.PermissionRequest{ID: "permission-1", Tool: "Bash", Input: `{"command":"printf ok"}`},
+			},
+			events: []runner.Event{
+				event(startCursor+1, runner.EventProgress, "permission granted", ""),
+				event(startCursor+2, runner.EventNeedsInput, "another permission", ""),
+			},
+		}
+		sink := &recordingSink{}
+		cfg := testConfig(f, 2, "sess-1")
+		out, err := New(cfg).Continue(context.Background(), testRun(), backend.Answer{
+			State: state, Decided: true, Approved: true,
+		}, sink)
+		if err != nil {
+			t.Fatalf("Continue from cursor %d: %v", startCursor, err)
+		}
+		return f, out, sink
+	}
+
+	first, firstOut, firstSink := resumeAndPark(10, firstState)
+	if len(first.resumes) != 1 || first.resumes[0].AttemptEpoch != 1 {
+		t.Fatalf("first resume = %+v, want runner attempt epoch 1", first.resumes)
+	}
+	firstPark := parkedState(t, firstOut)
+	if firstPark.Epoch != 1 || firstPark.Cursor != 12 {
+		t.Fatalf("first re-park state = %+v, want observed epoch 1 and cursor 12", firstPark)
+	}
+	if len(firstSink.deltas) != 0 {
+		t.Fatalf("permission lifecycle deltas = %q, want no assistant transcript text", firstSink.deltas)
+	}
+
+	second, secondOut, secondSink := resumeAndPark(firstPark.Cursor, firstOut.Parked.State)
+	if len(second.resumes) != 1 || second.resumes[0].AttemptEpoch != 1 {
+		t.Fatalf("second resume = %+v, want the same runner attempt epoch 1", second.resumes)
+	}
+	secondPark := parkedState(t, secondOut)
+	if secondPark.Epoch != 1 {
+		t.Fatalf("second re-park epoch = %d, want observed runner epoch 1", secondPark.Epoch)
+	}
+	if len(secondSink.deltas) != 0 {
+		t.Fatalf("permission lifecycle deltas = %q, want no assistant transcript text", secondSink.deltas)
+	}
+}
+
+func marshalStateWithSnapshot(t *testing.T, state State) (json.RawMessage, error) {
+	t.Helper()
+	snapshot, err := json.Marshal(dispatch.Snapshot{
+		Position: state.position(), Usage: dispatchUsage(state.Spent),
+		State: json.RawMessage(`{"version":1}`),
+	})
+	if err != nil {
+		return nil, err
+	}
+	state.Snapshot = snapshot
+	return json.Marshal(state)
 }
 
 // A recovery resume decided nothing, and it must not decide now either. The
