@@ -364,6 +364,19 @@ func (s *Server) clusterForScope(ctx context.Context, scope store.Scope) (string
 	if scope.OrgUUID == "" || scope.WorkspaceUUID == "" {
 		return "", false
 	}
+	// The live request's cluster comes from the parsed kcp path (or the hub's
+	// authenticated MCP aggregate headers). It is an addressing coordinate,
+	// not part of the tenant key, and lets the first run be projected before a
+	// user has populated the reverse mapping by calling an MCP tool.
+	if scope.ClusterID != "" {
+		return scope.ClusterID, true
+	}
+	// Rows written before tenant resolution use the cluster ID as the fallback
+	// workspace component. They remain recoverable after a restart, even before
+	// an MCP call teaches the provider the canonical mapping.
+	if scope.OrgUUID == store.UnmappedOrg {
+		return scope.WorkspaceUUID, true
+	}
 	key := scope.OrgUUID + "|" + scope.WorkspaceUUID
 	if cached, ok := s.scopeClusters.get(key); ok {
 		return cached, true

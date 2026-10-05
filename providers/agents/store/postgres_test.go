@@ -123,6 +123,54 @@ func TestPostgres_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 	}
 }
 
+func TestPostgres_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC()
+	first, err := ps.NextHarnessTurn(ctx, sc, "reused", now)
+	if err != nil {
+		t.Fatalf("allocate first turn: %v", err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		Turns: first.Turns, ObservedEpoch: first.Turns, UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("save first receipt: %v", err)
+	}
+	if err := ps.DeleteSession(ctx, sc, "reused"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	tombstone, ok, err := ps.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || !ok || tombstone.Turns != 1 || tombstone.ObservedEpoch != 2 || tombstone.HarnessSessionID != "" || tombstone.BackendKey != "" {
+		t.Fatalf("post-delete tombstone = %+v, ok=%v, err=%v", tombstone, ok, err)
+	}
+	next, err := ps.NextHarnessTurn(ctx, sc, "reused", now.Add(2*time.Second))
+	if err != nil || next.Turns != 2 || next.HarnessSessionID != "" {
+		t.Fatalf("reused session turn = %+v, err=%v; want fresh native session at epoch 2", next, err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		Turns: 1, ObservedEpoch: 1, UpdatedAt: now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("save late old receipt: %v", err)
+	}
+	late, _, err := ps.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || late.HarnessSessionID != "" || late.ObservedEpoch != 2 {
+		t.Fatalf("late receipt crossed delete fence: %+v, err=%v", late, err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", HarnessSessionID: "runner-thread-new", BackendKey: "edge-a",
+		Turns: 2, ObservedEpoch: 2, UpdatedAt: now.Add(4 * time.Second),
+	}); err != nil {
+		t.Fatalf("save new receipt: %v", err)
+	}
+	current, _, err := ps.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || current.HarnessSessionID != "runner-thread-new" || current.ObservedEpoch != 2 {
+		t.Fatalf("new receipt did not replace tombstone: %+v, err=%v", current, err)
+	}
+}
+
 func TestPostgres_MessagesRoundTripAndPagination(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()

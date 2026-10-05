@@ -76,6 +76,54 @@ func TestMemoryStore_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 	}
 }
 
+func TestMemoryStore_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	sc := testScope()
+	now := time.Now().UTC()
+	first, err := s.NextHarnessTurn(ctx, sc, "reused", now)
+	if err != nil {
+		t.Fatalf("allocate first turn: %v", err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		Turns: first.Turns, ObservedEpoch: first.Turns, UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("save first receipt: %v", err)
+	}
+	if err := s.DeleteSession(ctx, sc, "reused"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	tombstone, ok, err := s.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || !ok || tombstone.Turns != 1 || tombstone.ObservedEpoch != 2 || tombstone.HarnessSessionID != "" || tombstone.BackendKey != "" {
+		t.Fatalf("post-delete tombstone = %+v, ok=%v, err=%v", tombstone, ok, err)
+	}
+	next, err := s.NextHarnessTurn(ctx, sc, "reused", now.Add(2*time.Second))
+	if err != nil || next.Turns != 2 || next.HarnessSessionID != "" {
+		t.Fatalf("reused session turn = %+v, err=%v; want fresh native session at epoch 2", next, err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		Turns: 1, ObservedEpoch: 1, UpdatedAt: now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("save late old receipt: %v", err)
+	}
+	late, _, err := s.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || late.HarnessSessionID != "" || late.ObservedEpoch != 2 {
+		t.Fatalf("late receipt crossed delete fence: %+v, err=%v", late, err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", HarnessSessionID: "runner-thread-new", BackendKey: "edge-a",
+		Turns: 2, ObservedEpoch: 2, UpdatedAt: now.Add(4 * time.Second),
+	}); err != nil {
+		t.Fatalf("save new receipt: %v", err)
+	}
+	current, _, err := s.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || current.HarnessSessionID != "runner-thread-new" || current.ObservedEpoch != 2 {
+		t.Fatalf("new receipt did not replace tombstone: %+v, err=%v", current, err)
+	}
+}
+
 func TestMemoryStore_MessagesRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()

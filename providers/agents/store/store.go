@@ -35,9 +35,26 @@ type Scope struct {
 	OrgUUID       string
 	WorkspaceUUID string
 	AgentName     string
+	// ClusterID is the request's trusted kcp logical-cluster coordinate. It is
+	// deliberately not part of the persistence key: org/workspace remain the
+	// tenant boundary. Keeping it on the transient scope lets a request project
+	// a Run before a caller has taught the provider the reverse workspace map.
+	ClusterID string
+	// resolutionErr is internal error state from following a legacy scope
+	// through its tenant mapping. It is not serialized or used as a key; validate
+	// prevents a failed lookup from being mistaken for an unmapped tenant.
+	resolutionErr string
 }
 
+// UnmappedOrg marks the temporary cluster-keyed store scope used before the
+// provider learns a cluster's canonical org/workspace UUIDs. SaveTenantRef
+// migrates rows out of this scope as soon as that mapping becomes available.
+const UnmappedOrg = "unmapped"
+
 func (s Scope) validate() error {
+	if s.resolutionErr != "" {
+		return fmt.Errorf("scope resolution failed: %s", s.resolutionErr)
+	}
 	if strings.TrimSpace(s.OrgUUID) == "" || strings.TrimSpace(s.WorkspaceUUID) == "" {
 		return fmt.Errorf("scope is incomplete: org and workspace are required")
 	}
@@ -431,7 +448,9 @@ type Store interface {
 	// ListSessions returns the agent's chat sessions, most-recently-active first.
 	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
 	// DeleteSession wipes one session's transcript (the "/new" channel command),
-	// including any compaction summary for it.
+	// including its summary and native harness session. It retains a harness
+	// epoch tombstone so reusing the user-facing ID cannot replay an attempt the
+	// runner has already seen, and a late receipt cannot restore the deleted ID.
 	DeleteSession(ctx context.Context, scope Scope, sessionID string) error
 
 	// Compaction. PutSessionSummary upserts the summary standing in for a

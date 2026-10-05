@@ -911,14 +911,14 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 // scopeFor resolves the store scope for a cluster via the recorded tenant
 // mapping; unmapped clusters still run, under a cluster-keyed fallback scope.
 func (b *background) scopeFor(ctx context.Context, clusterID, agentName string) store.Scope {
-	if ref, ok, _ := b.server.store.GetTenantRef(ctx, clusterID); ok {
-		return store.Scope{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, AgentName: agentName}
+	if ref, ok, err := b.server.tenantRef(ctx, clusterID); err == nil && ok {
+		return store.Scope{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, AgentName: agentName, ClusterID: clusterID}
 	}
 	// The same cluster-keyed fallback a data-plane verb uses
 	// (resolveClusterScope), so the rows a run writes are the rows the portal
 	// reads. An MCP caller, the one class that still resolves the workspace
 	// as a user, records the mapping when it comes through.
-	return store.Scope{OrgUUID: unmappedOrg, WorkspaceUUID: clusterID, AgentName: agentName}
+	return store.Scope{OrgUUID: unmappedOrg, WorkspaceUUID: clusterID, AgentName: agentName, ClusterID: clusterID}
 }
 
 // PurgeAgentData removes a deleted Agent's rows from the provider store —
