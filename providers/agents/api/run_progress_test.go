@@ -232,6 +232,37 @@ func TestTrackerForStoredRestoresCheckpointTimingForTerminalFallback(t *testing.
 	}
 }
 
+func TestCloseRunNowUsesTriggerSessionForLegacyRun(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	s := &Server{store: st, events: newEventBus()}
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "scout"}
+	startedAt := time.Now().UTC()
+	run := store.Run{
+		ID: "legacy-default-session", AgentName: scope.AgentName, Trigger: "api",
+		Phase: store.RunPhaseRunning, CreatedAt: startedAt, UpdatedAt: startedAt,
+	}
+	if err := st.SaveRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+
+	s.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
+	page, err := st.ListMessages(ctx, scope, "api", 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Metadata["turnStatus"] != "aborted" {
+		t.Fatalf("legacy run terminal transcript = %+v, want an aborted row in its trigger session", page.Items)
+	}
+	stored, err := st.GetRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SessionID != "" {
+		t.Fatalf("terminal update rewrote immutable legacy sessionID to %q", stored.SessionID)
+	}
+}
+
 type recordingStore struct {
 	store.Store
 	appendErrs      []error

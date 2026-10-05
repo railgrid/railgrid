@@ -284,7 +284,7 @@ func TestPostgres_LegacyHarnessSessionUpgradeBackfillsObservedEpochOnce(t *testi
 		t.Fatalf("legacy harness row after upgrade = %+v, ok=%v, err=%v", upgraded, ok, err)
 	}
 
-	allocated, err := ps.NextHarnessTurn(ctx, scope, "chat", now.Add(time.Second))
+	allocated, err := ps.NextHarnessTurn(ctx, scope, "chat", now.Add(time.Second), legacyTaskIdentity("legacy-task"))
 	if err != nil || allocated.Turns != 6 || allocated.ObservedEpoch != 5 {
 		t.Fatalf("allocated legacy session turn = %+v, err=%v", allocated, err)
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -92,10 +93,6 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 			// strictly better than failing a working run over it.
 			return
 		}
-		payload, err := json.Marshal(ck)
-		if err != nil {
-			return
-		}
 		stored, err := s.store.GetRun(ctx, scope, runID)
 		if err != nil {
 			return
@@ -103,6 +100,19 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 		// Only a Running run gets a recovery checkpoint. If something else already
 		// moved the phase (a cancel, an approval gate), leave it alone.
 		if stored.Phase != store.RunPhaseRunning {
+			return
+		}
+		if backendType == agentsv1alpha1.AgentBackendHarness && len(stored.Checkpoint) > 0 {
+			var previous runCheckpoint
+			if err := json.Unmarshal(stored.Checkpoint, &previous); err == nil && previous.Backend == agentsv1alpha1.AgentBackendHarness {
+				// The first dispatch state is persisted before Runner.Start so a
+				// deadline can stop an orphan. Later event snapshots replace its
+				// resume state but must keep that immutable, non-secret target.
+				ck.HarnessRunner = previous.HarnessRunner
+			}
+		}
+		payload, err := json.Marshal(ck)
+		if err != nil {
 			return
 		}
 		stored.Checkpoint = payload
@@ -200,7 +210,7 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
 		tracker := trackerForStored(run)
-		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
+		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
 		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
 		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		if tell {

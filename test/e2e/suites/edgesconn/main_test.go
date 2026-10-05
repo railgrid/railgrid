@@ -193,7 +193,18 @@ func TestMain(m *testing.M) {
 	}
 	apiCancel()
 
-	if err := applyEdgesManifests(); err != nil {
+	// The suite serves the edges provider on an override port. Keep the
+	// CatalogEntry applied to the system workspace and the one provider init
+	// self-registers into its own workspace aligned. Both entries are platform
+	// scoped here and project the same name into the hub registry, so a stale
+	// URL in either copy can overwrite the healthy route and block revdial pickups.
+	catalogEntryFile := filepath.Join(dataDir, "edges-catalogentry.yaml")
+	if err := renderEdgesCatalogEntry(catalogEntryFile, providerPort); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "render edges CatalogEntry:", err)
+		os.Exit(1)
+	}
+	if err := applyEdgesManifests(catalogEntryFile); err != nil {
 		cleanup()
 		fmt.Fprintln(os.Stderr, "apply edges manifests:", err)
 		os.Exit(1)
@@ -216,7 +227,7 @@ func TestMain(m *testing.M) {
 		// reads the manifest for the coordinates the export publishes, and the
 		// DataPlaneEndpointSlice those coordinates route through needs the
 		// address this suite actually serves on.
-		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
+		"RAILGRID_CATALOGENTRY_FILE="+catalogEntryFile,
 		"RAILGRID_DATAPLANE_URL=http://127.0.0.1:"+providerPort,
 	)
 	initCmd.Stdout = initLog
@@ -246,7 +257,7 @@ func TestMain(m *testing.M) {
 		"RAILGRID_PROVIDER_NAME=edges",
 		// serve refuses to start without the manifest: it is where the
 		// "<resource>/<verb>" coordinates it answers come from.
-		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"),
+		"RAILGRID_CATALOGENTRY_FILE="+catalogEntryFile,
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"RAILGRID_DEV_MODE=true",
 	)
@@ -271,7 +282,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func applyEdgesManifests() error {
+func applyEdgesManifests(catalogEntryFile string) error {
 	cl, err := kcpDynamicRaw("root:railgrid:system:providers", adminToken)
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
@@ -280,11 +291,14 @@ func applyEdgesManifests() error {
 		"Provider":     {Group: "admin.railgrid.ai", Version: "v1alpha1", Resource: "providers"},
 		"CatalogEntry": {Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries"},
 	}
-	overrideURL := "http://localhost:" + providerPort
-	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
-		raw, err := os.ReadFile(filepath.Join(repoRoot, "providers", "edges", file))
+	files := []string{
+		filepath.Join(repoRoot, "providers", "edges", "provider.yaml"),
+		catalogEntryFile,
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
 		if err != nil {
-			return fmt.Errorf("read %s: %w", file, err)
+			return fmt.Errorf("read %s: %w", filepath.Base(file), err)
 		}
 		for _, doc := range bytes.Split(raw, []byte("\n---")) {
 			if !bytes.Contains(doc, []byte("apiVersion:")) {
@@ -292,7 +306,7 @@ func applyEdgesManifests() error {
 			}
 			obj := &unstructured.Unstructured{}
 			if err := yaml.Unmarshal(doc, &obj.Object); err != nil {
-				return fmt.Errorf("parse %s: %w", file, err)
+				return fmt.Errorf("parse %s: %w", filepath.Base(file), err)
 			}
 			if obj.GetKind() == "" {
 				continue
@@ -300,10 +314,6 @@ func applyEdgesManifests() error {
 			gvr, ok := gvrByKind[obj.GetKind()]
 			if !ok {
 				return fmt.Errorf("%s: unexpected kind %q", file, obj.GetKind())
-			}
-			if obj.GetKind() == "CatalogEntry" {
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "ui", "url")
-				_ = unstructured.SetNestedField(obj.Object, overrideURL, "spec", "serving", "backend", "url")
 			}
 			deadline := time.Now().Add(90 * time.Second)
 			for {
@@ -321,6 +331,46 @@ func applyEdgesManifests() error {
 		}
 	}
 	return nil
+}
+
+// renderEdgesCatalogEntry copies the checked-in manifest and points both hub
+// routes at this suite's provider process. init and serve read this same file,
+// and applyEdgesManifests applies it into the hub's system provider workspace.
+// The provider workspace CatalogEntry that init writes must not advertise the
+// chart's default :8088 address while the E2E process listens on :18098.
+func renderEdgesCatalogEntry(path, port string) error {
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "providers", "edges", "manifest.yaml"))
+	if err != nil {
+		return fmt.Errorf("read source manifest: %w", err)
+	}
+	for _, doc := range bytes.Split(raw, []byte("\n---")) {
+		if !bytes.Contains(doc, []byte("apiVersion:")) {
+			continue
+		}
+		obj := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal(doc, &obj.Object); err != nil {
+			return fmt.Errorf("parse source manifest: %w", err)
+		}
+		if obj.GetKind() != "CatalogEntry" {
+			continue
+		}
+		url := "http://localhost:" + port
+		if err := unstructured.SetNestedField(obj.Object, url, "spec", "serving", "ui", "url"); err != nil {
+			return fmt.Errorf("set CatalogEntry UI URL: %w", err)
+		}
+		if err := unstructured.SetNestedField(obj.Object, url, "spec", "serving", "backend", "url"); err != nil {
+			return fmt.Errorf("set CatalogEntry backend URL: %w", err)
+		}
+		out, err := yaml.Marshal(obj.Object)
+		if err != nil {
+			return fmt.Errorf("marshal CatalogEntry: %w", err)
+		}
+		if err := os.WriteFile(path, out, 0o600); err != nil {
+			return fmt.Errorf("write rendered CatalogEntry: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("source manifest contains no CatalogEntry")
 }
 
 func mintRuntimeKubeconfig(path string, timeout time.Duration) error {

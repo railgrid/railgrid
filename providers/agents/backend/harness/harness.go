@@ -84,6 +84,9 @@ type Config struct {
 	// continuation that resolves to another runner cannot safely resume the
 	// original attempt.
 	BackendKey string
+	// AgentUID binds the runner task and workspace to this Agent incarnation.
+	// Empty is reserved for a verified pre-UID checkpoint being resumed.
+	AgentUID string
 
 	// TaskID identifies the CONVERSATION on the runner. Every turn of one
 	// session is a new dispatch of this task.
@@ -150,6 +153,7 @@ type Observed struct {
 // the normalized event state needed to continue observing it after recovery.
 type State struct {
 	TaskID     string `json:"taskID"`
+	AgentUID   string `json:"agentUID,omitempty"`
 	AttemptID  string `json:"attemptID"`
 	Epoch      uint64 `json:"epoch"`
 	BackendKey string `json:"backendKey,omitempty"`
@@ -480,6 +484,7 @@ func (b *Backend) state(snapshot dispatch.Snapshot, parkType string) (State, err
 	}
 	return State{
 		TaskID:          firstNonEmpty(pos.TaskID, b.cfg.TaskID),
+		AgentUID:        b.cfg.AgentUID,
 		AttemptID:       firstNonEmpty(pos.AttemptID, b.cfg.AttemptID),
 		Epoch:           epoch,
 		BackendKey:      b.cfg.BackendKey,

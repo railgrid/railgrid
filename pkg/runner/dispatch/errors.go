@@ -87,7 +87,11 @@ func IsNothingToCancel(err error) bool {
 	case runner.ErrorStaleAttempt:
 		return refusal.Receipt != nil && refusal.Receipt.Phase.IsTerminal()
 	case runner.ErrorUnavailable:
-		return refusal.Receipt == nil
+		// A non-retryable refusal with no receipt is the runner's authenticated
+		// "attempt not found" answer. Retryable unavailable responses include
+		// failures to persist a cancellation fence; treating those as success
+		// could let a delayed Start run after the coordinator closes its record.
+		return !refusal.Retryable && refusal.Receipt == nil
 	default:
 		return false
 	}

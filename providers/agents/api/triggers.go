@@ -211,9 +211,13 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "this trigger has no task to run")
 		return
 	}
-	runID := s.startDetachedRun(r, c, id, agent, taskRun{
+	admission, err := s.startDetachedRun(r, c, id, agent, taskRun{
 		SessionID: "trigger:" + name, Task: task, Trigger: agentsv1alpha1.RunTriggerEvent, SourceName: name,
 		NotifyChannel: trig.Spec.ChannelRef,
 	})
-	writeJSON(w, http.StatusAccepted, map[string]string{"runID": runID})
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the run could not be recorded; retry later")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"runID": admission.ID})
 }

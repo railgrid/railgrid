@@ -72,7 +72,7 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 // the cluster ID as the workspace half, so rows written before and after a
 // mapping is learned can be told apart; background.scopeFor writes under the
 // same fallback.
-const unmappedOrg = "unmapped"
+const unmappedOrg = store.UnmappedOrg
 
 // resolveClusterScope fills the org/workspace scope of id for a request that
 // carries no caller credential — a data-plane verb.
@@ -127,7 +127,18 @@ func (s *Server) tenantRef(ctx context.Context, clusterID string) (store.TenantR
 	if s.store == nil {
 		return store.TenantRef{}, false, nil
 	}
-	return s.store.GetTenantRef(ctx, clusterID)
+	ref, ok, err := s.store.GetTenantRef(ctx, clusterID)
+	if err != nil || !ok {
+		return ref, ok, err
+	}
+	// Re-run the idempotent scope migration whenever a mapped cluster is used.
+	// A request that resolved just before the first mapping was saved may finish
+	// a write to the old fallback scope after that migration; the next request
+	// catches that tail up before it reads or writes the canonical scope.
+	if err := s.store.SaveTenantRef(ctx, clusterID, ref); err != nil {
+		return store.TenantRef{}, false, err
+	}
+	return ref, true, nil
 }
 
 // errNoWorkspaceLookup is the workspaceErr when there is nothing to ask: no
@@ -208,7 +219,7 @@ func writeList[T any](w http.ResponseWriter, items []T, extra ...map[string]any)
 // scope derives the store Scope for this identity, optionally narrowed to an
 // agent.
 func (id identity) scope(agentName string) store.Scope {
-	return store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: agentName}
+	return store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: agentName, ClusterID: id.clusterID}
 }
 
 // requireClient resolves the identity of a gated request and the client its

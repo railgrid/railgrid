@@ -126,7 +126,12 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 
 	// A retried delivery must not start the work again.
 	if req.IdempotencyKey != "" {
-		if existing, found, ferr := s.store.FindRunByIdempotencyKey(r.Context(), scope, req.IdempotencyKey); ferr == nil && found {
+		existing, found, lookupErr := s.store.FindRunByIdempotencyKey(r.Context(), scope, req.IdempotencyKey)
+		if lookupErr != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the previous run could not be checked; retry later")
+			return
+		}
+		if found {
 			resp := invokeRunResponse{RunID: existing.ID, Phase: string(existing.Phase), Reused: true}
 			if detail, derr := s.runDetailFor(r.Context(), scope, existing.ID); derr == nil {
 				resp.Run = &detail
@@ -152,25 +157,32 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	// workspace, so starting a run never lends the agent the caller's reach.
 	// Without that plumbing (local dev, no provider kubeconfig) the caller's
 	// own credentials are the only identity available.
-	var runID string
+	var admission runAdmission
 	if dyn, derr := s.backgroundScoped(r.Context(), id.clusterID); derr == nil {
 		// The agent's own ServiceAccount, as for any unattended run — the
 		// caller's token authorized the request, it does not become the identity
 		// the agent acts with. Edges stays absent: nobody is watching (see
 		// buildToolset).
-		runID = s.startRun(context.WithoutCancel(r.Context()), scope, agent, tr,
+		admission, err = s.startRun(context.WithoutCancel(r.Context()), scope, agent, tr,
 			s.bg.agentAccess(r.Context(), dyn, id.clusterID, agent.Name))
-		log.Printf("agents: %s started run %s on agent %s in %s", tr.SourceName, runID, name, id.clusterID)
 	} else {
-		runID = s.startDetachedRun(r, c, id, agent, tr)
+		admission, err = s.startDetachedRun(r, c, id, agent, tr)
 	}
 
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the run could not be recorded; retry later")
+		return
+	}
+	runID := admission.ID
+	if !admission.Reused {
+		log.Printf("agents: %s started run %s on agent %s in %s", tr.SourceName, runID, name, id.clusterID)
+	}
 	// A caller that asked to wait gets the settled run inline; one that did not
 	// gets the id to poll. Either way the run is already going.
 	if req.Wait > 0 {
 		wait := min(time.Duration(req.Wait)*time.Second, invokeMaxWait)
 		if run, settled := s.waitForRun(r.Context(), scope, runID, wait); settled {
-			resp := invokeRunResponse{RunID: runID, Phase: string(run.Phase)}
+			resp := invokeRunResponse{RunID: runID, Phase: string(run.Phase), Reused: admission.Reused}
 			if detail, derr := s.runDetailFor(r.Context(), scope, runID); derr == nil {
 				resp.Run = &detail
 			}
@@ -178,10 +190,10 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Out of time, not out of luck: the run continues and the caller polls.
-		writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(store.RunPhaseRunning)})
+		writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(store.RunPhaseRunning), Reused: admission.Reused})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(store.RunPhasePending)})
+	writeJSON(w, http.StatusAccepted, invokeRunResponse{RunID: runID, Phase: string(admission.Phase), Reused: admission.Reused})
 }
 
 // apiRunSource labels an API-invoked run with who asked for it, falling back to

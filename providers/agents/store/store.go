@@ -35,9 +35,45 @@ type Scope struct {
 	OrgUUID       string
 	WorkspaceUUID string
 	AgentName     string
+	// ClusterID is the request's trusted kcp logical-cluster coordinate. It is
+	// deliberately not part of the persistence key: org/workspace remain the
+	// tenant boundary. Keeping it on the transient scope lets a request project
+	// a Run before a caller has taught the provider the reverse workspace map.
+	ClusterID string
+	// resolutionErr is internal error state from following a legacy scope
+	// through its tenant mapping. It is not serialized or used as a key; validate
+	// prevents a failed lookup from being mistaken for an unmapped tenant.
+	resolutionErr string
+}
+
+// UnmappedOrg marks the temporary cluster-keyed store scope used before the
+// provider learns a cluster's canonical org/workspace UUIDs. SaveTenantRef
+// migrates rows out of this scope as soon as that mapping becomes available.
+const UnmappedOrg = "unmapped"
+
+func validateTenantRef(clusterID string, ref TenantRef) error {
+	if strings.TrimSpace(clusterID) == "" {
+		return fmt.Errorf("cluster ID is required")
+	}
+	if clusterID != strings.TrimSpace(clusterID) {
+		return fmt.Errorf("cluster ID must not contain surrounding whitespace")
+	}
+	if strings.TrimSpace(ref.OrgUUID) == "" || strings.TrimSpace(ref.WorkspaceUUID) == "" {
+		return fmt.Errorf("tenant mapping requires non-empty org and workspace UUIDs")
+	}
+	if ref.OrgUUID != strings.TrimSpace(ref.OrgUUID) || ref.WorkspaceUUID != strings.TrimSpace(ref.WorkspaceUUID) {
+		return fmt.Errorf("tenant mapping org and workspace UUIDs must not contain surrounding whitespace")
+	}
+	if ref.OrgUUID == UnmappedOrg {
+		return fmt.Errorf("tenant mapping org UUID %q is reserved", UnmappedOrg)
+	}
+	return nil
 }
 
 func (s Scope) validate() error {
+	if s.resolutionErr != "" {
+		return fmt.Errorf("scope resolution failed: %s", s.resolutionErr)
+	}
 	if strings.TrimSpace(s.OrgUUID) == "" || strings.TrimSpace(s.WorkspaceUUID) == "" {
 		return fmt.Errorf("scope is incomplete: org and workspace are required")
 	}
@@ -263,6 +299,13 @@ func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
 // edge or harness identity never resumes a native session on the wrong runner.
 type HarnessSession struct {
 	SessionID string `json:"sessionID"`
+	// TaskID is the durable runner task/workspace identity selected for this
+	// session. Older rows are marked with the legacy name/session identity on
+	// their next turn; new sessions use the Agent incarnation UID.
+	TaskID string `json:"taskID,omitempty"`
+	// AgentUID records which Agent incarnation owns this task identity. It is
+	// separate from TaskID because upgraded sessions keep their legacy TaskID.
+	AgentUID string `json:"agentUID,omitempty"`
 	// HarnessSessionID is empty until the first turn's receipt reported one.
 	HarnessSessionID string `json:"harnessSessionID,omitempty"`
 	// BackendKey identifies the cluster, edge and advertised harness that
@@ -275,6 +318,103 @@ type HarnessSession struct {
 	// HarnessSessionID. A later allocation does not advance it.
 	ObservedEpoch int64     `json:"observedEpoch,omitempty"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+// HarnessIdentity supplies the current and pre-UID runner identities to
+// NextHarnessTurn. The store chooses between them atomically with the turn
+// allocation, using CreatedAt to fence rows left behind by a deleted Agent.
+type HarnessIdentity struct {
+	TaskID       string
+	LegacyTaskID string
+	AgentUID     string
+	CreatedAt    time.Time
+}
+
+// selectHarnessIdentity binds a session row to the current Agent incarnation.
+// Adoption of an unmarked legacy row assumes pre-UID writers were drained for
+// the upgrade; CreatedAt and UpdatedAt reject clearly stale rows but cannot
+// fence a late write from an old binary. Explicitly UID-marked rows are fenced
+// by their owner. A stale row is reset onto the UID identity; ambiguous
+// timestamps fail closed.
+func selectHarnessIdentity(row *HarnessSession, identity HarnessIdentity, now time.Time) error {
+	if strings.TrimSpace(identity.TaskID) == "" {
+		return fmt.Errorf("harness task identity is required")
+	}
+	if strings.TrimSpace(identity.LegacyTaskID) == "" {
+		identity.LegacyTaskID = identity.TaskID
+	}
+
+	reset := func() {
+		row.TaskID = identity.TaskID
+		row.AgentUID = identity.AgentUID
+		row.HarnessSessionID = ""
+		row.BackendKey = ""
+		row.Turns = 0
+		row.ObservedEpoch = 0
+		row.UpdatedAt = now.UTC()
+	}
+
+	if identity.AgentUID == "" {
+		if row.AgentUID != "" {
+			return fmt.Errorf("harness session belongs to Agent UID %q, current Agent UID is missing", row.AgentUID)
+		}
+		if row.TaskID == "" {
+			row.TaskID = identity.LegacyTaskID
+		}
+		if row.TaskID != identity.TaskID && row.TaskID != identity.LegacyTaskID {
+			return fmt.Errorf("harness session task identity %q does not match the current Agent", row.TaskID)
+		}
+		return nil
+	}
+
+	if row.AgentUID == identity.AgentUID {
+		if row.TaskID != identity.TaskID && row.TaskID != identity.LegacyTaskID {
+			return fmt.Errorf("harness session task identity %q does not match Agent UID %q", row.TaskID, identity.AgentUID)
+		}
+		return nil
+	}
+	if row.AgentUID != "" {
+		reset()
+		return nil
+	}
+
+	// An unmarked row can only be adopted as the pre-UID identity. A different
+	// nonempty task ID cannot be attributed to this Agent, so start a clean UID
+	// task and native session.
+	if row.TaskID != "" && row.TaskID != identity.LegacyTaskID {
+		reset()
+		return nil
+	}
+	stale, err := CheckLegacyHarnessSessionLifetime(identity.CreatedAt, row.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if stale {
+		reset()
+		return nil
+	}
+	row.TaskID = identity.LegacyTaskID
+	row.AgentUID = identity.AgentUID
+	return nil
+}
+
+// CheckLegacyHarnessSessionLifetime reports whether a legacy harness row is
+// definitely older than the current Agent, or returns an error when timestamps
+// cannot establish ownership. Kubernetes CreationTimestamp is only precise to
+// a second, so rows updated in that second are ambiguous.
+func CheckLegacyHarnessSessionLifetime(createdAt, updatedAt time.Time) (stale bool, err error) {
+	createdAt = createdAt.UTC().Truncate(time.Second)
+	updatedAt = updatedAt.UTC()
+	if createdAt.IsZero() || updatedAt.IsZero() {
+		return false, fmt.Errorf("legacy harness session has no verifiable Agent lifetime")
+	}
+	if updatedAt.Before(createdAt) {
+		return true, nil
+	}
+	if updatedAt.Before(createdAt.Add(time.Second)) {
+		return false, fmt.Errorf("legacy harness session ownership is ambiguous at Agent CreationTimestamp precision")
+	}
+	return false, nil
 }
 
 // Memory is a long-term note the agent writes and later recalls. Body is
@@ -431,7 +571,9 @@ type Store interface {
 	// ListSessions returns the agent's chat sessions, most-recently-active first.
 	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
 	// DeleteSession wipes one session's transcript (the "/new" channel command),
-	// including any compaction summary for it.
+	// including its summary and native harness session. It retains a harness
+	// epoch tombstone so reusing the user-facing ID cannot replay an attempt the
+	// runner has already seen, and a late receipt cannot restore the deleted ID.
 	DeleteSession(ctx context.Context, scope Scope, sessionID string) error
 
 	// Compaction. PutSessionSummary upserts the summary standing in for a
@@ -444,17 +586,19 @@ type Store interface {
 	// session and returns the row as it then stands, so two replicas answering
 	// the same message cannot dispatch the same epoch; PutHarnessSession records
 	// the native session and backend identity reported by a receipt, gated by the
-	// highest observed epoch rather than the highest allocated epoch.
+	// highest observed epoch rather than the highest allocated epoch. Identity
+	// selection, stale-incarnation reset and epoch allocation happen atomically.
 	// GetHarnessSession reports ok=false for a session no harness turn has run in.
-	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error)
+	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time, identity HarnessIdentity) (HarnessSession, error)
 	PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error
 	GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error)
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
-	// ClaimRun atomically marks a resumable run as owned by requestID so only
-	// one replica resumes it.
+	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
+	// terminal run cannot be claimed, so an approval racing with cancel cannot
+	// revive work after the cancel flag or terminal phase is recorded.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything

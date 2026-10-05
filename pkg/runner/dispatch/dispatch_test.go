@@ -504,6 +504,15 @@ func TestCancelIsNotDoneUntilObserved(t *testing.T) {
 	if err != nil || got != nil {
 		t.Errorf("nothing to cancel = %+v, %v; want nil, nil", got, err)
 	}
+
+	// A retryable unavailable response is not evidence that no attempt exists.
+	// In particular, the runner may have failed to persist the unseen-attempt
+	// cancellation fence, so the coordinator must keep the run retryable.
+	failedFence := &runner.Error{Code: runner.ErrorUnavailable, Retryable: true, Message: "persist cancellation fence"}
+	got, err = Cancel(ctxWithTimeout(t), &fakeRunner{cancelErr: failedFence}, runner.CancelRequest{AttemptID: "not-durable"})
+	if err == nil || got != nil {
+		t.Errorf("retryable unavailable cancel = %+v, %v; want an error and no receipt", got, err)
+	}
 }
 
 // TestAbortedStopsTheFollow: the caller's own cancel flag is honoured between
@@ -552,6 +561,9 @@ func TestErrorTaxonomy(t *testing.T) {
 	done := receipt(runner.PhaseCompleted)
 	if !IsNothingToCancel(&runner.Error{Code: runner.ErrorStaleAttempt, Receipt: &done}) {
 		t.Error("a stale cancel against a finished attempt has nothing to cancel")
+	}
+	if IsNothingToCancel(&runner.Error{Code: runner.ErrorUnavailable, Retryable: true}) {
+		t.Error("a retryable unavailable does not prove that there is nothing to cancel")
 	}
 	wrapped := Describe("starting", unknown)
 	var back *runner.Error

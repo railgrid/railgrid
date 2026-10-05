@@ -9,12 +9,18 @@
 package api
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -104,6 +110,34 @@ func TestRunStatusForOmitsUsageItDoesNotHave(t *testing.T) {
 	}
 	if status.StartedAt != nil || status.FinishedAt != nil {
 		t.Error("a pending run has no timings to project")
+	}
+}
+
+func TestFirstUnmappedRunProjectsFromItsPathCluster(t *testing.T) {
+	ctx := context.Background()
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	var projectedCluster string
+	s := &Server{store: store.NewMemoryStore()}
+	s.bg = &background{server: s, scopedFn: func(_ context.Context, clusterID string) (dynamic.Interface, error) {
+		projectedCluster = clusterID
+		return dyn, nil
+	}}
+	clusterID := "first-run-cluster"
+	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
+	run := store.Run{ID: "first-run", AgentName: "coder", Trigger: "chat", Phase: store.RunPhaseRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+
+	if err := s.saveRun(ctx, scope, run); err != nil {
+		t.Fatalf("save first run: %v", err)
+	}
+	if projectedCluster != clusterID {
+		t.Fatalf("projected cluster = %q, want path cluster %q without a tenant-map entry", projectedCluster, clusterID)
+	}
+	object, err := dyn.Resource(agentsclient.RunGVR).Get(ctx, run.ID, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get projected Run object: %v", err)
+	}
+	if phase, _, _ := unstructured.NestedString(object.Object, "status", "phase"); phase != string(run.Phase) {
+		t.Fatalf("projected phase = %q, want %q", phase, run.Phase)
 	}
 }
 
