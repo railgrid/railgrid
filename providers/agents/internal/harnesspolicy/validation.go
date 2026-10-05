@@ -35,6 +35,30 @@ func UnsupportedFields(agent *agentsv1alpha1.Agent) (reason, message string) {
 		return agentsv1alpha1.ReasonMeaninglessForHarness,
 			"spec.tools has no effect on a harness-backed agent: the harness brings its own tools, and a grant here would read as a restriction that is not enforced anywhere. Remove it."
 	}
+	switch agent.Spec.Autonomy {
+	case agentsv1alpha1.AutonomySuggest:
+		return agentsv1alpha1.ReasonMeaninglessForHarness,
+			`spec.autonomy "suggest" cannot be enforced by a harness-backed agent: the harness can run its own tools without asking the provider to gate each action. Use a model-backed agent for draft-only behavior.`
+	case agentsv1alpha1.AutonomyAuto:
+		return agentsv1alpha1.ReasonMeaninglessForHarness,
+			`spec.autonomy "auto" cannot be enforced by a harness-backed agent: the provider cannot select the runner's permission mode. Use a model-backed agent for automatic actions.`
+	}
+	if len(agent.Spec.Delegates) > 0 {
+		return agentsv1alpha1.ReasonMeaninglessForHarness,
+			"spec.delegates has no effect on a harness-backed agent: the provider's delegate tool is not available to the harness. Remove it or use a model-backed agent."
+	}
+	if agent.Spec.Limits.MaxToolTurns > 0 {
+		return agentsv1alpha1.ReasonMeaninglessForHarness,
+			"spec.limits.maxToolTurns has no effect on a harness-backed agent: one runner turn can contain multiple tool calls, and the runner API has no matching tool-turn limit. Remove it or use a model-backed agent."
+	}
+	if agent.Spec.Limits.MaxSpawnsPerRun > 0 {
+		return agentsv1alpha1.ReasonMeaninglessForHarness,
+			"spec.limits.maxSpawnsPerRun has no effect on a harness-backed agent: the provider's spawn tool is not available to the harness. Remove it or use a model-backed agent."
+	}
+	if agent.Spec.Limits.MaxConcurrentSpawns > 0 {
+		return agentsv1alpha1.ReasonMeaninglessForHarness,
+			"spec.limits.maxConcurrentSpawns has no effect on a harness-backed agent: the provider's spawn tool is not available to the harness. Remove it or use a model-backed agent."
+	}
 	for purpose := range agent.Spec.ModelCredentials() {
 		if purpose != llm.PurposeChat {
 			return agentsv1alpha1.ReasonMeaninglessForHarness, fmt.Sprintf(

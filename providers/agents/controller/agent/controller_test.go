@@ -218,6 +218,56 @@ func TestValidatedRejectsNegativeLimits(t *testing.T) {
 	assertInvalid(t, agentsv1alpha1.ReasonInvalidSpec, b)
 }
 
+func TestValidatedRejectsUnsupportedHarnessControls(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		field  string
+		mutate func(*agentsv1alpha1.Agent)
+	}{
+		{"suggest autonomy", "spec.autonomy", func(a *agentsv1alpha1.Agent) { a.Spec.Autonomy = agentsv1alpha1.AutonomySuggest }},
+		{"auto autonomy", "spec.autonomy", func(a *agentsv1alpha1.Agent) { a.Spec.Autonomy = agentsv1alpha1.AutonomyAuto }},
+		{"tool turn limit", "maxToolTurns", func(a *agentsv1alpha1.Agent) { a.Spec.Limits.MaxToolTurns = 1 }},
+		{"delegates", "spec.delegates", func(a *agentsv1alpha1.Agent) { a.Spec.Delegates = []string{"reviewer"} }},
+		{"spawn limit", "maxSpawnsPerRun", func(a *agentsv1alpha1.Agent) { a.Spec.Limits.MaxSpawnsPerRun = 1 }},
+		{"concurrent spawn limit", "maxConcurrentSpawns", func(a *agentsv1alpha1.Agent) { a.Spec.Limits.MaxConcurrentSpawns = 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := validAgent("bounded")
+			a.Spec.Backend = agentsv1alpha1.AgentBackendSpec{
+				Type: agentsv1alpha1.AgentBackendHarness,
+				Harness: &agentsv1alpha1.AgentHarnessBackend{
+					EdgeRef:       agentsv1alpha1.AgentHarnessEdgeRef{Kind: "LinuxServer", Name: "edge"},
+					CredentialRef: "runner",
+				},
+			}
+			tc.mutate(a)
+			cond := assertInvalid(t, agentsv1alpha1.ReasonMeaninglessForHarness, a)
+			if !strings.Contains(cond.Message, tc.field) {
+				t.Fatalf("message %q does not name %s", cond.Message, tc.field)
+			}
+		})
+	}
+}
+
+func TestValidatedAcceptsSupportedHarnessDefaultsAndMemory(t *testing.T) {
+	a := validAgent("helper")
+	a.Spec.Backend = agentsv1alpha1.AgentBackendSpec{
+		Type: agentsv1alpha1.AgentBackendHarness,
+		Harness: &agentsv1alpha1.AgentHarnessBackend{
+			EdgeRef:       agentsv1alpha1.AgentHarnessEdgeRef{Kind: "LinuxServer", Name: "edge"},
+			CredentialRef: "runner",
+		},
+	}
+	a.Spec.Autonomy = agentsv1alpha1.AutonomyAsk
+	enabled := true
+	a.Spec.Memory = agentsv1alpha1.AgentMemoryPolicy{Enabled: &enabled, MaxNotes: 4}
+	a.Spec.Limits.TimeoutSeconds = 120
+	cond := validated(t, reconcileAgents(t, a))
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("supported harness defaults = %s/%s (%q), want Validated=True", cond.Status, cond.Reason, cond.Message)
+	}
+}
+
 // applyAgentUpdate dropped a self-delegation silently; it is named now.
 func TestValidatedRejectsSelfDelegation(t *testing.T) {
 	a := validAgent("solo")
