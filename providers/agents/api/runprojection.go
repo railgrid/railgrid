@@ -230,7 +230,7 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 		Spec: agentsv1alpha1.RunSpec{
 			AgentRef:       run.AgentName,
 			Trigger:        run.Trigger,
-			SessionID:      run.SessionID,
+			SessionID:      effectiveSessionID(run.SessionID, run.Trigger),
 			ParentRunRef:   run.ParentRunID,
 			IdempotencyKey: run.IdempotencyKey,
 			InputPreview:   safeTruncate(strings.TrimSpace(run.Input), runInputPreviewMax),
@@ -296,8 +296,8 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		at := metav1.NewTime(*run.FinishedAt)
 		status.FinishedAt = &at
 	}
-	if run.SessionID != "" {
-		status.TranscriptRef = &agentsv1alpha1.RunTranscriptRef{SessionID: run.SessionID}
+	if sessionID := effectiveSessionID(run.SessionID, run.Trigger); sessionID != "" {
+		status.TranscriptRef = &agentsv1alpha1.RunTranscriptRef{SessionID: sessionID}
 	}
 	if run.InputTokens > 0 || run.OutputTokens > 0 || run.USDMicros > 0 || run.WorkedDurationMS != nil {
 		status.Usage = &agentsv1alpha1.RunUsage{
@@ -363,6 +363,19 @@ func equalStatus(current, next map[string]any) bool {
 func (s *Server) clusterForScope(ctx context.Context, scope store.Scope) (string, bool) {
 	if scope.OrgUUID == "" || scope.WorkspaceUUID == "" {
 		return "", false
+	}
+	// The live request's cluster comes from the parsed kcp path (or the hub's
+	// authenticated MCP aggregate headers). It is an addressing coordinate,
+	// not part of the tenant key, and lets the first run be projected before a
+	// user has populated the reverse mapping by calling an MCP tool.
+	if scope.ClusterID != "" {
+		return scope.ClusterID, true
+	}
+	// Rows written before tenant resolution use the cluster ID as the fallback
+	// workspace component. They remain recoverable after a restart, even before
+	// an MCP call teaches the provider the canonical mapping.
+	if scope.OrgUUID == store.UnmappedOrg {
+		return scope.WorkspaceUUID, true
 	}
 	key := scope.OrgUUID + "|" + scope.WorkspaceUUID
 	if cached, ok := s.scopeClusters.get(key); ok {

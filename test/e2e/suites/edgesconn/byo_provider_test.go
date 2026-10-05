@@ -62,6 +62,34 @@ var edgeServiceGVR = schema.GroupVersionResource{
 	Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "services",
 }
 
+// TestEdgesCatalogEndpointsMatchListener protects the split registration path
+// used by this suite: the system workspace receives a rendered CatalogEntry,
+// while provider init self-registers the same entry into its own workspace.
+// A mismatch lets the later reconcile replace the healthy URL in the hub
+// registry, which makes reverse-dial requests fail before reaching the edge.
+func TestEdgesCatalogEndpointsMatchListener(t *testing.T) {
+	wantURL := "http://localhost:" + providerPort
+	for _, workspace := range []string{"root:railgrid:system:providers", edgesWorkspacePath} {
+		client := kcpDynamic(t, workspace, adminToken)
+		entry, err := client.Resource(catalogEntryGVR).Get(
+			ctxWithTimeout(t, 10*time.Second), "edges", metav1.GetOptions{},
+		)
+		if err != nil {
+			t.Fatalf("get edges CatalogEntry in %s: %v", workspace, err)
+		}
+		for _, field := range []string{"ui", "backend"} {
+			gotURL, found, err := unstructured.NestedString(entry.Object, "spec", "serving", field, "url")
+			if err != nil {
+				t.Fatalf("read %s URL from CatalogEntry in %s: %v", field, workspace, err)
+			}
+			if !found || gotURL != wantURL {
+				t.Errorf("CatalogEntry in %s advertises %s URL %q (found %t), want %q",
+					workspace, field, gotURL, found, wantURL)
+			}
+		}
+	}
+}
+
 func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 	edgeName := "byo-server"
 	workDir := suiteTempDir(t, "byo-provider")

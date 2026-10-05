@@ -107,7 +107,7 @@ func summarize(run store.Run) runSummary {
 		class = "interactive"
 	}
 	rs := runSummary{
-		ID: run.ID, Agent: run.AgentName, SessionID: run.SessionID, Trigger: run.Trigger, Class: class,
+		ID: run.ID, Agent: run.AgentName, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Class: class,
 		ParentRunID: run.ParentRunID, Phase: string(run.Phase), Attempt: run.Attempt,
 		InputPreview: safeTruncate(strings.Join(strings.Fields(run.Input), " "), 160),
 		Message:      safeTruncate(run.Message, 500),
@@ -210,10 +210,12 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 // on another replica or still queued (the engine loop reads the flag between
 // tool rounds; a queued job checks it before starting), or resumed later by
 // the recovery sweep (which closes a flagged run instead of resuming it).
-// A run not live here is also stamped Aborted immediately, as before, so the
-// caller sees it end without waiting for the executor to notice.
+// A run not live here is stamped Aborted only after any parked harness attempt
+// has acknowledged cancellation. If that remote stop fails, the durable cancel
+// request remains and the caller can retry without falsely terminalizing a
+// runner that may still be working.
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
-	_, id, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -237,10 +239,22 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
 	if err := s.store.RequestCancel(r.Context(), scope, runID, now); err != nil {
-		log.Printf("runs: recording cancel for run %s: %v", runID, err)
+		log.Printf("runs: recording cancel for run %s failed", runID)
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "could not record the cancellation request; retry the cancel")
+		return
 	}
 	live := s.liveRuns.cancel(runID)
 	if !live {
+		if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
+			if err := s.stopParkedHarness(r.Context(), c, id, run); err != nil {
+				// Errors can originate in an authenticated request. Keep the
+				// diagnostic generic so an upstream response cannot expose a
+				// credential or secret-bearing body.
+				log.Printf("runs: stopping parked harness attempt for run %s failed", runID)
+				writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "remote harness cancellation failed; retry the cancel")
+				return
+			}
+		}
 		s.closeRunNow(r.Context(), scope, run, store.RunPhaseAborted, "cancelled by user")
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": runID, "cancelling": live})
@@ -266,7 +280,7 @@ func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.R
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	defer cancelPersist()
 	tracker := trackerForStored(run)
-	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
+	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
 	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now)
 	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 }

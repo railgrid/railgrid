@@ -573,6 +573,10 @@ func (b *background) Submit(ctx context.Context, job executor.Job) error {
 		// enqueue: the object exists and the reconciler will claim it.
 		return nil
 	}
+	// The Run object and the Postgres row are the durable queue. Record the
+	// effective transcript session on that first write so later status updates
+	// do not depend on mutating an immutable session_id column.
+	job.SessionID = effectiveSessionID(job.SessionID, job.Trigger)
 	now := time.Now().UTC()
 	runID := uuid.NewString()
 	scope := b.scopeFor(ctx, job.ClusterID, job.AgentRef)
@@ -791,6 +795,15 @@ func (b *background) StopRun(ctx context.Context, clusterID, agentName, runID, r
 		// terminal phase with the timing it actually measured.
 		return nil
 	}
+	if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
+		// A process restart can erase liveRuns while leaving the runner's attempt
+		// parked or still working. Use the durable start/park checkpoint, and let
+		// the Run reconciler retry if the bounded remote cancellation fails.
+		if err := b.stopHarnessFromRun(ctx, clusterID, scope, run); err != nil {
+			log.Printf("background: run %s: stopping its remote harness attempt failed", runID)
+			return errors.New("stopping the remote harness attempt failed")
+		}
+	}
 	b.server.closeRunNow(ctx, scope, run, store.RunPhaseAborted, reason)
 	return nil
 }
@@ -846,7 +859,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	}
 	tr := taskRun{
 		Scope: scope, Agent: agent, RunID: job.RunID,
-		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
+		SessionID: effectiveSessionID(job.SessionID, job.Trigger), Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
 		// Recorded on the run so a crash mid-flight can still be reported to
 		// whoever is waiting — the goroutine that knows this is the thing a
@@ -911,14 +924,14 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 // scopeFor resolves the store scope for a cluster via the recorded tenant
 // mapping; unmapped clusters still run, under a cluster-keyed fallback scope.
 func (b *background) scopeFor(ctx context.Context, clusterID, agentName string) store.Scope {
-	if ref, ok, _ := b.server.store.GetTenantRef(ctx, clusterID); ok {
-		return store.Scope{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, AgentName: agentName}
+	if ref, ok, err := b.server.tenantRef(ctx, clusterID); err == nil && ok {
+		return store.Scope{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, AgentName: agentName, ClusterID: clusterID}
 	}
 	// The same cluster-keyed fallback a data-plane verb uses
 	// (resolveClusterScope), so the rows a run writes are the rows the portal
 	// reads. An MCP caller, the one class that still resolves the workspace
 	// as a user, records the mapping when it comes through.
-	return store.Scope{OrgUUID: unmappedOrg, WorkspaceUUID: clusterID, AgentName: agentName}
+	return store.Scope{OrgUUID: unmappedOrg, WorkspaceUUID: clusterID, AgentName: agentName, ClusterID: clusterID}
 }
 
 // PurgeAgentData removes a deleted Agent's rows from the provider store —

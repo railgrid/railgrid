@@ -223,12 +223,12 @@ func (r *TypedResource[T, L]) List(ctx context.Context, _ metav1.ListOptions) (*
 	return fromUnstructuredList[L](&unstructured.UnstructuredList{Items: items})
 }
 
-func (r *TypedResource[T, L]) Create(ctx context.Context, obj *T, _ metav1.CreateOptions) (*T, error) {
+func (r *TypedResource[T, L]) Create(ctx context.Context, obj *T, opts metav1.CreateOptions) (*T, error) {
 	u, err := r.toUnstructured(obj)
 	if err != nil {
 		return nil, err
 	}
-	out, err := r.scope.Apply(ctx, u)
+	out, err := r.scope.Create(ctx, u, opts)
 	if err != nil {
 		return nil, err
 	}

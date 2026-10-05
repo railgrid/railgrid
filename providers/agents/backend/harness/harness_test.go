@@ -418,6 +418,34 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	}
 }
 
+func TestParkedStateCarriesAgentIncarnation(t *testing.T) {
+	f := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "Continue?"},
+		},
+		events: []runner.Event{event(1, runner.EventNeedsInput, "Continue?", "")},
+	}
+	cfg := testConfig(f, 1, "")
+	cfg.AgentUID = "agent-uid-1"
+	out, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "do the task"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if out.Parked == nil {
+		t.Fatalf("outcome = %+v, want a parked turn", out)
+	}
+	var state State
+	if err := json.Unmarshal(out.Parked.State, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.AgentUID != "agent-uid-1" {
+		t.Fatalf("parked AgentUID = %q, want agent-uid-1", state.AgentUID)
+	}
+}
+
 // The rule the task states plainly: until the terminal receipt is observed the
 // attempt is Cancelling, not Cancelled, and Cancel must not claim otherwise.
 func TestCancelDoesNotReportCancelledUntilObserved(t *testing.T) {
@@ -1574,5 +1602,31 @@ func TestStartOptsIntoThePermissionRoundTrip(t *testing.T) {
 	}
 	if !f.starts[0].AskPermission {
 		t.Fatal("the start did not ask for the permission round-trip; prompts would be denied with nobody to see them")
+	}
+}
+
+func TestInitialStateCarriesCancellationCoordinatesWithoutCredential(t *testing.T) {
+	cfg := testConfig(&fakeRunner{}, 7, "native-session")
+	cfg.TaskID = "agent-scout-uid-chat"
+	cfg.AttemptID = "run-before-dispatch"
+	cfg.BackendKey = "cluster/edge/codex"
+	b := New(cfg)
+
+	raw, err := b.InitialState()
+	if err != nil {
+		t.Fatalf("InitialState: %v", err)
+	}
+	var state State
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode InitialState: %v", err)
+	}
+	if state.TaskID != cfg.TaskID || state.AttemptID != cfg.AttemptID || state.Epoch != cfg.Epoch || state.SessionID != cfg.SessionID || state.BackendKey != cfg.BackendKey {
+		t.Fatalf("initial state = %+v; want the configured cancellation coordinates", state)
+	}
+	if len(state.Snapshot) != 0 {
+		t.Fatalf("initial state unexpectedly claims to be a resumable event snapshot: %s", state.Snapshot)
+	}
+	if strings.Contains(string(raw), cfg.Credential.Value) || strings.Contains(string(raw), cfg.WorkspaceID) {
+		t.Fatal("initial state contains credential or workspace data")
 	}
 }

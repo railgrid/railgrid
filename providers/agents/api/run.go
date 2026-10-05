@@ -29,6 +29,7 @@ import (
 	backendmodel "github.com/railgrid/provider-agents/backend/model"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/internal/harnesspolicy"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
@@ -141,6 +142,27 @@ func pendingFor(inboxID string, parked *backend.Parked) *pendingInfo {
 	return &pendingInfo{InboxID: inboxID, Kind: string(store.InboxKindApproval), Tool: parked.Tool, Args: parked.Args}
 }
 
+// effectiveSessionID applies the historical per-trigger fallback used when a
+// caller does not choose a transcript session. Keep non-empty caller values
+// intact: they are durable conversation identities, not defaults to rewrite.
+func effectiveSessionID(sessionID, trigger string) string {
+	if sessionID != "" {
+		return sessionID
+	}
+	return trigger
+}
+
+// harnessCancelTarget is the non-secret address needed to reach one runner.
+// It is persisted beside a parked checkpoint so an Agent edit cannot redirect
+// cancellation to a different edge.
+type harnessCancelTarget struct {
+	ClusterID string `json:"clusterID"`
+	EdgeKind  string `json:"edgeKind"`
+	EdgeName  string `json:"edgeName"`
+	Service   string `json:"service"`
+	RunnerID  string `json:"runnerID"`
+}
+
 // runCheckpoint is the payload persisted in store.Run.Checkpoint: the resume
 // state the backend handed back, plus what the api layer needs to rebuild the
 // run around it.
@@ -156,12 +178,17 @@ type runCheckpoint struct {
 	// else is still holding (attempt, session, cursor). Decoding either as the
 	// other would silently produce an empty resume, so they do not share a
 	// field; which one is set is decided by the run's Backend.
-	Harness       json.RawMessage `json:"harness,omitempty"`
-	Tool          string          `json:"tool"`
-	Args          string          `json:"args"`
-	InboxID       string          `json:"inboxID"`
-	SourceName    string          `json:"sourceName,omitempty"`
-	NotifyChannel string          `json:"notifyChannel,omitempty"`
+	Harness json.RawMessage `json:"harness,omitempty"`
+	// HarnessRunner is the safe, non-secret address of the runner holding a
+	// parked harness attempt. It survives edits to the Agent or removal of its
+	// ModelCredential, so cancel can still stop the old attempt without storing
+	// a URL or bearer token.
+	HarnessRunner *harnessCancelTarget `json:"harnessRunner,omitempty"`
+	Tool          string               `json:"tool"`
+	Args          string               `json:"args"`
+	InboxID       string               `json:"inboxID"`
+	SourceName    string               `json:"sourceName,omitempty"`
+	NotifyChannel string               `json:"notifyChannel,omitempty"`
 	// Worker carries a spawned sub-task's constraints (its narrowed families,
 	// approval class and tool-turn budget) so a resumed worker is rebuilt as the
 	// worker it was rather than as a top-level run of its agent.
@@ -468,6 +495,13 @@ const backendCancelTimeout = 30 * time.Second
 // way of starting work: a bug fixed here is fixed for all of them.
 func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (runResult, error) {
 	scope, agent := run.Scope, run.Agent
+	// A status condition alone cannot enforce unsupported tool restrictions:
+	// direct API callers and background triggers may run before reconciliation.
+	if agent.Spec.HarnessBacked() {
+		if _, message := harnesspolicy.UnsupportedFields(agent); message != "" {
+			return runResult{}, errors.New(message)
+		}
+	}
 
 	// Before every turn, resumed ones included: a run that parked on an approval
 	// spends from the same rolling window a fresh one does.
@@ -477,10 +511,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 
 	purpose := turnPurpose(run)
 
-	sessionID := run.SessionID
-	if sessionID == "" {
-		sessionID = run.Trigger // e.g. schedules share a per-trigger session
-	}
+	sessionID := effectiveSessionID(run.SessionID, run.Trigger) // e.g. schedules share a per-trigger session
 	runID := run.RunID
 	if runID == "" {
 		runID = uuid.NewString()
@@ -567,6 +598,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		cancel()
 	}()
+	// Approval resume and cancel can cross between ClaimRun and this local
+	// registration. A cancel that saw no live entry has already closed the
+	// durable run; observe its flag before dispatching another model or harness
+	// request so that the late resume cannot restart the work.
+	if stored, err := s.store.GetRun(ctx, scope, runID); err == nil && stored.CancelRequested {
+		cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		// A cancellation landed after a resume claimed the row but before it
+		// registered locally. The caller already recorded the terminal phase;
+		// return before Continue can dispatch another request to the runner.
+		return runResult{RunID: runID, Phase: store.RunPhaseAborted}, err
+	}
 
 	// Assemble the agent's tools for this trigger class (policy + approvals +
 	// audit + delegation); MCP sessions are released when the run ends.
@@ -632,7 +676,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// message that anchor represents, even though the append API assigns
 		// sequence numbers internally and does not return the updated row.
 		msgs[len(msgs)-1].ID = taskMessageID
-		_ = s.saveRun(ctx, scope, store.Run{
+		running := store.Run{
 			ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
 			ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
 			Delivery: run.delivery(),
@@ -641,7 +685,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// may have been re-pointed since.
 			Backend: agent.Spec.BackendType(), AttemptID: harnessAttemptID(harnessT, runID),
 			Phase: store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
-		})
+		}
+		if agent.Spec.HarnessBacked() {
+			checkpoint, err := initialHarnessCheckpoint(run, harnessT)
+			if err != nil {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("preparing the harness cancellation checkpoint: %w", err))
+			}
+			running.Checkpoint = checkpoint
+		}
+		if err := s.saveRun(ctx, scope, running); err != nil {
+			// The runner is an external process. Do not dispatch it unless its
+			// attempt coordinates and safe cancel target are already durable.
+			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+		}
 		if run.OnRunStarted != nil {
 			run.OnRunStarted(startedAt)
 		}
@@ -691,7 +747,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	}
 	usageCtx, cancelUsage := boundedPersistContext(ctx)
 	window, usageErr := s.store.AddUsage(usageCtx, scope, agent.Name,
-		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, 30*24*time.Hour)
+		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, budgetWindow(agent.Spec.Budget))
 	cancelUsage()
 	if usageErr != nil {
 		log.Printf("run %s: recording usage: %v", runID, usageErr)
@@ -790,6 +846,14 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		Tool: out.Parked.Tool, Args: out.Parked.Args,
 		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
 		WorkedDurationMS: tracker.durationMS(),
+	}
+	if harnessT != nil {
+		if cfg := run.Agent.Spec.Harness(); cfg != nil {
+			ck.HarnessRunner = &harnessCancelTarget{
+				ClusterID: run.ClusterID, EdgeKind: cfg.EdgeRef.Kind,
+				EdgeName: cfg.EdgeRef.Name, Service: harnessT.Service, RunnerID: harnessT.Service,
+			}
+		}
 	}
 	// The backend's resume state is opaque across the seam; the api layer only
 	// stores it, in the field this run's backend resumes from. Do this before
@@ -894,13 +958,25 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 // (phase PendingApproval, checkpoint saved) instead of finishing; resolving the
 // approval resumes it.
 func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error) {
-	return s.runTurn(ctx, run, nil)
+	if run.RunID == "" {
+		run.RunID = uuid.NewString()
+	}
+	res, err := s.runTurn(ctx, run, nil)
+	if err != nil && res.Phase == "" {
+		// Every entry point needs a durable refusal, including controller-owned
+		// schedules and chats that announced their run ID before setup began.
+		// Keeping this at the execution boundary prevents a claimed Pending run
+		// from being stranded when no model or runner was ever dispatched.
+		sessionID := effectiveSessionID(run.SessionID, run.Trigger)
+		return s.failBeforeStart(ctx, run.Scope, run, sessionID, time.Time{}, err)
+	}
+	return res, err
 }
 
 // startDetachedRun starts a run-now for the request that asked for it: detached
 // from the request context, executing with the caller's own access (the gate's
 // provider client on a verb; the caller-credentialed one on the MCP class).
-func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id identity, agent *agentsv1alpha1.Agent, tr taskRun) string {
+func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id identity, agent *agentsv1alpha1.Agent, tr taskRun) (runAdmission, error) {
 	// Detach from the request context: the response returns immediately while
 	// the run continues (the lifecycle applies the agent's own timeout).
 	return s.startRun(context.WithoutCancel(r.Context()), id.scope(agent.Name), agent, tr, s.callerAccess(r.Context(), c, id))
@@ -915,19 +991,38 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 // virtual-workspace one, and a hand-built taskRun in each of the background and
 // spawn paths — differed only in the access the run executes with, so that is a
 // parameter now. ctx must already be detached from whatever asked.
-func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) string {
+type runAdmission struct {
+	ID     string
+	Phase  store.RunPhase
+	Reused bool
+}
+
+func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) (runAdmission, error) {
 	runID := uuid.NewString()
 	now := time.Now().UTC()
+	// Save the effective transcript identity before Pending is admitted. The
+	// Postgres run row treats session_id as immutable on later phase updates.
+	tr.SessionID = effectiveSessionID(tr.SessionID, tr.Trigger)
 	tr.RunID = runID
 	tr.Scope = scope
 	tr.Agent = agent
 	access.applyTo(&tr)
 
-	_ = s.saveRun(ctx, scope, store.Run{
+	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
 		IdempotencyKey: tr.IdempotencyKey,
 		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
-	})
+	}); err != nil {
+		// The unique store key is the admission boundary. Concurrent requests
+		// may both miss the earlier lookup; only the one that records a run may
+		// execute. A loser returns the already recorded run, never a phantom ID.
+		if tr.IdempotencyKey != "" {
+			if existing, found, lookupErr := s.store.FindRunByIdempotencyKey(ctx, scope, tr.IdempotencyKey); lookupErr == nil && found {
+				return runAdmission{ID: existing.ID, Phase: existing.Phase, Reused: true}, nil
+			}
+		}
+		return runAdmission{}, fmt.Errorf("persisting run before execution: %w", err)
+	}
 	go func() {
 		res, err := s.executeTask(ctx, tr)
 		if err != nil {
@@ -950,7 +1045,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		}
 		access.Notify(ctx, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
-	return runID
+	return runAdmission{ID: runID, Phase: store.RunPhasePending}, nil
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for
@@ -1007,12 +1102,13 @@ func (s *Server) failBeforeStart(ctx context.Context, scope store.Scope, run tas
 // commentary; the final response is persisted by the lifecycle after the run
 // reaches a terminal phase, so it can carry authoritative timing.
 type turnSink struct {
-	s         *Server
-	ctx       context.Context
-	run       taskRun
-	sessionID string
-	startedAt time.Time
-	tracker   *turnProgressTracker
+	s           *Server
+	ctx         context.Context
+	run         taskRun
+	sessionID   string
+	startedAt   time.Time
+	tracker     *turnProgressTracker
+	backendType string
 	// record persists a mid-turn recovery checkpoint; abort reads the durable
 	// cancel flag. Both are built once so their throttling and closures live for
 	// the whole turn.
@@ -1035,6 +1131,7 @@ func (s *Server) turnSink(ctx context.Context, run taskRun, sessionID string, st
 	}
 	return &turnSink{
 		s: s, ctx: ctx, run: run, sessionID: sessionID, startedAt: startedAt, tracker: tracker,
+		backendType: backendType,
 		// Periodic checkpoints make a long run recoverable: if this replica dies,
 		// the Run reconciler resumes from the last one instead of losing the work.
 		// A resumed run keeps checkpointing too, so a replica that dies again picks
@@ -1082,6 +1179,24 @@ func (k *turnSink) ToolStart(id, name, args string) {
 
 func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 	k.tracker.tool(ev)
+	// Model tools are audited by wrapTool. Harness tools execute on the Edge,
+	// so their completion events are the provider's audit boundary.
+	if k.backendType == agentsv1alpha1.AgentBackendHarness {
+		outcome, errorText := "ok", ""
+		if ev.Err {
+			outcome, errorText = "error", safeTruncate(ev.Result, 4000)
+		}
+		persistCtx, cancel := boundedPersistContext(k.ctx)
+		err := k.s.store.AppendToolCall(persistCtx, k.run.Scope, store.ToolCall{
+			ID: uuid.NewString(), AgentName: k.run.Agent.Name, RunID: k.run.RunID, Trigger: k.run.Trigger,
+			Tool: ev.Name, Args: redactArgs(ev.Args), Result: safeTruncate(ev.Result, maxStoredResult),
+			Outcome: outcome, Error: errorText, DurationMS: ev.Duration.Milliseconds(), CreatedAt: time.Now().UTC(),
+		})
+		cancel()
+		if err != nil {
+			k.run.transcriptWrites.record(fmt.Errorf("persist harness tool audit %q: %w", ev.ID, err))
+		}
+	}
 	if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
 		ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
 		Role: "tool", Content: ev.Result,

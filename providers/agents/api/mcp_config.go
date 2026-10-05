@@ -19,6 +19,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -51,8 +52,11 @@ func (s *Server) mcpIdentity(ctx context.Context, r *http.Request) identity {
 	}
 	s.resolveWorkspace(ctx, &id)
 	if id.orgUUID == "" || id.workspaceUUID == "" {
-		if ref, ok, _ := s.store.GetTenantRef(ctx, id.clusterID); ok {
+		if ref, ok, err := s.tenantRef(ctx, id.clusterID); err == nil && ok {
 			id.orgUUID, id.workspaceUUID = ref.OrgUUID, ref.WorkspaceUUID
+		} else if err != nil {
+			id.orgUUID, id.workspaceUUID = unmappedOrg, id.clusterID
+			log.Printf("agents: migrating tenant scope for cluster %s: %v", id.clusterID, err)
 		}
 		return id
 	}
@@ -61,9 +65,17 @@ func (s *Server) mcpIdentity(ctx context.Context, r *http.Request) identity {
 	// no caller to read the LogicalCluster as and key their rows on this
 	// mapping (resolveClusterScope, background.scopeFor).
 	if id.workspacePath != "" && s.store != nil {
-		_ = s.store.SaveTenantRef(ctx, id.clusterID, store.TenantRef{
+		ref := store.TenantRef{
 			OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, UpdatedAt: time.Now().UTC(),
-		})
+		}
+		if err := s.store.SaveTenantRef(ctx, id.clusterID, ref); err != nil {
+			// Keep this request on the exact fallback scope where existing data
+			// still lives. The next resolution retries the atomic migration; using
+			// the newly learned scope here would make a failed migration look like
+			// empty history and could defeat idempotency.
+			log.Printf("agents: migrating tenant scope for cluster %s: %v", id.clusterID, err)
+			id.orgUUID, id.workspaceUUID, id.workspacePath = unmappedOrg, id.clusterID, ""
+		}
 	}
 	return id
 }
@@ -684,9 +696,12 @@ func (s *Server) mcpRunNow(ctx context.Context, r *http.Request, c *agentsclient
 		// silently strand it.
 		return nil, runNowOutput{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
 	}
-	runID := s.startDetachedRun(r, c, id, agent, tr)
+	admission, err := s.startDetachedRun(r, c, id, agent, tr)
+	if err != nil {
+		return nil, runNowOutput{}, err
+	}
 	return nil, runNowOutput{
-		RunID:  runID,
+		RunID:  admission.ID,
 		Status: "started — the run is executing in the background; its output is delivered to the configured channel",
 	}, nil
 }

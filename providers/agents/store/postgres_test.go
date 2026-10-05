@@ -72,17 +72,18 @@ func TestPostgres_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 	ctx := context.Background()
 	sc := pgScope(t, ps)
 	now := time.Now().UTC()
+	identity := legacyTaskIdentity("agent-helper-chat")
 
-	first, err := ps.NextHarnessTurn(ctx, sc, "chat", now)
+	first, err := ps.NextHarnessTurn(ctx, sc, "chat", now, identity)
 	if err != nil {
 		t.Fatalf("claim first turn: %v", err)
 	}
-	second, err := ps.NextHarnessTurn(ctx, sc, "chat", now.Add(time.Second))
+	second, err := ps.NextHarnessTurn(ctx, sc, "chat", now.Add(time.Second), identity)
 	if err != nil {
 		t.Fatalf("claim second turn: %v", err)
 	}
 	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		SessionID: "chat", TaskID: first.TaskID, Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
 		HarnessSessionID: "first-thread", UpdatedAt: now.Add(2 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist first completed turn after second allocation: %v", err)
@@ -94,19 +95,19 @@ func TestPostgres_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 			got, ok, err, second.Turns, first.Turns)
 	}
 	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, BackendKey: "backend-b",
+		SessionID: "chat", TaskID: second.TaskID, Turns: second.Turns, ObservedEpoch: second.Turns, BackendKey: "backend-b",
 		HarnessSessionID: "newer-thread", UpdatedAt: now.Add(3 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist second turn: %v", err)
 	}
 	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		SessionID: "chat", TaskID: first.TaskID, Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
 		HarnessSessionID: "older-thread", UpdatedAt: now.Add(4 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist late first receipt: %v", err)
 	}
 	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, UpdatedAt: now.Add(5 * time.Second),
+		SessionID: "chat", TaskID: second.TaskID, Turns: second.Turns, ObservedEpoch: second.Turns, UpdatedAt: now.Add(5 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist empty receipt: %v", err)
 	}
@@ -117,9 +118,136 @@ func TestPostgres_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 		t.Fatalf("session after late writes = %+v, ok=%v, err=%v; want allocated epoch %d, observed epoch %d and newer-thread/backend-b",
 			got, ok, err, second.Turns, second.Turns)
 	}
-	third, err := ps.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second))
+	third, err := ps.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second), identity)
 	if err != nil || third.Turns != 3 || third.HarnessSessionID != "newer-thread" {
 		t.Fatalf("next turn = %+v, err=%v; want epoch 3 resuming newer-thread", third, err)
+	}
+}
+
+func TestPostgres_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC()
+	identity := HarnessIdentity{TaskID: "agent-helper-uid-reused", LegacyTaskID: "agent-helper-reused", AgentUID: "uid-reused"}
+	first, err := ps.NextHarnessTurn(ctx, sc, "reused", now, identity)
+	if err != nil {
+		t.Fatalf("allocate first turn: %v", err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", TaskID: first.TaskID, AgentUID: identity.AgentUID, HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		Turns: first.Turns, ObservedEpoch: first.Turns, UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("save first receipt: %v", err)
+	}
+	if err := ps.DeleteSession(ctx, sc, "reused"); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	tombstone, ok, err := ps.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || !ok || tombstone.Turns != 1 || tombstone.ObservedEpoch != 2 || tombstone.TaskID != first.TaskID || tombstone.HarnessSessionID != "" || tombstone.BackendKey != "" {
+		t.Fatalf("post-delete tombstone = %+v, ok=%v, err=%v", tombstone, ok, err)
+	}
+	next, err := ps.NextHarnessTurn(ctx, sc, "reused", now.Add(2*time.Second), identity)
+	if err != nil || next.Turns != 2 || next.TaskID != first.TaskID || next.HarnessSessionID != "" {
+		t.Fatalf("reused session turn = %+v, err=%v; want fresh native session at epoch 2", next, err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", TaskID: first.TaskID, AgentUID: identity.AgentUID, HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		Turns: 1, ObservedEpoch: 1, UpdatedAt: now.Add(3 * time.Second),
+	}); err != nil {
+		t.Fatalf("save late old receipt: %v", err)
+	}
+	late, _, err := ps.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || late.HarnessSessionID != "" || late.ObservedEpoch != 2 {
+		t.Fatalf("late receipt crossed delete fence: %+v, err=%v", late, err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "reused", TaskID: next.TaskID, AgentUID: identity.AgentUID, HarnessSessionID: "runner-thread-new", BackendKey: "edge-a",
+		Turns: 2, ObservedEpoch: 2, UpdatedAt: now.Add(4 * time.Second),
+	}); err != nil {
+		t.Fatalf("save new receipt: %v", err)
+	}
+	current, _, err := ps.GetHarnessSession(ctx, sc, "reused")
+	if err != nil || current.HarnessSessionID != "runner-thread-new" || current.ObservedEpoch != 2 {
+		t.Fatalf("new receipt did not replace tombstone: %+v, err=%v", current, err)
+	}
+}
+
+func TestPostgres_NextHarnessTurnSelectsAndKeepsTaskIdentity(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC()
+	identity := HarnessIdentity{TaskID: "new-uid-task", LegacyTaskID: "new-legacy-task", AgentUID: "new-agent-uid", CreatedAt: now.Add(-3 * time.Second).Truncate(time.Second)}
+
+	created, err := ps.NextHarnessTurn(ctx, sc, "new", now, identity)
+	if err != nil || created.TaskID != "new-uid-task" {
+		t.Fatalf("new session identity = %+v, err=%v; want UID task", created, err)
+	}
+	next, err := ps.NextHarnessTurn(ctx, sc, "new", now.Add(time.Second), identity)
+	if err != nil || next.TaskID != "new-uid-task" {
+		t.Fatalf("existing session identity changed = %+v, err=%v", next, err)
+	}
+
+	legacyID := legacyTaskIdentity("legacy-task")
+	if _, err := ps.NextHarnessTurn(ctx, sc, "legacy", now, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	newIdentity := HarnessIdentity{TaskID: "wrong-new-uid", LegacyTaskID: "legacy-task", AgentUID: "new-agent-uid", CreatedAt: now.Add(-3 * time.Second).Truncate(time.Second)}
+	legacy, err := ps.NextHarnessTurn(ctx, sc, "legacy", now.Add(time.Second), newIdentity)
+	if err != nil || legacy.TaskID != "legacy-task" {
+		t.Fatalf("unmarked existing session identity = %+v, err=%v; want legacy marker", legacy, err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{SessionID: "legacy", TaskID: "wrong-task", AgentUID: "new-agent-uid", Turns: legacy.Turns, UpdatedAt: now.Add(2 * time.Second)}); err == nil {
+		t.Fatal("receipt with mismatched identity was accepted")
+	}
+	stored, ok, err := ps.GetHarnessSession(ctx, sc, "legacy")
+	if err != nil || !ok || stored.TaskID != "legacy-task" {
+		t.Fatalf("receipt overwrote task identity = %+v, ok=%v, err=%v", stored, ok, err)
+	}
+
+	if err := ps.DeleteAgentData(ctx, sc, sc.AgentName); err != nil {
+		t.Fatal(err)
+	}
+	recreatedIdentity := HarnessIdentity{TaskID: "recreated-uid-task", LegacyTaskID: "new-legacy-task", AgentUID: "recreated-agent-uid", CreatedAt: now.Add(3 * time.Second).Truncate(time.Second)}
+	recreated, err := ps.NextHarnessTurn(ctx, sc, "new", now.Add(4*time.Second), recreatedIdentity)
+	if err != nil || recreated.TaskID != "recreated-uid-task" {
+		t.Fatalf("recreated Agent session identity = %+v, err=%v", recreated, err)
+	}
+}
+
+func TestPostgres_RecreatedAgentResetsSessionAndFencesLateReceipt(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	base := time.Now().UTC().Truncate(time.Second)
+	oldIdentity := HarnessIdentity{TaskID: "task-old", LegacyTaskID: "legacy-task", AgentUID: "uid-old", CreatedAt: base.Add(-10 * time.Second)}
+	old, err := ps.NextHarnessTurn(ctx, sc, "chat", base, oldIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", TaskID: oldIdentity.TaskID, AgentUID: oldIdentity.AgentUID,
+		HarnessSessionID: "old-native", BackendKey: "edge", Turns: 8, ObservedEpoch: 8,
+		UpdatedAt: base.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newIdentity := HarnessIdentity{TaskID: "task-new", LegacyTaskID: "legacy-task", AgentUID: "uid-new", CreatedAt: base.Add(2 * time.Second)}
+	newTurn, err := ps.NextHarnessTurn(ctx, sc, "chat", base.Add(3*time.Second), newIdentity)
+	if err != nil || newTurn.TaskID != newIdentity.TaskID || newTurn.AgentUID != newIdentity.AgentUID || newTurn.Turns != 1 || newTurn.HarnessSessionID != "" {
+		t.Fatalf("recreated Agent did not get a fresh task: %+v, err=%v", newTurn, err)
+	}
+	if err := ps.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", TaskID: oldIdentity.TaskID, AgentUID: oldIdentity.AgentUID,
+		HarnessSessionID: "late-old-native", BackendKey: "edge", Turns: old.Turns,
+		ObservedEpoch: 20, UpdatedAt: base.Add(4 * time.Second),
+	}); err == nil {
+		t.Fatal("late receipt from the deleted Agent incarnation was accepted")
+	}
+	current, ok, err := ps.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || current.TaskID != newIdentity.TaskID || current.AgentUID != newIdentity.AgentUID || current.HarnessSessionID != "" {
+		t.Fatalf("late receipt changed recreated Agent state: %+v, ok=%v, err=%v", current, ok, err)
 	}
 }
 
@@ -222,6 +350,41 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}
 	if got, err = ps.GetRun(ctx, sc, runID); err != nil || got.Sources != nil {
 		t.Fatalf("sources should clear to nil: %v %v", err, got.Sources)
+	}
+}
+
+func TestPostgres_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for _, tc := range []struct {
+		name          string
+		phase         RunPhase
+		requestCancel bool
+	}{
+		{name: "cancelled pending approval", phase: RunPhasePendingApproval, requestCancel: true},
+		{name: "aborted", phase: RunPhaseAborted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := uuid.NewString()
+			if err := ps.SaveRun(ctx, sc, Run{ID: id, AgentName: sc.AgentName, Trigger: "chat", Phase: tc.phase, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatalf("save run: %v", err)
+			}
+			if tc.requestCancel {
+				if err := ps.RequestCancel(ctx, sc, id, now); err != nil {
+					t.Fatalf("request cancel: %v", err)
+				}
+			}
+			if _, err := ps.ClaimRun(ctx, sc, id, "late-approval", now); err == nil {
+				t.Fatal("ClaimRun succeeded for a cancelled or terminal run")
+			}
+			stored, err := ps.GetRun(ctx, sc, id)
+			if err != nil || stored.Phase != tc.phase || (tc.requestCancel && !stored.CancelRequested) {
+				t.Fatalf("run after failed claim = %+v, %v", stored, err)
+			}
+		})
 	}
 }
 

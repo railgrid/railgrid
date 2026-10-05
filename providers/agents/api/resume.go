@@ -97,7 +97,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		log.Printf("resume: run %s: %v", run.ID, err)
 		return
 	}
-	s.upgradeLegacyImageCheckpoint(ctx, agentScope, run, &ck.Engine)
+	legacyRun := run
+	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
+	s.upgradeLegacyImageCheckpoint(ctx, agentScope, legacyRun, &ck.Engine)
 	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
 	agent, err := access.CR.GetAgent(ctx, run.AgentName)
@@ -111,7 +113,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	used := false
 	tr := taskRun{
 		Scope: agentScope, Agent: agent,
-		RunID: run.ID, SessionID: run.SessionID, Trigger: run.Trigger,
+		RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID,
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
 		// A spawned worker's constraints come back off its checkpoint, so a

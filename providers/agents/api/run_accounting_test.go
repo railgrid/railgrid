@@ -56,6 +56,40 @@ func TestFailedHarnessTurnBillsPartialUsage(t *testing.T) {
 	}
 }
 
+func TestHarnessTurnUsageEnforcesDailyBudgetOnNextTurn(t *testing.T) {
+	dispatcher := &accountingHarnessDispatcher{
+		events:    []runner.Event{accountingUsageEvent(1, 600, 10, 610)},
+		eventsErr: errors.New("runner event stream failed after usage"),
+	}
+	s, run := newHarnessRunLifecycleFixture(t, dispatcher, 0)
+	run.Agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+
+	first, err := s.runTurn(context.Background(), run, nil)
+	if err == nil || first.Phase != store.RunPhaseFailed {
+		t.Fatalf("first run result=%+v err=%v, want billed failed run", first, err)
+	}
+
+	now := time.Now().UTC()
+	daily, err := s.store.GetUsage(context.Background(), run.Scope, run.Agent.Name, now, budgetWindow(run.Agent.Spec.Budget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if daily.InputTokens != 600 || daily.OutputTokens != 10 {
+		t.Fatalf("daily usage = %+v, want 600/10 tokens", daily)
+	}
+	if err := s.checkBudget(context.Background(), run.Scope, run.Agent, now); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("daily budget after the first turn = %v, want ErrBudgetExceeded", err)
+	}
+
+	// The same gate runTurn uses must reject the next turn before another
+	// attempt is dispatched. This catches accounting that was written to a
+	// monthly bucket while the budget reads the daily bucket.
+	run.RunID = "run-after-daily-cap"
+	if _, err := s.runTurn(context.Background(), run, nil); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("next run error = %v, want ErrBudgetExceeded", err)
+	}
+}
+
 func TestFailedResumedHarnessTurnKeepsPriorUsageAndBillsOnlyDelta(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -90,14 +124,21 @@ func TestFailedResumedHarnessTurnKeepsPriorUsageAndBillsOnlyDelta(t *testing.T) 
 			}); err != nil {
 				t.Fatal(err)
 			}
+			backendKey := harnessBackendKey(run.ClusterID,
+				run.Agent.Spec.Harness().EdgeRef.Kind, run.Agent.Spec.Harness().EdgeRef.Name,
+				llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex))
+			if err := s.store.PutHarnessSession(context.Background(), run.Scope, store.HarnessSession{
+				SessionID: run.SessionID, TaskID: harnessTaskID(run.Agent.Name, run.SessionID),
+				HarnessSessionID: "thread", BackendKey: backendKey, Turns: 1, ObservedEpoch: 1, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
 			rawState, err := json.Marshal(backendharness.State{
 				TaskID: harnessTaskID(run.Agent.Name, run.SessionID), AttemptID: run.RunID,
 				Epoch: 1, SessionID: "thread",
-				BackendKey: harnessBackendKey(run.ClusterID,
-					run.Agent.Spec.Harness().EdgeRef.Kind, run.Agent.Spec.Harness().EdgeRef.Name,
-					llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)),
-				Spent:    prior,
-				Snapshot: json.RawMessage(`{"version":1,"turnStarted":true}`),
+				BackendKey: backendKey,
+				Spent:      prior,
+				Snapshot:   json.RawMessage(`{"version":1,"turnStarted":true}`),
 			})
 			if err != nil {
 				t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -58,7 +59,9 @@ type usageResponse struct {
 // attribution uses the agent's CURRENT primary model
 // (spec.backend.model.credentials.chat), since
 // runs are recorded per agent; this is exact unless the agent's model changed
-// mid-window.
+// mid-window. Harness agents use their explicit harness model when set; a
+// harness that delegates model choice to its own default is attributed to its
+// configured credential identity.
 //
 // It is the `usage` verb on the agent, so the response is one agent's slice of
 // the workspace total: byAgent has a single bucket. A workspace-wide dashboard
@@ -92,7 +95,7 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	// with no assigned model is bucketed under "(unassigned)".
 	agentModel := map[string]string{}
 	if a, aerr := c.Agents().Get(r.Context(), agentName, metav1.GetOptions{}); aerr == nil {
-		agentModel[a.Name] = a.Spec.ModelCredentialFor(llm.PurposeChat)
+		agentModel[a.Name] = usageModelKey(a)
 	}
 
 	total := usageBucket{Key: "total"}
@@ -193,6 +196,22 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(resp.Series, func(i, j int) bool { return resp.Series[i].Date < resp.Series[j].Date })
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func usageModelKey(agent *agentsv1alpha1.Agent) string {
+	if agent == nil {
+		return ""
+	}
+	if harness := agent.Spec.Harness(); harness != nil {
+		if model := strings.TrimSpace(harness.Model); model != "" {
+			return model
+		}
+		if credential := strings.TrimSpace(harness.CredentialRef); credential != "" {
+			return credential + " (harness default)"
+		}
+		return "harness default"
+	}
+	return agent.Spec.ModelCredentialFor(llm.PurposeChat)
 }
 
 // percentiles returns the p50 and p95 of xs (nearest-rank). Empty → (0, 0).

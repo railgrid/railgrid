@@ -16,8 +16,11 @@ package api
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
+	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 )
@@ -71,5 +74,32 @@ func TestCompactionMaxTokensOptionPayload(t *testing.T) {
 				t.Errorf("request unexpectedly includes %q = %v", tt.unexpectedField, got)
 			}
 		})
+	}
+}
+
+func TestCompactionUsageCountsTowardDailyBudget(t *testing.T) {
+	ctx := context.Background()
+	f := newCompactFixture(t, 0, 0, "gpt-4o")
+	f.agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+	model, err := f.s.buildModelForPurpose(ctx, f.creds, f.agent, llm.PurposeCompaction)
+	if err != nil {
+		t.Fatalf("build compaction model: %v", err)
+	}
+
+	if _, err := f.s.summarizeBatch(ctx, f.run(), model, "gpt-4o", []engine.Message{{
+		Role: engine.RoleUser, Content: "Summarize this conversation evidence.",
+	}}); err != nil {
+		t.Fatalf("summarize batch: %v", err)
+	}
+
+	usage, err := f.s.store.GetUsage(ctx, f.scope, f.agent.Name, time.Now().UTC(), budgetWindow(f.agent.Spec.Budget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 100 || usage.OutputTokens != 20 {
+		t.Fatalf("daily usage = %+v, want compaction's 100/20 tokens", usage)
+	}
+	if err := f.s.checkBudget(ctx, f.scope, f.agent, time.Now().UTC()); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("daily budget after compaction = %v, want ErrBudgetExceeded", err)
 	}
 }

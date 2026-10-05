@@ -120,6 +120,14 @@ func (s *Scope) ListWithOptions(ctx context.Context, res Resource, namespace str
 	return list.Items, nil
 }
 
+// Create creates obj only when its name is unused. Unlike Apply, this is a
+// single Kubernetes create request: an existing object returns AlreadyExists
+// and is never read or replaced as part of the operation.
+func (s *Scope) Create(ctx context.Context, obj *unstructured.Unstructured, opts metav1.CreateOptions) (*unstructured.Unstructured, error) {
+	res := resourceFromObject(obj)
+	return s.resource(res, obj.GetNamespace()).Create(ctx, obj, opts)
+}
+
 // Apply create-or-updates obj: an absent object is created, an existing one
 // is replaced wholesale (the server's resourceVersion and uid are carried
 // over, so this is last-write-wins, not compare-and-swap). An object without

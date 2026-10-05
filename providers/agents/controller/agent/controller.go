@@ -74,6 +74,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/internal/harnesspolicy"
 )
 
 // DataFinalizer guards an Agent until its rows in the provider store have
@@ -412,9 +413,9 @@ func (r *Reconciler) validate(ctx context.Context, c client.Client, agent *agent
 		return agentsv1alpha1.ReasonInvalidSpec, "spec.limits.timeoutSeconds must be zero or greater", nil
 	}
 	// What cannot mean anything for a harness-backed agent, said out loud rather
-	// than ignored. See harnessMeaninglessFields.
+	// than ignored. See harnesspolicy.UnsupportedFields.
 	if agent.Spec.HarnessBacked() {
-		if reason, message := harnessMeaninglessFields(agent); reason != "" {
+		if reason, message := harnesspolicy.UnsupportedFields(agent); reason != "" {
 			return reason, message, nil
 		}
 	}
