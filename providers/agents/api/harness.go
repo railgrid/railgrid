@@ -31,7 +31,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/url"
 	"strconv"
@@ -223,15 +222,10 @@ func stopHarnessTurn(ctx context.Context, h *harnessTurn, run *backend.Run) erro
 // config is used only to address the same runner and mint its scoped identity.
 // This path deliberately does not load the harness credential: cancellation
 // needs the runner identity, not the model provider's long-lived auth secret.
-func (s *Server) stopParkedHarness(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) {
+func (s *Server) stopParkedHarness(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) error {
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
 	defer cancel()
-	if err := s.cancelParkedHarness(stopCtx, c, id, run); err != nil {
-		// Errors can originate in an authenticated request. Keep diagnostics
-		// generic so neither a provider credential nor an upstream error body is
-		// copied into logs.
-		log.Printf("run %s: stopping parked harness attempt failed", run.ID)
-	}
+	return s.cancelParkedHarness(stopCtx, c, id, run)
 }
 
 func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) error {
@@ -255,7 +249,13 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 		return err
 	}
 	ref, grantAgent, ok := parkedHarnessRunner(id.clusterID, agent, checkpoint.HarnessRunner, state.BackendKey)
-	if !ok {
+	if checkpoint.HarnessRunner != nil && !ok {
+		// A saved target is authoritative. If it is malformed or no longer
+		// matches the checkpoint, do not redirect a cancellation through the
+		// Agent's current spec; leave the run retryable for the reconciler.
+		return errors.New("the saved harness cancellation target does not match the checkpoint")
+	}
+	if checkpoint.HarnessRunner == nil {
 		// Older checkpoints do not carry a runner target. They can still be
 		// stopped while the Agent and its harness credential reference remain
 		// intact; new checkpoints do not depend on either remaining unchanged.

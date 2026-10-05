@@ -41,6 +41,7 @@ import (
 	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tenant"
 )
 
 const parkedCancelAgentToken = "SENSITIVE_AGENT_BEARER_FOR_TEST"
@@ -240,6 +241,15 @@ func (f *parkedCancelFixture) cancel(t *testing.T) *httptest.ResponseRecorder {
 	return w
 }
 
+type failingRequestCancelStore struct {
+	store.Store
+	err error
+}
+
+func (s failingRequestCancelStore) RequestCancel(context.Context, store.Scope, string, time.Time) error {
+	return s.err
+}
+
 func (f *parkedCancelFixture) replaceAgent(t *testing.T, replacement *agentsv1alpha1.Agent) {
 	t.Helper()
 	if _, err := f.dynamic.Resource(agentsclient.AgentGVR).Update(context.Background(), parkedCancelUnstructured(t, agentsclient.AgentGVR, "Agent", replacement), metav1.UpdateOptions{}); err != nil {
@@ -266,6 +276,7 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 		t.Fatalf("add pending inbox item: %v", err)
 	}
 
+	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
 	w := f.cancel(t)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("cancel status = %d: %s", w.Code, w.Body.String())
@@ -318,7 +329,6 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 		t.Fatal("late approval dispatched another remote cancellation/resume call")
 	default:
 	}
-	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
 }
 
 func TestCancelLegacyParkedHarnessUsesCurrentAgentAndCredentialMetadata(t *testing.T) {
@@ -331,6 +341,7 @@ func TestCancelLegacyParkedHarnessUsesCurrentAgentAndCredentialMetadata(t *testi
 	}
 	f := newParkedCancelFixture(t, agent, credential)
 	f.park(t, false)
+	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
 	w := f.cancel(t)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("cancel status = %d: %s", w.Code, w.Body.String())
@@ -354,7 +365,101 @@ func TestCancelLegacyParkedHarnessUsesCurrentAgentAndCredentialMetadata(t *testi
 	if got := f.secretGets.Load(); got != 0 {
 		t.Fatalf("legacy cancel read %d Secret objects", got)
 	}
+}
+
+func TestCancelParkedHarnessFailureStaysRetryableUntilRemoteStopSucceeds(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	f := newParkedCancelFixture(t, agent, nil)
+	run := f.park(t, true)
+	f.dispatcher.failCancels = 1
+
+	first := f.cancel(t)
+	if first.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed remote cancel status = %d: %s; want retryable 503", first.Code, first.Body.String())
+	}
+	stored, err := f.server.store.GetRun(context.Background(), f.scope, run.ID)
+	if err != nil || stored.Phase != store.RunPhasePendingApproval || !stored.CancelRequested {
+		t.Fatalf("run after failed remote cancel = %+v, %v; want pending approval with durable cancel request", stored, err)
+	}
+
 	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
+	second := f.cancel(t)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("successful retry status = %d: %s; want 202", second.Code, second.Body.String())
+	}
+	stored, err = f.server.store.GetRun(context.Background(), f.scope, run.ID)
+	if err != nil || stored.Phase != store.RunPhaseAborted {
+		t.Fatalf("run after successful remote cancel = %+v, %v; want Aborted", stored, err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-f.dispatcher.calls:
+		case <-time.After(time.Second):
+			t.Fatalf("remote cancel attempt %d did not reach the dispatcher", i+1)
+		}
+	}
+}
+
+func TestCancelRunReturnsUnavailableWhenCancelFlagCannotBeStored(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	f := newParkedCancelFixture(t, agent, nil)
+	run := f.park(t, true)
+	f.server.store = failingRequestCancelStore{Store: f.server.store, err: errors.New("store unavailable")}
+
+	w := f.cancel(t)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("cancel storage failure status = %d: %s; want 503", w.Code, w.Body.String())
+	}
+	stored, err := f.server.store.GetRun(context.Background(), f.scope, run.ID)
+	if err != nil || stored.Phase != store.RunPhasePendingApproval || stored.CancelRequested {
+		t.Fatalf("run after cancel storage failure = %+v, %v; want unchanged and not cancelled", stored, err)
+	}
+	select {
+	case call := <-f.dispatcher.calls:
+		t.Fatalf("remote cancellation ran before cancel flag was stored: %+v", call.request)
+	default:
+	}
+}
+
+func TestCancelParkedHarnessDoesNotRedirectInvalidSavedTarget(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	agent.Spec.Backend.Harness.CredentialRef = "codex-credential"
+	credential := &agentsv1alpha1.ModelCredential{
+		ObjectMeta: metav1.ObjectMeta{Name: "codex-credential"},
+		Spec:       agentsv1alpha1.ModelCredentialSpec{Provider: agentsv1alpha1.ModelProviderCodex},
+	}
+	f := newParkedCancelFixture(t, agent, credential)
+	run := f.park(t, true)
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.HarnessRunner.EdgeName = "different-edge"
+	run.Checkpoint, _ = json.Marshal(checkpoint)
+	if err := f.server.store.SaveRun(context.Background(), f.scope, run); err != nil {
+		t.Fatal(err)
+	}
+
+	client := agentsclient.NewFromScope(tenant.NewScopeFromDynamic("cluster-test", f.dynamic))
+	err := f.server.cancelParkedHarness(context.Background(), client, f.identity, run)
+	if err == nil {
+		t.Fatal("cancel accepted a saved runner target that did not match the checkpoint")
+	}
+	select {
+	case dial := <-f.dialed:
+		t.Fatalf("invalid saved target redirected cancellation to %+v", dial.ref)
+	default:
+	}
+	select {
+	case call := <-f.dispatcher.calls:
+		t.Fatalf("invalid saved target sent remote cancellation %+v", call.request)
+	default:
+	}
+	if got := f.secretGets.Load(); got != 0 {
+		t.Fatalf("invalid saved target fallback read %d Secret objects", got)
+	}
 }
 
 func TestParkRunPersistsHarnessCancelTargetWithoutCredentials(t *testing.T) {
