@@ -196,8 +196,19 @@ func parkedCancelUnstructured(t *testing.T, gvr schema.GroupVersionResource, kin
 
 func (f *parkedCancelFixture) park(t *testing.T, saveRunnerTarget bool) store.Run {
 	t.Helper()
+	uid := string(f.initialAgent.UID)
+	return f.parkWithIdentity(t, saveRunnerTarget, harnessTaskIDFor(f.run.AgentName, uid, f.run.SessionID), uid)
+}
+
+func (f *parkedCancelFixture) parkLegacy(t *testing.T, saveRunnerTarget bool) store.Run {
+	t.Helper()
+	return f.parkWithIdentity(t, saveRunnerTarget, harnessTaskID(f.run.AgentName, f.run.SessionID), "")
+}
+
+func (f *parkedCancelFixture) parkWithIdentity(t *testing.T, saveRunnerTarget bool, taskID, agentUID string) store.Run {
+	t.Helper()
 	state := backendharness.State{
-		TaskID: harnessTaskID(f.run.AgentName, f.run.SessionID), AttemptID: f.run.ID, Epoch: 2,
+		TaskID: taskID, AgentUID: agentUID, AttemptID: f.run.ID, Epoch: 2,
 		BackendKey: harnessBackendKey("cluster-test", edgeref.KindLinuxServer, "edge-test", llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)),
 		SessionID:  "native-session",
 	}
@@ -215,6 +226,14 @@ func (f *parkedCancelFixture) park(t *testing.T, saveRunnerTarget bool) store.Ru
 	checkpointJSON, err := json.Marshal(checkpoint)
 	if err != nil {
 		t.Fatal(err)
+	}
+	updatedAt := time.Now().UTC()
+	if err := f.server.store.PutHarnessSession(context.Background(), f.scope, store.HarnessSession{
+		SessionID: f.run.SessionID, TaskID: taskID, AgentUID: agentUID,
+		HarnessSessionID: state.SessionID, BackendKey: state.BackendKey,
+		Turns: int64(state.Epoch), ObservedEpoch: int64(state.Epoch), UpdatedAt: updatedAt,
+	}); err != nil {
+		t.Fatalf("save durable harness session identity: %v", err)
 	}
 	f.run.Phase = store.RunPhasePendingApproval
 	f.run.Checkpoint = checkpointJSON
@@ -248,6 +267,12 @@ type failingRequestCancelStore struct {
 
 func (s failingRequestCancelStore) RequestCancel(context.Context, store.Scope, string, time.Time) error {
 	return s.err
+}
+
+type missingHarnessSessionStore struct{ store.Store }
+
+func (s missingHarnessSessionStore) GetHarnessSession(context.Context, store.Scope, string) (store.HarnessSession, bool, error) {
+	return store.HarnessSession{}, false, nil
 }
 
 func (f *parkedCancelFixture) replaceAgent(t *testing.T, replacement *agentsv1alpha1.Agent) {
@@ -304,7 +329,7 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 		if call.ctxErr != nil || !call.hasDeadline {
 			t.Fatalf("remote cancel context err=%v deadline=%t; want detached and bounded", call.ctxErr, call.hasDeadline)
 		}
-		if call.request.TaskID != harnessTaskID(run.AgentName, run.SessionID) || call.request.AttemptID != run.ID || call.request.AttemptEpoch != 2 {
+		if call.request.TaskID != harnessTaskIDFor(run.AgentName, string(f.initialAgent.UID), run.SessionID) || call.request.AttemptID != run.ID || call.request.AttemptEpoch != 2 {
 			t.Fatalf("remote cancel request = %+v, want checkpoint coordinates", call.request)
 		}
 	case <-time.After(5 * time.Second):
@@ -339,8 +364,9 @@ func TestCancelLegacyParkedHarnessUsesCurrentAgentAndCredentialMetadata(t *testi
 		ObjectMeta: metav1.ObjectMeta{Name: "codex-credential"},
 		Spec:       agentsv1alpha1.ModelCredentialSpec{Provider: agentsv1alpha1.ModelProviderCodex},
 	}
+	agent.CreationTimestamp = metav1.NewTime(time.Now().UTC().Add(-3 * time.Second).Truncate(time.Second))
 	f := newParkedCancelFixture(t, agent, credential)
-	f.park(t, false)
+	f.parkLegacy(t, false)
 	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
 	w := f.cancel(t)
 	if w.Code != http.StatusAccepted {
@@ -364,6 +390,57 @@ func TestCancelLegacyParkedHarnessUsesCurrentAgentAndCredentialMetadata(t *testi
 	}
 	if got := f.secretGets.Load(); got != 0 {
 		t.Fatalf("legacy cancel read %d Secret objects", got)
+	}
+}
+
+func TestCancelUIDCheckpointRequiresCurrentAgentOwner(t *testing.T) {
+	initial := harnessAgent("edge-test")
+	initial.UID = "agent-uid-original"
+	f := newParkedCancelFixture(t, initial, nil)
+	run := f.park(t, true)
+	recreated := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: initial.Name, UID: "agent-uid-recreated"}}
+	f.replaceAgent(t, recreated)
+
+	w := f.cancel(t)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("wrong-owner cancel status = %d: %s; want retryable 503", w.Code, w.Body.String())
+	}
+	stored, err := f.server.store.GetRun(context.Background(), f.scope, run.ID)
+	if err != nil || stored.Phase != store.RunPhasePendingApproval || !stored.CancelRequested {
+		t.Fatalf("run after wrong-owner cancel = %+v, %v; want nonterminal with durable cancel request", stored, err)
+	}
+	select {
+	case dial := <-f.dialed:
+		t.Fatalf("wrong Agent incarnation dialed runner %+v", dial.ref)
+	default:
+	}
+	select {
+	case call := <-f.dispatcher.calls:
+		t.Fatalf("wrong Agent incarnation sent remote cancellation %+v", call.request)
+	default:
+	}
+}
+
+func TestCancelLegacyCheckpointRequiresDurableSessionRow(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	agent.CreationTimestamp = metav1.NewTime(time.Now().UTC().Add(-3 * time.Second).Truncate(time.Second))
+	f := newParkedCancelFixture(t, agent, nil)
+	run := f.parkLegacy(t, true)
+	f.server.store = missingHarnessSessionStore{Store: f.server.store}
+
+	w := f.cancel(t)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("legacy cancel without session row status = %d: %s; want 503", w.Code, w.Body.String())
+	}
+	stored, err := f.server.store.GetRun(context.Background(), f.scope, run.ID)
+	if err != nil || stored.Phase != store.RunPhasePendingApproval || !stored.CancelRequested {
+		t.Fatalf("run after unverified legacy cancel = %+v, %v; want nonterminal with durable cancel request", stored, err)
+	}
+	select {
+	case dial := <-f.dialed:
+		t.Fatalf("unverified legacy checkpoint dialed runner %+v", dial.ref)
+	default:
 	}
 }
 

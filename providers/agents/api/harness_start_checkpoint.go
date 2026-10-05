@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
@@ -35,6 +36,24 @@ func initialHarnessCheckpoint(run taskRun, turn *harnessTurn) (json.RawMessage, 
 	var state backendharness.State
 	if err := json.Unmarshal(stateRaw, &state); err != nil {
 		return nil, err
+	}
+	sessionID := turn.Session.SessionID
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, errors.New("harness start state has no effective session identity")
+	}
+	if run.SessionID != "" && run.SessionID != sessionID {
+		return nil, errors.New("harness start state uses a different session than the run")
+	}
+	taskID := turn.Session.TaskID
+	if taskID == "" {
+		return nil, errors.New("harness start state has no durable task identity")
+	}
+	agentUID, err := harnessAgentUIDForTask(run.Agent, sessionID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if state.TaskID != taskID || state.AgentUID != agentUID {
+		return nil, errors.New("harness start state does not match its Agent identity")
 	}
 	if state.TaskID == "" || state.AttemptID != run.RunID || state.Epoch == 0 || state.BackendKey == "" {
 		return nil, errors.New("harness start state is missing its durable cancellation coordinates")
@@ -67,7 +86,7 @@ func initialHarnessCheckpoint(run taskRun, turn *harnessTurn) (json.RawMessage, 
 // stopHarnessFromRun reaches a run's saved target after the process that held
 // its executor is gone. The provider's scoped identity is minted from the
 // current Agent; no model credential or runner URL is loaded from storage.
-func (b *background) stopHarnessFromRun(ctx context.Context, clusterID string, run store.Run) error {
+func (b *background) stopHarnessFromRun(ctx context.Context, clusterID string, scope store.Scope, run store.Run) error {
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
 	defer cancel()
 	dyn, err := b.scoped(stopCtx, clusterID)
@@ -75,5 +94,7 @@ func (b *background) stopHarnessFromRun(ctx context.Context, clusterID string, r
 		return err
 	}
 	client := agentsclient.NewFromScope(tenant.NewScopeFromDynamic(clusterID, dyn))
-	return b.server.cancelParkedHarness(stopCtx, client, identity{clusterID: clusterID}, run)
+	return b.server.cancelParkedHarness(stopCtx, client, identity{
+		clusterID: clusterID, orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID,
+	}, run)
 }

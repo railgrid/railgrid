@@ -29,6 +29,7 @@ import (
 
 func TestInitialHarnessCheckpointContainsOnlySafeCancellationCoordinates(t *testing.T) {
 	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
 	run := taskRun{
 		Scope: store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: agent.Name},
 		Agent: agent, RunID: "run-start-checkpoint", SessionID: "chat", ClusterID: "cluster-test",
@@ -50,7 +51,7 @@ func TestInitialHarnessCheckpointContainsOnlySafeCancellationCoordinates(t *test
 	if checkpoint.Backend != agentsv1alpha1.AgentBackendHarness || checkpoint.SourceName != run.SourceName || checkpoint.NotifyChannel != run.NotifyChannel {
 		t.Fatalf("initial run checkpoint metadata = %+v", checkpoint)
 	}
-	if state.TaskID != harnessTaskID(agent.Name, run.SessionID) || state.AttemptID != run.RunID || state.Epoch != 3 || state.SessionID != "native-session" || state.BackendKey == "" {
+	if state.TaskID != harnessTaskIDFor(agent.Name, string(agent.UID), run.SessionID) || state.AgentUID != string(agent.UID) || state.AttemptID != run.RunID || state.Epoch != 3 || state.SessionID != "native-session" || state.BackendKey == "" {
 		t.Fatalf("initial harness coordinates = %+v", state)
 	}
 	if state.Snapshot != nil {
@@ -65,6 +66,58 @@ func TestInitialHarnessCheckpointContainsOnlySafeCancellationCoordinates(t *test
 	}
 	if strings.Contains(string(checkpointRaw), "harness-login-test-secret") || strings.Contains(string(checkpointRaw), "runner-bearer-test-secret") {
 		t.Fatal("initial checkpoint contains credential material")
+	}
+}
+
+func TestInitialHarnessCheckpointUsesSelectedTaskAndEffectiveSession(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	run := taskRun{
+		Scope: store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: agent.Name},
+		Agent: agent, RunID: "run-api-checkpoint", ClusterID: "cluster-test", Trigger: "api",
+	}
+	turn := startCheckpointHarnessTurn(run, 1, "")
+	checkpointRaw, err := initialHarnessCheckpoint(run, turn)
+	if err != nil {
+		t.Fatalf("initialHarnessCheckpoint for an implicit API session: %v", err)
+	}
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(checkpointRaw, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	var state backendharness.State
+	if err := json.Unmarshal(checkpoint.Harness, &state); err != nil {
+		t.Fatal(err)
+	}
+	if turn.Session.SessionID != "api" || state.TaskID != harnessTaskIDFor(agent.Name, string(agent.UID), "api") || state.AgentUID != string(agent.UID) {
+		t.Fatalf("implicit-session checkpoint = session %q state %+v", turn.Session.SessionID, state)
+	}
+
+	// Existing conversations deliberately keep their legacy task/workspace when
+	// the durable session row proves ownership. A fresh dispatch on that selected
+	// task must still checkpoint the current Agent UID.
+	legacyTaskID := harnessTaskID(agent.Name, "api")
+	turn.Session.TaskID = legacyTaskID
+	turn.Session.AgentUID = string(agent.UID)
+	turn.backend = backendharness.New(backendharness.Config{
+		Runner: &parkedCancelDispatcher{}, TaskID: legacyTaskID, AgentUID: string(agent.UID),
+		AttemptID: run.RunID, Epoch: 2, WorkspaceID: "agent-coder-api",
+		RequiredHarness: llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex),
+		Credential:      llm.HarnessIdentity{Kind: "codex-auth", Value: "harness-login-test-secret"},
+		BackendKey:      turn.Session.BackendKey,
+	})
+	checkpointRaw, err = initialHarnessCheckpoint(run, turn)
+	if err != nil {
+		t.Fatalf("initialHarnessCheckpoint for an adopted legacy task: %v", err)
+	}
+	if err := json.Unmarshal(checkpointRaw, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(checkpoint.Harness, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.TaskID != legacyTaskID || state.AgentUID != string(agent.UID) {
+		t.Fatalf("adopted legacy task checkpoint = %+v", state)
 	}
 }
 
@@ -150,10 +203,12 @@ func TestRunDeadlineStopCancelsFromInitialHarnessCheckpoint(t *testing.T) {
 		Scope: f.scope, Agent: agent, RunID: f.run.ID, SessionID: f.run.SessionID,
 		ClusterID: "cluster-test", Trigger: "chat",
 	}
-	checkpoint, err := initialHarnessCheckpoint(run, startCheckpointHarnessTurn(run, 2, ""))
+	turn := startCheckpointHarnessTurn(run, 2, "")
+	checkpoint, err := initialHarnessCheckpoint(run, turn)
 	if err != nil {
 		t.Fatalf("initialHarnessCheckpoint: %v", err)
 	}
+	persistCheckpointHarnessSession(t, f, turn)
 	f.run.Backend = agentsv1alpha1.AgentBackendHarness
 	f.run.Checkpoint = checkpoint
 	if err := f.server.store.SaveRun(context.Background(), f.scope, f.run); err != nil {
@@ -172,7 +227,7 @@ func TestRunDeadlineStopCancelsFromInitialHarnessCheckpoint(t *testing.T) {
 	}()
 	select {
 	case call := <-f.dispatcher.calls:
-		if call.request.TaskID != harnessTaskID(f.run.AgentName, f.run.SessionID) || call.request.AttemptID != f.run.ID || call.request.AttemptEpoch != 2 {
+		if call.request.TaskID != harnessTaskIDFor(f.run.AgentName, string(agent.UID), f.run.SessionID) || call.request.AttemptID != f.run.ID || call.request.AttemptEpoch != 2 {
 			t.Fatalf("StopRun cancellation = %+v; want initial checkpoint coordinates", call.request)
 		}
 		if call.ctxErr != nil || !call.hasDeadline {
@@ -205,16 +260,19 @@ func TestRunDeadlineStopCancelsFromInitialHarnessCheckpoint(t *testing.T) {
 
 func TestRunDeadlineStopLeavesRunRetryableWhenRemoteCancelFails(t *testing.T) {
 	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
 	f := newParkedCancelFixture(t, agent, nil)
 	f.dispatcher.failCancels = 1
 	run := taskRun{
 		Scope: f.scope, Agent: agent, RunID: f.run.ID, SessionID: f.run.SessionID,
 		ClusterID: "cluster-test", Trigger: "chat",
 	}
-	checkpoint, err := initialHarnessCheckpoint(run, startCheckpointHarnessTurn(run, 2, ""))
+	turn := startCheckpointHarnessTurn(run, 2, "")
+	checkpoint, err := initialHarnessCheckpoint(run, turn)
 	if err != nil {
 		t.Fatalf("initialHarnessCheckpoint: %v", err)
 	}
+	persistCheckpointHarnessSession(t, f, turn)
 	f.run.Backend = agentsv1alpha1.AgentBackendHarness
 	f.run.Checkpoint = checkpoint
 	if err := f.server.store.SaveRun(context.Background(), f.scope, f.run); err != nil {
@@ -231,7 +289,9 @@ func TestRunDeadlineStopLeavesRunRetryableWhenRemoteCancelFails(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "simulated runner cancellation failure") {
 		t.Fatalf("StopRun error = %v; want a generic retryable failure", err)
 	}
-	if _, ok := <-f.dispatcher.calls; !ok {
+	select {
+	case <-f.dispatcher.calls:
+	case <-time.After(5 * time.Second):
 		t.Fatal("failed remote cancel was not attempted")
 	}
 	stored, err := f.server.store.GetRun(context.Background(), f.scope, f.run.ID)
@@ -267,15 +327,29 @@ func startCheckpointHarnessTurn(run taskRun, epoch uint64, session string) *harn
 	config := run.Agent.Spec.Harness()
 	backendKey := harnessBackendKey(run.ClusterID, config.EdgeRef.Kind, config.EdgeRef.Name, llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex))
 	service := "edge-test-codex"
+	effectiveSessionID := run.SessionID
+	if effectiveSessionID == "" {
+		effectiveSessionID = run.Trigger
+	}
+	taskID := harnessTaskIDFor(run.Agent.Name, string(run.Agent.UID), effectiveSessionID)
 	return &harnessTurn{
 		backend: backendharness.New(backendharness.Config{
-			Runner: &parkedCancelDispatcher{}, TaskID: harnessTaskID(run.Agent.Name, run.SessionID),
+			Runner: &parkedCancelDispatcher{}, TaskID: taskID, AgentUID: string(run.Agent.UID),
 			AttemptID: run.RunID, Epoch: epoch, SessionID: session, BackendKey: backendKey,
 			WorkspaceID: "agent-coder-chat", RequiredHarness: llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex),
 			Credential: llm.HarnessIdentity{Kind: "codex-auth", Value: "harness-login-test-secret"},
 		}),
-		Session: store.HarnessSession{SessionID: run.SessionID, Turns: int64(epoch), HarnessSessionID: session, BackendKey: backendKey},
+		Session: store.HarnessSession{SessionID: effectiveSessionID, TaskID: taskID, AgentUID: string(run.Agent.UID), Turns: int64(epoch), HarnessSessionID: session, BackendKey: backendKey},
 		Service: service, Harness: llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex),
+	}
+}
+
+func persistCheckpointHarnessSession(t *testing.T, f *parkedCancelFixture, turn *harnessTurn) {
+	t.Helper()
+	session := turn.Session
+	session.UpdatedAt = time.Now().UTC()
+	if err := f.server.store.PutHarnessSession(context.Background(), f.scope, session); err != nil {
+		t.Fatalf("persist selected harness session: %v", err)
 	}
 }
 

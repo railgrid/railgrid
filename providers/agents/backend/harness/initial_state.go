@@ -19,7 +19,7 @@ func (b *Backend) InitialState() (json.RawMessage, error) {
 		return nil, err
 	}
 	state := State{
-		TaskID: b.cfg.TaskID, AttemptID: b.cfg.AttemptID, Epoch: b.cfg.Epoch,
+		TaskID: b.cfg.TaskID, AgentUID: b.cfg.AgentUID, AttemptID: b.cfg.AttemptID, Epoch: b.cfg.Epoch,
 		BackendKey: b.cfg.BackendKey, SessionID: b.cfg.SessionID,
 	}
 	raw, err := json.Marshal(state)

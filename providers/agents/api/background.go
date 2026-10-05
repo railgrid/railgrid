@@ -795,7 +795,7 @@ func (b *background) StopRun(ctx context.Context, clusterID, agentName, runID, r
 		// A process restart can erase liveRuns while leaving the runner's attempt
 		// parked or still working. Use the durable start/park checkpoint, and let
 		// the Run reconciler retry if the bounded remote cancellation fails.
-		if err := b.stopHarnessFromRun(ctx, clusterID, run); err != nil {
+		if err := b.stopHarnessFromRun(ctx, clusterID, scope, run); err != nil {
 			log.Printf("background: run %s: stopping its remote harness attempt failed", runID)
 			return errors.New("stopping the remote harness attempt failed")
 		}

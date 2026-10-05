@@ -233,21 +233,59 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 		return nil
 	}
 	var checkpoint runCheckpoint
-	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil || checkpoint.Backend != agentsv1alpha1.AgentBackendHarness || len(checkpoint.Harness) == 0 {
-		return nil
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		return fmt.Errorf("reading the harness cancellation checkpoint: %w", err)
+	}
+	if checkpoint.Backend != agentsv1alpha1.AgentBackendHarness || len(checkpoint.Harness) == 0 {
+		return errors.New("the harness cancellation checkpoint is incomplete")
 	}
 	var state backendharness.State
-	if err := json.Unmarshal(checkpoint.Harness, &state); err != nil || state.TaskID == "" || state.AttemptID == "" || state.Epoch == 0 {
-		return nil
+	if err := json.Unmarshal(checkpoint.Harness, &state); err != nil {
+		return fmt.Errorf("reading the harness attempt identity: %w", err)
 	}
-	if state.AttemptID != run.ID || (run.AttemptID != "" && state.AttemptID != run.AttemptID) || state.TaskID != harnessTaskID(run.AgentName, run.SessionID) {
-		return nil
+	if state.TaskID == "" || state.AttemptID == "" || state.Epoch == 0 {
+		return errors.New("the harness cancellation checkpoint has no attempt coordinates")
+	}
+	if state.AttemptID != run.ID || (run.AttemptID != "" && state.AttemptID != run.AttemptID) {
+		return errors.New("the harness cancellation checkpoint does not match this run")
 	}
 
 	agent, err := c.Agents().Get(ctx, run.AgentName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
+	taskID, _, err := harnessTaskIdentity(agent, run.SessionID, &continuation{Checkpoint: checkpoint})
+	if err != nil {
+		return fmt.Errorf("validating the harness checkpoint owner: %w", err)
+	}
+	if taskID != state.TaskID {
+		return errors.New("the harness cancellation task does not match its Agent owner")
+	}
+	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
+	stored, found, err := s.store.GetHarnessSession(ctx, scope, run.SessionID)
+	if err != nil {
+		return fmt.Errorf("checking the harness session owner: %w", err)
+	}
+	if state.AgentUID == "" && !found {
+		return errors.New("the legacy harness checkpoint has no durable session identity")
+	}
+	if found && stored.TaskID != "" && stored.TaskID != taskID {
+		return errors.New("the harness checkpoint does not match the durable session task identity")
+	}
+	currentUID := string(agent.UID)
+	if found && stored.AgentUID != "" && stored.AgentUID != currentUID {
+		return errors.New("the harness checkpoint belongs to a different Agent incarnation")
+	}
+	if state.AgentUID == "" && found && stored.AgentUID == "" && currentUID != "" {
+		stale, lifetimeErr := store.CheckLegacyHarnessSessionLifetime(agent.CreationTimestamp.Time, stored.UpdatedAt)
+		if lifetimeErr != nil {
+			return fmt.Errorf("the legacy harness checkpoint has no verifiable Agent lifetime: %w", lifetimeErr)
+		}
+		if stale {
+			return errors.New("the legacy harness checkpoint predates this Agent incarnation")
+		}
+	}
+
 	ref, grantAgent, ok := parkedHarnessRunner(id.clusterID, agent, checkpoint.HarnessRunner, state.BackendKey)
 	if checkpoint.HarnessRunner != nil && !ok {
 		// A saved target is authoritative. If it is malformed or no longer
