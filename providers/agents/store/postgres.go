@@ -1339,8 +1339,8 @@ func (p *PostgresStore) GetUsage(ctx context.Context, scope Scope, agentName str
 // ---- tenant refs ---------------------------------------------------------------------
 
 func (p *PostgresStore) SaveTenantRef(ctx context.Context, clusterID string, ref TenantRef) error {
-	if clusterID == "" {
-		return fmt.Errorf("cluster ID is required")
+	if err := validateTenantRef(clusterID, ref); err != nil {
+		return err
 	}
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {

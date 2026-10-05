@@ -51,6 +51,25 @@ type Scope struct {
 // migrates rows out of this scope as soon as that mapping becomes available.
 const UnmappedOrg = "unmapped"
 
+func validateTenantRef(clusterID string, ref TenantRef) error {
+	if strings.TrimSpace(clusterID) == "" {
+		return fmt.Errorf("cluster ID is required")
+	}
+	if clusterID != strings.TrimSpace(clusterID) {
+		return fmt.Errorf("cluster ID must not contain surrounding whitespace")
+	}
+	if strings.TrimSpace(ref.OrgUUID) == "" || strings.TrimSpace(ref.WorkspaceUUID) == "" {
+		return fmt.Errorf("tenant mapping requires non-empty org and workspace UUIDs")
+	}
+	if ref.OrgUUID != strings.TrimSpace(ref.OrgUUID) || ref.WorkspaceUUID != strings.TrimSpace(ref.WorkspaceUUID) {
+		return fmt.Errorf("tenant mapping org and workspace UUIDs must not contain surrounding whitespace")
+	}
+	if ref.OrgUUID == UnmappedOrg {
+		return fmt.Errorf("tenant mapping org UUID %q is reserved", UnmappedOrg)
+	}
+	return nil
+}
+
 func (s Scope) validate() error {
 	if s.resolutionErr != "" {
 		return fmt.Errorf("scope resolution failed: %s", s.resolutionErr)

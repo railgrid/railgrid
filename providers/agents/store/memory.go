@@ -148,8 +148,8 @@ func (m *MemoryStore) FindRunByIdempotencyKey(_ context.Context, scope Scope, ke
 }
 
 func (m *MemoryStore) SaveTenantRef(_ context.Context, clusterID string, ref TenantRef) error {
-	if clusterID == "" {
-		return fmt.Errorf("cluster ID is required")
+	if err := validateTenantRef(clusterID, ref); err != nil {
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

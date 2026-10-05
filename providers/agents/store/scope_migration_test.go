@@ -229,6 +229,42 @@ func TestMemoryStoreFallbackMutationRechecksMappingUnderWriteLock(t *testing.T) 
 	}
 }
 
+func TestMemoryStoreRejectsInvalidTenantMappings(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	clusterID := "cluster-invalid-mapping"
+	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
+	if err := s.AppendMessage(ctx, fallback, Message{ID: "before-invalid", AgentName: "coder", SessionID: "s", Role: "user", Content: "preserve", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed fallback transcript: %v", err)
+	}
+	invalid := []TenantRef{
+		{},
+		{OrgUUID: " ", WorkspaceUUID: "ws"},
+		{OrgUUID: "org", WorkspaceUUID: "\t"},
+		{OrgUUID: " org", WorkspaceUUID: "ws"},
+		{OrgUUID: "org", WorkspaceUUID: "ws "},
+		{OrgUUID: UnmappedOrg, WorkspaceUUID: "ws"},
+	}
+	for _, ref := range invalid {
+		if err := s.SaveTenantRef(ctx, clusterID, ref); err == nil {
+			t.Fatalf("SaveTenantRef accepted invalid mapping %+v", ref)
+		}
+	}
+	if err := s.SaveTenantRef(ctx, " \t ", TenantRef{OrgUUID: "org", WorkspaceUUID: "ws"}); err == nil {
+		t.Fatal("SaveTenantRef accepted whitespace cluster ID")
+	}
+	if err := s.SaveTenantRef(ctx, " cluster-padded ", TenantRef{OrgUUID: "org", WorkspaceUUID: "ws"}); err == nil {
+		t.Fatal("SaveTenantRef accepted a cluster ID with surrounding whitespace")
+	}
+	if _, ok, err := s.GetTenantRef(ctx, clusterID); err != nil || ok {
+		t.Fatalf("invalid mapping was persisted: ok=%v err=%v", ok, err)
+	}
+	page, err := s.ListMessages(ctx, fallback, "s", 10, "")
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "before-invalid" {
+		t.Fatalf("invalid mapping altered fallback transcript: %+v err=%v", page.Items, err)
+	}
+}
+
 func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()
@@ -527,6 +563,46 @@ func TestPostgresTenantMappingIsImmutable(t *testing.T) {
 	}
 	if fallbackRows != 1 || wrongTenantRows != 0 {
 		t.Fatalf("conflicting mapping moved rows: fallback=%d wrong tenant=%d", fallbackRows, wrongTenantRows)
+	}
+}
+
+func TestPostgresRejectsInvalidTenantMappings(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	clusterID := "scope-invalid-map-" + uuid.NewString()
+	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
+	t.Cleanup(func() {
+		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_messages WHERE org_uuid=$1 AND workspace_uuid=$2`, UnmappedOrg, clusterID)
+		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, clusterID)
+	})
+	if err := ps.AppendMessage(ctx, fallback, Message{ID: "before-invalid-" + uuid.NewString(), AgentName: "coder", SessionID: "s", Role: "user", Content: "preserve", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed fallback transcript: %v", err)
+	}
+	invalid := []TenantRef{
+		{},
+		{OrgUUID: " ", WorkspaceUUID: "ws"},
+		{OrgUUID: "org", WorkspaceUUID: "\t"},
+		{OrgUUID: " org", WorkspaceUUID: "ws"},
+		{OrgUUID: "org", WorkspaceUUID: "ws "},
+		{OrgUUID: UnmappedOrg, WorkspaceUUID: "ws"},
+	}
+	for _, ref := range invalid {
+		if err := ps.SaveTenantRef(ctx, clusterID, ref); err == nil {
+			t.Fatalf("SaveTenantRef accepted invalid mapping %+v", ref)
+		}
+	}
+	if err := ps.SaveTenantRef(ctx, " \t ", TenantRef{OrgUUID: "org", WorkspaceUUID: "ws"}); err == nil {
+		t.Fatal("SaveTenantRef accepted whitespace cluster ID")
+	}
+	if err := ps.SaveTenantRef(ctx, " cluster-padded ", TenantRef{OrgUUID: "org", WorkspaceUUID: "ws"}); err == nil {
+		t.Fatal("SaveTenantRef accepted a cluster ID with surrounding whitespace")
+	}
+	if _, ok, err := ps.GetTenantRef(ctx, clusterID); err != nil || ok {
+		t.Fatalf("invalid mapping was persisted: ok=%v err=%v", ok, err)
+	}
+	page, err := ps.ListMessages(ctx, fallback, "s", 10, "")
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("invalid mapping altered fallback transcript: %+v err=%v", page.Items, err)
 	}
 }
 
