@@ -52,9 +52,10 @@ type parkedCancelCall struct {
 }
 
 type parkedCancelDispatcher struct {
-	calls   chan parkedCancelCall
-	release chan struct{}
-	once    sync.Once
+	calls       chan parkedCancelCall
+	release     chan struct{}
+	once        sync.Once
+	failCancels int
 }
 
 func (d *parkedCancelDispatcher) Start(context.Context, runner.StartRequest) (runner.Receipt, error) {
@@ -68,6 +69,10 @@ func (d *parkedCancelDispatcher) Resume(context.Context, runner.ResumeRequest) (
 func (d *parkedCancelDispatcher) Cancel(ctx context.Context, req runner.CancelRequest) (runner.Receipt, error) {
 	_, deadline := ctx.Deadline()
 	d.calls <- parkedCancelCall{request: req, ctxErr: ctx.Err(), hasDeadline: deadline}
+	if d.failCancels > 0 {
+		d.failCancels--
+		return runner.Receipt{}, errors.New("simulated runner cancellation failure")
+	}
 	select {
 	case <-d.release:
 		return runner.Receipt{AttemptID: req.AttemptID, AttemptEpoch: req.AttemptEpoch, Phase: runner.PhaseCancelled}, nil

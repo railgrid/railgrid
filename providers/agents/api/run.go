@@ -669,7 +669,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// message that anchor represents, even though the append API assigns
 		// sequence numbers internally and does not return the updated row.
 		msgs[len(msgs)-1].ID = taskMessageID
-		_ = s.saveRun(ctx, scope, store.Run{
+		running := store.Run{
 			ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
 			ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
 			Delivery: run.delivery(),
@@ -678,7 +678,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// may have been re-pointed since.
 			Backend: agent.Spec.BackendType(), AttemptID: harnessAttemptID(harnessT, runID),
 			Phase: store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
-		})
+		}
+		if agent.Spec.HarnessBacked() {
+			checkpoint, err := initialHarnessCheckpoint(run, harnessT)
+			if err != nil {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("preparing the harness cancellation checkpoint: %w", err))
+			}
+			running.Checkpoint = checkpoint
+		}
+		if err := s.saveRun(ctx, scope, running); err != nil {
+			// The runner is an external process. Do not dispatch it unless its
+			// attempt coordinates and safe cancel target are already durable.
+			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+		}
 		if run.OnRunStarted != nil {
 			run.OnRunStarted(startedAt)
 		}
