@@ -34,7 +34,11 @@ func TestDetachedRunSetupRefusalSettlesPendingRecord(t *testing.T) {
 				agent.Spec.Backend.Type = agentsv1alpha1.AgentBackendHarness
 				agent.Spec.Tools.Interactive.RequireApproval = []string{"*"}
 			}
-			id := s.startRun(t.Context(), scope, agent, taskRun{SessionID: "test", Trigger: "api", Task: "must not execute", IdempotencyKey: "once"}, runAccess{})
+			admission, err := s.startRun(t.Context(), scope, agent, taskRun{SessionID: "test", Trigger: "api", Task: "must not execute", IdempotencyKey: "once"}, runAccess{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := admission.ID
 			deadline := time.Now().Add(2 * time.Second)
 			for {
 				run, err := st.GetRun(t.Context(), scope, id)

@@ -684,9 +684,12 @@ func (s *Server) mcpRunNow(ctx context.Context, r *http.Request, c *agentsclient
 		// silently strand it.
 		return nil, runNowOutput{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
 	}
-	runID := s.startDetachedRun(r, c, id, agent, tr)
+	admission, err := s.startDetachedRun(r, c, id, agent, tr)
+	if err != nil {
+		return nil, runNowOutput{}, err
+	}
 	return nil, runNowOutput{
-		RunID:  runID,
+		RunID:  admission.ID,
 		Status: "started — the run is executing in the background; its output is delivered to the configured channel",
 	}, nil
 }

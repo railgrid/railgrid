@@ -960,7 +960,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 // startDetachedRun starts a run-now for the request that asked for it: detached
 // from the request context, executing with the caller's own access (the gate's
 // provider client on a verb; the caller-credentialed one on the MCP class).
-func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id identity, agent *agentsv1alpha1.Agent, tr taskRun) string {
+func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id identity, agent *agentsv1alpha1.Agent, tr taskRun) (runAdmission, error) {
 	// Detach from the request context: the response returns immediately while
 	// the run continues (the lifecycle applies the agent's own timeout).
 	return s.startRun(context.WithoutCancel(r.Context()), id.scope(agent.Name), agent, tr, s.callerAccess(r.Context(), c, id))
@@ -975,7 +975,13 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 // virtual-workspace one, and a hand-built taskRun in each of the background and
 // spawn paths — differed only in the access the run executes with, so that is a
 // parameter now. ctx must already be detached from whatever asked.
-func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) string {
+type runAdmission struct {
+	ID     string
+	Phase  store.RunPhase
+	Reused bool
+}
+
+func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) (runAdmission, error) {
 	runID := uuid.NewString()
 	now := time.Now().UTC()
 	tr.RunID = runID
@@ -983,11 +989,21 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	tr.Agent = agent
 	access.applyTo(&tr)
 
-	_ = s.saveRun(ctx, scope, store.Run{
+	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
 		IdempotencyKey: tr.IdempotencyKey,
 		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
-	})
+	}); err != nil {
+		// The unique store key is the admission boundary. Concurrent requests
+		// may both miss the earlier lookup; only the one that records a run may
+		// execute. A loser returns the already recorded run, never a phantom ID.
+		if tr.IdempotencyKey != "" {
+			if existing, found, lookupErr := s.store.FindRunByIdempotencyKey(ctx, scope, tr.IdempotencyKey); lookupErr == nil && found {
+				return runAdmission{ID: existing.ID, Phase: existing.Phase, Reused: true}, nil
+			}
+		}
+		return runAdmission{}, fmt.Errorf("persisting run before execution: %w", err)
+	}
 	go func() {
 		res, err := s.executeTask(ctx, tr)
 		if err != nil {
@@ -1010,7 +1026,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		}
 		access.Notify(ctx, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
-	return runID
+	return runAdmission{ID: runID, Phase: store.RunPhasePending}, nil
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for

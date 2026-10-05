@@ -164,9 +164,13 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "this schedule has no task/checklist to run")
 		return
 	}
-	runID := s.startDetachedRun(r, c, id, agent, taskRun{
+	admission, err := s.startDetachedRun(r, c, id, agent, taskRun{
 		SessionID: "schedule:" + name, Task: task, Trigger: trigger, SourceName: name,
 		NotifyChannel: sched.Spec.ChannelRef,
 	})
-	writeJSON(w, http.StatusAccepted, map[string]string{"runID": runID})
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the run could not be recorded; retry later")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"runID": admission.ID})
 }
