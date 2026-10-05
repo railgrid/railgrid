@@ -66,9 +66,18 @@ func (m *MemoryStore) FindClusterForScope(_ context.Context, orgUUID, workspaceU
 }
 
 // normalizeScope resolves a legacy fallback scope after a tenant mapping is
-// learned. Re-migrating here catches a write from any handler that resolved the
-// old scope before the mapping transaction committed.
+// learned. Mutations recheck the mapping under the write mutex before changing
+// state, so a mapping transaction cannot miss a delayed fallback write.
 func (m *MemoryStore) normalizeScope(scope Scope) Scope {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.normalizeScopeLocked(scope)
+}
+
+// normalizeScopeLocked rechecks the cluster mapping while the caller holds the
+// store mutex. Mutations call it after acquiring the same mutex they use for
+// the write, closing the gap between an earlier fallback lookup and the write.
+func (m *MemoryStore) normalizeScopeLocked(scope Scope) Scope {
 	if scope.OrgUUID != UnmappedOrg || scope.WorkspaceUUID == "" {
 		return scope
 	}
@@ -76,8 +85,6 @@ func (m *MemoryStore) normalizeScope(scope Scope) Scope {
 	if clusterID == "" {
 		clusterID = scope.WorkspaceUUID
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	ref, ok := m.tenants[clusterID]
 	if !ok || ref.OrgUUID == "" || ref.WorkspaceUUID == "" {
 		return scope
@@ -100,6 +107,7 @@ func (m *MemoryStore) PutSessionSummary(_ context.Context, scope Scope, s Sessio
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := sessionKey(scope, s.SessionID)
 	if current, ok := m.summaries[k]; ok && current.Checkpoint != nil {
 		if s.Checkpoint == nil || s.Checkpoint.ThroughSequence < current.Checkpoint.ThroughSequence {
@@ -145,8 +153,14 @@ func (m *MemoryStore) SaveTenantRef(_ context.Context, clusterID string, ref Ten
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if current, ok := m.tenants[clusterID]; ok &&
+		(current.OrgUUID != ref.OrgUUID || current.WorkspaceUUID != ref.WorkspaceUUID) {
+		return fmt.Errorf("tenant mapping for cluster %s is immutable (%s/%s already mapped)", clusterID, current.OrgUUID, current.WorkspaceUUID)
+	}
 	m.migrateUnmappedScope(clusterID, ref)
-	m.tenants[clusterID] = ref
+	if _, ok := m.tenants[clusterID]; !ok {
+		m.tenants[clusterID] = ref
+	}
 	return nil
 }
 
@@ -424,6 +438,7 @@ func (m *MemoryStore) AppendMessage(_ context.Context, scope Scope, msg Message)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := sessionKey(scope, msg.SessionID)
 	if msg.CreatedAt.IsZero() {
 		return fmt.Errorf("message CreatedAt is required")
@@ -564,6 +579,7 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	delete(m.messages, sessionKey(scope, sessionID))
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
@@ -600,6 +616,7 @@ func (m *MemoryStore) NextHarnessTurn(_ context.Context, scope Scope, sessionID 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	key := sessionKey(scope, sessionID)
 	row := m.harness[key]
 	row.SessionID = sessionID
@@ -631,6 +648,7 @@ func (m *MemoryStore) PutHarnessSession(_ context.Context, scope Scope, s Harnes
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	key := sessionKey(scope, s.SessionID)
 	row := m.harness[key]
 	row.SessionID = s.SessionID
@@ -675,6 +693,7 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	key := tenantKey(scope) + "|" + run.ID
 	_, exists := m.runs[key]
 	if !exists && run.IdempotencyKey != "" {
@@ -717,6 +736,7 @@ func (m *MemoryStore) RequestCancel(_ context.Context, scope Scope, id string, n
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
 	if !ok {
@@ -756,6 +776,7 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
 	if !ok {
@@ -875,6 +896,7 @@ func (m *MemoryStore) PutMemory(_ context.Context, scope Scope, mem Memory) erro
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	m.memories[tenantKey(scope)+"|"+mem.ID] = mem
 	return nil
 }
@@ -910,6 +932,7 @@ func (m *MemoryStore) DeleteMemory(_ context.Context, scope Scope, id string) er
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	delete(m.memories, tenantKey(scope)+"|"+id)
 	return nil
 }
@@ -924,6 +947,7 @@ func (m *MemoryStore) AddInboxItem(_ context.Context, scope Scope, item InboxIte
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	m.inbox[tenantKey(scope)+"|"+item.ID] = item
 	return nil
 }
@@ -973,6 +997,7 @@ func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope) + "|" + id
 	it, ok := m.inbox[k]
 	if !ok {
@@ -992,6 +1017,7 @@ func (m *MemoryStore) AppendToolCall(_ context.Context, scope Scope, tc ToolCall
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope)
 	m.toolCalls[k] = append(m.toolCalls[k], tc)
 	return nil
@@ -1027,6 +1053,7 @@ func (m *MemoryStore) AddUsage(_ context.Context, scope Scope, agentName string,
 	ws := windowStart(now, window)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := fmt.Sprintf("%s|%s|%d", tenantKey(scope), agentName, ws.Unix())
 	u := m.usage[k]
 	u.AgentName = agentName
@@ -1047,6 +1074,7 @@ func (m *MemoryStore) GetUsage(_ context.Context, scope Scope, agentName string,
 	ws := windowStart(now, window)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	k := fmt.Sprintf("%s|%s|%d", tenantKey(scope), agentName, ws.Unix())
 	u, ok := m.usage[k]
 	if !ok {
@@ -1062,6 +1090,7 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	tk := tenantKey(scope)
 	msgPrefix := tk + "|" + agentName + "|"
 	for k := range m.messages {
@@ -1110,6 +1139,7 @@ func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
 	key := tenantKey(scope) + "|" + runID
 	delete(m.runs, key)
 	delete(m.runScopes, key)

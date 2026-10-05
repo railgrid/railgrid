@@ -30,6 +30,38 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
+// scopedExecutor is the part of database/sql used by scoped store operations.
+// Mutations use either the pool (canonical scopes) or a transaction (legacy
+// fallback scopes while they serialize with tenant mapping).
+type scopedExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type scopedMutation struct {
+	scope    Scope
+	executor scopedExecutor
+	tx       *sql.Tx
+}
+
+func (m *scopedMutation) commit() error {
+	if m.tx == nil {
+		return nil
+	}
+	if err := m.tx.Commit(); err != nil {
+		return fmt.Errorf("commit scoped mutation: %w", err)
+	}
+	m.tx = nil
+	return nil
+}
+
+func (m *scopedMutation) rollback() {
+	if m.tx != nil {
+		_ = m.tx.Rollback()
+	}
+}
+
 // OpenPostgres opens the Postgres-backed store and verifies connectivity.
 // Call EnsureSchema before first use.
 func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
@@ -264,7 +296,12 @@ func (p *PostgresStore) EnsureSchema(ctx context.Context) error {
 // ---- transcript --------------------------------------------------------------
 
 func (p *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Message) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
@@ -275,19 +312,21 @@ func (p *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Mess
 	if err != nil {
 		return err
 	}
-	tx, err := p.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		mutation.tx, mutation.executor = tx, tx
 	}
-	defer func() { _ = tx.Rollback() }()
 	// Serialize appends within a session until commit. BIGSERIAL values are
 	// allocated before commit; this lock prevents a late-committing older value
 	// from appearing behind a checkpoint boundary captured by another turn.
 	lockKey := scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + scope.AgentName + "/" + msg.SessionID
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+	if _, err := mutation.executor.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
 		return fmt.Errorf("lock transcript session: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, `
+	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_messages
 			(id, org_uuid, workspace_uuid, agent_name, session_id, run_id, role, content, content_encrypted, content_key_id, metadata, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
@@ -296,7 +335,7 @@ func (p *PostgresStore) AppendMessage(ctx context.Context, scope Scope, msg Mess
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return mutation.commit()
 }
 
 func (p *PostgresStore) ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error) {
@@ -432,16 +471,23 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 }
 
 func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionID string) error {
-	scope = p.normalizeScope(ctx, scope)
-	if err := scope.withAgent(); err != nil {
-		return err
-	}
-	tx, err := p.db.BeginTx(ctx, nil)
+	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		mutation.tx, mutation.executor = tx, tx
+	}
+	if _, err := mutation.executor.ExecContext(ctx, `
 		DELETE FROM agents_messages
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
@@ -449,7 +495,7 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	}
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := mutation.executor.ExecContext(ctx, `
 		DELETE FROM agents_session_summaries
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
@@ -459,7 +505,7 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	// its highest attempt for this session ID even after the provider forgets the
 	// conversation; the next turn must be strictly newer, and an old receipt must
 	// not restore the native session the user deleted.
-	if _, err := tx.ExecContext(ctx, `
+	if _, err := mutation.executor.ExecContext(ctx, `
 		UPDATE agents_harness_sessions SET
 			harness_session_id='', backend_key='',
 			turns=GREATEST(turns, observed_epoch-1),
@@ -468,11 +514,16 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, time.Now().UTC()); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return mutation.commit()
 }
 
 func (p *PostgresStore) PutSessionSummary(ctx context.Context, scope Scope, s SessionSummary) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
@@ -483,14 +534,13 @@ func (p *PostgresStore) PutSessionSummary(ctx context.Context, scope Scope, s Se
 		return err
 	}
 	var checkpoint any
-	var err error
 	if s.Checkpoint != nil {
 		checkpoint, err = marshalJSONB(s.Checkpoint)
 	}
 	if err != nil {
 		return fmt.Errorf("marshal session checkpoint: %w", err)
 	}
-	result, err := p.db.ExecContext(ctx, `
+	result, err := mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_session_summaries
 			(org_uuid, workspace_uuid, agent_name, session_id, summary, through_at, message_count, created_at, updated_at, checkpoint)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -515,7 +565,7 @@ func (p *PostgresStore) PutSessionSummary(ctx context.Context, scope Scope, s Se
 	} else if affected == 0 {
 		return ErrSessionCheckpointStale
 	}
-	return nil
+	return mutation.commit()
 }
 
 func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sessionID string) (SessionSummary, bool, error) {
@@ -560,7 +610,12 @@ func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sess
 // must not be handed the same one, and the runner's stale_attempt refusal is only
 // a backstop for the case where they were.
 func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error) {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return HarnessSession{}, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return HarnessSession{}, err
 	}
@@ -568,7 +623,7 @@ func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessio
 		return HarnessSession{}, fmt.Errorf("session ID is required")
 	}
 	out := HarnessSession{SessionID: sessionID}
-	row := p.db.QueryRowContext(ctx, `
+	row := mutation.executor.QueryRowContext(ctx, `
 		INSERT INTO agents_harness_sessions
 			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at)
 		VALUES ($1,$2,$3,$4,'','',1,0,$5)
@@ -580,6 +635,9 @@ func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessio
 		return HarnessSession{}, err
 	}
 	out.UpdatedAt = out.UpdatedAt.UTC()
+	if err := mutation.commit(); err != nil {
+		return HarnessSession{}, err
+	}
 	return out, nil
 }
 
@@ -587,7 +645,12 @@ func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessio
 // reported unless a receipt from a newer observed epoch already won. The
 // allocated turn count only moves forward, and empty session IDs never clear it.
 func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
@@ -608,7 +671,7 @@ func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s Ha
 		s.BackendKey = ""
 		s.ObservedEpoch = 0
 	}
-	_, err := p.db.ExecContext(ctx, `
+	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_harness_sessions
 			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -626,7 +689,10 @@ func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s Ha
 			updated_at=EXCLUDED.updated_at`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID,
 		s.HarnessSessionID, s.BackendKey, s.Turns, s.ObservedEpoch, s.UpdatedAt.UTC())
-	return err
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 func (p *PostgresStore) GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error) {
@@ -654,7 +720,12 @@ func (p *PostgresStore) GetHarnessSession(ctx context.Context, scope Scope, sess
 // ---- runs ---------------------------------------------------------------------
 
 func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
@@ -671,7 +742,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			return err
 		}
 	}
-	_, err = p.db.ExecContext(ctx, `
+	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
 			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
@@ -691,7 +762,10 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
 		run.Backend, run.AttemptID, run.HarnessSessionID)
-	return err
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 // runColumns is the run SELECT list, shared by every read path so a schema
@@ -717,13 +791,18 @@ func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run
 }
 
 func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id string, now time.Time) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return err
 	}
 	// Only the cancel columns move: phase, checkpoint and the rest belong to
 	// whoever is executing the run, and this must not race their writes.
-	res, err := p.db.ExecContext(ctx, `
+	res, err := mutation.executor.ExecContext(ctx, `
 		UPDATE agents_runs SET cancel_requested=TRUE, cancel_requested_at=COALESCE(cancel_requested_at, $4)
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($5,$6,$7)`,
 		scope.OrgUUID, scope.WorkspaceUUID, id, now.UTC(),
@@ -733,22 +812,32 @@ func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id strin
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		// Either unknown or already terminal; both mean there is nothing to stop.
-		if _, gerr := p.GetRun(ctx, scope, id); gerr != nil {
+		row := mutation.executor.QueryRowContext(ctx, `SELECT `+runColumns+`
+			FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`, scope.OrgUUID, scope.WorkspaceUUID, id)
+		if _, gerr := scanRun(row); errors.Is(gerr, sql.ErrNoRows) {
+			return fmt.Errorf("run %q not found", id)
+		} else if gerr != nil {
 			return gerr
 		}
 	}
-	return nil
+	return mutation.commit()
 }
 
 func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time) (Run, error) {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return Run{}, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return Run{}, err
 	}
-	res, err := p.db.ExecContext(ctx, `
+	res, err := mutation.executor.ExecContext(ctx, `
 		UPDATE agents_runs SET phase=$4, updated_at=$5, started_at=COALESCE(started_at, $5)
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`,
-		scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval))
+		scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(),
+		string(RunPhasePending), string(RunPhasePendingApproval))
 	if err != nil {
 		return Run{}, err
 	}
@@ -756,7 +845,16 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 	if n == 0 {
 		return Run{}, fmt.Errorf("run %q not found or already claimed", id)
 	}
-	return p.GetRun(ctx, scope, id)
+	row := mutation.executor.QueryRowContext(ctx, `SELECT `+runColumns+`
+		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`, scope.OrgUUID, scope.WorkspaceUUID, id)
+	run, err := scanRun(row)
+	if err != nil {
+		return Run{}, err
+	}
+	if err := mutation.commit(); err != nil {
+		return Run{}, err
+	}
+	return run, nil
 }
 
 func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error) {
@@ -914,20 +1012,28 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 // ---- memories ------------------------------------------------------------------
 
 func (p *PostgresStore) PutMemory(ctx context.Context, scope Scope, m Memory) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
 	if m.ID == "" {
 		return fmt.Errorf("memory ID is required")
 	}
-	_, err := p.db.ExecContext(ctx, `
+	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_memories (id, org_uuid, workspace_uuid, agent_name, title, body, content_encrypted, content_key_id, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title, body=EXCLUDED.body, updated_at=EXCLUDED.updated_at`,
 		m.ID, scope.OrgUUID, scope.WorkspaceUUID, m.AgentName, m.Title, m.Body, m.ContentEncrypted, m.ContentKeyID,
 		m.CreatedAt.UTC(), m.UpdatedAt.UTC())
-	return err
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 func (p *PostgresStore) ListMemories(ctx context.Context, scope Scope, limit int) ([]Memory, error) {
@@ -960,19 +1066,32 @@ func (p *PostgresStore) ListMemories(ctx context.Context, scope Scope, limit int
 }
 
 func (p *PostgresStore) DeleteMemory(ctx context.Context, scope Scope, id string) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
-	_, err := p.db.ExecContext(ctx, `DELETE FROM agents_memories WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
+	_, err = mutation.executor.ExecContext(ctx, `DELETE FROM agents_memories WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
 		scope.OrgUUID, scope.WorkspaceUUID, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 // ---- inbox ----------------------------------------------------------------------
 
 func (p *PostgresStore) AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return err
 	}
@@ -983,12 +1102,15 @@ func (p *PostgresStore) AddInboxItem(ctx context.Context, scope Scope, item Inbo
 	if err != nil {
 		return err
 	}
-	_, err = p.db.ExecContext(ctx, `
+	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_inbox (id, org_uuid, workspace_uuid, agent_name, run_id, kind, state, prompt, payload, response, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		item.ID, scope.OrgUUID, scope.WorkspaceUUID, item.AgentName, item.RunID, string(item.Kind), string(item.State),
 		item.Prompt, payload, item.Response, item.CreatedAt.UTC(), item.UpdatedAt.UTC())
-	return err
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 func (p *PostgresStore) GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error) {
@@ -1060,11 +1182,16 @@ func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxI
 }
 
 func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error) {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return InboxItem{}, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return InboxItem{}, err
 	}
-	res, err := p.db.ExecContext(ctx, `
+	res, err := mutation.executor.ExecContext(ctx, `
 		UPDATE agents_inbox SET state=$4, response=$5, updated_at=$6
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
 		scope.OrgUUID, scope.WorkspaceUUID, id, string(state), response, now.UTC())
@@ -1074,31 +1201,49 @@ func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id st
 	if n, _ := res.RowsAffected(); n == 0 {
 		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
 	}
-	items, err := p.ListInbox(ctx, scope, "")
+	var item InboxItem
+	var kind, currentState string
+	var payload []byte
+	err = mutation.executor.QueryRowContext(ctx, `
+		SELECT id, agent_name, run_id, kind, state, prompt, payload, response, created_at, updated_at
+		FROM agents_inbox WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
+		scope.OrgUUID, scope.WorkspaceUUID, id,
+	).Scan(&item.ID, &item.AgentName, &item.RunID, &kind, &currentState, &item.Prompt, &payload, &item.Response, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return InboxItem{}, err
 	}
-	for _, it := range items {
-		if it.ID == id {
-			return it, nil
-		}
+	item.Kind, item.State = InboxItemKind(kind), InboxItemState(currentState)
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &item.Payload)
 	}
-	return InboxItem{}, fmt.Errorf("inbox item %q not found after update", id)
+	item.CreatedAt, item.UpdatedAt = item.CreatedAt.UTC(), item.UpdatedAt.UTC()
+	if err := mutation.commit(); err != nil {
+		return InboxItem{}, err
+	}
+	return item, nil
 }
 
 // ---- audit + usage -----------------------------------------------------------------
 
 func (p *PostgresStore) AppendToolCall(ctx context.Context, scope Scope, tc ToolCall) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	_, err := p.db.ExecContext(ctx, `
+	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, trigger_kind, tool, args, result, outcome, error, duration_ms, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		tc.ID, scope.OrgUUID, scope.WorkspaceUUID, tc.AgentName, tc.RunID, tc.Trigger, tc.Tool, tc.Args, tc.Result,
 		tc.Outcome, tc.Error, tc.DurationMS, tc.CreatedAt.UTC())
-	return err
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID string) ([]ToolCall, error) {
@@ -1130,12 +1275,17 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 }
 
 func (p *PostgresStore) AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error) {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return Usage{}, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return Usage{}, err
 	}
 	ws := windowStart(now, window)
-	row := p.db.QueryRowContext(ctx, `
+	row := mutation.executor.QueryRowContext(ctx, `
 		INSERT INTO agents_usage (org_uuid, workspace_uuid, agent_name, window_start, input_tokens, output_tokens, usd_micros, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, window_start) DO UPDATE SET
@@ -1150,28 +1300,39 @@ func (p *PostgresStore) AddUsage(ctx context.Context, scope Scope, agentName str
 		return Usage{}, err
 	}
 	u.UpdatedAt = u.UpdatedAt.UTC()
+	if err := mutation.commit(); err != nil {
+		return Usage{}, err
+	}
 	return u, nil
 }
 
 func (p *PostgresStore) GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error) {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return Usage{}, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return Usage{}, err
 	}
 	ws := windowStart(now, window)
-	row := p.db.QueryRowContext(ctx, `
+	row := mutation.executor.QueryRowContext(ctx, `
 		SELECT input_tokens, output_tokens, usd_micros, updated_at FROM agents_usage
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND window_start=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, agentName, ws)
 	u := Usage{AgentName: agentName, WindowStart: ws}
-	err := row.Scan(&u.InputTokens, &u.OutputTokens, &u.USDMicros, &u.UpdatedAt)
+	err = row.Scan(&u.InputTokens, &u.OutputTokens, &u.USDMicros, &u.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Usage{AgentName: agentName, WindowStart: ws}, nil
+		u = Usage{AgentName: agentName, WindowStart: ws}
+	} else if err != nil {
+		return Usage{}, err
+	} else {
+		u.UpdatedAt = u.UpdatedAt.UTC()
 	}
-	if err != nil {
+	if err := mutation.commit(); err != nil {
 		return Usage{}, err
 	}
-	u.UpdatedAt = u.UpdatedAt.UTC()
 	return u, nil
 }
 
@@ -1186,11 +1347,21 @@ func (p *PostgresStore) SaveTenantRef(ctx context.Context, clusterID string, ref
 		return fmt.Errorf("begin tenant scope migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Serialize repeat/cross-replica migrations for this cluster. Store writes
-	// from a request that resolved before the mapping can still land in the old
-	// scope; each later resolution runs this transaction again and catches it up.
+	// Serialize mapping publication with fallback mutations. A request holding a
+	// stale fallback scope either commits before this transaction and is migrated
+	// here, or waits for publication and re-resolves into the canonical scope.
+	// Repeated calls also catch rows written directly by an older provider build.
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "agents-tenant-map:"+clusterID); err != nil {
 		return fmt.Errorf("lock tenant scope migration: %w", err)
+	}
+	var current TenantRef
+	err = tx.QueryRowContext(ctx, `SELECT org_uuid, workspace_uuid, updated_at FROM agents_tenants WHERE cluster_id=$1`, clusterID).
+		Scan(&current.OrgUUID, &current.WorkspaceUUID, &current.UpdatedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read existing tenant mapping: %w", err)
+	}
+	if err == nil && (current.OrgUUID != ref.OrgUUID || current.WorkspaceUUID != ref.WorkspaceUUID) {
+		return fmt.Errorf("tenant mapping for cluster %s is immutable (%s/%s already mapped)", clusterID, current.OrgUUID, current.WorkspaceUUID)
 	}
 	if err := migrateUnmappedScopeTx(ctx, tx, clusterID, ref); err != nil {
 		return err
@@ -1198,8 +1369,7 @@ func (p *PostgresStore) SaveTenantRef(ctx context.Context, clusterID string, ref
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agents_tenants (cluster_id, org_uuid, workspace_uuid, updated_at)
 		VALUES ($1,$2,$3,$4)
-		ON CONFLICT (cluster_id) DO UPDATE SET org_uuid=EXCLUDED.org_uuid, workspace_uuid=EXCLUDED.workspace_uuid, updated_at=EXCLUDED.updated_at
-		WHERE agents_tenants.org_uuid<>EXCLUDED.org_uuid OR agents_tenants.workspace_uuid<>EXCLUDED.workspace_uuid`,
+		ON CONFLICT (cluster_id) DO NOTHING`,
 		clusterID, ref.OrgUUID, ref.WorkspaceUUID, ref.UpdatedAt.UTC()); err != nil {
 		return fmt.Errorf("save tenant mapping: %w", err)
 	}
@@ -1211,8 +1381,9 @@ func (p *PostgresStore) SaveTenantRef(ctx context.Context, clusterID string, ref
 
 // migrateUnmappedScopeTx moves fallback rows into the canonical workspace in
 // one transaction. It is intentionally idempotent: once a row has moved, a
-// retry sees no source row. Late writes from requests that resolved before the
-// mapping are moved on the next request's catch-up migration.
+// retry sees no source row. The shared tenant-map lock fences store mutations,
+// so a request that resolved fallback before mapping either commits before
+// this migration or re-resolves to the canonical scope after it.
 func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, ref TenantRef) error {
 	if clusterID == "" || ref.OrgUUID == "" || ref.WorkspaceUUID == "" ||
 		(ref.OrgUUID == UnmappedOrg && ref.WorkspaceUUID == clusterID) {
@@ -1349,6 +1520,62 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 	return nil
 }
 
+// beginScopedMutation holds the tenant-map advisory lock from the final map
+// lookup through the stateful operation whenever the caller still has a
+// cluster-keyed fallback scope. SaveTenantRef takes the same lock while it
+// migrates and publishes a mapping, so either the fallback mutation commits
+// first and is included in that migration, or it sees the committed mapping
+// and performs the mutation in the canonical scope.
+//
+// Canonical scopes do not take the lock: cluster mappings are immutable once
+// learned, and these rows no longer participate in fallback migration.
+func (p *PostgresStore) beginScopedMutation(ctx context.Context, scope Scope) (*scopedMutation, error) {
+	mutation := &scopedMutation{scope: scope, executor: p.db}
+	if scope.OrgUUID != UnmappedOrg {
+		return mutation, nil
+	}
+	clusterID := scope.ClusterID
+	if clusterID == "" {
+		clusterID = scope.WorkspaceUUID
+	}
+	if strings.TrimSpace(clusterID) == "" {
+		return nil, fmt.Errorf("fallback scope is missing its cluster ID")
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin scoped mutation: %w", err)
+	}
+	mutation.tx, mutation.executor = tx, tx
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "agents-tenant-map:"+clusterID); err != nil {
+		mutation.rollback()
+		return nil, fmt.Errorf("lock scoped mutation for cluster %s: %w", clusterID, err)
+	}
+	var ref TenantRef
+	err = tx.QueryRowContext(ctx, `
+		SELECT org_uuid, workspace_uuid, updated_at FROM agents_tenants WHERE cluster_id=$1`, clusterID).
+		Scan(&ref.OrgUUID, &ref.WorkspaceUUID, &ref.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No mapping is a valid fallback case. Keep the lock through the write so
+		// a concurrent SaveTenantRef cannot migrate an empty snapshot and then
+		// miss the row this operation is about to create.
+		return mutation, nil
+	}
+	if err != nil {
+		mutation.rollback()
+		return nil, fmt.Errorf("resolve scoped mutation for cluster %s: %w", clusterID, err)
+	}
+	if ref.OrgUUID == "" || ref.WorkspaceUUID == "" {
+		mutation.rollback()
+		return nil, fmt.Errorf("tenant mapping for cluster %s is incomplete", clusterID)
+	}
+	if err := migrateUnmappedScopeTx(ctx, tx, clusterID, ref); err != nil {
+		mutation.rollback()
+		return nil, err
+	}
+	mutation.scope.OrgUUID, mutation.scope.WorkspaceUUID, mutation.scope.ClusterID = ref.OrgUUID, ref.WorkspaceUUID, clusterID
+	return mutation, nil
+}
+
 // normalizeScope follows a legacy scope onto its mapped tenant. Missing mappings
 // are a valid legacy scope; lookup or migration failures are carried through to
 // validate so callers cannot accidentally read or allocate history in a scope
@@ -1444,24 +1671,34 @@ func (p *PostgresStore) FindRunByIdempotencyKey(ctx context.Context, scope Scope
 // ---- teardown -------------------------------------------------------------------------
 
 func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentName string) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.validate(); err != nil {
 		return err
 	}
 	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
-		if _, err := p.db.ExecContext(ctx,
+		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
 			return err
 		}
 	}
-	return nil
+	return mutation.commit()
 }
 
 // DeleteRunData removes one run's rows. See Store.DeleteRunData for why usage
 // is not among them.
 func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID string) error {
-	scope = p.normalizeScope(ctx, scope)
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
@@ -1472,18 +1709,18 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 	// run row behind as the thing that still points at them, never orphans
 	// nothing points at.
 	for _, table := range []string{"agents_messages", "agents_tool_calls"} {
-		if _, err := p.db.ExecContext(ctx,
+		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
 			return err
 		}
 	}
-	if _, err := p.db.ExecContext(ctx,
+	if _, err := mutation.executor.ExecContext(ctx,
 		`DELETE FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
 		return err
 	}
-	return nil
+	return mutation.commit()
 }
 
 // ---- helpers ----------------------------------------------------------------------------

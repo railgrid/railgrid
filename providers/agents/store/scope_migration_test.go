@@ -10,6 +10,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -140,6 +141,12 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 	if err := s.SaveTenantRef(ctx, clusterID, ref); err != nil {
 		t.Fatalf("save mapping and migrate history: %v", err)
 	}
+	if err := s.SaveTenantRef(ctx, clusterID, TenantRef{OrgUUID: "other-org", WorkspaceUUID: "other-workspace", UpdatedAt: now.Add(11 * time.Second)}); err == nil {
+		t.Fatal("conflicting tenant mapping replaced an established mapping")
+	}
+	if got, ok, err := s.GetTenantRef(ctx, clusterID); err != nil || !ok || got.OrgUUID != ref.OrgUUID || got.WorkspaceUUID != ref.WorkspaceUUID {
+		t.Fatalf("mapping after conflicting update = %+v, ok=%v, err=%v", got, ok, err)
+	}
 
 	page, err := s.ListMessages(ctx, mapped, "continuity", 20, "")
 	if err != nil || len(page.Items) != 2 {
@@ -197,15 +204,42 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreFallbackMutationRechecksMappingUnderWriteLock(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	clusterID := "cluster-scope-race"
+	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
+	mapped := Scope{OrgUUID: "org-scope-race", WorkspaceUUID: "workspace-scope-race", AgentName: "coder", ClusterID: clusterID}
+	now := time.Now().UTC()
+	if err := s.AppendMessage(ctx, fallback, Message{ID: "before-map", AgentName: "coder", SessionID: "s", Role: "user", Content: "old", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a caller that resolved the fallback before SaveTenantRef, then
+	// pauses until after the mapping is committed. MemoryStore's final scope
+	// recheck happens under the same mutex as the write.
+	if err := s.SaveTenantRef(ctx, clusterID, TenantRef{OrgUUID: mapped.OrgUUID, WorkspaceUUID: mapped.WorkspaceUUID, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendMessage(ctx, fallback, Message{ID: "after-map", AgentName: "coder", SessionID: "s", Role: "assistant", Content: "new", CreatedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListMessages(ctx, mapped, "s", 10, "")
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("canonical transcript after delayed fallback write = %d messages, err=%v", len(page.Items), err)
+	}
+}
+
 func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()
 	clusterID := "scope-migration-" + uuid.NewString()
 	t.Cleanup(func() {
-		for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
-			_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 AND workspace_uuid=$2", UnmappedOrg, clusterID)
+		for _, unmappedClusterID := range []string{clusterID, clusterID + "-destructive", clusterID + "-budget"} {
+			for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+				_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 AND workspace_uuid=$2", UnmappedOrg, unmappedClusterID)
+			}
+			_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, unmappedClusterID)
 		}
-		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, clusterID)
 	})
 	canonical := pgScope(t, ps)
 	canonical.AgentName = "coder"
@@ -451,5 +485,268 @@ func TestPostgresMappedFallbackScopeFailsClosedWhenMappingLookupFails(t *testing
 	}
 	if messages != 0 || sessions != 0 {
 		t.Fatalf("lookup failure created fallback rows: messages=%d harness_sessions=%d", messages, sessions)
+	}
+}
+
+func TestPostgresTenantMappingIsImmutable(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	clusterID := "scope-immutable-" + uuid.NewString()
+	first := TenantRef{OrgUUID: "org-immutable-" + uuid.NewString(), WorkspaceUUID: "ws-immutable-" + uuid.NewString(), UpdatedAt: time.Now().UTC()}
+	second := TenantRef{OrgUUID: "org-other-" + uuid.NewString(), WorkspaceUUID: "ws-other-" + uuid.NewString(), UpdatedAt: time.Now().UTC()}
+	t.Cleanup(func() {
+		for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+			_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 OR (org_uuid=$2 AND workspace_uuid=$3)", first.OrgUUID, UnmappedOrg, clusterID)
+		}
+		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, clusterID)
+	})
+	if err := ps.SaveTenantRef(ctx, clusterID, first); err != nil {
+		t.Fatalf("save initial mapping: %v", err)
+	}
+	// Model a late row from an older provider that does not participate in the
+	// fence. A conflicting mapping attempt must fail before it moves that row.
+	if _, err := ps.db.ExecContext(ctx, `INSERT INTO agents_messages
+		(id, org_uuid, workspace_uuid, agent_name, session_id, role, content, created_at)
+		VALUES ($1,$2,$3,'coder','s','user','legacy row',$4)`,
+		"legacy-immutable-"+uuid.NewString(), UnmappedOrg, clusterID, time.Now().UTC()); err != nil {
+		t.Fatalf("seed late fallback row: %v", err)
+	}
+	if err := ps.SaveTenantRef(ctx, clusterID, second); err == nil {
+		t.Fatal("conflicting tenant mapping replaced an established mapping")
+	}
+	got, ok, err := ps.GetTenantRef(ctx, clusterID)
+	if err != nil || !ok || got.OrgUUID != first.OrgUUID || got.WorkspaceUUID != first.WorkspaceUUID {
+		t.Fatalf("mapping after conflicting update = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	var fallbackRows, wrongTenantRows int
+	if err := ps.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents_messages WHERE org_uuid=$1 AND workspace_uuid=$2`, UnmappedOrg, clusterID).Scan(&fallbackRows); err != nil {
+		t.Fatalf("count unmoved fallback rows: %v", err)
+	}
+	if err := ps.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents_messages WHERE org_uuid=$1 AND workspace_uuid=$2`, second.OrgUUID, second.WorkspaceUUID).Scan(&wrongTenantRows); err != nil {
+		t.Fatalf("count wrong-tenant rows: %v", err)
+	}
+	if fallbackRows != 1 || wrongTenantRows != 0 {
+		t.Fatalf("conflicting mapping moved rows: fallback=%d wrong tenant=%d", fallbackRows, wrongTenantRows)
+	}
+}
+
+func TestPostgresFallbackMutationsFenceTenantMapping(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	clusterID := "scope-fence-" + uuid.NewString()
+	canonical := pgScope(t, ps)
+	canonical.AgentName = "coder"
+	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
+	ref := TenantRef{OrgUUID: canonical.OrgUUID, WorkspaceUUID: canonical.WorkspaceUUID, UpdatedAt: time.Now().UTC()}
+	t.Cleanup(func() {
+		for _, unmappedClusterID := range []string{clusterID, clusterID + "-destructive"} {
+			for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+				_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 AND workspace_uuid=$2", UnmappedOrg, unmappedClusterID)
+			}
+			_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, unmappedClusterID)
+		}
+	})
+
+	// The same idempotency key already exists in the canonical scope. A fallback
+	// SaveRun racing mapping publication must block on the shared tenant-map lock,
+	// route to canonical after release, and hit the unique index before dispatch.
+	existing := Run{ID: "existing-" + uuid.NewString(), AgentName: "coder", IdempotencyKey: "same-key", Phase: RunPhasePending,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := ps.SaveRun(ctx, canonical, existing); err != nil {
+		t.Fatalf("save canonical idempotency winner: %v", err)
+	}
+	mapTx, blockerPID := lockTenantMapping(t, ps, clusterID)
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- ps.SaveRun(ctx, fallback, Run{ID: "duplicate-" + uuid.NewString(), AgentName: "coder", IdempotencyKey: "same-key", Phase: RunPhasePending,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	}()
+	waitForTenantLockWaiters(t, ps, blockerPID, 1)
+	publishTenantMappingInTx(t, mapTx, clusterID, ref)
+	if err := <-writeDone; err == nil {
+		t.Fatal("fallback duplicate SaveRun succeeded after mapping publication")
+	}
+	if runs, err := ps.ListRuns(ctx, canonical, 20); err != nil || len(runs) != 1 || runs[0].ID != existing.ID {
+		t.Fatalf("canonical runs after duplicate race = %+v, err=%v", runs, err)
+	}
+	var fallbackRuns int
+	if err := ps.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`, UnmappedOrg, clusterID).Scan(&fallbackRuns); err != nil || fallbackRuns != 0 {
+		t.Fatalf("fallback duplicate rows=%d, err=%v", fallbackRuns, err)
+	}
+
+	// A cancellation and session delete resolved against a separate fallback
+	// scope before map publication. Both must wait, re-resolve after commit, and
+	// mutate the rows that migration moved into the canonical scope.
+	destructiveClusterID := clusterID + "-destructive"
+	destructiveFallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: destructiveClusterID, AgentName: "coder", ClusterID: destructiveClusterID}
+	destructiveRef := TenantRef{OrgUUID: canonical.OrgUUID, WorkspaceUUID: canonical.WorkspaceUUID, UpdatedAt: time.Now().UTC()}
+	run := Run{ID: "cancel-" + uuid.NewString(), AgentName: "coder", SessionID: "cancel-session", Phase: RunPhasePending,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := ps.SaveRun(ctx, destructiveFallback, run); err != nil {
+		t.Fatalf("save fallback run: %v", err)
+	}
+	if err := ps.AppendMessage(ctx, destructiveFallback, Message{ID: "delete-me-" + uuid.NewString(), AgentName: "coder", SessionID: "delete-session", Role: "user", Content: "old", CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("append fallback session: %v", err)
+	}
+	if _, err := ps.NextHarnessTurn(ctx, destructiveFallback, "delete-session", time.Now().UTC()); err != nil {
+		t.Fatalf("allocate fallback harness epoch: %v", err)
+	}
+	if err := ps.PutHarnessSession(ctx, destructiveFallback, HarnessSession{SessionID: "delete-session", HarnessSessionID: "native-session", BackendKey: "edge", Turns: 1, ObservedEpoch: 1, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("save fallback harness session: %v", err)
+	}
+	mapTx, blockerPID = lockTenantMapping(t, ps, destructiveClusterID)
+	cancelDone := make(chan error, 1)
+	deleteDone := make(chan error, 1)
+	go func() { cancelDone <- ps.RequestCancel(ctx, destructiveFallback, run.ID, time.Now().UTC()) }()
+	go func() { deleteDone <- ps.DeleteSession(ctx, destructiveFallback, "delete-session") }()
+	waitForTenantLockWaiters(t, ps, blockerPID, 2)
+	publishTenantMappingInTx(t, mapTx, destructiveClusterID, destructiveRef)
+	if err := <-cancelDone; err != nil {
+		t.Fatalf("fallback cancellation after mapping: %v", err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("fallback session delete after mapping: %v", err)
+	}
+	cancelled, err := ps.GetRun(ctx, canonical, run.ID)
+	if err != nil || !cancelled.CancelRequested {
+		t.Fatalf("canonical run after fenced cancellation = %+v, err=%v", cancelled, err)
+	}
+	if page, err := ps.ListMessages(ctx, canonical, "delete-session", 10, ""); err != nil || len(page.Items) != 0 {
+		t.Fatalf("canonical session after fenced delete = %d messages, err=%v", len(page.Items), err)
+	}
+	harness, ok, err := ps.GetHarnessSession(ctx, canonical, "delete-session")
+	if err != nil || !ok || harness.HarnessSessionID != "" || harness.ObservedEpoch <= 1 {
+		t.Fatalf("canonical harness tombstone after fenced delete = %+v, ok=%v, err=%v", harness, ok, err)
+	}
+
+	// Budget reads must use the same fence: otherwise a lookup that races map
+	// publication can see only the source usage, or report zero after migration.
+	budgetClusterID := clusterID + "-budget"
+	budgetFallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: budgetClusterID, AgentName: "coder", ClusterID: budgetClusterID}
+	budgetRef := TenantRef{OrgUUID: canonical.OrgUUID, WorkspaceUUID: canonical.WorkspaceUUID, UpdatedAt: time.Now().UTC()}
+	budgetNow := time.Now().UTC()
+	if _, err := ps.AddUsage(ctx, budgetFallback, "coder", 7, 0, 0, budgetNow, 24*time.Hour); err != nil {
+		t.Fatalf("add fallback usage: %v", err)
+	}
+	if _, err := ps.AddUsage(ctx, canonical, "coder", 11, 0, 0, budgetNow, 24*time.Hour); err != nil {
+		t.Fatalf("add canonical usage: %v", err)
+	}
+	mapTx, blockerPID = lockTenantMapping(t, ps, budgetClusterID)
+	type usageResult struct {
+		usage Usage
+		err   error
+	}
+	usageDone := make(chan usageResult, 1)
+	go func() {
+		usage, err := ps.GetUsage(ctx, budgetFallback, "coder", budgetNow, 24*time.Hour)
+		usageDone <- usageResult{usage: usage, err: err}
+	}()
+	waitForTenantLockWaiters(t, ps, blockerPID, 1)
+	publishTenantMappingInTx(t, mapTx, budgetClusterID, budgetRef)
+	gotUsage := <-usageDone
+	if gotUsage.err != nil || gotUsage.usage.InputTokens != 18 {
+		t.Fatalf("budget usage after fenced migration = %+v, err=%v; want 18 input tokens", gotUsage.usage, gotUsage.err)
+	}
+}
+
+func TestPostgresFallbackMutationRollsBackWithoutTenantMapping(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	clusterID := "scope-fence-rollback-" + uuid.NewString()
+	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
+	ref := TenantRef{OrgUUID: "org-rollback-" + uuid.NewString(), WorkspaceUUID: "ws-rollback-" + uuid.NewString(), UpdatedAt: time.Now().UTC()}
+	t.Cleanup(func() {
+		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`, UnmappedOrg, clusterID)
+		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, clusterID)
+	})
+	before := Run{ID: "before-rollback-" + uuid.NewString(), AgentName: "coder", Phase: RunPhasePending,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := ps.SaveRun(ctx, fallback, before); err != nil {
+		t.Fatalf("save pre-migration fallback run: %v", err)
+	}
+	mapTx, blockerPID := lockTenantMapping(t, ps, clusterID)
+	writeDone := make(chan error, 1)
+	after := Run{ID: "after-rollback-" + uuid.NewString(), AgentName: "coder", Phase: RunPhasePending,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	go func() {
+		writeDone <- ps.SaveRun(ctx, fallback, after)
+	}()
+	waitForTenantLockWaiters(t, ps, blockerPID, 1)
+	if err := migrateUnmappedScopeTx(ctx, mapTx, clusterID, ref); err != nil {
+		t.Fatalf("stage scope migration before rollback: %v", err)
+	}
+	if _, err := mapTx.ExecContext(ctx, `
+		INSERT INTO agents_tenants (cluster_id, org_uuid, workspace_uuid, updated_at)
+		VALUES ($1,$2,$3,$4)`, clusterID, ref.OrgUUID, ref.WorkspaceUUID, ref.UpdatedAt.UTC()); err != nil {
+		t.Fatalf("stage mapping before rollback: %v", err)
+	}
+	if err := mapTx.Rollback(); err != nil {
+		t.Fatalf("rollback mapping transaction: %v", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("fallback write after mapping rollback: %v", err)
+	}
+	if _, ok, err := ps.GetTenantRef(ctx, clusterID); err != nil || ok {
+		t.Fatalf("mapping after rollback exists=%v, err=%v", ok, err)
+	}
+	var fallbackRuns int
+	if err := ps.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`, UnmappedOrg, clusterID).Scan(&fallbackRuns); err != nil || fallbackRuns != 2 {
+		t.Fatalf("fallback rows after mapping rollback=%d, err=%v; want both original and delayed writes", fallbackRuns, err)
+	}
+	var rolledBackCanonicalRuns int
+	if err := ps.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`, ref.OrgUUID, ref.WorkspaceUUID).Scan(&rolledBackCanonicalRuns); err != nil || rolledBackCanonicalRuns != 0 {
+		t.Fatalf("canonical rows after mapping rollback=%d, err=%v; want zero", rolledBackCanonicalRuns, err)
+	}
+}
+
+func lockTenantMapping(t *testing.T, ps *PostgresStore, clusterID string) (*sql.Tx, int) {
+	t.Helper()
+	tx, err := ps.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tenant mapping blocker: %v", err)
+	}
+	var blockerPID int
+	if err := tx.QueryRowContext(context.Background(), `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("read blocker PID: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(), `SELECT pg_advisory_xact_lock(hashtext($1))`, "agents-tenant-map:"+clusterID); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("lock tenant mapping: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	return tx, blockerPID
+}
+
+func waitForTenantLockWaiters(t *testing.T, ps *PostgresStore, blockerPID, minimum int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		err := ps.db.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM pg_stat_activity
+			WHERE $1 = ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'`, blockerPID).Scan(&count)
+		if err == nil && count >= minimum {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("did not observe %d mutation(s) blocked by mapping PID %d", minimum, blockerPID)
+}
+
+func publishTenantMappingInTx(t *testing.T, tx *sql.Tx, clusterID string, ref TenantRef) {
+	t.Helper()
+	ctx := context.Background()
+	if err := migrateUnmappedScopeTx(ctx, tx, clusterID, ref); err != nil {
+		t.Fatalf("migrate fallback scope in mapping transaction: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO agents_tenants (cluster_id, org_uuid, workspace_uuid, updated_at)
+		VALUES ($1,$2,$3,$4) ON CONFLICT (cluster_id) DO NOTHING`,
+		clusterID, ref.OrgUUID, ref.WorkspaceUUID, ref.UpdatedAt.UTC()); err != nil {
+		t.Fatalf("publish tenant mapping in transaction: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tenant mapping transaction: %v", err)
 	}
 }
