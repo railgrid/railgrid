@@ -185,20 +185,20 @@ async function resolve(item: InboxItem, decision: 'approve' | 'deny'): Promise<v
     await authority.api.resolveInbox(item.id, decision)
     if (!authorityIsCurrent(authority)) return
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
-    void authority.store.load('inbox')
-    void reload('foreground')
+    await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
     if (authorityIsCurrent(authority)) {
       // The request can time out after the server has already accepted it.
       // Read both projections again before leaving the pending card as truth.
-      void authority.store.load('inbox')
-      void reload('background')
       toast('error', approvalResolutionFailureMessage(cause instanceof ApiError ? cause.status : undefined))
+      await Promise.allSettled([authority.store.load('inbox'), reload('background')])
     }
   } finally {
-    const next = new Map(resolvingInbox.value)
-    next.delete(item.id)
-    resolvingInbox.value = next
+    if (authorityIsCurrent(authority)) {
+      const next = new Map(resolvingInbox.value)
+      next.delete(item.id)
+      resolvingInbox.value = next
+    }
   }
 }
 

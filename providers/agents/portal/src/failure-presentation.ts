@@ -23,7 +23,9 @@ export function sanitizeTechnicalDiagnostic(value: string | null | undefined): s
   let safe = value
     .replace(/(\b(?:proxy-)?authorization\s*:\s*)(?:bearer|basic)\s+[^\s,;]+/gi, '$1[redacted]')
     .replace(/(\b(?:bearer|basic)\s+)[A-Za-z0-9._~+\/-]{8,}={0,2}/gi, '$1[redacted]')
-    .replace(/("?(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|password|passwd|secret|client[_-]?secret|credential)"?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi, '$1[redacted]')
+    // Consume escaped quotes with their value, including Python-style quoted
+    // fields. Otherwise a quote inside a secret can expose the remaining bytes.
+    .replace(/(["']?(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|password|passwd|secret|client[_-]?secret|credential)["']?\s*[:=]\s*)(?:"(?:\\[\s\S]|[^"\\])*(?:"|$)|'(?:\\[\s\S]|[^'\\])*(?:'|$)|[^\s,;&}]+)/gi, '$1[redacted]')
     .replace(/(https?:\/\/)[^/\s:@]+:[^@\s/]+@/gi, '$1[redacted]@')
     .replace(/\b(?:sk-(?:proj|live|test|ant-[a-z0-9]+)-|sk-)[A-Za-z0-9_-]{16,}\b/gi, '[redacted key]')
     .replace(/\b(?:gh[pousr]_|xox[baprs]-)[A-Za-z0-9-]{16,}\b/gi, '[redacted token]')

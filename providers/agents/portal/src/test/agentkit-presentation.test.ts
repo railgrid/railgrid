@@ -245,6 +245,15 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(view.element.querySelector('.agents-code-copy')).not.toBeNull()
   })
 
+  it.each([
+    "{'api_key': 'opaque-private-value'}",
+    String.raw`{"password":"prefix\"opaque-private-value"}`,
+    String.raw`{'client_secret': 'prefix\'opaque-private-value'}`,
+  ])('redacts quoted credential fields completely: %s', diagnostic => {
+    expect(sanitizeTechnicalDiagnostic(diagnostic)).not.toContain('opaque-private-value')
+    expect(sanitizeTechnicalDiagnostic(diagnostic)).toContain('[redacted]')
+  })
+
   it('keeps a failed chat turn actionable while preserving secret-safe diagnostics and the run link', async () => {
     const bearer = 'super-secret-bearer-value'
     const apiKey = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789'

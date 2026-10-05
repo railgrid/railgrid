@@ -244,16 +244,14 @@ async function resolve(inboxID: string, decision: 'approve' | 'deny'): Promise<v
     await authority.api.resolveInbox(inboxID, decision)
     if (!authorityIsCurrent(authority) || id !== props.runId) return
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
-    void authority.store.load('inbox')
-    void load()
+    await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
     if (authorityIsCurrent(authority) && id === props.runId) {
-      void authority.store.load('inbox')
-      void load('background')
       toast('error', approvalResolutionFailureMessage(cause instanceof ApiError ? cause.status : undefined))
+      await Promise.allSettled([authority.store.load('inbox'), load('background')])
     }
   } finally {
-    if (resolvingInboxID.value === inboxID) {
+    if (authorityIsCurrent(authority) && id === props.runId && resolvingInboxID.value === inboxID) {
       resolvingInboxID.value = ''
       resolvingDecision.value = ''
     }

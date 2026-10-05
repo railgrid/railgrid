@@ -387,7 +387,8 @@ describe('Activity.vue', () => {
       id: 'i2', agentName: 'scout', runID: 'r10', kind: 'approval', state: 'pending',
       prompt: 'scout wants to run deploy', payload: { tool: 'deploy', args: '{}' }, createdAt: new Date().toISOString(),
     }
-    const listInbox = vi.fn().mockResolvedValue([item])
+    const inboxRefresh = deferred<InboxItem[]>()
+    const listInbox = vi.fn().mockImplementation(() => inboxRefresh.promise)
     const listRuns = vi.fn().mockResolvedValue({ items: [], nextCursor: '' })
     const resolveInbox = vi.fn().mockRejectedValue(new ApiError(403, 'Authorization: Bearer sensitive-backend-detail'))
     const api = stubApi({ listInbox, listRuns, resolveInbox })
@@ -403,6 +404,12 @@ describe('Activity.vue', () => {
     await settleVue(3)
 
     expect(resolveInbox).toHaveBeenCalledWith('i2', 'approve')
+    expect(approve.disabled).toBe(true)
+    approve.click()
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+    inboxRefresh.resolve([item])
+    await settleVue(3)
+    expect(approve.disabled).toBe(false)
     expect(listInbox).toHaveBeenCalled()
     expect(listRuns.mock.calls.length).toBeGreaterThan(1)
     expect(text(document.querySelector('.k-toast--error'))).toContain('do not have permission')
@@ -848,7 +855,8 @@ describe('RunDetail.vue', () => {
       pending: { inboxID: 'i8', tool: 'deploy', args: '{"target":"prod"}' },
     }))
     const resolveInbox = vi.fn().mockRejectedValue(new ApiError(403, 'Authorization: Bearer secret-response-body'))
-    const api = stubApi({ getRun, resolveInbox, listInbox: vi.fn().mockResolvedValue([]) })
+    const inboxRefresh = deferred<InboxItem[]>()
+    const api = stubApi({ getRun, resolveInbox, listInbox: vi.fn().mockImplementation(() => inboxRefresh.promise) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
     const approve = buttonWithText(view.element, 'Approve & resume')
 
@@ -856,6 +864,11 @@ describe('RunDetail.vue', () => {
     await settleVue(5)
 
     expect(getRun).toHaveBeenCalledTimes(2)
+    expect(approve.disabled).toBe(true)
+    approve.click()
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+    inboxRefresh.resolve([])
+    await settleVue(3)
     expect(text(view.element.querySelector('.agents-approval-args'))).toContain('prod')
     expect(buttonWithText(view.element, 'Approve & resume').disabled).toBe(false)
     expect(text(document.querySelector('.k-toast--error'))).toContain('do not have permission')
