@@ -940,6 +940,11 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		res, err := s.executeTask(ctx, tr)
 		if err != nil {
 			log.Printf("agents: run %s on agent %s failed: %v", runID, agent.Name, err)
+			if res.Phase == "" {
+				// Setup gates can refuse before the lifecycle owns the Pending
+				// record. Settle it here so waiters and callbacks see the refusal.
+				res, err = s.failBeforeStart(ctx, scope, tr, tr.SessionID, time.Time{}, err)
+			}
 		}
 		if err != nil || res.Pending != nil {
 			// The outcome is on the run record (approvals resume separately), but a
