@@ -691,7 +691,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	}
 	usageCtx, cancelUsage := boundedPersistContext(ctx)
 	window, usageErr := s.store.AddUsage(usageCtx, scope, agent.Name,
-		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, 30*24*time.Hour)
+		out.Usage.Billed.InputTokens, out.Usage.Billed.OutputTokens, out.Usage.Billed.CostMicros, end, budgetWindow(agent.Spec.Budget))
 	cancelUsage()
 	if usageErr != nil {
 		log.Printf("run %s: recording usage: %v", runID, usageErr)

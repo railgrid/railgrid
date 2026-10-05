@@ -510,7 +510,7 @@ func (s *Server) summarizeBatch(ctx context.Context, run taskRun, model einomode
 		end := time.Now().UTC()
 		costMicros := llm.CostMicros(strings.TrimSpace(modelName), usage.InputTokens, usage.OutputTokens)
 		if _, err := s.store.AddUsage(ctx, run.Scope, run.Agent.Name,
-			usage.InputTokens, usage.OutputTokens, costMicros, end, 30*24*time.Hour); err != nil {
+			usage.InputTokens, usage.OutputTokens, costMicros, end, budgetWindow(run.Agent.Spec.Budget)); err != nil {
 			if readErr != nil {
 				return "", errors.Join(readErr, fmt.Errorf("record compaction model usage: %w", err))
 			}

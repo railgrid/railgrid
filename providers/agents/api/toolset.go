@@ -114,7 +114,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 			// Budget rollup: the child's spend (tokens + cost) also counts
 			// against the parent.
 			_, _ = s.store.AddUsage(dctx, parentDeps.Scope, parentDeps.Agent.Name,
-				res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.USDMicros, time.Now().UTC(), 30*24*time.Hour)
+				res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.USDMicros, time.Now().UTC(), budgetWindow(parentDeps.Agent.Spec.Budget))
 			// The child hit its own approval gate. Say so plainly rather than
 			// handing back a partial answer the parent would treat as final —
 			// the child's run resumes on its own once the user decides.
