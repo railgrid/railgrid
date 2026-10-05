@@ -939,7 +939,22 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 // (phase PendingApproval, checkpoint saved) instead of finishing; resolving the
 // approval resumes it.
 func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error) {
-	return s.runTurn(ctx, run, nil)
+	if run.RunID == "" {
+		run.RunID = uuid.NewString()
+	}
+	res, err := s.runTurn(ctx, run, nil)
+	if err != nil && res.Phase == "" {
+		// Every entry point needs a durable refusal, including controller-owned
+		// schedules and chats that announced their run ID before setup began.
+		// Keeping this at the execution boundary prevents a claimed Pending run
+		// from being stranded when no model or runner was ever dispatched.
+		sessionID := run.SessionID
+		if sessionID == "" {
+			sessionID = run.Trigger
+		}
+		return s.failBeforeStart(ctx, run.Scope, run, sessionID, time.Time{}, err)
+	}
+	return res, err
 }
 
 // startDetachedRun starts a run-now for the request that asked for it: detached
@@ -977,11 +992,6 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		res, err := s.executeTask(ctx, tr)
 		if err != nil {
 			log.Printf("agents: run %s on agent %s failed: %v", runID, agent.Name, err)
-			if res.Phase == "" {
-				// Setup gates can refuse before the lifecycle owns the Pending
-				// record. Settle it here so waiters and callbacks see the refusal.
-				res, err = s.failBeforeStart(ctx, scope, tr, tr.SessionID, time.Time{}, err)
-			}
 		}
 		if err != nil || res.Pending != nil {
 			// The outcome is on the run record (approvals resume separately), but a

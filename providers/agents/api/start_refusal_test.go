@@ -55,3 +55,37 @@ func TestDetachedRunSetupRefusalSettlesPendingRecord(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutionSetupRefusalPersistsForEveryEntryPoint(t *testing.T) {
+	for _, trigger := range []string{"chat", "schedule", "heartbeat", "wakeup", "event", "channel", "delegation"} {
+		t.Run(trigger, func(t *testing.T) {
+			st := store.NewMemoryStore()
+			s := &Server{store: st, events: newEventBus()}
+			scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
+			agent := &agentsv1alpha1.Agent{}
+			agent.Name = scope.AgentName
+			agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+			if _, err := st.AddUsage(t.Context(), scope, agent.Name, 2, 0, 0, time.Now(), 24*time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			tr := taskRun{RunID: "refused-" + trigger, Scope: scope, Agent: agent, Trigger: trigger, Task: "must not execute", SourceName: "source"}
+			if trigger != "chat" {
+				// The controller claimed a durable Pending run before execution.
+				if err := st.SaveRun(t.Context(), scope, store.Run{ID: tr.RunID, AgentName: agent.Name, Trigger: trigger, Phase: store.RunPhasePending, Input: tr.Task, IdempotencyKey: "dedupe", CreatedAt: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := s.executeTask(t.Context(), tr)
+			if err == nil || result.Phase != store.RunPhaseFailed || result.RunID != tr.RunID {
+				t.Fatalf("setup refusal is not settled: result=%+v, err=%v", result, err)
+			}
+			run, err := st.GetRun(t.Context(), scope, tr.RunID)
+			if err != nil || run.Phase != store.RunPhaseFailed || run.FinishedAt == nil || run.StartedAt != nil || !strings.Contains(run.Message, "budget exceeded") {
+				t.Fatalf("setup refusal has no durable terminal record: run=%+v, err=%v", run, err)
+			}
+			if trigger != "chat" && run.IdempotencyKey != "dedupe" {
+				t.Fatal("setup refusal discarded the pre-created record's idempotency key")
+			}
+		})
+	}
+}
