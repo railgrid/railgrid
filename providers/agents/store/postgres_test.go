@@ -225,6 +225,41 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}
 }
 
+func TestPostgres_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	for _, tc := range []struct {
+		name          string
+		phase         RunPhase
+		requestCancel bool
+	}{
+		{name: "cancelled pending approval", phase: RunPhasePendingApproval, requestCancel: true},
+		{name: "aborted", phase: RunPhaseAborted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := uuid.NewString()
+			if err := ps.SaveRun(ctx, sc, Run{ID: id, AgentName: sc.AgentName, Trigger: "chat", Phase: tc.phase, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatalf("save run: %v", err)
+			}
+			if tc.requestCancel {
+				if err := ps.RequestCancel(ctx, sc, id, now); err != nil {
+					t.Fatalf("request cancel: %v", err)
+				}
+			}
+			if _, err := ps.ClaimRun(ctx, sc, id, "late-approval", now); err == nil {
+				t.Fatal("ClaimRun succeeded for a cancelled or terminal run")
+			}
+			stored, err := ps.GetRun(ctx, sc, id)
+			if err != nil || stored.Phase != tc.phase || (tc.requestCancel && !stored.CancelRequested) {
+				t.Fatalf("run after failed claim = %+v, %v", stored, err)
+			}
+		})
+	}
+}
+
 func TestPostgres_RunWorkedDurationKeepsUnknownAndMeasuredZeroDistinct(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()

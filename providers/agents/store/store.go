@@ -453,8 +453,9 @@ type Store interface {
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
-	// ClaimRun atomically marks a resumable run as owned by requestID so only
-	// one replica resumes it.
+	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
+	// terminal run cannot be claimed, so an approval racing with cancel cannot
+	// revive work after the cancel flag or terminal phase is recorded.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything

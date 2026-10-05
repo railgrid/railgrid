@@ -142,6 +142,17 @@ func pendingFor(inboxID string, parked *backend.Parked) *pendingInfo {
 	return &pendingInfo{InboxID: inboxID, Kind: string(store.InboxKindApproval), Tool: parked.Tool, Args: parked.Args}
 }
 
+// harnessCancelTarget is the non-secret address needed to reach one runner.
+// It is persisted beside a parked checkpoint so an Agent edit cannot redirect
+// cancellation to a different edge.
+type harnessCancelTarget struct {
+	ClusterID string `json:"clusterID"`
+	EdgeKind  string `json:"edgeKind"`
+	EdgeName  string `json:"edgeName"`
+	Service   string `json:"service"`
+	RunnerID  string `json:"runnerID"`
+}
+
 // runCheckpoint is the payload persisted in store.Run.Checkpoint: the resume
 // state the backend handed back, plus what the api layer needs to rebuild the
 // run around it.
@@ -157,12 +168,17 @@ type runCheckpoint struct {
 	// else is still holding (attempt, session, cursor). Decoding either as the
 	// other would silently produce an empty resume, so they do not share a
 	// field; which one is set is decided by the run's Backend.
-	Harness       json.RawMessage `json:"harness,omitempty"`
-	Tool          string          `json:"tool"`
-	Args          string          `json:"args"`
-	InboxID       string          `json:"inboxID"`
-	SourceName    string          `json:"sourceName,omitempty"`
-	NotifyChannel string          `json:"notifyChannel,omitempty"`
+	Harness json.RawMessage `json:"harness,omitempty"`
+	// HarnessRunner is the safe, non-secret address of the runner holding a
+	// parked harness attempt. It survives edits to the Agent or removal of its
+	// ModelCredential, so cancel can still stop the old attempt without storing
+	// a URL or bearer token.
+	HarnessRunner *harnessCancelTarget `json:"harnessRunner,omitempty"`
+	Tool          string               `json:"tool"`
+	Args          string               `json:"args"`
+	InboxID       string               `json:"inboxID"`
+	SourceName    string               `json:"sourceName,omitempty"`
+	NotifyChannel string               `json:"notifyChannel,omitempty"`
 	// Worker carries a spawned sub-task's constraints (its narrowed families,
 	// approval class and tool-turn budget) so a resumed worker is rebuilt as the
 	// worker it was rather than as a top-level run of its agent.
@@ -575,6 +591,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		cancel()
 	}()
+	// Approval resume and cancel can cross between ClaimRun and this local
+	// registration. A cancel that saw no live entry has already closed the
+	// durable run; observe its flag before dispatching another model or harness
+	// request so that the late resume cannot restart the work.
+	if stored, err := s.store.GetRun(ctx, scope, runID); err == nil && stored.CancelRequested {
+		cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		// A cancellation landed after a resume claimed the row but before it
+		// registered locally. The caller already recorded the terminal phase;
+		// return before Continue can dispatch another request to the runner.
+		return runResult{RunID: runID, Phase: store.RunPhaseAborted}, err
+	}
 
 	// Assemble the agent's tools for this trigger class (policy + approvals +
 	// audit + delegation); MCP sessions are released when the run ends.
@@ -798,6 +827,14 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		Tool: out.Parked.Tool, Args: out.Parked.Args,
 		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
 		WorkedDurationMS: tracker.durationMS(),
+	}
+	if harnessT != nil {
+		if cfg := run.Agent.Spec.Harness(); cfg != nil {
+			ck.HarnessRunner = &harnessCancelTarget{
+				ClusterID: run.ClusterID, EdgeKind: cfg.EdgeRef.Kind,
+				EdgeName: cfg.EdgeRef.Name, Service: harnessT.Service, RunnerID: harnessT.Service,
+			}
+		}
 	}
 	// The backend's resume state is opaque across the seam; the api layer only
 	// stores it, in the field this run's backend resumes from. Do this before

@@ -139,6 +139,44 @@ func TestMemoryStore_RunClaimIsExclusive(t *testing.T) {
 	}
 }
 
+func TestMemoryStore_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	sc := testScope()
+	now := time.Now().UTC()
+
+	if err := s.SaveRun(ctx, sc, Run{
+		ID: "cancelled-approval", AgentName: sc.AgentName, Trigger: "chat",
+		Phase: RunPhasePendingApproval, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save pending approval: %v", err)
+	}
+	if err := s.RequestCancel(ctx, sc, "cancelled-approval", now); err != nil {
+		t.Fatalf("request cancel: %v", err)
+	}
+	if _, err := s.ClaimRun(ctx, sc, "cancelled-approval", "late-approval", now); err == nil {
+		t.Fatal("ClaimRun succeeded after cancellation was recorded")
+	}
+	stored, err := s.GetRun(ctx, sc, "cancelled-approval")
+	if err != nil || stored.Phase != RunPhasePendingApproval || !stored.CancelRequested {
+		t.Fatalf("cancelled run after failed claim = %+v, %v", stored, err)
+	}
+
+	if err := s.SaveRun(ctx, sc, Run{
+		ID: "already-aborted", AgentName: sc.AgentName, Trigger: "chat",
+		Phase: RunPhaseAborted, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save aborted run: %v", err)
+	}
+	if _, err := s.ClaimRun(ctx, sc, "already-aborted", "late-approval", now); err == nil {
+		t.Fatal("ClaimRun succeeded for an aborted run")
+	}
+	stored, err = s.GetRun(ctx, sc, "already-aborted")
+	if err != nil || stored.Phase != RunPhaseAborted {
+		t.Fatalf("aborted run after failed claim = %+v, %v", stored, err)
+	}
+}
+
 func TestMemoryStore_RunWorkedDurationKeepsUnknownAndMeasuredZeroDistinct(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()

@@ -213,7 +213,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 // A run not live here is also stamped Aborted immediately, as before, so the
 // caller sees it end without waiting for the executor to notice.
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
-	_, id, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -242,6 +242,9 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 	live := s.liveRuns.cancel(runID)
 	if !live {
 		s.closeRunNow(r.Context(), scope, run, store.RunPhaseAborted, "cancelled by user")
+		if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
+			go s.stopParkedHarness(r.Context(), c, id, run)
+		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": runID, "cancelling": live})
 }

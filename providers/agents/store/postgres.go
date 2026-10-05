@@ -713,8 +713,8 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 	}
 	res, err := p.db.ExecContext(ctx, `
 		UPDATE agents_runs SET phase=$4, updated_at=$5, started_at=COALESCE(started_at, $5)
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase <> $4`,
-		scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC())
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`,
+		scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval))
 	if err != nil {
 		return Run{}, err
 	}

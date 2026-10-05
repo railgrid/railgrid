@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"strconv"
@@ -39,8 +40,10 @@ import (
 
 	"github.com/google/uuid"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
+	"github.com/railgrid/railgrid/pkg/runner"
 	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
@@ -48,6 +51,7 @@ import (
 	"github.com/railgrid/provider-agents/backend"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/channels"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
@@ -210,6 +214,119 @@ func stopHarnessTurn(ctx context.Context, h *harnessTurn, run *backend.Run) erro
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
 	defer cancel()
 	return h.backend.Cancel(stopCtx, run)
+}
+
+// stopParkedHarness closes the remote half of a run that was waiting for a
+// person when this provider received cancel. A parked turn is no longer in
+// liveRuns, so its backend.Cancel callback cannot be reached through the local
+// registry. The checkpoint carries the runner coordinates; the current Agent
+// config is used only to address the same runner and mint its scoped identity.
+// This path deliberately does not load the harness credential: cancellation
+// needs the runner identity, not the model provider's long-lived auth secret.
+func (s *Server) stopParkedHarness(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) {
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backendCancelTimeout)
+	defer cancel()
+	if err := s.cancelParkedHarness(stopCtx, c, id, run); err != nil {
+		// Errors can originate in an authenticated request. Keep diagnostics
+		// generic so neither a provider credential nor an upstream error body is
+		// copied into logs.
+		log.Printf("run %s: stopping parked harness attempt failed", run.ID)
+	}
+}
+
+func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) error {
+	if run.Backend != agentsv1alpha1.AgentBackendHarness || len(run.Checkpoint) == 0 || c == nil || s.runners == nil {
+		return nil
+	}
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil || checkpoint.Backend != agentsv1alpha1.AgentBackendHarness || len(checkpoint.Harness) == 0 {
+		return nil
+	}
+	var state backendharness.State
+	if err := json.Unmarshal(checkpoint.Harness, &state); err != nil || state.TaskID == "" || state.AttemptID == "" || state.Epoch == 0 {
+		return nil
+	}
+	if state.AttemptID != run.ID || (run.AttemptID != "" && state.AttemptID != run.AttemptID) || state.TaskID != harnessTaskID(run.AgentName, run.SessionID) {
+		return nil
+	}
+
+	agent, err := c.Agents().Get(ctx, run.AgentName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	ref, grantAgent, ok := parkedHarnessRunner(id.clusterID, agent, checkpoint.HarnessRunner, state.BackendKey)
+	if !ok {
+		// Older checkpoints do not carry a runner target. They can still be
+		// stopped while the Agent and its harness credential reference remain
+		// intact; new checkpoints do not depend on either remaining unchanged.
+		cfg := agent.Spec.Harness()
+		if cfg == nil {
+			return nil
+		}
+		cred, getErr := c.GetModelCredential(ctx, cfg.CredentialRef)
+		if getErr != nil {
+			return getErr
+		}
+		selector := llm.HarnessSelector(cred.Spec.Provider)
+		if selector == "" {
+			return nil
+		}
+		advertised := llm.HarnessAdvertisedName(cred.Spec.Provider)
+		if state.BackendKey != "" && state.BackendKey != harnessBackendKey(id.clusterID, cfg.EdgeRef.Kind, cfg.EdgeRef.Name, advertised) {
+			return nil
+		}
+		service := edgeref.RunnerServiceName(cfg.EdgeRef.Name, selector)
+		ref = runnerclient.ServiceRef{Cluster: id.clusterID, Service: service, EdgeKind: cfg.EdgeRef.Kind, EdgeName: cfg.EdgeRef.Name, RunnerID: service}
+		grantAgent = agent
+	}
+	token, err := s.harnessIdentity(ctx, id.clusterID, grantAgent)
+	if err != nil {
+		return err
+	}
+	dispatcher, err := s.runners(ctx, ref, token)
+	if err != nil {
+		return err
+	}
+	_, err = dispatch.Cancel(ctx, dispatcher, runner.CancelRequest{
+		RequestID: uuid.NewString(), TaskID: state.TaskID,
+		AttemptID: state.AttemptID, AttemptEpoch: state.Epoch,
+	})
+	return err
+}
+
+// parkedHarnessRunner validates and reconstructs the narrow runner grant saved
+// with a new parked checkpoint. The persisted coordinates contain no URL or
+// token; the owner UID comes from the current Agent object, while the grant is
+// rebuilt for the one edge that held the attempt even if its spec has changed.
+func parkedHarnessRunner(clusterID string, agent *agentsv1alpha1.Agent, target *harnessCancelTarget, backendKey string) (runnerclient.ServiceRef, *agentsv1alpha1.Agent, bool) {
+	if target == nil || agent == nil || target.ClusterID == "" || target.ClusterID != clusterID || target.EdgeKind == "" || target.EdgeName == "" || target.Service == "" || target.RunnerID != target.Service {
+		return runnerclient.ServiceRef{}, nil, false
+	}
+	claude := edgeref.RunnerServiceName(target.EdgeName, llm.HarnessSelector(agentsv1alpha1.ModelProviderClaudeCode))
+	codex := edgeref.RunnerServiceName(target.EdgeName, llm.HarnessSelector(agentsv1alpha1.ModelProviderCodex))
+	var advertised string
+	switch target.Service {
+	case claude:
+		advertised = llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderClaudeCode)
+	case codex:
+		advertised = llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)
+	default:
+		return runnerclient.ServiceRef{}, nil, false
+	}
+	if backendKey != "" && backendKey != harnessBackendKey(clusterID, target.EdgeKind, target.EdgeName, advertised) {
+		return runnerclient.ServiceRef{}, nil, false
+	}
+	grantAgent := agent.DeepCopy()
+	grantAgent.Spec.Backend = agentsv1alpha1.AgentBackendSpec{
+		Type: agentsv1alpha1.AgentBackendHarness,
+		Harness: &agentsv1alpha1.AgentHarnessBackend{
+			EdgeRef: agentsv1alpha1.AgentHarnessEdgeRef{Kind: target.EdgeKind, Name: target.EdgeName},
+		},
+	}
+	return runnerclient.ServiceRef{
+		Cluster: clusterID, Service: target.Service,
+		EdgeKind: target.EdgeKind, EdgeName: target.EdgeName, RunnerID: target.RunnerID,
+	}, grantAgent, true
 }
 
 // unbilledHarnessUsage includes consumption recovered from an in-flight

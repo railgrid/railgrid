@@ -430,8 +430,8 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	if !ok {
 		return Run{}, fmt.Errorf("run %q not found", id)
 	}
-	if run.Phase == RunPhaseRunning {
-		return Run{}, fmt.Errorf("run %q already claimed", id)
+	if run.CancelRequested || (run.Phase != RunPhasePending && run.Phase != RunPhasePendingApproval) {
+		return Run{}, fmt.Errorf("run %q is no longer resumable", id)
 	}
 	run.Phase = RunPhaseRunning
 	run.UpdatedAt = now.UTC()
