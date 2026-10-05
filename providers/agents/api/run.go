@@ -29,6 +29,7 @@ import (
 	backendmodel "github.com/railgrid/provider-agents/backend/model"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/internal/harnesspolicy"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
@@ -468,6 +469,13 @@ const backendCancelTimeout = 30 * time.Second
 // way of starting work: a bug fixed here is fixed for all of them.
 func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (runResult, error) {
 	scope, agent := run.Scope, run.Agent
+	// A status condition alone cannot enforce unsupported tool restrictions:
+	// direct API callers and background triggers may run before reconciliation.
+	if agent.Spec.HarnessBacked() {
+		if _, message := harnesspolicy.UnsupportedFields(agent); message != "" {
+			return runResult{}, errors.New(message)
+		}
+	}
 
 	// Before every turn, resumed ones included: a run that parked on an approval
 	// spends from the same rolling window a fresh one does.
