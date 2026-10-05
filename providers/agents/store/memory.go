@@ -395,10 +395,12 @@ func mergeMigratedSummary(current, incoming SessionSummary) SessionSummary {
 }
 
 func mergeMigratedHarnessSession(current, incoming HarnessSession) HarnessSession {
-	if incoming.ObservedEpoch > current.ObservedEpoch ||
-		(incoming.ObservedEpoch == current.ObservedEpoch && incoming.UpdatedAt.After(current.UpdatedAt)) {
+	incomingWins := incoming.ObservedEpoch > current.ObservedEpoch ||
+		(incoming.ObservedEpoch == current.ObservedEpoch && !incoming.UpdatedAt.Before(current.UpdatedAt))
+	if incomingWins {
 		current.HarnessSessionID, current.BackendKey = incoming.HarnessSessionID, incoming.BackendKey
 		current.ObservedEpoch = incoming.ObservedEpoch
+		current.TaskID, current.AgentUID = incoming.TaskID, incoming.AgentUID
 	}
 	if incoming.Turns > current.Turns {
 		current.Turns = incoming.Turns
@@ -606,7 +608,7 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	return nil
 }
 
-func (m *MemoryStore) NextHarnessTurn(_ context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error) {
+func (m *MemoryStore) NextHarnessTurn(_ context.Context, scope Scope, sessionID string, now time.Time, identity HarnessIdentity) (HarnessSession, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.withAgent(); err != nil {
 		return HarnessSession{}, err
@@ -618,7 +620,13 @@ func (m *MemoryStore) NextHarnessTurn(_ context.Context, scope Scope, sessionID 
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	key := sessionKey(scope, sessionID)
-	row := m.harness[key]
+	row, exists := m.harness[key]
+	if !exists {
+		row = HarnessSession{SessionID: sessionID, TaskID: identity.TaskID, AgentUID: identity.AgentUID, UpdatedAt: now.UTC()}
+	}
+	if err := selectHarnessIdentity(&row, identity, now); err != nil {
+		return HarnessSession{}, err
+	}
 	row.SessionID = sessionID
 	row.Turns++
 	row.UpdatedAt = now.UTC()
@@ -651,7 +659,19 @@ func (m *MemoryStore) PutHarnessSession(_ context.Context, scope Scope, s Harnes
 	scope = m.normalizeScopeLocked(scope)
 	key := sessionKey(scope, s.SessionID)
 	row := m.harness[key]
+	if row.TaskID != "" && row.TaskID != s.TaskID {
+		return fmt.Errorf("harness session receipt belongs to a different task identity")
+	}
+	if row.AgentUID != "" && row.AgentUID != s.AgentUID {
+		return fmt.Errorf("harness session receipt belongs to a different Agent incarnation")
+	}
 	row.SessionID = s.SessionID
+	if row.TaskID == "" {
+		row.TaskID = s.TaskID
+	}
+	if row.AgentUID == "" {
+		row.AgentUID = s.AgentUID
+	}
 	// A slower earlier turn must not replace the session reported by a newer
 	// observed receipt. Allocation is independent: a completed earlier turn may
 	// report its native session after a later turn has already claimed an epoch.

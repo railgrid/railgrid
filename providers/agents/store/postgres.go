@@ -264,6 +264,8 @@ var agentsSchema = []string{
 		workspace_uuid TEXT NOT NULL,
 		agent_name TEXT NOT NULL,
 		session_id TEXT NOT NULL,
+		task_id TEXT NOT NULL DEFAULT '',
+		agent_uid TEXT NOT NULL DEFAULT '',
 		harness_session_id TEXT NOT NULL DEFAULT '',
 		backend_key TEXT NOT NULL DEFAULT '',
 		turns BIGINT NOT NULL DEFAULT 0,
@@ -271,6 +273,8 @@ var agentsSchema = []string{
 		updated_at TIMESTAMPTZ NOT NULL,
 		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
 	)`,
+	`ALTER TABLE agents_harness_sessions ADD COLUMN IF NOT EXISTS task_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_harness_sessions ADD COLUMN IF NOT EXISTS agent_uid TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_harness_sessions ADD COLUMN IF NOT EXISTS backend_key TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_harness_sessions ADD COLUMN IF NOT EXISTS observed_epoch BIGINT NOT NULL DEFAULT 0`,
 	// Existing native sessions have no recorded receipt epoch. Backfill them
@@ -605,33 +609,62 @@ func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sess
 
 // NextHarnessTurn claims the next turn number for a session.
 //
-// It is an UPSERT that increments, in one statement, because the number it
-// returns is the attempt epoch: two replicas answering the same channel message
-// must not be handed the same one, and the runner's stale_attempt refusal is only
-// a backstop for the case where they were.
-func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error) {
+// A row lock makes identity selection, stale-incarnation reset and epoch
+// allocation one transaction: two replicas cannot both receive one attempt
+// epoch, and the runner's stale_attempt refusal remains a backstop.
+func (p *PostgresStore) NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time, identity HarnessIdentity) (HarnessSession, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return HarnessSession{}, err
 	}
 	defer mutation.rollback()
 	scope = mutation.scope
+	// Canonical scopes need a transaction too: row locking keeps identity
+	// selection, stale-incarnation reset and epoch allocation atomic.
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return HarnessSession{}, fmt.Errorf("begin harness turn mutation: %w", err)
+		}
+		mutation.tx, mutation.executor = tx, tx
+	}
 	if err := scope.withAgent(); err != nil {
 		return HarnessSession{}, err
 	}
 	if strings.TrimSpace(sessionID) == "" {
 		return HarnessSession{}, fmt.Errorf("session ID is required")
 	}
-	out := HarnessSession{SessionID: sessionID}
-	row := mutation.executor.QueryRowContext(ctx, `
+	now = now.UTC()
+	if _, err := mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_harness_sessions
-			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at)
-		VALUES ($1,$2,$3,$4,'','',1,0,$5)
-		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
-			turns=agents_harness_sessions.turns+1, updated_at=EXCLUDED.updated_at
-		RETURNING harness_session_id, backend_key, turns, observed_epoch, updated_at`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, now.UTC())
-	if err := row.Scan(&out.HarnessSessionID, &out.BackendKey, &out.Turns, &out.ObservedEpoch, &out.UpdatedAt); err != nil {
+			(org_uuid, workspace_uuid, agent_name, session_id, task_id, agent_uid, harness_session_id, backend_key, turns, observed_epoch, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'','',0,0,$7)
+		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO NOTHING`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, identity.TaskID, identity.AgentUID, now); err != nil {
+		return HarnessSession{}, err
+	}
+	out := HarnessSession{SessionID: sessionID}
+	err = mutation.executor.QueryRowContext(ctx, `
+		SELECT task_id, agent_uid, harness_session_id, backend_key, turns, observed_epoch, updated_at
+		FROM agents_harness_sessions
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+		FOR UPDATE`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID).
+		Scan(&out.TaskID, &out.AgentUID, &out.HarnessSessionID, &out.BackendKey, &out.Turns, &out.ObservedEpoch, &out.UpdatedAt)
+	if err != nil {
+		return HarnessSession{}, err
+	}
+	if err := selectHarnessIdentity(&out, identity, now); err != nil {
+		return HarnessSession{}, err
+	}
+	out.SessionID = sessionID
+	out.Turns++
+	out.UpdatedAt = now
+	if _, err := mutation.executor.ExecContext(ctx, `
+		UPDATE agents_harness_sessions SET task_id=$5, agent_uid=$6, harness_session_id=$7,
+			backend_key=$8, turns=$9, observed_epoch=$10, updated_at=$11
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, out.TaskID, out.AgentUID,
+		out.HarnessSessionID, out.BackendKey, out.Turns, out.ObservedEpoch, out.UpdatedAt); err != nil {
 		return HarnessSession{}, err
 	}
 	out.UpdatedAt = out.UpdatedAt.UTC()
@@ -671,11 +704,13 @@ func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s Ha
 		s.BackendKey = ""
 		s.ObservedEpoch = 0
 	}
-	_, err = mutation.executor.ExecContext(ctx, `
+	res, err := mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_harness_sessions
-			(org_uuid, workspace_uuid, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			(org_uuid, workspace_uuid, agent_name, session_id, task_id, agent_uid, harness_session_id, backend_key, turns, observed_epoch, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
+			task_id=CASE WHEN agents_harness_sessions.task_id='' THEN EXCLUDED.task_id ELSE agents_harness_sessions.task_id END,
+			agent_uid=CASE WHEN agents_harness_sessions.agent_uid='' THEN EXCLUDED.agent_uid ELSE agents_harness_sessions.agent_uid END,
 			harness_session_id=CASE WHEN EXCLUDED.harness_session_id <> ''
 					AND EXCLUDED.observed_epoch >= agents_harness_sessions.observed_epoch THEN EXCLUDED.harness_session_id
 				ELSE agents_harness_sessions.harness_session_id END,
@@ -686,11 +721,18 @@ func (p *PostgresStore) PutHarnessSession(ctx context.Context, scope Scope, s Ha
 					AND EXCLUDED.observed_epoch >= agents_harness_sessions.observed_epoch THEN EXCLUDED.observed_epoch
 				ELSE agents_harness_sessions.observed_epoch END,
 			turns=GREATEST(agents_harness_sessions.turns, EXCLUDED.turns),
-			updated_at=EXCLUDED.updated_at`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID,
+			updated_at=EXCLUDED.updated_at
+		WHERE (agents_harness_sessions.task_id='' OR agents_harness_sessions.task_id=EXCLUDED.task_id)
+			AND (agents_harness_sessions.agent_uid='' OR agents_harness_sessions.agent_uid=EXCLUDED.agent_uid)`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID, s.TaskID, s.AgentUID,
 		s.HarnessSessionID, s.BackendKey, s.Turns, s.ObservedEpoch, s.UpdatedAt.UTC())
 	if err != nil {
 		return err
+	}
+	if affected, err := res.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return fmt.Errorf("harness session receipt belongs to a different task identity")
 	}
 	return mutation.commit()
 }
@@ -702,11 +744,11 @@ func (p *PostgresStore) GetHarnessSession(ctx context.Context, scope Scope, sess
 	}
 	out := HarnessSession{SessionID: sessionID}
 	row := p.db.QueryRowContext(ctx, `
-		SELECT harness_session_id, backend_key, turns, observed_epoch, updated_at
+		SELECT task_id, agent_uid, harness_session_id, backend_key, turns, observed_epoch, updated_at
 		FROM agents_harness_sessions
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
-	err := row.Scan(&out.HarnessSessionID, &out.BackendKey, &out.Turns, &out.ObservedEpoch, &out.UpdatedAt)
+	err := row.Scan(&out.TaskID, &out.AgentUID, &out.HarnessSessionID, &out.BackendKey, &out.Turns, &out.ObservedEpoch, &out.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return HarnessSession{}, false, nil
 	}
@@ -1496,10 +1538,18 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 	// backwards when two previously split rows are merged.
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO agents_harness_sessions (org_uuid, workspace_uuid, agent_name, session_id,
-			harness_session_id, backend_key, turns, observed_epoch, updated_at)
-		SELECT $3, $4, agent_name, session_id, harness_session_id, backend_key, turns, observed_epoch, updated_at
+			task_id, agent_uid, harness_session_id, backend_key, turns, observed_epoch, updated_at)
+		SELECT $3, $4, agent_name, session_id, task_id, agent_uid, harness_session_id, backend_key, turns, observed_epoch, updated_at
 		FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2
 		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
+			task_id=CASE WHEN EXCLUDED.observed_epoch > agents_harness_sessions.observed_epoch OR
+				(EXCLUDED.observed_epoch = agents_harness_sessions.observed_epoch AND
+				 EXCLUDED.updated_at >= agents_harness_sessions.updated_at)
+				THEN EXCLUDED.task_id ELSE agents_harness_sessions.task_id END,
+			agent_uid=CASE WHEN EXCLUDED.observed_epoch > agents_harness_sessions.observed_epoch OR
+				(EXCLUDED.observed_epoch = agents_harness_sessions.observed_epoch AND
+				 EXCLUDED.updated_at >= agents_harness_sessions.updated_at)
+				THEN EXCLUDED.agent_uid ELSE agents_harness_sessions.agent_uid END,
 			harness_session_id=CASE WHEN EXCLUDED.observed_epoch > agents_harness_sessions.observed_epoch OR
 				(EXCLUDED.observed_epoch = agents_harness_sessions.observed_epoch AND
 				 EXCLUDED.updated_at >= agents_harness_sessions.updated_at)

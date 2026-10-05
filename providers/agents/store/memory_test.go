@@ -18,22 +18,27 @@ func testScope() Scope {
 	return Scope{OrgUUID: "org1", WorkspaceUUID: "ws1", AgentName: "helper"}
 }
 
+func legacyTaskIdentity(taskID string) HarnessIdentity {
+	return HarnessIdentity{TaskID: taskID, LegacyTaskID: taskID}
+}
+
 func TestMemoryStore_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryStore()
 	sc := testScope()
 	now := time.Now().UTC()
 
-	first, err := s.NextHarnessTurn(ctx, sc, "chat", now)
+	identity := legacyTaskIdentity("agent-helper-chat")
+	first, err := s.NextHarnessTurn(ctx, sc, "chat", now, identity)
 	if err != nil {
 		t.Fatalf("claim first turn: %v", err)
 	}
-	second, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(time.Second))
+	second, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(time.Second), identity)
 	if err != nil {
 		t.Fatalf("claim second turn: %v", err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		SessionID: "chat", TaskID: first.TaskID, Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
 		HarnessSessionID: "first-thread", UpdatedAt: now.Add(2 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist first completed turn after second allocation: %v", err)
@@ -45,13 +50,13 @@ func TestMemoryStore_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 			got, ok, err, second.Turns, first.Turns)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, BackendKey: "backend-b",
+		SessionID: "chat", TaskID: second.TaskID, Turns: second.Turns, ObservedEpoch: second.Turns, BackendKey: "backend-b",
 		HarnessSessionID: "newer-thread", UpdatedAt: now.Add(3 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist second turn: %v", err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
+		SessionID: "chat", TaskID: first.TaskID, Turns: first.Turns, ObservedEpoch: first.Turns, BackendKey: "backend-a",
 		HarnessSessionID: "older-thread", UpdatedAt: now.Add(4 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist late first receipt: %v", err)
@@ -59,7 +64,7 @@ func TestMemoryStore_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 	// An empty receipt is not allowed to clear the session, even when it comes
 	// from the latest turn.
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "chat", Turns: second.Turns, ObservedEpoch: second.Turns, UpdatedAt: now.Add(5 * time.Second),
+		SessionID: "chat", TaskID: second.TaskID, Turns: second.Turns, ObservedEpoch: second.Turns, UpdatedAt: now.Add(5 * time.Second),
 	}); err != nil {
 		t.Fatalf("persist empty receipt: %v", err)
 	}
@@ -70,7 +75,7 @@ func TestMemoryStore_HarnessSessionGatesReceiptsByObservedEpoch(t *testing.T) {
 		t.Fatalf("session after late writes = %+v, ok=%v, err=%v; want allocated epoch %d, observed epoch %d and newer-thread/backend-b",
 			got, ok, err, second.Turns, second.Turns)
 	}
-	third, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second))
+	third, err := s.NextHarnessTurn(ctx, sc, "chat", now.Add(5*time.Second), identity)
 	if err != nil || third.Turns != 3 || third.HarnessSessionID != "newer-thread" {
 		t.Fatalf("next turn = %+v, err=%v; want epoch 3 resuming newer-thread", third, err)
 	}
@@ -81,12 +86,13 @@ func TestMemoryStore_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
 	s := NewMemoryStore()
 	sc := testScope()
 	now := time.Now().UTC()
-	first, err := s.NextHarnessTurn(ctx, sc, "reused", now)
+	identity := HarnessIdentity{TaskID: "agent-helper-uid-reused", LegacyTaskID: "agent-helper-reused", AgentUID: "uid-reused"}
+	first, err := s.NextHarnessTurn(ctx, sc, "reused", now, identity)
 	if err != nil {
 		t.Fatalf("allocate first turn: %v", err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "reused", HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		SessionID: "reused", TaskID: first.TaskID, AgentUID: identity.AgentUID, HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
 		Turns: first.Turns, ObservedEpoch: first.Turns, UpdatedAt: now.Add(time.Second),
 	}); err != nil {
 		t.Fatalf("save first receipt: %v", err)
@@ -95,15 +101,15 @@ func TestMemoryStore_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
 		t.Fatalf("delete session: %v", err)
 	}
 	tombstone, ok, err := s.GetHarnessSession(ctx, sc, "reused")
-	if err != nil || !ok || tombstone.Turns != 1 || tombstone.ObservedEpoch != 2 || tombstone.HarnessSessionID != "" || tombstone.BackendKey != "" {
+	if err != nil || !ok || tombstone.Turns != 1 || tombstone.ObservedEpoch != 2 || tombstone.TaskID != first.TaskID || tombstone.HarnessSessionID != "" || tombstone.BackendKey != "" {
 		t.Fatalf("post-delete tombstone = %+v, ok=%v, err=%v", tombstone, ok, err)
 	}
-	next, err := s.NextHarnessTurn(ctx, sc, "reused", now.Add(2*time.Second))
-	if err != nil || next.Turns != 2 || next.HarnessSessionID != "" {
+	next, err := s.NextHarnessTurn(ctx, sc, "reused", now.Add(2*time.Second), identity)
+	if err != nil || next.Turns != 2 || next.TaskID != first.TaskID || next.HarnessSessionID != "" {
 		t.Fatalf("reused session turn = %+v, err=%v; want fresh native session at epoch 2", next, err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "reused", HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
+		SessionID: "reused", TaskID: first.TaskID, AgentUID: identity.AgentUID, HarnessSessionID: "runner-thread-old", BackendKey: "edge-a",
 		Turns: 1, ObservedEpoch: 1, UpdatedAt: now.Add(3 * time.Second),
 	}); err != nil {
 		t.Fatalf("save late old receipt: %v", err)
@@ -113,7 +119,7 @@ func TestMemoryStore_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
 		t.Fatalf("late receipt crossed delete fence: %+v, err=%v", late, err)
 	}
 	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
-		SessionID: "reused", HarnessSessionID: "runner-thread-new", BackendKey: "edge-a",
+		SessionID: "reused", TaskID: next.TaskID, AgentUID: identity.AgentUID, HarnessSessionID: "runner-thread-new", BackendKey: "edge-a",
 		Turns: 2, ObservedEpoch: 2, UpdatedAt: now.Add(4 * time.Second),
 	}); err != nil {
 		t.Fatalf("save new receipt: %v", err)
@@ -121,6 +127,86 @@ func TestMemoryStore_DeleteSessionRetainsHarnessEpochFence(t *testing.T) {
 	current, _, err := s.GetHarnessSession(ctx, sc, "reused")
 	if err != nil || current.HarnessSessionID != "runner-thread-new" || current.ObservedEpoch != 2 {
 		t.Fatalf("new receipt did not replace tombstone: %+v, err=%v", current, err)
+	}
+}
+
+func TestMemoryStore_NextHarnessTurnSelectsAndKeepsTaskIdentity(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	sc := testScope()
+	now := time.Now().UTC()
+
+	identity := HarnessIdentity{TaskID: "new-uid-task", LegacyTaskID: "new-legacy-task", AgentUID: "new-agent-uid", CreatedAt: now.Add(-3 * time.Second).Truncate(time.Second)}
+	created, err := s.NextHarnessTurn(ctx, sc, "new", now, identity)
+	if err != nil || created.TaskID != "new-uid-task" {
+		t.Fatalf("new session identity = %+v, err=%v; want UID task", created, err)
+	}
+	next, err := s.NextHarnessTurn(ctx, sc, "new", now.Add(time.Second), identity)
+	if err != nil || next.TaskID != "new-uid-task" {
+		t.Fatalf("existing session identity changed = %+v, err=%v", next, err)
+	}
+
+	// A session row created by the old provider has no marker. Its first
+	// post-upgrade claim selects and persists the legacy task identity.
+	legacyID := legacyTaskIdentity("legacy-task")
+	if _, err := s.NextHarnessTurn(ctx, sc, "legacy", now, legacyID); err != nil {
+		t.Fatal(err)
+	}
+	newIdentity := HarnessIdentity{TaskID: "wrong-new-uid", LegacyTaskID: "legacy-task", AgentUID: "new-agent-uid", CreatedAt: now.Add(-3 * time.Second).Truncate(time.Second)}
+	legacy, err := s.NextHarnessTurn(ctx, sc, "legacy", now.Add(time.Second), newIdentity)
+	if err != nil || legacy.TaskID != "legacy-task" {
+		t.Fatalf("unmarked existing session identity = %+v, err=%v; want legacy marker", legacy, err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{SessionID: "legacy", TaskID: "wrong-task", AgentUID: "new-agent-uid", Turns: legacy.Turns, UpdatedAt: now.Add(2 * time.Second)}); err == nil {
+		t.Fatal("receipt with mismatched identity was accepted")
+	}
+	stored, ok, err := s.GetHarnessSession(ctx, sc, "legacy")
+	if err != nil || !ok || stored.TaskID != "legacy-task" {
+		t.Fatalf("receipt overwrote task identity = %+v, ok=%v, err=%v", stored, ok, err)
+	}
+
+	if err := s.DeleteAgentData(ctx, sc, sc.AgentName); err != nil {
+		t.Fatal(err)
+	}
+	recreatedIdentity := HarnessIdentity{TaskID: "recreated-uid-task", LegacyTaskID: "new-legacy-task", AgentUID: "recreated-agent-uid", CreatedAt: now.Add(3 * time.Second).Truncate(time.Second)}
+	recreated, err := s.NextHarnessTurn(ctx, sc, "new", now.Add(4*time.Second), recreatedIdentity)
+	if err != nil || recreated.TaskID != "recreated-uid-task" {
+		t.Fatalf("recreated Agent session identity = %+v, err=%v", recreated, err)
+	}
+}
+
+func TestMemoryStore_RecreatedAgentResetsSessionAndFencesLateReceipt(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	sc := testScope()
+	base := time.Now().UTC().Truncate(time.Second)
+	oldIdentity := HarnessIdentity{TaskID: "task-old", LegacyTaskID: "legacy-task", AgentUID: "uid-old", CreatedAt: base.Add(-10 * time.Second)}
+	old, err := s.NextHarnessTurn(ctx, sc, "chat", base, oldIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", TaskID: oldIdentity.TaskID, AgentUID: oldIdentity.AgentUID,
+		HarnessSessionID: "old-native", BackendKey: "edge", Turns: 8, ObservedEpoch: 8,
+		UpdatedAt: base.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newIdentity := HarnessIdentity{TaskID: "task-new", LegacyTaskID: "legacy-task", AgentUID: "uid-new", CreatedAt: base.Add(2 * time.Second)}
+	newTurn, err := s.NextHarnessTurn(ctx, sc, "chat", base.Add(3*time.Second), newIdentity)
+	if err != nil || newTurn.TaskID != newIdentity.TaskID || newTurn.AgentUID != newIdentity.AgentUID || newTurn.Turns != 1 || newTurn.HarnessSessionID != "" {
+		t.Fatalf("recreated Agent did not get a fresh task: %+v, err=%v", newTurn, err)
+	}
+	if err := s.PutHarnessSession(ctx, sc, HarnessSession{
+		SessionID: "chat", TaskID: oldIdentity.TaskID, AgentUID: oldIdentity.AgentUID,
+		HarnessSessionID: "late-old-native", BackendKey: "edge", Turns: old.Turns,
+		ObservedEpoch: 20, UpdatedAt: base.Add(4 * time.Second),
+	}); err == nil {
+		t.Fatal("late receipt from the deleted Agent incarnation was accepted")
+	}
+	current, ok, err := s.GetHarnessSession(ctx, sc, "chat")
+	if err != nil || !ok || current.TaskID != newIdentity.TaskID || current.AgentUID != newIdentity.AgentUID || current.HarnessSessionID != "" {
+		t.Fatalf("late receipt changed recreated Agent state: %+v, ok=%v, err=%v", current, ok, err)
 	}
 }
 

@@ -299,6 +299,13 @@ func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
 // edge or harness identity never resumes a native session on the wrong runner.
 type HarnessSession struct {
 	SessionID string `json:"sessionID"`
+	// TaskID is the durable runner task/workspace identity selected for this
+	// session. Older rows are marked with the legacy name/session identity on
+	// their next turn; new sessions use the Agent incarnation UID.
+	TaskID string `json:"taskID,omitempty"`
+	// AgentUID records which Agent incarnation owns this task identity. It is
+	// separate from TaskID because upgraded sessions keep their legacy TaskID.
+	AgentUID string `json:"agentUID,omitempty"`
 	// HarnessSessionID is empty until the first turn's receipt reported one.
 	HarnessSessionID string `json:"harnessSessionID,omitempty"`
 	// BackendKey identifies the cluster, edge and advertised harness that
@@ -311,6 +318,101 @@ type HarnessSession struct {
 	// HarnessSessionID. A later allocation does not advance it.
 	ObservedEpoch int64     `json:"observedEpoch,omitempty"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+// HarnessIdentity supplies the current and pre-UID runner identities to
+// NextHarnessTurn. The store chooses between them atomically with the turn
+// allocation, using CreatedAt to fence rows left behind by a deleted Agent.
+type HarnessIdentity struct {
+	TaskID       string
+	LegacyTaskID string
+	AgentUID     string
+	CreatedAt    time.Time
+}
+
+// selectHarnessIdentity binds a session row to the current Agent incarnation.
+// Legacy task IDs are adopted only when the row's last update proves that it
+// belongs to this Agent lifetime. A stale row is reset onto the UID identity;
+// ambiguous timestamps fail closed.
+func selectHarnessIdentity(row *HarnessSession, identity HarnessIdentity, now time.Time) error {
+	if strings.TrimSpace(identity.TaskID) == "" {
+		return fmt.Errorf("harness task identity is required")
+	}
+	if strings.TrimSpace(identity.LegacyTaskID) == "" {
+		identity.LegacyTaskID = identity.TaskID
+	}
+
+	reset := func() {
+		row.TaskID = identity.TaskID
+		row.AgentUID = identity.AgentUID
+		row.HarnessSessionID = ""
+		row.BackendKey = ""
+		row.Turns = 0
+		row.ObservedEpoch = 0
+		row.UpdatedAt = now.UTC()
+	}
+
+	if identity.AgentUID == "" {
+		if row.AgentUID != "" {
+			return fmt.Errorf("harness session belongs to Agent UID %q, current Agent UID is missing", row.AgentUID)
+		}
+		if row.TaskID == "" {
+			row.TaskID = identity.LegacyTaskID
+		}
+		if row.TaskID != identity.TaskID && row.TaskID != identity.LegacyTaskID {
+			return fmt.Errorf("harness session task identity %q does not match the current Agent", row.TaskID)
+		}
+		return nil
+	}
+
+	if row.AgentUID == identity.AgentUID {
+		if row.TaskID != identity.TaskID && row.TaskID != identity.LegacyTaskID {
+			return fmt.Errorf("harness session task identity %q does not match Agent UID %q", row.TaskID, identity.AgentUID)
+		}
+		return nil
+	}
+	if row.AgentUID != "" {
+		reset()
+		return nil
+	}
+
+	// An unmarked row can only be adopted as the pre-UID identity. A different
+	// nonempty task ID cannot be attributed to this Agent, so start a clean UID
+	// task and native session.
+	if row.TaskID != "" && row.TaskID != identity.LegacyTaskID {
+		reset()
+		return nil
+	}
+	stale, err := CheckLegacyHarnessSessionLifetime(identity.CreatedAt, row.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if stale {
+		reset()
+		return nil
+	}
+	row.TaskID = identity.LegacyTaskID
+	row.AgentUID = identity.AgentUID
+	return nil
+}
+
+// CheckLegacyHarnessSessionLifetime reports whether a legacy harness row is
+// definitely older than the current Agent, or returns an error when timestamps
+// cannot establish ownership. Kubernetes CreationTimestamp is only precise to
+// a second, so rows updated in that second are ambiguous.
+func CheckLegacyHarnessSessionLifetime(createdAt, updatedAt time.Time) (stale bool, err error) {
+	createdAt = createdAt.UTC().Truncate(time.Second)
+	updatedAt = updatedAt.UTC()
+	if createdAt.IsZero() || updatedAt.IsZero() {
+		return false, fmt.Errorf("legacy harness session has no verifiable Agent lifetime")
+	}
+	if updatedAt.Before(createdAt) {
+		return true, nil
+	}
+	if updatedAt.Before(createdAt.Add(time.Second)) {
+		return false, fmt.Errorf("legacy harness session ownership is ambiguous at Agent CreationTimestamp precision")
+	}
+	return false, nil
 }
 
 // Memory is a long-term note the agent writes and later recalls. Body is
@@ -482,9 +584,10 @@ type Store interface {
 	// session and returns the row as it then stands, so two replicas answering
 	// the same message cannot dispatch the same epoch; PutHarnessSession records
 	// the native session and backend identity reported by a receipt, gated by the
-	// highest observed epoch rather than the highest allocated epoch.
+	// highest observed epoch rather than the highest allocated epoch. Identity
+	// selection, stale-incarnation reset and epoch allocation happen atomically.
 	// GetHarnessSession reports ok=false for a session no harness turn has run in.
-	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time) (HarnessSession, error)
+	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time, identity HarnessIdentity) (HarnessSession, error)
 	PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error
 	GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error)
 

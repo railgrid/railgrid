@@ -418,6 +418,34 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	}
 }
 
+func TestParkedStateCarriesAgentIncarnation(t *testing.T) {
+	f := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "Continue?"},
+		},
+		events: []runner.Event{event(1, runner.EventNeedsInput, "Continue?", "")},
+	}
+	cfg := testConfig(f, 1, "")
+	cfg.AgentUID = "agent-uid-1"
+	out, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "do the task"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if out.Parked == nil {
+		t.Fatalf("outcome = %+v, want a parked turn", out)
+	}
+	var state State
+	if err := json.Unmarshal(out.Parked.State, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.AgentUID != "agent-uid-1" {
+		t.Fatalf("parked AgentUID = %q, want agent-uid-1", state.AgentUID)
+	}
+}
+
 // The rule the task states plainly: until the terminal receipt is observed the
 // attempt is Cancelling, not Cancelled, and Cancel must not claim otherwise.
 func TestCancelDoesNotReportCancelledUntilObserved(t *testing.T) {

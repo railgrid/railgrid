@@ -57,24 +57,27 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 		t.Fatalf("put mapped summary: %v", err)
 	}
 
+	legacyTask := legacyTaskIdentity("legacy-task")
 	for i := 0; i < 4; i++ {
-		if _, err := s.NextHarnessTurn(ctx, fallback, "continuity", now.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, err := s.NextHarnessTurn(ctx, fallback, "continuity", now.Add(time.Duration(i)*time.Second), legacyTask); err != nil {
 			t.Fatalf("allocate legacy harness turn %d: %v", i, err)
 		}
 	}
 	if err := s.PutHarnessSession(ctx, fallback, HarnessSession{
-		SessionID: "continuity", HarnessSessionID: "runner-thread-legacy", BackendKey: "edge-a", Turns: 4,
+		SessionID: "continuity", TaskID: "legacy-task", AgentUID: "legacy-agent-uid",
+		HarnessSessionID: "runner-thread-legacy", BackendKey: "edge-a", Turns: 4,
 		ObservedEpoch: 3, UpdatedAt: now.Add(4 * time.Second),
 	}); err != nil {
 		t.Fatalf("save legacy harness receipt: %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := s.NextHarnessTurn(ctx, mapped, "continuity", now.Add(time.Duration(i+5)*time.Second)); err != nil {
+		if _, err := s.NextHarnessTurn(ctx, mapped, "continuity", now.Add(time.Duration(i+5)*time.Second), legacyTaskIdentity("mapped-task")); err != nil {
 			t.Fatalf("allocate mapped harness turn %d: %v", i, err)
 		}
 	}
 	if err := s.PutHarnessSession(ctx, mapped, HarnessSession{
-		SessionID: "continuity", HarnessSessionID: "runner-thread-mapped", BackendKey: "edge-b", Turns: 2,
+		SessionID: "continuity", TaskID: "mapped-task", AgentUID: "mapped-agent-uid",
+		HarnessSessionID: "runner-thread-mapped", BackendKey: "edge-b", Turns: 2,
 		ObservedEpoch: 2, UpdatedAt: now.Add(8 * time.Second),
 	}); err != nil {
 		t.Fatalf("save mapped harness receipt: %v", err)
@@ -156,8 +159,8 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 	if err != nil || !ok || summary.Summary != "mapped summary" || summary.MessageCount != 5 || summary.Checkpoint == nil || summary.Checkpoint.ThroughSequence != 2 {
 		t.Fatalf("merged summary = %+v, ok=%v, err=%v; want newest checkpoint plus max count", summary, ok, err)
 	}
-	next, err := s.NextHarnessTurn(ctx, mapped, "continuity", now.Add(11*time.Second))
-	if err != nil || next.Turns != 5 || next.ObservedEpoch != 3 || next.HarnessSessionID != "runner-thread-legacy" || next.BackendKey != "edge-a" {
+	next, err := s.NextHarnessTurn(ctx, mapped, "continuity", now.Add(11*time.Second), HarnessIdentity{TaskID: "new-uid-task", LegacyTaskID: "legacy-task", AgentUID: "legacy-agent-uid"})
+	if err != nil || next.Turns != 5 || next.ObservedEpoch != 3 || next.TaskID != "legacy-task" || next.AgentUID != "legacy-agent-uid" || next.HarnessSessionID != "runner-thread-legacy" || next.BackendKey != "edge-a" {
 		t.Fatalf("merged harness state = %+v, err=%v; want epoch 5 continuing the highest observed receipt", next, err)
 	}
 	if runs, err := s.ListRuns(ctx, mapped, 20); err != nil || len(runs) != 2 {
@@ -326,8 +329,12 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 		{fallback, 4, now.Add(4 * time.Second)},
 		{canonical, 2, now.Add(6 * time.Second)},
 	} {
+		identity := legacyTaskIdentity("legacy-task")
+		if entry.scope.OrgUUID != UnmappedOrg {
+			identity = legacyTaskIdentity("mapped-task")
+		}
 		for i := 0; i < entry.turns; i++ {
-			if _, err := ps.NextHarnessTurn(ctx, entry.scope, "continuity", entry.at.Add(time.Duration(i)*time.Second)); err != nil {
+			if _, err := ps.NextHarnessTurn(ctx, entry.scope, "continuity", entry.at.Add(time.Duration(i)*time.Second), identity); err != nil {
 				t.Fatalf("allocate harness turn: %v", err)
 			}
 		}
@@ -336,8 +343,13 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 		if entry.scope.OrgUUID != UnmappedOrg {
 			epoch, native, backend = 2, "runner-thread-mapped", "edge-b"
 		}
+		taskID, agentUID := "legacy-task", "legacy-agent-uid"
+		if entry.scope.OrgUUID != UnmappedOrg {
+			taskID, agentUID = "mapped-task", "mapped-agent-uid"
+		}
 		if err := ps.PutHarnessSession(ctx, entry.scope, HarnessSession{
-			SessionID: "continuity", HarnessSessionID: native, BackendKey: backend, Turns: int64(entry.turns),
+			SessionID: "continuity", TaskID: taskID, AgentUID: agentUID,
+			HarnessSessionID: native, BackendKey: backend, Turns: int64(entry.turns),
 			ObservedEpoch: epoch, UpdatedAt: entry.at.Add(time.Duration(entry.turns) * time.Second),
 		}); err != nil {
 			t.Fatalf("put harness session: %v", err)
@@ -411,8 +423,8 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	if err != nil || !ok || summary.MessageCount != 5 || summary.Checkpoint == nil || summary.Checkpoint.ThroughSequence != 2 {
 		t.Fatalf("merged summary = %+v, ok=%v, err=%v", summary, ok, err)
 	}
-	next, err := ps.NextHarnessTurn(ctx, canonical, "continuity", now.Add(11*time.Second))
-	if err != nil || next.Turns != 5 || next.ObservedEpoch != 3 || next.HarnessSessionID != "runner-thread-legacy" || next.BackendKey != "edge-a" {
+	next, err := ps.NextHarnessTurn(ctx, canonical, "continuity", now.Add(11*time.Second), HarnessIdentity{TaskID: "new-uid-task", LegacyTaskID: "legacy-task", AgentUID: "legacy-agent-uid"})
+	if err != nil || next.Turns != 5 || next.ObservedEpoch != 3 || next.TaskID != "legacy-task" || next.AgentUID != "legacy-agent-uid" || next.HarnessSessionID != "runner-thread-legacy" || next.BackendKey != "edge-a" {
 		t.Fatalf("merged harness = %+v, err=%v", next, err)
 	}
 	if runs, err := ps.ListRuns(ctx, canonical, 20); err != nil || len(runs) != 2 {
@@ -509,7 +521,7 @@ func TestPostgresMappedFallbackScopeFailsClosedWhenMappingLookupFails(t *testing
 	}); err == nil {
 		t.Fatal("AppendMessage succeeded despite an unknown tenant mapping")
 	}
-	if _, err := ps.NextHarnessTurn(ctx, fallback, "continuity", time.Now().UTC()); err == nil {
+	if _, err := ps.NextHarnessTurn(ctx, fallback, "continuity", time.Now().UTC(), legacyTaskIdentity("legacy-task")); err == nil {
 		t.Fatal("NextHarnessTurn allocated an epoch despite an unknown tenant mapping")
 	}
 	var messages, sessions int
@@ -664,10 +676,11 @@ func TestPostgresFallbackMutationsFenceTenantMapping(t *testing.T) {
 	if err := ps.AppendMessage(ctx, destructiveFallback, Message{ID: "delete-me-" + uuid.NewString(), AgentName: "coder", SessionID: "delete-session", Role: "user", Content: "old", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("append fallback session: %v", err)
 	}
-	if _, err := ps.NextHarnessTurn(ctx, destructiveFallback, "delete-session", time.Now().UTC()); err != nil {
+	destructiveIdentity := legacyTaskIdentity("delete-session-task")
+	if _, err := ps.NextHarnessTurn(ctx, destructiveFallback, "delete-session", time.Now().UTC(), destructiveIdentity); err != nil {
 		t.Fatalf("allocate fallback harness epoch: %v", err)
 	}
-	if err := ps.PutHarnessSession(ctx, destructiveFallback, HarnessSession{SessionID: "delete-session", HarnessSessionID: "native-session", BackendKey: "edge", Turns: 1, ObservedEpoch: 1, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := ps.PutHarnessSession(ctx, destructiveFallback, HarnessSession{SessionID: "delete-session", TaskID: destructiveIdentity.TaskID, HarnessSessionID: "native-session", BackendKey: "edge", Turns: 1, ObservedEpoch: 1, UpdatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("save fallback harness session: %v", err)
 	}
 	mapTx, blockerPID = lockTenantMapping(t, ps, destructiveClusterID)

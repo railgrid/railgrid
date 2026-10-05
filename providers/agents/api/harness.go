@@ -409,22 +409,28 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	// is the protection that makes two replicas answering one message safe, and
 	// only works if the number is not derived from something either replica could
 	// read as equal.
-	session, err := s.harnessSessionFor(ctx, run.Scope, sessionID, backendKey, cont)
+	session, err := s.harnessSessionFor(ctx, agent, run.Scope, sessionID, backendKey, cont)
 	if err != nil {
 		return harnessTurn{}, fmt.Errorf("claiming this turn's number for session %s: %w", sessionID, err)
 	}
+	agentUID, err := harnessAgentUIDForTask(agent, sessionID, session.TaskID)
+	if err != nil {
+		return harnessTurn{}, err
+	}
+	taskID := session.TaskID
 
 	b := backendharness.New(backendharness.Config{
 		Runner: dispatcher,
 		// session → task, run → attempt, turn number → epoch.
-		TaskID:    harnessTaskID(agent.Name, sessionID),
+		TaskID:    taskID,
+		AgentUID:  agentUID,
 		AttemptID: runID,
 		Epoch:     uint64(session.Turns),
 		// What an EARLIER turn's receipt reported, which is what makes
 		// consecutive turns one conversation.
 		SessionID:       session.HarnessSessionID,
 		BackendKey:      backendKey,
-		WorkspaceID:     harnessWorkspaceID(agent, sessionID, runID),
+		WorkspaceID:     harnessWorkspaceIDForTask(agent, runID, taskID),
 		RequiredHarness: advertised,
 		Model:           strings.TrimSpace(cfg.Model),
 		Credential:      identity,
@@ -441,10 +447,22 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 // A continuation addresses the attempt already running on the edge. Allocating
 // another epoch would make its second approval obsolete and could let an older
 // receipt overwrite a newer turn's saved session.
-func (s *Server) harnessSessionFor(ctx context.Context, scope store.Scope, sessionID, backendKey string, cont *continuation) (store.HarnessSession, error) {
+func (s *Server) harnessSessionFor(ctx context.Context, agent *agentsv1alpha1.Agent, scope store.Scope, sessionID, backendKey string, cont *continuation) (store.HarnessSession, error) {
 	if cont == nil {
-		session, err := s.store.NextHarnessTurn(ctx, scope, sessionID, time.Now().UTC())
+		initialTaskID, _, err := harnessTaskIdentity(agent, sessionID, nil)
 		if err != nil {
+			return store.HarnessSession{}, err
+		}
+		legacyTaskID := harnessTaskID(agent.Name, sessionID)
+		identity := store.HarnessIdentity{
+			TaskID: initialTaskID, LegacyTaskID: legacyTaskID,
+			AgentUID: string(agent.UID), CreatedAt: agent.CreationTimestamp.Time,
+		}
+		session, err := s.store.NextHarnessTurn(ctx, scope, sessionID, time.Now().UTC(), identity)
+		if err != nil {
+			return store.HarnessSession{}, err
+		}
+		if _, err := harnessAgentUIDForTask(agent, sessionID, session.TaskID); err != nil {
 			return store.HarnessSession{}, err
 		}
 		// Legacy rows and sessions observed on a different runner remain in the
@@ -468,10 +486,45 @@ func (s *Server) harnessSessionFor(ctx context.Context, scope store.Scope, sessi
 	if state.Epoch == 0 || state.Epoch > math.MaxInt64 {
 		return store.HarnessSession{}, errors.New("the harness checkpoint carries an invalid attempt epoch")
 	}
-	return store.HarnessSession{
-		SessionID: sessionID, HarnessSessionID: state.SessionID, BackendKey: backendKey,
+	taskID, _, err := harnessTaskIdentity(agent, sessionID, cont)
+	if err != nil {
+		return store.HarnessSession{}, err
+	}
+	stored, found, err := s.store.GetHarnessSession(ctx, scope, sessionID)
+	if err != nil {
+		return store.HarnessSession{}, err
+	}
+	if state.AgentUID == "" && !found {
+		return store.HarnessSession{}, errors.New("the legacy harness checkpoint has no durable session identity")
+	}
+	if found && stored.TaskID != "" && stored.TaskID != taskID {
+		return store.HarnessSession{}, errors.New("the harness checkpoint does not match this session's durable task identity")
+	}
+	currentUID := string(agent.UID)
+	if found && stored.AgentUID != "" && stored.AgentUID != currentUID {
+		return store.HarnessSession{}, errors.New("the harness checkpoint belongs to a different Agent incarnation")
+	}
+	if found && stored.AgentUID == "" && currentUID != "" {
+		stale, lifetimeErr := store.CheckLegacyHarnessSessionLifetime(agent.CreationTimestamp.Time, stored.UpdatedAt)
+		if lifetimeErr != nil {
+			return store.HarnessSession{}, fmt.Errorf("the legacy harness checkpoint has no verifiable Agent lifetime: %w", lifetimeErr)
+		}
+		if stale {
+			return store.HarnessSession{}, errors.New("the legacy harness checkpoint predates this Agent incarnation")
+		}
+	}
+	session := store.HarnessSession{
+		SessionID: sessionID, TaskID: taskID, AgentUID: currentUID, HarnessSessionID: state.SessionID, BackendKey: backendKey,
 		Turns: int64(state.Epoch), ObservedEpoch: int64(state.Epoch), UpdatedAt: time.Now().UTC(),
-	}, nil
+	}
+	// A parked checkpoint can predate the durable task marker. Record the
+	// verified identity before resuming so a later turn keeps the same workspace.
+	if !found || stored.TaskID == "" || stored.AgentUID == "" {
+		if err := s.store.PutHarnessSession(ctx, scope, session); err != nil {
+			return store.HarnessSession{}, err
+		}
+	}
+	return session, nil
 }
 
 // harnessBackendKey binds a native session to the runner that reported it.
@@ -499,16 +552,82 @@ func harnessTaskID(agent, sessionID string) string {
 	return protocolIdentifier("agent-" + agent + "-" + sessionID)
 }
 
+// harnessTaskIdentity selects the runner task ID and the incarnation encoded
+// in its checkpoint. Fresh tasks include the Agent UID, so deleting and
+// recreating an Agent with the same name/session cannot inherit its runner
+// epoch. Parked checkpoints keep their original task ID across upgrades: old
+// checkpoints are accepted only when they match the exact pre-UID name/session
+// format, while UID-bearing checkpoints must match the current Agent object.
+func harnessTaskIdentity(agent *agentsv1alpha1.Agent, sessionID string, cont *continuation) (taskID, agentUID string, err error) {
+	if agent == nil {
+		return "", "", errors.New("a harness turn needs an Agent")
+	}
+	currentUID := string(agent.UID)
+	if cont == nil {
+		return harnessTaskIDFor(agent.Name, currentUID, sessionID), currentUID, nil
+	}
+	raw, err := cont.Checkpoint.backendState()
+	if err != nil {
+		return "", "", fmt.Errorf("reading the harness task identity: %w", err)
+	}
+	var state backendharness.State
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return "", "", fmt.Errorf("reading the harness task identity: %w", err)
+	}
+	if state.TaskID == "" {
+		return "", "", errors.New("the harness checkpoint carries no task identity")
+	}
+	if state.AgentUID != "" {
+		if currentUID == "" || state.AgentUID != currentUID {
+			return "", "", errors.New("the harness checkpoint belongs to a different Agent incarnation")
+		}
+		uidTaskID := harnessTaskIDFor(agent.Name, state.AgentUID, sessionID)
+		legacyTaskID := harnessTaskID(agent.Name, sessionID)
+		if state.TaskID != uidTaskID && state.TaskID != legacyTaskID {
+			return "", "", errors.New("the harness checkpoint task identity does not match its Agent incarnation")
+		}
+		return state.TaskID, state.AgentUID, nil
+	}
+	legacyTaskID := harnessTaskID(agent.Name, sessionID)
+	if state.TaskID != legacyTaskID {
+		return "", "", errors.New("the legacy harness checkpoint task identity does not match this Agent session")
+	}
+	return state.TaskID, "", nil
+}
+
+func harnessAgentUIDForTask(agent *agentsv1alpha1.Agent, sessionID, taskID string) (string, error) {
+	if agent == nil {
+		return "", errors.New("a harness turn needs an Agent")
+	}
+	uid := string(agent.UID)
+	if taskID == harnessTaskID(agent.Name, sessionID) || (uid != "" && taskID == harnessTaskIDFor(agent.Name, uid, sessionID)) {
+		return uid, nil
+	}
+	return "", errors.New("the harness session task identity does not match this Agent incarnation")
+}
+
+func harnessTaskIDFor(agentName, agentUID, sessionID string) string {
+	if agentUID == "" {
+		return harnessTaskID(agentName, sessionID)
+	}
+	raw := "agent-" + agentName + "-" + agentUID + "-" + sessionID
+	return protocolIdentifierWithDigest(raw)
+}
+
 // harnessWorkspaceID names the runner directory this agent's turns run in.
 //
 // A "persistent" workspace is per agent and session, which is what makes a
 // conversation about a checkout coherent across turns; an "ephemeral" one is per
 // run, so nothing carries over.
 func harnessWorkspaceID(agent *agentsv1alpha1.Agent, sessionID, runID string) string {
+	return harnessWorkspaceIDForTask(agent, runID, harnessTaskIDFor(agent.Name, string(agent.UID), sessionID))
+}
+
+func harnessWorkspaceIDForTask(agent *agentsv1alpha1.Agent, runID, taskID string) string {
 	if cfg := agent.Spec.Harness(); cfg != nil && cfg.Workspace == agentsv1alpha1.HarnessWorkspaceEphemeral {
 		return protocolIdentifier("run-" + runID)
 	}
-	return protocolIdentifier("agent-" + agent.Name + "-" + sessionID)
+	return taskID
 }
 
 // protocolIdentifierMax is the runner's identifier length bound (its pattern
@@ -544,6 +663,19 @@ func protocolIdentifier(raw string) string {
 		out = out[:protocolIdentifierMax-9] + "-" + shortDigest(raw)
 	}
 	return out
+}
+
+// protocolIdentifierWithDigest keeps new UID-scoped identities distinct even
+// when two raw session IDs sanitize to the same runner-safe spelling (for
+// example, "a/b" and "a-b").
+func protocolIdentifierWithDigest(raw string) string {
+	base := protocolIdentifier(raw)
+	sum := sha256.Sum256([]byte(raw))
+	suffix := "-" + hex.EncodeToString(sum[:8])
+	if len(base)+len(suffix) > protocolIdentifierMax {
+		base = base[:protocolIdentifierMax-len(suffix)]
+	}
+	return base + suffix
 }
 
 // shortDigest is 8 hex characters of sha256, enough to keep two long names that

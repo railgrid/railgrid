@@ -124,14 +124,21 @@ func TestFailedResumedHarnessTurnKeepsPriorUsageAndBillsOnlyDelta(t *testing.T) 
 			}); err != nil {
 				t.Fatal(err)
 			}
+			backendKey := harnessBackendKey(run.ClusterID,
+				run.Agent.Spec.Harness().EdgeRef.Kind, run.Agent.Spec.Harness().EdgeRef.Name,
+				llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex))
+			if err := s.store.PutHarnessSession(context.Background(), run.Scope, store.HarnessSession{
+				SessionID: run.SessionID, TaskID: harnessTaskID(run.Agent.Name, run.SessionID),
+				HarnessSessionID: "thread", BackendKey: backendKey, Turns: 1, ObservedEpoch: 1, UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
 			rawState, err := json.Marshal(backendharness.State{
 				TaskID: harnessTaskID(run.Agent.Name, run.SessionID), AttemptID: run.RunID,
 				Epoch: 1, SessionID: "thread",
-				BackendKey: harnessBackendKey(run.ClusterID,
-					run.Agent.Spec.Harness().EdgeRef.Kind, run.Agent.Spec.Harness().EdgeRef.Name,
-					llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)),
-				Spent:    prior,
-				Snapshot: json.RawMessage(`{"version":1,"turnStarted":true}`),
+				BackendKey: backendKey,
+				Spent:      prior,
+				Snapshot:   json.RawMessage(`{"version":1,"turnStarted":true}`),
 			})
 			if err != nil {
 				t.Fatal(err)

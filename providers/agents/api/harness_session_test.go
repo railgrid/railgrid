@@ -29,21 +29,27 @@ import (
 	"github.com/railgrid/provider-agents/store"
 )
 
+func legacyHarnessIdentityFor(scope store.Scope, sessionID string) store.HarnessIdentity {
+	taskID := harnessTaskID(scope.AgentName, sessionID)
+	return store.HarnessIdentity{TaskID: taskID, LegacyTaskID: taskID}
+}
+
 func TestHarnessApprovalsKeepTheAttemptEpoch(t *testing.T) {
 	ctx := context.Background()
 	s := &Server{store: store.NewMemoryStore()}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
-	first, err := s.harnessSessionFor(ctx, scope, "chat", "backend-a", nil)
+	agent := harnessIdentityAgent("agent-uid-approvals")
+	first, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-a", nil)
 	if err != nil || first.Turns != 1 {
 		t.Fatalf("first turn = %+v, err = %v", first, err)
 	}
-	raw, err := json.Marshal(backendharness.State{AttemptID: "attempt", Epoch: 1, SessionID: "thread"})
+	raw, err := json.Marshal(backendharness.State{TaskID: first.TaskID, AgentUID: string(agent.UID), AttemptID: "attempt", Epoch: 1, SessionID: "thread"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cont := &continuation{Checkpoint: runCheckpoint{Backend: agentsv1alpha1.AgentBackendHarness, Harness: raw}}
 	for range 2 {
-		resumed, err := s.harnessSessionFor(ctx, scope, "chat", "backend-a", cont)
+		resumed, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-a", cont)
 		if err != nil || resumed.Turns != 1 || resumed.HarnessSessionID != "thread" {
 			t.Fatalf("approval resume = %+v, err = %v; want the original attempt", resumed, err)
 		}
@@ -51,7 +57,7 @@ func TestHarnessApprovalsKeepTheAttemptEpoch(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	next, err := s.harnessSessionFor(ctx, scope, "chat", "backend-a", nil)
+	next, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-a", nil)
 	if err != nil || next.Turns != 2 || next.HarnessSessionID != "thread" {
 		t.Fatalf("next fresh turn = %+v, err = %v; approvals must not allocate epochs", next, err)
 	}
@@ -62,7 +68,8 @@ func TestHarnessSessionChainsAcrossTurnsAndCancellation(t *testing.T) {
 	st := store.NewMemoryStore()
 	s := &Server{store: st}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
-	first, err := st.NextHarnessTurn(ctx, scope, "chat", time.Now())
+	identity := legacyHarnessIdentityFor(scope, "chat")
+	first, err := st.NextHarnessTurn(ctx, scope, "chat", time.Now(), identity)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +77,7 @@ func TestHarnessSessionChainsAcrossTurnsAndCancellation(t *testing.T) {
 	if err := s.persistHarnessSession(ctx, scope, first, backendharness.Observed{SessionID: "codex-thread"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	second, err := st.NextHarnessTurn(ctx, scope, "chat", time.Now())
+	second, err := st.NextHarnessTurn(ctx, scope, "chat", time.Now(), identity)
 	if err != nil || second.Turns != 2 || second.HarnessSessionID != "codex-thread" {
 		t.Fatalf("next turn = %+v, err = %v; want epoch 2 resuming codex-thread", second, err)
 	}
@@ -87,13 +94,13 @@ func TestHarnessSessionChainsAcrossTurnsAndCancellation(t *testing.T) {
 	if err := s.persistHarnessSession(ctx, scope, second, backendharness.Observed{}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	third, err := st.NextHarnessTurn(ctx, scope, "chat", time.Now())
+	third, err := st.NextHarnessTurn(ctx, scope, "chat", time.Now(), identity)
 	if err != nil || third.Turns != 3 || third.HarnessSessionID != "recovered-thread" {
 		t.Fatalf("next turn = %+v, err = %v; want epoch 3 resuming recovered-thread", third, err)
 	}
 	other := scope
 	other.WorkspaceUUID = "other-workspace"
-	isolated, err := st.NextHarnessTurn(ctx, other, "chat", time.Now())
+	isolated, err := st.NextHarnessTurn(ctx, other, "chat", time.Now(), identity)
 	if err != nil || isolated.HarnessSessionID != "" || isolated.Turns != 1 {
 		t.Fatalf("other workspace inherited a session: %+v, %v", isolated, err)
 	}
@@ -104,7 +111,8 @@ func TestHarnessSessionDoesNotReuseNativeSessionAcrossBackends(t *testing.T) {
 	st := store.NewMemoryStore()
 	s := &Server{store: st}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
-	first, err := s.harnessSessionFor(ctx, scope, "chat", "backend-a", nil)
+	agent := harnessIdentityAgent("agent-uid-backend-switch")
+	first, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-a", nil)
 	if err != nil || first.Turns != 1 || first.HarnessSessionID != "" {
 		t.Fatalf("first backend turn = %+v, err = %v", first, err)
 	}
@@ -112,7 +120,7 @@ func TestHarnessSessionDoesNotReuseNativeSessionAcrossBackends(t *testing.T) {
 		t.Fatalf("persist first backend receipt: %v", err)
 	}
 
-	changed, err := s.harnessSessionFor(ctx, scope, "chat", "backend-b", nil)
+	changed, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-b", nil)
 	if err != nil || changed.Turns != 2 || changed.HarnessSessionID != "" || changed.BackendKey != "backend-b" {
 		t.Fatalf("changed backend turn = %+v, err = %v; must start without edge-a-thread", changed, err)
 	}
@@ -123,7 +131,7 @@ func TestHarnessSessionDoesNotReuseNativeSessionAcrossBackends(t *testing.T) {
 
 	// Returning to the original backend can still use its last observed native
 	// session if the changed-backend dispatch never produced a receipt.
-	returned, err := s.harnessSessionFor(ctx, scope, "chat", "backend-a", nil)
+	returned, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-a", nil)
 	if err != nil || returned.Turns != 3 || returned.HarnessSessionID != "edge-a-thread" {
 		t.Fatalf("return to prior backend = %+v, err = %v", returned, err)
 	}
@@ -134,9 +142,10 @@ func TestHarnessSessionTreatsLegacyBackendKeyAsUnknown(t *testing.T) {
 	st := store.NewMemoryStore()
 	s := &Server{store: legacyHarnessSessionStore{Store: st}}
 	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "coder"}
+	agent := harnessIdentityAgent("agent-uid-legacy-backend")
 	// Simulate a pre-BackendKey row. Its native ID cannot safely be attributed to
 	// the current edge and harness.
-	got, err := s.harnessSessionFor(ctx, scope, "chat", "backend-a", nil)
+	got, err := s.harnessSessionFor(ctx, agent, scope, "chat", "backend-a", nil)
 	if err != nil || got.Turns != 5 || got.HarnessSessionID != "" {
 		t.Fatalf("legacy session dispatch = %+v, err = %v; must allocate the next turn but clear the unknown native ID", got, err)
 	}
@@ -168,8 +177,8 @@ type legacyHarnessSessionStore struct {
 	store.Store
 }
 
-func (s legacyHarnessSessionStore) NextHarnessTurn(ctx context.Context, scope store.Scope, sessionID string, now time.Time) (store.HarnessSession, error) {
-	row, err := s.Store.NextHarnessTurn(ctx, scope, sessionID, now)
+func (s legacyHarnessSessionStore) NextHarnessTurn(ctx context.Context, scope store.Scope, sessionID string, now time.Time, identity store.HarnessIdentity) (store.HarnessSession, error) {
+	row, err := s.Store.NextHarnessTurn(ctx, scope, sessionID, now, identity)
 	if err != nil {
 		return store.HarnessSession{}, err
 	}
