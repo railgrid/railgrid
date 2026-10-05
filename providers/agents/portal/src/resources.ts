@@ -120,6 +120,9 @@ const MACOSSERVERS: KubeResourceRef = { group: EDGES_GROUP, version: VERSION, re
 // workspace.
 const LABEL_AGENT = 'agents.railgrid.ai/agent'
 const LABEL_CREDENTIAL_PROBE = 'agents.railgrid.ai/credential-probe'
+const ANNOTATION_CREDENTIAL_PROBE_ID = 'agents.railgrid.ai/credential-probe-id'
+const ANNOTATION_CREDENTIAL_PROBE_EXPIRY = 'agents.railgrid.ai/credential-probe-expires-at'
+const CREDENTIAL_PROBE_TTL_MS = 10 * 60 * 1000
 // DEFAULT_MCPSERVER is the conventional endpoint every workspace gets.
 const DEFAULT_MCPSERVER = 'default'
 
@@ -1059,7 +1062,12 @@ export class Resources {
       const name = `model-check-${probeID}`
       const secretName = credentialSecretName(name)
       const labels = { ...OWNER_LABELS, [LABEL_CREDENTIAL_PROBE]: 'true' }
-      const annotations = { 'agents.railgrid.ai/credential-probe-id': probeID }
+      // The controller caps this deadline at server creation time + ten minutes
+      // and owns cleanup when this browser closes or loses workspace authority.
+      const annotations = {
+        [ANNOTATION_CREDENTIAL_PROBE_ID]: probeID,
+        [ANNOTATION_CREDENTIAL_PROBE_EXPIRY]: new Date(Date.now() + CREDENTIAL_PROBE_TTL_MS).toISOString(),
+      }
       let secretAttempted = false
       let objectAttempted = false
       let ownerUID: string | undefined
@@ -1069,11 +1077,17 @@ export class Resources {
           const object = await client.get(ref, objectName, { namespace })
           // An ambiguous POST response can still have committed. Inspect the
           // unique marker and use a UID precondition; never delete a replacement.
-          if (object.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' || object.metadata.annotations?.['agents.railgrid.ai/credential-probe-id'] !== probeID || !object.metadata.uid) throw new Error('Probe ownership could not be confirmed')
+          if (object.metadata.labels?.['railgrid.ai/owner'] !== 'agents' || object.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' || object.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_ID] !== probeID || !object.metadata.uid) throw new Error('Probe ownership could not be confirmed')
           const expectedUID = ref === SECRETS ? secretUID : ownerUID
           if (expectedUID && object.metadata.uid !== expectedUID) throw new Error('The test resource was replaced')
           if (ref === SECRETS && !object.metadata.ownerReferences?.some(owner => owner.apiVersion === API_VERSION && owner.kind === 'ModelCredential' && owner.name === name && owner.uid === ownerUID)) throw new Error('The test Secret owner could not be confirmed')
-          await client.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid } })
+          await client.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid, resourceVersion: object.metadata.resourceVersion } })
+          if (ref === SECRETS) {
+            // A successful DELETE can leave an object terminating behind a
+            // finalizer. Preserve the owning credential until the key is gone.
+            await client.get(ref, objectName, { namespace })
+            throw new Error('The test Secret is still terminating')
+          }
         } catch (error) { if (!isKubeNotFound(error)) throw error }
       }
       try {
@@ -1093,6 +1107,21 @@ export class Resources {
           type: 'Opaque', stringData: { [DEFAULT_CREDENTIAL_KEY]: apiKey },
         } as KubeObject, { namespace: SECRET_NAMESPACE })
         secretUID = secret.metadata.uid
+        // Creating two objects is not atomic. A delayed Secret write may finish
+        // after the controller expires its owner; never call a model on behalf
+        // of an expired or replaced candidate. Its owner reference also allows
+        // kcp garbage collection if this browser closes before cleanup.
+        const active = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+        const created = Date.parse(active.metadata.creationTimestamp || '')
+        const requestedExpiry = Date.parse(active.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_EXPIRY] || '')
+        const deadline = Math.min(created + CREDENTIAL_PROBE_TTL_MS, Number.isFinite(requestedExpiry) ? requestedExpiry : Infinity)
+        if (active.metadata.deletionTimestamp || active.metadata.uid !== ownerUID || active.metadata.labels?.['railgrid.ai/owner'] !== 'agents' || active.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' || active.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_ID] !== probeID || !Number.isFinite(deadline) || deadline <= Date.now()) {
+          throw validationError('This verification session expired or changed. Test the connection again.')
+        }
+        const activeSpec = active.spec
+        if (!activeSpec || activeSpec.provider !== provider || activeSpec.baseURL !== baseURL || activeSpec.secretRef?.name !== secretName || activeSpec.secretKey !== DEFAULT_CREDENTIAL_KEY) {
+          throw validationError('This verification candidate changed. Test the connection again.')
+        }
         return await probe(name)
       } finally {
         const leftovers: string[] = []
@@ -1100,11 +1129,14 @@ export class Resources {
           try { await cleanup(SECRETS, secretName, SECRET_NAMESPACE) }
           catch { leftovers.push(`Secret ${secretName}`) }
         }
-        if (objectAttempted) {
+        // Keep the controller's retry anchor if the Secret could not be removed.
+        if (objectAttempted && leftovers.length === 0) {
           try { await cleanup(MODELCREDENTIALS, name) }
           catch { leftovers.push(`model credential ${name}`) }
         }
-        if (leftovers.length) throw new ResourceError(0, 'ProbeCleanupFailed', `Verification could not finish cleaning up ${leftovers.join(' and ')}. Ask a workspace administrator to remove it before retrying.`)
+        if (leftovers.length) throw new ResourceError(0, 'ProbeCleanupFailed',
+          'Temporary verification credentials could not be removed. Automatic cleanup will retry when the workspace is available. If this persists, ask a workspace administrator.',
+          `Cleanup could not remove ${leftovers.join(' and ')}.`)
       }
     })
 

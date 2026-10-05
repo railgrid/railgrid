@@ -2886,13 +2886,23 @@ e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
 	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"
 
 .PHONY: test-model-connections test-model-connections-api lint-model-connections fix-lint-model-connections
-.PHONY: test-agents-portal test-agents-usage
+.PHONY: test-agents-portal test-agents-usage test-agents-credential-cleanup
 
 test-agents-portal: ## Run Agents UI regression tests (optional TEST_ARGS)
 	cd providers/agents/portal && npm test -- $(TEST_ARGS)
 
 test-agents-usage: ## Verify Agents usage coverage and percentile reporting
 	cd providers/agents && go test -count=1 ./api -run 'TestUsage|TestPercentiles'
+
+test-agents-credential-cleanup: ## Verify tenant-scoped model probe expiry and cleanup
+	cd providers/agents && go test -race -count=1 ./controller/modelcredential
+
+.PHONY: fix-lint-agents-credentials lint-agents-credentials
+fix-lint-agents-credentials: $(GOLANGCI_LINT) ## Format the Agents model credential controller
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt controller/modelcredential
+
+lint-agents-credentials: $(GOLANGCI_LINT) ## Lint the Agents model credential controller
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./controller/modelcredential/...
 
 # The providers remain standalone; run each contract in its owning module.
 test-model-connections: ## Verify the shared Models UX and provider adapters

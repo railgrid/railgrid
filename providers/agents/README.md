@@ -87,6 +87,15 @@ than leaving the first agent run to discover it does not work. Agents reference 
 `spec.modelFallbacks`, and their own `ModelCredentialsReady` condition names
 any that are missing or not ready.
 
+New endpoints and replacement keys are verified through temporary, explicitly
+marked ModelCredential/Secret pairs before the named connection is saved. The
+portal removes the pair after verification; if it closes or loses workspace
+authority, the tenant-scoped controller removes the pair at its persisted expiry,
+capped at ten minutes after server creation. It checks the Secret's probe marker
+and exact owner UID, uses conditional deletes, and retains the credential to retry
+failed Secret cleanup. These temporary objects do not receive background model
+readiness probes. See [probe lifecycle](../../docs/agents-provider-architecture.md#temporary-model-verification-credentials).
+
 ```bash
 kubectl create secret generic railgrid-agents-model-openai \
   --from-literal=apiKey=sk-… -n default

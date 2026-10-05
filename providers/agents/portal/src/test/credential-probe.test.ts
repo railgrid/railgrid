@@ -13,7 +13,7 @@ function fixture(intercept?: (call: Call, persisted: Map<string, any>) => Respon
     calls.push(call)
     // Commit first, so rejected responses exercise ambiguous server outcomes.
     if (call.method === 'POST' && call.body.kind) {
-      persisted.set(call.url + '/' + call.body.metadata.name, { ...call.body, metadata: { ...call.body.metadata, uid: 'uid-' + call.body.metadata.name } })
+      persisted.set(call.url + '/' + call.body.metadata.name, { ...call.body, metadata: { ...call.body.metadata, uid: 'uid-' + call.body.metadata.name, resourceVersion: '1', creationTimestamp: new Date().toISOString() } })
     }
     const response = intercept?.(call, persisted)
     if (response) return response
@@ -30,6 +30,7 @@ function fixture(intercept?: (call: Call, persisted: Map<string, any>) => Respon
 describe('exact-candidate model probes', () => {
   it.each([true, false])('keeps keys only in owned Secrets and cleans up exact objects (discovery=%s)', async discover => {
     const { api, calls, persisted } = fixture()
+    const started = Date.now()
     expect(await api.probeCredentialDraft(candidate, discover)).toMatchObject({ ok: true })
     const secret = calls.find(call => call.method === 'POST' && call.url.endsWith('/secrets'))!
     const object = calls.find(call => call.method === 'POST' && call.url.endsWith('/modelcredentials'))!
@@ -38,12 +39,16 @@ describe('exact-candidate model probes', () => {
     expect(object.body.spec).toMatchObject({ provider: 'openai', baseURL: candidate.baseURL, secretRef: { name: secret.body.metadata.name } })
     expect(object.body.metadata.name).toMatch(/^model-check-/)
     expect(secret.body.metadata.ownerReferences[0]).toMatchObject({ kind: 'ModelCredential', name: object.body.metadata.name, uid: 'uid-' + object.body.metadata.name })
+    const expiry = Date.parse(object.body.metadata.annotations['agents.railgrid.ai/credential-probe-expires-at'])
+    expect(expiry).toBeGreaterThanOrEqual(started + 10 * 60 * 1000)
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000)
+    expect(secret.body.metadata.annotations).toEqual(object.body.metadata.annotations)
     expect(verb.body).toEqual(discover ? {} : { model: 'candidate-model' })
     expect(JSON.stringify(calls.filter(call => call !== secret))).not.toContain(candidate.apiKey)
     expect(calls.some(call => call.url.includes('/live-model'))).toBe(false)
     const deletes = calls.filter(call => call.method === 'DELETE')
     expect(deletes).toHaveLength(2)
-    expect(deletes.every(call => Boolean(call.body.preconditions.uid))).toBe(true)
+    expect(deletes.every(call => Boolean(call.body.preconditions.uid) && call.body.preconditions.resourceVersion === '1')).toBe(true)
     expect(persisted.size).toBe(0)
   })
 
@@ -70,6 +75,35 @@ describe('exact-candidate model probes', () => {
     })
     await expect(api.probeCredentialDraft(candidate, false)).rejects.toMatchObject({ status: 403 })
     expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/secrets'))).toBe(false)
+    expect(persisted.size).toBe(0)
+  })
+
+  it.each([409, 202])('keeps the credential while its Secret remains after DELETE status %s', async status => {
+    const { api, calls, persisted } = fixture(call => call.method === 'DELETE' && call.url.includes('/secrets/')
+      ? new Response(JSON.stringify({ reason: status === 409 ? 'Conflict' : 'Success', code: status }), { status }) : undefined)
+    await expect(api.probeCredentialDraft(candidate, false)).rejects.toMatchObject({
+      reason: 'ProbeCleanupFailed',
+      message: expect.stringContaining('Automatic cleanup will retry'),
+      technicalDiagnostic: expect.stringContaining('Secret railgrid-agents-model-model-check-'),
+    })
+    expect(calls.some(call => call.method === 'DELETE' && call.url.includes('/modelcredentials/'))).toBe(false)
+    expect(persisted.size).toBe(2)
+  })
+
+  it.each(['expired', 'removed', 'terminating', 'endpoint changed'])('does not call the model when the candidate is %s during Secret creation', async change => {
+    const { api, calls, persisted } = fixture((call, objects) => {
+      if (call.method !== 'POST' || !call.url.endsWith('/secrets')) return
+      for (const [path, object] of objects.entries()) {
+        if (object.kind !== 'ModelCredential') continue
+        if (change === 'removed') objects.delete(path)
+        else if (change === 'expired') object.metadata.creationTimestamp = new Date(Date.now() - 11 * 60 * 1000).toISOString()
+        else if (change === 'terminating') object.metadata.deletionTimestamp = new Date().toISOString()
+        else object.spec.baseURL = 'https://different.example/v1'
+      }
+      return undefined
+    })
+    await expect(api.probeCredentialDraft(candidate, false)).rejects.toThrow()
+    expect(calls.some(call => call.url.endsWith('/test'))).toBe(false)
     expect(persisted.size).toBe(0)
   })
 
