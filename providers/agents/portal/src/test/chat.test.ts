@@ -107,6 +107,76 @@ async function chooseSession(el: HTMLElement, label: string): Promise<void> {
 }
 
 describe('chat streaming', () => {
+  it('recovers a running turn when the chat stream ends without a terminal frame', async () => {
+    const getRun = vi.fn().mockResolvedValue({
+      id: 'r-disconnected', agent: 'scout', sessionID: 's-disconnected', phase: 'Running',
+      trigger: 'chat', class: 'interactive', createdAt: '', inputTokens: 0, outputTokens: 0, usdMicros: 0,
+    })
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r-disconnected', sessionID: 's-disconnected' } },
+      { event: 'delta', data: { text: 'Partial reply' } },
+    ]), { getRun })
+
+    await send(el, 'hello')
+    await settle(6)
+
+    expect(getRun).toHaveBeenCalledWith('r-disconnected')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('Stop it')
+    expect(text(el.querySelector('.agents-log'))).toContain('Partial reply')
+  })
+
+  it('reloads the saved reply when a disconnected turn already completed', async () => {
+    const listMessages = vi.fn().mockResolvedValue([{ id: 'saved-final', runID: 'r1', role: 'assistant', content: 'Complete saved reply' }])
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'delta', data: { text: 'Partial reply' } },
+    ]), { getRun: vi.fn().mockResolvedValue({ id: 'r1', phase: 'Succeeded' }), listMessages })
+
+    await send(el, 'hello')
+    await settle(6)
+
+    expect(listMessages).toHaveBeenCalledWith('scout', 's1')
+    expect(text(el.querySelector('.agents-log'))).toContain('Complete saved reply')
+    expect(text(el.querySelector('.agents-log'))).not.toContain('Partial reply')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+  })
+
+  it('preserves partial output and offers recovery when disconnected run status cannot be read', async () => {
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'delta', data: { text: 'Partial reply' } },
+    ]), { getRun: vi.fn().mockRejectedValue(new Error('network unavailable')) })
+
+    await send(el, 'hello')
+    await settle(6)
+
+    expect(text(el)).toContain('Could not recover the disconnected run.')
+    expect(text(el)).toContain('network unavailable')
+    expect(text(el.querySelector('.agents-log'))).toContain('Partial reply')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+  })
+
+  it('keeps Stop available when a live Running event supersedes stream recovery', async () => {
+    const recovery = deferred<unknown>()
+    const cancelRun = vi.fn().mockResolvedValue({})
+    const { el, store } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'delta', data: { text: 'Partial reply' } },
+    ]), { getRun: vi.fn(() => recovery.promise), cancelRun })
+    await send(el, 'hello')
+
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r1', phase: 'Running' } } }))
+    recovery.resolve({ id: 'r1', phase: 'Failed' })
+    await settle(6)
+
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
+    const stop = [...el.querySelectorAll<HTMLButtonElement>('.agents-orphan-banner button')].find(button => text(button) === 'Stop it')!
+    stop.click()
+    await settle(4)
+    expect(cancelRun).toHaveBeenCalledWith('r1')
+  })
+
   it('uses the App Studio composer geometry and accessible compact action', async () => {
     const chatStream = vi.fn(scripted([]))
     const { el } = await mountChat(chatStream)
@@ -1489,7 +1559,7 @@ describe('approval handoff after the chat stream closes', () => {
     const getRun = vi.fn().mockResolvedValue(pending('recovered'))
     const { el, store } = await mountChat(chatStream, { getRun })
     await send(el, 'describe models')
-    expect(text(el)).toContain('Chat failed: connection closed')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
 
     event(store, 'PendingApproval')
     await settle(6)
@@ -1608,6 +1678,7 @@ describe('approval handoff after the chat stream closes', () => {
     await send(el, 'first run')
     await send(el, 'second run')
 
+    getRun.mockClear() // Ignore the status reads started by stream recovery.
     event(store, 'PendingApproval', 'r-1')
     event(store, 'PendingApproval', 'r-2')
     expect(getRun).toHaveBeenCalledTimes(2)
@@ -1653,6 +1724,7 @@ describe('approval handoff after the chat stream closes', () => {
     const { el, store } = await mountChat(chatStream, { getRun })
     await send(el, 'describe models')
 
+    getRun.mockClear() // Ignore the status read started by stream recovery.
     event(store, 'PendingApproval')
     event(store, 'Running')
     lookup.resolve(pending('stale'))

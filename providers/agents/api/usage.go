@@ -221,12 +221,12 @@ func percentiles(xs []int64) (p50, p95 int64) {
 	}
 	sorted := append([]int64(nil), xs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	at := func(q float64) int64 {
-		idx := int(q * float64(len(sorted)))
-		if idx >= len(sorted) {
-			idx = len(sorted) - 1
-		}
-		return sorted[idx]
+	at := func(percent int) int64 {
+		// Nearest-rank uses rank=ceil(percent*n/100), then converts the
+		// one-based rank to a zero-based index. Floor(percent*n) would choose
+		// the upper middle value for p50 whenever n is even.
+		rank := (percent*len(sorted) + 99) / 100
+		return sorted[rank-1]
 	}
-	return at(0.50), at(0.95)
+	return at(50), at(95)
 }

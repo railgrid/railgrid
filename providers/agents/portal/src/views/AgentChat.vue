@@ -271,7 +271,7 @@ function resetApprovalRecovery(): void {
 // Approval resumes run outside the original chat SSE response. Lifecycle
 // events and session hydration therefore recover the current disclosure from
 // the durable run checkpoint, fenced against navigation and newer events.
-async function refreshRunApproval(runID: string): Promise<void> {
+async function refreshRunApproval(runID: string, recoverStream = false): Promise<void> {
   if (approvalRecoveryClosedRunIDs.has(runID)) return
   const contextSerial = approvalReadSerial
   const serial = nextApprovalReadGeneration(runID)
@@ -299,6 +299,13 @@ async function refreshRunApproval(runID: string): Promise<void> {
       return
     }
     const target = messages.value.find(message => message.role === 'assistant' && message.runID === runID)
+    if (recoverStream && LIVE_RUN_PHASES.has(detail.phase || '') && !streaming.value) {
+      orphanRun.value = detail
+      orphanError.value = null
+      orphanHasSnapshot.value = true
+      applyRunProgress(detail)
+      if (target?.error?.startsWith('Chat failed:')) patchMessage(target.id, { error: undefined })
+    }
     // The checkpoint can precede its KCP phase projection. Its pending ID is
     // the current approval identity even if that projection still says Running.
     if (!detail.pending) return
@@ -315,7 +322,7 @@ async function refreshRunApproval(runID: string): Promise<void> {
     }
   } catch (error) {
     if (requestIsCurrent() && authorityIsCurrent(authority) && contextIsCurrent(name, authority.api) && sessionID.value === session) {
-      orphanError.value = `Could not load approval details. ${(error as Error).message}`
+      orphanError.value = `${recoverStream ? 'Could not recover the disconnected run.' : 'Could not load approval details.'} ${(error as Error).message}`
     }
   }
 }
@@ -949,6 +956,12 @@ async function send(): Promise<void> {
     patchMessage(assistantID, { streaming: false })
     void loadSessions(name, api)
     flushTerminalTranscriptRefresh()
+    if (liveRunID && !stopRequested.value && !messages.value.find(message => message.id === assistantID)?.approval) {
+      // A clean EOF can still truncate the response. The server owns the run's
+      // state; recover its progress and controls just as reopening a chat does.
+      patchProgress(assistantID, { status: 'interrupted' })
+      void refreshRunApproval(liveRunID, true)
+    }
   }
 }
 
@@ -1136,6 +1149,14 @@ function onServerEvent(event: Event): void {
     if (status === 'waiting') void refreshRunApproval(detail.data.id)
     else if (status === 'running') {
       invalidateApprovalRead(detail.data.id)
+      if (watchedLive && !streaming.value && !stopRequested.value) {
+        // This newer event supersedes a disconnected stream's status lookup.
+        // It also confirms that the run still needs progress/Stop controls.
+        orphanRun.value = recoverableRun(detail.data.id, sessionID.value, props.name)
+        orphanError.value = null
+        orphanHasSnapshot.value = true
+        orphanLoading.value = false
+      }
       messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant'
         ? { ...message, approval: undefined, progress: progressPatch(message, { status }) } : message)
     }

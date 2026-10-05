@@ -59,6 +59,32 @@ func TestUsageRollupAttributesHarnessRunByModel(t *testing.T) {
 	}
 }
 
+func TestPercentilesUseNearestRank(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		values  []int64
+		wantP50 int64
+		wantP95 int64
+	}{
+		{name: "empty", values: []int64{}, wantP50: 0, wantP95: 0},
+		{name: "single", values: []int64{42}, wantP50: 42, wantP95: 42},
+		{name: "even", values: []int64{200, 100}, wantP50: 100, wantP95: 200},
+		{name: "odd", values: []int64{30, 10, 20}, wantP50: 20, wantP95: 30},
+		{
+			name:    "twenty values",
+			values:  []int64{20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1},
+			wantP50: 10, wantP95: 19,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p50, p95 := percentiles(test.values)
+			if p50 != test.wantP50 || p95 != test.wantP95 {
+				t.Fatalf("percentiles(%v) = (%d, %d), want (%d, %d)", test.values, p50, p95, test.wantP50, test.wantP95)
+			}
+		})
+	}
+}
+
 func runUsageRollup(t *testing.T, backend map[string]any) usageResponse {
 	t.Helper()
 	workspace := tenanttest.New()

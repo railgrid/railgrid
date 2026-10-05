@@ -359,7 +359,7 @@ func modelReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
 	if idx := strings.LastIndex(m, "/"); idx >= 0 {
 		m = m[idx+1:]
 	}
-	if m == "gpt-5.6-luna" {
+	if m == "gpt-5.6-luna" || m == "gpt-6-luna" {
 		return openaimodel.ReasoningEffortLevel("none")
 	}
 	return ""

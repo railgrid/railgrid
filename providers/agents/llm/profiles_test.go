@@ -32,6 +32,8 @@ func TestModelReasoningEffort(t *testing.T) {
 	}{
 		{model: "gpt-5.6-luna", want: "none"},
 		{model: "openai/gpt-5.6-luna", want: "none"},
+		{model: "gpt-6-luna", want: "none"},
+		{model: "openai/gpt-6-luna", want: "none"},
 		{model: "gpt-5.6-terra"},
 		{model: "gpt-5.4"},
 		{model: "gpt-4o"},
@@ -51,6 +53,7 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 		wantPresent bool
 	}{
 		{model: "gpt-5.6-luna", wantEffort: "none", wantPresent: true},
+		{model: "gpt-6-luna", wantEffort: "none", wantPresent: true},
 		{model: "gpt-4o", wantPresent: false},
 	} {
 		t.Run("model="+tc.model, func(t *testing.T) {
