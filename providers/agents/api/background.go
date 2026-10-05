@@ -573,6 +573,10 @@ func (b *background) Submit(ctx context.Context, job executor.Job) error {
 		// enqueue: the object exists and the reconciler will claim it.
 		return nil
 	}
+	// The Run object and the Postgres row are the durable queue. Record the
+	// effective transcript session on that first write so later status updates
+	// do not depend on mutating an immutable session_id column.
+	job.SessionID = effectiveSessionID(job.SessionID, job.Trigger)
 	now := time.Now().UTC()
 	runID := uuid.NewString()
 	scope := b.scopeFor(ctx, job.ClusterID, job.AgentRef)
@@ -855,7 +859,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	}
 	tr := taskRun{
 		Scope: scope, Agent: agent, RunID: job.RunID,
-		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
+		SessionID: effectiveSessionID(job.SessionID, job.Trigger), Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
 		// Recorded on the run so a crash mid-flight can still be reported to
 		// whoever is waiting — the goroutine that knows this is the thing a

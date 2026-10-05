@@ -142,6 +142,16 @@ func pendingFor(inboxID string, parked *backend.Parked) *pendingInfo {
 	return &pendingInfo{InboxID: inboxID, Kind: string(store.InboxKindApproval), Tool: parked.Tool, Args: parked.Args}
 }
 
+// effectiveSessionID applies the historical per-trigger fallback used when a
+// caller does not choose a transcript session. Keep non-empty caller values
+// intact: they are durable conversation identities, not defaults to rewrite.
+func effectiveSessionID(sessionID, trigger string) string {
+	if sessionID != "" {
+		return sessionID
+	}
+	return trigger
+}
+
 // harnessCancelTarget is the non-secret address needed to reach one runner.
 // It is persisted beside a parked checkpoint so an Agent edit cannot redirect
 // cancellation to a different edge.
@@ -501,10 +511,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 
 	purpose := turnPurpose(run)
 
-	sessionID := run.SessionID
-	if sessionID == "" {
-		sessionID = run.Trigger // e.g. schedules share a per-trigger session
-	}
+	sessionID := effectiveSessionID(run.SessionID, run.Trigger) // e.g. schedules share a per-trigger session
 	runID := run.RunID
 	if runID == "" {
 		runID = uuid.NewString()
@@ -960,10 +967,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		// schedules and chats that announced their run ID before setup began.
 		// Keeping this at the execution boundary prevents a claimed Pending run
 		// from being stranded when no model or runner was ever dispatched.
-		sessionID := run.SessionID
-		if sessionID == "" {
-			sessionID = run.Trigger
-		}
+		sessionID := effectiveSessionID(run.SessionID, run.Trigger)
 		return s.failBeforeStart(ctx, run.Scope, run, sessionID, time.Time{}, err)
 	}
 	return res, err
@@ -996,6 +1000,9 @@ type runAdmission struct {
 func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, tr taskRun, access runAccess) (runAdmission, error) {
 	runID := uuid.NewString()
 	now := time.Now().UTC()
+	// Save the effective transcript identity before Pending is admitted. The
+	// Postgres run row treats session_id as immutable on later phase updates.
+	tr.SessionID = effectiveSessionID(tr.SessionID, tr.Trigger)
 	tr.RunID = runID
 	tr.Scope = scope
 	tr.Agent = agent

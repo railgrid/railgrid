@@ -210,7 +210,7 @@ func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume reco
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
 		tracker := trackerForStored(run)
-		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
+		s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", reason)
 		s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: reason, WorkedDurationMS: tracker.workedDurationMS()}, now)
 		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		if tell {

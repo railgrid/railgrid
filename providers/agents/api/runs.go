@@ -107,7 +107,7 @@ func summarize(run store.Run) runSummary {
 		class = "interactive"
 	}
 	rs := runSummary{
-		ID: run.ID, Agent: run.AgentName, SessionID: run.SessionID, Trigger: run.Trigger, Class: class,
+		ID: run.ID, Agent: run.AgentName, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Class: class,
 		ParentRunID: run.ParentRunID, Phase: string(run.Phase), Attempt: run.Attempt,
 		InputPreview: safeTruncate(strings.Join(strings.Fields(run.Input), " "), 160),
 		Message:      safeTruncate(run.Message, 500),
@@ -280,7 +280,7 @@ func (s *Server) closeRunNow(ctx context.Context, scope store.Scope, run store.R
 	persistCtx, cancelPersist := boundedPersistContext(ctx)
 	defer cancelPersist()
 	tracker := trackerForStored(run)
-	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), run.SessionID, startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
+	s.appendTurnTerminal(persistCtx, scope, taskRunForStored(run), effectiveSessionID(run.SessionID, run.Trigger), startedAt, now, tracker, turnStatusForRunPhase(phase), "", message)
 	s.finishRun(persistCtx, scope, run.ID, runOutcome{Phase: phase, Message: message, WorkedDurationMS: tracker.workedDurationMS()}, now)
 	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 }

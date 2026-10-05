@@ -61,6 +61,64 @@ func TestRunAdmissionFailsClosedWhenRecordCannotBeSaved(t *testing.T) {
 	}
 }
 
+func TestRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
+	assertDefaultSessionAdmission(t, store.NewMemoryStore(), store.Scope{
+		OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "agent",
+	})
+}
+
+func TestPostgresRunAdmissionPersistsDefaultSessionBeforeExecution(t *testing.T) {
+	dsn := os.Getenv("AGENTS_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("AGENTS_TEST_POSTGRES_DSN is not set")
+	}
+	pg, err := store.OpenPostgres(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.Close() })
+	if err := pg.EnsureSchema(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	scope := store.Scope{OrgUUID: "default-session-" + uuid.NewString(), WorkspaceUUID: "workspace", AgentName: "agent"}
+	t.Cleanup(func() { _ = pg.DeleteAgentData(context.Background(), scope, scope.AgentName) })
+	assertDefaultSessionAdmission(t, pg, scope)
+}
+
+func assertDefaultSessionAdmission(t *testing.T, st store.Store, scope store.Scope) {
+	t.Helper()
+	if _, err := st.AddUsage(t.Context(), scope, scope.AgentName, 2, 0, 0, time.Now(), 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st, events: newEventBus()}
+	agent := &agentsv1alpha1.Agent{}
+	agent.Name = scope.AgentName
+	agent.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "day", TokenLimit: 1}
+	admission, err := s.startRun(t.Context(), scope, agent, taskRun{
+		Trigger: "api", Task: "the budget refusal still advances the Pending row",
+	}, runAccess{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		run, err := st.GetRun(t.Context(), scope, admission.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Phase == store.RunPhaseFailed {
+			if run.SessionID != "api" {
+				t.Fatalf("settled run sessionID = %q, want its effective default %q", run.SessionID, "api")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("admitted run did not advance beyond Pending: %+v", run)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestPostgresConcurrentRunAdmissionReusesOneExecution(t *testing.T) {
 	dsn := os.Getenv("AGENTS_TEST_POSTGRES_DSN")
 	if dsn == "" {

@@ -230,7 +230,7 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 		Spec: agentsv1alpha1.RunSpec{
 			AgentRef:       run.AgentName,
 			Trigger:        run.Trigger,
-			SessionID:      run.SessionID,
+			SessionID:      effectiveSessionID(run.SessionID, run.Trigger),
 			ParentRunRef:   run.ParentRunID,
 			IdempotencyKey: run.IdempotencyKey,
 			InputPreview:   safeTruncate(strings.TrimSpace(run.Input), runInputPreviewMax),
@@ -296,8 +296,8 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		at := metav1.NewTime(*run.FinishedAt)
 		status.FinishedAt = &at
 	}
-	if run.SessionID != "" {
-		status.TranscriptRef = &agentsv1alpha1.RunTranscriptRef{SessionID: run.SessionID}
+	if sessionID := effectiveSessionID(run.SessionID, run.Trigger); sessionID != "" {
+		status.TranscriptRef = &agentsv1alpha1.RunTranscriptRef{SessionID: sessionID}
 	}
 	if run.InputTokens > 0 || run.OutputTokens > 0 || run.USDMicros > 0 || run.WorkedDurationMS != nil {
 		status.Usage = &agentsv1alpha1.RunUsage{

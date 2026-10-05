@@ -249,12 +249,13 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 	if state.AttemptID != run.ID || (run.AttemptID != "" && state.AttemptID != run.AttemptID) {
 		return errors.New("the harness cancellation checkpoint does not match this run")
 	}
+	sessionID := effectiveSessionID(run.SessionID, run.Trigger)
 
 	agent, err := c.Agents().Get(ctx, run.AgentName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
-	taskID, _, err := harnessTaskIdentity(agent, run.SessionID, &continuation{Checkpoint: checkpoint})
+	taskID, _, err := harnessTaskIdentity(agent, sessionID, &continuation{Checkpoint: checkpoint})
 	if err != nil {
 		return fmt.Errorf("validating the harness checkpoint owner: %w", err)
 	}
@@ -262,7 +263,7 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 		return errors.New("the harness cancellation task does not match its Agent owner")
 	}
 	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-	stored, found, err := s.store.GetHarnessSession(ctx, scope, run.SessionID)
+	stored, found, err := s.store.GetHarnessSession(ctx, scope, sessionID)
 	if err != nil {
 		return fmt.Errorf("checking the harness session owner: %w", err)
 	}

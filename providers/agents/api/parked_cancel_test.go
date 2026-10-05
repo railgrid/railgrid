@@ -198,16 +198,17 @@ func parkedCancelUnstructured(t *testing.T, gvr schema.GroupVersionResource, kin
 func (f *parkedCancelFixture) park(t *testing.T, saveRunnerTarget bool) store.Run {
 	t.Helper()
 	uid := string(f.initialAgent.UID)
-	return f.parkWithIdentity(t, saveRunnerTarget, harnessTaskIDFor(f.run.AgentName, uid, f.run.SessionID), uid)
+	return f.parkWithIdentity(t, saveRunnerTarget, harnessTaskIDFor(f.run.AgentName, uid, effectiveSessionID(f.run.SessionID, f.run.Trigger)), uid)
 }
 
 func (f *parkedCancelFixture) parkLegacy(t *testing.T, saveRunnerTarget bool) store.Run {
 	t.Helper()
-	return f.parkWithIdentity(t, saveRunnerTarget, harnessTaskID(f.run.AgentName, f.run.SessionID), "")
+	return f.parkWithIdentity(t, saveRunnerTarget, harnessTaskID(f.run.AgentName, effectiveSessionID(f.run.SessionID, f.run.Trigger)), "")
 }
 
 func (f *parkedCancelFixture) parkWithIdentity(t *testing.T, saveRunnerTarget bool, taskID, agentUID string) store.Run {
 	t.Helper()
+	sessionID := effectiveSessionID(f.run.SessionID, f.run.Trigger)
 	state := backendharness.State{
 		TaskID: taskID, AgentUID: agentUID, AttemptID: f.run.ID, Epoch: 2,
 		BackendKey: harnessBackendKey("cluster-test", edgeref.KindLinuxServer, "edge-test", llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)),
@@ -230,7 +231,7 @@ func (f *parkedCancelFixture) parkWithIdentity(t *testing.T, saveRunnerTarget bo
 	}
 	updatedAt := time.Now().UTC()
 	if err := f.server.store.PutHarnessSession(context.Background(), f.scope, store.HarnessSession{
-		SessionID: f.run.SessionID, TaskID: taskID, AgentUID: agentUID,
+		SessionID: sessionID, TaskID: taskID, AgentUID: agentUID,
 		HarnessSessionID: state.SessionID, BackendKey: state.BackendKey,
 		Turns: int64(state.Epoch), ObservedEpoch: int64(state.Epoch), UpdatedAt: updatedAt,
 	}); err != nil {
@@ -242,6 +243,30 @@ func (f *parkedCancelFixture) parkWithIdentity(t *testing.T, saveRunnerTarget bo
 		t.Fatalf("save parked run: %v", err)
 	}
 	return f.run
+}
+
+func TestCancelParkedHarnessUsesTriggerSessionForLegacyRun(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	f := newParkedCancelFixture(t, agent, nil)
+	f.run.SessionID = "" // Historical rows may predate session_id persistence.
+	f.run.Trigger = "api"
+	run := f.park(t, true)
+
+	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
+	client := agentsclient.NewFromScope(tenant.NewScopeFromDynamic("cluster-test", f.dynamic))
+	if err := f.server.cancelParkedHarness(context.Background(), client, f.identity, run); err != nil {
+		t.Fatalf("cancel legacy parked run: %v", err)
+	}
+	select {
+	case call := <-f.dispatcher.calls:
+		wantTaskID := harnessTaskIDFor(run.AgentName, string(agent.UID), "api")
+		if call.request.TaskID != wantTaskID {
+			t.Fatalf("remote cancel TaskID = %q, want fallback-session task %q", call.request.TaskID, wantTaskID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("legacy parked cancel did not reach the runner")
+	}
 }
 
 func (f *parkedCancelFixture) cancel(t *testing.T) *httptest.ResponseRecorder {
