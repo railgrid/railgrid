@@ -356,7 +356,12 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(table, /class="k-table k-table--resource"/)
   assert.match(table, /class="k-table__controls"/)
   assert.match(table, /ariaLabel\?: string/)
-  assert.match(table, /class="k-table__scroll" role="region" :aria-label="`\$\{tableAriaLabel\} scroll area`" tabindex="0"/)
+  const scrollRegion = table.match(/<div\s+ref="tableScrollRegion"[\s\S]*?>/)?.[0] || ''
+  assert.match(scrollRegion, /class="k-table__scroll"/)
+  assert.match(scrollRegion, /role="region"/)
+  assert.match(scrollRegion, /:aria-label="`\$\{tableAriaLabel\} scroll area`"/)
+  assert.match(scrollRegion, /tabindex="0"/)
+  assert.match(scrollRegion, /:aria-describedby="tableHasHorizontalOverflow \? tableScrollHintID : undefined"/)
   assert.match(table, /<table class="k-table__table" :aria-label="tableAriaLabel">/)
   assert.doesNotMatch(table, /Scrollable table/)
   assert.match(table, /<slot name="after-row" :row="row" :column-count="renderedColumnCount" \/>/)

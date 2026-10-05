@@ -85,7 +85,32 @@ func TestPercentilesUseNearestRank(t *testing.T) {
 	}
 }
 
-func runUsageRollup(t *testing.T, backend map[string]any) usageResponse {
+func TestUsageRollupReportsUnpricedRuns(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		harness bool
+		run     store.Run
+		want    int64
+	}{
+		{name: "metered usage without estimate", run: store.Run{InputTokens: 100}, want: 1},
+		{name: "recorded estimate", run: store.Run{InputTokens: 100, USDMicros: 25}},
+		{name: "no model usage", run: store.Run{}},
+		{name: "external harness billing", harness: true, run: store.Run{}, want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := map[string]any{"type": "model", "model": map[string]any{}}
+			if test.harness {
+				backend = map[string]any{"type": "harness", "harness": map[string]any{"credentialRef": "codex"}}
+			}
+			got := runUsageRollup(t, backend, test.run)
+			if got.Total.UnpricedRuns != test.want || got.ByAgent[0].UnpricedRuns != test.want || got.ByModel[0].UnpricedRuns != test.want || got.Series[0].UnpricedRuns != test.want {
+				t.Fatalf("coverage must survive every aggregation: %+v", got)
+			}
+		})
+	}
+}
+
+func runUsageRollup(t *testing.T, backend map[string]any, supplied ...store.Run) usageResponse {
 	t.Helper()
 	workspace := tenanttest.New()
 	workspace.Add(unstructuredAgent(backend))
@@ -99,11 +124,17 @@ func runUsageRollup(t *testing.T, backend map[string]any) usageResponse {
 	scope := store.Scope{OrgUUID: "org1", WorkspaceUUID: "ws1", AgentName: "coder"}
 	st := store.NewMemoryStore()
 	now := time.Now().UTC()
-	if err := st.SaveRun(t.Context(), scope, store.Run{
+	run := store.Run{
 		ID: "run-harness", AgentName: "coder", Trigger: "chat", Phase: store.RunPhaseSucceeded,
 		InputTokens: 12, OutputTokens: 34, USDMicros: 56,
 		CreatedAt: now, UpdatedAt: now, StartedAt: &now, FinishedAt: &now,
-	}); err != nil {
+	}
+	if len(supplied) > 0 {
+		run.InputTokens = supplied[0].InputTokens
+		run.OutputTokens = supplied[0].OutputTokens
+		run.USDMicros = supplied[0].USDMicros
+	}
+	if err := st.SaveRun(t.Context(), scope, run); err != nil {
 		t.Fatal(err)
 	}
 

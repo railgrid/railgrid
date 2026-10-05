@@ -1,9 +1,11 @@
+import { defineComponent, h } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import AITimestamp from '../agentkit/AITimestamp.vue'
 import ChatMessage from '../views/ChatMessage.vue'
 import { formatAIWorkedDuration } from '../agentkit/conversation'
 import { formatFullTime, formatRelativeTime } from '../agentkit/timestamp'
 import type { ChatMessage as ChatMessageView } from '../types'
+import { runFailurePresentation, sanitizeTechnicalDiagnostic, type FailureRecoveryTarget } from '../failure-presentation'
 import { mountVue, settleVue, text } from './vue-helper'
 
 type TimestampMessage = ChatMessageView & { createdAt?: string }
@@ -19,6 +21,12 @@ function message(overrides: Partial<TimestampMessage> = {}): TimestampMessage {
 }
 
 describe('AgentKit timestamp and chat presentation', () => {
+  it('does not blame the model for an unidentified tool authentication or request failure', () => {
+    for (const diagnostic of ['Tool credential expired', 'HTTP connector: 400 Bad Request']) {
+      expect(runFailurePresentation('failed', diagnostic).recovery).toBeUndefined()
+    }
+    expect(runFailurePresentation('failed', 'OpenAI API key is invalid').recovery?.target).toBe('model-connections')
+  })
   it('omits missing or invalid timestamps', async () => {
     const missing = await mountVue(AITimestamp, { value: '' })
     expect(missing.element.querySelector('.k-ai-timestamp')).toBeNull()
@@ -235,5 +243,93 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(view.element.querySelector('.agents-body strong')?.textContent).toBe('Answer')
     expect(view.element.querySelector('.agents-body pre code')?.textContent).toBe('const value = 1\n')
     expect(view.element.querySelector('.agents-code-copy')).not.toBeNull()
+  })
+
+  it('keeps a failed chat turn actionable while preserving secret-safe diagnostics and the run link', async () => {
+    const bearer = 'super-secret-bearer-value'
+    const apiKey = 'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789'
+    const urlPassword = 'private-url-password'
+    const urlToken = 'query-secret-value'
+    const diagnostic = [
+      'HTTP 400 Bad Request: reasoning_effort is not supported by this model.',
+      `Authorization: Bearer ${bearer}`,
+      `{"api_key":"${apiKey}"}`,
+      `Endpoint https://operator:${urlPassword}@model.example/v1?access_token=${urlToken}`,
+    ].join('\n')
+    const safe = sanitizeTechnicalDiagnostic(diagnostic)
+    const recovery = runFailurePresentation('failed', safe)
+    expect(recovery.recovery).toEqual({ label: 'Review model selection', target: 'agent-config' })
+    expect(safe).toContain('reasoning_effort')
+    expect(safe).toContain('model.example')
+    expect(safe).not.toContain(bearer)
+    expect(safe).not.toContain(apiKey)
+    expect(safe).not.toContain(urlPassword)
+    expect(safe).not.toContain(urlToken)
+
+    const recoveredTo: FailureRecoveryTarget[] = []
+    const viewedRuns: string[] = []
+    const host = defineComponent({
+      setup: () => () => h(ChatMessage, {
+        message: message({
+          id: 'failed-turn',
+          runID: 'run-9',
+          content: 'Partial answer',
+          error: diagnostic,
+          progress: { status: 'failed', trace: [] },
+        }),
+        onRecovery: (target: FailureRecoveryTarget) => recoveredTo.push(target),
+        onViewRun: (runID: string) => viewedRuns.push(runID),
+      }),
+    })
+    const view = await mountVue(host, {})
+    const state = view.element.querySelector<HTMLElement>('.agents-run-state')!
+    const progress = view.element.querySelector<HTMLElement>('.k-ai-turn-progress')!
+    const partialOutput = view.element.querySelector<HTMLElement>('.agents-body')!
+    const details = state.querySelector<HTMLDetailsElement>('details')!
+
+    expect(state.getAttribute('role')).toBe('alert')
+    expect(text(state.querySelector('h3'))).toBe('The model rejected a reasoning setting')
+    expect(details.open).toBe(false)
+    expect(Boolean(state.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    expect(Boolean(state.compareDocumentPosition(partialOutput) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+
+    details.querySelector('summary')!.click()
+    await settleVue()
+    const diagnosticText = text(details.querySelector('pre'))
+    expect(diagnosticText).toContain('reasoning_effort')
+    expect(diagnosticText).toContain('model.example')
+    expect(diagnosticText).not.toContain(bearer)
+    expect(diagnosticText).not.toContain(apiKey)
+    expect(diagnosticText).not.toContain(urlPassword)
+    expect(diagnosticText).not.toContain(urlToken)
+    expect(text(partialOutput)).toBe('Partial answer')
+
+    state.querySelector<HTMLButtonElement>('.agents-run-state__recovery')!.click()
+    view.element.querySelector<HTMLButtonElement>('.agents-message-run-link')!.click()
+    expect(recoveredTo).toEqual(['agent-config'])
+    expect(viewedRuns).toEqual(['run-9'])
+  })
+
+  it('distinguishes canceled and recovered successful turns from failed runs', async () => {
+    const canceled = await mountVue(ChatMessage, {
+      message: message({ error: 'operator requested stop', progress: { status: 'aborted', trace: [] } }),
+    })
+    expect(canceled.element.querySelector('.agents-run-state')?.getAttribute('role')).toBe('status')
+    expect(text(canceled.element.querySelector('.agents-run-state h3'))).toBe('Run canceled')
+    expect(canceled.element.querySelector('.agents-run-state__recovery')).toBeNull()
+
+    const completed = await mountVue(ChatMessage, {
+      message: message({
+        error: 'Chat failed: connection closed before transcript reload',
+        progress: { status: 'completed', trace: [] },
+      }),
+    })
+    expect(completed.element.querySelector('.agents-run-state')).toBeNull()
+
+    const interrupted = await mountVue(ChatMessage, {
+      message: message({ error: 'Chat failed: connection closed', progress: { status: 'interrupted', trace: [] } }),
+    })
+    expect(interrupted.element.querySelector('.agents-run-state')?.getAttribute('role')).toBe('status')
+    expect(text(interrupted.element.querySelector('.agents-run-state h3'))).toBe('Chat connection interrupted')
   })
 })

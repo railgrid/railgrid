@@ -1,7 +1,7 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
-import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Info, Search, X } from 'lucide-vue-next'
+import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Info, MoveHorizontal, MoveLeft, Search, X } from 'lucide-vue-next'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import {
   cursorPageRange,
@@ -133,6 +133,7 @@ const props = withDefaults(defineProps<{
 })
 
 const componentID = useId()
+const tableScrollHintID = `k-table-scroll-hint-${componentID}`
 const query = ref('')
 const page = ref(1)
 const selectedPageSize = ref(normalizePageSize(props.pageSize))
@@ -197,6 +198,8 @@ const primaryTooltip = ref<{
 const primaryTooltipElement = ref<HTMLElement | null>(null)
 const headerSelectionCheckbox = ref<HTMLInputElement | null>(null)
 const tableScrollRegion = ref<HTMLElement | null>(null)
+const tableHasHorizontalOverflow = ref(false)
+const tableScrollAtEnd = ref(false)
 let activeTooltipAnchor: HTMLElement | null = null
 let activeSelectionTooltip: {
   anchor: HTMLElement
@@ -486,6 +489,54 @@ function setFilter(key: string, value: string) {
 function clearSelection() {
   if (normalizedSelectedKeys.value.length > 0) emit('update:selectedKeys', [])
 }
+
+function tableScrollState(region: Pick<HTMLElement, 'clientWidth' | 'scrollWidth' | 'scrollLeft'>) {
+  const maxScroll = Math.max(0, region.scrollWidth - region.clientWidth)
+  const hasOverflow = maxScroll > 1
+  return {
+    hasOverflow,
+    atEnd: hasOverflow && region.scrollLeft >= maxScroll - 1,
+  }
+}
+
+const tableScrollHintText = computed(() => {
+  if (!tableHasHorizontalOverflow.value) return ''
+  return tableScrollAtEnd.value
+    ? 'Scroll left to return to earlier columns.'
+    : 'Scroll horizontally to see more columns.'
+})
+
+function updateTableScrollHint() {
+  const region = tableScrollRegion.value
+  if (!region) {
+    tableHasHorizontalOverflow.value = false
+    tableScrollAtEnd.value = false
+    return
+  }
+  const state = tableScrollState(region)
+  tableHasHorizontalOverflow.value = state.hasOverflow
+  tableScrollAtEnd.value = state.atEnd
+}
+
+let tableScrollResizeObserver: ResizeObserver | null = null
+watch(tableScrollRegion, (region, previous) => {
+  previous?.removeEventListener('scroll', updateTableScrollHint)
+  tableScrollResizeObserver?.disconnect()
+  tableScrollResizeObserver = null
+  if (!region) {
+    updateTableScrollHint()
+    return
+  }
+
+  region.addEventListener('scroll', updateTableScrollHint, { passive: true })
+  if (typeof ResizeObserver !== 'undefined') {
+    tableScrollResizeObserver = new ResizeObserver(updateTableScrollHint)
+    tableScrollResizeObserver.observe(region)
+    const table = region.querySelector('table')
+    if (table) tableScrollResizeObserver.observe(table)
+  }
+  void nextTick(updateTableScrollHint)
+}, { flush: 'post' })
 
 function checkboxIsVisibleInScrollRegion(checkbox: HTMLInputElement, region: HTMLElement): boolean {
   const checkboxRect = checkbox.getBoundingClientRect()
@@ -779,11 +830,15 @@ function syncRowPrimaryOverflow(event: FocusEvent) {
 onMounted(() => {
   window.addEventListener('resize', hideTooltip)
   window.addEventListener('scroll', hideTooltip, true)
+  window.addEventListener('resize', updateTableScrollHint)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', hideTooltip)
   window.removeEventListener('scroll', hideTooltip, true)
+  window.removeEventListener('resize', updateTableScrollHint)
+  tableScrollRegion.value?.removeEventListener('scroll', updateTableScrollHint)
+  tableScrollResizeObserver?.disconnect()
 })
 
 function clearFilters() {
@@ -970,7 +1025,19 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         {{ selectionAnnouncement }}
       </span>
 
-      <div ref="tableScrollRegion" class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
+      <p v-if="tableHasHorizontalOverflow" :id="tableScrollHintID" class="k-table__scroll-hint">
+        <MoveLeft v-if="tableScrollAtEnd" :stroke-width="1.75" aria-hidden="true" />
+        <MoveHorizontal v-else :stroke-width="1.75" aria-hidden="true" />
+        <span>{{ tableScrollHintText }}</span>
+      </p>
+      <div
+        ref="tableScrollRegion"
+        class="k-table__scroll"
+        role="region"
+        :aria-label="`${tableAriaLabel} scroll area`"
+        :aria-describedby="tableHasHorizontalOverflow ? tableScrollHintID : undefined"
+        tabindex="0"
+      >
         <table class="k-table__table" :aria-label="tableAriaLabel">
           <thead v-if="!confirmedEmptyInventory || selectedCount > 0"><tr class="k-table__head-row">
             <th v-if="selectionSurfaceVisible" class="k-table__heading k-table__selection-heading" scope="col">

@@ -20,7 +20,25 @@ const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.s
 // itself keeps the same identity while its loading fields change.
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
+const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
+const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
 const showFirstRun = computed(() => agents.value.loaded && agents.value.data.length === 0 && (!agents.value.error || agents.value.hasSnapshot))
+
+const firstRunDescription = computed(() => {
+  const hasChat = chatCredentials.value.length > 0
+  const hasHarness = harnessCredentials.value.length > 0
+  if (hasChat && hasHarness) return 'Choose a chat model for a provider-run agent, or run Claude Code or Codex on a joined Linux or macOS machine. Each backend uses its own credential type.'
+  if (hasChat) return 'Choose a chat model for a provider-run agent, or use Claude Code or Codex on a joined Linux or macOS machine with a harness identity.'
+  if (hasHarness) return 'Run Claude Code or Codex on a joined Linux or macOS machine, or connect a chat model for a provider-run agent.'
+  return 'Choose a chat model for a provider-run agent, or run Claude Code or Codex on a joined Linux or macOS machine. Each path needs only its own credential type.'
+})
+
+const firstRunPrimary = computed(() => chatCredentials.value.length === 0 && harnessCredentials.value.length > 0
+  ? { label: 'Create with coding harness', route: { kind: 'create', resource: 'agent', type: 'harness' } as Route }
+  : { label: 'Create agent', route: { kind: 'create', resource: 'agent' } as Route })
+const firstRunSecondary = computed(() => chatCredentials.value.length > 0
+  ? { label: 'Create with coding harness', route: { kind: 'create', resource: 'agent', type: 'harness' } as Route }
+  : { label: 'Add model credential', route: { kind: 'create', resource: 'model' } as Route })
 
 function navigate(route: Route): void { emit('navigate', route) }
 
@@ -113,19 +131,18 @@ function primaryChannel(agent: Agent): string {
           <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
         </div>
         <FirstRunGuide
-          :title="credentials.data.length ? 'Create your first agent' : 'Connect a model before creating your first agent'"
-          :description="credentials.data.length
-            ? 'Give an agent a model and standing instructions, then start a conversation or automate its work.'
-            : 'Agents need a model credential to reason. Add one first, then return here to choose instructions, tools, and a channel.'"
-          :primary-label="credentials.data.length ? 'Create agent' : 'Add model credential'"
+          title="Create your first agent"
+          :description="firstRunDescription"
+          :primary-label="firstRunPrimary.label"
+          :secondary-label="firstRunSecondary.label"
           :steps="[
-            { label: 'Model', description: 'Credential and model endpoint' },
-            { label: 'Agent', description: 'Identity, instructions, and capabilities' },
-            { label: 'Conversation', description: 'Chat directly or add automation' },
+            { label: 'Choose a backend', description: 'Chat model or coding harness' },
+            { label: 'Set up the agent', description: 'Identity, instructions, and channel' },
+            { label: 'Run or automate', description: 'Start a conversation or add automation' },
           ]"
-          :current-step="credentials.data.length ? 1 : 0"
           journey-label="Agent setup path"
-          @primary="navigate({ kind: 'create', resource: credentials.data.length ? 'agent' : 'model' })"
+          @primary="navigate(firstRunPrimary.route)"
+          @secondary="navigate(firstRunSecondary.route)"
         >
           <template #icon><Bot aria-hidden="true" /></template>
         </FirstRunGuide>

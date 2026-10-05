@@ -30,6 +30,10 @@ type usageBucket struct {
 	InputTokens  int64  `json:"inputTokens"`
 	OutputTokens int64  `json:"outputTokens"`
 	USDMicros    int64  `json:"usdMicros"`
+	// UnpricedRuns counts runs whose cost cannot be established from recorded
+	// usage. A zero estimate with tokens (or externally billed harness work)
+	// does not establish that the run was free.
+	UnpricedRuns int64 `json:"unpricedRuns"`
 	// LatencyP50MS/P95MS are computed over completed runs with timing.
 	LatencyP50MS int64 `json:"latencyP50MS"`
 	LatencyP95MS int64 `json:"latencyP95MS"`
@@ -42,6 +46,7 @@ type usagePoint struct {
 	InputTokens  int64  `json:"inputTokens"`
 	OutputTokens int64  `json:"outputTokens"`
 	USDMicros    int64  `json:"usdMicros"`
+	UnpricedRuns int64  `json:"unpricedRuns"`
 }
 
 type usageResponse struct {
@@ -94,8 +99,10 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	// agent → primary model, for per-model attribution. Best-effort: an agent
 	// with no assigned model is bucketed under "(unassigned)".
 	agentModel := map[string]string{}
+	harnessAgent := false
 	if a, aerr := c.Agents().Get(r.Context(), agentName, metav1.GetOptions{}); aerr == nil {
 		agentModel[a.Name] = usageModelKey(a)
+		harnessAgent = a.Spec.Harness() != nil
 	}
 
 	total := usageBucket{Key: "total"}
@@ -116,6 +123,7 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 			modelKey = "(unassigned)"
 		}
 		isErr := run.Phase == store.RunPhaseFailed
+		unpriced := run.USDMicros == 0 && (run.InputTokens > 0 || run.OutputTokens > 0 || harnessAgent)
 
 		acc := func(b *usageBucket) {
 			b.Runs++
@@ -125,6 +133,9 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 			b.InputTokens += run.InputTokens
 			b.OutputTokens += run.OutputTokens
 			b.USDMicros += run.USDMicros
+			if unpriced {
+				b.UnpricedRuns++
+			}
 		}
 		acc(&total)
 		ab := byAgent[run.AgentName]
@@ -161,6 +172,9 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 		pt.InputTokens += run.InputTokens
 		pt.OutputTokens += run.OutputTokens
 		pt.USDMicros += run.USDMicros
+		if unpriced {
+			pt.UnpricedRuns++
+		}
 	}
 
 	total.LatencyP50MS, total.LatencyP95MS = percentiles(latAll)

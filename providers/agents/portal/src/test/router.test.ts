@@ -15,10 +15,12 @@ beforeEach(() => {
 describe('create routes', () => {
   it.each<[string, Route]>([
     ['#/create/agent', { kind: 'create', resource: 'agent' }],
+    ['#/create/agent/harness', { kind: 'create', resource: 'agent', type: 'harness' }],
     ['#/create/connection', { kind: 'create', resource: 'connection' }],
     ['#/create/connection/github', { kind: 'create', resource: 'connection', type: 'github' }],
     ['#/create/toolset', { kind: 'create', resource: 'toolset' }],
     ['#/create/model', { kind: 'create', resource: 'model' }],
+    ['#/create/model/harness', { kind: 'create', resource: 'model', type: 'harness' }],
   ])('parses and formats %s', (hash, route) => {
     expect(parseHash(hash)).toEqual(route)
     expect(hashFor(route)).toBe(hash)

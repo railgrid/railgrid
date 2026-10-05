@@ -688,7 +688,7 @@ test-create-flow-conformance: ## Verify route-owned creation uses the canonical 
 	@node --test hack/create-flow-conformance.test.mjs
 
 verify-ui-conformance: test-portal-settings-conformance test-create-flow-conformance ## Verify provider UI source uses the canonical k-* design vocabulary
-	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs
+	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs provider-sdk/portalkit-vue/ResourceTable.overflow.test.mjs provider-sdk/portalkit-vue/resource-technical.conformance.test.mjs
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
 
@@ -2886,6 +2886,14 @@ e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging
 	$(MAKE) e2e-standalone E2E_FLAGS="--keep-clusters"
 
 .PHONY: test-model-connections test-model-connections-api lint-model-connections fix-lint-model-connections
+.PHONY: test-agents-portal test-agents-usage
+
+test-agents-portal: ## Run Agents UI regression tests (optional TEST_ARGS)
+	cd providers/agents/portal && npm test -- $(TEST_ARGS)
+
+test-agents-usage: ## Verify Agents usage coverage and percentile reporting
+	cd providers/agents && go test -count=1 ./api -run 'TestUsage|TestPercentiles'
+
 # The providers remain standalone; run each contract in its owning module.
 test-model-connections: ## Verify the shared Models UX and provider adapters
 	cd providers/agents/portal && npm run typecheck && npm test
@@ -2902,7 +2910,7 @@ lint-model-connections: $(GOLANGCI_LINT) ## Lint the model connection implementa
 	cd provider-sdk && $(abspath $(GOLANGCI_LINT)) run $(ARGS) ./modelcatalog/...
 
 fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes with the pinned formatter
-	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt api/model_connection.go api/settings.go llm/catalog.go api/model_connection_test.go
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt api/model_connection.go api/settings.go llm/catalog.go api/model_connection_test.go api/usage.go api/usage_test.go
 	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) fmt api/llm_registry.go api/model_connection_test.go
 	cd provider-sdk && $(abspath $(GOLANGCI_LINT)) fmt modelcatalog/catalog.go
 

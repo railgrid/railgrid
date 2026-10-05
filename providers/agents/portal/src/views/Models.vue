@@ -8,14 +8,17 @@ import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
 import ModelUsageSection from '../agentkit/ModelUsageSection.vue'
 import ModelConnectionEditor from './ModelConnectionEditor.vue'
+import TechnicalDetails from '../components/TechnicalDetails.vue'
+import { errorTechnicalDiagnostic, presentModelProbeResult } from '../model-probe-result'
 import type { CreateSuccessDetail, Route } from '../router'
 import type { AppStore } from '../store'
 import { toast } from '../ui/toast'
 import { agentHarness, agentModelCredential, agentModelFallbacks, fmtTokens, fmtUSD, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo, type UsagePoint, type UsageResponse } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; routeOwned?: boolean; createRoute?: boolean; authorityEpoch?: number; createSession?: number }>(), { routeOwned: false, createRoute: false })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { routeOwned: false, createRoute: false, initialFamily: 'chat' })
 const emit = defineEmits<{
   navigate: [route: Route]
   'create-success': [detail: CreateSuccessDetail & Fence]
@@ -42,7 +45,7 @@ const createBusy = ref(false)
 const editorGeneration = ref(0)
 const editor = ref<{ cancel: () => Promise<void>; locked: boolean } | null>(null)
 const editingCredential = ref<Credential>()
-const editorFamily = ref<'chat' | 'harness'>('chat')
+const editorFamily = ref<'chat' | 'harness'>(props.initialFamily)
 const saveError = ref<string | null>(null)
 const showBreakdown = ref(false)
 let catalogGeneration = 0
@@ -51,7 +54,8 @@ const probeGenerations = new Map<string, number>()
 
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
 const showFirstRun = computed(() => credentials.value.loaded && credentials.value.data.length === 0 && (!credentials.value.error || credentials.value.hasSnapshot))
-const normalizedUsage = computed(() => usage.value ? { ...usage.value, byAgent: usage.value.byAgent ?? [], byModel: usage.value.byModel ?? [], series: usage.value.series ?? [] } : null)
+const normalizedUsage = computed(() => usage.value ? { ...usage.value, byAgent: usage.value.byAgent ?? [], byModel: usage.value.byModel ?? [], series: usage.value.series ?? [], unavailableAgents: usage.value.unavailableAgents ?? [] } : null)
+const unpricedRuns = computed(() => normalizedUsage.value ? unpricedRunCount(normalizedUsage.value.total) : 0)
 
 function resetCatalogRead(): void {
   catalogGeneration += 1
@@ -87,7 +91,7 @@ function resetUsageRead(): void {
 
 watch([() => props.store, () => props.api], () => { resetCatalogRead(); void loadCatalog() }, { immediate: true })
 watch([() => props.store, () => props.api, windowDays], () => { resetUsageRead(); void loadUsage() }, { immediate: true })
-watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = 'chat'; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
+watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
 async function loadUsage(): Promise<void> {
   const generation = ++usageGeneration
@@ -199,14 +203,14 @@ async function testCredential(name: string): Promise<void> {
   const authority = captureAuthority()
   testing.value = new Set(testing.value).add(name)
   try {
-    const result = await authority.api.testCredential(name)
+    const result = presentModelProbeResult(await authority.api.testCredential(name))
     if (probeGenerations.get(name) !== generation || !authorityIsCurrent(authority)) return
     tested.value = setMap(tested.value, name, result)
     toast(result.ok ? 'ok' : 'error', result.ok ? `${name}: model responded · ${result.latencyMS}ms` : `${name}: ${result.error || 'failed'}`)
   } catch (error) {
     if (probeGenerations.get(name) !== generation || !authorityIsCurrent(authority)) return
     const message = (error as Error).message
-    tested.value = setMap(tested.value, name, { ok: false, latencyMS: 0, error: message }); toast('error', `${name}: ${message}`)
+    tested.value = setMap(tested.value, name, { ok: false, latencyMS: 0, error: message, technicalDiagnostic: errorTechnicalDiagnostic(error) }); toast('error', `${name}: ${message}`)
   } finally {
     if (probeGenerations.get(name) === generation) { const next = new Set(testing.value); next.delete(name); testing.value = next }
   }
@@ -255,23 +259,6 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     if (probe) tested.value = setMap(tested.value, body.name, probe)
     await authority.store.load('credentials')
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
-    // A CHAT credential saved without a model is half a job, and deliberately
-    // so: "which models does this endpoint serve?" is a verb on the SAVED
-    // credential, so the first save is what makes the question askable. Keep
-    // the editor open on the object that now exists, rather than closing on a
-    // credential no agent can run.
-    //
-    // A harness identity is whole on its first save — it has no model to pick
-    // and no endpoint to ask — so holding the form open on "Find models to pick
-    // one" would be an instruction it cannot follow.
-    if (!edited && !isHarnessProvider(body.provider) && !(body.model ?? '').trim()) {
-      editingCredential.value = credentials.value.data.find(item => item.name === body.name) ?? { ...result }
-      editName.value = body.name
-      creating.value = false
-      editorGeneration.value++
-      toast('ok', 'Connection saved. Find models to pick one.')
-      return
-    }
     cancelEditorAfterSave()
     toast('ok', edited ? 'Credential updated.' : isHarnessProvider(body.provider) ? 'Harness identity added.' : 'Model connected.')
     if (!edited && props.routeOwned) emit('create-success', { resource: 'model', name: body.name, item: result, ...fence })
@@ -286,12 +273,12 @@ function sparkPoints(series: UsagePoint[]): string {
   return values.map((value, index) => `${(index * step).toFixed(1)},${(40 - (value / max) * 36 - 2).toFixed(1)}`).join(' ')
 }
 function dailySpendSummary(series: UsagePoint[]): string {
-  if (!series.length) return 'Daily spend: no spend in this window.'
+  if (!series.length) return 'Daily priced usage: no recorded estimates in this window.'
   const first = series[0]
   const last = series[series.length - 1]
   const peak = series.reduce((highest, point) => point.usdMicros > highest.usdMicros ? point : highest, first)
   const trend = last.usdMicros > first.usdMicros ? 'increased' : last.usdMicros < first.usdMicros ? 'decreased' : 'was unchanged'
-  return `Daily spend over ${series.length} days: ${fmtUSD(first.usdMicros)} on ${first.date}, ${fmtUSD(last.usdMicros)} on ${last.date}; peak ${fmtUSD(peak.usdMicros)} on ${peak.date}; spend ${trend} overall.`
+  return `Daily priced usage over ${series.length} days: ${fmtUSD(first.usdMicros)} on ${first.date}, ${fmtUSD(last.usdMicros)} on ${last.date}; peak ${fmtUSD(peak.usdMicros)} on ${peak.date}; spend ${trend} overall.`
 }
 function barWidth(value: number, max: number): string { return `${max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0}%` }
 
@@ -303,14 +290,14 @@ defineExpose({ loadCatalog, loadUsage })
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>
-      <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
+      <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="initialFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
       <div class="agents-panel-head"><h3>Models</h3><button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect model</button></div><p class="muted">Connect and manage models for your agents.</p>
       <div v-if="catalogError && !catalogHasSnapshot" class="k-error" role="alert">Model catalog unavailable: {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="catalogError" class="k-stale" role="status">Could not refresh the model catalog. Showing the last loaded catalog. {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
-      <FirstRunGuide v-if="showFirstRun" title="Connect your first model" description="Connect a provider endpoint and credential before creating or chatting with agents." primary-label="Connect model" :steps="[{ label: 'Model', description: 'Connect and test a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true" />
+      <FirstRunGuide v-if="showFirstRun" title="Connect a model or harness identity" description="Connect and test a chat model, or add a Claude Code or Codex identity for an agent running on a machine." primary-label="Connect model" :secondary-label="routeOwned ? 'Add harness identity' : ''" :steps="[{ label: 'Model', description: 'Connect and test a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @secondary="emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })" @primary="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true" />
       <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
@@ -328,7 +315,8 @@ defineExpose({ loadCatalog, loadUsage })
           </template>
           <div class="agents-model-assign"><span v-for="agent in primaryOf(credential)" :key="`p-${agent.metadata.name}`" class="agents-chip agents-chip-primary"><Link2 :stroke-width="1.75" aria-hidden="true" /> Primary: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-for="agent in fallbackOf(credential)" :key="`f-${agent.metadata.name}`" class="agents-chip agents-chip-fallback"><CornerDownRight :stroke-width="1.75" aria-hidden="true" /> Fallback: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-if="!primaryOf(credential).length && !fallbackOf(credential).length" class="muted agents-assign-none">Not assigned to any agent</span></div>
           <p v-if="tested.get(credential.name)?.error" class="k-error" role="alert">{{ tested.get(credential.name)?.error }}</p>
-          <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">{{ credential.statusMessage }}</p>
+          <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">{{ harnessCredential(credential) ? 'The harness identity needs attention. Edit it to review the credential format.' : 'The model connection needs attention. Edit it to review the endpoint and credential.' }}</p>
+          <TechnicalDetails :diagnostic="tested.get(credential.name)?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
           <p v-if="!harnessCredential(credential) && credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
           <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="toggleEdit(credential)">Edit</button><button v-if="!harnessCredential(credential)" class="k-btn k-btn--ghost" :disabled="testing.has(credential.name) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credential.name}…` : `Delete ${credential.name}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
         </ModelConnectionCard>
@@ -339,12 +327,16 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="!usageHasSnapshot" class="agents-dash-loading k-loading-reveal muted" role="status">Loading usage…</div>
       <template v-else-if="normalizedUsage">
         <div v-if="usageError" class="k-stale" role="status">Could not refresh usage. Showing usage from the last successful read. {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
-        <p class="agents-hint">Spend estimates exclude usage without model pricing. A $0 estimate does not mean that usage was free.</p>
+        <div v-if="normalizedUsage.unavailableAgents.length" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
+          <span class="k-inline-notification__body"><span class="k-inline-notification__message">Usage could not be read for {{ normalizedUsage.unavailableAgents.length }} agent{{ normalizedUsage.unavailableAgents.length === 1 ? '' : 's' }}: {{ normalizedUsage.unavailableAgents.join(', ') }}. Totals cover only agents whose usage was available.</span></span>
+          <button class="k-inline-notification__action" type="button" :disabled="usageLoading" :aria-busy="usageLoading ? 'true' : undefined" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button>
+        </div>
+        <p class="agents-hint">Estimates cover recorded, priced usage only. Unpriced runs have no recorded cost estimate and may be billed by the model provider or harness. Usage is calculated from each agent’s most recent 5,000 runs, then filtered to this window.</p>
         <div class="agents-dash">
 
-        <div class="agents-stats"><div class="agents-stat"><div class="agents-stat-v">{{ fmtUSD(normalizedUsage.total.usdMicros) }}</div><div class="agents-stat-k">estimated spend</div><div class="agents-stat-sub">{{ normalizedUsage.windowDays }}d</div></div><div class="agents-stat"><div class="agents-stat-v">{{ fmtTokens(normalizedUsage.total.inputTokens + normalizedUsage.total.outputTokens) }}</div><div class="agents-stat-k">tokens</div><div class="agents-stat-sub">{{ fmtTokens(normalizedUsage.total.inputTokens) }} in · {{ fmtTokens(normalizedUsage.total.outputTokens) }} out</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.runs }}</div><div class="agents-stat-k">runs</div><div class="agents-stat-sub">{{ normalizedUsage.total.runs ? Math.round(normalizedUsage.total.errors / normalizedUsage.total.runs * 100) : 0 }}% errors</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.latencyP50MS ? `${normalizedUsage.total.latencyP50MS}ms` : '—' }}</div><div class="agents-stat-k">latency</div><div class="agents-stat-sub">{{ normalizedUsage.total.latencyP95MS ? `${normalizedUsage.total.latencyP95MS}ms p95` : 'p50 / p95' }}</div></div></div>
-        <button type="button" class="k-btn k-btn--ghost agents-usage-disclosure" :aria-expanded="showBreakdown" @click="showBreakdown = !showBreakdown">{{ showBreakdown ? 'Hide usage breakdown' : 'Show usage breakdown' }}</button><div v-if="showBreakdown" class="agents-dash-grid"><div class="agents-dash-card"><div class="agents-dash-card-h">Daily spend · USD</div><div v-if="!sparkPoints(normalizedUsage.series)" class="agents-spark-empty muted">no spend in this window</div><svg v-else class="agents-spark" viewBox="0 0 260 40" preserveAspectRatio="none" role="img" :aria-label="dailySpendSummary(normalizedUsage.series)"><polygon class="agents-spark-fill" :points="`0,40 ${sparkPoints(normalizedUsage.series)} 260,40`"/><polyline class="agents-spark-line" :points="sparkPoints(normalizedUsage.series)"/></svg></div>
-          <div v-for="breakdown in [{ title: 'Spend by model', rows: normalizedUsage.byModel }, { title: 'Spend by agent', rows: normalizedUsage.byAgent }]" :key="breakdown.title" class="agents-dash-card"><div class="agents-dash-card-h">{{ breakdown.title }}</div><div class="agents-bars"><div v-for="bucket in breakdown.rows.slice(0, 6)" :key="bucket.key" class="agents-bar-row"><div class="agents-bar-label" :title="bucket.key">{{ bucket.key }}</div><div class="agents-bar-track"><div class="agents-bar-fill" :style="{ width: barWidth(bucket.usdMicros, Math.max(1, ...breakdown.rows.map(item => item.usdMicros))) }" /></div><div class="agents-bar-val">{{ fmtUSD(bucket.usdMicros) }} · {{ bucket.runs }} run{{ bucket.runs === 1 ? '' : 's' }}</div></div><div v-if="!breakdown.rows.length" class="muted agents-bars-empty">—</div></div></div>
+        <div class="agents-stats"><div class="agents-stat"><div class="agents-stat-v">{{ usageCostLabel(normalizedUsage.total) }}</div><div class="agents-stat-k">{{ unpricedRuns && normalizedUsage.total.usdMicros ? 'priced usage only' : 'estimated spend' }}</div><div class="agents-stat-sub">{{ normalizedUsage.windowDays }}d<span v-if="unpricedRuns"> · {{ unpricedRuns }} unpriced run{{ unpricedRuns === 1 ? '' : 's' }}</span></div></div><div class="agents-stat"><div class="agents-stat-v">{{ fmtTokens(normalizedUsage.total.inputTokens + normalizedUsage.total.outputTokens) }}</div><div class="agents-stat-k">tokens</div><div class="agents-stat-sub">{{ fmtTokens(normalizedUsage.total.inputTokens) }} in · {{ fmtTokens(normalizedUsage.total.outputTokens) }} out</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.runs }}</div><div class="agents-stat-k">runs</div><div class="agents-stat-sub">{{ normalizedUsage.total.runs ? Math.round(normalizedUsage.total.errors / normalizedUsage.total.runs * 100) : 0 }}% errors</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.latencyP50MS ? `${normalizedUsage.total.latencyP50MS}ms` : '—' }}</div><div class="agents-stat-k">slowest agent p50</div><div class="agents-stat-sub">{{ normalizedUsage.total.latencyP95MS ? `${normalizedUsage.total.latencyP95MS}ms p95` : 'p50 / p95' }}</div></div></div>
+        <button type="button" class="k-btn k-btn--ghost agents-usage-disclosure" :aria-expanded="showBreakdown" @click="showBreakdown = !showBreakdown">{{ showBreakdown ? 'Hide usage breakdown' : 'Show usage breakdown' }}</button><div v-if="showBreakdown" class="agents-dash-grid"><div class="agents-dash-card"><div class="agents-dash-card-h">Daily priced usage · USD</div><div v-if="!sparkPoints(normalizedUsage.series)" class="agents-spark-empty muted">No recorded cost estimates in this window.</div><svg v-else class="agents-spark" viewBox="0 0 260 40" preserveAspectRatio="none" role="img" :aria-label="dailySpendSummary(normalizedUsage.series)"><polygon class="agents-spark-fill" :points="`0,40 ${sparkPoints(normalizedUsage.series)} 260,40`"/><polyline class="agents-spark-line" :points="sparkPoints(normalizedUsage.series)"/></svg></div>
+          <div v-for="breakdown in [{ title: 'Estimate by current model connection', rows: normalizedUsage.byModel }, { title: 'Estimate by agent', rows: normalizedUsage.byAgent }]" :key="breakdown.title" class="agents-dash-card"><div class="agents-dash-card-h">{{ breakdown.title }}</div><p v-if="breakdown.rows.length > 6" class="agents-hint">Showing 6 of {{ breakdown.rows.length }} rows; the rest are not shown.</p><div class="agents-bars"><div v-for="bucket in breakdown.rows.slice(0, 6)" :key="bucket.key" class="agents-bar-row"><div class="agents-bar-label" :title="bucket.key">{{ bucket.key }}</div><div class="agents-bar-track"><div class="agents-bar-fill" :style="{ width: barWidth(bucket.usdMicros, Math.max(1, ...breakdown.rows.map(item => item.usdMicros))) }" /></div><div class="agents-bar-val">{{ usageCostLabel(bucket) }} · {{ bucket.runs }} run{{ bucket.runs === 1 ? '' : 's' }}<span v-if="unpricedRunCount(bucket)"> · {{ unpricedRunCount(bucket) }} unpriced</span></div></div><div v-if="!breakdown.rows.length" class="muted agents-bars-empty">—</div></div></div>
         </div>
         </div>
       </template>

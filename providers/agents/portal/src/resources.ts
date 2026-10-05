@@ -33,6 +33,7 @@ import {
   type KubeResourceRef,
 } from './portalkit/kube'
 import { providerFetch } from './portalkit/tenant'
+import { presentRequestFailure } from './request-errors'
 import {
   AGENT_BACKEND_HARNESS,
   AGENT_BACKEND_MODEL,
@@ -118,6 +119,7 @@ const MACOSSERVERS: KubeResourceRef = { group: EDGES_GROUP, version: VERSION, re
 // runs" a server-side list rather than a filter over every run in the
 // workspace.
 const LABEL_AGENT = 'agents.railgrid.ai/agent'
+const LABEL_CREDENTIAL_PROBE = 'agents.railgrid.ai/credential-probe'
 // DEFAULT_MCPSERVER is the conventional endpoint every workspace gets.
 const DEFAULT_MCPSERVER = 'default'
 
@@ -175,19 +177,20 @@ const TRIGGER_SOURCES = ['webhook', 'github']
 
 /**
  * ResourceError is what a view catches. It carries the same `status` an
- * ApiError did, so the error handling written against the REST surface keeps
- * working: a KubeError already knows its HTTP status and carries the
- * apiserver's own message, which is more specific than anything the backend
- * relayed.
+ * ApiError did, so status-based recovery keeps working. Remote diagnostics
+ * are available separately after redaction; the default message is a stable
+ * product summary rather than the apiserver's untrusted response body.
  */
 export class ResourceError extends Error {
   readonly status: number
   readonly reason: string
-  constructor(status: number, reason: string, message: string) {
+  readonly technicalDiagnostic: string
+  constructor(status: number, reason: string, message: string, technicalDiagnostic = '') {
     super(message)
     this.name = 'ResourceError'
     this.status = status
     this.reason = reason
+    this.technicalDiagnostic = technicalDiagnostic
   }
 }
 
@@ -197,16 +200,49 @@ const validationError = (message: string) => new ResourceError(400, 'BadRequest'
 function asResourceError(error: unknown): ResourceError {
   if (error instanceof ResourceError) return error
   if (isKubeError(error)) {
+    const failure = presentRequestFailure(error.status, error.message, error.reason)
     // A 404 on the resource TYPE (rather than a named object) means the tenant
     // has not enabled this provider in this workspace — a different thing from
     // "no such agent", and the only one a user can act on.
     const missingBinding = error.status === 404 && !error.body?.details?.name
     if (missingBinding) {
-      return new ResourceError(404, 'APIBindingMissing', 'the agents provider is not enabled in this workspace')
+      return new ResourceError(404, 'APIBindingMissing', 'the agents provider is not enabled in this workspace', failure.technicalDiagnostic)
     }
-    return new ResourceError(error.status, error.reason, error.message)
+    return new ResourceError(error.status, error.reason, failure.message, failure.technicalDiagnostic)
   }
-  return new ResourceError(0, 'NetworkError', error instanceof Error ? error.message : String(error))
+  if (isHttpError(error)) {
+    const status = error.status
+    const reason = error.reason || 'RequestFailed'
+    // ApiClient failures can surface inside a resource operation such as the
+    // exact-candidate probe. Keep their HTTP status and safe headline through
+    // this boundary without importing ApiError and creating a module cycle.
+    if (error.technicalDiagnostic) {
+      const failure = presentRequestFailure(status, error.technicalDiagnostic, error.reason)
+      return new ResourceError(status, reason, failure.message, failure.technicalDiagnostic)
+    }
+    // Locally authored ApiErrors have no remote diagnostic. Preserve their
+    // specific validation or context message rather than replacing it with a
+    // generic HTTP summary.
+    return new ResourceError(status, reason, error.message)
+  }
+  if (isAbortError(error)) {
+    return new ResourceError(409, 'ContextChanged', 'workspace changed while the request was in flight')
+  }
+  const diagnostic = error instanceof Error ? error.message : String(error)
+  const failure = presentRequestFailure(0, diagnostic)
+  return new ResourceError(0, 'NetworkError', failure.message, failure.technicalDiagnostic)
+}
+
+type HttpErrorShape = Error & { status: number; reason?: string; technicalDiagnostic?: string }
+
+function isHttpError(error: unknown): error is HttpErrorShape {
+  if (!(error instanceof Error)) return false
+  const status = (error as Partial<HttpErrorShape>).status
+  return typeof status === 'number' && Number.isInteger(status) && status >= 0
+}
+
+function isAbortError(error: unknown): boolean {
+  return !!error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError'
 }
 
 /** trimmedList trims, drops blanks, and de-duplicates while preserving order. */
@@ -997,9 +1033,79 @@ export class Resources {
   listCredentials = (): Promise<Credential[]> =>
     this.run(async (client) => {
       const items = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
-      const out = items.map(credentialView)
+      const out = items.filter(item => item.metadata?.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true').map(credentialView)
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       return out
+    })
+
+  /**
+   * Probe an exact draft through the normal workspace objects and verbs. The
+   * candidate key is written only to a Secret, never to a verb request, and a
+   * working saved connection is not modified during verification.
+   *
+   * The caller supplies a scoped verb client. The host authority guard still
+   * cancels requests after a workspace switch; it is never bypassed for cleanup.
+   */
+  withCredentialProbe = <T>(body: CredentialWrite, probe: (name: string) => Promise<T>): Promise<T> =>
+    this.run(async client => {
+      const provider = body.provider || MODEL_PROVIDER_OPENAI_COMPATIBLE
+      const baseURL = body.baseURL?.trim() || ''
+      const apiKey = body.apiKey?.trim() || ''
+      if (isHarnessProvider(provider) || !apiKey || !baseURL) throw validationError('A model probe needs an endpoint and a new API key.')
+      let endpoint: URL
+      try { endpoint = new URL(baseURL) } catch { throw validationError('Enter a valid HTTP or HTTPS API endpoint.') }
+      if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw validationError('Enter a valid HTTP or HTTPS API endpoint.')
+      const probeID = crypto.randomUUID()
+      const name = `model-check-${probeID}`
+      const secretName = credentialSecretName(name)
+      const labels = { ...OWNER_LABELS, [LABEL_CREDENTIAL_PROBE]: 'true' }
+      const annotations = { 'agents.railgrid.ai/credential-probe-id': probeID }
+      let secretAttempted = false
+      let objectAttempted = false
+      let ownerUID: string | undefined
+      let secretUID: string | undefined
+      const cleanup = async (ref: KubeResourceRef, objectName: string, namespace?: string): Promise<void> => {
+        try {
+          const object = await client.get(ref, objectName, { namespace })
+          // An ambiguous POST response can still have committed. Inspect the
+          // unique marker and use a UID precondition; never delete a replacement.
+          if (object.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' || object.metadata.annotations?.['agents.railgrid.ai/credential-probe-id'] !== probeID || !object.metadata.uid) throw new Error('Probe ownership could not be confirmed')
+          const expectedUID = ref === SECRETS ? secretUID : ownerUID
+          if (expectedUID && object.metadata.uid !== expectedUID) throw new Error('The test resource was replaced')
+          if (ref === SECRETS && !object.metadata.ownerReferences?.some(owner => owner.apiVersion === API_VERSION && owner.kind === 'ModelCredential' && owner.name === name && owner.uid === ownerUID)) throw new Error('The test Secret owner could not be confirmed')
+          await client.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid } })
+        } catch (error) { if (!isKubeNotFound(error)) throw error }
+      }
+      try {
+        objectAttempted = true
+        const owner = await client.create(MODELCREDENTIALS, {
+          apiVersion: API_VERSION, kind: 'ModelCredential', metadata: { name, labels, annotations },
+          spec: { provider, baseURL, secretRef: { name: secretName }, secretKey: DEFAULT_CREDENTIAL_KEY },
+        } as KubeObject)
+        if (!owner.metadata.uid) throw new Error('The workspace did not confirm the test credential identity.')
+        ownerUID = owner.metadata.uid
+        secretAttempted = true
+        const secret = await client.create(SECRETS, {
+          apiVersion: 'v1', kind: 'Secret',
+          metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels, annotations,
+            ownerReferences: [{ apiVersion: API_VERSION, kind: 'ModelCredential', name, uid: owner.metadata.uid }],
+          },
+          type: 'Opaque', stringData: { [DEFAULT_CREDENTIAL_KEY]: apiKey },
+        } as KubeObject, { namespace: SECRET_NAMESPACE })
+        secretUID = secret.metadata.uid
+        return await probe(name)
+      } finally {
+        const leftovers: string[] = []
+        if (secretAttempted) {
+          try { await cleanup(SECRETS, secretName, SECRET_NAMESPACE) }
+          catch { leftovers.push(`Secret ${secretName}`) }
+        }
+        if (objectAttempted) {
+          try { await cleanup(MODELCREDENTIALS, name) }
+          catch { leftovers.push(`model credential ${name}`) }
+        }
+        if (leftovers.length) throw new ResourceError(0, 'ProbeCleanupFailed', `Verification could not finish cleaning up ${leftovers.join(' and ')}. Ask a workspace administrator to remove it before retrying.`)
+      }
     })
 
   /**
@@ -1010,10 +1116,8 @@ export class Resources {
    * yet parks in SecretResolved=False until one is. Writing the object first
    * would flag a credential that is about to be fine.
    *
-   * A model id is NOT required here. The first save is what makes the
-   * credential probeable at all — "which models does this endpoint serve?"
-   * needs a saved object to ask of — so the editor saves, discovers, and saves
-   * again with the chosen id.
+   * The API writer permits an omitted model, but the editor verifies a complete
+   * candidate using withCredentialProbe before saving the named connection.
    *
    * A HARNESS IDENTITY (claude-code, codex) takes a different branch, because
    * it is a different shape and not a variant: no baseURL, no model, and its
@@ -1261,4 +1365,3 @@ function newSigningSecret(): string {
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
-

@@ -11,6 +11,7 @@ import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
+import TechnicalDetails from '../components/TechnicalDetails.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import type { TableFilterDefinition } from '../portalkit/table'
 import { hashFor, type CreateSuccessDetail, type EditCancelDetail, type EditSuccessDetail, type Route } from '../router'
@@ -58,6 +59,13 @@ const connectionSlice = computed(() => { revision.value; return { ...props.store
 const toolConnections = computed(() => { revision.value; return props.store.toolConnections() })
 const showFirstRun = computed(() => slice.value.hasSnapshot && slice.value.data.length === 0)
 const hasToolConnections = computed(() => connectionSlice.value.hasSnapshot && toolConnections.value.length > 0)
+const toolConnectionPrerequisite = computed(() => {
+  if (!connectionSlice.value.hasSnapshot) return 'Tool connections have not loaded. You can still create this toolset without external tools.'
+  if (connectionSlice.value.error) return 'The last loaded connection list is shown; retry before relying on its current contents.'
+  return toolConnections.value.length
+    ? 'At least one tool connection is available in this workspace.'
+    : 'No external connections are configured yet; add them later if the toolset should expose external tools.'
+})
 const derivedFamilies = computed(() => { revision.value; return props.store.familiesFor(draftConns.value, selectedStandalone.value) })
 const filters: TableFilterDefinition[] = [{ key: 'usage', label: 'Usage', allLabel: 'All usage' }]
 
@@ -167,13 +175,32 @@ function cancelCreate(): void {
             <label>Name *<input v-model="draftName" class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder="dev-tools" :disabled="createBusy" /></label>
             <label>Display name<input v-model="draftDisplay" class="k-input" placeholder="optional" :disabled="createBusy" /></label>
           </div>
+          <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
+            <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+            <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be loaded. You can still create this toolset without external tools.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+            <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+          </div>
+          <div v-else-if="!connectionSlice.hasSnapshot && connectionSlice.loading" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+            <span class="agents-spinner k-spin" aria-hidden="true" />
+            <div class="k-inline-notification__body"><span class="k-inline-notification__message">Loading tool connections. You can still create the toolset while this list loads.</span></div>
+          </div>
+          <div v-else-if="!connectionSlice.hasSnapshot" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+            <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+            <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections have not loaded yet. You can still create the toolset without external tools.</span></div>
+            <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Loading…' : 'Load connections' }}</button>
+          </div>
+          <div v-else-if="connectionSlice.error" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
+            <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+            <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+            <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
+          </div>
           <fieldset class="agents-cap-fs" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
             <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
             <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
-            <span v-if="!toolConnections.length" class="muted">No external tool connections yet.</span>
+            <span v-if="connectionSlice.hasSnapshot && !connectionSlice.error && !toolConnections.length" class="agents-hint" role="status">No external tool connections are configured. You can add them later; this toolset can still include visualization and cluster edge tools.</span>
           </div><span id="toolset-tools-hint" class="agents-hint">Choose built-in visualization or add existing tool connections.</span></fieldset>
         </div>
-        <CreateGuidance title="Build a reusable capability bundle" description="Choose built-in visualization and optional existing tool connections." :prerequisites="[toolConnections.length ? 'At least one tool connection is available in this workspace.' : 'Create a tool connection first if this bundle should expose external tools.', 'Cluster edge tools remain available independently and do not need a connection here.']" :values="[{ label: 'Toolset', value: draftName.trim() || 'Not entered yet', technical: true }, { label: 'Display name', value: draftDisplay.trim() || 'Same as name' }, { label: 'Connections', value: draftConns.length ? draftConns.join(', ') : 'None selected', technical: true }, { label: 'Families', value: derivedFamilies.join(', '), technical: true }]" :next-steps="['Railgrid creates the bundle without changing any existing agents.', 'Attach the toolset to interactive or background work from agent Config.', 'Connection authorization is still checked when an agent invokes a tool.']" />
+        <CreateGuidance title="Build a reusable capability bundle" description="Choose built-in visualization and optional existing tool connections." :prerequisites="[toolConnectionPrerequisite, 'Cluster edge tools remain available independently and do not need a connection here.']" :values="[{ label: 'Toolset', value: draftName.trim() || 'Not entered yet', technical: true }, { label: 'Display name', value: draftDisplay.trim() || 'Same as name' }, { label: 'Connections', value: draftConns.length ? draftConns.join(', ') : 'None selected', technical: true }, { label: 'Families', value: derivedFamilies.join(', '), technical: true }]" :next-steps="['Railgrid creates the bundle without changing any existing agents.', 'Attach the toolset to interactive or background work from agent Config.', 'Connection authorization is still checked when an agent invokes a tool.']" />
       </div>
       <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Creating…' : 'Create toolset' }}</button></div>
     </form>
@@ -200,10 +227,29 @@ function cancelCreate(): void {
           <form class="agents-toolset-form" :aria-busy="createBusy" @submit.prevent="save">
             <div class="k-create-body k-create-fields">
               <label>Display name<input v-model="draftDisplay" class="k-input" :placeholder="currentEditItem.metadata.name" :disabled="createBusy" /></label>
+              <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
+                <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+                <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be loaded. Existing assignments are preserved in this draft, but cannot be reviewed until the list loads.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+                <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+              </div>
+              <div v-else-if="!connectionSlice.hasSnapshot && connectionSlice.loading" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+                <span class="agents-spinner k-spin" aria-hidden="true" />
+                <div class="k-inline-notification__body"><span class="k-inline-notification__message">Loading tool connections. Existing assignments remain in this draft.</span></div>
+              </div>
+              <div v-else-if="!connectionSlice.hasSnapshot" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+                <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+                <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections have not loaded yet. Existing assignments remain in this draft.</span></div>
+                <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Loading…' : 'Load connections' }}</button>
+              </div>
+              <div v-else-if="connectionSlice.error" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
+                <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+                <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+                <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
+              </div>
               <fieldset class="agents-cap-fs" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
                 <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
                 <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
-                <span v-if="!toolConnections.length" class="muted">No external tool connections yet.</span>
+                <span v-if="connectionSlice.hasSnapshot && !connectionSlice.error && !toolConnections.length" class="agents-hint" role="status">No external tool connections are configured. You can add them later; this toolset can still include visualization and cluster edge tools.</span>
               </div><span id="toolset-tools-hint" class="agents-hint">Choose built-in visualization or add existing tool connections.</span></fieldset>
             </div>
             <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Saving…' : 'Save changes' }}</button></div>
@@ -223,8 +269,25 @@ function cancelCreate(): void {
         <AlertCircle aria-hidden="true" /> Showing the last loaded toolsets. {{ slice.error }}
         <button class="k-btn k-btn--ghost" type="button" :disabled="slice.loading" @click="store.load('toolsets')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-card agents-state agents-state-error" role="alert">Could not load optional tool connections. {{ connectionSlice.error }} <button class="k-btn k-btn--ghost secondary" @click="store.load('connections')">Retry</button></div>
-      <div v-else-if="!connectionSlice.hasSnapshot" class="k-card agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading optional tool connections…</div>
+      <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
+        <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be loaded. You can still create a toolset without external tools.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+        <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+      </div>
+      <div v-else-if="!connectionSlice.hasSnapshot && connectionSlice.loading" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+        <span class="agents-spinner k-spin" aria-hidden="true" />
+        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Loading optional tool connections…</span></div>
+      </div>
+      <div v-else-if="!connectionSlice.hasSnapshot" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+        <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections have not loaded yet. Toolsets can still be created without them.</span></div>
+        <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Loading…' : 'Load connections' }}</button>
+      </div>
+      <div v-else-if="connectionSlice.error" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
+        <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+        <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
+      </div>
       <FirstRunGuide
         :title="hasToolConnections ? 'Bundle tools for reuse' : 'Create your first toolset'"
         :description="hasToolConnections ? 'Group available tool connections so the same capability bundle can be attached to multiple agents.' : connectionSlice.hasSnapshot ? 'Start with core and edge capabilities now. External tool connections are optional and can be added whenever the bundle needs them.' : 'Start with core and edge capabilities now. Available external tool connections will appear after they finish loading.'"

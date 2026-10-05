@@ -7,7 +7,7 @@ import AgentChat from '../views/AgentChat.vue'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
-import type { SSEEvent } from '../api'
+import { ApiError, type SSEEvent } from '../api'
 import type { TranscriptMessage } from '../types'
 import { agentFixture, makeStore, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
@@ -1550,6 +1550,57 @@ describe('approval handoff after the chat stream closes', () => {
   ]
   const pending = (inboxID: string, runID = 'r-approval') => ({ id: runID, phase: 'Running', pending: { inboxID, tool: 'describe_model', args: JSON.stringify({ model: inboxID }) }, steps: [] })
   const event = (store: EventTarget, phase: string, runID = 'r-approval') => store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: runID, phase } } }))
+
+  it('keeps an approval retryable after a rejected decision and refreshes its server state safely', async () => {
+    const resolveInbox = vi.fn()
+      .mockRejectedValueOnce(new ApiError(403, 'Authorization: Bearer sensitive-backend-detail'))
+      .mockResolvedValueOnce({})
+    const listInbox = vi.fn().mockResolvedValue([])
+    const getRun = vi.fn().mockResolvedValue(pending('first'))
+    const { el } = await mountChat(scripted(frames), { resolveInbox, listInbox, getRun })
+    await send(el, 'describe models')
+    listInbox.mockClear()
+
+    const approve = () => el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!
+    approve().click()
+    await settle(6)
+
+    expect(resolveInbox).toHaveBeenCalledWith('first', 'approve')
+    expect(listInbox).toHaveBeenCalledTimes(1)
+    expect(getRun).toHaveBeenCalledWith('r-approval')
+    expect(el.querySelector('.agents-approval')).not.toBeNull()
+    expect(approve().disabled).toBe(false)
+    expect([...document.querySelectorAll('.k-toast--error')].map(item => text(item)).join(' ')).toContain('do not have permission')
+    expect(text(el)).not.toContain('sensitive-backend-detail')
+
+    approve().click()
+    await settle(6)
+
+    expect(resolveInbox).toHaveBeenCalledTimes(2)
+    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+  })
+
+  it('uses the refreshed inbox to reconcile a decision whose response was lost without resending it', async () => {
+    const resolveInbox = vi.fn().mockRejectedValue(new ApiError(502, 'Authorization: Bearer sensitive-backend-detail'))
+    const listInbox = vi.fn().mockResolvedValue([{
+      id: 'first', agentName: 'scout', runID: 'r-approval', kind: 'approval', state: 'approved',
+      prompt: 'describe_model', createdAt: '',
+    }])
+    const getRun = vi.fn().mockResolvedValue(pending('first'))
+    const { el } = await mountChat(scripted(frames), { resolveInbox, listInbox, getRun })
+    await send(el, 'describe models')
+    listInbox.mockClear()
+
+    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    await settle(6)
+
+    expect(listInbox).toHaveBeenCalledTimes(1)
+    expect(getRun).toHaveBeenCalledWith('r-approval')
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+    expect(text(el.querySelector('.agents-approval-done'))).toContain('Approved — the run is resuming.')
+    expect(el.querySelector('.k-ai-interrupt__actions')).toBeNull()
+    expect(text(el)).not.toContain('sensitive-backend-detail')
+  })
 
   it('recovers a pending disclosure after the original chat stream fails', async () => {
     const chatStream = vi.fn(async function* () {

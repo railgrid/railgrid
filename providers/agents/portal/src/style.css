@@ -85,7 +85,7 @@ railgrid-provider-agents .agents-card-chat {
   flex: 1; padding: 8px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
   border-radius: 4px; border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   background: var(--color-accent-subtle);
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
   transition: background 0.12s, border-color 0.12s;
 }
 railgrid-provider-agents .agents-card-chat:hover {
@@ -523,7 +523,7 @@ railgrid-provider-agents .agents-dash-head h3 { margin: 0; }
 railgrid-provider-agents .agents-dash-loading { padding: 0; text-align: center; }
 railgrid-provider-agents .agents-seg { display: inline-flex; background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-radius: 4px; padding: 2px; }
 railgrid-provider-agents .agents-seg button { border: 0; background: transparent; color: var(--color-text-secondary, #8a8ca6); font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 3px; cursor: pointer; }
-railgrid-provider-agents .agents-seg button.on { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); box-shadow: none; }
+railgrid-provider-agents .agents-seg button.on { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent-hover, #a18aff); box-shadow: none; }
 railgrid-provider-agents .agents-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 railgrid-provider-agents .agents-stat { padding: 12px 14px; }
 railgrid-provider-agents .agents-stat-v { font-size: 22px; font-weight: 700; color: var(--color-text-primary, #e9e9f2); line-height: 1.1; }
@@ -748,6 +748,34 @@ railgrid-dashboard-tile-agents .agents-tile-msg { font-size: 11px; color: var(--
 railgrid-dashboard-tile-agents .agents-tile-err { font-size: 11px; color: var(--color-danger); }
 
 railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
+
+/* Keep conversation targets generous on touch without expanding desktop
+ * chrome. */
+@media (pointer: coarse), (any-pointer: coarse) {
+  railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  railgrid-provider-agents .agents-mobile-rail-toggle { min-height: 44px; }
+  railgrid-provider-agents .agents-chat-head--agent .agents-mobile-rail-toggle {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    flex-basis: 44px;
+  }
+  railgrid-provider-agents .agents-desktop-rail-toggle {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  railgrid-provider-agents .agents-seg button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 
 /* Collection spacing follows Databricks: the host owns the outer inset. */
 railgrid-provider-agents .agents-panel.agents-models-page { padding: 0; gap: 16px; }

@@ -39,7 +39,77 @@ function toolset(name: string, connections: string[] = []): Toolset {
   return { metadata: { name }, spec: { displayName: `Toolset ${name}`, connections } }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
 describe('Connections resource tables', () => {
+  it('keeps a toolset creatable while tool connections fail, retry, and return an authoritative empty list', async () => {
+    const response = deferred<Connection[]>()
+    const listConnections = vi.fn(() => response.promise)
+    const api = stubApi({ listConnections })
+    const store = makeStore(api)
+    Object.assign(store.connections, { loaded: true, hasSnapshot: false, error: 'permission denied Authorization: Bearer sensitive-backend-detail' })
+
+    const el = await mount<Toolsets>('agents-toolsets', { store, api, createRoute: true })
+    const failure = el.querySelector<HTMLElement>('.k-inline-notification--error')!
+    expect(text(failure)).toContain('Tool connections could not be loaded')
+    expect(text(failure)).toContain('Technical details')
+    expect(text(failure)).toContain('permission denied')
+    expect(text(failure)).not.toContain('sensitive-backend-detail')
+    expect(text(el)).not.toContain('No external tool connections are configured')
+    expect([...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Create toolset')?.disabled).toBe(false)
+
+    const retry = failure.querySelector<HTMLButtonElement>('.k-inline-notification__action')!
+    retry.click()
+    await settle(el, 2)
+
+    expect(listConnections).toHaveBeenCalledTimes(1)
+    expect(retry.disabled).toBe(true)
+    expect(text(retry)).toContain('Retrying')
+    expect(text(el)).not.toContain('No external tool connections are configured')
+
+    response.resolve([])
+    await settle(el, 4)
+
+    expect(el.querySelector('.k-inline-notification--error')).toBeNull()
+    expect(text(el)).toContain('No external tool connections are configured')
+    expect(text(el)).toContain('You can add them later')
+    expect([...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Create toolset')?.disabled).toBe(false)
+  })
+
+  it('retains selected connections while a toolset edit shows a refresh failure and retry', async () => {
+    const response = deferred<Connection[]>()
+    const listConnections = vi.fn(() => response.promise)
+    const api = stubApi({ listConnections })
+    const store = makeStore(api)
+    store.connections.data = [connection('included', 'websearch')]
+    Object.assign(store.connections, { loaded: true, hasSnapshot: true, error: 'upstream unavailable' })
+    store.toolsets.data = [toolset('research', ['included'])]
+    Object.assign(store.toolsets, { loaded: true, hasSnapshot: true })
+
+    const el = await mount<Toolsets>('agents-toolsets', { store, api, editRoute: true, editName: 'research' })
+    const selected = [...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(input => input.checked)!
+    expect(selected.checked).toBe(true)
+    expect(text(el.querySelector('.k-inline-notification--warning'))).toContain('last loaded list remains available')
+    expect(text(el)).not.toContain('No external tool connections are configured')
+
+    const retry = el.querySelector<HTMLButtonElement>('.k-inline-notification__action')!
+    retry.click()
+    await settle(el, 2)
+    expect(retry.disabled).toBe(true)
+    expect(text(retry)).toContain('Refreshing')
+
+    response.resolve([connection('included', 'websearch'), connection('new', 'websearch')])
+    await settle(el, 4)
+
+    expect(el.querySelector('.k-inline-notification--warning')).toBeNull()
+    expect([...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].some(input => input.checked)).toBe(true)
+    expect(text(el)).toContain('new')
+  })
+
   it('shows secret-bearing webhook destinations as configured without putting their URLs in the table', async () => {
     const secrets = [
       { metadata: { name: 'slack-hook' }, spec: { type: 'slack', displayName: 'Slack hook', channel: 'https://hooks.slack.com/services/T/B/secret' } },
@@ -522,6 +592,8 @@ describe('Connections resource tables', () => {
     expect(toolsets.querySelector('.k-first-run')).not.toBeNull()
     expect(text(toolsets.querySelector('.agents-stale'))).toContain('toolset refresh failed')
     expect(toolsets.querySelector('.agents-stale button')).not.toBeNull()
+    expect(text(toolsets.querySelector('.k-inline-notification--warning'))).toContain('last loaded list remains available')
+    expect(toolsets.querySelector('.k-inline-notification--warning .k-inline-notification__action')).not.toBeNull()
   })
 
   it('uses h2 category headings in the connection type picker', async () => {
