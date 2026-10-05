@@ -10,7 +10,7 @@ import {
 } from 'lucide-vue-next'
 import { Marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { ApiClient } from '../api'
+import { ApiError, type ApiClient } from '../api'
 import { hashFor, type Route } from '../router'
 import type { AppStore, ServerEvent } from '../store'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
@@ -41,6 +41,9 @@ import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import RunFailureNotice from '../components/RunFailureNotice.vue'
+import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
+import { approvalResolutionFailureMessage } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -63,6 +66,7 @@ const expanded = ref(new Set<string>())
 const stepsExpanded = ref(true)
 const inspectorOpen = ref(true)
 const resolvingInboxID = ref('')
+const resolvingDecision = ref<'approve' | 'deny' | ''>('')
 const cancellingRuns = ref(new Set<string>())
 const now = ref(Date.now())
 let pollHandle = 0
@@ -83,6 +87,11 @@ const backRoute = computed<Route>(() => isEmbedded.value
 const backHref = computed(() => hashFor(backRoute.value))
 const backLabel = computed(() => isEmbedded.value ? 'Runs' : 'Activity')
 const globalRunHref = computed(() => hashFor({ kind: 'run', id: run.value?.id || props.runId }))
+const runFailurePhase = computed<RunFailurePhase | undefined>(() => {
+  if (run.value?.phase === 'Failed') return 'failed'
+  if (run.value?.phase === 'Aborted') return 'aborted'
+  return undefined
+})
 
 const phaseMeta: Record<RunPhase, { label: string; cls: string; tone: 'success' | 'warning' | 'danger' }> = {
   Pending: { label: 'Pending', cls: 'pending', tone: 'warning' },
@@ -230,16 +239,22 @@ async function resolve(inboxID: string, decision: 'approve' | 'deny'): Promise<v
   const authority = captureAuthority()
   const id = props.runId
   resolvingInboxID.value = inboxID
+  resolvingDecision.value = decision
   try {
     await authority.api.resolveInbox(inboxID, decision)
     if (!authorityIsCurrent(authority) || id !== props.runId) return
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
-    void authority.store.load('inbox')
-    void load()
+    await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
-    if (authorityIsCurrent(authority) && id === props.runId) toast('error', `Could not ${decision}: ${(cause as Error).message}`)
+    if (authorityIsCurrent(authority) && id === props.runId) {
+      toast('error', approvalResolutionFailureMessage(cause instanceof ApiError ? cause.status : undefined))
+      await Promise.allSettled([authority.store.load('inbox'), load('background')])
+    }
   } finally {
-    if (resolvingInboxID.value === inboxID) resolvingInboxID.value = ''
+    if (authorityIsCurrent(authority) && id === props.runId && resolvingInboxID.value === inboxID) {
+      resolvingInboxID.value = ''
+      resolvingDecision.value = ''
+    }
   }
 }
 
@@ -396,6 +411,15 @@ function openChild(child: RunSummary): void {
   emit('navigate', { kind: 'run', id: child.id })
 }
 
+function navigateForFailure(target: FailureRecoveryTarget): void {
+  if (target === 'model-connections') {
+    emit('navigate', { kind: 'menu', menu: 'models' })
+    return
+  }
+  const agentName = run.value?.agent || props.embeddedAgent
+  if (agentName) emit('navigate', { kind: 'agent', name: agentName, tab: 'config' })
+}
+
 function goBack(): void {
   emit('navigate', backRoute.value)
 }
@@ -408,6 +432,7 @@ watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const,
   bindStore(props.store)
   requestGeneration += 1
   resolvingInboxID.value = ''
+  resolvingDecision.value = ''
   cancellingRuns.value = new Set()
   stopLive()
   run.value = null
@@ -492,6 +517,38 @@ onBeforeUnmount(() => {
           <main class="agents-run-main">
             <AITranscript class="agents-run-transcript">
               <AIConversationTurn
+                v-if="runFailurePhase || (run.phase === 'PendingApproval' && run.pending)"
+                class="agents-run-message agents-run-state-message"
+                role="assistant"
+                aria-label="Run status"
+              >
+                <template #before>
+                  <RunFailureNotice
+                    v-if="runFailurePhase"
+                    :phase="runFailurePhase"
+                    :diagnostic="run.message"
+                    @recovery="navigateForFailure"
+                  />
+                  <AIInterrupt
+                    v-else-if="run.phase === 'PendingApproval' && run.pending"
+                    class="agents-approval"
+                    :status="resolvingInboxID ? 'busy' : 'pending'"
+                    :busy="!!resolvingInboxID"
+                    :invalid="!approvalDisclosureAvailable(run.pending.tool, run.pending.args)"
+                    title="Approval required"
+                    aria-label="Tool approval required"
+                  >
+                    <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused details-only />
+                    <template #actions>
+                      <div class="agents-approval-actions">
+                        <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
+                        <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' || undefined" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' ? 'Denying…' : 'Deny' }}</button>
+                      </div>
+                    </template>
+                  </AIInterrupt>
+                </template>
+              </AIConversationTurn>
+              <AIConversationTurn
                 v-if="run.input"
                 class="agents-run-message agents-run-input-message"
                 role="user"
@@ -546,7 +603,6 @@ onBeforeUnmount(() => {
                 </section>
               </template>
 
-              <div v-if="(run.phase === 'Failed' || run.phase === 'Aborted') && run.message" class="agents-err" role="alert">{{ run.message }}</div>
               <h3 v-if="(run.phase === 'Failed' || run.phase === 'Aborted') && run.output">Partial output</h3>
               <div v-if="run.output || !(run.phase === 'Failed' || run.phase === 'Aborted')" class="agents-body k-ai-prose" v-html="markdownHTML(run.output || run.message || '')"></div>
               <div v-if="run.sources?.length" class="agents-runsources">
@@ -554,25 +610,6 @@ onBeforeUnmount(() => {
                 <ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul>
               </div>
 
-              <template #after>
-                <AIInterrupt
-                  v-if="run.phase === 'PendingApproval' && run.pending"
-                  class="agents-approval"
-                  :status="resolvingInboxID ? 'busy' : 'pending'"
-                  :busy="!!resolvingInboxID"
-                  :invalid="!approvalDisclosureAvailable(run.pending.tool, run.pending.args)"
-                  title="Approval required"
-                  aria-label="Tool approval required"
-                >
-                  <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused details-only />
-                  <template #actions>
-                    <div class="agents-approval-actions">
-                      <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID ? 'Resolving…' : 'Approve & resume' }}</button>
-                      <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> Deny</button>
-                    </div>
-                  </template>
-                </AIInterrupt>
-              </template>
               </AIConversationTurn>
             </AITranscript>
           </main>

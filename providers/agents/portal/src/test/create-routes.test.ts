@@ -46,6 +46,26 @@ function markAuthoritative(store: ReturnType<typeof makeStore>, ...keys: Array<'
 }
 
 describe('route-owned creation surfaces', () => {
+  it('opens machine setup in a scoped new tab and refreshes choices without discarding the agent draft', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    markAuthoritative(store, 'agents', 'credentials', 'edges')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialBackendType: 'harness' })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'work-in-progress'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const link = el.querySelector<HTMLAnchorElement>('a[target="_blank"]')!
+    expect(link.getAttribute('href')).toBe('/ui/org/ws/providers/edges/connect/edge')
+    expect(link.rel).toContain('noopener')
+    const load = vi.spyOn(store, 'load').mockResolvedValue()
+    const check = [...el.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === 'Check again')!
+    check.click(); await settle(el)
+    expect(load).toHaveBeenCalledWith('edges')
+    expect(name.value).toBe('work-in-progress')
+    expect(el.textContent).toContain('Keep this tab open')
+  })
+
   it('renders agent creation as a page and emits its result after the API succeeds', async () => {
     const createAgent = vi.fn().mockResolvedValue({ metadata: { name: 'nova' }, spec: { displayName: 'nova' } })
     const api = stubApi({ createAgent })
@@ -203,12 +223,12 @@ describe('route-owned creation surfaces', () => {
     expect(runnerError.querySelector('.k-create-guidance')?.textContent).not.toContain('Join a Linux or macOS machine')
   })
 
-  it('renders an authoritative empty credential state with recovery to model creation', async () => {
+  it('routes a missing chat credential through a resumable chat setup event', async () => {
     const api = stubApi()
     const store = makeStore(api)
     markAuthoritative(store, 'agents', 'credentials')
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
-    const routes = mountedByElement.get(el)!.navigations
+    const events = mountedByElement.get(el)!.events
 
     expect(el.querySelector('form')).not.toBeNull()
     expect(el.textContent).toContain('No model credentials yet')
@@ -216,7 +236,43 @@ describe('route-owned creation surfaces', () => {
     const recovery = el.querySelector<HTMLButtonElement>('.k-dashboard-action')!
     expect(recovery.textContent).toContain('add one under Models')
     recovery.click()
-    expect(routes).toEqual([{ kind: 'create', resource: 'model' }])
+    expect(events['add-credential']?.[0]).toEqual(expect.objectContaining({
+      family: 'chat',
+      draft: expect.objectContaining({ backendType: 'model' }),
+      store,
+      authorityEpoch: 0,
+      createSession: 0,
+    }))
+    expect(JSON.stringify(events['add-credential']?.[0])).not.toContain('secret')
+  })
+
+  it('routes a missing harness identity to harness setup with the full non-secret agent draft', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    markAuthoritative(store, 'agents', 'credentials', 'edges')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
+    const events = mountedByElement.get(el)!.events
+
+    el.querySelector<HTMLInputElement>('#agent-create-name')!.value = 'draft-agent'
+    el.querySelector<HTMLInputElement>('#agent-create-name')!.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!.value = 'Keep this instruction.'
+    el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    el.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    await settle(el, 2)
+    el.querySelector<HTMLButtonElement>('#agent-create-harnesscred-empty .k-dashboard-action')!.click()
+
+    expect(events['add-credential']?.[0]).toEqual(expect.objectContaining({
+      family: 'harness',
+      draft: expect.objectContaining({
+        name: 'draft-agent',
+        backendType: 'harness',
+        systemPrompt: 'Keep this instruction.',
+        harnessWorkspace: 'persistent',
+      }),
+      store,
+    }))
+    expect(events['add-credential']?.[0]).not.toHaveProperty('secret')
   })
 
   it('keeps connection type selection and creation in hash-owned surfaces', async () => {
@@ -286,7 +342,7 @@ describe('route-owned creation surfaces', () => {
 
   it('renders model creation separately and saves the typed credential payload', async () => {
     const saveCredential = vi.fn().mockResolvedValue({ name: 'main', provider: 'openai-compatible', model: 'gpt-5' })
-    const api = stubApi({ saveCredential, catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
+    const api = stubApi({ probeCredentialDraft: () => Promise.resolve({ ok: true, latencyMS: 1 }), saveCredential, catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
     const store = makeStore(api)
     const el = await mount<Models>('agents-models', { store, api, routeOwned: true, createRoute: true })
     expect(el.querySelector('.k-create-page')).not.toBeNull()
@@ -307,10 +363,12 @@ describe('route-owned creation surfaces', () => {
     await settle(el)
     document.querySelector<HTMLElement>('[role="option"]')!.click()
     await settle(el)
-    // Testing is a verb on a SAVED credential, so it is unavailable here and
-    // saving does not wait for it: a person who already knows the model id
-    // gets through in one step.
-    expect([...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!.disabled).toBe(true)
+    // The exact candidate must respond before the named connection is saved.
+    const testButton = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!
+    expect(testButton.disabled).toBe(false)
+    expect(saveCredential).not.toHaveBeenCalled()
+    testButton.click()
+    await settle(el)
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
     expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'gpt-5', apiKey: 'secret' }))
@@ -387,9 +445,10 @@ describe('route-owned collection affordances', () => {
     markAuthoritative(store, 'toolsets')
     const el = await mount<Toolsets>('agents-toolsets', { store, api, routeOwned: true })
 
-    expect(el.querySelector('.agents-state-loading')?.textContent).toContain('Loading optional tool connections')
+    expect(el.querySelector('.k-inline-notification--info')?.textContent).toContain('Tool connections have not loaded yet')
     expect(el.textContent).not.toContain('External tool connections are optional')
     expect(el.textContent).toContain('Available external tool connections will appear after they finish loading')
+    expect(el.textContent).not.toContain('No external connections are configured yet')
     expect([...el.querySelectorAll('button')].some((button) => button.textContent?.includes('Create toolset'))).toBe(true)
   })
 
@@ -398,13 +457,17 @@ describe('route-owned collection affordances', () => {
     const store = makeStore(api)
     markAuthoritative(store, 'toolsets')
     store.connections.loaded = true
-    store.connections.error = 'connection API unavailable'
+    store.connections.error = 'connection API unavailable Authorization: Bearer sensitive-backend-detail'
     const load = vi.spyOn(store, 'load').mockResolvedValue()
     const el = await mount<Toolsets>('agents-toolsets', { store, api, routeOwned: true })
 
-    expect(el.querySelector('.agents-state-error')?.textContent).toContain('Could not load optional tool connections')
+    const failure = el.querySelector<HTMLElement>('.k-inline-notification--error')!
+    expect(failure.textContent).toContain('Tool connections could not be loaded')
+    expect(failure.textContent).toContain('Technical details')
+    expect(failure.textContent).toContain('connection API unavailable')
+    expect(failure.textContent).not.toContain('sensitive-backend-detail')
     expect([...el.querySelectorAll('button')].some((button) => button.textContent?.includes('Create toolset'))).toBe(true)
-    el.querySelector<HTMLButtonElement>('.agents-state-error button')!.click()
+    failure.querySelector<HTMLButtonElement>('.k-inline-notification__action')!.click()
     expect(load).toHaveBeenCalledWith('connections')
   })
 

@@ -153,7 +153,9 @@ func credentialsForSecret(clusterName multicluster.ClusterName, cl cluster.Clust
 		}
 		var reqs []reconcile.Request
 		for i := range list.Items {
-			if strings.TrimSpace(list.Items[i].Spec.SecretRef.Name) == obj.GetName() {
+			credential := &list.Items[i]
+			cleanupSecret := strings.TrimSpace(credential.Annotations[credentialProbeCleanupSecretAnnotation])
+			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() {
 				reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
 			}
 		}
@@ -178,7 +180,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 	if !cred.DeletionTimestamp.IsZero() {
+		if hasCredentialProbeCleanupFinalizer(&cred) {
+			// A portal may request deletion while the controller is holding this
+			// probe at its deadline. Once terminating, finish cleanup immediately
+			// from the persisted reservation even if marker fields were edited.
+			return r.finishCredentialProbeCleanup(ctx, c, &cred)
+		}
 		return ctrl.Result{}, nil
+	}
+	if probeID, isProbe := credentialProbeID(&cred); isProbe {
+		now := r.now()
+		deadline := credentialProbeDeadline(&cred, now)
+		if now.Before(deadline) {
+			// Narrow, explicitly approved AGENTS §5.8 exception: wake this marked,
+			// server-created test credential at its persisted cleanup deadline.
+			// This is per-object and bounded, not a tenant sweep or a substitute
+			// for watching a KRM object. See the temporary model verification
+			// credential lifecycle in docs/agents-provider-architecture.md.
+			return ctrl.Result{RequeueAfter: deadline.Sub(now)}, nil
+		}
+		return r.beginCredentialProbeCleanup(ctx, c, &cred, probeID)
+	}
+	if hasCredentialProbeCleanupFinalizer(&cred) {
+		// A marker edit before the delete CAS means cleanup has not become
+		// irreversible. Release the reservation and leave the object/Secret
+		// untouched; finalizing probes are handled above from their snapshot.
+		return ctrl.Result{}, r.releaseCredentialProbeReservation(ctx, c, &cred)
 	}
 
 	apiKey, secretReason, secretMessage, err := r.resolveSecret(ctx, c, &cred)

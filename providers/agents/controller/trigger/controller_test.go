@@ -259,6 +259,62 @@ func TestValidatedRejectsAnUnknownConnectionRef(t *testing.T) {
 	}
 }
 
+func TestConnectionChangeEnqueuesTriggersThatReferenceIt(t *testing.T) {
+	first := trigger(agentsv1alpha1.TriggerSourceGitHub, testAgent)
+	first.Name = "first"
+	first.Spec.ConnectionRef = "gh"
+	second := trigger(agentsv1alpha1.TriggerSourceGitHub, testAgent)
+	second.Name = "second"
+	second.Spec.ConnectionRef = " gh "
+	unrelated := trigger(agentsv1alpha1.TriggerSourceGitHub, testAgent)
+	unrelated.Name = "unrelated"
+	unrelated.Spec.ConnectionRef = "other"
+	h := newHarness(t, testKey, first, second, unrelated, agent(testAgent))
+	for _, name := range []string{"first", "second"} {
+		_, err := h.r.Reconcile(context.Background(), mcreconcile.Request{
+			ClusterName: testCluster,
+			Request:     reconcile.Request{NamespacedName: types.NamespacedName{Name: name}},
+		})
+		if err != nil {
+			t.Fatalf("initial reconcile for %s: %v", name, err)
+		}
+		var got agentsv1alpha1.Trigger
+		if err := h.c.Get(context.Background(), types.NamespacedName{Name: name}, &got); err != nil {
+			t.Fatal(err)
+		}
+		if cond := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionValidated); cond == nil || cond.Reason != agentsv1alpha1.ReasonUnknownConnectionRef {
+			t.Fatalf("initial condition for %s = %+v, want UnknownConnectionRef", name, cond)
+		}
+	}
+	if err := h.c.Create(context.Background(), conn("gh")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := triggerRequestsForConnection(context.Background(), h.c, "gh")
+	if len(got) != 2 {
+		t.Fatalf("requests = %+v, want the two triggers referencing gh", got)
+	}
+	names := map[string]bool{}
+	for _, req := range got {
+		names[req.Name] = true
+	}
+	if !names["first"] || !names["second"] || names["unrelated"] {
+		t.Fatalf("requests = %+v, want first and second only", got)
+	}
+	for _, req := range got {
+		if _, err := h.r.Reconcile(context.Background(), mcreconcile.Request{ClusterName: testCluster, Request: req}); err != nil {
+			t.Fatalf("reconcile %s after connection creation: %v", req.Name, err)
+		}
+		var tr agentsv1alpha1.Trigger
+		if err := h.c.Get(context.Background(), req.NamespacedName, &tr); err != nil {
+			t.Fatal(err)
+		}
+		if cond := meta.FindStatusCondition(tr.Status.Conditions, agentsv1alpha1.ConditionValidated); cond == nil || cond.Status != metav1.ConditionTrue {
+			t.Fatalf("condition for %s after connection creation = %+v, want True", req.Name, cond)
+		}
+	}
+}
+
 // A channelRef naming nothing still fires, but answers somewhere its author
 // did not ask for — worth saying, not worth blocking.
 func TestValidatedRejectsAChannelRefTheAgentDoesNotHave(t *testing.T) {

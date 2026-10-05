@@ -20,6 +20,7 @@ import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
+import RunFailureNotice from '../components/RunFailureNotice.vue'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AIInterrupt from '../agentkit/AIInterrupt.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
@@ -27,6 +28,7 @@ import AITimestamp from '../agentkit/AITimestamp.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import { formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
 import { isValidTimestamp } from '../agentkit/timestamp'
+import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   message: ChatMessage
@@ -38,6 +40,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   approval: [detail: { inboxID: string; decision: 'approve' | 'deny' | 'answer'; response?: string }]
   'view-run': [runID: string]
+  recovery: [target: FailureRecoveryTarget]
 }>()
 
 const visualizations = computed(() => messageVisualizations(props.message))
@@ -63,6 +66,21 @@ const messageCreatedAt = computed(() => {
 })
 const progressVisible = computed(() => props.message.role === 'assistant' && Boolean(props.message.progress))
 const progressStatus = computed<AITurnProgressStatus>(() => props.message.progress?.status || 'pending')
+const failurePhase = computed<RunFailurePhase | undefined>(() => {
+  if (props.message.role !== 'assistant') return undefined
+  const status = props.message.progress?.status
+  if (status === 'aborted') return 'aborted'
+  if (status === 'interrupted') return 'interrupted'
+  if (status === 'failed') return 'failed'
+  // A completed phase is authoritative. In particular, a recovered local
+  // stream error must not turn a successful run back into a failure.
+  if (status === 'completed') {
+    return props.message.error && !props.message.error.startsWith('Chat failed:') ? 'interrupted' : undefined
+  }
+  if (props.message.error && ['pending', 'running', 'waiting'].includes(status || '')) return 'interrupted'
+  if (props.message.error && status !== 'stopping') return 'failed'
+  return undefined
+})
 const progressDuration = computed(() => {
   const value = props.message.progress?.durationMS
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? formatAIWorkedDuration(value) : undefined
@@ -282,6 +300,14 @@ onBeforeUnmount(() => { mounted = false })
       :bubble="message.role === 'user'"
       :aria-label="message.role === 'user' ? 'Your message' : 'Assistant message'"
     >
+      <template v-if="failurePhase" #before>
+        <RunFailureNotice
+          :phase="failurePhase"
+          :diagnostic="message.error"
+          @recovery="emit('recovery', $event)"
+        />
+      </template>
+
       <template v-if="progressVisible" #progress>
         <AITurnProgress
           :turn-id="message.id"
@@ -367,7 +393,7 @@ onBeforeUnmount(() => { mounted = false })
 
     <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 
-    <template v-if="message.approval || message.error || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
+    <template v-if="message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
       <!--
         A question is not an approval. It names no tool, and what resolves it is
         an answer — so it gets the question and a reply box rather than an
@@ -444,7 +470,6 @@ onBeforeUnmount(() => { mounted = false })
         </template>
       </AIInterrupt>
 
-      <div v-if="message.error" class="agents-err" role="alert">{{ message.error }}</div>
       <div v-if="message.runID && showRunLink" class="k-ai-message-metadata agents-message-footer">
         <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
       </div>

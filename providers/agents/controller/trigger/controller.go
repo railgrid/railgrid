@@ -78,6 +78,7 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Named("agents-trigger").
 		For(&agentsv1alpha1.Trigger{}).
 		Watches(&agentsv1alpha1.Agent{}, triggersForAgent).
+		Watches(&agentsv1alpha1.Connection{}, triggersForConnection).
 		Complete(r)
 }
 
@@ -98,6 +99,30 @@ func triggersForAgent(clusterName multicluster.ClusterName, cl cluster.Cluster) 
 		}
 		return reqs
 	}))(clusterName, cl)
+}
+
+// triggersForConnection enqueues Triggers whose connectionRef names the
+// Connection that changed. A trigger with a dangling connectionRef otherwise
+// stays marked invalid after the missing Connection is created.
+func triggersForConnection(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+	return mchandler.Lift(handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return triggerRequestsForConnection(ctx, cl.GetClient(), obj.GetName())
+	}))(clusterName, cl)
+}
+
+func triggerRequestsForConnection(ctx context.Context, c client.Reader, connectionName string) []reconcile.Request {
+	var list agentsv1alpha1.TriggerList
+	if err := c.List(ctx, &list); err != nil {
+		klog.FromContext(ctx).Error(err, "listing triggers to re-validate")
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		if strings.TrimSpace(list.Items[i].Spec.ConnectionRef) == connectionName {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
+		}
+	}
+	return reqs
 }
 
 // Reconcile handles one Trigger.

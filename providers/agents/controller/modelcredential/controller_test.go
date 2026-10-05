@@ -45,11 +45,16 @@ var now = time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 
 type fakeManager struct {
 	mcmanager.Manager
-	c client.Client
+	c        client.Client
+	clusters map[multicluster.ClusterName]client.Client
 }
 
-func (m fakeManager) GetCluster(context.Context, multicluster.ClusterName) (cluster.Cluster, error) {
-	return fakeCluster{c: m.c}, nil
+func (m fakeManager) GetCluster(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
+	c := m.c
+	if routed := m.clusters[name]; routed != nil {
+		c = routed
+	}
+	return fakeCluster{c: c}, nil
 }
 
 type fakeCluster struct {

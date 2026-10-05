@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from '../api'
+import { ApiError, type ApiClient } from '../api'
 import { resolveConfirm } from '../portalkit/confirm'
 import type { AppStore } from '../store'
 import type { InboxItem, RunDetail as RunDetailData, RunSummary, Schedule } from '../types'
@@ -363,17 +363,58 @@ describe('Activity.vue', () => {
     expect(text(view.element.querySelector('.agents-approval-args'))).toBe('{}')
 
     const actions = view.element.querySelector('.agents-approval-actions')!
-    buttonWithText(actions, 'Approve').click()
-    buttonWithText(actions, 'Deny').click()
+    const approve = buttonWithText(actions, 'Approve & resume')
+    const deny = buttonWithText(actions, 'Deny')
+    approve.click()
     await settleVue(2)
 
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'approve')
     expect(resolveInbox).toHaveBeenCalledTimes(1)
-    expect([...actions.querySelectorAll<HTMLButtonElement>('button')].every(button => button.disabled)).toBe(true)
+    expect(text(approve)).toContain('Approving & resuming…')
+    expect(approve.disabled).toBe(true)
+    expect(approve.getAttribute('aria-busy')).toBe('true')
+    expect(deny.disabled).toBe(true)
+    expect(deny.getAttribute('aria-busy')).toBeNull()
+    expect(text(view.element.querySelector('.agents-approval-row'))).toContain('edges__pods_delete')
 
     resolution.resolve({})
     await settleVue()
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
+  })
+
+  it('refreshes pending approvals after a denied or uncertain resolution without exposing backend text', async () => {
+    const item: InboxItem = {
+      id: 'i2', agentName: 'scout', runID: 'r10', kind: 'approval', state: 'pending',
+      prompt: 'scout wants to run deploy', payload: { tool: 'deploy', args: '{}' }, createdAt: new Date().toISOString(),
+    }
+    const inboxRefresh = deferred<InboxItem[]>()
+    const listInbox = vi.fn().mockImplementation(() => inboxRefresh.promise)
+    const listRuns = vi.fn().mockResolvedValue({ items: [], nextCursor: '' })
+    const resolveInbox = vi.fn().mockRejectedValue(new ApiError(403, 'Authorization: Bearer sensitive-backend-detail'))
+    const api = stubApi({ listInbox, listRuns, resolveInbox })
+    const store = makeStore(api)
+    store.inbox.data = [item]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+    const actions = view.element.querySelector('.agents-approval-actions')!
+    const approve = buttonWithText(actions, 'Approve & resume')
+
+    approve.click()
+    await settleVue(3)
+
+    expect(resolveInbox).toHaveBeenCalledWith('i2', 'approve')
+    expect(approve.disabled).toBe(true)
+    approve.click()
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+    inboxRefresh.resolve([item])
+    await settleVue(3)
+    expect(approve.disabled).toBe(false)
+    expect(listInbox).toHaveBeenCalled()
+    expect(listRuns.mock.calls.length).toBeGreaterThan(1)
+    expect(text(document.querySelector('.k-toast--error'))).toContain('do not have permission')
+    expect(text(document.querySelector('.k-toast--error'))).not.toContain('sensitive-backend-detail')
+    expect(view.element.querySelector('.agents-approval-row')).not.toBeNull()
   })
 
   it('blocks approval without a valid disclosed argument object but leaves denial available', async () => {
@@ -760,14 +801,27 @@ describe('RunDetail.vue', () => {
     })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
     const actions = view.element.querySelector('.agents-approval-actions')!
+    const stateMessage = view.element.querySelector('.agents-run-state-message')!
+    const inputMessage = view.element.querySelector('.agents-run-input-message')!
+    const approvalDisclosure = view.element.querySelector('.agents-approval-disclosure')!
 
-    buttonWithText(actions, 'Approve').click()
-    buttonWithText(actions, 'Deny').click()
+    expect(text(approvalDisclosure)).toContain('edges__pods_delete')
+    expect(text(view.element.querySelector('.agents-approval-args'))).toBe('{}')
+    expect(Boolean(stateMessage.compareDocumentPosition(inputMessage) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+
+    const approve = buttonWithText(actions, 'Approve & resume')
+    const deny = buttonWithText(actions, 'Deny')
+    approve.click()
+    deny.click()
     await settleVue(2)
 
     expect(resolveInbox).toHaveBeenCalledTimes(1)
     expect(resolveInbox).toHaveBeenCalledWith('i7', 'approve')
     expect([...actions.querySelectorAll<HTMLButtonElement>('button')].every(button => button.disabled)).toBe(true)
+    expect(text(approve)).toContain('Approving & resuming…')
+    expect(approve.getAttribute('aria-busy')).toBe('true')
+    expect(text(deny)).toBe('Deny')
+    expect(deny.getAttribute('aria-busy')).toBeNull()
 
     resolution.resolve({})
     await settleVue()
@@ -795,6 +849,32 @@ describe('RunDetail.vue', () => {
     expect(resolveInbox).toHaveBeenCalledWith('i7', 'deny')
   })
 
+  it('refreshes run state after a permission failure without exposing backend details', async () => {
+    const getRun = vi.fn().mockResolvedValue(detail({
+      phase: 'PendingApproval',
+      pending: { inboxID: 'i8', tool: 'deploy', args: '{"target":"prod"}' },
+    }))
+    const resolveInbox = vi.fn().mockRejectedValue(new ApiError(403, 'Authorization: Bearer secret-response-body'))
+    const inboxRefresh = deferred<InboxItem[]>()
+    const api = stubApi({ getRun, resolveInbox, listInbox: vi.fn().mockImplementation(() => inboxRefresh.promise) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const approve = buttonWithText(view.element, 'Approve & resume')
+
+    approve.click()
+    await settleVue(5)
+
+    expect(getRun).toHaveBeenCalledTimes(2)
+    expect(approve.disabled).toBe(true)
+    approve.click()
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+    inboxRefresh.resolve([])
+    await settleVue(3)
+    expect(text(view.element.querySelector('.agents-approval-args'))).toContain('prod')
+    expect(buttonWithText(view.element, 'Approve & resume').disabled).toBe(false)
+    expect(text(document.querySelector('.k-toast--error'))).toContain('do not have permission')
+    expect(text(document.querySelector('.k-toast--error'))).not.toContain('secret-response-body')
+  })
+
   it('ignores server events for unrelated runs', async () => {
     const getRun = vi.fn().mockResolvedValue(detail())
     const api = stubApi({ getRun })
@@ -809,14 +889,46 @@ describe('RunDetail.vue', () => {
     expect(getRun).toHaveBeenCalledTimes(calls)
   })
 
-  it('shows the error and partial output for a failed run', async () => {
-    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ phase: 'Failed', message: 'model unavailable', output: 'got this far', sources: ['https://example.com/evidence'] })) })
+  it('leads with a safe recovery summary and keeps the technical error, partial output, and trace inspectable', async () => {
+    const diagnostic = 'HTTP 400 Bad Request: reasoning_effort is not supported by this model. Authorization: Bearer private-value-123456789.'
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ phase: 'Failed', message: diagnostic, output: 'got this far', sources: ['https://example.com/evidence'] })) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const stateMessage = view.element.querySelector('.agents-run-state-message')!
+    const failure = stateMessage.querySelector<HTMLElement>('.agents-run-state')!
+    const inputMessage = view.element.querySelector('.agents-run-input-message')!
+    const outputMessage = view.element.querySelector('.agents-run-output-message')!
+    const trace = view.element.querySelector('.agents-run-activity')!
+    const details = failure.querySelector<HTMLDetailsElement>('details')!
 
-    expect(text(view.element.querySelector('.agents-err'))).toContain('model unavailable')
+    expect(failure.getAttribute('role')).toBe('alert')
+    expect(text(failure.querySelector('h3'))).toBe('The model rejected a reasoning setting')
+    expect(details.open).toBe(false)
+    expect(Boolean(stateMessage.compareDocumentPosition(inputMessage) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    expect(Boolean(stateMessage.compareDocumentPosition(outputMessage) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    expect(Boolean(outputMessage.compareDocumentPosition(trace) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
     expect(text(view.element)).toContain('Partial output')
     expect(text(view.element.querySelector('.agents-run-output-message .agents-body'))).toContain('got this far')
     expect(view.element.querySelector('.agents-runsources a')?.getAttribute('href')).toBe('https://example.com/evidence')
+
+    details.querySelector('summary')!.click()
+    await settleVue()
+    const technicalDetails = text(details.querySelector('pre'))
+    expect(technicalDetails).toContain('reasoning_effort')
+    expect(technicalDetails).toContain('HTTP 400')
+    expect(technicalDetails).not.toContain('private-value-123456789')
+    buttonWithText(failure, 'Review model selection').click()
+    expect(view.navigations).toContainEqual({ kind: 'agent', name: 'scout', tab: 'config' })
+  })
+
+  it('labels an aborted run as canceled without offering a failure correction', async () => {
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ phase: 'Aborted', message: 'operator canceled this run', output: 'partial work' })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const failure = view.element.querySelector<HTMLElement>('.agents-run-state')!
+
+    expect(failure.getAttribute('role')).toBe('status')
+    expect(text(failure.querySelector('h3'))).toBe('Run canceled')
+    expect(failure.querySelector('.agents-run-state__recovery')).toBeNull()
+    expect(text(view.element.querySelector('.agents-run-output-message .agents-body'))).toContain('partial work')
   })
 
   it('summarizes running, queued, approval-gated, completed, and failed children', async () => {
