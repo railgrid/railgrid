@@ -331,9 +331,11 @@ type HarnessIdentity struct {
 }
 
 // selectHarnessIdentity binds a session row to the current Agent incarnation.
-// Legacy task IDs are adopted only when the row's last update proves that it
-// belongs to this Agent lifetime. A stale row is reset onto the UID identity;
-// ambiguous timestamps fail closed.
+// Adoption of an unmarked legacy row assumes pre-UID writers were drained for
+// the upgrade; CreatedAt and UpdatedAt reject clearly stale rows but cannot
+// fence a late write from an old binary. Explicitly UID-marked rows are fenced
+// by their owner. A stale row is reset onto the UID identity; ambiguous
+// timestamps fail closed.
 func selectHarnessIdentity(row *HarnessSession, identity HarnessIdentity, now time.Time) error {
 	if strings.TrimSpace(identity.TaskID) == "" {
 		return fmt.Errorf("harness task identity is required")
