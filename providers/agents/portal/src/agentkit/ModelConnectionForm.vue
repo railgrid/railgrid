@@ -243,6 +243,7 @@ function isLocked(): boolean {
         <Check :size="14" :stroke-width="2" />Connection verified. The model responded successfully.
       </p>
       <p v-else-if="testNotice" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite">{{ testNotice }}</p>
+      <slot name="probe-details" />
     </div>
 
     <p class="k-model-form-test-hint">Testing sends a small model request and may incur a charge.</p>

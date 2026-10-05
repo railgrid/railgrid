@@ -74,7 +74,14 @@ export function parseHash(hash = location.hash): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
   const [head, second, third, fourth, fifth] = parts
   if (head === 'create') {
-    if (second === 'agent' || second === 'toolset' || second === 'model') return { kind: 'create', resource: second }
+    if (second === 'agent' || second === 'model') {
+      return {
+        kind: 'create',
+        resource: second,
+        ...(third === 'harness' ? { type: third } : {}),
+      }
+    }
+    if (second === 'toolset') return { kind: 'create', resource: 'toolset' }
     if (second === 'connection') {
       return { kind: 'create', resource: 'connection', ...(third ? { type: decodePart(third) } : {}) }
     }

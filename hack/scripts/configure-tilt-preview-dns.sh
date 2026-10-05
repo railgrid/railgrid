@@ -95,9 +95,11 @@ ${marker_start}
 EOF
 if [[ -n "$hub_host" ]]; then
   escaped_hub_host="${hub_host//./\\.}"
+  # External provider pods use this Docker hostname to reach the host hub.
+  # Native Linux kind clusters do not resolve it without an explicit mapping.
   cat >>"$block_file" <<EOF
     template IN A {
-        match ^${escaped_hub_host}\\.$
+        match ^(${escaped_hub_host}|host\\.docker\\.internal)\\.$
         answer "{{ .Name }} 60 IN A ${hub_ip}"
         fallthrough
     }

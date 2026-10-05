@@ -24,6 +24,7 @@ async function mountConfig(
   credentials: Array<{ name: string; model?: string; provider?: string }> = [],
   edges: Edge[] = [],
   status?: Agent['status'],
+  credentialState: { loaded?: boolean; hasSnapshot?: boolean; loading?: boolean; error?: string | null } = {},
 ) {
   const patchAgent = vi.fn().mockImplementation((_n: string, body: AgentPatch) => Promise.resolve({ metadata: { name: 'scout' }, spec: body }))
   const api = stubApi({ patchAgent })
@@ -31,8 +32,7 @@ async function mountConfig(
   store.agents.data = [{ ...agentFixture('scout', spec), ...(status ? { status } : {}) }]
   store.agents.loaded = true
   store.credentials.data = credentials
-  store.credentials.loaded = true
-  store.credentials.hasSnapshot = true
+  Object.assign(store.credentials, { loaded: true, hasSnapshot: true, ...credentialState })
   store.edges.data = edges
   store.edges.loaded = true
   store.edges.hasSnapshot = true
@@ -320,6 +320,112 @@ describe('agent config', () => {
     sectionButton(el, 'Save policy').click()
     await settle(4)
     expect(patchAgent.mock.calls[0][1]).toMatchObject({ maxToolTurns: 0, timeoutSeconds: 0, budgetTokens: 0 })
+  })
+
+  it.each([
+    ['agent-max-tool-turns-label', '1.5', 'agent-max-tool-turns-error', 'Enter a whole number'],
+    ['agent-max-tool-turns-label', '-1', 'agent-max-tool-turns-error', 'Enter a whole number'],
+    ['agent-run-timeout-label', 'Infinity', 'agent-run-timeout-error', 'Enter a whole number'],
+    ['agent-run-timeout-label', '9007199254740992', 'agent-run-timeout-error', 'within the supported range'],
+  ])('rejects invalid limit drafts without losing dirty state (%s = %s)', async (labelID, value, errorID, errorText) => {
+    const { el, patchAgent } = await mountConfig()
+    const input = el.querySelector<HTMLInputElement>(`[aria-labelledby="${labelID}"]`)!
+    input.value = value
+    input.dispatchEvent(new Event('input'))
+    await settle()
+
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(input.getAttribute('aria-describedby')).toContain(errorID)
+    expect(text(el.querySelector(`#${errorID}`))).toContain(errorText)
+    const savePolicy = sectionButton(el, 'Save policy')
+    expect(savePolicy.disabled).toBe(true)
+    expect(savePolicy.getAttribute('aria-describedby')).toContain(errorID)
+    expect(text(el.querySelector('[data-config-save-status="dirty"]'))).toContain('Unsaved changes')
+    expect(patchAgent).not.toHaveBeenCalled()
+  })
+
+  it('accepts explicit zero as the provider default and saves whole limits unchanged', async () => {
+    const { el, patchAgent } = await mountConfig()
+    const turns = el.querySelector<HTMLInputElement>('[aria-labelledby="agent-max-tool-turns-label"]')!
+    const timeout = el.querySelector<HTMLInputElement>('[aria-labelledby="agent-run-timeout-label"]')!
+    turns.value = '0'
+    turns.dispatchEvent(new Event('input'))
+    timeout.value = '60'
+    timeout.dispatchEvent(new Event('input'))
+    await settle()
+
+    expect(sectionButton(el, 'Save policy').disabled).toBe(false)
+    sectionButton(el, 'Save policy').click()
+    await settle(4)
+
+    expect(patchAgent).toHaveBeenCalledWith('scout', expect.objectContaining({ maxToolTurns: 0, timeoutSeconds: 60 }))
+  })
+
+  it('keeps an invalid model-only limit visible and blocks a harness switch until it is cleared', async () => {
+    const { el, patchAgent } = await mountConfig()
+    const turns = el.querySelector<HTMLInputElement>('[aria-labelledby="agent-max-tool-turns-label"]')!
+    turns.value = '2.5'
+    turns.dispatchEvent(new Event('input'))
+    el.querySelector<HTMLInputElement>('input[name="backend-type"][value="harness"]')!.click()
+    await settle()
+
+    expect(text(el.querySelector('#agent-harness-policy-issues'))).toContain('Max tool turns')
+    expect(text(el.querySelector('#agent-harness-policy-issues'))).toContain('whole number')
+    expect(sectionButton(el, 'Save backend').disabled).toBe(true)
+    expect(sectionButton(el, 'Save policy').getAttribute('aria-describedby')).toContain('agent-harness-policy-issues')
+    expect(sectionButton(el, 'Clear draft limit').disabled).toBe(false)
+    expect(patchAgent).not.toHaveBeenCalled()
+  })
+
+  it('hides model-only tool-turn limits and explains runner-owned permissions for a harness agent', async () => {
+    const { el } = await mountConfig({
+      backend: {
+        type: 'harness',
+        harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'claude', workspace: 'persistent' },
+      },
+      autonomy: 'ask',
+      limits: { timeoutSeconds: 600 },
+    })
+
+    const suggest = el.querySelector<HTMLInputElement>('input[name="autonomy"][value="suggest"]')!
+    const ask = el.querySelector<HTMLInputElement>('input[name="autonomy"][value="ask"]')!
+    const auto = el.querySelector<HTMLInputElement>('input[name="autonomy"][value="auto"]')!
+    expect(suggest.disabled).toBe(true)
+    expect(ask.disabled).toBe(false)
+    expect(auto.disabled).toBe(true)
+    expect(el.querySelector('#agent-max-tool-turns-label')).toBeNull()
+    expect(el.querySelector('#agent-run-timeout-label')).not.toBeNull()
+    expect(el.querySelector('#agent-harness-permission-policy')?.textContent).toContain('configured by Claude Code or Codex on the machine')
+    expect(el.textContent).toContain('harness caps depend on usage reported by the runner')
+    expect(el.querySelector('[data-harness-tool-turn-limit]')?.textContent).toContain('cannot cap individual tool calls')
+  })
+
+  it('does not rewrite a model policy when selecting a harness and requires an explicit supported policy save', async () => {
+    const { el, patchAgent } = await mountConfig({ autonomy: 'suggest', limits: { maxToolTurns: 12 } })
+    const suggest = el.querySelector<HTMLInputElement>('input[name="autonomy"][value="suggest"]')!
+    const ask = el.querySelector<HTMLInputElement>('input[name="autonomy"][value="ask"]')!
+    const harness = el.querySelector<HTMLInputElement>('input[name="backend-type"][value="harness"]')!
+
+    harness.click()
+    await settle()
+
+    expect(suggest.checked).toBe(true)
+    expect(suggest.disabled).toBe(true)
+    expect(ask.disabled).toBe(false)
+    expect(el.querySelector('[data-harness-tool-turn-limit]')?.textContent).toContain('12-turn cap')
+    const saveBackend = sectionButton(el, 'Save backend')
+    expect(saveBackend.disabled).toBe(true)
+    expect(el.querySelector('#agent-backend-policy-blocker')?.textContent).toContain('Choose Ask and save the policy')
+
+    sectionButton(el, 'Clear draft limit').click()
+    ask.click()
+    await settle()
+    expect(suggest.checked).toBe(false)
+    expect(saveBackend.disabled).toBe(true)
+    sectionButton(el, 'Save policy').click()
+    await settle(5)
+
+    expect(patchAgent).toHaveBeenCalledWith('scout', expect.objectContaining({ autonomy: 'ask', maxToolTurns: 0 }))
   })
 
   it.each([
@@ -1483,7 +1589,8 @@ describe('agent creation backend choice', () => {
     const noEdges = await mountWizard({ edges: [] })
     backendRadio(noEdges.el, 'harness').click()
     await settle(2)
-    expect(text(noEdges.el)).toContain('No Linux or macOS machine in this workspace yet')
+    expect(text(noEdges.el)).toContain('Connect a Linux or macOS machine in Edges, then check again here.')
+    expect(text(noEdges.el)).toContain('Keep this tab open to retain your agent draft.')
     expect(primary(noEdges.el).disabled).toBe(true)
 
     const noIdentity = await mountWizard({ credentials: [CHAT] })
@@ -1615,6 +1722,40 @@ describe('agent backend', () => {
     await settle()
     const warning = el.querySelector('.k-inline-notification--warning[role="status"]')
     expect(warning?.textContent).toContain('Showing the last loaded machines. machine refresh failed')
+  })
+
+  it('does not report an empty harness identity list until a successful credential snapshot exists', async () => {
+    const { el, store } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      [],
+      EDGES,
+      undefined,
+      { loaded: false, hasSnapshot: false, loading: true },
+    )
+
+    expect(el.querySelector('#agent-harness-credential-loading')?.textContent).toContain('Loading harness identities')
+    expect(el.querySelector('#agent-harness-credential-empty')).toBeNull()
+    expect(el.querySelector('a[href*="create/model/harness"]')).toBeNull()
+    expect(sectionButton(el, 'Save backend').disabled).toBe(true)
+
+    store.credentials.loading = false
+    store.credentials.loaded = true
+    store.credentials.error = 'credential read failed'
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    expect(el.querySelector('#agent-harness-credential-read-error')?.textContent).toContain('Could not load harness identities. credential read failed')
+    expect(el.querySelector('#agent-harness-credential-empty')).toBeNull()
+    expect(el.querySelector('a[href*="create/model/harness"]')).toBeNull()
+    expect(sectionButton(el, 'Save backend').disabled).toBe(true)
+
+    sectionButton(el, 'Retry').click()
+    await settle(6)
+
+    expect(store.credentials.hasSnapshot).toBe(true)
+    expect(el.querySelector('#agent-harness-credential-empty')?.textContent).toContain('No harness identities yet')
+    expect(el.querySelector('a[href*="create/model/harness"]')?.textContent).toContain('Add harness identity')
+    expect(sectionButton(el, 'Save backend').disabled).toBe(false)
   })
 
   it('offers only chat endpoints to a model-backed agent', async () => {

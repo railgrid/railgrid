@@ -35,6 +35,7 @@ export async function mountVue(component: Component, initialProps: Record<string
   const declared = new Set(Array.isArray(componentEmits) ? componentEmits : Object.keys(componentEmits || {}))
   const listeners: Record<string, (detail?: unknown) => void> = {}
   if (declared.has('navigate')) listeners.onNavigate = route => navigations.push(route as Route)
+  if (declared.has('add-credential')) listeners.onAddCredential = capture('add-credential')
   if (declared.has('create-success')) listeners.onCreateSuccess = capture('create-success')
   if (declared.has('create-cancel')) listeners.onCreateCancel = capture('create-cancel')
   if (declared.has('edit-success')) listeners.onEditSuccess = capture('edit-success')

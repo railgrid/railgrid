@@ -727,12 +727,58 @@ alphabetically, and the portal groups on that split.
 
 Curation narrows the list; it does not prove anything. That is what the `test`
 verb's optional `{"model": "<id>"}` body is for: the editor probes the model a
-person just picked, with the endpoint and key still taken from the saved object
-and its Secret, and "Save changes" stays disabled until it answers. A save that
-only rotates the key is unaffected — nothing new is being claimed about the
-model. And when a run does fail this way anyway (a model retired between the
+person just picked, with the endpoint and key taken from a ModelCredential
+and its Secret, and "Save changes" stays disabled until it answers. New endpoints
+and replacement keys use the temporary credential lifecycle below, so a failed
+candidate never changes a working saved connection. And when a run does fail
+this way anyway (a model retired between the
 probe and the run), `llm.ExplainChatCompletionsRefusal` keeps the provider's
 sentence and adds which credential owns the model id.
+
+### Temporary model verification credentials
+
+The editor creates a temporary ModelCredential first, then its Secret, with
+`railgrid.ai/owner=agents`, `agents.railgrid.ai/credential-probe=true`, and the
+same unique `agents.railgrid.ai/credential-probe-id` annotation. The Secret's
+owner reference names the exact ModelCredential UID. Only the Secret contains
+the key. The existing `test` and `discover` verbs verify this candidate; saving
+the named connection remains a separate user action.
+
+The portal deletes the pair after the verb completes. If Secret cleanup fails,
+it retains the ModelCredential so the controller can retry. Closing a browser
+or changing workspace cannot bypass the host authority guard to perform cleanup.
+Instead, the existing leader-elected, multicluster ModelCredential controller
+owns a bounded retention deadline for marked probes. This is the narrowly
+approved exception to the ordinary requeue cadence in AGENTS §5.8; it is not a
+workspace sweep or a substitute for watching another KRM object.
+
+The maximum deadline is the ModelCredential's server `creationTimestamp` plus
+ten minutes. The optional RFC3339 `agents.railgrid.ai/credential-probe-expires-at`
+annotation may shorten it, never extend it. Missing or malformed annotations
+use the server-derived maximum, including probes created before the annotation
+was introduced. Reconciliation after a restart derives the same deadline from
+persisted metadata. Marked probes skip normal background model readiness calls.
+
+At expiry, cleanup uses only the request's tenant client. A dedicated finalizer
+retains the credential while a conditional delete reserves it for cleanup;
+concurrent edits that remove its probe markers cannot lose their Secret through
+a stale reconcile. The controller verifies the Secret's provider label, probe
+marker and ID, and exact owner reference before deleting it with UID and
+resource-version preconditions. It removes the credential's finalizer only after
+the provider's scoped view reports no Secret at that name. A failed read, ownership mismatch, terminating
+Secret or failed deletion retains the credential for retry; saved connections
+and unrelated Secrets are not eligible.
+Deadline cleanup requires an available controller and kcp; failed API calls retry
+when service recovers. No new permission claim is needed: the existing Secret
+claim already permits deletion only of Secrets labelled for Agents.
+Because that claim filters reads by label, NotFound can also mean the owner
+label was removed. Such a hidden dependent is handled by kcp garbage collection
+through its exact owner reference; the provider does not broaden its access or
+delete an unrelated hidden Secret.
+The browser rechecks the candidate's identity, endpoint and deadline after
+creating its Secret. If a delayed Secret creation finishes after its owner has
+already expired, the owner reference also makes it eligible for kcp garbage
+collection; no browser cleanup bypasses the workspace authority guard.
 
 **Agents report their credentials.** The Agent reconciler resolves every name
 in `spec.models` and `spec.modelFallbacks` and sets

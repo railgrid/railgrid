@@ -1,30 +1,8 @@
 <script setup lang="ts">
-// The model connection editor writes either of the two families a
-// ModelCredential can be, and WHICH ONE is the first question it asks.
-//
-// A CHAT ENDPOINT (openai, openai-compatible) is a two-step form, and the step
-// boundary is a SAVE.
-//
-// Both probes — "Find models" and "Test connection" — are verbs on a saved
-// ModelCredential, so the credential is written first and asked about second.
-// That ordering is not a limitation to work around; it is what makes the
-// first-run flow work at all. The probes used to hang off an arbitrary Agent,
-// which meant the very first thing a person does in an empty workspace —
-// connect a model — had nothing to run the probe as, and the form had to
-// explain that it could not test what the person had just typed.
-//
-// So: name + endpoint + key → Save → the endpoint is asked what it serves →
-// pick a model → Save. A credential with no model is a legitimate halfway
-// state (its reconciler will still report whether the key works), and the
-// editor stays open on it rather than pretending the job is done.
-//
-// A HARNESS IDENTITY (claude-code, codex) is one step, because there is
-// nothing to ask anything: no endpoint, no /models, no chat model. Its whole
-// content is which login it is and the login itself — and for this family the
-// Secret KEY is the kind declaration, so the choice of key is what gets
-// written, not spec.secretKey. It gets its own form (HarnessCredentialForm)
-// rather than a mode of this one, so the controls that cannot mean anything
-// are absent instead of disabled.
+// Connection probes use saved credentials only when the endpoint, provider,
+// and key are unchanged. New or rotated credentials are verified through a
+// temporary workspace object; the named connection is saved only after the
+// exact candidate responds. Harness identities retain their distinct flow.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import {
@@ -41,12 +19,14 @@ import {
 import { DEFAULT_PROVIDER_PRESET, PROVIDER_PRESETS, presetFor, providerPreset } from '../conn-defs'
 import ModelConnectionForm from '../agentkit/ModelConnectionForm.vue'
 import HarnessCredentialForm from '../components/HarnessCredentialForm.vue'
+import TechnicalDetails from '../components/TechnicalDetails.vue'
+import { errorTechnicalDiagnostic, presentModelProbeResult } from '../model-probe-result'
 import { confirmDialog } from '../portalkit/confirm'
 
 // catalog is the curated reference list the Models view already loaded. It is
 // passed in rather than fetched again, and it is optional: without it every
 // discovered model is simply "available" and the picker shows one flat group.
-const props = defineProps<{ api: ApiClient; credential?: Credential; busy: boolean; error?: string | null; catalog?: ModelInfo[] }>()
+const props = defineProps<{ api: ApiClient; credential?: Credential; initialFamily?: 'chat' | 'harness'; busy: boolean; error?: string | null; catalog?: ModelInfo[] }>()
 const emit = defineEmits<{
   save: [body: CredentialWrite, result?: CredentialTestResult]
   cancel: []
@@ -57,9 +37,14 @@ const editorForm = ref<{ $el: HTMLFormElement } | null>(null)
 // The preset IS the provider choice now: it carries spec.provider and the
 // family, so picking one changes which form exists rather than only which URL
 // is prefilled.
-const preset = ref(presetFor(props.credential).id)
+const initialPreset = props.credential ? presetFor(props.credential) : props.initialFamily === 'harness'
+  ? PROVIDER_PRESETS.find(item => item.family === 'harness')!
+  : DEFAULT_PROVIDER_PRESET
+const preset = ref(initialPreset.id)
 const current = computed(() => providerPreset(preset.value))
-const provider = computed(() => current.value.provider)
+const provider = computed(() => props.credential && preset.value === initialPreset.id
+  ? props.credential.provider || current.value.provider
+  : current.value.provider)
 const harness = computed(() => current.value.family === 'harness')
 const baseURL = ref(props.credential?.baseURL || DEFAULT_PROVIDER_PRESET.baseURL)
 const model = ref(props.credential?.model || '')
@@ -68,7 +53,7 @@ const apiKey = ref('')
 // harness identity would mean rewriting its Secret into a different shape and
 // unsaying spec.secretKey, and the honest way to do that is a new credential —
 // so an edit offers only the presets of the family it already is.
-const storedFamily = props.credential ? presetFor(props.credential).family : null
+const storedFamily = props.credential ? presetFor(props.credential).family : props.initialFamily === 'harness' ? 'harness' : null
 const options = computed(() => PROVIDER_PRESETS
   .filter(item => !storedFamily || item.family === storedFamily)
   .map(item => ({ value: item.id, label: item.label })))
@@ -79,6 +64,7 @@ const discovering = ref(false)
 const testing = ref(false)
 const discoveryError = ref('')
 const testError = ref('')
+const probeDiagnostic = ref('')
 const nameError = ref('')
 const endpointValidationError = ref('')
 const credentialError = ref('')
@@ -96,26 +82,20 @@ let providerFocusGeneration = 0
 // in there. It does not have to: a blank input writes nothing at all, and a
 // typed one declares its own kind.
 const harnessKeys = computed(() => harnessSecretKeys(provider.value))
-const harnessKey = ref<HarnessSecretKey>(harnessSecretKeys(presetFor(props.credential).provider)[0] ?? HARNESS_SECRET_KEY_OAUTH_TOKEN)
+const harnessKey = ref<HarnessSecretKey>(harnessSecretKeys(initialPreset.provider)[0] ?? HARNESS_SECRET_KEY_OAUTH_TOKEN)
 const harnessSecret = ref('')
 const codex = computed(() => harnessKey.value === HARNESS_SECRET_KEY_CODEX_AUTH)
 
-// saved is the step boundary: an unsaved credential has no object for a verb
-// to be addressed at, so neither probe can run yet.
+// A saved credential can be reused for probes without returning its key.
 const saved = computed(() => Boolean(props.credential))
-const SAVE_FIRST_NOTICE = 'Save this connection first. Finding models and testing run against the saved credential, so nothing has to hold your key in the browser.'
-const PICK_MODEL_NOTICE = 'Connection saved. Find models to see which chat models this endpoint serves, pick one, test it, then save again.'
+const ENTER_CREDENTIAL_NOTICE = 'Enter an endpoint and API key to find models, then test the selected model before connecting.'
+const PICK_MODEL_NOTICE = 'Find models to see what this endpoint serves, or enter a model ID. Test the model before saving.'
 // A model the endpoint lists is not a model it will answer chat on: a picked
 // id used to be exercised for the first time by the first agent run, which is
 // where the provider's "use the responses endpoint instead" 404 turned up.
 const TEST_MODEL_NOTICE = 'Test this model before saving. The endpoint listing a model is not a promise that it answers chat requests.'
 const CODEX_JSON_NOTICE = 'This is not a JSON object. Paste the contents of the auth.json file created by codex login.'
 
-const savedModel = computed(() => (props.credential?.model || '').trim())
-// A model that differs from what is stored is an unproven choice. Rotating the
-// key or changing nothing else is not: those were already verified for this
-// model, and re-testing them is a charge for no new information.
-const modelChanged = computed(() => saved.value && model.value.trim() !== savedModel.value)
 const fingerprint = computed(() => JSON.stringify([
   provider.value, baseURL.value.trim(), model.value.trim(), apiKey.value.trim(),
   harnessKey.value, harnessSecret.value.trim(),
@@ -141,8 +121,10 @@ const discoveredModels = computed(() => models.value.map(id => ({
 })))
 // A changed endpoint invalidates the stored key: it was issued for the old one
 // and must not be sent to a new one.
-const credentialChanged = computed(() => !props.credential || baseURL.value.replace(/\/+$/, '') !== (props.credential.baseURL || DEFAULT_PROVIDER_PRESET.baseURL).replace(/\/+$/, ''))
+const credentialChanged = computed(() => !props.credential || provider.value !== (props.credential.provider || initialPreset.provider) || baseURL.value.replace(/\/+$/, '') !== (props.credential.baseURL || DEFAULT_PROVIDER_PRESET.baseURL).replace(/\/+$/, ''))
 const needsKey = computed(() => credentialChanged.value || props.credential?.secretResolved === false)
+const reuseSavedCredential = computed(() => saved.value && !credentialChanged.value && !apiKey.value.trim())
+const canProbe = computed(() => Boolean(baseURL.value.trim()) && (!needsKey.value || Boolean(apiKey.value.trim())))
 const providerGuidance = computed(() => current.value.guidance)
 
 // A harness identity's secret is required when there is nothing stored to
@@ -178,37 +160,38 @@ function updateProvider(nextPreset: string): void {
   })
 }
 
-// The notice explains what the disabled buttons are waiting for, in the order
-// a person meets it: save, then choose a model.
+// The notice names the next step without implying discovery is verification.
 const notice = computed(() => {
-  if (!saved.value) return SAVE_FIRST_NOTICE
+  if (!canProbe.value) return ENTER_CREDENTIAL_NOTICE
   if (!model.value.trim()) return PICK_MODEL_NOTICE
-  if (modelChanged.value && !verified.value) return TEST_MODEL_NOTICE
+  if (!verified.value) return TEST_MODEL_NOTICE
   return ''
 })
 
-// An unsaved form saves what it has; a saved one must carry a model, because
-// that is the field an agent actually runs on. A harness identity has neither
-// an endpoint nor a model to require.
+// A chat connection is saved only after the exact candidate model responds.
+// Harness identities have a separate credential-shape validation contract.
 const saveDisabled = computed(() => {
   if (!name.value.trim()) return true
   if (harness.value) return needsHarnessSecret.value && !harnessSecret.value.trim()
   return !baseURL.value.trim() ||
     (needsKey.value && !apiKey.value.trim()) ||
-    (saved.value && !model.value.trim()) ||
-    (modelChanged.value && !verified.value)
+    !model.value.trim() || !verified.value
 })
 
 watch(fingerprint, () => {
   generation++
   testedFingerprint.value = ''
   testError.value = ''
+  probeDiagnostic.value = ''
   endpointValidationError.value = ''
   credentialError.value = ''
   modelError.value = ''
   harnessSecretError.value = ''
 })
 watch(name, () => { nameError.value = '' })
+// A typed key belongs to the endpoint it was entered for. Never carry it to a
+// different provider or URL, even before the candidate has been saved.
+watch([provider, baseURL], () => { apiKey.value = '' }, { flush: 'sync' })
 // A changed endpoint or key means the discovered list belongs to something
 // else. A changed model does not: it was picked FROM that list.
 watch([baseURL, apiKey], () => { models.value = []; discoveryError.value = '' })
@@ -228,7 +211,7 @@ watch(harnessKeys, keys => { if (keys.length && !keys.includes(harnessKey.value)
 watch(harnessKey, () => { harnessSecret.value = '' })
 onBeforeUnmount(() => { generation++; providerFocusGeneration++; apiKey.value = ''; harnessSecret.value = '' })
 
-function valid(requireModel: boolean): boolean {
+function valid(requireModel: boolean, requireVerification = false): boolean {
   endpointValidationError.value = ''
   credentialError.value = ''
   modelError.value = ''
@@ -244,7 +227,7 @@ function valid(requireModel: boolean): boolean {
   // The button is disabled for this too, but a form can also be submitted with
   // Enter, and an unproven model is exactly what this change exists to stop
   // from being written.
-  else if (modelChanged.value && !verified.value) { modelError.value = TEST_MODEL_NOTICE; ok = false }
+  else if (requireVerification && !verified.value) { modelError.value = TEST_MODEL_NOTICE; ok = false }
   return ok
 }
 
@@ -271,27 +254,36 @@ function validHarness(): boolean {
   return !harnessSecretError.value
 }
 
-// probe runs one of the two verbs against the SAVED credential. Neither takes
-// anything from this form: the object and its Secret are the whole input, so a
-// probe can never be pointed at an endpoint the saved credential does not have.
+// Only unchanged credentials may reuse the saved key. New key/endpoint values
+// use an isolated temporary credential and never change the active connection.
 async function probe(discover: boolean) {
-  if (locked.value || !props.credential || harness.value) return
+  if (locked.value || harness.value || !valid(!discover)) return
   if (!discover && !model.value.trim()) { modelError.value = 'Choose or enter a model ID.'; return }
   const serial = ++generation
   const snapshot = fingerprint.value
+  probeDiagnostic.value = ''
   if (discover) { discovering.value = true; discoveryError.value = '' } else { testing.value = true; testError.value = ''; testedFingerprint.value = '' }
   try {
-    const target = props.credential.name
+    const target = props.credential?.name
     // The probe carries the model currently PICKED, not the one saved on the
     // object — that is the whole point: the pick is proved before it is
     // written, not by the first run that uses it.
-    const result = await (discover ? props.api.discoverCredential(target) : props.api.testCredential(target, model.value.trim()))
+    const result = await (reuseSavedCredential.value && target
+      ? discover ? props.api.discoverCredential(target) : props.api.testCredential(target, model.value.trim())
+      : props.api.probeCredentialDraft({ name: name.value.trim(), provider: provider.value, baseURL: baseURL.value.trim(), apiKey: apiKey.value.trim(), model: model.value.trim() }, discover))
     if (serial !== generation || snapshot !== fingerprint.value) return
-    if (!result.ok) throw new Error(result.error || 'The provider did not confirm this connection.')
+    if (!result.ok) {
+      const failure = presentModelProbeResult(result)
+      probeDiagnostic.value = failure.technicalDiagnostic || ''
+      if (discover) discoveryError.value = failure.error || ''
+      else testError.value = failure.error || ''
+      return
+    }
     if (discover) models.value = result.models || []
     else { testedFingerprint.value = snapshot; testResult.value = result }
   } catch (error) {
     if (serial !== generation) return
+    probeDiagnostic.value = errorTechnicalDiagnostic(error)
     if (discover) discoveryError.value = (error as Error).message
     else testError.value = (error as Error).message
   } finally { if (serial === generation) { discovering.value = false; testing.value = false } }
@@ -322,7 +314,7 @@ function submit() {
     })
     return
   }
-  const fieldsValid = valid(saved.value)
+  const fieldsValid = valid(true, true)
   const nameValid = namedWell()
   if (!fieldsValid || !nameValid) return
   emit('save', {
@@ -401,14 +393,14 @@ defineExpose({ cancel, locked })
   :discovered-models="discoveredModels"
   :discovery-loading="discovering"
   :discovery-error="discoveryError"
-  :discover-disabled="!saved"
-  discover-disabled-reason="Save this connection first — model discovery runs against the saved credential."
+  :discover-disabled="!canProbe"
+  discover-disabled-reason="Enter an endpoint and API key to find models."
   :testing="testing"
   :test-error="testError"
   :test-notice="notice"
   :form-error="error"
   :connection-tested="verified"
-  :test-disabled="!saved || !model.trim()"
+  :test-disabled="!canProbe || !model.trim()"
   :save-disabled="saveDisabled"
   :busy="busy"
   :editing="Boolean(credential)"
@@ -424,5 +416,7 @@ defineExpose({ cancel, locked })
   @test="probe(false)"
   @cancel="cancel"
   @save="submit"
- />
+ >
+   <template #probe-details><TechnicalDetails :diagnostic="probeDiagnostic" /></template>
+ </ModelConnectionForm>
 </template>

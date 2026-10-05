@@ -22,6 +22,7 @@ import SecretHandoff from '../components/SecretHandoff.vue'
 import { channelInbound } from '../conn-defs'
 import { mutate } from '../mutate'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
+import { portalHref } from '../portalkit/navigation'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../portalkit/toast'
@@ -55,7 +56,7 @@ import { useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../
 import Automation from './Automation.vue'
 
 const AUTONOMY_MODES: { id: Autonomy; label: string; blurb: string }[] = [
-  { id: 'suggest', label: 'Suggest', blurb: 'Every tool call waits for your approval. Safest; most interruptions.' },
+  { id: 'suggest', label: 'Suggest', blurb: 'Consequential tool calls wait for approval; memory, ask, wait, notify, and schedule-list built-ins remain available.' },
   { id: 'ask', label: 'Ask', blurb: 'Only tools matched by a grant’s approval patterns wait for you.' },
   { id: 'auto', label: 'Auto', blurb: 'Tools run without asking. Use only with tools you trust unattended.' },
 ]
@@ -144,6 +145,8 @@ const budgetUSDError = ref('')
 const budgetTokensError = ref('')
 const maxToolTurns = ref('')
 const timeoutSeconds = ref('')
+const maxToolTurnsValidation = computed(() => validateOptionalLimit(maxToolTurns.value))
+const timeoutSecondsValidation = computed(() => validateOptionalLimit(timeoutSeconds.value))
 const channels = ref<ChannelRow[]>([])
 const channelError = ref('')
 const channelErrorTarget = ref<{ key: number; field: 'name' | 'connection' } | null>(null)
@@ -356,8 +359,8 @@ const policyDraft = computed<PolicySnapshot>(() => {
     autonomy: autonomy.value,
     budgetUSD: budget.usdError ? budgetUSD.value.trim() : budget.budgetUSD,
     budgetTokens: budget.tokenError ? budgetTokens.value.trim() : budget.budgetTokens ? String(budget.budgetTokens) : '',
-    maxToolTurns: intOrZero(maxToolTurns.value),
-    timeoutSeconds: intOrZero(timeoutSeconds.value),
+    maxToolTurns: maxToolTurnsValidation.value.value,
+    timeoutSeconds: timeoutSecondsValidation.value.value,
   }
 })
 const channelsDraft = computed(() => channelSnapshot(channels.value))
@@ -380,8 +383,38 @@ const resolvedHarness = computed(() => {
   const version = backend.harness.version
   return version ? `${backend.harness.name} ${version}` : backend.harness.name
 })
-const policyDirty = computed(() => !same(policyDraft.value, baselines.policy))
+const policyDirty = computed(() => !same(policyDraft.value, baselines.policy) || policyLimitInvalid.value)
 const channelsDirty = computed(() => !same(channelsDraft.value, baselines.channels))
+const harnessPolicyTarget = computed(() => backendType.value === AGENT_BACKEND_HARNESS)
+const hasToolTurnLimit = computed(() => maxToolTurnsValidation.value.value > 0)
+const hasToolTurnDraft = computed(() => maxToolTurns.value.trim() !== '')
+const policyLimitInvalid = computed(() => Boolean(maxToolTurnsValidation.value.error || timeoutSecondsValidation.value.error))
+const harnessPolicyIssues = computed(() => {
+  if (!harnessPolicyTarget.value) return []
+  const issues: string[] = []
+  if (autonomy.value !== 'ask') issues.push('Choose Ask and save the policy.')
+  if (maxToolTurnsValidation.value.error) issues.push(`Max tool turns: ${maxToolTurnsValidation.value.error}`)
+  if (hasToolTurnLimit.value) issues.push('Clear Max tool turns and save the policy.')
+  return issues
+})
+const savedPolicyBlocksHarness = computed(() => Boolean(
+  baselines.policy && (baselines.policy.autonomy !== 'ask' || baselines.policy.maxToolTurns > 0),
+))
+const backendPolicyBlocker = computed(() => {
+  if (!harnessPolicyTarget.value) return ''
+  if (harnessPolicyIssues.value.length) return harnessPolicyIssues.value.join(' ')
+  if (savedPolicyBlocksHarness.value) return 'Save the updated policy before saving the harness backend.'
+  return ''
+})
+const policyDescription = computed(() => harnessPolicyTarget.value
+  ? 'The coding harness owns its permission prompts on the selected machine. Railgrid still enforces monthly usage caps and the run timeout.'
+  : 'Autonomy controls approval for provider-managed tools. Paused actions appear in Activity before they run.')
+
+function autonomyBlurb(mode: Autonomy): string {
+  if (!harnessPolicyTarget.value) return AUTONOMY_MODES.find(item => item.id === mode)?.blurb || ''
+  if (mode === 'ask') return 'The runner controls its own permission prompts on the selected machine.'
+  return 'Unavailable for coding harnesses; permission behavior belongs to the runner.'
+}
 
 function resetSaveState(): void {
   for (const region of Object.keys(saveState) as SaveRegion[]) {
@@ -431,7 +464,9 @@ function feedbackError(region: SaveRegion): string | undefined {
 
 function newerEdits(region: ManualSaveRegion): boolean {
   const state = saveState[region]
-  return state.status === 'pending' && state.submitted !== null && !same(state.submitted, draftFor(region))
+  return state.status === 'pending' && state.submitted !== null && (
+    !same(state.submitted, draftFor(region)) || (region === 'policy' && policyLimitInvalid.value)
+  )
 }
 
 function feedbackDescription(region: SaveRegion, dirty = false): string | undefined {
@@ -591,6 +626,10 @@ function saveBackend(): void {
   harnessError.value = ''
   const snapshot = backendDraft.value
   if (snapshot.type === AGENT_BACKEND_HARNESS) {
+    if (backendPolicyBlocker.value) {
+      harnessError.value = backendPolicyBlocker.value
+      return
+    }
     const { kind, name } = splitEdgeKey(snapshot.edge)
     if (!kind || !name) {
       harnessError.value = 'Pick the machine this agent’s turns run on.'
@@ -632,13 +671,15 @@ function saveBackend(): void {
 
 function savePolicy(): void {
   if (saveState.policy.status === 'pending') return
+  if (harnessPolicyIssues.value.length) return
+  if (policyLimitInvalid.value) return
   const budget = validateBudgetInputs(budgetUSD.value, budgetTokens.value)
   budgetUSDError.value = budget.usdError
   budgetTokensError.value = budget.tokenError
   if (budget.usdError || budget.tokenError) return
   const tokens = budget.budgetTokens
-  const turns = intOrZero(maxToolTurns.value)
-  const timeout = intOrZero(timeoutSeconds.value)
+  const turns = maxToolTurnsValidation.value.value
+  const timeout = timeoutSecondsValidation.value.value
   const usd = budget.budgetUSD
   const mode = autonomy.value
   void saveRegion(
@@ -894,9 +935,20 @@ function setDelegate(source: Agent, delegate: string, on: boolean): void {
   saveImmediate('delegates', { delegates: next }, spec => { spec.delegates = next }, 'Delegates saved.', 'delegates')
 }
 
-function intOrZero(value: string): number {
-  const parsed = Number(value.trim())
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+interface OptionalLimitValidation {
+  value: number
+  error: string
+}
+
+function validateOptionalLimit(value: string): OptionalLimitValidation {
+  const raw = value.trim()
+  if (!raw) return { value: 0, error: '' }
+  if (!/^\d+$/.test(raw)) {
+    return { value: 0, error: 'Enter a whole number of zero or more, or leave blank for the provider default.' }
+  }
+  const parsed = Number(raw)
+  if (!Number.isSafeInteger(parsed)) return { value: 0, error: 'Enter a whole number within the supported range.' }
+  return { value: parsed, error: '' }
 }
 
 function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
@@ -953,13 +1005,30 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
               <span id="agent-harness-edge-label">Machine *</span>
               <FormSelect v-model="harnessEdge" :options="edgeOptions" :required="true" labelledby="agent-harness-edge-label" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="['agent-harness-edge-hint', hostEdges.length === 0 ? 'agent-harness-edge-empty' : '', harnessError && !harnessEdge ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
               <span id="agent-harness-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
-              <span v-if="hostEdges.length === 0" id="agent-harness-edge-empty" class="agents-hint">No Linux or macOS machine in this workspace yet — join one under Edges first.</span>
+              <span v-if="hostEdges.length === 0" id="agent-harness-edge-empty" class="agents-hint">No Linux or macOS machine in this workspace yet.
+                <a :href="portalHref('/providers/edges/connect/edge', api.tenant())" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Connect a machine (new tab)</a>
+                <button type="button" class="k-btn k-btn--ghost" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Checking machines…' : 'Check again' }}</button>
+                Keep this tab open to retain your changes.</span>
             </label>
             <label>
               <span id="agent-harness-credential-label">Harness credential *</span>
-              <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" labelledby="agent-harness-credential-label" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="['agent-harness-credential-hint', harnessCredentials.length === 0 ? 'agent-harness-credential-empty' : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
+              <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" id="agent-harness-credential-read-error" class="k-inline-notification k-inline-notification--error" role="alert">
+                <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load harness identities. {{ credentialSlice.error }}</span></span>
+                <button class="k-inline-notification__action" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+              </div>
+              <div v-else-if="!credentialSlice.hasSnapshot" id="agent-harness-credential-loading" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading harness identities…</div>
+              <template v-else>
+                <div v-if="credentialSlice.error" class="k-inline-notification k-inline-notification--warning" role="status">
+                  <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded harness identities. {{ credentialSlice.error }}</span></span>
+                  <button class="k-inline-notification__action" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Check again' }}</button>
+                </div>
+                <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" labelledby="agent-harness-credential-label" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="['agent-harness-credential-hint', harnessCredentials.length === 0 ? 'agent-harness-credential-empty' : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
+                <span v-if="harnessCredentials.length === 0" id="agent-harness-credential-empty" class="agents-hint">{{ credentialSlice.error ? 'No harness identities in the last loaded snapshot.' : 'No harness identities yet.' }}
+                  <a :href="portalHref('/providers/agents/#/create/model/harness', api.tenant())" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Add harness identity (new tab)</a>
+                  <button type="button" class="k-btn k-btn--ghost" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Checking identities…' : 'Check again' }}</button>
+                  Keep this tab open to retain your changes.</span>
+              </template>
               <span id="agent-harness-credential-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
-              <span v-if="harnessCredentials.length === 0" id="agent-harness-credential-empty" class="agents-hint">No harness credentials yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
             </label>
           </div>
           <div class="agents-grid2">
@@ -977,6 +1046,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </template>
 
       <div v-if="harnessError" id="agent-backend-error" class="agents-fielderr" role="alert">{{ harnessError }}</div>
+      <p v-if="backendPolicyBlocker" id="agent-backend-policy-blocker" class="agents-hint agents-warn-inline" role="status">
+        {{ backendPolicyBlocker }} Save a supported policy before changing this agent to a coding harness.
+      </p>
 
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Saved backend readiness</span>
@@ -993,7 +1065,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
 
       <div class="agents-form-actions">
-        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.backend.status === 'pending'" :aria-busy="saveState.backend.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessError ? 'agent-backend-error' : '', feedbackDescription('backend', backendDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveBackend"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.backend.status === 'pending' ? 'Saving backend…' : 'Save backend' }}</button>
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.backend.status === 'pending' || Boolean(backendPolicyBlocker) || (backendType === 'harness' && !credentialSlice.hasSnapshot)" :aria-busy="saveState.backend.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessError ? 'agent-backend-error' : '', backendPolicyBlocker ? 'agent-backend-policy-blocker' : '', backendType === 'harness' && !credentialSlice.hasSnapshot ? (credentialSlice.error ? 'agent-harness-credential-read-error' : 'agent-harness-credential-loading') : '', feedbackDescription('backend', backendDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveBackend"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.backend.status === 'pending' ? 'Saving backend…' : 'Save backend' }}</button>
         <ConfigSaveFeedback id="agent-backend-save-feedback" action="the backend" :status="feedbackStatus('backend', backendDirty)" :newer-edits="newerEdits('backend')" :error="feedbackError('backend')" />
       </div>
     </ResourceSectionCard>
@@ -1030,13 +1102,16 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-policy-heading" title="Autonomy &amp; budget" description="Autonomy decides which tool calls stop and wait for you. It is enforced on every run — a paused run shows up in Activity as PendingApproval.">
+    <ResourceSectionCard class="agents-config-sec" heading-id="agent-policy-heading" title="Autonomy &amp; budget" :description="policyDescription">
       <fieldset class="agents-cap-fs">
         <legend>Autonomy</legend>
+        <p v-if="harnessPolicyTarget" id="agent-harness-permission-policy" class="agents-hint" role="status">
+          Coding harness permission prompts are configured by Claude Code or Codex on the machine. Railgrid cannot gate harness actions; Ask is the only supported Railgrid value for this backend.
+        </p>
         <div class="agents-radiocards">
           <label v-for="mode in AUTONOMY_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === autonomy }">
-            <input v-model="autonomy" type="radio" name="autonomy" :value="mode.id" />
-            <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
+            <input v-model="autonomy" type="radio" name="autonomy" :value="mode.id" :disabled="harnessPolicyTarget && mode.id !== 'ask'" />
+            <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ autonomyBlurb(mode.id) }}</span>
           </label>
         </div>
       </fieldset>
@@ -1046,16 +1121,24 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? 'agent-budget-usd-error' : undefined" /><span v-if="budgetUSDError" id="agent-budget-usd-error" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
           <label>Monthly token cap<input v-model="budgetTokens" class="k-input" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? 'agent-budget-tokens-error' : undefined" /><span v-if="budgetTokensError" id="agent-budget-tokens-error" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
         </div>
+        <p class="agents-hint">Monthly caps apply to either backend and use usage reported by that backend; harness caps depend on usage reported by the runner.</p>
       </div>
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Limits</span>
         <div class="agents-grid2">
-          <label><span id="agent-max-tool-turns-label">Max tool turns</span><input v-model="maxToolTurns" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-max-tool-turns-label" aria-describedby="agent-max-tool-turns-hint" /><span id="agent-max-tool-turns-hint" class="agents-hint">How many tool-call rounds one run may take before it stops.</span></label>
-          <label><span id="agent-run-timeout-label">Run timeout (seconds)</span><input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-run-timeout-label" aria-describedby="agent-run-timeout-hint" /><span id="agent-run-timeout-hint" class="agents-hint">Wall-clock bound on a run — it is aborted when this elapses.</span></label>
+          <label v-if="!harnessPolicyTarget"><span id="agent-max-tool-turns-label">Max tool turns</span><input v-model="maxToolTurns" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-max-tool-turns-label" :aria-invalid="maxToolTurnsValidation.error ? 'true' : undefined" :aria-describedby="['agent-max-tool-turns-hint', maxToolTurnsValidation.error ? 'agent-max-tool-turns-error' : ''].filter(Boolean).join(' ')" /><span id="agent-max-tool-turns-hint" class="agents-hint">How many tool-call rounds one model run may take before it stops. Leave blank for the provider default.</span><span v-if="maxToolTurnsValidation.error" id="agent-max-tool-turns-error" class="agents-fielderr" role="alert">{{ maxToolTurnsValidation.error }}</span></label>
+          <div v-else class="agents-fieldset" data-harness-tool-turn-limit>
+            <span class="agents-fieldset-legend">Model-only limit</span>
+            <p v-if="hasToolTurnLimit" class="agents-hint" role="status">This draft still has a {{ maxToolTurns }}-turn cap. A harness owns its tool-call loop, so Railgrid cannot enforce this limit.</p>
+            <p v-else class="agents-hint">A harness owns its tool-call loop. Railgrid cannot cap individual tool calls.</p>
+            <button v-if="hasToolTurnDraft" class="k-btn k-btn--ghost" type="button" :disabled="saveState.policy.status === 'pending'" @click="maxToolTurns = ''">Clear draft limit</button>
+          </div>
+          <label><span id="agent-run-timeout-label">Run timeout (seconds)</span><input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-run-timeout-label" :aria-invalid="timeoutSecondsValidation.error ? 'true' : undefined" :aria-describedby="['agent-run-timeout-hint', timeoutSecondsValidation.error ? 'agent-run-timeout-error' : ''].filter(Boolean).join(' ')" /><span id="agent-run-timeout-hint" class="agents-hint">Railgrid stops the run when this wall-clock limit expires. Leave blank for the provider default.</span><span v-if="timeoutSecondsValidation.error" id="agent-run-timeout-error" class="agents-fielderr" role="alert">{{ timeoutSecondsValidation.error }}</span></label>
         </div>
       </div>
+      <p v-if="harnessPolicyIssues.length" id="agent-harness-policy-issues" class="agents-fielderr" role="alert">{{ harnessPolicyIssues.join(' ') }}</p>
       <div class="agents-form-actions">
-        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.policy.status === 'pending'" :aria-busy="saveState.policy.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('policy', policyDirty)" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.policy.status === 'pending' ? 'Saving policy…' : 'Save policy' }}</button>
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.policy.status === 'pending' || harnessPolicyIssues.length > 0 || policyLimitInvalid" :aria-busy="saveState.policy.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessPolicyIssues.length ? 'agent-harness-policy-issues' : '', maxToolTurnsValidation.error && !harnessPolicyTarget ? 'agent-max-tool-turns-error' : '', timeoutSecondsValidation.error ? 'agent-run-timeout-error' : '', feedbackDescription('policy', policyDirty) || ''].filter(Boolean).join(' ') || undefined" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.policy.status === 'pending' ? 'Saving policy…' : 'Save policy' }}</button>
         <ConfigSaveFeedback id="agent-policy-save-feedback" action="autonomy, budget and limits" :status="feedbackStatus('policy', policyDirty)" :newer-edits="newerEdits('policy')" :error="feedbackError('policy')" />
       </div>
     </ResourceSectionCard>

@@ -22,7 +22,8 @@ import {
   type Route,
 } from './router'
 import { clearToasts } from './ui/toast'
-import type { Agent, Connection, Credential, RailgridContext, Toolset } from './types'
+import { isHarnessProvider, type Agent, type Connection, type Credential, type RailgridContext, type Toolset } from './types'
+import { withCreatedCredential, type AgentCreateDraft, type AgentCredentialFamily } from './agent-create-draft'
 import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
 import AgentCreate from './views/AgentCreate.vue'
@@ -42,6 +43,13 @@ const route = ref<Route>(parseHash())
 const authorityEpoch = ref(0)
 const createSession = ref(0)
 const storeRevision = ref(0)
+const agentCreateDraft = shallowRef<AgentCreateDraft | null>(null)
+const agentCredentialSetup = shallowRef<{
+  family: AgentCredentialFamily
+  returnRoute: Extract<Route, { kind: 'create' }>
+  tenantKey: string
+  userKey: string | null
+} | null>(null)
 const host = ref<HTMLElement | null>(props.host)
 const root = ref<HTMLElement | null>(null)
 
@@ -115,9 +123,37 @@ function advanceCreateSession(previous: Route, next: Route): void {
   if (previous.kind === 'create' || next.kind === 'create') createSession.value += 1
 }
 
+function isAgentCreateRoute(route: Route): route is Extract<Route, { kind: 'create' }> {
+  return route.kind === 'create' && route.resource === 'agent'
+}
+
+function isModelCreateRoute(route: Route): route is Extract<Route, { kind: 'create' }> {
+  return route.kind === 'create' && route.resource === 'model'
+}
+
+function clearAgentCreateSetup(): void {
+  agentCreateDraft.value = null
+  agentCredentialSetup.value = null
+}
+
+function preserveAgentDraftTransition(previous: Route, next: Route): boolean {
+  if (!agentCredentialSetup.value) return false
+  return (isAgentCreateRoute(previous) && isModelCreateRoute(next)) ||
+    (isModelCreateRoute(previous) && isAgentCreateRoute(next))
+}
+
+function prepareAgentCreateRouteChange(previous: Route, next: Route): void {
+  if (hashFor(previous) === hashFor(next) || preserveAgentDraftTransition(previous, next)) return
+  if (isAgentCreateRoute(previous) || agentCredentialSetup.value) clearAgentCreateSetup()
+  // A new create visit starts with a clean draft. Only the explicitly linked
+  // credential visit may carry a setup draft back into this route.
+  if (isAgentCreateRoute(next)) clearAgentCreateSetup()
+}
+
 function go(next: Route, mode?: 'push' | 'replace'): void {
   const previous = route.value
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
+  prepareAgentCreateRouteChange(previous, next)
   advanceCreateSession(route.value, next)
   route.value = next
   // Let the host's Vue Router own browser history when this provider is
@@ -140,6 +176,7 @@ function restoreRoute(): void {
 function restoreRouteFromHash(normalize: boolean): void {
   const previous = route.value
   const next = parseHash()
+  prepareAgentCreateRouteChange(previous, next)
   if (route.value.kind === 'edit' && next.kind === 'menu' && next.menu === 'connections') {
     focusCollectionAfterEdit = route.value.resource === 'toolset' ? 'toolsets' : 'connections'
   }
@@ -226,6 +263,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   bindStore(nextStore)
   loadedTenant = null
   authority = nextApi.contextAuthority()
+  if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
   maybeLoad()
 }
@@ -309,14 +347,62 @@ function adoptCreateResult(detail: CreateSuccessDetail): void {
   }
 }
 
+function addAgentCredential(detail: {
+  family: AgentCredentialFamily
+  draft: AgentCreateDraft
+  store: AppStore
+  authorityEpoch: number
+  createSession: number
+}): void {
+  if (!sourceIsCurrent(detail, true) || !isAgentCreateRoute(route.value) || !authority?.usable) return
+  agentCreateDraft.value = { ...detail.draft }
+  agentCredentialSetup.value = {
+    family: detail.family,
+    returnRoute: {
+      kind: 'create',
+      resource: 'agent',
+      ...(detail.family === 'harness' ? { type: 'harness' } : {}),
+    },
+    tenantKey: authority.tenantKey,
+    userKey: authority.userKey,
+  }
+  go({ kind: 'create', resource: 'model', ...(detail.family === 'harness' ? { type: 'harness' } : {}) })
+}
+
+function credentialMatchesFamily(credential: Credential | undefined, family: AgentCredentialFamily): boolean {
+  if (!credential) return false
+  return family === 'harness' ? isHarnessProvider(credential.provider) : !isHarnessProvider(credential.provider)
+}
+
 function onCreateSuccess(detail: CreateSuccessDetail): void {
   if (!sourceIsCurrent(detail, true) || route.value.kind !== 'create' || detail.resource !== route.value.resource) return
   adoptCreateResult(detail)
+  if (detail.resource === 'model' && agentCredentialSetup.value && authority?.usable &&
+    agentCredentialSetup.value.tenantKey === authority.tenantKey && agentCredentialSetup.value.userKey === authority.userKey) {
+    const flow = agentCredentialSetup.value
+    const credential = detail.item as Credential | undefined
+    if (credential?.name && credentialMatchesFamily(credential, flow.family) && agentCreateDraft.value) {
+      agentCreateDraft.value = withCreatedCredential(agentCreateDraft.value, flow.family, credential.name)
+    }
+    go(flow.returnRoute, 'replace')
+    agentCredentialSetup.value = null
+    return
+  }
+  if (detail.resource === 'agent') clearAgentCreateSetup()
   go(detail.destination || createSuccessRoute(detail), 'replace')
 }
 
 function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>): void {
-  if (sourceIsCurrent(detail, true) && route.value.kind === 'create') go(createOwnerRoute(route.value), 'replace')
+  if (!sourceIsCurrent(detail, true) || route.value.kind !== 'create') return
+  if (route.value.resource === 'model' && agentCredentialSetup.value && authority?.usable &&
+    agentCredentialSetup.value.tenantKey === authority.tenantKey && agentCredentialSetup.value.userKey === authority.userKey) {
+    const returnRoute = agentCredentialSetup.value.returnRoute
+    go(returnRoute, 'replace')
+    agentCredentialSetup.value = null
+    return
+  }
+  if (route.value.resource === 'agent') clearAgentCreateSetup()
+  go(createOwnerRoute(route.value), 'replace')
 }
 
 function onEditCancel(detail: EditCancelDetail): void {
@@ -461,9 +547,12 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
+        :initial-draft="agentCreateDraft"
+        :initial-backend-type="route.type === 'harness' ? 'harness' : 'model'"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"
+        @add-credential="addAgentCredential"
         @create-success="onCreateSuccess"
         @create-cancel="onCreateCancel"
       />
@@ -501,6 +590,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :api="api"
         :route-owned="true"
         :create-route="true"
+        :initial-family="route.type === 'harness' ? 'harness' : 'chat'"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"

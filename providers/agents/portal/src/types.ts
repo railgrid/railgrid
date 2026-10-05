@@ -701,6 +701,7 @@ export interface UsageBucket {
   inputTokens: number
   outputTokens: number
   usdMicros: number
+  unpricedRuns?: number
   latencyP50MS: number
   latencyP95MS: number
 }
@@ -711,6 +712,7 @@ export interface UsagePoint {
   inputTokens: number
   outputTokens: number
   usdMicros: number
+  unpricedRuns?: number
 }
 
 export interface UsageResponse {
@@ -719,12 +721,16 @@ export interface UsageResponse {
   byAgent: UsageBucket[]
   byModel: UsageBucket[]
   series: UsagePoint[]
+  /** Agent names whose usage verb could not be read during the workspace fan-out. */
+  unavailableAgents?: string[]
 }
 
 export interface CredentialTestResult {
   ok: boolean
   latencyMS: number
   error?: string
+  /** Sanitized supporting detail for an explicit disclosure, never a toast. */
+  technicalDiagnostic?: string
   models?: string[]
 }
 

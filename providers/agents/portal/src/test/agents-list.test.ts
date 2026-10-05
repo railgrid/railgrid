@@ -67,12 +67,36 @@ describe('agents list refresh resilience', () => {
     Object.assign(empty.credentials, { loaded: true, hasSnapshot: true })
     const emptyMounted = await mountVue(AgentsList, { store: empty, api })
     expect(emptyMounted.element.querySelector('.k-first-run')).not.toBeNull()
-    expect(text(emptyMounted.element.querySelector('.k-first-run'))).toContain('Connect a model before creating your first agent')
+    expect(text(emptyMounted.element.querySelector('.k-first-run'))).toContain('Create your first agent')
+    expect(text(emptyMounted.element.querySelector('.k-first-run'))).toContain('coding harness')
+    const actions = [...emptyMounted.element.querySelectorAll<HTMLButtonElement>('.k-first-run__actions button')]
+    expect(actions.map(button => text(button))).toEqual(['Create agent', 'Add model credential'])
+    actions[0].click()
+    actions[1].click()
+    expect(emptyMounted.navigations).toEqual([
+      { kind: 'create', resource: 'agent' },
+      { kind: 'create', resource: 'model' },
+    ])
     const stale = emptyMounted.element.querySelector<HTMLElement>('.agents-stale')!
     expect(text(stale)).toContain('Showing the last loaded agents. temporarily unavailable')
     const loadAgents = vi.spyOn(empty, 'load')
     stale.querySelector<HTMLButtonElement>('button')!.click()
     expect(loadAgents).toHaveBeenCalledWith('agents')
+  })
+
+  it('offers a direct harness first-run action when only harness identities are configured', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    Object.assign(store.credentials, { loaded: true, hasSnapshot: true })
+    store.credentials.data = [{ name: 'claude', provider: 'claude-code' }]
+    const mounted = await mountVue(AgentsList, { store, api })
+
+    expect(text(mounted.element.querySelector('.k-first-run'))).toContain('Run Claude Code or Codex')
+    const actions = [...mounted.element.querySelectorAll<HTMLButtonElement>('.k-first-run__actions button')]
+    expect(text(actions[0])).toContain('Create with coding harness')
+    actions[0].click()
+    expect(mounted.navigations).toEqual([{ kind: 'create', resource: 'agent', type: 'harness' }])
   })
 
   it('waits for credentials and surfaces a retryable credential error', async () => {

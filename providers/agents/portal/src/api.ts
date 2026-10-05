@@ -79,8 +79,10 @@ import type {
 } from './types'
 
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
+import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
 import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS } from './resources'
+import { presentRequestFailure } from './request-errors'
 
 export type { Tenant }
 export { ResourceError } from './resources'
@@ -128,10 +130,14 @@ export interface ContextAuthority {
 // 404 (agent gone) from a 502 (upstream) without string-matching.
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  readonly technicalDiagnostic: string
+  readonly reason: string
+  constructor(status: number, message: string, technicalDiagnostic = '', reason = '') {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.technicalDiagnostic = technicalDiagnostic
+    this.reason = reason
   }
 }
 
@@ -306,8 +312,11 @@ export class ApiClient {
   }
 
   private async fail(r: Response): Promise<ApiError> {
-    const body = (await r.json().catch(() => null)) as { message?: string; error?: { message?: string } } | null
-    return new ApiError(r.status, body?.error?.message || body?.message || r.statusText || `HTTP ${r.status}`)
+    const body = (await r.json().catch(() => null)) as { message?: string; reason?: string; error?: { message?: string; reason?: string } } | null
+    const diagnostic = body?.error?.message || body?.message || r.statusText || `HTTP ${r.status}`
+    const reason = body?.error?.reason || body?.reason || ''
+    const failure = presentRequestFailure(r.status, diagnostic, reason)
+    return new ApiError(r.status, failure.message, failure.technicalDiagnostic, reason)
   }
 
   // get and send take a hub-proxied path (/oauth/providers) and rewrite it
@@ -409,6 +418,15 @@ export class ApiClient {
   discoverCredential = (name: string): Promise<CredentialTestResult> =>
     this.sendVerb('POST', this.verb(MODELCREDENTIALS, name, 'discover'))
 
+  /** Validate a new key/endpoint without replacing the saved connection. */
+  probeCredentialDraft = (body: CredentialWrite, discover: boolean): Promise<CredentialTestResult> => {
+    const scoped = new ApiClient()
+    scoped.setContext(this.ctx ? { ...this.ctx } : null)
+    return scoped.resources.withCredentialProbe(body, name => discover
+      ? scoped.discoverCredential(name)
+      : scoped.testCredential(name, body.model))
+  }
+
   // The curated catalog is compiled-in reference data — prices, context
   // windows, capabilities — with no tenant content, so it ships in the bundle
   // rather than over a route. providers/agents/api keeps it honest against
@@ -425,10 +443,21 @@ export class ApiClient {
   // guarded at every use site: Go marshals a nil slice as null, so an empty
   // workspace would otherwise fault the dashboard on its first render.
   usage = async (days: number): Promise<UsageResponse> => {
-    const parts = await this.settleAll((agent) =>
+    const agents = await this.agentNames()
+    const settled = await Promise.allSettled(agents.map((agent) =>
       this.getVerb<UsageResponse>(this.verb(AGENTS, agent, 'usage', { query: { days } })),
-    )
-    return mergeUsage(days, parts)
+    ))
+    const parts: UsageResponse[] = []
+    const unavailableAgents: string[] = []
+    settled.forEach((result, index) => {
+      if (result.status === 'fulfilled') parts.push(result.value)
+      else unavailableAgents.push(agents[index])
+    })
+    if (!parts.length && unavailableAgents.length) {
+      const firstFailure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (firstFailure) throw firstFailure.reason
+    }
+    return { ...mergeUsage(days, parts), unavailableAgents }
   }
 
   listConnections = (): Promise<Connection[]> => this.resources.listConnections()
@@ -716,9 +745,10 @@ function byNewest<T extends { id: string; createdAt: string }>(a: T, b: T): numb
 // mergeUsage sums the per-agent rollups into the workspace view the dashboard
 // renders. Latency percentiles cannot be summed — a percentile of percentiles
 // is not a percentile — so the total takes the worst agent's, which is the only
-// statement that stays true of the whole workspace.
+// statement that stays true of the whole workspace. The UI must label these
+// values as slowest-agent percentiles, never workspace percentiles.
 function mergeUsage(days: number, parts: UsageResponse[]): UsageResponse {
-  const total: UsageBucket = { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }
+  const total: UsageBucket = { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, unpricedRuns: 0, latencyP50MS: 0, latencyP95MS: 0 }
   const byAgent: UsageBucket[] = []
   const byModel = new Map<string, UsageBucket>()
   const series = new Map<string, UsagePoint>()
@@ -729,13 +759,14 @@ function mergeUsage(days: number, parts: UsageResponse[]): UsageResponse {
     total.inputTokens += part.total?.inputTokens ?? 0
     total.outputTokens += part.total?.outputTokens ?? 0
     total.usdMicros += part.total?.usdMicros ?? 0
+    total.unpricedRuns! += part.total ? unpricedRunCount(part.total) : 0
     total.latencyP50MS = Math.max(total.latencyP50MS, part.total?.latencyP50MS ?? 0)
     total.latencyP95MS = Math.max(total.latencyP95MS, part.total?.latencyP95MS ?? 0)
     byAgent.push(...(part.byAgent ?? []))
     for (const bucket of part.byModel ?? []) {
       const existing = byModel.get(bucket.key)
       if (!existing) {
-        byModel.set(bucket.key, { ...bucket })
+        byModel.set(bucket.key, { ...bucket, unpricedRuns: unpricedRunCount(bucket) })
         continue
       }
       existing.runs += bucket.runs
@@ -743,19 +774,21 @@ function mergeUsage(days: number, parts: UsageResponse[]): UsageResponse {
       existing.inputTokens += bucket.inputTokens
       existing.outputTokens += bucket.outputTokens
       existing.usdMicros += bucket.usdMicros
+      existing.unpricedRuns! += unpricedRunCount(bucket)
       existing.latencyP50MS = Math.max(existing.latencyP50MS, bucket.latencyP50MS)
       existing.latencyP95MS = Math.max(existing.latencyP95MS, bucket.latencyP95MS)
     }
     for (const point of part.series ?? []) {
       const existing = series.get(point.date)
       if (!existing) {
-        series.set(point.date, { ...point })
+        series.set(point.date, { ...point, unpricedRuns: unpricedRunCount(point) })
         continue
       }
       existing.runs += point.runs
       existing.inputTokens += point.inputTokens
       existing.outputTokens += point.outputTokens
       existing.usdMicros += point.usdMicros
+      existing.unpricedRuns! += unpricedRunCount(point)
     }
   }
 

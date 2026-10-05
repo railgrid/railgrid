@@ -12,6 +12,7 @@ const workbenchLauncher = source('AIWorkbenchLauncher.vue')
 const aiTypes = source('ai.ts')
 const types = source('conversation.ts')
 const styles = readFileSync(new URL('../agentkit/conversation.css', import.meta.url), 'utf8')
+const agentStyles = readFileSync(new URL('../agentkit/agent-ui.css', import.meta.url), 'utf8')
 
 test('conversation turn composes the neutral message frame through provider-owned slots', () => {
   assert.match(turn, /import AIMessage from ['"]\.\/AIMessage\.vue['"]/)
@@ -73,6 +74,27 @@ test('workbench launcher presents controlled search and provider-filtered choice
   assert.match(workbenchLauncher, /No workbench tabs found\./)
   assert.match(workbenchLauncher, /safeConversationID\('k-ai-workbench-launcher'\)/)
   assert.doesNotMatch(workbenchLauncher, /localStorage|sessionStorage|fetch\(|reorderWorkbench/)
+})
+
+test('selected workbench tabs keep readable text on their accent tint', () => {
+  assert.match(agentStyles, /\.k-workbench-tab--active\s*\{[\s\S]*?color: var\(--color-accent-hover/)
+  assert.match(agentStyles, /\.k-workbench-tab--active:hover:not\(:disabled\)\s*\{[\s\S]*?color: var\(--color-accent-hover/)
+})
+
+test('coarse-pointer workbench tabs preserve labels beside full-size close controls', () => {
+  assert.match(agentStyles, /@media \(hover: none\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.k-workbench-tab\s*\{[\s\S]*?min-width: 144px;[\s\S]*?\.k-workbench-tab__close \{ width: 44px; height: 44px; \}/)
+})
+
+test('coarse-pointer workbench tab buttons remain 44px inside their bordered frame', () => {
+  assert.match(agentStyles, /@media \(hover: none\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.k-workbench-tab\s*\{[\s\S]*?height: 46px;[\s\S]*?min-height: 46px;[\s\S]*?\.k-workbench-tab__button\s*\{\s*height: 100%;\s*min-height: 44px;/)
+})
+
+test('message metadata and timestamps meet the coarse-pointer hit target contract', () => {
+  assert.match(agentStyles, /@media \(hover: none\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.k-ai-message-metadata__button,[\s\S]*?\.k-ai-timestamp__button\s*\{\s*min-width: 44px;\s*min-height: 44px;/)
+})
+
+test('conversation rail actions use readable semantic foregrounds', () => {
+  assert.match(agentStyles, /\.k-ai-conversation-rail__item-action\s*\{[^}]*color: var\(--color-text-secondary/)
 })
 
 test('AgentKit conversation recipes use semantic tokens and reduced-motion affordances', () => {

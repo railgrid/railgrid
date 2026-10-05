@@ -49,6 +49,7 @@ printf '%s\n' '.:53 {' 'errors' 'forward . /etc/resolv.conf' '}' >"$state_dir/co
 grep -F '# railgrid-preview-dns' "$state_dir/corefile" >/dev/null
 grep -F '10.96.2.2' "$state_dir/corefile" >/dev/null
 grep -F 'console\.127\.0\.0\.1\.sslip\.io' "$state_dir/corefile" >/dev/null
+grep -F '|host\.docker\.internal)' "$state_dir/corefile" >/dev/null
 grep -F '172.18.0.1' "$state_dir/corefile" >/dev/null
 
 # Tilt orders kcp-dns after preview-dns because both replace the same CoreDNS

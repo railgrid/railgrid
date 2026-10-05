@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw } from 'lucide-vue-next'
-import type { ApiClient } from '../api'
+import { ApiError, type ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import AIComposer from '../agentkit/AIComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
@@ -11,6 +11,8 @@ import AIPrimaryAction from '../agentkit/AIPrimaryAction.vue'
 import AITranscript from '../agentkit/AITranscript.vue'
 import { toast } from '../portalkit/toast'
 import type { Route } from '../router'
+import type { FailureRecoveryTarget } from '../failure-presentation'
+import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
 import { agentHarnessBacked, agentModelCredential, sessionLabel, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
@@ -189,6 +191,12 @@ function validDuration(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
+function navigateForFailure(target: FailureRecoveryTarget): void {
+  emit('navigate', target === 'model-connections'
+    ? { kind: 'menu', menu: 'models' }
+    : { kind: 'agent', name: props.name, tab: 'config' })
+}
+
 function progressPatch(message: ChatMessage, patch: Partial<ChatProgress> & { status?: AITurnProgressStatus }): ChatProgress {
   const current = message.progress
   const status = patch.status || current?.status || 'pending'
@@ -271,7 +279,7 @@ function resetApprovalRecovery(): void {
 // Approval resumes run outside the original chat SSE response. Lifecycle
 // events and session hydration therefore recover the current disclosure from
 // the durable run checkpoint, fenced against navigation and newer events.
-async function refreshRunApproval(runID: string): Promise<void> {
+async function refreshRunApproval(runID: string, recoverStream = false, safeReadFailure = false): Promise<void> {
   if (approvalRecoveryClosedRunIDs.has(runID)) return
   const contextSerial = approvalReadSerial
   const serial = nextApprovalReadGeneration(runID)
@@ -299,9 +307,16 @@ async function refreshRunApproval(runID: string): Promise<void> {
       return
     }
     const target = messages.value.find(message => message.role === 'assistant' && message.runID === runID)
+    if (recoverStream && LIVE_RUN_PHASES.has(detail.phase || '') && !streaming.value) {
+      orphanRun.value = detail
+      orphanError.value = null
+      orphanHasSnapshot.value = true
+      applyRunProgress(detail)
+      if (target?.error?.startsWith('Chat failed:')) patchMessage(target.id, { error: undefined })
+    }
+    if (!detail.pending) return
     // The checkpoint can precede its KCP phase projection. Its pending ID is
     // the current approval identity even if that projection still says Running.
-    if (!detail.pending) return
     if (target?.approval?.inboxID === detail.pending.inboxID && target.approval.resolved) return
     const approval = { runID, ...detail.pending }
     if (target) {
@@ -315,7 +330,9 @@ async function refreshRunApproval(runID: string): Promise<void> {
     }
   } catch (error) {
     if (requestIsCurrent() && authorityIsCurrent(authority) && contextIsCurrent(name, authority.api) && sessionID.value === session) {
-      orphanError.value = `Could not load approval details. ${(error as Error).message}`
+      orphanError.value = safeReadFailure
+        ? approvalStatusReadFailureMessage(error instanceof ApiError ? error.status : undefined)
+        : `${recoverStream ? 'Could not recover the disconnected run.' : 'Could not load approval details.'} ${(error as Error).message}`
     }
   }
 }
@@ -949,6 +966,12 @@ async function send(): Promise<void> {
     patchMessage(assistantID, { streaming: false })
     void loadSessions(name, api)
     flushTerminalTranscriptRefresh()
+    if (liveRunID && !stopRequested.value && !messages.value.find(message => message.id === assistantID)?.approval) {
+      // A clean EOF can still truncate the response. The server owns the run's
+      // state; recover its progress and controls just as reopening a chat does.
+      patchProgress(assistantID, { status: 'interrupted' })
+      void refreshRunApproval(liveRunID, true)
+    }
   }
 }
 
@@ -1000,11 +1023,36 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
       : decision === 'approve' ? 'Approved — resuming the run.' : 'Denied.')
     void store.load('inbox')
   } catch (error) {
-    if (requestIsCurrent()) toast('error', `Could not ${decision}: ${(error as Error).message}`)
+    if (requestIsCurrent()) {
+      toast('error', approvalResolutionFailureMessage(error instanceof ApiError ? error.status : undefined))
+      // A failed response can race with a server-side decision. Re-read both
+      // authorities while the approval is still attached to this session; keep
+      // the card busy until the inbox read confirms whether it remains pending.
+      await store.load('inbox')
+      if (!requestIsCurrent()) return
+      const inboxItem = store.inbox.hasSnapshot && !store.inbox.error
+        ? store.inbox.data.find(item => item.id === inboxID)
+        : undefined
+      const confirmedDecision = inboxItem?.state === 'approved'
+        ? 'approve'
+        : inboxItem?.state === 'denied' ? 'deny' : inboxItem?.state === 'answered' ? 'answer' : undefined
+      if (confirmedDecision && target?.approval) {
+        patchMessage(target.id, { approval: { ...target.approval, resolved: confirmedDecision } })
+      }
+      if (target?.approval?.runID) {
+        await refreshRunApproval(target.approval.runID, false, true)
+      }
+    }
   } finally {
     const { [inboxID]: pendingDecision, ...remaining } = approvalBusy.value
     if (pendingDecision === decision) approvalBusy.value = remaining
   }
+}
+
+function approvalStatusReadFailureMessage(status?: number): string {
+  if (status === 403) return 'The run status could not be checked because access was denied. Ask a workspace administrator to review your access.'
+  if (status === 404) return 'This run is no longer available. Refresh Activity before deciding whether to start another run.'
+  return 'The run status could not be refreshed. Check Activity before deciding whether to start another run.'
 }
 
 async function cancelOrphan(): Promise<void> {
@@ -1136,6 +1184,14 @@ function onServerEvent(event: Event): void {
     if (status === 'waiting') void refreshRunApproval(detail.data.id)
     else if (status === 'running') {
       invalidateApprovalRead(detail.data.id)
+      if (watchedLive && !streaming.value && !stopRequested.value) {
+        // This newer event supersedes a disconnected stream's status lookup.
+        // It also confirms that the run still needs progress/Stop controls.
+        orphanRun.value = recoverableRun(detail.data.id, sessionID.value, props.name)
+        orphanError.value = null
+        orphanHasSnapshot.value = true
+        orphanLoading.value = false
+      }
       messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant'
         ? { ...message, approval: undefined, progress: progressPatch(message, { status }) } : message)
     }
@@ -1408,6 +1464,7 @@ defineExpose({
               :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
               @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
               @view-run="emit('navigate', { kind: 'run', id: $event })"
+              @recovery="navigateForFailure"
             />
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
             <p v-if="messagesHasSnapshot && messages.length === 0" class="muted" role="status" aria-live="polite" aria-atomic="true">No messages yet. Say hi.</p>

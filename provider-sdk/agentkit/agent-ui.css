@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 7;
+  --railgrid-agent-ui-version: 8;
 }
 
 /* Conversation headers keep their neutral icon-only back control in the core
@@ -93,12 +93,12 @@ button.k-workbench-tab {
 .k-workbench-tab--active {
   border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent);
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 10%, transparent);
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
 }
 .k-workbench-tab--active:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent);
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 10%, transparent);
-  color: var(--color-accent, #8b6bff);
+  color: var(--color-accent-hover, #a18aff);
 }
 .k-workbench-tab:focus-visible,
 .k-workbench-tab__button:focus-visible {
@@ -145,12 +145,16 @@ button.k-workbench-tab {
 }
 @media (hover: none), (any-pointer: coarse) {
   .k-workbench-tab {
-    height: 44px;
-    min-height: 44px;
+    /* Its one-pixel frame borders sit outside the inner tab button. Give the
+     * frame two extra pixels so the actual interactive button still reaches
+     * the 44px target height after the border is accounted for. */
+    height: 46px;
+    min-height: 46px;
+    min-width: 144px;
   }
   .k-workbench-tab__button {
     height: 100%;
-    min-height: 0;
+    min-height: 44px;
   }
 }
 
@@ -933,7 +937,7 @@ button.k-workbench-tab {
 .k-ai-conversation-rail__item-actions { pointer-events: none; position: absolute; inset: 0 6px 0 auto; z-index: 2; display: flex; width: 96px; align-items: center; justify-content: flex-end; gap: 2px; padding-left: 28px; opacity: 0; transition: opacity .15s ease; }
 .k-ai-conversation-rail__item:hover .k-ai-conversation-rail__item-actions,
 .k-ai-conversation-rail__item:focus-within .k-ai-conversation-rail__item-actions { pointer-events: auto; opacity: 1; }
-.k-ai-conversation-rail__item-action { display: inline-flex; width: 28px; height: 28px; min-width: 28px; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; padding: 0; color: var(--color-text-muted, #8587a1); }
+.k-ai-conversation-rail__item-action { display: inline-flex; width: 28px; height: 28px; min-width: 28px; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; padding: 0; color: var(--color-text-secondary, #8a8ca6); }
 .k-ai-conversation-rail__item-action svg { width: 12px; height: 12px; }
 .k-ai-conversation-rail__item-action:hover { color: var(--color-accent, #8b6bff); }
 .k-ai-conversation-rail__item-action--archive:hover { color: var(--color-danger, #ff5d5d); }
@@ -964,7 +968,14 @@ button.k-workbench-tab {
   .k-ai-conversation-rail__item-action,
   .k-ai-conversation-rail__create,
   .k-ai-conversation-rail__search input,
-  .k-ai-primary-action { min-width: 44px; min-height: 44px; }
+  .k-ai-primary-action,
+  .k-ai-message-metadata__button,
+  .k-ai-timestamp__button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .k-ai-message-metadata__button,
+  .k-ai-timestamp__button { justify-content: center; }
   .k-ai-conversation-rail__item-action { width: 36px; height: 36px; }
   .k-ai-conversation-rail__item { height: 44px; }
   .k-ai-conversation-rail__item-select { height: 44px; }

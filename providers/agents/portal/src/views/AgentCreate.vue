@@ -3,9 +3,11 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ArrowLeft, Bot, Check, Clock } from 'lucide-vue-next'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
+import { portalHref } from '../portalkit/navigation'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
+import { emptyAgentCreateDraft, type AgentCreateDraft, type AgentCredentialFamily } from '../agent-create-draft'
 import type { CreateSuccessDetail, Route } from '../router'
 import {
   AGENT_BACKEND_HARNESS,
@@ -28,9 +30,18 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   authorityEpoch?: number
   createSession?: number
-}>(), { authorityEpoch: 0, createSession: 0 })
+  initialDraft?: AgentCreateDraft | null
+  initialBackendType?: AgentBackendType
+}>(), { authorityEpoch: 0, createSession: 0, initialDraft: null, initialBackendType: AGENT_BACKEND_MODEL })
 const emit = defineEmits<{
   navigate: [route: Route]
+  'add-credential': [detail: {
+    family: AgentCredentialFamily
+    draft: AgentCreateDraft
+    store: AppStore
+    authorityEpoch: number
+    createSession: number
+  }]
   'create-success': [detail: CreateSuccessDetail]
   'create-cancel': [detail: Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>]
 }>()
@@ -44,23 +55,24 @@ const BACKENDS: { id: AgentBackendType; label: string; blurb: string }[] = [
   { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Runs on a Linux or macOS machine and uses its own tools. Agent tool grants do not apply.' },
 ]
 
-const name = ref('')
-const backendType = ref<AgentBackendType>(AGENT_BACKEND_MODEL)
-const modelCredential = ref('')
-const harnessEdge = ref('')
-const harnessCredential = ref('')
-const harnessModel = ref('')
-const harnessWorkspace = ref<HarnessWorkspace>('persistent')
-const systemPrompt = ref('')
-const channel = ref('')
-const web = ref(false)
-const fanOut = ref(false)
-const visualization = ref(false)
+const initialDraft = props.initialDraft || emptyAgentCreateDraft(props.initialBackendType)
+const name = ref(initialDraft.name)
+const backendType = ref<AgentBackendType>(initialDraft.backendType)
+const modelCredential = ref(initialDraft.modelCredential)
+const harnessEdge = ref(initialDraft.harnessEdge)
+const harnessCredential = ref(initialDraft.harnessCredential)
+const harnessModel = ref(initialDraft.harnessModel)
+const harnessWorkspace = ref<HarnessWorkspace>(initialDraft.harnessWorkspace)
+const systemPrompt = ref(initialDraft.systemPrompt)
+const channel = ref(initialDraft.channel)
+const web = ref(initialDraft.web)
+const fanOut = ref(initialDraft.fanOut)
+const visualization = ref(initialDraft.visualization)
 // Background runs (schedules, triggers) have no human watching, so a family
 // stays interactive-only unless opted in here — same rule as the Config pane.
-const webBackground = ref(false)
-const fanOutBackground = ref(false)
-const visualizationBackground = ref(false)
+const webBackground = ref(initialDraft.webBackground)
+const fanOutBackground = ref(initialDraft.fanOutBackground)
+const visualizationBackground = ref(initialDraft.visualizationBackground)
 watch(visualization, on => { if (!on) visualizationBackground.value = false })
 watch(web, on => { if (!on) webBackground.value = false })
 watch(fanOut, on => { if (!on) fanOutBackground.value = false })
@@ -81,6 +93,7 @@ const edgeSlice = computed(() => { revision.value; return { ...props.store.edges
 // one. It is filtered here as well as refused by the write path: an option that
 // cannot work should not be offered, not merely rejected after being picked.
 const hostEdges = computed(() => edgeSlice.value.data.filter(edge => HARNESS_EDGE_KINDS.includes(edge.kind)))
+const connectMachineHref = computed(() => portalHref('/providers/edges/connect/edge', props.api.tenant()))
 const edgeOptions = computed<FormSelectOption[]>(() => [
   { value: '', label: '— pick a machine —' },
   ...hostEdges.value.map(edge => ({
@@ -173,6 +186,33 @@ onMounted(() => { void nextTick(() => nameInput.value?.focus()) })
 
 function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key]
+}
+
+function addCredential(family: AgentCredentialFamily): void {
+  if (busy.value) return
+  emit('add-credential', {
+    family,
+    draft: {
+      name: name.value,
+      backendType: backendType.value,
+      modelCredential: modelCredential.value,
+      harnessEdge: harnessEdge.value,
+      harnessCredential: harnessCredential.value,
+      harnessModel: harnessModel.value,
+      harnessWorkspace: harnessWorkspace.value,
+      systemPrompt: systemPrompt.value,
+      channel: channel.value,
+      web: web.value,
+      fanOut: fanOut.value,
+      visualization: visualization.value,
+      webBackground: webBackground.value,
+      fanOutBackground: fanOutBackground.value,
+      visualizationBackground: visualizationBackground.value,
+    },
+    store: props.store,
+    authorityEpoch: props.authorityEpoch,
+    createSession: props.createSession,
+  })
 }
 
 function cancel(): void {
@@ -347,9 +387,13 @@ async function submit(): Promise<void> {
                   <span v-if="errors.harnessEdge" id="agent-create-edge-error" class="agents-fielderr" role="alert">{{ errors.harnessEdge }}</span>
                   <span id="agent-create-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
                   <span v-if="hostEdges.length === 0" id="agent-create-edge-empty" class="agents-hint">
-                    No Linux or macOS machine in this workspace yet — join one under Edges first.
+                    Connect a Linux or macOS machine in Edges, then check again here. Keep this tab open to retain your agent draft.
                   </span>
                 </label>
+                <div v-if="hostEdges.length === 0" class="agents-form-actions">
+                  <a :href="connectMachineHref" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Connect a machine (new tab)</a>
+                  <button type="button" class="k-btn k-btn--ghost" :disabled="busy || edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Checking machines…' : 'Check again' }}</button>
+                </div>
 
                 <label>
                   <span id="agent-create-harnesscred-label">Harness credential *</span>
@@ -368,7 +412,7 @@ async function submit(): Promise<void> {
                   <span id="agent-create-harnesscred-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
                   <span v-if="harnessCredentials.length === 0" id="agent-create-harnesscred-empty" class="agents-hint">
                     No harness identities yet —
-                    <button type="button" class="k-dashboard-action" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
+                    <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('harness')">
                       add a Claude Code or Codex one under Models
                     </button>
                     first.
@@ -406,7 +450,7 @@ async function submit(): Promise<void> {
               <span id="agent-create-model-hint" class="agents-hint">The credential and model endpoint used for every turn.</span>
               <span v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
                 No model credentials yet —
-                <button type="button" class="k-dashboard-action" :disabled="busy" @click="emit('navigate', { kind: 'create', resource: 'model' })">
+                <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">
                   add one under Models
                 </button>
                 first.

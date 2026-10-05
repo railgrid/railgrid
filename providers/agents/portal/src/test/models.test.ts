@@ -53,7 +53,84 @@ describe('models view on an empty workspace', () => {
     expect(text).toContain('Connect model')
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
+    expect(text).toContain('most recent 5,000 runs')
     expect(el.querySelector('.agents-panel.agents-route-panel')).toBeTruthy()
+  })
+
+  it('labels partial totals and retries the unavailable agent reads', async () => {
+    const partial = {
+      ...usageWithNulls,
+      total: { ...usageWithNulls.total, runs: 3, usdMicros: 2_000_000 },
+      unavailableAgents: ['scout', 'worker'],
+    }
+    const complete = {
+      ...partial,
+      total: { ...partial.total, runs: 5, usdMicros: 4_000_000 },
+      unavailableAgents: [],
+    }
+    const retry = deferred<typeof complete>()
+    const usage = vi.fn().mockResolvedValueOnce(partial).mockReturnValueOnce(retry.promise)
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    await settleVue()
+
+    const notice = el.querySelector<HTMLElement>('.k-inline-notification--warning[role="status"]')!
+    expect(notice.textContent).toContain('Usage could not be read for 2 agents: scout, worker')
+    expect(notice.textContent).toContain('Totals cover only agents whose usage was available')
+    expect(el.querySelectorAll('.agents-stat')[2]?.textContent).toContain('3')
+
+    const retryButton = notice.querySelector<HTMLButtonElement>('button')!
+    retryButton.click()
+    await settleVue()
+    expect(usage).toHaveBeenCalledTimes(2)
+    expect(retryButton.disabled).toBe(true)
+    expect(retryButton.getAttribute('aria-busy')).toBe('true')
+    expect(retryButton.textContent).toContain('Retrying…')
+
+    retry.resolve(complete)
+    await settleVue()
+    expect(el.querySelector('.k-inline-notification--warning')).toBeNull()
+    expect(el.querySelectorAll('.agents-stat')[2]?.textContent).toContain('5')
+  })
+
+  it('discloses when the usage breakdown omits rows beyond six', async () => {
+    const rows = Array.from({ length: 7 }, (_, index) => ({
+      ...usageWithNulls.total,
+      key: `row-${index + 1}`,
+      runs: index + 1,
+      usdMicros: (index + 1) * 100,
+    }))
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve({
+      ...usageWithNulls, byAgent: rows, byModel: rows.map(row => ({ ...row, key: `model-${row.key}` })),
+    }) })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
+    await settleVue()
+
+    expect(el.querySelectorAll('.agents-dash-card .agents-hint')).toHaveLength(2)
+    expect([...el.querySelectorAll('.agents-dash-card .agents-hint')].every(note => note.textContent?.includes('Showing 6 of 7 rows'))).toBe(true)
+    expect([...el.querySelectorAll('.agents-bars')].map(list => list.querySelectorAll('.agents-bar-row').length)).toEqual([6, 6])
+  })
+
+  it.each([
+    { usdMicros: 0, value: 'Unknown', label: 'estimated spend' },
+    { usdMicros: 5_000_000, value: '$5.00', label: 'priced usage only' },
+  ])('keeps unpriced runs distinct from zero spend ($usdMicros)', async ({ usdMicros, value, label }) => {
+    const bucket = { ...usageWithNulls.total, runs: 2, inputTokens: 100, usdMicros, unpricedRuns: 1 }
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve({
+      ...usageWithNulls, total: bucket, byModel: [{ ...bucket, key: 'main' }], byAgent: [], series: [],
+    }) })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    await settleVue()
+    const cost = el.querySelector('.agents-stat')!
+    expect(cost.textContent).toContain(value)
+    expect(cost.textContent).toContain(label)
+    expect(cost.textContent).toContain('1 unpriced run')
+    expect(el.textContent).toContain('slowest agent p50')
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
+    await settleVue()
+    expect(el.querySelector('.agents-bar-val')?.textContent).toContain(value)
+    expect(el.textContent).not.toContain('no spend in this window')
   })
 
   it('distinguishes initial usage and catalog failures from empty results', async () => {
@@ -315,6 +392,76 @@ describe('api client array normalization', () => {
     expect(u.byAgent).toEqual([])
     expect(u.byModel).toEqual([])
     expect(u.series).toEqual([])
+  })
+
+  it('merges pricing coverage independently of spend and retains slowest-agent latency', async () => {
+    const api = new ApiClient()
+    api.setContext({ basePath: '/ui/providers/agents', tenant: 'c1', orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
+    const row = (name: string) => ({ ...usageWithNulls.total, key: name, runs: 1, inputTokens: 100,
+      usdMicros: name === 'a' ? 500 : 0, unpricedRuns: name === 'a' ? 0 : 1,
+      latencyP50MS: name === 'a' ? 10 : 100, latencyP95MS: name === 'a' ? 20 : 200 })
+    const original = globalThis.fetch
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const agent = url.includes('/agents/a/usage') ? 'a' : 'b'
+      const bucket = row(agent)
+      const body = url.includes('/usage') ? { windowDays: 30, total: bucket, byAgent: [bucket],
+        byModel: [{ ...bucket, key: 'shared' }], series: [{ ...bucket, date: '2026-10-05' }] }
+        : { items: ['a', 'b'].map(name => ({ metadata: { name } })) }
+      return new Response(JSON.stringify(body), { status: 200 })
+    }) as typeof fetch
+    try {
+      const got = await api.usage(30)
+      expect(got.total).toMatchObject({ runs: 2, usdMicros: 500, unpricedRuns: 1, latencyP50MS: 100, latencyP95MS: 200 })
+      expect(got.byModel[0]).toMatchObject({ key: 'shared', unpricedRuns: 1, usdMicros: 500 })
+      expect(got.series[0]).toMatchObject({ date: '2026-10-05', unpricedRuns: 1, usdMicros: 500 })
+    } finally { globalThis.fetch = original }
+  })
+
+  it('keeps successful usage totals and names authorized agents whose reads failed', async () => {
+    const api = new ApiClient()
+    api.setContext({ basePath: '/ui/providers/agents', tenant: 'c1', orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
+    const original = globalThis.fetch
+    const calls: string[] = []
+    const available = { ...usageWithNulls.total, key: 'available', runs: 2, inputTokens: 120, usdMicros: 420_000 }
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.split('?')[0].endsWith('/apis/agents.railgrid.ai/v1alpha1/agents')) {
+        return response({ items: ['available', 'restricted'].map(name => ({ metadata: { name } })) })
+      }
+      if (url.includes('/agents/available/usage')) {
+        return response({ windowDays: 30, total: available, byAgent: [available], byModel: [], series: [] })
+      }
+      if (url.includes('/agents/restricted/usage')) return response({ message: 'forbidden' }, 403)
+      throw new Error(`unexpected request ${url}`)
+    }) as typeof fetch
+    try {
+      const got = await api.usage(30)
+      expect(got.total).toMatchObject({ runs: 2, inputTokens: 120, usdMicros: 420_000 })
+      expect(got.byAgent.map(bucket => bucket.key)).toEqual(['available'])
+      expect(got.unavailableAgents).toEqual(['restricted'])
+      expect(calls).toHaveLength(3)
+      expect(calls.every(call => call.startsWith('GET '))).toBe(true)
+      expect(calls.some(call => call.includes('/modelcredentials/'))).toBe(false)
+    } finally { globalThis.fetch = original }
+  })
+
+  it('throws a normal request error when every authorized usage read fails', async () => {
+    const api = new ApiClient()
+    api.setContext({ basePath: '/ui/providers/agents', tenant: 'c1', orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
+    const original = globalThis.fetch
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.split('?')[0].endsWith('/apis/agents.railgrid.ai/v1alpha1/agents')) {
+        return new Response(JSON.stringify({ items: [{ metadata: { name: 'scout' } }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ message: 'unavailable' }), { status: 503 })
+    }) as typeof fetch
+    try {
+      await expect(api.usage(30)).rejects.toMatchObject({ status: 503 })
+    } finally { globalThis.fetch = original }
   })
 
   it('getRun() turns null steps/children into empty arrays', async () => {

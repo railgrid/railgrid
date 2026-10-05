@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
-import type { Agent, Connection, RailgridContext, Toolset } from '../types'
+import type { Agent, Connection, Credential, RailgridContext, Toolset } from '../types'
 import { agentFixture } from './helpers'
 import { settleVue, text } from './vue-helper'
 
@@ -400,6 +400,78 @@ describe('public Agents shell routing', () => {
 })
 
 describe('context and create-session routing fences', () => {
+  it('keeps a harness agent draft through identity setup and discards it on explicit cancel', async () => {
+    const element = await mountShell('#/create/agent/harness')
+    const store = element.store!
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.edges.data = [{ kind: 'LinuxServer', name: 'builder-01', connected: true }]
+    store.edges.loaded = store.edges.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue(4)
+
+    const name = element.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'release-helper'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const prompt = element.querySelector<HTMLTextAreaElement>('#agent-create-system-prompt-label + textarea')!
+    prompt.value = 'Prepare release notes from the merged changes.'
+    prompt.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    element.querySelector<HTMLButtonElement>('#agent-create-edge')!.click()
+    await settleVue()
+    buttonWithText(document.querySelector('.k-form-select__panel')!, 'builder-01').click()
+    await settleVue()
+
+    buttonWithText(element, 'add a Claude Code or Codex one').click()
+    await settleVue(5)
+    expect(location.hash).toBe('#/create/model/harness')
+    expect(element.querySelector<HTMLSelectElement>('#model-provider')?.value).toBe('claude-code')
+
+    // Canceling the prerequisite returns to the same draft instead of making
+    // the agent flow restart with its initial values.
+    buttonWithText(element.querySelector('.agents-model-create')!, 'Cancel').click()
+    await settleVue(5)
+    expect(location.hash).toBe('#/create/agent/harness')
+    expect(element.querySelector<HTMLInputElement>('#agent-create-name')?.value).toBe('release-helper')
+    expect(element.querySelector<HTMLTextAreaElement>('#agent-create-system-prompt-label + textarea')?.value).toBe('Prepare release notes from the merged changes.')
+    expect(text(element.querySelector('#agent-create-edge'))).toContain('builder-01')
+
+    buttonWithText(element, 'add a Claude Code or Codex one').click()
+    await settleVue(5)
+    const created: Credential = { name: 'claude-login', provider: 'claude-code' }
+    element.api!.saveCredential = vi.fn().mockResolvedValue(created)
+    element.api!.listCredentials = vi.fn().mockResolvedValue([created])
+    const identityName = element.querySelector<HTMLInputElement>('#model-display-name')!
+    identityName.value = 'claude-login'
+    identityName.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const secret = element.querySelector<HTMLInputElement>('#harness-secret')!
+    secret.value = 'sk-ant-oat01-test'
+    secret.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element.querySelector('.agents-model-create')!, 'Add identity').click()
+    await settleVue(8, 120)
+
+    expect(element.api!.saveCredential).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'claude-login',
+      provider: 'claude-code',
+      harnessSecret: expect.objectContaining({ value: 'sk-ant-oat01-test' }),
+    }))
+    expect(location.hash).toBe('#/create/agent/harness')
+    expect(element.querySelector<HTMLInputElement>('#agent-create-name')?.value).toBe('release-helper')
+    expect(element.querySelector<HTMLTextAreaElement>('#agent-create-system-prompt-label + textarea')?.value).toBe('Prepare release notes from the merged changes.')
+    expect(text(element.querySelector('#agent-create-edge'))).toContain('builder-01')
+    expect(text(element.querySelector('#agent-create-harnesscred'))).toContain('claude-login')
+
+    buttonWithText(element, 'Cancel').click()
+    await settleVue(5)
+    expect(location.hash).toBe('#/agents')
+    buttonWithText(element, 'Create with coding harness').click()
+    await settleVue(5)
+    expect(location.hash).toBe('#/create/agent/harness')
+    expect(element.querySelector<HTMLInputElement>('#agent-create-name')?.value).toBe('')
+    expect(element.querySelector<HTMLTextAreaElement>('#agent-create-system-prompt-label + textarea')?.value).toBe('')
+    element.remove()
+  })
+
   it('rejects a pending agent result after moving directly to model creation', async () => {
     const element = await mountShell('#/create/agent')
     const store = element.store!

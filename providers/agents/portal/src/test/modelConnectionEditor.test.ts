@@ -1,8 +1,6 @@
-// The model editor is a two-step form and the step boundary is a save: both
-// probes are verbs on a saved ModelCredential, so nothing can be tested or
-// discovered until the object exists. These assert that boundary from both
-// sides — that an unsaved form cannot probe and still saves, and that a saved
-// one probes the object by name and never sends a key to do it.
+// A model connection is committed only after its exact candidate responds.
+// Stored keys are reused only at the original endpoint; new or changed keys
+// are tested through temporary workspace credentials, never active ones.
 
 import { describe, expect, it, vi } from 'vitest'
 import Models from '../views/Models.vue'
@@ -38,10 +36,27 @@ const credential = { name: 'main', model: 'gpt-4o', baseURL: 'https://api.openai
 const usage = { windowDays: 30, total: { runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0 }, byAgent: [], byModel: [], series: [] }
 
 describe('focused model connection editor', () => {
+ it('clears a typed key before probing a different provider or endpoint', async () => {
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true })
+  const { element: el } = await mountVue(Editor, { api: stubApi({ probeCredentialDraft }), busy: false })
+  await input(el, 'apiKey', 'key-for-original-endpoint')
+  await selectProvider(el, 'custom')
+  expect(el.querySelector<HTMLInputElement>('input[name="apiKey"]')!.value).toBe('')
+  await input(el, 'baseURL', 'https://first.example/v1')
+  await input(el, 'apiKey', 'key-for-first-endpoint')
+  await input(el, 'baseURL', 'https://second.example/v1')
+  expect(el.querySelector<HTMLInputElement>('input[name="apiKey"]')!.value).toBe('')
+  expect(button(el, 'Find models').disabled).toBe(true)
+  expect(probeCredentialDraft).not.toHaveBeenCalled()
+  await input(el, 'apiKey', 'key-for-second-endpoint')
+  button(el, 'Find models').click(); await settleVue()
+  expect(probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ baseURL: 'https://second.example/v1', apiKey: 'key-for-second-endpoint' }), true)
+ })
+
  it.each(['team--openai', 'team.openai'])('allows editing an existing credential named %s without renaming it', async (name) => {
   const save = vi.fn()
   const testCredential = vi.fn().mockResolvedValue({ ok: true })
-  const { element: el } = await mountVue(Editor, { api: stubApi({ testCredential }), credential: { ...credential, name }, busy: false, onSave: save })
+  const { element: el } = await mountVue(Editor, { api: stubApi({ probeCredentialDraft: testCredential }), credential: { ...credential, name }, busy: false, onSave: save })
   expect(el.querySelector<HTMLInputElement>('input[name="name"]')!.disabled).toBe(true)
   await input(el, 'apiKey', 'replacement')
   button(el, 'Test connection').click(); await settleVue()
@@ -80,26 +95,26 @@ describe('focused model connection editor', () => {
   expect(el.querySelector('#model-id')?.textContent).toContain('o3-mini')
  })
 
- it('cannot probe before the first save, and says what to do instead', async () => {
-  // This is the first-run case: an empty workspace, no agent, no credential.
-  // The old shape addressed the probes at an Agent, so there was nothing to
-  // run them as and the form had to apologize. Now the answer is an ordinary
-  // next step.
-  const save = vi.fn(); const testCredential = vi.fn(); const discoverCredential = vi.fn()
-  const api = stubApi({ testCredential, discoverCredential })
+ it('discovers and tests an exact new candidate before saving the connection', async () => {
+  const save = vi.fn()
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-4o'], latencyMS: 3 })
+  const api = stubApi({ probeCredentialDraft })
   const { element: el } = await mountVue(Editor, { api, busy: false, onSave: save })
   await input(el, 'name', 'first')
   await input(el, 'apiKey', 'sk-first')
-  expect(el.textContent).toContain('Save this connection first')
-  expect(button(el, 'Test connection').disabled).toBe(true)
-  expect(button(el, 'Find models').disabled).toBe(true)
-  // Saving with no model at all is legitimate: it is what makes the endpoint
-  // askable.
-  expect(button(el, 'Connect model').disabled).toBe(false)
-  el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue()
-  expect(testCredential).not.toHaveBeenCalled()
-  expect(discoverCredential).not.toHaveBeenCalled()
-  expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'first', model: '', apiKey: 'sk-first' }), undefined)
+  expect(button(el, 'Find models').disabled).toBe(false)
+  expect(button(el, 'Connect model').disabled).toBe(true)
+  button(el, 'Find models').click(); await settleVue()
+  expect(probeCredentialDraft).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: 'sk-first', baseURL: 'https://api.openai.com/v1' }), true)
+  await selectModel(el, 'gpt-4o')
+  await submitForm(el)
+  expect(save).not.toHaveBeenCalled()
+  button(el, 'Test connection').click(); await settleVue()
+  expect(probeCredentialDraft).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: 'sk-first', model: 'gpt-4o' }), false)
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'first', model: 'gpt-4o', apiKey: 'sk-first' }), expect.objectContaining({ ok: true }))
+  await input(el, 'apiKey', 'rotated')
+  expect(button(el, 'Connect model').disabled).toBe(true)
  })
 
  it('refuses an API key that contains whitespace before anything is saved', async () => {
@@ -119,7 +134,7 @@ describe('focused model connection editor', () => {
   expect(chat.element.querySelector('form')?.noValidate).toBe(true)
   await input(chat.element, 'name', 'Invalid Name')
   await input(chat.element, 'apiKey', 'sk-valid')
-  button(chat.element, 'Connect model').click(); await settleVue()
+  await submitForm(chat.element)
   const chatName = chat.element.querySelector<HTMLInputElement>('#model-display-name')!
   const chatKey = chat.element.querySelector<HTMLInputElement>('[name="apiKey"]')!
   expect(chatName.getAttribute('aria-invalid')).toBe('true')
@@ -138,7 +153,7 @@ describe('focused model connection editor', () => {
   await input(chat.element, 'name', 'endpoint')
   await input(chat.element, 'baseURL', 'not an endpoint')
   await input(chat.element, 'apiKey', 'sk-valid')
-  button(chat.element, 'Connect model').click(); await settleVue()
+  await submitForm(chat.element)
   const endpoint = chat.element.querySelector<HTMLInputElement>('#model-base-url')!
   expect(endpoint.getAttribute('aria-invalid')).toBe('true')
   expect(chat.element.querySelector<HTMLInputElement>('[name="apiKey"]')!.getAttribute('aria-invalid')).toBe('false')
@@ -209,46 +224,38 @@ describe('focused model connection editor', () => {
   const { element: el } = await mountVue(Editor, { api: stubApi({ testCredential }), credential, busy: false })
   button(el, 'Test connection').click(); await settleVue()
   expect(el.textContent).toContain('Model permission denied')
+  const alert = el.querySelector('[role="alert"]')!
+  const details = el.querySelector('details')!
+  expect(alert.textContent).toContain('did not pass verification')
+  expect(alert.textContent).not.toContain('Model permission denied')
+  expect(details.open).toBe(false)
+  expect(Boolean(alert.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
   // A changed endpoint needs a new key: the stored one was issued for the old
   // endpoint and must not be sent to a new one.
   await input(el, 'baseURL', 'https://another.example/v1')
   expect(button(el, 'Save changes').disabled).toBe(true)
   await input(el, 'apiKey', 'new-key')
-  expect(button(el, 'Save changes').disabled).toBe(false)
+  expect(button(el, 'Save changes').disabled).toBe(true)
  })
 
- it('keeps the editor open after the first save so a model can be picked', async () => {
-  // Save → the object exists → discover → pick → save. The editor does not
-  // close on the first save, because a credential with no model is not
-  // something an agent can run on.
-  const saved = { name: 'first', baseURL: 'https://api.openai.com/v1', model: '', ready: false, secretResolved: true }
+ it('creates the named connection only once after successful verification', async () => {
+  const saved = { name: 'first', baseURL: 'https://api.openai.com/v1', model: 'gpt-5', ready: true, secretResolved: true }
   const saveCredential = vi.fn().mockResolvedValue(saved)
-  const discoverCredential = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-5'] })
   const listCredentials = vi.fn().mockResolvedValue([saved])
-  const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 4 })
-  const api = stubApi({ saveCredential, discoverCredential, listCredentials, testCredential, catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
-  const store = makeStore(api)
-  const { element: el } = await mountVue(Models, { api, store })
-
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-5'], latencyMS: 4 })
+  const api = stubApi({ saveCredential, probeCredentialDraft, listCredentials, catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
+  const { element: el } = await mountVue(Models, { api, store: makeStore(api) })
   button(el, 'Connect model').click(); await settleVue()
   await input(el, 'name', 'first')
   await input(el, 'apiKey', 'sk-first')
-  el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue(8)
-
-  expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'first', model: '' }))
-  expect(el.querySelector('form'), 'the editor stays open on the saved credential').not.toBeNull()
-  // Now that the object exists, the probes are live.
-  expect(button(el, 'Find models').disabled).toBe(false)
   button(el, 'Find models').click(); await settleVue()
-  expect(discoverCredential).toHaveBeenCalledWith('first')
   await selectModel(el, 'gpt-5')
-  // The pick is proved before it is written. Without this the first thing to
-  // exercise the model would be the first agent run.
-  expect(button(el, 'Save changes').disabled).toBe(true)
+  expect(saveCredential).not.toHaveBeenCalled()
+  expect(button(el, 'Connect model').disabled).toBe(true)
   button(el, 'Test connection').click(); await settleVue()
-  expect(testCredential).toHaveBeenCalledWith('first', 'gpt-5')
-  el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue(8)
-  expect(saveCredential).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'first', model: 'gpt-5' }))
+  await submitForm(el, 8)
+  expect(saveCredential).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'first', model: 'gpt-5', apiKey: 'sk-first' }))
+  expect(el.querySelector('form')).toBeNull()
  })
 
  it('preserves drafts across refreshes, coalesces saves, and invalidates an older saved-model probe', async () => {
@@ -302,15 +309,20 @@ describe('focused model connection editor', () => {
   expect(save).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-4.1' }), expect.objectContaining({ ok: true }))
  })
 
- it('still lets a key rotation save without re-testing the unchanged model', async () => {
-  // Nothing new is being claimed about the model, so charging for another
-  // round-trip would buy no information.
+ it('tests the replacement key without touching the saved connection first', async () => {
   const save = vi.fn()
-  const { element: el } = await mountVue(Editor, { api: stubApi(), credential, busy: false, onSave: save })
+  const testCredential = vi.fn()
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 2 })
+  const { element: el } = await mountVue(Editor, { api: stubApi({ testCredential, probeCredentialDraft }), credential, busy: false, onSave: save })
   await input(el, 'apiKey', 'rotated-key')
-  expect(button(el, 'Save changes').disabled).toBe(false)
-  el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue()
-  expect(save).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-4o', apiKey: 'rotated-key' }), undefined)
+  expect(button(el, 'Save changes').disabled).toBe(true)
+  await submitForm(el)
+  expect(save).not.toHaveBeenCalled()
+  button(el, 'Test connection').click(); await settleVue()
+  expect(testCredential).not.toHaveBeenCalled()
+  expect(probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'rotated-key', model: 'gpt-4o' }), false)
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-4o', apiKey: 'rotated-key' }), expect.objectContaining({ ok: true }))
  })
 
  it('separates catalog-known models from the rest of what the endpoint serves', async () => {
@@ -337,18 +349,19 @@ describe('focused model connection editor', () => {
   expect(document.querySelector('.k-table__filter-panel')!.textContent).toContain('Use \u201cvendor/typed-by-hand\u201d')
  })
 
- it('writes a chat endpoint exactly as before, provider included', async () => {
-  // The provider select is a real choice now, so the preset's own provider is
-  // what lands on the object — and everything else about this form is what it
-  // always was: endpoint, key, and a model proved before it is written.
+ it('writes the tested chat provider, endpoint, key, and model together', async () => {
   const save = vi.fn()
-  const { element: el } = await mountVue(Editor, { api: stubApi(), busy: false, onSave: save })
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-4o'], latencyMS: 4 })
+  const { element: el } = await mountVue(Editor, { api: stubApi({ probeCredentialDraft }), busy: false, onSave: save })
   await input(el, 'name', 'everyday')
   await input(el, 'apiKey', 'sk-chat')
+  button(el, 'Find models').click(); await settleVue()
+  await selectModel(el, 'gpt-4o')
+  button(el, 'Test connection').click(); await settleVue()
   await submitForm(el)
   expect(save).toHaveBeenCalledWith({
-   name: 'everyday', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: '', apiKey: 'sk-chat',
-  }, undefined)
+   name: 'everyday', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: 'sk-chat',
+  }, expect.objectContaining({ ok: true }))
   expect(save.mock.calls[0]?.[0]).not.toHaveProperty('harnessSecret')
  })
 

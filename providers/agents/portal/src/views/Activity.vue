@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
-import type { ApiClient, RunFilter } from '../api'
+import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -13,6 +13,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import type { Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import { approvalResolutionFailureMessage } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -48,7 +49,7 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const loaded = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
-const resolvingInbox = ref(new Set<string>())
+const resolvingInbox = ref(new Map<string, 'approve' | 'deny'>())
 const tablePage = ref(1)
 const tablePageSize = ref(PAGE)
 const tableCursor = ref<string | null>(null)
@@ -179,19 +180,25 @@ function onTableChange(change: ResourceTableChange): void {
 async function resolve(item: InboxItem, decision: 'approve' | 'deny'): Promise<void> {
   if (resolvingInbox.value.has(item.id)) return
   const authority = captureAuthority()
-  resolvingInbox.value = new Set(resolvingInbox.value).add(item.id)
+  resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
   try {
     await authority.api.resolveInbox(item.id, decision)
     if (!authorityIsCurrent(authority)) return
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
-    void authority.store.load('inbox')
-    void reload('foreground')
+    await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
-    if (authorityIsCurrent(authority)) toast('error', `Could not ${decision}: ${(cause as Error).message}`)
+    if (authorityIsCurrent(authority)) {
+      // The request can time out after the server has already accepted it.
+      // Read both projections again before leaving the pending card as truth.
+      toast('error', approvalResolutionFailureMessage(cause instanceof ApiError ? cause.status : undefined))
+      await Promise.allSettled([authority.store.load('inbox'), reload('background')])
+    }
   } finally {
-    const next = new Set(resolvingInbox.value)
-    next.delete(item.id)
-    resolvingInbox.value = next
+    if (authorityIsCurrent(authority)) {
+      const next = new Map(resolvingInbox.value)
+      next.delete(item.id)
+      resolvingInbox.value = next
+    }
   }
 }
 
@@ -237,7 +244,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   loading.value = false
   error.value = null
   refreshMode.value = 'foreground'
-  resolvingInbox.value = new Set()
+  resolvingInbox.value = new Map()
   void reload('foreground')
 }, { flush: 'post' })
 onBeforeUnmount(() => {
@@ -288,8 +295,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="agents-approval-actions">
             <template v-if="item.kind === 'approval'">
-              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.has(item.id) || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.has(item.id) ? 'Resolving…' : 'Approve' }}</button>
-              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> Deny</button>
+              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
+              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
             </template>
             <span v-else class="agents-hint">Answer from the agent's channel or chat.</span>
           </div>
