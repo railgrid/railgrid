@@ -136,8 +136,8 @@ func TestRepositoryStartRequestIsARepositoryAttempt(t *testing.T) {
 		t.Errorf("task/attempt/epoch = %q/%q/%d, want run-1/run-1/1", req.TaskID, req.AttemptID, req.AttemptEpoch)
 	case req.Limits.MaxTurns != 1:
 		t.Errorf("limits.maxTurns = %d, want 1", req.Limits.MaxTurns)
-	case !req.AskPermission:
-		t.Error("a repository attempt still opts into the permission round-trip")
+	case req.AskPermission:
+		t.Error("a repository attempt must not opt into the permission round-trip; nobody attends it")
 	case req.HarnessCredential == nil || req.HarnessCredential.Value == "":
 		t.Error("every dispatch carries a harness credential")
 	case string(req.ApprovedInput) != `{"ticket":"T-1"}`:

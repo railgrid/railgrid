@@ -274,13 +274,20 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 		Model:             b.cfg.Model,
 		ApprovedInput:     approved,
 		RequiredHarness:   b.cfg.RequiredHarness,
-		// Opt into the permission round-trip. This provider is the one that CAN
-		// answer: it already has an inbox, an approval card and a resume that
-		// files a verdict, so a tool call the harness's permission mode does not
-		// pre-approve should reach a person rather than being denied where
-		// nobody can see it. A runner too old to know the field ignores it and
-		// behaves as it always did.
-		AskPermission: true,
+		// A conversational turn opts into the permission round-trip. This
+		// provider is the one that CAN answer: it already has an inbox, an
+		// approval card and a resume that files a verdict, so a tool call the
+		// harness's permission mode does not pre-approve should reach a person
+		// rather than being denied where nobody can see it. A runner too old to
+		// know the field ignores it and behaves as it always did.
+		//
+		// A repository attempt does not. It is unattended coding work a
+		// coordinator dispatched against a checkout, and a run that stops on
+		// `git ls-files` until somebody approves it is a run that never
+		// finishes; the harness's own permission mode decides, as it did
+		// before a person could be asked. A question the harness asks of its
+		// own accord (request-user-input) still parks the run.
+		AskPermission: b.cfg.Repository == nil,
 		Limits: runner.ExecutionLimits{
 			// One launch is one turn in this protocol revision, and the runner
 			// refuses anything else.
