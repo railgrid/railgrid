@@ -311,6 +311,45 @@ type Outcome struct {
 	Usage Usage
 	// Parked is set exactly when Status is StatusParked.
 	Parked *Parked
+	// Result is set on a completed REPOSITORY attempt — a turn that ran in a
+	// fresh checkout and exported a Git result — once the backend has fetched
+	// and verified what the runner reported. Nil for a conversational turn.
+	Result *RepositoryResult
+	// Artifacts are the verified artifact bytes behind Result, for the provider
+	// to store: a reader of the run (the coordinator that dispatched it) fetches
+	// them from the provider, not from the runner. Empty unless Result is set.
+	Artifacts []Artifact
+}
+
+// RepositoryResult is what a repository attempt produced, as the provider
+// records it on the run: the commit the runner snapshotted on top of the
+// approved base, or the fact that nothing changed.
+type RepositoryResult struct {
+	// BaseCommit is the approved base the attempt ran against, as requested.
+	BaseCommit string
+	// Commit and Tree are the snapshot the runner exported; empty when
+	// NoChanges.
+	Commit string
+	Tree   string
+	// NoChanges reports that the worktree still matched the base commit, in
+	// which case there is no bundle.
+	NoChanges bool
+	// ResultDigest is the sha256 (hex) of the git-result.json bytes.
+	ResultDigest string
+	// BundleDigest is the sha256 (hex) of the bundle bytes, and BundleSize its
+	// length; both absent when NoChanges.
+	BundleDigest string
+	BundleSize   int64
+}
+
+// Artifact is one verified artifact's bytes and the facts a reader is given
+// about it.
+type Artifact struct {
+	Name      string
+	Digest    string // sha256 hex of Data
+	MediaType string
+	Size      int64
+	Data      []byte
 }
 
 // EventSink is the provider's half of a turn in flight: progress out, and the

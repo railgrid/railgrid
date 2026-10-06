@@ -49,6 +49,9 @@ const (
 	// interval is the one knob that bounds this controller's rate budget.
 	defaultObserveInterval = 5 * time.Minute
 	minObserveInterval     = 30 * time.Second
+	// pushSettleInterval is how soon a pull request is re-read after its
+	// branch was advanced and the forge did not report the new head yet.
+	pushSettleInterval = 15 * time.Second
 	// Bounds on what the status carries of the conversation.
 	maxReviews  = 64
 	maxComments = 128
@@ -144,7 +147,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	next.Status.ObservedGeneration = pr.Generation
 
 	// 1. The branch: advance it to the desired head when it is not there.
+	pushed := false
 	if head := pr.Spec.DesiredHead; head != nil && pr.Status.Head != head.Commit {
+		pushed = true
 		if err := r.advance(ctx, host, conn, cred, repo, string(req.ClusterName), &pr, head); err != nil {
 			var permanent permanentError
 			if errors.As(err, &permanent) {
@@ -189,6 +194,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	if observed.Head != pr.Spec.Branch || observed.Base != pr.Spec.Base || !strings.EqualFold(observed.HeadRepository, observed.Repository) {
 		return ctrl.Result{}, r.fail(ctx, c, &pr, "the pull request on the forge is not the one this resource describes")
+	}
+	// The branch was just advanced and the forge does not report it yet: a
+	// read right after a push can lag. Reading the conversation against the
+	// stale head would be refused, and waiting the whole observe interval
+	// would leave the coordinator a stale head for minutes. Come back soon.
+	if pushed && pr.Spec.DesiredHead != nil && observed.Commit != pr.Spec.DesiredHead.Commit {
+		shared.SetCondition(&next.Status.Conditions, codev1alpha1.PullRequestConditionHeadApplied, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "The head branch was advanced; waiting for the forge to report it.", pr.Generation)
+		shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "The head branch was advanced; waiting for the forge to report it.", pr.Generation)
+		if err := updateStatusIfChanged(ctx, c, &pr, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: pushSettleInterval}, nil
 	}
 	next.Status.URL = observed.URL
 	next.Status.Head = observed.Commit

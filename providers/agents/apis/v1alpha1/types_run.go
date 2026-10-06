@@ -152,6 +152,34 @@ type RunSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=2048
 	InputPreview string `json:"inputPreview,omitempty"`
+
+	// Repository marks a REPOSITORY run: a harness attempt dispatched against
+	// a fresh clone of an approved commit rather than the agent's own
+	// workspace, exporting a Git result when it completes (see status.result).
+	// It is what a coding coordinator asks for through the `run` verb, and it
+	// records what ran — never the clone credential, which is dispatch data
+	// and is gone with the turn.
+	// +optional
+	Repository *RunRepository `json:"repository,omitempty"`
+}
+
+// RunRepository is what a repository run was asked to run against.
+type RunRepository struct {
+	// RepositoryID is the repository's id on the runner that executed the
+	// attempt.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	RepositoryID string `json:"repositoryID"`
+
+	// BaseCommit is the approved commit the attempt started from.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
+	BaseCommit string `json:"baseCommit"`
+
+	// CommitMessage is the subject the exported snapshot commit carries; empty
+	// is the runner's canonical message.
+	// +optional
+	// +kubebuilder:validation:MaxLength=200
+	CommitMessage string `json:"commitMessage,omitempty"`
 }
 
 // RunDelivery is where a run's answer goes: what asked for it, the exact chat
@@ -257,6 +285,13 @@ type RunStatus struct {
 	// +optional
 	Usage *RunUsage `json:"usage,omitempty"`
 
+	// Result is a repository run's verified Git result, present once the run
+	// Succeeded. The artifacts it describes — git-result.json and, unless
+	// NoChanges, git-result.bundle — are read with the `artifact` verb and
+	// re-checked against the digests here.
+	// +optional
+	Result *RunResult `json:"result,omitempty"`
+
 	// ObservedGeneration mirrors metadata.generation last reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -266,6 +301,43 @@ type RunStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// RunResult is what a repository run produced: the snapshot commit on top of
+// the approved base, or the fact that nothing changed.
+type RunResult struct {
+	// BaseCommit is the approved base the attempt ran against.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
+	BaseCommit string `json:"baseCommit"`
+
+	// Commit is the exported snapshot commit; absent when NoChanges.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
+	Commit string `json:"commit,omitempty"`
+
+	// Tree is the snapshot commit's tree; absent when NoChanges.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
+	Tree string `json:"tree,omitempty"`
+
+	// NoChanges reports that the worktree still matched the base commit, so
+	// there is no commit and no bundle.
+	// +optional
+	NoChanges bool `json:"noChanges,omitempty"`
+
+	// ResultDigest is the sha256 (hex) of the stored git-result.json bytes.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	ResultDigest string `json:"resultDigest"`
+
+	// BundleDigest is the sha256 (hex) of the stored bundle; absent when
+	// NoChanges.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	BundleDigest string `json:"bundleDigest,omitempty"`
+
+	// BundleSize is the bundle's length in bytes; absent when NoChanges.
+	// +optional
+	BundleSize int64 `json:"bundleSize,omitempty"`
 }
 
 // RunTranscriptRef points at the store-side half of a run.

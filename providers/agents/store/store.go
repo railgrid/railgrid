@@ -166,16 +166,25 @@ type Run struct {
 	// RECEIPT reported it — which is not necessarily the one that was sent,
 	// because a harness may fork a session on resume. It is what the next turn
 	// of the conversation chains onto.
-	HarnessSessionID string          `json:"harnessSessionID,omitempty"`
-	Message          string          `json:"message,omitempty"`
-	Checkpoint       json.RawMessage `json:"checkpoint,omitempty"`
-	InputTokens      int64           `json:"inputTokens,omitempty"`
-	OutputTokens     int64           `json:"outputTokens,omitempty"`
-	USDMicros        int64           `json:"usdMicros,omitempty"` // cost in millionths of a USD
-	CreatedAt        time.Time       `json:"createdAt"`
-	UpdatedAt        time.Time       `json:"updatedAt"`
-	StartedAt        *time.Time      `json:"startedAt,omitempty"`
-	FinishedAt       *time.Time      `json:"finishedAt,omitempty"`
+	HarnessSessionID string `json:"harnessSessionID,omitempty"`
+	// Repository marks a REPOSITORY run — a harness attempt dispatched against a
+	// fresh clone of an approved commit rather than the agent's workspace —
+	// and records what it ran against. It never carries the clone credential:
+	// that is dispatch data, held for the turn and gone with it.
+	Repository *RunRepository `json:"repository,omitempty"`
+	// Result is what a repository run produced, once the exported Git result
+	// was fetched and verified. Nil until the run succeeds, and always nil for
+	// a run with no Repository.
+	Result       *RunResult      `json:"result,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	Checkpoint   json.RawMessage `json:"checkpoint,omitempty"`
+	InputTokens  int64           `json:"inputTokens,omitempty"`
+	OutputTokens int64           `json:"outputTokens,omitempty"`
+	USDMicros    int64           `json:"usdMicros,omitempty"` // cost in millionths of a USD
+	CreatedAt    time.Time       `json:"createdAt"`
+	UpdatedAt    time.Time       `json:"updatedAt"`
+	StartedAt    *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt   *time.Time      `json:"finishedAt,omitempty"`
 	// WorkedDurationMS is measured model-response and tool-callback time. It is
 	// nil when the run has no authoritative timing measurement; a non-nil zero
 	// is a measured zero and remains distinct from unknown.
@@ -188,6 +197,57 @@ type Run struct {
 	// RequestCancel; SaveRun never clears it.
 	CancelRequested   bool       `json:"cancelRequested,omitempty"`
 	CancelRequestedAt *time.Time `json:"cancelRequestedAt,omitempty"`
+}
+
+// RunRepository is what a repository run was asked to run against. The same
+// shape is projected onto the Run object's spec.repository, so a reader of
+// either knows what ran without being able to clone it.
+type RunRepository struct {
+	RepositoryID  string `json:"repositoryID"`
+	BaseCommit    string `json:"baseCommit"`
+	CommitMessage string `json:"commitMessage,omitempty"`
+}
+
+// RunResult is a repository run's verified Git result: the snapshot commit on
+// top of the base, or the fact that nothing changed, plus the digests a reader
+// re-checks the stored artifacts against.
+type RunResult struct {
+	BaseCommit   string `json:"baseCommit"`
+	Commit       string `json:"commit,omitempty"`
+	Tree         string `json:"tree,omitempty"`
+	NoChanges    bool   `json:"noChanges,omitempty"`
+	ResultDigest string `json:"resultDigest"`
+	BundleDigest string `json:"bundleDigest,omitempty"`
+	BundleSize   int64  `json:"bundleSize,omitempty"`
+}
+
+// RunArtifact is one artifact a repository run exported, stored whole so the
+// coordinator that dispatched the run fetches it from this provider rather
+// than reaching the runner itself. Bounded by the harness backend before it
+// gets here (64 KiB for the document, 32 MiB for the bundle).
+type RunArtifact struct {
+	RunID     string    `json:"runID"`
+	Name      string    `json:"name"`
+	Digest    string    `json:"digest"` // sha256 hex of Data
+	MediaType string    `json:"mediaType"`
+	Size      int64     `json:"size"`
+	Data      []byte    `json:"data"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// validate checks the facts an artifact row must carry.
+func (a RunArtifact) validate() error {
+	switch {
+	case strings.TrimSpace(a.RunID) == "":
+		return fmt.Errorf("run artifact needs a run ID")
+	case strings.TrimSpace(a.Name) == "" || strings.ContainsAny(a.Name, "/\\"):
+		return fmt.Errorf("run artifact needs a plain name")
+	case strings.TrimSpace(a.Digest) == "":
+		return fmt.Errorf("run artifact needs a digest")
+	case a.Size != int64(len(a.Data)):
+		return fmt.Errorf("run artifact size %d does not match its %d data bytes", a.Size, len(a.Data))
+	}
+	return nil
 }
 
 // RunDelivery is where a run's output goes: the connection to answer on, the
@@ -613,6 +673,13 @@ type Store interface {
 	// key, so a retried request is answered with the original run rather than
 	// starting the same work again. Scope must name the agent.
 	FindRunByIdempotencyKey(ctx context.Context, scope Scope, key string) (Run, bool, error)
+
+	// Run artifacts: what a repository run exported, stored with the run and
+	// deleted with it (DeleteRunData). SaveRunArtifact upserts on (scope, run,
+	// name) and needs the agent on the scope; GetRunArtifact reports ok=false
+	// for a name the run never stored.
+	SaveRunArtifact(ctx context.Context, scope Scope, artifact RunArtifact) error
+	GetRunArtifact(ctx context.Context, scope Scope, runID, name string) (RunArtifact, bool, error)
 
 	// Long-term memory.
 	PutMemory(ctx context.Context, scope Scope, m Memory) error

@@ -156,6 +156,11 @@ var agentsSchema = []string{
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS backend TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS harness_session_id TEXT NOT NULL DEFAULT ''`,
+	// A repository run's request (what it ran against, never the clone
+	// credential) and its verified Git result. NULL on every conversational
+	// run, which is every row written before repository runs existed.
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS repository JSONB`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS result JSONB`,
 	// Partial unique index: at most one primary run per (tenant, agent, key),
 	// while migrated duplicate run records remain intact for history.
 	`CREATE UNIQUE INDEX IF NOT EXISTS agents_runs_idempotency_primary_idx
@@ -286,6 +291,22 @@ var agentsSchema = []string{
 	// the one that keeps it from being a full table scan as run history grows.
 	`CREATE INDEX IF NOT EXISTS agents_runs_phase_updated_idx
 		ON agents_runs (phase, updated_at)`,
+	// The artifacts a repository run exported (git-result.json and the bundle),
+	// stored whole so the coordinator that dispatched the run reads them from
+	// this provider. One row per (tenant, run, name); deleted with the run.
+	`CREATE TABLE IF NOT EXISTS agents_run_artifacts (
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		digest TEXT NOT NULL,
+		media_type TEXT NOT NULL DEFAULT '',
+		size BIGINT NOT NULL DEFAULT 0,
+		data BYTEA NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, run_id, name)
+	)`,
 }
 
 func (p *PostgresStore) EnsureSchema(ctx context.Context) error {
@@ -784,12 +805,23 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			return err
 		}
 	}
+	var repository, result any
+	if run.Repository != nil {
+		if repository, err = marshalJSONB(run.Repository); err != nil {
+			return err
+		}
+	}
+	if run.Result != nil {
+		if result, err = marshalJSONB(run.Result); err != nil {
+			return err
+		}
+	}
 	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
 			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-			 backend, attempt_id, harness_session_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+			 backend, attempt_id, harness_session_id, repository, result)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
 			output=EXCLUDED.output, sources=EXCLUDED.sources, delivery=EXCLUDED.delivery,
@@ -798,12 +830,13 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			updated_at=EXCLUDED.updated_at, started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at,
 			worked_duration_ms=EXCLUDED.worked_duration_ms,
 			backend=EXCLUDED.backend, attempt_id=EXCLUDED.attempt_id,
-			harness_session_id=EXCLUDED.harness_session_id`,
+			harness_session_id=EXCLUDED.harness_session_id,
+			repository=EXCLUDED.repository, result=EXCLUDED.result`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result)
 	if err != nil {
 		return err
 	}
@@ -814,7 +847,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id`
+		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1005,7 +1038,7 @@ func scanRun(r rowScanner) (Run, error) { return scanScopedRun(r, nil) }
 func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var run Run
 	var phase string
-	var checkpoint, sources, delivery []byte
+	var checkpoint, sources, delivery, repository, result []byte
 	var started, finished, cancelAt sql.NullTime
 	var worked sql.NullInt64
 	dest := []any{}
@@ -1015,7 +1048,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
 		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt,
-		&run.Backend, &run.AttemptID, &run.HarnessSessionID)
+		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
@@ -1033,6 +1066,16 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	if len(delivery) > 0 {
 		if err := json.Unmarshal(delivery, &run.Delivery); err != nil {
 			return Run{}, fmt.Errorf("decode run delivery: %w", err)
+		}
+	}
+	if len(repository) > 0 {
+		if err := json.Unmarshal(repository, &run.Repository); err != nil {
+			return Run{}, fmt.Errorf("decode run repository: %w", err)
+		}
+	}
+	if len(result) > 0 {
+		if err := json.Unmarshal(result, &run.Result); err != nil {
+			return Run{}, fmt.Errorf("decode run result: %w", err)
 		}
 	}
 	if started.Valid {
@@ -1443,7 +1486,8 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 			EXISTS (SELECT 1 FROM agents_tool_calls WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_usage WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2) OR
-			EXISTS (SELECT 1 FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2)`,
+			EXISTS (SELECT 1 FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2) OR
+			EXISTS (SELECT 1 FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2)`,
 		fromOrg, fromWorkspace).Scan(&hasSource); err != nil {
 		return fmt.Errorf("check legacy scope for cluster %s: %w", clusterID, err)
 	}
@@ -1475,6 +1519,19 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 		if _, err := tx.ExecContext(ctx, query, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
 			return fmt.Errorf("migrate %s for cluster %s: %w", table, clusterID, err)
 		}
+	}
+	// Artifacts are keyed by run and name; the same run cannot exist under both
+	// scopes with different bytes, so a collision keeps the destination's row.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agents_run_artifacts AS src SET org_uuid=$3, workspace_uuid=$4
+		WHERE src.org_uuid=$1 AND src.workspace_uuid=$2 AND NOT EXISTS (
+			SELECT 1 FROM agents_run_artifacts AS dst
+			WHERE dst.org_uuid=$3 AND dst.workspace_uuid=$4 AND dst.run_id=src.run_id AND dst.name=src.name)`,
+		fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
+		return fmt.Errorf("migrate run artifacts for cluster %s: %w", clusterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
+		return fmt.Errorf("remove migrated run artifacts for cluster %s: %w", clusterID, err)
 	}
 	// Usage is a cumulative bucket: combine both partitions once, then remove
 	// the source so a later catch-up cannot count it a second time.
@@ -1730,7 +1787,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions", "agents_run_artifacts"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
@@ -1755,10 +1812,10 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 	if strings.TrimSpace(runID) == "" {
 		return fmt.Errorf("run ID is required")
 	}
-	// Messages and tool calls first: a crash between statements must leave the
-	// run row behind as the thing that still points at them, never orphans
-	// nothing points at.
-	for _, table := range []string{"agents_messages", "agents_tool_calls"} {
+	// Messages, tool calls and artifacts first: a crash between statements
+	// must leave the run row behind as the thing that still points at them,
+	// never orphans nothing points at.
+	for _, table := range []string{"agents_messages", "agents_tool_calls", "agents_run_artifacts"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
@@ -1771,6 +1828,57 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 		return err
 	}
 	return mutation.commit()
+}
+
+// ---- run artifacts -------------------------------------------------------------
+
+func (p *PostgresStore) SaveRunArtifact(ctx context.Context, scope Scope, artifact RunArtifact) error {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if err := artifact.validate(); err != nil {
+		return err
+	}
+	_, err = mutation.executor.ExecContext(ctx, `
+		INSERT INTO agents_run_artifacts
+			(org_uuid, workspace_uuid, agent_name, run_id, name, digest, media_type, size, data, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (org_uuid, workspace_uuid, run_id, name) DO UPDATE SET
+			agent_name=EXCLUDED.agent_name, digest=EXCLUDED.digest, media_type=EXCLUDED.media_type,
+			size=EXCLUDED.size, data=EXCLUDED.data, created_at=EXCLUDED.created_at`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, artifact.RunID, artifact.Name,
+		artifact.Digest, artifact.MediaType, artifact.Size, artifact.Data, artifact.CreatedAt.UTC())
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
+}
+
+func (p *PostgresStore) GetRunArtifact(ctx context.Context, scope Scope, runID, name string) (RunArtifact, bool, error) {
+	scope = p.normalizeScope(ctx, scope)
+	if err := scope.validate(); err != nil {
+		return RunArtifact{}, false, err
+	}
+	var a RunArtifact
+	err := p.db.QueryRowContext(ctx, `
+		SELECT run_id, name, digest, media_type, size, data, created_at
+		FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2 AND run_id=$3 AND name=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, runID, name).
+		Scan(&a.RunID, &a.Name, &a.Digest, &a.MediaType, &a.Size, &a.Data, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RunArtifact{}, false, nil
+	}
+	if err != nil {
+		return RunArtifact{}, false, err
+	}
+	a.CreatedAt = a.CreatedAt.UTC()
+	return a, true, nil
 }
 
 // ---- helpers ----------------------------------------------------------------------------

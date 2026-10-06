@@ -92,6 +92,9 @@ spec:
             readOnly: true
           - name: cancel
             description: "Ask a run in flight to stop."
+          - name: artifact
+            description: "Read one artifact a repository run exported (git-result.json or git-result.bundle), base64-encoded. POST {\"name\": \"<artifact>\"}."
+            readOnly: true
       - name: connections
         apiVersion: agents.railgrid.ai/v1alpha1
         kind: Connection

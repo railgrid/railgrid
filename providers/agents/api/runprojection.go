@@ -236,6 +236,13 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 			InputPreview:   safeTruncate(strings.TrimSpace(run.Input), runInputPreviewMax),
 		},
 	}
+	if repo := run.Repository; repo != nil {
+		// What a repository run ran against is part of the REQUEST and goes on
+		// spec. Never the clone credential: the record does not hold it.
+		object.Spec.Repository = &agentsv1alpha1.RunRepository{
+			RepositoryID: repo.RepositoryID, BaseCommit: repo.BaseCommit, CommitMessage: repo.CommitMessage,
+		}
+	}
 	if d := run.Delivery; d != nil {
 		// The delivery target is part of the REQUEST, so it is projected onto
 		// spec: a process that picks this run up after a restart has to know
@@ -309,6 +316,12 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 		}
 		if run.StartedAt != nil && run.FinishedAt != nil {
 			status.Usage.DurationMS = run.FinishedAt.Sub(*run.StartedAt).Milliseconds()
+		}
+	}
+	if r := run.Result; r != nil {
+		status.Result = &agentsv1alpha1.RunResult{
+			BaseCommit: r.BaseCommit, Commit: r.Commit, Tree: r.Tree, NoChanges: r.NoChanges,
+			ResultDigest: r.ResultDigest, BundleDigest: r.BundleDigest, BundleSize: r.BundleSize,
 		}
 	}
 	return status

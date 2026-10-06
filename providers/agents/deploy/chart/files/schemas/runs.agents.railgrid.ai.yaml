@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-e478625c.runs.agents.railgrid.ai
+  name: v261006-726052b8.runs.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -139,6 +139,37 @@ spec:
                 client alone.
               maxLength: 253
               type: string
+            repository:
+              description: |-
+                Repository marks a REPOSITORY run: a harness attempt dispatched against
+                a fresh clone of an approved commit rather than the agent's own
+                workspace, exporting a Git result when it completes (see status.result).
+                It is what a coding coordinator asks for through the `run` verb, and it
+                records what ran — never the clone credential, which is dispatch data
+                and is gone with the turn.
+              properties:
+                baseCommit:
+                  description: BaseCommit is the approved commit the attempt started
+                    from.
+                  pattern: ^[a-f0-9]{40}$
+                  type: string
+                commitMessage:
+                  description: |-
+                    CommitMessage is the subject the exported snapshot commit carries; empty
+                    is the runner's canonical message.
+                  maxLength: 200
+                  type: string
+                repositoryID:
+                  description: |-
+                    RepositoryID is the repository's id on the runner that executed the
+                    attempt.
+                  maxLength: 128
+                  minLength: 1
+                  type: string
+              required:
+              - baseCommit
+              - repositoryID
+              type: object
             sessionID:
               description: |-
                 SessionID is the conversation this run belongs to, and the second half of
@@ -279,6 +310,51 @@ spec:
                 Phase is the run's lifecycle position: Pending, Running,
                 PendingApproval, Succeeded, Failed or Aborted.
               type: string
+            result:
+              description: |-
+                Result is a repository run's verified Git result, present once the run
+                Succeeded. The artifacts it describes — git-result.json and, unless
+                NoChanges, git-result.bundle — are read with the `artifact` verb and
+                re-checked against the digests here.
+              properties:
+                baseCommit:
+                  description: BaseCommit is the approved base the attempt ran against.
+                  pattern: ^[a-f0-9]{40}$
+                  type: string
+                bundleDigest:
+                  description: |-
+                    BundleDigest is the sha256 (hex) of the stored bundle; absent when
+                    NoChanges.
+                  pattern: ^[a-f0-9]{64}$
+                  type: string
+                bundleSize:
+                  description: BundleSize is the bundle's length in bytes; absent
+                    when NoChanges.
+                  format: int64
+                  type: integer
+                commit:
+                  description: Commit is the exported snapshot commit; absent when
+                    NoChanges.
+                  pattern: ^[a-f0-9]{40}$
+                  type: string
+                noChanges:
+                  description: |-
+                    NoChanges reports that the worktree still matched the base commit, so
+                    there is no commit and no bundle.
+                  type: boolean
+                resultDigest:
+                  description: ResultDigest is the sha256 (hex) of the stored git-result.json
+                    bytes.
+                  pattern: ^[a-f0-9]{64}$
+                  type: string
+                tree:
+                  description: Tree is the snapshot commit's tree; absent when NoChanges.
+                  pattern: ^[a-f0-9]{40}$
+                  type: string
+              required:
+              - baseCommit
+              - resultDigest
+              type: object
             startedAt:
               description: |-
                 StartedAt is when execution began — not when the run was accepted. The

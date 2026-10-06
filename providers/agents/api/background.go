@@ -849,12 +849,18 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// A job Submit pre-recorded may have been cancelled (or closed by the
 	// recovery sweep) while it sat in the queue; starting it now would
 	// resurrect a run the user already saw end.
+	var repository *repositoryAttempt
 	if job.RunID != "" {
 		if stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID); gerr == nil {
 			if stored.CancelRequested || stored.Phase != store.RunPhasePending {
 				log.Printf("background: job %s/%s: run %s is %s (cancelRequested=%t); not starting it", job.Kind, job.SourceName, job.RunID, stored.Phase, stored.CancelRequested)
 				return nil
 			}
+			// A repository run picked up here never has its clone source any
+			// more — that died with the process that accepted it — so a fresh
+			// dispatch of one fails with the retry message rather than
+			// starting a workspace turn in its place.
+			repository = repositoryAttemptFromStored(stored.Repository)
 		}
 	}
 	tr := taskRun{
@@ -866,6 +872,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// restart destroys.
 		ReplyTarget:  job.ReplyTarget,
 		DeliveryKind: string(job.Kind),
+		Repository:   repository,
 	}
 	// There is no user to act as here, so the run acts as the AGENT's own
 	// ServiceAccount through the virtual workspace.

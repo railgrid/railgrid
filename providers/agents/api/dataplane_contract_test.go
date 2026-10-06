@@ -166,6 +166,10 @@ func TestRunVerbsGateOnTheRunObject(t *testing.T) {
 		{"GET", base + "r1/unknown", 404, "not a verb this provider declares"},
 		{"GET", base + "r1/trace/extra", 400, "trace takes no tail"},
 		{"POST", base + "r1/trace", 405, "trace answers GET only"},
+		{"POST", base + "r1/artifact", 400, "the run object is visible; with no body naming an artifact the verb refuses before looking in the store"},
+		{"POST", base + "r2/artifact", 404, "no such run object, and a denial must not disclose that"},
+		{"GET", base + "r1/artifact", 405, "artifact answers POST only: it takes the artifact's name in its body"},
+		{"POST", base + "r1/artifact/extra", 400, "artifact takes no tail"},
 	} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, stamped(tc.method, tc.path, nil, conformanceUser))
