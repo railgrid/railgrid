@@ -23,8 +23,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpclientset "github.com/kcp-dev/sdk/client/clientset/versioned"
@@ -32,19 +30,16 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/apiurl"
-	"github.com/railgrid/railgrid/pkg/kcppaths"
+	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // roleNamePrefix prefixes the generated per-server ClusterRole name:
@@ -61,9 +56,17 @@ var (
 
 // dataPlaneGrant describes RBAC coordinates a provider data plane checks with
 // a SubjectAccessReview as the caller instead of serving through the API
-// server. They exist purely as authorization coordinates, so the tenant's
-// APIBindings never list them and they have to be spelled out here.
+// server. They are declared on the provider export, while APIBindings only
+// report the parent resource; this type records the server-owned allowlist of
+// non-read-only coordinates an MCPServer may receive.
 type dataPlaneGrant struct {
+	// providerName and APIExport identity pin this exception to the public
+	// platform provider that owns the reviewed data plane. A different export
+	// may serve the same group/resource coordinate, but it cannot inherit the
+	// curated writable capability.
+	providerName  string
+	apiExportPath string
+	apiExportName string
 	// resources, when non-empty, restricts the grant to those resources
 	// (intersected with what the tenant actually bound). Empty means every
 	// bound resource in the group, which is only correct when the data plane
@@ -78,12 +81,11 @@ type dataPlaneGrant struct {
 	subresources []string
 }
 
-// dataPlaneGrants is keyed by API group of the bound resources. Every
-// data-plane verb is an RBAC subresource granted with "create": the owning
-// provider runs a SelfSubjectAccessReview for exactly {resource}/{verb} as the
-// caller before serving it (provider-sdk/dataplane.Gate), so each entry mirrors
-// the verbs that provider declares on the resource under
-// CatalogEntry.spec.export.resources[].verbs.
+// dataPlaneGrants is keyed by API group and is an explicit allowlist of
+// non-read-only custom verbs. Every coordinate is granted with the verbs from
+// dataplane.SubresourceVerbs after its declaration and exact APIExport identity
+// are checked. The owning provider runs a SelfSubjectAccessReview for exactly
+// {resource}/{verb} as the caller before serving it (provider-sdk/dataplane.Gate).
 var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// providers/edges/internal/tunnel/grammar.go dataPlaneVerbs. The tunnel
 	// serves kubectl (including delete and exec), an SSH shell and MCP under
@@ -93,9 +95,9 @@ var dataPlaneGrants = map[string][]dataPlaneGrant{
 	// credential for the machine the caller has proved it is. An MCP token has
 	// proved nothing of the sort, so none of them is ever granted here.
 	"edges.railgrid.ai": {
-		{resources: []string{"kubernetesclusters"}, subresources: []string{"k8s", "ssh", "mcp"}},
-		{resources: []string{"linuxservers"}, subresources: []string{"k8s", "ssh"}},
-		{resources: []string{"services"}, subresources: []string{"proxy", "mcp"}},
+		{providerName: "edges", apiExportPath: "root:railgrid:providers:edges", apiExportName: "edges.providers.railgrid.ai", resources: []string{"kubernetesclusters"}, subresources: []string{"k8s", "ssh", "mcp"}},
+		{providerName: "edges", apiExportPath: "root:railgrid:providers:edges", apiExportName: "edges.providers.railgrid.ai", resources: []string{"linuxservers"}, subresources: []string{"k8s", "ssh"}},
+		{providerName: "edges", apiExportPath: "root:railgrid:providers:edges", apiExportName: "edges.providers.railgrid.ai", resources: []string{"services"}, subresources: []string{"proxy", "mcp"}},
 	},
 	// providers/agents/api/dataplane.go routes(). The agents data plane serves
 	// verbs on agents, runs, connections, schedules, triggers and
@@ -108,13 +110,13 @@ var dataPlaneGrants = map[string][]dataPlaneGrant{
 	//
 	// modelcredentials is named explicitly so binding a new resource in the
 	// group never widens this to <newresource>/test.
-	"agents.railgrid.ai": {{resources: []string{"modelcredentials"}, subresources: []string{"test", "discover"}}},
+	"agents.railgrid.ai": {{providerName: "agents", apiExportPath: "root:railgrid:providers:agents", apiExportName: "agents.railgrid.ai", resources: []string{"modelcredentials"}, subresources: []string{"test", "discover"}}},
 	// The infrastructure data plane serves instances/{verb} as kcp custom
 	// subresources (providers/infrastructure/dataplane/handler.go); exec is
 	// the one an MCP token may hold. instances is the only resource the data
 	// plane serves, so exec is granted on instances alone and never on
 	// templates.
-	"infrastructure.railgrid.ai": {{resources: []string{"instances"}, subresources: []string{"exec"}}},
+	"infrastructure.railgrid.ai": {{providerName: "infrastructure", apiExportPath: "root:railgrid:providers:infrastructure", apiExportName: "infrastructure.providers.railgrid.ai", resources: []string{"instances"}, subresources: []string{"exec"}}},
 }
 
 // privilegedResources are bound resources a generated MCPServer role NEVER
@@ -180,29 +182,42 @@ func splitPrivilegedWrites(group string, resources []string) (writable, readOnly
 	return writable, readOnly
 }
 
-// ActionGrant is one provider action from the platform catalog, expressed as
-// the RBAC coordinate a provider checks before invoking it: "create" on
-// <Resource>/<Name> in Group (e.g. tables/query_table).
-type ActionGrant struct {
+// SubresourceGrant is one provider-declared action or custom verb, expressed
+// as the RBAC coordinate a provider checks before invoking it: the
+// provider-sdk/dataplane subresource verbs on <Resource>/<Name> in Group.
+// ExportPath and ExportName identify the APIExport whose declaration owns the
+// coordinate, so a different export serving the same group/resource cannot
+// inherit it accidentally.
+type SubresourceGrant struct {
 	Group    string
 	Resource string
-	// Name is the action name without its version suffix — the subresource
-	// the provider's SelfSubjectAccessReview names.
-	Name string
-	// ReadOnly mirrors the catalog's declaration; read-only actions stay
-	// granted on readOnly servers.
+	Name     string
 	ReadOnly bool
+	// AllowPrivilegedWrite is set only for coordinates in the existing
+	// server-owned data-plane allowlist. Those deliberate capabilities remain
+	// available on writable MCPServers even when the parent resource itself is
+	// read-only to ordinary actions.
+	AllowPrivilegedWrite bool
+	APIExportPath        string
+	APIExportName        string
 }
 
-// ActionGrantSource lists the action grants declared by platform providers.
-type ActionGrantSource func(ctx context.Context) ([]ActionGrant, error)
+// BoundResource carries the identity of the APIExport a tenant bound along
+// with the bound resource. The APIBinding's status alone has only
+// group/resource/schema identity; its export reference is needed to match a
+// provider declaration without crossing an export boundary.
+type BoundResource struct {
+	apisv1alpha2.BoundAPIResource
+	APIExportPath string
+	APIExportName string
+}
 
 // buildRules derives the ClusterRole rules for one server: every resource the
-// tenant has bound gets read (and, unless readOnly, write) verbs; data-plane
-// coordinates (never for readOnly) and catalog actions are added for bound
-// resources only; plus the read-only kcp/authz plumbing every tool path
-// needs. Output is deterministic so reconcile-time comparison is stable.
-func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, readOnly bool) []rbacv1.PolicyRule {
+// tenant has bound gets read (and, unless readOnly, write) verbs; provider
+// subresources are added only when their exact APIExport and resource are
+// bound; plus the read-only kcp/authz plumbing every tool path needs. Output is
+// deterministic so reconcile-time comparison is stable.
+func buildRules(bound []BoundResource, grants []SubresourceGrant, readOnly bool) []rbacv1.PolicyRule {
 	byGroup := map[string]map[string]struct{}{}
 	for _, b := range bound {
 		if b.Resource == "" {
@@ -214,32 +229,42 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 		byGroup[b.Group][b.Resource] = struct{}{}
 	}
 
-	// Action coordinates, keyed by group, only for resources that are bound.
-	actionSubs := map[string]map[string]struct{}{}
-	for _, a := range actions {
-		if a.Name == "" || a.Resource == "" {
+	// Provider subresource coordinates, keyed by group, only for resources
+	// bound from the exact APIExport that declared them.
+	subresourceSubs := map[string]map[string]struct{}{}
+	for _, grant := range grants {
+		if grant.Name == "" || grant.Resource == "" || grant.APIExportName == "" || grant.APIExportPath == "" {
 			continue
 		}
-		if _, ok := byGroup[a.Group][a.Resource]; !ok {
+		if _, ok := byGroup[grant.Group][grant.Resource]; !ok {
 			continue
 		}
-		// A catalog action must not become a back door into a resource the
-		// generated role refuses outright, nor a write into one it may only
-		// read: an action is an invocation, which is a write in every sense
-		// that matters here.
-		if privilegedResources[a.Group][a.Resource] {
+		if !boundToExport(bound, grant) {
 			continue
 		}
-		if privilegedWriteResources[a.Group][a.Resource] && !a.ReadOnly {
+		// A provider subresource must not become a back door into a resource
+		// the generated role refuses outright, nor a write into one it may
+		// only read. Invocation is a write unless the provider explicitly
+		// declared the coordinate read-only.
+		if privilegedResources[grant.Group][grant.Resource] {
 			continue
 		}
-		if readOnly && !a.ReadOnly {
+		if neverMCPSubresources[grant.Group][grant.Resource][grant.Name] {
 			continue
 		}
-		if actionSubs[a.Group] == nil {
-			actionSubs[a.Group] = map[string]struct{}{}
+		if grant.ReadOnly && neverReadOnlyMCPSubresources[grant.Group][grant.Resource][grant.Name] {
+			continue
 		}
-		actionSubs[a.Group][a.Resource+"/"+a.Name] = struct{}{}
+		if privilegedWriteResources[grant.Group][grant.Resource] && !grant.ReadOnly && !grant.AllowPrivilegedWrite {
+			continue
+		}
+		if readOnly && !grant.ReadOnly {
+			continue
+		}
+		if subresourceSubs[grant.Group] == nil {
+			subresourceSubs[grant.Group] = map[string]struct{}{}
+		}
+		subresourceSubs[grant.Group][grant.Resource+"/"+grant.Name] = struct{}{}
 	}
 
 	groups := make([]string, 0, len(byGroup))
@@ -272,24 +297,7 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: readOnlyResources, Verbs: append([]string{}, readVerbs...)})
 		}
 
-		for _, dp := range dataPlaneGrants[g] {
-			// Scope the grant to the resources the data plane actually serves,
-			// so binding an unrelated resource in the same group never widens
-			// it (e.g. templates must not get templates/exec). Subresources
-			// are invocation rights, not reads; none survives readOnly.
-			targets := filterResources(resources, dp.resources)
-			if readOnly || len(dp.subresources) == 0 || len(targets) == 0 {
-				continue
-			}
-			subs := make([]string, 0, len(targets)*len(dp.subresources))
-			for _, r := range targets {
-				for _, s := range dp.subresources {
-					subs = append(subs, r+"/"+s)
-				}
-			}
-			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: subs, Verbs: append([]string(nil), dataplane.SubresourceVerbs...)})
-		}
-		if subs := actionSubs[g]; len(subs) > 0 {
+		if subs := subresourceSubs[g]; len(subs) > 0 {
 			rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{g}, Resources: sortedKeys(subs), Verbs: append([]string(nil), dataplane.SubresourceVerbs...)})
 		}
 	}
@@ -306,19 +314,14 @@ func buildRules(bound []apisv1alpha2.BoundAPIResource, actions []ActionGrant, re
 	return rules
 }
 
-// filterResources keeps the bound resources an allow-list names, preserving
-// order. An empty allow-list means "all of them".
-func filterResources(bound, allowed []string) []string {
-	if len(allowed) == 0 {
-		return bound
-	}
-	out := make([]string, 0, len(bound))
-	for _, r := range bound {
-		if slices.Contains(allowed, r) {
-			out = append(out, r)
+func boundToExport(bound []BoundResource, grant SubresourceGrant) bool {
+	for _, b := range bound {
+		if b.Group == grant.Group && b.Resource == grant.Resource &&
+			b.APIExportPath == grant.APIExportPath && b.APIExportName == grant.APIExportName {
+			return true
 		}
 	}
-	return out
+	return false
 }
 
 func sortedKeys(m map[string]struct{}) []string {
@@ -331,16 +334,35 @@ func sortedKeys(m map[string]struct{}) []string {
 }
 
 // listBoundResources collects status.boundResources across the tenant's
-// APIBindings. Bindings still being bound contribute nothing yet; the next
-// reconcile picks them up.
-func listBoundResources(ctx context.Context, kcp kcpclientset.Interface) ([]apisv1alpha2.BoundAPIResource, error) {
+// nondeleting, Bound APIBindings and records each binding's APIExport identity.
+// Bindings still being bound contribute nothing yet; the next reconcile picks
+// them up.
+func listBoundResources(ctx context.Context, kcp kcpclientset.Interface, tenantPath string) ([]BoundResource, error) {
 	list, err := kcp.ApisV1alpha2().APIBindings().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	var out []apisv1alpha2.BoundAPIResource
+	var out []BoundResource
 	for i := range list.Items {
-		out = append(out, list.Items[i].Status.BoundResources...)
+		binding := &list.Items[i]
+		if binding.DeletionTimestamp != nil || binding.Status.Phase != apisv1alpha2.APIBindingPhaseBound {
+			continue
+		}
+		var exportName, exportPath string
+		if export := binding.Spec.Reference.Export; export != nil {
+			exportName = export.Name
+			exportPath = export.Path
+			if exportPath == "" {
+				exportPath = tenantPath
+			}
+		}
+		for _, resource := range binding.Status.BoundResources {
+			out = append(out, BoundResource{
+				BoundAPIResource: resource,
+				APIExportPath:    exportPath,
+				APIExportName:    exportName,
+			})
+		}
 	}
 	return out, nil
 }
@@ -432,80 +454,6 @@ func ensureMCPRBAC(ctx context.Context, cs kubernetes.Interface, srv *railgridv1
 	return nil
 }
 
-// actionGrantCacheTTL bounds how stale the cached catalog action grants may
-// be. The platform catalog changes only when a provider ships, while every
-// MCPServer re-derives its role on each reconcile plus every 60s tools
-// refresh, so a short memo removes almost all of the listing without
-// meaningfully delaying a new action: worst case a server picks it up one TTL
-// later than it would have.
-const actionGrantCacheTTL = 30 * time.Second
-
-// cachedActionGrants memoizes an ActionGrantSource for ttl. The lock is held
-// across the refresh on purpose: concurrent reconciles then collapse into one
-// list of the system providers workspace instead of a stampede. Errors are not
-// cached, so a transient failure retries on the next reconcile, and the
-// returned slice is shared — callers must treat it as read-only.
-func cachedActionGrants(src ActionGrantSource, ttl time.Duration) ActionGrantSource {
-	if src == nil {
-		return nil
-	}
-	var (
-		mu      sync.Mutex
-		grants  []ActionGrant
-		expires time.Time
-	)
-	return func(ctx context.Context) ([]ActionGrant, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if time.Now().Before(expires) {
-			return grants, nil
-		}
-		out, err := src(ctx)
-		if err != nil {
-			return nil, err
-		}
-		grants, expires = out, time.Now().Add(ttl)
-		return grants, nil
-	}
-}
-
-var catalogEntryGVR = schema.GroupVersionResource{
-	Group: providersv1alpha1.GroupName, Version: providersv1alpha1.Version, Resource: "catalogentries",
-}
-
-// catalogActionGrants returns an ActionGrantSource that reads the platform
-// providers' CatalogEntries from the system providers workspace. Only platform
-// providers federate into the aggregate (see the enumerator in server.go), so
-// org-owned catalogs are not consulted.
-// The dynamic client is built once and reused: it is stateless and its
-// construction was repeated on every reconcile.
-func catalogActionGrants(kcpConfig *rest.Config) ActionGrantSource {
-	if kcpConfig == nil {
-		return func(context.Context) ([]ActionGrant, error) { return nil, nil }
-	}
-	cfg := rest.CopyConfig(kcpConfig)
-	cfg.Host = apiurl.KCPClusterURL(kcpConfig.Host, kcppaths.SystemProviders)
-	dyn, dynErr := dynamic.NewForConfig(cfg)
-	return func(ctx context.Context) ([]ActionGrant, error) {
-		if dynErr != nil {
-			return nil, fmt.Errorf("building system providers client: %w", dynErr)
-		}
-		list, err := dyn.Resource(catalogEntryGVR).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("listing CatalogEntries in %s: %w", kcppaths.SystemProviders, err)
-		}
-		var out []ActionGrant
-		for i := range list.Items {
-			var entry providersv1alpha1.CatalogEntry
-			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &entry); err != nil {
-				return nil, fmt.Errorf("decoding CatalogEntry %s: %w", list.Items[i].GetName(), err)
-			}
-			out = append(out, actionGrantsFromExport(entry.Spec.Export)...)
-		}
-		return out, nil
-	}
-}
-
 // actionNamePattern is the documented shape of an action's name, which is the
 // subresource half of the {resource}/{action} coordinate. It mirrors the
 // kubebuilder Pattern on ProviderAction.Name character for character; keep the
@@ -514,38 +462,165 @@ func catalogActionGrants(kcpConfig *rest.Config) ActionGrantSource {
 // the shape itself rather than trusting what is in storage.
 var actionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
 
-// actionGrantsFromExport maps an export's catalogued actions to RBAC
-// coordinates. An action is declared ON the resource it is served on, so the
-// coordinate is (that resource, this action's name) and the group comes from the
-// resource's apiVersion — the version of the action's contract is not in any
-// path and is irrelevant here.
+var customVerbNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
+
+// neverMCPSubresources lists the edge credential-plane verbs MCPServer tokens
+// never receive, even when a provider labels one read-only. These coordinates
+// are used by edge agents to rotate or hand over machine credentials. The
+// legacy names remain denied so reintroducing a handler cannot silently widen
+// the MCP role.
+var neverMCPSubresources = map[string]map[string]map[string]bool{
+	"edges.railgrid.ai": {
+		"kubernetesclusters": {"agent-token": true, "runner-auth": true, "runner-token": true},
+		"linuxservers":       {"agent-token": true, "ssh-credentials": true, "runner-auth": true, "runner-token": true},
+		"macosservers":       {"agent-token": true, "runner-auth": true, "runner-token": true},
+		"services":           {"ticket": true},
+	},
+}
+
+// neverReadOnlyMCPSubresources preserves the old read-only role boundary for
+// invocation routes that can open shells, proxy arbitrary traffic, or reach an
+// edge MCP server. These verbs remain eligible for writable MCPServers only
+// through the curated dataPlaneGrants entries, even if a declaration later
+// labels one read-only by mistake.
+var neverReadOnlyMCPSubresources = map[string]map[string]map[string]bool{
+	"edges.railgrid.ai": {
+		"kubernetesclusters": {"k8s": true, "ssh": true, "mcp": true},
+		"linuxservers":       {"k8s": true, "ssh": true},
+		"services":           {"proxy": true, "mcp": true},
+	},
+	"infrastructure.railgrid.ai": {
+		"instances": {"exec": true},
+	},
+}
+
+// registrySubresourceGrants projects provider declarations visible to the
+// MCPServer's ServiceAccount. A tenant path is required so org-owned records
+// shadow same-named platform providers before those org records are excluded:
+// the SA cannot mint the delegated token required to federate an org provider.
 //
-// A name or apiVersion that does not match the documented shape is skipped
-// rather than granted: a malformed catalog entry must not widen the role.
-func actionGrantsFromExport(export *providersv1alpha1.ProviderExport) []ActionGrant {
-	if export == nil {
+// Every declared action is eligible subject to the usual ReadOnly checks in
+// buildRules. Custom verbs are included only when their declaration explicitly
+// says ReadOnly; non-read-only verbs remain limited to the curated
+// dataPlaneGrants allowlist below. Provider exports need a known path, name and
+// actual API group identity before any grant from them is considered.
+func registrySubresourceGrants(reg *providers.Registry, tenantPath string) []SubresourceGrant {
+	if reg == nil {
 		return nil
 	}
-	out := make([]ActionGrant, 0, len(export.Resources))
-	for _, resource := range export.Resources {
-		if resource.Name == "" {
+	orgUUID, _, ok := mcpaggregate.TenantFromPath(tenantPath)
+	if !ok {
+		return nil
+	}
+
+	grants := map[SubresourceGrant]struct{}{}
+	for _, provider := range reg.ListForOrg(orgUUID) {
+		if provider.OrgUUID != "" || provider.APIExportPath == "" || provider.APIExportName == "" ||
+			provider.Export == nil || len(provider.APIGroups) == 0 {
 			continue
 		}
-		gv, err := schema.ParseGroupVersion(resource.APIVersion)
-		if err != nil || gv.Group == "" {
-			continue
+		actualGroups := make(map[string]struct{}, len(provider.APIGroups))
+		for _, group := range provider.APIGroups {
+			if group != "" {
+				actualGroups[group] = struct{}{}
+			}
 		}
-		for _, action := range resource.Actions {
-			if !actionNamePattern.MatchString(strings.TrimSpace(action.Name)) {
+
+		for _, resource := range provider.Export.Resources {
+			if resource.Name == "" {
 				continue
 			}
-			out = append(out, ActionGrant{
-				Group:    gv.Group,
-				Resource: resource.Name,
-				Name:     action.Name,
-				ReadOnly: action.ReadOnly,
-			})
+			gv, err := schema.ParseGroupVersion(resource.APIVersion)
+			if err != nil || gv.Group == "" {
+				continue
+			}
+			if _, ok := actualGroups[gv.Group]; !ok {
+				continue
+			}
+			for _, action := range resource.Actions {
+				name := strings.TrimSpace(action.Name)
+				if name != action.Name || !actionNamePattern.MatchString(name) {
+					continue
+				}
+				grant := SubresourceGrant{
+					Group: gv.Group, Resource: resource.Name, Name: name,
+					ReadOnly: action.ReadOnly, APIExportPath: provider.APIExportPath, APIExportName: provider.APIExportName,
+				}
+				if !neverMCPSubresources[grant.Group][grant.Resource][grant.Name] &&
+					(!grant.ReadOnly || !neverReadOnlyMCPSubresources[grant.Group][grant.Resource][grant.Name]) {
+					grants[grant] = struct{}{}
+				}
+			}
+			for _, verb := range resource.Verbs {
+				name := strings.TrimSpace(verb.Name)
+				if !verb.ReadOnly || name != verb.Name || !customVerbNamePattern.MatchString(name) {
+					continue
+				}
+				grant := SubresourceGrant{
+					Group: gv.Group, Resource: resource.Name, Name: name,
+					ReadOnly: true, APIExportPath: provider.APIExportPath, APIExportName: provider.APIExportName,
+				}
+				if !neverMCPSubresources[grant.Group][grant.Resource][grant.Name] &&
+					!neverReadOnlyMCPSubresources[grant.Group][grant.Resource][grant.Name] {
+					grants[grant] = struct{}{}
+				}
+			}
+			// These non-read-only data-plane capabilities are deliberately
+			// curated. Require the provider's own export to declare each
+			// coordinate before granting it, and keep it tied to that export.
+			for _, dp := range dataPlaneGrants[gv.Group] {
+				if provider.Name != dp.providerName || provider.APIExportPath != dp.apiExportPath || provider.APIExportName != dp.apiExportName {
+					continue
+				}
+				if len(dp.resources) > 0 && !slices.Contains(dp.resources, resource.Name) {
+					continue
+				}
+				for _, name := range dp.subresources {
+					if !declaresCustomVerb(resource.Verbs, name) || neverMCPSubresources[gv.Group][resource.Name][name] {
+						continue
+					}
+					grants[SubresourceGrant{
+						Group: gv.Group, Resource: resource.Name, Name: name, AllowPrivilegedWrite: true,
+						APIExportPath: provider.APIExportPath, APIExportName: provider.APIExportName,
+					}] = struct{}{}
+				}
+			}
 		}
 	}
+
+	out := make([]SubresourceGrant, 0, len(grants))
+	for grant := range grants {
+		out = append(out, grant)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		if out[i].Resource != out[j].Resource {
+			return out[i].Resource < out[j].Resource
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].APIExportPath != out[j].APIExportPath {
+			return out[i].APIExportPath < out[j].APIExportPath
+		}
+		if out[i].APIExportName != out[j].APIExportName {
+			return out[i].APIExportName < out[j].APIExportName
+		}
+		if out[i].ReadOnly != out[j].ReadOnly {
+			return !out[i].ReadOnly
+		}
+		return !out[i].AllowPrivilegedWrite && out[j].AllowPrivilegedWrite
+	})
 	return out
+}
+
+func declaresCustomVerb(verbs []providersv1alpha1.ProviderVerb, name string) bool {
+	for _, verb := range verbs {
+		if verb.Name == name {
+			return true
+		}
+	}
+	return false
 }

@@ -48,6 +48,7 @@ import (
 	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // mcpIdentityNamespace is the tenant-workspace namespace the per-MCPServer
@@ -67,14 +68,11 @@ type ProviderEnumerator = mcpaggregate.ProviderEnumerator
 
 // Reconciler provisions each MCPServer's identity and publishes its status.
 type Reconciler struct {
-	mgr            mcmanager.Manager
-	kcpConfig      *rest.Config
-	hubExternalURL string
-	enumerate      ProviderEnumerator
-	// actionGrants lists the provider-action RBAC coordinates declared in the
-	// platform catalog (see rbac.go). Defaults to reading CatalogEntries from
-	// the system providers workspace; tests inject a stub.
-	actionGrants ActionGrantSource
+	mgr              mcmanager.Manager
+	kcpConfig        *rest.Config
+	hubExternalURL   string
+	enumerate        ProviderEnumerator
+	providerRegistry *providers.Registry
 }
 
 // SetupWithManager registers the MCPServer controller with the core.railgrid.ai
@@ -82,13 +80,13 @@ type Reconciler struct {
 // direct per-tenant client for identity provisioning (the token controller
 // populates legacy token Secrets written through a direct client, which the
 // APIExport virtual-workspace client does not guarantee). enumerate lists the
-// Ready MCP-exposing providers each server discovers its tools from.
-func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternalURL string, enumerate ProviderEnumerator) error {
-	r := &Reconciler{mgr: mgr, kcpConfig: kcpConfig, hubExternalURL: hubExternalURL, enumerate: enumerate}
-	// Cached: every reconcile derives the role from the catalog, so without a
-	// memo each MCPServer would re-list the system providers workspace on its
-	// own 60s refresh.
-	r.actionGrants = cachedActionGrants(catalogActionGrants(kcpConfig), actionGrantCacheTTL)
+// Ready MCP-exposing providers each server discovers its tools from. registry
+// is the shared source of validated provider declarations.
+func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternalURL string, enumerate ProviderEnumerator, registry *providers.Registry) error {
+	r := &Reconciler{
+		mgr: mgr, kcpConfig: kcpConfig, hubExternalURL: hubExternalURL,
+		enumerate: enumerate, providerRegistry: registry,
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("mcpserver").
 		For(&railgridv1alpha1.MCPServer{}).
@@ -134,11 +132,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("building tenant kcp client for %s: %w", req.ClusterName, err)
 	}
+	tenantPath := clusterPath
+	if tenantPath == "" {
+		tenantPath = directClusterPath(ctx, kcp)
+	}
 
 	// The role is regenerated on every reconcile (including the periodic tools
 	// refresh), so a provider enabled after the server was created gets its
 	// rules within one refresh interval.
-	rules, provErr := r.desiredRules(ctx, kcp, &srv)
+	rules, provErr := r.desiredRules(ctx, kcp, &srv, tenantPath)
 	var (
 		ref        *corev1.SecretReference
 		token      string
@@ -163,10 +165,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// set reflects exactly what this server can reach (per-server targeted
 		// tooling). Best-effort: discovery failures leave the last snapshot and
 		// don't fail the reconcile.
-		tenantPath := clusterPath
-		if tenantPath == "" {
-			tenantPath = directClusterPath(ctx, kcp)
-		}
 		srv.Status.FederatedProviders = r.discoverTools(ctx, string(req.ClusterName), statusCaller(tenantPath, srv.Name), token)
 		now := metav1.Now()
 		srv.Status.ToolsRefreshedTime = &now
@@ -241,20 +239,16 @@ func (r *Reconciler) tenantConfig(clusterName string) *rest.Config {
 }
 
 // desiredRules computes the ClusterRole rules for one server from the tenant's
-// APIBindings and the platform action catalog (see rbac.go).
-func (r *Reconciler) desiredRules(ctx context.Context, kcp kcpclientset.Interface, srv *railgridv1alpha1.MCPServer) ([]rbacv1.PolicyRule, error) {
-	bound, err := listBoundResources(ctx, kcp)
+// APIBindings and provider registry (see rbac.go). tenantPath must be the
+// logical-cluster path resolved by Reconcile; an unknown path grants no
+// provider-declared subresources.
+func (r *Reconciler) desiredRules(ctx context.Context, kcp kcpclientset.Interface, srv *railgridv1alpha1.MCPServer, tenantPath string) ([]rbacv1.PolicyRule, error) {
+	bound, err := listBoundResources(ctx, kcp, tenantPath)
 	if err != nil {
 		return nil, fmt.Errorf("listing bound resources: %w", err)
 	}
-	var actions []ActionGrant
-	if r.actionGrants != nil {
-		actions, err = r.actionGrants(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("listing provider action grants: %w", err)
-		}
-	}
-	return buildRules(bound, actions, srv.Spec.ReadOnly), nil
+	grants := registrySubresourceGrants(r.providerRegistry, tenantPath)
+	return buildRules(bound, grants, srv.Spec.ReadOnly), nil
 }
 
 // ensureMCPIdentity provisions, idempotently, the per-MCPServer ServiceAccount,

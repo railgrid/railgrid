@@ -412,34 +412,34 @@ Two consequences:
   would expire and silently break a long-lived MCP connection — see the
   `MCPServer` controller in [`pkg/hub/controllers/mcpserver/`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/controllers/mcpserver/).
 - **Scoped token permissions.** The ServiceAccount is bound to a generated
-  ClusterRole `railgrid:mcpserver:<name>` in the tenant workspace, never to
-  `cluster-admin`. The controller regenerates the role on every reconcile
-  (including the 60s tools refresh) from the tenant's `APIBindings`: each
-  `status.boundResources[]` group/resource gets `get,list,watch` plus
-  `create,update,patch,delete`; `spec.readOnly` drops the write verbs. On top
-  of that it grants the RBAC coordinates provider data planes check via
-  SubjectAccessReview as the caller: verb `proxy` on `edges.railgrid.ai`
-  objects, `create` on `infrastructure.railgrid.ai` `<instance>/exec` (dropped
-  for readOnly), and `create` on `<resource>/<action>` for every action
-  declared in the platform provider catalog whose resource is bound (read-only
-  actions survive readOnly) — plus read-only `core.kcp.io/logicalclusters` and
-  `selfsubjectaccessreviews` create
-  (`pkg/hub/controllers/mcpserver/rbac.go`, `dataPlaneGrants`). Nothing grants
-  secrets, service accounts, RBAC, or APIBinding access, so a leaked token
-  cannot escalate.
+  ClusterRole `railgrid:mcpserver:<name>` in its tenant workspace, never to
+  `cluster-admin`. On every reconcile (including the 60s external tools
+  refresh), the controller derives object permissions from non-deleting,
+  Bound `APIBindings`: `get,list,watch`, plus `create,update,patch,delete` when
+  `spec.readOnly` is false, subject to the existing privileged-resource
+  restrictions.
 
-  > **Known gap.** The `edges.railgrid.ai` entry still spells the **wildcard
-  > `proxy` verb**, which the edges provider retired: it now gates every
-  > data-plane call with `create` on the `{resource}/{verb}` subresource
-  > (`kubernetesclusters/k8s`, `kubernetesclusters/mcp`, `services/proxy`,
-  > `services/mcp`, …). Until `dataPlaneGrants` emits those subresources, an
-  > MCPServer token is denied on the edges data plane and the `proxy` rule it
-  > does get authorizes nothing. The coordinates to emit are no longer a
-  > guess: they are exactly the `{resource}/{verb}` pairs the edges provider
-  > publishes at `railgrid://providers/capabilities` (below). The Enable-time
-  > `edges-proxy` ClusterRole that used to carry a parallel copy of this
-  > grant was deleted on 2026-09-20 — it granted the *provider's*
-  > ServiceAccount, and no provider authenticates that way any more.
+  Invocation permissions come from the current, validated provider registry,
+  including CatalogEntries registered in providers' own workspaces. The
+  controller applies the tenant organization's catalog shadowing, then excludes
+  org-owned providers that the server's ServiceAccount cannot federate. A
+  declaration contributes only when its APIExport path and name, API group,
+  and parent resource match the tenant's binding. An unresolved tenant or
+  incomplete provider identity contributes no invocation grants.
+
+  Declared actions and explicitly read-only custom verbs receive exact
+  `<resource>/<verb>` subresource permissions; read-only endpoints retain only
+  read-only declarations. Custom verbs that can mutate resources remain subject
+  to the existing explicit data-plane allowlist. Edge credential and ticket
+  endpoints remain excluded even if described as read-only: that flag does not
+  authorize an MCP token to retrieve machine credentials. These restrictions
+  apply to both read-only and writable MCPServers.
+
+  The role also includes read-only `core.kcp.io/logicalclusters` and permission
+  to create `selfsubjectaccessreviews`, which providers use to check the token's
+  own access. It does not grant Secrets, ServiceAccounts, RBAC, or APIBinding
+  administration. Tool discovery can advertise a tool the token cannot invoke;
+  the provider still authorizes every call.
 - **No provider-wide identity.** A federated provider must perform its tenant
   work as the forwarded caller token, scoped to the workspace whose cluster ID
   is in `X-Railgrid-Cluster` / `X-Railgrid-Tenant`. The infrastructure provider does this in
