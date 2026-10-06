@@ -108,6 +108,10 @@ func (r *TokenReconciler) issueToken(ctx context.Context, c client.Client, edge 
 	}
 
 	cs.JoinToken = token
+	// Kept after the token is cleared on registration, so the agent that joined
+	// with this token can re-enroll after its durable credential expires.
+	// Rotation replaces it, which is what invalidates the previous token.
+	cs.JoinTokenHash = edgeapi.HashJoinToken(token)
 	meta.SetStatusCondition(&cs.Conditions, metav1.Condition{
 		Type:               edgeapi.ConnectionConditionRegistered,
 		Status:             metav1.ConditionFalse,
