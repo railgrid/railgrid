@@ -431,9 +431,13 @@ Two consequences:
   `<resource>/<verb>` subresource permissions; read-only endpoints retain only
   read-only declarations. Custom verbs that can mutate resources remain subject
   to the existing explicit data-plane allowlist. Edge credential and ticket
-  endpoints remain excluded even if described as read-only: that flag does not
-  authorize an MCP token to retrieve machine credentials. These restrictions
-  apply to both read-only and writable MCPServers.
+  endpoints, Code's `repositories/mint-clone-token`, and Code's
+  `connections/mint-registry-token` remain excluded even if described as
+  read-only. That flag describes resource mutation, not credential authority:
+  Code's PAT/OAuth responses can contain an unscoped upstream credential.
+  These exclusions apply to both read-only and writable MCPServers. Credential
+  delegation requires separate explicit authorization and guaranteed narrowing;
+  it is not inferred from a provider declaration or a writable MCPServer.
 
   The role also includes read-only `core.kcp.io/logicalclusters` and permission
   to create `selfsubjectaccessreviews`, which providers use to check the token's

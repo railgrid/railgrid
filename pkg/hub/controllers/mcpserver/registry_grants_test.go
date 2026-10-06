@@ -18,12 +18,14 @@ package mcpserver
 
 import (
 	"context"
+	"os"
 	"slices"
 	"testing"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpfake "github.com/kcp-dev/sdk/client/clientset/versioned/fake"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"sigs.k8s.io/yaml"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
@@ -334,4 +336,78 @@ func TestDesiredRules_UsesProviderRegistryAndExactBoundExportIdentity(t *testing
 	assertCoordinate(readOnlyRules(false), "widgets/inspect", false)
 	assertCoordinate(readOnlyRules(false), "widgets/query", true)
 	assertCoordinate(readOnlyRules(false), "widgets/rebuild", false)
+}
+
+// Use Code's actual declaration: these actions are legitimately marked
+// read-only with respect to Code objects, but PAT/OAuth results can carry
+// the Connection's full upstream write authority.
+func TestCodeCredentialActionsExcludedFromMCPGrants(t *testing.T) {
+	raw, err := os.ReadFile("../../../../providers/code/manifest.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry providersv1alpha1.CatalogEntry
+	if err := yaml.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Spec.Export == nil {
+		t.Fatal("Code manifest has no export")
+	}
+	const group = "code.railgrid.ai"
+	const exportPath = "root:railgrid:providers:code"
+	exportName := entry.Spec.Export.Name
+	reg := hubproviders.NewRegistry()
+	reg.Upsert(hubproviders.Provider{Name: "code", APIExportPath: exportPath,
+		APIExportName: exportName, APIGroups: []string{group}, Export: entry.Spec.Export})
+	grants := registrySubresourceGrants(reg, "root:railgrid:tenants:org-a:workspace-a")
+	denied := []struct{ resource, action string }{
+		{"repositories", "mint-clone-token"},
+		{"connections", "mint-registry-token"},
+	}
+	boundResources := []BoundResource{
+		{BoundAPIResource: apisBound(group, "repositories"), APIExportPath: exportPath, APIExportName: exportName},
+		{BoundAPIResource: apisBound(group, "connections"), APIExportPath: exportPath, APIExportName: exportName},
+	}
+	for _, target := range denied {
+		declared := false
+		for _, resource := range entry.Spec.Export.Resources {
+			if resource.Name != target.resource {
+				continue
+			}
+			for _, action := range resource.Actions {
+				if action.Name == target.action {
+					declared = true
+				}
+			}
+		}
+		if !declared {
+			t.Fatalf("regression fixture no longer declares %s/%s", target.resource, target.action)
+		}
+		for _, grant := range grants {
+			if grant.Group == group && grant.Resource == target.resource && grant.Name == target.action {
+				t.Errorf("registry grants credential action %s/%s", target.resource, target.action)
+			}
+		}
+	}
+	for _, readOnly := range []bool{false, true} {
+		rules := buildRules(boundResources, grants, readOnly)
+		if !hasSubresourceRule(rules, group, "repositories/branches") {
+			t.Fatalf("readOnly=%v lost ordinary Code read action", readOnly)
+		}
+		for _, target := range denied {
+			coordinate := target.resource + "/" + target.action
+			if hasSubresourceRule(rules, group, coordinate) {
+				t.Errorf("readOnly=%v granted %s", readOnly, coordinate)
+			}
+			// The final role builder must enforce the boundary independently of
+			// registry projection, even if an injected grant claims a curated write.
+			for _, declaredReadOnly := range []bool{false, true} {
+				injected := SubresourceGrant{Group: group, Resource: target.resource, Name: target.action,
+					APIExportPath: exportPath, APIExportName: exportName, ReadOnly: declaredReadOnly, AllowPrivilegedWrite: true}
+				if hasSubresourceRule(buildRules(boundResources, []SubresourceGrant{injected}, readOnly), group, coordinate) {
+					t.Errorf("readOnly=%v declaredReadOnly=%v accepted injected credential grant %s", readOnly, declaredReadOnly, coordinate)
+				}
+			}
+		}
+	}
 }

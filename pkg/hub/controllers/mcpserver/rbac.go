@@ -464,12 +464,18 @@ var actionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
 
 var customVerbNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
 
-// neverMCPSubresources lists the edge credential-plane verbs MCPServer tokens
-// never receive, even when a provider labels one read-only. These coordinates
-// are used by edge agents to rotate or hand over machine credentials. The
-// legacy names remain denied so reintroducing a handler cannot silently widen
-// the MCP role.
+// neverMCPSubresources lists credential-plane coordinates MCPServer tokens
+// never receive automatically, even when a provider labels one read-only.
+// Read-only describes resource mutation, not the authority of a returned
+// credential. Edge agents use these routes to rotate or hand over machine
+// credentials; Code's token actions can return a PAT/OAuth credential without
+// narrowing its upstream permissions. Neither belongs in a generated MCP role.
+// Legacy edge names remain denied so restoring a handler cannot widen the role.
 var neverMCPSubresources = map[string]map[string]map[string]bool{
+	"code.railgrid.ai": {
+		"repositories": {"mint-clone-token": true},
+		"connections":  {"mint-registry-token": true},
+	},
 	"edges.railgrid.ai": {
 		"kubernetesclusters": {"agent-token": true, "runner-auth": true, "runner-token": true},
 		"linuxservers":       {"agent-token": true, "ssh-credentials": true, "runner-auth": true, "runner-token": true},
