@@ -55,17 +55,17 @@ spec:
   resources:
   - group: edges.railgrid.ai
     name: kubernetesclusters
-    schema: v260926-76b9080b.kubernetesclusters.edges.railgrid.ai
+    schema: v261006-726052b8.kubernetesclusters.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai
     name: linuxservers
-    schema: v260928-76b9080b.linuxservers.edges.railgrid.ai
+    schema: v261006-726052b8.linuxservers.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai
     name: macosservers
-    schema: v260928-76b9080b.macosservers.edges.railgrid.ai
+    schema: v261006-726052b8.macosservers.edges.railgrid.ai
     storage:
       crd: {}
   - group: edges.railgrid.ai

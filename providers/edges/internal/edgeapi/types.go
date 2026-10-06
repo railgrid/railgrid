@@ -22,6 +22,9 @@ limitations under the License.
 package edgeapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -64,6 +67,21 @@ type ConnectionStatus struct {
 	// JoinToken is a bootstrap token for agent registration; cleared on register.
 	// +optional
 	JoinToken string `json:"joinToken,omitempty"`
+	// JoinTokenHash is the SHA-256 (hex) of the bootstrap token, kept after
+	// JoinToken is cleared so the agent that joined with it can enroll again.
+	//
+	// It exists because the agent's durable credential is re-minted by the
+	// provider and cannot be renewed once it has expired: an edge offline for
+	// longer than that credential's lifetime came back with an expired
+	// credential the provider refuses and a join token the provider had
+	// cleared, and stayed locked out until an operator regenerated the token by
+	// hand. Matching the presented token against this hash lets the same agent
+	// re-enroll with what it already has on disk, while the token itself stops
+	// being readable from status once the edge has registered. Regenerating the
+	// token (AnnotationRegenerateJoinToken) replaces the hash, so rotation
+	// still invalidates the old one.
+	// +optional
+	JoinTokenHash string `json:"joinTokenHash,omitempty"`
 	// Phase describes the current lifecycle phase.
 	Phase ConnectionPhase `json:"phase,omitempty"`
 	// Connected indicates whether the agent currently has an active tunnel.
@@ -173,4 +191,16 @@ type SSHCredentials struct {
 	// PrivateKeySecretRef references a Secret containing the SSH private key (key: "privateKey").
 	// +optional
 	PrivateKeySecretRef *corev1.SecretReference `json:"privateKeySecretRef,omitempty"`
+}
+
+// HashJoinToken returns the hex SHA-256 of a bootstrap join token, the form
+// stored in ConnectionStatus.JoinTokenHash. The token is high-entropy random
+// (32 bytes), so a plain digest is enough: there is nothing to guess and no
+// password to stretch.
+func HashJoinToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
