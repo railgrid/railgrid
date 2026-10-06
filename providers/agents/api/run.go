@@ -1050,7 +1050,11 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
 		IdempotencyKey: tr.IdempotencyKey,
-		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
+		// What a repository run is asked to run against is part of the REQUEST,
+		// so it is on the first record: the Run object is projected from this
+		// write, and its spec is never rewritten afterwards.
+		Repository: tr.Repository.persisted(),
+		Phase:      store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		// The unique store key is the admission boundary. Concurrent requests
 		// may both miss the earlier lookup; only the one that records a run may
