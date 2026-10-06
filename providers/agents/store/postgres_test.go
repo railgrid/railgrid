@@ -59,7 +59,7 @@ func purgeTestScope(t *testing.T, ps *PostgresStore, orgUUID string) {
 	ctx := context.Background()
 	for _, table := range []string{
 		"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_harness_sessions",
-		"agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_tenants",
+		"agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_tenants", "agents_run_artifacts",
 	} {
 		if _, err := ps.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE org_uuid=$1", orgUUID); err != nil {
 			t.Logf("cleanup: %s for %s: %v", table, orgUUID, err)

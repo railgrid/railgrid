@@ -121,6 +121,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		// toolset, same approval class, same tool-turn budget, same model
 		// purpose — rather than as a top-level run of its agent.
 		Worker: ck.Worker,
+		// A repository run's coordinates come back off the record; the clone
+		// source does not, and a re-join does not need it.
+		Repository: repositoryAttemptFromStored(run.Repository),
 	}
 	access.applyTo(&tr)
 	// Only an approval resume pre-authorizes a call. A recovery checkpoint has no

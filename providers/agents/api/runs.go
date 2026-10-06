@@ -10,6 +10,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -87,6 +88,12 @@ type runDetail struct {
 	// and the harness session its turn ran in. Without them a failed run can be
 	// seen but not correlated with anything on the machine that ran it.
 	Harness *runHarnessInfo `json:"harness,omitempty"`
+	// Repository and Result are present only for a repository run: what it ran
+	// against, and — once it succeeded — the verified Git result whose
+	// artifacts the `artifact` verb serves. Same shapes as the Run object's
+	// spec.repository and status.result.
+	Repository *store.RunRepository `json:"repository,omitempty"`
+	Result     *store.RunResult     `json:"result,omitempty"`
 }
 
 // runHarnessInfo is the edge-side identity of one harness-backed run.
@@ -171,6 +178,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	if run.Backend == agentsv1alpha1.AgentBackendHarness && (run.AttemptID != "" || run.HarnessSessionID != "") {
 		detail.Harness = &runHarnessInfo{AttemptID: run.AttemptID, SessionID: run.HarnessSessionID}
 	}
+	detail.Repository, detail.Result = run.Repository, run.Result
 	if run.Phase == store.RunPhasePendingApproval && len(run.Checkpoint) > 0 {
 		var ck runCheckpoint
 		if json.Unmarshal(run.Checkpoint, &ck) == nil {
@@ -202,6 +210,73 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 		}
 	}
 	return detail, nil
+}
+
+// runArtifactRequest is the `artifact` verb's input: which of a repository
+// run's stored artifacts to read.
+type runArtifactRequest struct {
+	Name string `json:"name"`
+}
+
+// runArtifactResponse is one stored artifact, bytes included. Base64 because
+// the verb answers JSON like every other, and the bundle is binary; a reader
+// re-checks Digest against what it decodes.
+type runArtifactResponse struct {
+	Name      string `json:"name"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	MediaType string `json:"mediaType"`
+	Data      string `json:"data"`
+}
+
+// runArtifact serves the `artifact` verb on a Run: POST …/runs/{id}/artifact
+// with {"name": "git-result.json" | "git-result.bundle"}.
+//
+// It serves only what this provider stored for THAT run, after it verified the
+// runner's export (backend/harness/repository.go): a coordinator reads the
+// result from the provider that vouched for it, never from the runner. A name
+// the run did not store — a conversational run has none at all — is not
+// found, and the refusal does not say which of the two it was.
+func (s *Server) runArtifact(w http.ResponseWriter, r *http.Request) {
+	_, id, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	agent, ok := gatedRunAgent(r)
+	if !ok {
+		writeStatus(w, http.StatusConflict, "Conflict", "this run names no agent, so its artifacts cannot be located")
+		return
+	}
+	var req runArtifactRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "name is required")
+		return
+	}
+	runID := r.PathValue("name")
+	scope := id.scope(agent)
+	if _, err := s.store.GetRun(r.Context(), scope, runID); err != nil {
+		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		return
+	}
+	artifact, found, err := s.store.GetRunArtifact(r.Context(), scope, runID, name)
+	if err != nil {
+		log.Printf("runs: reading artifact %q of run %s failed: %v", name, runID, err)
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "the artifact could not be read; retry later")
+		return
+	}
+	if !found {
+		writeStatus(w, http.StatusNotFound, "NotFound", "run "+runID+" has no stored artifact "+name)
+		return
+	}
+	writeJSON(w, http.StatusOK, runArtifactResponse{
+		Name: artifact.Name, Digest: artifact.Digest, Size: artifact.Size, MediaType: artifact.MediaType,
+		Data: base64.StdEncoding.EncodeToString(artifact.Data),
+	})
 }
 
 // cancelRun serves the `cancel` verb on a Run: POST …/runs/{id}/cancel. The request is recorded on the

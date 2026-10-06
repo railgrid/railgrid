@@ -43,6 +43,7 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		"agents/inbox-resolve",
 		"modelcredentials/discover",
 		"runs/cancel",
+		"runs/artifact",
 		"connections/enable-inbound",
 		"schedules/run",
 		"triggers/run",

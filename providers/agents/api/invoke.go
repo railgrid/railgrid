@@ -65,6 +65,11 @@ type invokeRunRequest struct {
 	// Callback names a URL to POST the outcome to when the run finishes.
 	// Best-effort — see api/callback.go; polling stays the reliable path.
 	Callback *runCallback `json:"callback,omitempty"`
+	// Repository makes the run a REPOSITORY attempt on a harness-backed agent:
+	// a fresh clone of the named commit, never the agent's workspace or a chat
+	// session, exporting a Git result the `artifact` verb then serves. See
+	// api/repository.go. Refused on a model-backed agent.
+	Repository *invokeRepository `json:"repository,omitempty"`
 }
 
 type invokeRunResponse struct {
@@ -116,10 +121,25 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
+	repository, err := req.Repository.validate()
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if repository != nil && strings.TrimSpace(req.SessionID) != "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "a repository run is a fresh checkout and cannot continue a session")
+		return
+	}
 
 	agent, err := c.Agents().Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
 		writeResourceError(w, err)
+		return
+	}
+	if repository != nil && !agent.Spec.HarnessBacked() {
+		// Only a coding harness on an edge can clone a repository and export a
+		// Git result; an in-process model turn has no checkout to run in.
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "this agent cannot run against a repository")
 		return
 	}
 	scope := id.scope(name)
@@ -146,6 +166,7 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		Trigger:        agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey: req.IdempotencyKey,
 		Callback:       req.Callback,
+		Repository:     repository,
 		// SourceName attributes the run to its caller in the activity view. The
 		// caller's name comes from the hub's verified header when there is one
 		// and is omitted otherwise — it is a label, never a trust root; the
