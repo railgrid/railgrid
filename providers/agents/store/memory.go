@@ -31,6 +31,7 @@ type MemoryStore struct {
 	summaries          map[string]SessionSummary // key: scope|session
 	harness            map[string]HarnessSession // key: scope|session
 	idempotencyPrimary map[string]bool           // key: scope|runID; one stable winner per tenant/agent/key
+	artifacts          map[string]runArtifactRow // key: scope|runID|name
 	messageSequence    int64
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
 	// mirroring the org/workspace columns the Postgres rows carry.
@@ -50,8 +51,20 @@ func NewMemoryStore() *MemoryStore {
 		summaries:          map[string]SessionSummary{},
 		harness:            map[string]HarnessSession{},
 		idempotencyPrimary: map[string]bool{},
+		artifacts:          map[string]runArtifactRow{},
 		runScopes:          map[string]Scope{},
 	}
+}
+
+// runArtifactRow mirrors the Postgres row: the artifact plus the agent it is
+// filed under, which DeleteAgentData keys on.
+type runArtifactRow struct {
+	agentName string
+	artifact  RunArtifact
+}
+
+func artifactKey(s Scope, runID, name string) string {
+	return tenantKey(s) + "|" + runID + "|" + name
 }
 
 func (m *MemoryStore) FindClusterForScope(_ context.Context, orgUUID, workspaceUUID string) (string, bool, error) {
@@ -275,6 +288,16 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		}
 		delete(m.harness, key)
 	}
+	for key, row := range m.artifacts {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if _, ok := m.artifacts[target]; !ok {
+			m.artifacts[target] = row
+		}
+		delete(m.artifacts, key)
+	}
 
 	// If both scopes already contain the same idempotency key, retain both run
 	// records but make the oldest run the stable lookup winner. This restores
@@ -336,6 +359,11 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 		}
 	}
 	for key := range m.harness {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.artifacts {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -1134,6 +1162,11 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 			delete(m.runScopes, k)
 		}
 	}
+	for k, row := range m.artifacts {
+		if row.agentName == agentName && hasPrefix(k, tk+"|") {
+			delete(m.artifacts, k)
+		}
+	}
 	for k, mem := range m.memories {
 		if mem.AgentName == agentName && hasPrefix(k, tk+"|") {
 			delete(m.memories, k)
@@ -1163,6 +1196,11 @@ func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string
 	key := tenantKey(scope) + "|" + runID
 	delete(m.runs, key)
 	delete(m.runScopes, key)
+	for k := range m.artifacts {
+		if hasPrefix(k, key+"|") {
+			delete(m.artifacts, k)
+		}
+	}
 	for k, msgs := range m.messages {
 		if !hasPrefix(k, tenantKey(scope)+"|") {
 			continue
@@ -1189,6 +1227,42 @@ func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string
 		m.toolCalls[k] = kept
 	}
 	return nil
+}
+
+// ---- run artifacts -------------------------------------------------------------
+
+func (m *MemoryStore) SaveRunArtifact(_ context.Context, scope Scope, artifact RunArtifact) error {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if err := artifact.validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	// Copy the bytes: the caller's buffer is not this store's to share.
+	artifact.Data = append([]byte(nil), artifact.Data...)
+	artifact.CreatedAt = artifact.CreatedAt.UTC()
+	m.artifacts[artifactKey(scope, artifact.RunID, artifact.Name)] = runArtifactRow{agentName: scope.AgentName, artifact: artifact}
+	return nil
+}
+
+func (m *MemoryStore) GetRunArtifact(_ context.Context, scope Scope, runID, name string) (RunArtifact, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return RunArtifact{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.artifacts[artifactKey(scope, runID, name)]
+	if !ok {
+		return RunArtifact{}, false, nil
+	}
+	out := row.artifact
+	out.Data = append([]byte(nil), out.Data...)
+	return out, true, nil
 }
 
 func hasPrefix(s, prefix string) bool {

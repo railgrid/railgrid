@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"strconv"
@@ -91,7 +92,21 @@ func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, toke
 	if err != nil {
 		return nil, err
 	}
-	return dispatch.Wrap(c), nil
+	return runnerWithArtifacts{Runner: dispatch.Wrap(c), client: c}, nil
+}
+
+// runnerWithArtifacts is the shared client as the lifecycle drives it, plus
+// the one call the lifecycle does not make: reading an artifact, which only a
+// repository attempt ever has. The harness backend asks for the reader by
+// type (backendharness.ArtifactReader); a test's fake runner that lacks it
+// simply cannot complete a repository attempt.
+type runnerWithArtifacts struct {
+	dispatch.Runner
+	client *runnerclient.Client
+}
+
+func (r runnerWithArtifacts) Artifact(ctx context.Context, attemptID, artifactID string, w io.Writer) (runner.Artifact, error) {
+	return r.client.Artifact(ctx, attemptID, artifactID, w)
 }
 
 // runnerRESTConfig is the provider's own credential aimed at one tenant
@@ -167,6 +182,9 @@ type harnessTurn struct {
 	// record and for a log line that says where the work went.
 	Service string
 	Harness string
+	// Repository marks a repository attempt, whose Session is synthetic (the
+	// run is its own task) and must never be written to the session store.
+	Repository bool
 }
 
 // persistHarnessSession records the thread the harness actually used. The
@@ -255,35 +273,18 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 	if err != nil {
 		return err
 	}
-	taskID, _, err := harnessTaskIdentity(agent, sessionID, &continuation{Checkpoint: checkpoint})
-	if err != nil {
-		return fmt.Errorf("validating the harness checkpoint owner: %w", err)
-	}
-	if taskID != state.TaskID {
-		return errors.New("the harness cancellation task does not match its Agent owner")
-	}
-	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-	stored, found, err := s.store.GetHarnessSession(ctx, scope, sessionID)
-	if err != nil {
-		return fmt.Errorf("checking the harness session owner: %w", err)
-	}
-	if state.AgentUID == "" && !found {
-		return errors.New("the legacy harness checkpoint has no durable session identity")
-	}
-	if found && stored.TaskID != "" && stored.TaskID != taskID {
-		return errors.New("the harness checkpoint does not match the durable session task identity")
-	}
-	currentUID := string(agent.UID)
-	if found && stored.AgentUID != "" && stored.AgentUID != currentUID {
-		return errors.New("the harness checkpoint belongs to a different Agent incarnation")
-	}
-	if state.AgentUID == "" && found && stored.AgentUID == "" && currentUID != "" {
-		stale, lifetimeErr := store.CheckLegacyHarnessSessionLifetime(agent.CreationTimestamp.Time, stored.UpdatedAt)
-		if lifetimeErr != nil {
-			return fmt.Errorf("the legacy harness checkpoint has no verifiable Agent lifetime: %w", lifetimeErr)
+	if run.Repository != nil {
+		// A repository attempt is its own task (see repositoryHarnessTurn):
+		// there is no session row to check it against, only the run.
+		if state.TaskID != run.ID || state.Epoch != 1 {
+			return errors.New("the harness cancellation checkpoint does not match this repository run")
 		}
-		if stale {
-			return errors.New("the legacy harness checkpoint predates this Agent incarnation")
+		if state.AgentUID != "" && state.AgentUID != string(agent.UID) {
+			return errors.New("the harness checkpoint belongs to a different Agent incarnation")
+		}
+	} else {
+		if err := s.verifyParkedHarnessOwner(ctx, id, run, agent, sessionID, checkpoint, state); err != nil {
+			return err
 		}
 	}
 
@@ -331,6 +332,43 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 		AttemptID: state.AttemptID, AttemptEpoch: state.Epoch,
 	})
 	return err
+}
+
+// verifyParkedHarnessOwner checks a parked conversational attempt's checkpoint
+// against the Agent and the durable session row that own it.
+func (s *Server) verifyParkedHarnessOwner(ctx context.Context, id identity, run store.Run, agent *agentsv1alpha1.Agent, sessionID string, checkpoint runCheckpoint, state backendharness.State) error {
+	taskID, _, err := harnessTaskIdentity(agent, sessionID, &continuation{Checkpoint: checkpoint})
+	if err != nil {
+		return fmt.Errorf("validating the harness checkpoint owner: %w", err)
+	}
+	if taskID != state.TaskID {
+		return errors.New("the harness cancellation task does not match its Agent owner")
+	}
+	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
+	stored, found, err := s.store.GetHarnessSession(ctx, scope, sessionID)
+	if err != nil {
+		return fmt.Errorf("checking the harness session owner: %w", err)
+	}
+	if state.AgentUID == "" && !found {
+		return errors.New("the legacy harness checkpoint has no durable session identity")
+	}
+	if found && stored.TaskID != "" && stored.TaskID != taskID {
+		return errors.New("the harness checkpoint does not match the durable session task identity")
+	}
+	currentUID := string(agent.UID)
+	if found && stored.AgentUID != "" && stored.AgentUID != currentUID {
+		return errors.New("the harness checkpoint belongs to a different Agent incarnation")
+	}
+	if state.AgentUID == "" && found && stored.AgentUID == "" && currentUID != "" {
+		stale, lifetimeErr := store.CheckLegacyHarnessSessionLifetime(agent.CreationTimestamp.Time, stored.UpdatedAt)
+		if lifetimeErr != nil {
+			return fmt.Errorf("the legacy harness checkpoint has no verifiable Agent lifetime: %w", lifetimeErr)
+		}
+		if stale {
+			return errors.New("the legacy harness checkpoint predates this Agent incarnation")
+		}
+	}
+	return nil
 }
 
 // parkedHarnessRunner validates and reconstructs the narrow runner grant saved
@@ -443,6 +481,13 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		return harnessTurn{}, fmt.Errorf("reaching the runner on edge %s/%s: %w", cfg.EdgeRef.Kind, cfg.EdgeRef.Name, err)
 	}
 
+	if run.Repository != nil {
+		return s.repositoryHarnessTurn(run, runID, sessionID, cont, repositoryTurnDeps{
+			dispatcher: dispatcher, backendKey: backendKey, service: service, advertised: advertised,
+			model: strings.TrimSpace(cfg.Model), identity: identity,
+		})
+	}
+
 	// The epoch. Claimed durably and BEFORE the dispatch, because the runner
 	// refuses a start whose epoch did not advance past the task's highest — which
 	// is the protection that makes two replicas answering one message safe, and
@@ -481,6 +526,79 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		MaxDurationSeconds: int(agent.Spec.Limits.TimeoutSeconds),
 	})
 	return harnessTurn{backend: b, Session: session, Service: service, Harness: advertised}, nil
+}
+
+// repositoryTurnDeps is what harnessBackendFor resolved before the two
+// attempt shapes part ways: the runner, its identity, and the harness.
+type repositoryTurnDeps struct {
+	dispatcher dispatch.Runner
+	backendKey string
+	service    string
+	advertised string
+	model      string
+	identity   llm.HarnessIdentity
+}
+
+// repositoryHarnessTurn resolves a REPOSITORY attempt: the run is its own task
+// (taskID = attemptID = run id, epoch 1), it names no workspace and chains onto
+// no harness session, and it claims nothing from the session store — a fresh
+// checkout has no conversation to number. A continuation must address that
+// same attempt; its coordinates come off the checkpoint and are checked
+// against the run rather than against an Agent session.
+func (s *Server) repositoryHarnessTurn(run taskRun, runID, sessionID string, cont *continuation, deps repositoryTurnDeps) (harnessTurn, error) {
+	agent := run.Agent
+	if cont != nil {
+		raw, err := cont.Checkpoint.backendState()
+		if err != nil {
+			return harnessTurn{}, err
+		}
+		var state backendharness.State
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return harnessTurn{}, fmt.Errorf("reading the repository attempt's resume state: %w", err)
+		}
+		if state.TaskID != runID || state.AttemptID != runID || state.Epoch != 1 {
+			return harnessTurn{}, errors.New("the harness checkpoint does not address this repository run")
+		}
+		if state.AgentUID != "" && state.AgentUID != string(agent.UID) {
+			return harnessTurn{}, errors.New("the harness checkpoint belongs to a different Agent incarnation")
+		}
+	}
+	maxDuration := run.Repository.MaxDurationSeconds
+	if maxDuration <= 0 {
+		maxDuration = int(agent.Spec.Limits.TimeoutSeconds)
+	}
+	maxDuration = min(maxDuration, maxRepositoryDurationSecs)
+	// Only the reader a real runner connection has; a fake without one cannot
+	// finish a repository attempt, which is the honest answer.
+	artifacts, _ := deps.dispatcher.(backendharness.ArtifactReader)
+	b := backendharness.New(backendharness.Config{
+		Runner:    deps.dispatcher,
+		TaskID:    runID,
+		AgentUID:  string(agent.UID),
+		AttemptID: runID,
+		Epoch:     1,
+		// No WorkspaceID, no SessionID: the two things a repository attempt
+		// never has.
+		BackendKey:      deps.backendKey,
+		RequiredHarness: deps.advertised,
+		Model:           deps.model,
+		Credential:      deps.identity,
+		Provenance: map[string]any{
+			"workspace": run.Scope.WorkspaceUUID,
+			"org":       run.Scope.OrgUUID,
+			"cluster":   run.ClusterID,
+		},
+		MaxDurationSeconds: maxDuration,
+		Repository:         &run.Repository.Repository,
+		Artifacts:          artifacts,
+	})
+	// A synthetic session row: what the checkpoint and the run record read
+	// their coordinates from. It is never written to the store.
+	session := store.HarnessSession{
+		SessionID: sessionID, TaskID: runID, AgentUID: string(agent.UID),
+		BackendKey: deps.backendKey, Turns: 1, UpdatedAt: time.Now().UTC(),
+	}
+	return harnessTurn{backend: b, Session: session, Service: deps.service, Harness: deps.advertised, Repository: true}, nil
 }
 
 // A continuation addresses the attempt already running on the edge. Allocating

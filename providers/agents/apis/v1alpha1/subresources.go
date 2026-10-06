@@ -39,6 +39,25 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// ArtifactRequest is the payload of the "artifact" custom subresource on runs.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=artifact,scope=Cluster
+type ArtifactRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // AuthorizeRequest is the payload of the "authorize" custom subresource on connections.
 //
 // +kubebuilder:object:root=true
@@ -346,6 +365,7 @@ type WaitRequest struct {
 func init() {
 	SchemeBuilder.Register(func(scheme *runtime.Scheme) error {
 		scheme.AddKnownTypes(SchemeGroupVersion,
+			&ArtifactRequest{},
 			&AuthorizeRequest{},
 			&CancelRequest{},
 			&ChatRequest{},

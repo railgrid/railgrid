@@ -137,6 +137,9 @@ func (s *Server) routes() map[string]resourceRoutes {
 			"trace":  {methods: get, handler: s.runTrace, readOnly: true},
 			"wait":   {methods: get, handler: s.waitRunHandler, readOnly: true},
 			"cancel": {methods: post, handler: s.cancelRun},
+			// A read with a body (which artifact), hence POST on a readOnly
+			// verb: it changes nothing, it just has an argument.
+			"artifact": {methods: post, handler: s.runArtifact, readOnly: true},
 		}},
 		"connections": {gvr: agentsclient.ConnectionGVR, verbs: map[string]verbRoute{
 			"test":           {methods: post, handler: s.testConnection},

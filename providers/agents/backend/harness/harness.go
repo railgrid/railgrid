@@ -28,7 +28,8 @@
 //
 //   - A conversational turn is a WORKSPACE attempt: it names a workspaceID and
 //     runs in a directory the runner keeps across attempts. It pins no commit,
-//     clones nothing and exports no Git result.
+//     clones nothing and exports no Git result. The other shape, a REPOSITORY
+//     attempt dispatched for a coding coordinator, is in repository.go.
 //
 //   - Consecutive turns are one conversation because each start carries the
 //     sessionID an EARLIER attempt created. The harness may FORK that session on
@@ -118,6 +119,15 @@ type Config struct {
 	// MaxDurationSeconds bounds the attempt on the runner, in addition to the
 	// provider's own run timeout. Zero leaves the runner's default.
 	MaxDurationSeconds int
+
+	// Repository makes this a REPOSITORY attempt (see repository.go): a fresh
+	// clone of an approved commit, no workspace, no harness session, and a Git
+	// result exported and verified on completion. Nil is a conversational
+	// workspace turn.
+	Repository *Repository
+	// Artifacts reads the artifacts a repository attempt exports. Required for
+	// a repository attempt to COMPLETE; the shared runner client satisfies it.
+	Artifacts ArtifactReader
 
 	// NewID mints attempt and request identifiers. nil means uuid.NewString.
 	NewID func() string
@@ -255,13 +265,10 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 	}
 	credential := b.credential()
 	req := runner.StartRequest{
-		RequestID:    b.newID(),
-		TaskID:       b.cfg.TaskID,
-		AttemptID:    b.cfg.AttemptID,
-		AttemptEpoch: b.cfg.Epoch,
-		// A workspace attempt: a directory the runner keeps, no commit to pin.
-		WorkspaceID:       b.cfg.WorkspaceID,
-		SessionID:         b.cfg.SessionID,
+		RequestID:         b.newID(),
+		TaskID:            b.cfg.TaskID,
+		AttemptID:         b.cfg.AttemptID,
+		AttemptEpoch:      b.cfg.Epoch,
 		HarnessCredential: &credential,
 		Instructions:      instructions(in.Messages),
 		Model:             b.cfg.Model,
@@ -280,6 +287,28 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 			MaxTurns:           1,
 			MaxDurationSeconds: b.cfg.MaxDurationSeconds,
 		},
+	}
+	if repo := b.cfg.Repository; repo != nil {
+		// A repository attempt: a fresh clone of the approved commit, exporting
+		// a Git result. No workspace and no session — never the agent's
+		// persistent directory, never a chat thread. The clone source is
+		// dispatch data and a fresh start cannot do without it.
+		if repo.Source == nil {
+			return backend.Outcome{Status: backend.StatusFailed}, ErrCloneCredentialUnavailable
+		}
+		req.RepositoryID = strings.TrimSpace(repo.RepositoryID)
+		req.BaseCommit = repo.BaseCommit
+		req.Repository = repo.Source
+		req.ExportGitResult = true
+		req.CommitMessage = repo.CommitMessage
+		req.RequiredCapabilities = repo.RequiredCapabilities
+		req.RequiredToolchains = repo.RequiredToolchains
+		req.RequiredEnvironment = repo.RequiredEnvironment
+		req.Verification = repo.Verification
+	} else {
+		// A workspace attempt: a directory the runner keeps, no commit to pin.
+		req.WorkspaceID = b.cfg.WorkspaceID
+		req.SessionID = b.cfg.SessionID
 	}
 	if strings.TrimSpace(req.Instructions) == "" {
 		return backend.Outcome{Status: backend.StatusFailed}, errors.New("the turn has nothing to ask the harness")
@@ -463,12 +492,25 @@ func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, 
 	}
 	text := out.Summary.Text
 	output, sources := backend.SplitSources(text)
-	return backend.Outcome{
+	completed := backend.Outcome{
 		Status: backend.StatusCompleted,
 		Text:   text, Output: output, Sources: sources,
 		Final: out.Summary.Final,
 		Usage: usage,
-	}, nil
+	}
+	if b.cfg.Repository != nil {
+		// A completed repository attempt is not complete until what it exported
+		// has been fetched and verified: a receipt that says "completed" with no
+		// usable Git result is a failed run, not a successful one with nothing
+		// to show. The failure keeps the usage — the work was done and billed —
+		// and drops the text, as every failed turn does.
+		result, artifacts, rerr := b.gitResult(ctx, out.Receipt)
+		if rerr != nil {
+			return backend.Outcome{Status: b.statusFor(ctx), Usage: usage}, rerr
+		}
+		completed.Result, completed.Artifacts = result, artifacts
+	}
+	return completed, nil
 }
 
 // state renders the resume coordinates the provider persists.
@@ -661,10 +703,25 @@ func (b *Backend) validate() error {
 		return errors.New("a harness turn needs an attempt id (the run)")
 	case b.cfg.Epoch == 0:
 		return errors.New("a harness turn needs a nonzero epoch (the turn number)")
-	case strings.TrimSpace(b.cfg.WorkspaceID) == "":
-		return errors.New("a harness turn needs a workspace id")
 	case b.cfg.Credential.Empty():
 		return errors.New("a harness turn needs a harness credential; every dispatch carries one, and a runner has no identity of its own")
+	}
+	if repo := b.cfg.Repository; repo != nil {
+		// The two shapes are exclusive on the wire, and the exclusivity is
+		// checked here rather than left to the runner's refusal so a
+		// misconfigured turn fails before anything is dispatched.
+		switch {
+		case strings.TrimSpace(b.cfg.WorkspaceID) != "":
+			return errors.New("a repository attempt cannot name a workspace")
+		case strings.TrimSpace(b.cfg.SessionID) != "":
+			return errors.New("a repository attempt cannot continue a harness session")
+		case b.cfg.TaskID != b.cfg.AttemptID || b.cfg.Epoch != 1:
+			return errors.New("a repository attempt is its own task: task id and attempt id are the run id, and the epoch is 1")
+		}
+		return repo.validate()
+	}
+	if strings.TrimSpace(b.cfg.WorkspaceID) == "" {
+		return errors.New("a harness turn needs a workspace id")
 	}
 	return nil
 }
@@ -679,6 +736,15 @@ func (b *Backend) credential() runner.HarnessCredential {
 // be a non-empty JSON object carrying provenance, and the provenance is the
 // run's own: what agent, which run, what started it, which workspace.
 func (b *Backend) approvedInput(r *backend.Run) (json.RawMessage, error) {
+	if repo := b.cfg.Repository; repo != nil && len(repo.ApprovedInput) > 0 {
+		// The coordinator's own approved input, verbatim: the attempt is ITS
+		// work, and what it approved is what the runner should see.
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(repo.ApprovedInput, &envelope); err != nil || len(envelope) == 0 {
+			return nil, errors.New("the repository attempt's approved input must be a non-empty JSON object")
+		}
+		return repo.ApprovedInput, nil
+	}
 	provenance := map[string]any{}
 	for k, v := range b.cfg.Provenance {
 		provenance[k] = v

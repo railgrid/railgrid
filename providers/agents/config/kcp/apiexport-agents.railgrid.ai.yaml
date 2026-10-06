@@ -93,7 +93,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: runs
-    schema: v260919-e478625c.runs.agents.railgrid.ai
+    schema: v261006-726052b8.runs.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -231,6 +231,15 @@ spec:
   - group: agents.railgrid.ai
     name: modelcredentials/test
     schema: v260924-87f1980f.test.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: runs/artifact
+    schema: v261006-726052b8.artifact.agents.railgrid.ai
     storage:
       virtual:
         reference:

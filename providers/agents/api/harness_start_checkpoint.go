@@ -48,12 +48,19 @@ func initialHarnessCheckpoint(run taskRun, turn *harnessTurn) (json.RawMessage, 
 	if taskID == "" {
 		return nil, errors.New("harness start state has no durable task identity")
 	}
-	agentUID, err := harnessAgentUIDForTask(run.Agent, sessionID, taskID)
-	if err != nil {
-		return nil, err
-	}
-	if state.TaskID != taskID || state.AgentUID != agentUID {
-		return nil, errors.New("harness start state does not match its Agent identity")
+	if turn.Repository {
+		// A repository attempt is its own task; its identity is the run.
+		if taskID != run.RunID || state.TaskID != run.RunID || state.AgentUID != string(run.Agent.UID) {
+			return nil, errors.New("harness start state does not match this repository run")
+		}
+	} else {
+		agentUID, err := harnessAgentUIDForTask(run.Agent, sessionID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		if state.TaskID != taskID || state.AgentUID != agentUID {
+			return nil, errors.New("harness start state does not match its Agent identity")
+		}
 	}
 	if state.TaskID == "" || state.AttemptID != run.RunID || state.Epoch == 0 || state.BackendKey == "" {
 		return nil, errors.New("harness start state is missing its durable cancellation coordinates")

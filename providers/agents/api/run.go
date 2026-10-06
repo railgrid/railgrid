@@ -350,6 +350,13 @@ type taskRun struct {
 	// not execution — consumed by the detached-start helper. See api/callback.go.
 	Callback *runCallback
 
+	// Repository, when non-nil, makes this a REPOSITORY attempt on a
+	// harness-backed agent (see api/repository.go): a fresh clone of an approved
+	// commit, no history, no harness session, a Git result on completion. The
+	// clone source it carries is dispatch data — held here for the turn and
+	// never persisted; a run rebuilt from its record carries none.
+	Repository *repositoryAttempt
+
 	// Worker, when non-nil, marks this run as a spawned sub-agent worker and
 	// carries the constraints its parent imposed (depth, narrowed families,
 	// approval class, tool-turn budget). See api/spawn.go.
@@ -518,10 +525,16 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	}
 	run.RunID = runID
 
-	// spec.limits.timeoutSeconds bounds the run's wall clock (default 1h).
+	// spec.limits.timeoutSeconds bounds the run's wall clock (default 1h). A
+	// repository attempt that named its own bound runs to that instead, with a
+	// margin so the runner's limit — which produces a failed receipt with a
+	// reason — fires before this context does.
 	timeout := time.Hour
 	if v := agent.Spec.Limits.TimeoutSeconds; v > 0 {
 		timeout = time.Duration(v) * time.Second
+	}
+	if run.Repository != nil && run.Repository.MaxDurationSeconds > 0 {
+		timeout = time.Duration(run.Repository.MaxDurationSeconds)*time.Second + repositoryDeadlineMargin
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -655,7 +668,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// into history and the model would see it twice.
 		// Derived from the toolset that was actually built, not from the grant: a
 		// depth-limited worker has no spawn tool and must not be told to fan out.
-		msgs, aerr := s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
+		var (
+			msgs []backend.Message
+			aerr error
+		)
+		if run.Repository != nil {
+			// A repository attempt is a fresh checkout and nothing else: the
+			// agent's standing instructions and the approved task, with none
+			// of the session's history or the agent's notes — the coordinator
+			// approved the prompt it sent, not the conversation around it.
+			msgs = repositoryTurnMessages(agent, run.Task)
+		} else {
+			msgs, aerr = s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
+		}
 		if aerr != nil {
 			return s.failBeforeStart(ctx, scope, run, sessionID, time.Time{}, fmt.Errorf("assemble agent history: %w", aerr))
 		}
@@ -684,7 +709,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// recovery reads it off the row rather than off an agent spec that
 			// may have been re-pointed since.
 			Backend: agent.Spec.BackendType(), AttemptID: harnessAttemptID(harnessT, runID),
-			Phase: store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
+			// What a repository run ran against, minus the credential.
+			Repository: run.Repository.persisted(),
+			Phase:      store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
 		}
 		if agent.Spec.HarnessBacked() {
 			checkpoint, err := initialHarnessCheckpoint(run, harnessT)
@@ -724,7 +751,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		out, err = b.Continue(ctx, brun, answer, sink)
 	}
 	end := time.Now().UTC()
-	if harnessT != nil {
+	if harnessT != nil && run.Repository == nil {
 		// The next chat reads the session row, not this run's display metadata.
 		// Save the receipt's session even on a park or cancellation so a later
 		// turn can resume the actual Codex thread instead of replaying history
@@ -812,6 +839,18 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		return runResult{RunID: runID, Content: out.Text, FinalContent: finalContent, Phase: store.RunPhaseFailed,
 			StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}, writeErr
 	}
+	// A repository run's result is its artifacts, and they are stored BEFORE
+	// the run is reported as succeeded: a Succeeded run whose bundle cannot be
+	// fetched is a result nobody can use, so a failed store write fails the
+	// run instead.
+	if run.Repository != nil {
+		if out.Result == nil {
+			return finishFailedTurn(errors.New("git result unusable: the turn completed without a verified result"))
+		}
+		if serr := s.storeRunArtifacts(ctx, scope, runID, out.Artifacts, end); serr != nil {
+			return finishFailedTurn(fmt.Errorf("git result unusable: storing its artifacts: %w", serr))
+		}
+	}
 	// The answer goes on the run record too, so a programmatic reader (the parent
 	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
 	// phase instead of having to locate the session and dig out its last message.
@@ -819,7 +858,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	s.finishRun(persistCtx, scope, runID, runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: out.Usage.Total.Tokens, CostMicros: out.Usage.Total.CostMicros,
 		Output: out.Output, Sources: out.Sources, WorkedDurationMS: tracker.workedDurationMS(),
-		Harness: harnessT,
+		Harness: harnessT, Result: runResultFor(out.Result),
 	}, end)
 	s.recordAgentRun(persistCtx, run.CR, agent, end, &window)
 	cancelPersist()
@@ -1239,6 +1278,8 @@ type runOutcome struct {
 	// keeps the attempt it was and the harness session the NEXT turn has to chain
 	// onto. Nil for a model-backed run.
 	Harness *harnessTurn
+	// Result is a repository run's verified Git result. Nil otherwise.
+	Result *store.RunResult
 }
 
 // finishRun stamps a run's terminal phase, result, usage, and timestamps, and
@@ -1272,9 +1313,54 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 		stored.WorkedDurationMS = &value
 	}
 	applyHarnessObservation(&stored, out.Harness)
+	if out.Result != nil {
+		stored.Result = out.Result
+	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
 	_ = s.saveRun(ctx, scope, stored)
+}
+
+// repositoryDeadlineMargin is how much longer than its own maxDurationSeconds
+// a repository run's context lives, so the runner's limit reports first.
+const repositoryDeadlineMargin = 2 * time.Minute
+
+// repositoryTurnMessages is the prompt a repository attempt gets: the agent's
+// persona, when it has one, and the approved task. No history, no notes.
+func repositoryTurnMessages(agent *agentsv1alpha1.Agent, task string) []backend.Message {
+	var msgs []backend.Message
+	if sp := strings.TrimSpace(agent.Spec.SystemPrompt); sp != "" {
+		msgs = append(msgs, backend.Message{Role: backend.RoleSystem, Content: sp})
+	}
+	return append(msgs, backend.Message{Role: backend.RoleUser, Content: task})
+}
+
+// runResultFor renders the backend's verified result as the run record keeps
+// it.
+func runResultFor(r *backend.RepositoryResult) *store.RunResult {
+	if r == nil {
+		return nil
+	}
+	return &store.RunResult{
+		BaseCommit: r.BaseCommit, Commit: r.Commit, Tree: r.Tree, NoChanges: r.NoChanges,
+		ResultDigest: r.ResultDigest, BundleDigest: r.BundleDigest, BundleSize: r.BundleSize,
+	}
+}
+
+// storeRunArtifacts files what a repository attempt exported, under the run,
+// for the `artifact` verb to serve. Bounded by its own persist context: the
+// bundle can be tens of megabytes and the turn's context may be near its end.
+func (s *Server) storeRunArtifacts(ctx context.Context, scope store.Scope, runID string, artifacts []backend.Artifact, at time.Time) error {
+	persistCtx, cancel := boundedPersistContext(ctx)
+	defer cancel()
+	for _, a := range artifacts {
+		if err := s.store.SaveRunArtifact(persistCtx, scope, store.RunArtifact{
+			RunID: runID, Name: a.Name, Digest: a.Digest, MediaType: a.MediaType, Size: a.Size, Data: a.Data, CreatedAt: at,
+		}); err != nil {
+			return fmt.Errorf("%s: %w", a.Name, err)
+		}
+	}
+	return nil
 }
 
 // applyHarnessObservation records what a harness turn learned: which attempt ran
