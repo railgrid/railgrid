@@ -11,9 +11,12 @@ package tools
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/railgrid/provider-agents/engine"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -73,4 +76,130 @@ func TestConnectMCPInstanceAddressing(t *testing.T) {
 			t.Fatalf("want an error naming both options, got %v", err)
 		}
 	})
+}
+
+func TestConnectMCPEndpointWithClientPreservesBoundedResults(t *testing.T) {
+	const exactID = uint64(9_007_199_254_740_993)
+	largeFirst := `{"exactID":9007199254740993,"padding":"` + strings.Repeat("x", 23_050) + `"`
+	largeTail := `,"records":["recorded_sales"],"metrics":{"hits":50,"total":53},"pagination":{"continueToken":"next-page-token"}}`
+	largeWant := largeFirst + "\n" + largeTail
+	if at := strings.Index(largeWant, "recorded_sales"); at <= webFetchMaxReturn {
+		t.Fatalf("test result should put recorded_sales beyond the former %d-byte cap, got offset %d", webFetchMaxReturn, at)
+	}
+
+	underLimitUTF8 := strings.Repeat("界", (mcpResultMaxReturn-1)/len("界"))
+	overLimitUTF8 := strings.Repeat("界", mcpResultMaxReturn/len("界")+1)
+	imageData := []byte{0x89, 'P', 'N', 'G'}
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "result-test", Version: "1.0.0"}, nil)
+	addResultTool := func(name string, result *mcp.CallToolResult) {
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return result, nil
+		})
+	}
+	addResultTool("large_semantic_search", &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: largeFirst},
+			&mcp.TextContent{Text: largeTail},
+		},
+		// MCP's decoded StructuredContent uses any and can round integers
+		// above 2^53; TextContent must retain the exact value.
+		StructuredContent: map[string]any{"exactID": exactID, "roundedID": float64(exactID)},
+	})
+	addResultTool("exact_limit", &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: strings.Repeat("x", mcpResultMaxReturn)}},
+	})
+	addResultTool("under_limit_utf8", &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: underLimitUTF8}},
+	})
+	addResultTool("over_limit_utf8", &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: overLimitUTF8}},
+	})
+	addResultTool("image_result", &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "camera snapshot"},
+			&mcp.ImageContent{MIMEType: "image/png", Data: imageData},
+		},
+	})
+	addResultTool("error_result", &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "backend unavailable"}},
+		IsError: true,
+	})
+
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return server
+	}, nil))
+	t.Cleanup(httpServer.Close)
+
+	session, err := ConnectMCPEndpointWithClient(context.Background(), httpServer.URL, httpServer.Client(), "results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(session.Close)
+	byName := make(map[string]engine.Tool, len(session.Tools))
+	for _, tool := range session.Tools {
+		byName[tool.Name] = tool
+	}
+
+	tests := []struct {
+		name           string
+		wantText       string
+		wantErrParts   []string
+		wantImageMIME  string
+		wantImageBytes []byte
+	}{
+		{name: "large_semantic_search", wantText: largeWant},
+		{name: "exact_limit", wantText: strings.Repeat("x", mcpResultMaxReturn)},
+		{name: "under_limit_utf8", wantText: underLimitUTF8},
+		{
+			name:         "over_limit_utf8",
+			wantErrParts: []string{"65538 bytes", "not truncated", "not passed to the model", "already executed", "do not repeat side-effecting calls", "read-only queries", "smaller page"},
+		},
+		{name: "image_result", wantText: "camera snapshot", wantImageMIME: "image/png", wantImageBytes: imageData},
+		{name: "error_result", wantErrParts: []string{"backend unavailable"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ok := byName["results__"+tc.name]
+			if !ok || tool.ExecRich == nil {
+				t.Fatalf("connected MCP tool %q is missing", tc.name)
+			}
+			obs, err := tool.ExecRich(context.Background(), `{}`)
+			if len(tc.wantErrParts) > 0 {
+				if err == nil {
+					t.Fatalf("ExecRich returned no error; observation text length=%d", len(obs.Text))
+				}
+				for _, part := range tc.wantErrParts {
+					if !strings.Contains(err.Error(), part) {
+						t.Errorf("error %q does not contain %q", err, part)
+					}
+				}
+				if obs.Text != "" || len(obs.Images) != 0 {
+					t.Fatalf("error returned partial observation: text length=%d, images=%d", len(obs.Text), len(obs.Images))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if obs.Text != tc.wantText {
+				t.Fatalf("text length=%d, want %d", len(obs.Text), len(tc.wantText))
+			}
+			if tc.name == "large_semantic_search" {
+				if strings.Contains(obs.Text, `"roundedID"`) || !strings.Contains(obs.Text, `"exactID":9007199254740993`) {
+					t.Fatalf("text result did not preserve the exact integer without appending decoded StructuredContent")
+				}
+				if !strings.HasSuffix(obs.Text, `"continueToken":"next-page-token"}}`) {
+					t.Fatalf("tail pagination data is missing from the complete result")
+				}
+			}
+			if tc.wantImageMIME != "" {
+				if len(obs.Images) != 1 || obs.Images[0].MIMEType != tc.wantImageMIME || string(obs.Images[0].Data) != string(tc.wantImageBytes) {
+					t.Fatalf("image result = %#v, want one %s image with original bytes", obs.Images, tc.wantImageMIME)
+				}
+			} else if len(obs.Images) != 0 {
+				t.Fatalf("got %d unexpected images", len(obs.Images))
+			}
+		})
+	}
 }

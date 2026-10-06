@@ -27,6 +27,11 @@ import (
 // a PAT gets its full toolset without any MCP configuration.
 const githubMCPEndpoint = "https://api.githubcopilot.com/mcp"
 
+// MCP results can include query pages and other structured data that exceeds
+// the chat-sized web fetch budget. Keep the complete result up to this hard
+// limit, then reject it rather than passing a misleading partial prefix.
+const mcpResultMaxReturn = 64 * 1024
+
 // MCPSession wraps one live MCP connection's discovered tools. Close after
 // the run completes.
 type MCPSession struct {
@@ -160,7 +165,15 @@ func ConnectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 				if res.IsError {
 					return engine.Observation{}, fmt.Errorf("%s", clip(text, 2000))
 				}
-				return engine.Observation{Text: clip(text, webFetchMaxReturn), Images: images}, nil
+				// Preserve the complete text result. StructuredContent is decoded
+				// through any by the SDK and can round large integer values.
+				if len(text) > mcpResultMaxReturn {
+					return engine.Observation{}, fmt.Errorf(
+						"MCP tool returned %d bytes (limit %d); result withheld, not truncated, and not passed to the model. The tool already executed, so do not repeat side-effecting calls. For read-only queries, narrow filters or use a smaller page if supported",
+						len(text), mcpResultMaxReturn,
+					)
+				}
+				return engine.Observation{Text: text, Images: images}, nil
 			},
 		})
 	}

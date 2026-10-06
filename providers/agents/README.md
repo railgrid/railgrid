@@ -159,6 +159,18 @@ Postgres and your own cluster.
 - [docs/agents-provider-architecture.md](../../docs/agents-provider-architecture.md)
 - [deploy/chart/README.md](deploy/chart/README.md) — chart values
 
+## MCP tool results
+
+MCP tools preserve their complete text response up to a 64 KiB text budget.
+JSON supplied in MCP text blocks retains its original numeric precision.
+Unlike fetched web pages, these results are not shortened to a fixed prefix:
+doing so can remove fields or pagination cursors and break JSON.
+An oversized result fails explicitly after the tool has executed. For read-only
+queries, the agent can retry with narrower filters or a smaller page when the
+tool supports them; side-effecting calls must not be repeated just to recover
+the output. This is a per-result safety limit; the conversation still uses the
+context-budget and compaction policy below.
+
 ## Conversation history and compaction
 
 Chat, channel, and resumed runs retain structured assistant tool calls and their
