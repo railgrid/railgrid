@@ -39,6 +39,45 @@ own workspace when self-hosted).
 Revoking access is deleting the edge — that garbage-collects the ServiceAccount
 and its grants.
 
+### Re-enrolling after a long outage
+
+The agent cannot mint or renew its ServiceAccount credential itself; the
+provider re-mints it before it expires. An edge that is off or unreachable for
+longer than that credential's lifetime therefore comes back holding one the
+provider refuses:
+
+```
+Rejected edge agent tunnel: SA token failed delegated authorization  err="token not authenticated"
+```
+
+and, on the agent side, a refresh it cannot authenticate for:
+
+```
+could not refresh the agent credential; continuing with the one in hand
+  err="refreshing the agent credential: HTTP 401"
+tunnel connection failed, reconnecting  err="hub returned HTTP 401 Unauthorized"
+```
+
+Step 3 cleared `status.joinToken`, so the agent's fallback used to be refused
+too (`has no join token set`) and the edge stayed locked out until an operator
+regenerated the token by hand. Registration now keeps
+`status.joinTokenHash` — the SHA-256 of that token — and the tunnel accepts a
+presented token that matches it. The agent re-enrolls with the token already on
+its disk, gets a fresh credential, and the edge recovers on its own.
+
+The plaintext is still cleared on registration, so it cannot be read back from
+status. The digest makes the original bootstrap token a durable re-enrollment
+secret for that one edge, which is the same trust already placed in the copy on
+the agent's disk. To invalidate it, rotate:
+
+```bash
+kubectl annotate kubernetesclusters/<name> edges.railgrid.ai/regenerate-join-token=true
+```
+
+The token reconciler mints a new token and a new digest, so the previous token
+stops enrolling — and the agent must be re-joined with the new one. Deleting
+the edge still revokes everything.
+
 ## Workloads
 
 A `Workload` (namespaced on the hub) is rendered by the provider into a

@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	edgeapi "github.com/railgrid/provider-edges/internal/edgeapi"
 	utilhttp "github.com/railgrid/provider-edges/internal/wsutil"
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/revdial"
@@ -289,8 +291,19 @@ func (p *Server) enrolmentHeader(ctx context.Context, gvr schema.GroupVersionRes
 }
 
 // authorizeByJoinToken looks up the Edge by cluster+name and performs a
-// constant-time comparison of the provided token against edge.Status.JoinToken.
-// Returns nil if the token is valid, or an error otherwise.
+// constant-time comparison of the provided token against edge.Status.JoinToken,
+// falling back to status.joinTokenHash once registration has cleared the
+// plaintext. Returns nil if the token is valid, or an error otherwise.
+//
+// The hash fallback is what lets an edge recover on its own. The agent's
+// durable credential is minted by this provider and cannot be renewed after it
+// expires, so an edge offline for longer than that lifetime comes back holding
+// a credential the provider refuses ("token not authenticated") and a join
+// token the provider cleared ("has no join token set") — locked out until an
+// operator regenerated the token by hand. Accepting the token it already has,
+// matched against the stored hash, closes that trap without putting the token
+// back into status. Rotation (AnnotationRegenerateJoinToken) replaces the hash
+// and so still invalidates the old token.
 func (p *Server) authorizeByJoinToken(ctx context.Context, gvr schema.GroupVersionResource, token, cluster, name string) error {
 	if p.kcpConfig == nil {
 		return fmt.Errorf("kcp config not available")
@@ -317,19 +330,39 @@ func (p *Server) authorizeByJoinToken(ctx context.Context, gvr schema.GroupVersi
 		return fmt.Errorf("getting %s %s/%s: %w", gvr.Resource, cluster, name, err)
 	}
 
-	// status.joinToken is a shared ConnectionStatus field present on both kinds,
-	// so read it directly from the unstructured object (kind-agnostic).
+	// status.joinToken and status.joinTokenHash are shared ConnectionStatus
+	// fields present on both kinds, so read them directly from the unstructured
+	// object (kind-agnostic).
 	joinToken, _, _ := unstructured.NestedString(u.Object, "status", "joinToken")
-	if joinToken == "" {
-		return fmt.Errorf("%s %s/%s has no join token set", gvr.Resource, cluster, name)
+	joinTokenHash, _, _ := unstructured.NestedString(u.Object, "status", "joinTokenHash")
+	if err := matchJoinToken(joinToken, joinTokenHash, token); err != nil {
+		return fmt.Errorf("%s %s/%s: %w", gvr.Resource, cluster, name, err)
 	}
-
-	// Constant-time comparison to prevent timing attacks.
-	if subtle.ConstantTimeCompare([]byte(token), []byte(joinToken)) != 1 {
-		return fmt.Errorf("join token mismatch for %s %s/%s", gvr.Resource, cluster, name)
-	}
-
 	return nil
+}
+
+// matchJoinToken decides whether presented is this edge's bootstrap token.
+//
+// Before registration the plaintext is in status and is compared directly.
+// After registration it has been cleared and only the digest remains, so the
+// same token still authenticates — that is what lets an agent whose durable
+// credential expired while it was offline enroll again by itself. Both
+// comparisons are constant-time.
+func matchJoinToken(joinToken, joinTokenHash, presented string) error {
+	switch {
+	case joinToken != "":
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(joinToken)) != 1 {
+			return errors.New("join token mismatch")
+		}
+		return nil
+	case joinTokenHash != "":
+		if subtle.ConstantTimeCompare([]byte(edgeapi.HashJoinToken(presented)), []byte(joinTokenHash)) != 1 {
+			return errors.New("join token mismatch")
+		}
+		return nil
+	default:
+		return errors.New("has no join token set")
+	}
 }
 
 // authorizeByIssuedToken validates a reconnecting agent's ServiceAccount token
