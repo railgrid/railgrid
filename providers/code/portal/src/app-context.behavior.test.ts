@@ -1,4 +1,4 @@
-import { defineComponent, h, inject, nextTick, reactive } from 'vue'
+import { defineComponent, h, inject, nextTick, reactive, ref } from 'vue'
 import { createRenderer, ssrContextKey, type RendererOptions } from '@vue/runtime-core'
 import * as VueRuntime from 'vue'
 import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
@@ -154,6 +154,38 @@ function click(root: TreeNode, id: string): void {
 }
 
 describe('Code App context authority generation', () => {
+  it('preserves collection authority through route and theme context replacements', async () => {
+    captured.generation = undefined
+    const context = ref<RailgridContext>({
+      basePath: '/ui/providers/code', token: 'same-token', tenant: 'same-tenant',
+      user: { sub: 'same-user', email: 'same@example.com' }, subPath: 'connections', theme: 'light',
+    })
+    const host = defineComponent({ setup: () => () => h(App, { ctx: context.value }) })
+    const root = node('root')
+    const app = renderer.createApp(host)
+    app.provide(ssrContextKey, { modules: new Set<string>() })
+    app.mount(root)
+    const generation = captured.generation!.value
+
+    // The real host sends a fresh context object on each navigation and theme
+    // change. Those replacements must not revoke cached collection state.
+    for (const next of [
+      { subPath: 'connections/github' },
+      { subPath: 'connections' },
+      { theme: 'dark' as const },
+      { fetch: (() => Promise.reject(new Error('unused test transport'))) as RailgridContext['fetch'] },
+    ]) {
+      context.value = { ...context.value, ...next, user: { ...context.value.user } }
+      await nextTick()
+      expect(captured.generation!.value).toBe(generation)
+    }
+
+    context.value = { ...context.value, tenant: 'another-tenant' }
+    await nextTick()
+    expect(captured.generation!.value).toBeGreaterThan(generation)
+    app.unmount()
+  })
+
   it('increments synchronously for every shell authority field before child unmount', async () => {
     captured.generation = undefined
     const context = reactive<RailgridContext>({
