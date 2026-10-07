@@ -40,6 +40,7 @@ import (
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	einoschema "github.com/cloudwego/eino/schema"
+	openaisdk "github.com/openai/openai-go/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -2064,6 +2065,10 @@ func classifyProjectLLMConnectionTestError(ctx context.Context, err error) error
 	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode >= 400 && apiErr.HTTPStatusCode < 500 {
 		return &projectLLMConnectionTestError{Kind: projectLLMConnectionTestRejected, Err: wrapped}
 	}
+	var responsesErr *openaisdk.Error
+	if errors.As(err, &responsesErr) && responsesErr.StatusCode >= 400 && responsesErr.StatusCode < 500 {
+		return &projectLLMConnectionTestError{Kind: projectLLMConnectionTestRejected, Err: wrapped}
+	}
 	return &projectLLMConnectionTestError{Kind: projectLLMConnectionTestUpstream, Err: wrapped}
 }
 
@@ -2094,9 +2099,9 @@ func validateProjectLLMBaseURL(provider, raw string) error {
 	path := strings.ToLower(strings.TrimRight(u.Path, "/"))
 	switch {
 	case strings.HasSuffix(path, "/chat/completions"):
-		return newValidationError("baseURL must be the provider API base URL, not the /chat/completions operation URL; App Studio appends /chat/completions automatically")
+		return newValidationError("baseURL must be the provider API base URL, not the /chat/completions operation URL; App Studio selects the model endpoint automatically")
 	case strings.HasSuffix(path, "/responses"), strings.HasSuffix(path, "/messages"):
-		return newValidationError("baseURL must be the provider API base URL, not a model operation URL; App Studio's OpenAI-compatible provider requires a /chat/completions model")
+		return newValidationError("baseURL must be the provider API base URL, not a model operation URL; App Studio selects the model endpoint automatically")
 	default:
 		return nil
 	}

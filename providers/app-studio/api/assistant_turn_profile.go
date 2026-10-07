@@ -16,7 +16,10 @@ limitations under the License.
 
 package api
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // projectAssistantTurnProfile is the internal tool policy derived from the
 // user-selected collaboration mode. It is not a semantic classification.
@@ -43,6 +46,10 @@ var projectAssistantModelCapabilityCatalog = map[string]projectAssistantModelCap
 	"openai-compatible/gpt-5.6-luna":           {VisionToolResults: true},
 	"openai-compatible/gpt-5.6-sol":            {VisionToolResults: true},
 	"openai-compatible/gpt-5.6-terra":          {VisionToolResults: true},
+	"openai-compatible/gpt-6-luna":             {VisionToolResults: true},
+	"openai-compatible/gpt-6-sol":              {VisionToolResults: true},
+	"openai-compatible/gpt-6-astra":            {VisionToolResults: true},
+	"openai-compatible/gpt-6.1-sol":            {VisionToolResults: true},
 	"google-ai-studio/gemini-2.5-pro":          {VisionToolResults: true},
 	"google-ai-studio/gemini-3-pro-preview":    {VisionToolResults: true},
 	"google-ai-studio/gemini-3.5-flash":        {VisionToolResults: true},
@@ -57,6 +64,24 @@ func projectAssistantCapabilitiesForModel(settings projectLLMSettings) projectAs
 	model := strings.ToLower(strings.TrimSpace(settings.Model))
 	if model == "" && provider == defaultProjectLLMProvider {
 		model = defaultProjectLLMModel
+	}
+	if provider == defaultProjectLLMProvider && projectModelUsesResponsesAPI(model) {
+		// Gateways may namespace OpenAI model IDs. Transport selection and the
+		// vision capability must agree for the same known model.
+		if idx := strings.LastIndex(model, "/"); idx >= 0 {
+			model = model[idx+1:]
+		}
+		if strings.HasPrefix(model, "gpt6") {
+			model = "gpt-6" + strings.TrimPrefix(model, "gpt6")
+		}
+		if len(model) > len(time.DateOnly)+1 {
+			suffix := len(model) - len(time.DateOnly)
+			if model[suffix-1] == '-' {
+				if _, err := time.Parse(time.DateOnly, model[suffix:]); err == nil {
+					model = model[:suffix-1]
+				}
+			}
+		}
 	}
 	return projectAssistantModelCapabilityCatalog[provider+"/"+model]
 }

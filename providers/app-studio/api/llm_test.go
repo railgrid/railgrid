@@ -371,22 +371,22 @@ func TestNormalizeProjectLLMSettingsRejectsOperationURLs(t *testing.T) {
 		{
 			name:    "chat completions endpoint",
 			baseURL: "https://opencode.ai/zen/v1/chat/completions",
-			want:    "App Studio appends /chat/completions automatically",
+			want:    "App Studio selects the model endpoint automatically",
 		},
 		{
 			name:    "chat completions endpoint with trailing slash and mixed case",
 			baseURL: "https://opencode.ai/zen/v1/Chat/Completions/",
-			want:    "App Studio appends /chat/completions automatically",
+			want:    "App Studio selects the model endpoint automatically",
 		},
 		{
 			name:    "responses endpoint",
 			baseURL: "https://opencode.ai/zen/v1/responses",
-			want:    "requires a /chat/completions model",
+			want:    "App Studio selects the model endpoint automatically",
 		},
 		{
 			name:    "messages endpoint",
 			baseURL: "https://opencode.ai/zen/v1/messages",
-			want:    "requires a /chat/completions model",
+			want:    "App Studio selects the model endpoint automatically",
 		},
 	}
 	for _, tt := range tests {
