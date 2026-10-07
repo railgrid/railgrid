@@ -21,7 +21,7 @@ describe('Edges create guidance', () => {
     expect(services).toMatch(/services\.value\.length === 0 && isCompleteFirstCursorPage\(/)
     expect(services).toMatch(/<ResourceTable\s+v-else/)
     expect(workloads).toMatch(/hasKubernetesEdges \? 'Create workload' : 'Connect edge'/)
-    expect(workloads).toMatch(/secondary-label="hasKubernetesEdges \? 'Browse marketplace' : ''"/)
+    expect(workloads).not.toMatch(/Browse marketplace|MARKETPLACE_CATEGORIES|showMarket/)
     expect(workloads).toMatch(/workloads\.value\.length === 0 && isCompleteFirstCursorPage\(/)
     expect(workloads).toMatch(/<ResourceTable\s+v-if="!showFirstRun"/)
   })

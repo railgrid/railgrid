@@ -288,7 +288,6 @@ onUnmounted(() => {
         :result="workloadResult"
         @create="navigate('deploy/workload/manual')"
         @connect-edge="connectEdgeFrom('deploy/workload/manual', { cancelPath: 'workloads', requiredType: 'kubernetes' })"
-        @deploy="(app) => navigate(workloadDeployPath('marketplace', app.type))"
         @dismiss-result="onWorkloadDismissResult"
       />
     </KeepAlive>
