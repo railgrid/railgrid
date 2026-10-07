@@ -205,3 +205,45 @@ test('dashboard tile uses shared semantics while preserving escaping and navigat
   await row.click()
   expect(await page.evaluate(() => (window as typeof window & { tileNavigation?: unknown }).tileNavigation)).toEqual({ path: '' })
 })
+
+test('clearing the example selection preserves an edited playground query', async ({ page }) => {
+  await mountKuery(page, 'light')
+  await page.getByRole('button', { name: 'Playground', exact: true }).click()
+  await expect(page.locator('.CodeMirror')).toBeVisible()
+  await page.getByRole('combobox').last().click()
+  await page.getByRole('option', { name: 'Everything in a namespace', exact: true }).click()
+  const draft = '{"filter":{"objects":[{"namespace":"my-draft"}]},"limit":1}'
+  await page.locator('.CodeMirror').evaluate((element, value) => {
+    ;(element as HTMLElement & { CodeMirror: { setValue: (value: string) => void } }).CodeMirror.setValue(value)
+  }, draft)
+  await page.getByRole('combobox').last().click()
+  await page.getByRole('option', { name: 'Choose an example…', exact: true }).click()
+  expect(await page.locator('.CodeMirror').evaluate(element => (element as HTMLElement & { CodeMirror: { getValue: () => string } }).CodeMirror.getValue())).toBe(draft)
+})
+
+test.describe('playground technical access on a narrow coarse canvas', () => {
+  test.use({ hasTouch: true })
+  for (const theme of ['light', 'dark'] as const) {
+    test(`${theme} API path remains readable inside the provider`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 })
+      await mountKuery(page, theme)
+      await page.addStyleTag({ content: 'railgrid-provider-kuery { display: block; max-width: 302px; }' })
+      await page.getByRole('button', { name: 'Playground', exact: true }).click()
+      await expect(page.locator('.CodeMirror')).toBeVisible()
+      const details = page.locator('.pg-docs')
+      await expect(details).not.toHaveAttribute('open', '')
+      await page.getByText('API and access', { exact: true }).click()
+      const path = details.locator('pre')
+      await expect(path).toBeVisible()
+      expect(await path.innerText()).toContain('/savedviews/<name>/run')
+      const box = await path.boundingBox()
+      const provider = await page.locator('#kuery').boundingBox()
+      expect(box!.x).toBeGreaterThanOrEqual(provider!.x)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(provider!.x + provider!.width + 1)
+      const state = await path.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth, overflow: getComputedStyle(element).overflowX, wrap: getComputedStyle(element).whiteSpace }))
+      expect(state.scroll > state.width ? ['auto', 'scroll'].includes(state.overflow) : true).toBe(true)
+      expect(await details.locator('.k-resource-technical__chevron').count()).toBe(1)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    })
+  }
+})

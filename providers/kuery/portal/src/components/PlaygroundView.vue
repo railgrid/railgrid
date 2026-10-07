@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Play } from 'lucide-vue-next'
+import { ChevronDown, Play } from 'lucide-vue-next'
 
 import type { RailgridContext } from '../element'
 import type { QuerySpec } from '../api'
@@ -47,7 +47,10 @@ async function mountEditor(): Promise<void> {
   }
 }
 function chooseExample(value: string): void {
-  example.value = value; const index = Number(value)
+  example.value = value
+  // The placeholder clears the selection, not the user's query draft.
+  if (!value) return
+  const index = Number(value)
   if (!Number.isInteger(index) || !EXAMPLES[index]) return
   documentText.value = JSON.stringify(EXAMPLES[index].spec, null, 2); editor?.setValue(documentText.value); editor?.refresh()
 }
@@ -90,6 +93,21 @@ onBeforeUnmount(() => { controller?.abort(); schemaController?.abort(); generati
         <pre class="pg-result" :class="{ error: !!error }">{{ error || result || '// Results appear here after you run a query.' }}</pre>
       </section>
     </div>
-    <details class="pg-docs"><summary>API and access</summary><p>A query is the <code>run</code> verb on a SavedView. This editor runs your own scratch view, <code>{{ savedView || '…' }}</code>; programmatic clients POST <code>{"input": {"query": …}}</code> to <code>/clusters/&lt;workspace&gt;/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/&lt;name&gt;/run</code> on the hub with an OIDC bearer token — the same kube path <code>kubectl</code> would use. You must be able to see the view and be granted <code>run</code> on it, so what you can query is exactly what your workspace RBAC allows.</p></details>
+    <details class="k-resource-technical pg-docs">
+      <summary class="k-resource-technical__summary">
+        <span class="k-resource-technical__summary-label">API and access</span>
+        <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
+      </summary>
+      <div class="k-resource-technical__body">
+        <section class="k-resource-technical__section">
+          <h3 class="k-resource-technical__section-title">Run a saved view</h3>
+          <div class="k-resource-technical__content">
+            <p>A query is the <code>run</code> verb on a SavedView. This editor runs your own scratch view, <code>{{ savedView || '…' }}</code>. Programmatic clients POST <code>{"input": {"query": …}}</code> to this hub path with an OIDC bearer token:</p>
+            <pre class="k-resource-technical__pre">/clusters/&lt;workspace&gt;/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/&lt;name&gt;/run</pre>
+            <p>You must be able to see the view and be granted <code>run</code> on it, so what you can query is exactly what your workspace RBAC allows.</p>
+          </div>
+        </section>
+      </div>
+    </details>
   </section>
 </template>
