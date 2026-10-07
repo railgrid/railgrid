@@ -508,13 +508,10 @@ railgrid-provider-kuery .pg-result.error {
 
 railgrid-provider-kuery .pg-docs {
   margin-top: 12px;
-  font-size: 13px;
 }
 
-railgrid-provider-kuery .pg-docs summary {
-  cursor: pointer;
-  font-weight: 600;
-  color: var(--color-text-muted, #5d5f78);
+railgrid-provider-kuery .pg-docs code {
+  overflow-wrap: anywhere;
 }
 
 railgrid-provider-kuery .legend {
