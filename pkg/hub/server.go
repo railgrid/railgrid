@@ -1069,7 +1069,7 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Creating core multicluster manager failed")
 				return
 			}
-			if err := mcpserver.SetupWithManager(coreMgr, kcpConfig, s.opts.HubExternalURL, mcpProviderEnumerator); err != nil {
+			if err := mcpserver.SetupWithManager(coreMgr, kcpConfig, s.opts.HubExternalURL, mcpProviderEnumerator, providerRegistry); err != nil {
 				logger.Error(err, "Setting up mcpserver controller failed")
 				return
 			}

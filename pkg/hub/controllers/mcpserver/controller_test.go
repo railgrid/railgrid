@@ -21,7 +21,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	kcpfake "github.com/kcp-dev/sdk/client/clientset/versioned/fake"
@@ -36,7 +35,6 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
-	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	railgridv1alpha1 "github.com/railgrid/railgrid/apis/railgrid/v1alpha1"
 )
 
@@ -47,15 +45,78 @@ func newServer(name string, readOnly bool) *railgridv1alpha1.MCPServer {
 	}
 }
 
-func newBinding(name string, bound ...apisv1alpha2.BoundAPIResource) *apisv1alpha2.APIBinding {
-	return &apisv1alpha2.APIBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Status:     apisv1alpha2.APIBindingStatus{BoundResources: bound},
+func newBinding(name string, bound ...BoundResource) *apisv1alpha2.APIBinding {
+	apiBinding := &apisv1alpha2.APIBinding{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if len(bound) == 0 {
+		return apiBinding
+	}
+	apiBinding.Spec.Reference.Export = &apisv1alpha2.ExportBindingReference{
+		Path: bound[0].APIExportPath,
+		Name: bound[0].APIExportName,
+	}
+	apiBinding.Status.Phase = apisv1alpha2.APIBindingPhaseBound
+	apiBinding.Status.BoundResources = make([]apisv1alpha2.BoundAPIResource, 0, len(bound))
+	for _, resource := range bound {
+		apiBinding.Status.BoundResources = append(apiBinding.Status.BoundResources, resource.BoundAPIResource)
+	}
+	return apiBinding
+}
+
+func bound(group, resource string) BoundResource {
+	path, name := testExportIdentity(group)
+	return BoundResource{
+		BoundAPIResource: apisv1alpha2.BoundAPIResource{Group: group, Resource: resource},
+		APIExportPath:    path,
+		APIExportName:    name,
 	}
 }
 
-func bound(group, resource string) apisv1alpha2.BoundAPIResource {
-	return apisv1alpha2.BoundAPIResource{Group: group, Resource: resource}
+func testExportIdentity(group string) (string, string) {
+	provider := "demo"
+	switch group {
+	case "edges.railgrid.ai":
+		provider = "edges"
+	case "agents.railgrid.ai":
+		provider = "agents"
+	case "infrastructure.railgrid.ai":
+		provider = "infrastructure"
+	case "code.railgrid.ai":
+		provider = "code"
+	}
+	return "root:railgrid:providers:" + provider, provider + ".providers.railgrid.ai"
+}
+
+func testSubresourceGrant(group, resource, name string, readOnly bool) SubresourceGrant {
+	path, exportName := testExportIdentity(group)
+	return SubresourceGrant{
+		Group: group, Resource: resource, Name: name, ReadOnly: readOnly,
+		APIExportPath: path, APIExportName: exportName,
+	}
+}
+
+func testDataPlaneGrants() []SubresourceGrant {
+	var grants []SubresourceGrant
+	for resource, names := range map[string][]string{
+		"kubernetesclusters": {"k8s", "ssh", "mcp"},
+		"linuxservers":       {"k8s", "ssh"},
+		"services":           {"proxy", "mcp"},
+	} {
+		for _, name := range names {
+			grant := testSubresourceGrant("edges.railgrid.ai", resource, name, false)
+			grant.AllowPrivilegedWrite = true
+			grants = append(grants, grant)
+		}
+	}
+	for _, name := range []string{"test", "discover"} {
+		grants = append(grants, testSubresourceGrant("agents.railgrid.ai", "modelcredentials", name, false))
+	}
+	grants = append(grants, testSubresourceGrant("infrastructure.railgrid.ai", "instances", "exec", false))
+	return grants
+}
+
+func buildTestRules(bound []BoundResource, grants []SubresourceGrant, readOnly bool) []rbacv1.PolicyRule {
+	allGrants := append(testDataPlaneGrants(), grants...)
+	return buildRules(bound, allGrants, readOnly)
 }
 
 // populatedTokenSecret is the token Secret as kcp's token controller leaves
@@ -88,15 +149,15 @@ func assertNoWildcards(t *testing.T, rules []rbacv1.PolicyRule) {
 }
 
 func TestBuildRules_MatchesBoundResources(t *testing.T) {
-	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+	rules := buildTestRules([]BoundResource{
 		bound("code.railgrid.ai", "repositories"),
 		bound("code.railgrid.ai", "connections"),
 		bound("edges.railgrid.ai", "kubernetesclusters"),
 		bound("infrastructure.railgrid.ai", "templates"),
 		bound("infrastructure.railgrid.ai", "instances"),
-	}, []ActionGrant{
-		{Group: "databricks.railgrid.ai", Resource: "tables", Name: "query_table", ReadOnly: true}, // not bound: ignored
-		{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "restart"},
+	}, []SubresourceGrant{
+		testSubresourceGrant("demo.railgrid.ai", "widgets", "inspect", true), // not bound: ignored
+		testSubresourceGrant("infrastructure.railgrid.ai", "instances", "restart", false),
 	}, false)
 	assertNoWildcards(t, rules)
 
@@ -117,7 +178,7 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	// the RBAC verb), never a bare verb on the object.
 	k8s := findRule(t, rules, "edges.railgrid.ai", "kubernetesclusters/k8s")
 	if k8s == nil || !slices.Equal(k8s.Verbs, dataplane.SubresourceVerbs) ||
-		!slices.Equal(k8s.Resources, []string{"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"}) {
+		!slices.Equal(k8s.Resources, []string{"kubernetesclusters/k8s", "kubernetesclusters/mcp", "kubernetesclusters/ssh"}) {
 		t.Fatalf("edges data-plane rule = %+v, want every kcp verb on kubernetesclusters/{k8s,ssh,mcp}", k8s)
 	}
 	for _, r := range rules {
@@ -134,7 +195,7 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 	if action == nil || !slices.Equal(action.Verbs, dataplane.SubresourceVerbs) {
 		t.Fatalf("action rule = %+v, want every kcp verb", action)
 	}
-	if r := findRule(t, rules, "databricks.railgrid.ai", "tables/query_table"); r != nil {
+	if r := findRule(t, rules, "demo.railgrid.ai", "widgets/inspect"); r != nil {
 		t.Fatalf("action for an unbound resource must not be granted: %+v", r)
 	}
 
@@ -155,7 +216,7 @@ func TestBuildRules_MatchesBoundResources(t *testing.T) {
 // resource bound from the same group (templates, and anything the APIExport
 // grows later) must not pick up an /exec grant just by sharing the group.
 func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
-	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+	rules := buildTestRules([]BoundResource{
 		bound("infrastructure.railgrid.ai", "templates"),
 		bound("infrastructure.railgrid.ai", "instances"),
 		bound("infrastructure.railgrid.ai", "executions"),
@@ -173,21 +234,20 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 
 	// Each edge kind gets exactly the verbs its data plane serves, and a kind
 	// the tunnel does not serve (macosservers) gets no data-plane grant.
-	edges := buildRules([]apisv1alpha2.BoundAPIResource{
+	edges := buildTestRules([]BoundResource{
 		bound("edges.railgrid.ai", "kubernetesclusters"),
 		bound("edges.railgrid.ai", "linuxservers"),
 		bound("edges.railgrid.ai", "macosservers"),
 		bound("edges.railgrid.ai", "services"),
 	}, nil, false)
-	want := map[string][]string{
-		"kubernetesclusters/k8s": {"kubernetesclusters/k8s", "kubernetesclusters/ssh", "kubernetesclusters/mcp"},
-		"linuxservers/k8s":       {"linuxservers/k8s", "linuxservers/ssh"},
-		"services/proxy":         {"services/proxy", "services/mcp"},
+	want := []string{
+		"kubernetesclusters/k8s", "kubernetesclusters/mcp", "kubernetesclusters/ssh",
+		"linuxservers/k8s", "linuxservers/ssh", "services/mcp", "services/proxy",
 	}
-	for key, resources := range want {
+	for _, key := range []string{"kubernetesclusters/k8s", "linuxservers/k8s", "services/proxy"} {
 		r := findRule(t, edges, "edges.railgrid.ai", key)
-		if r == nil || !slices.Equal(r.Verbs, dataplane.SubresourceVerbs) || !slices.Equal(r.Resources, resources) {
-			t.Fatalf("%s rule = %+v, want every kcp verb on %v", key, r, resources)
+		if r == nil || !slices.Equal(r.Verbs, dataplane.SubresourceVerbs) || !slices.Equal(r.Resources, want) {
+			t.Fatalf("%s rule = %+v, want every kcp verb on %v", key, r, want)
 		}
 	}
 	for _, r := range edges {
@@ -207,7 +267,7 @@ func TestBuildRules_DataPlaneSubresourcesAreResourceScoped(t *testing.T) {
 // other agents.railgrid.ai resource picks up a subresource by sharing the
 // group.
 func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
-	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+	rules := buildTestRules([]BoundResource{
 		bound("agents.railgrid.ai", "agents"),
 		bound("agents.railgrid.ai", "modelcredentials"),
 		bound("agents.railgrid.ai", "runs"),
@@ -217,7 +277,7 @@ func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
 
 	probe := findRule(t, rules, "agents.railgrid.ai", "modelcredentials/test")
 	if probe == nil || !slices.Equal(probe.Verbs, dataplane.SubresourceVerbs) ||
-		!slices.Equal(probe.Resources, []string{"modelcredentials/test", "modelcredentials/discover"}) {
+		!slices.Equal(probe.Resources, []string{"modelcredentials/discover", "modelcredentials/test"}) {
 		t.Fatalf("agents data-plane rule = %+v, want every kcp verb on modelcredentials/{test,discover}", probe)
 	}
 	// The retired coordinates, and everything else the data plane serves that
@@ -234,7 +294,7 @@ func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
 
 	// readOnly servers invoke nothing: a probe is still a call out to a third
 	// party with the tenant's key.
-	ro := buildRules([]apisv1alpha2.BoundAPIResource{
+	ro := buildTestRules([]BoundResource{
 		bound("agents.railgrid.ai", "modelcredentials"),
 	}, nil, true)
 	if r := findRule(t, ro, "agents.railgrid.ai", "modelcredentials/test"); r != nil {
@@ -245,7 +305,7 @@ func TestBuildRules_AgentsGrantsOnlyModelCredentialProbes(t *testing.T) {
 // With the instance resource unbound the group's data-plane grant yields
 // nothing at all, rather than falling back to whatever else is bound.
 func TestBuildRules_ExecSkippedWhenTheInstanceResourceIsNotBound(t *testing.T) {
-	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+	rules := buildTestRules([]BoundResource{
 		bound("infrastructure.railgrid.ai", "templates"),
 	}, nil, false)
 	for _, r := range rules {
@@ -258,13 +318,13 @@ func TestBuildRules_ExecSkippedWhenTheInstanceResourceIsNotBound(t *testing.T) {
 }
 
 func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
-	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+	rules := buildTestRules([]BoundResource{
 		bound("code.railgrid.ai", "repositories"),
 		bound("edges.railgrid.ai", "kubernetesclusters"),
 		bound("infrastructure.railgrid.ai", "instances"),
-	}, []ActionGrant{
-		{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "describe", ReadOnly: true},
-		{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "restart"},
+	}, []SubresourceGrant{
+		testSubresourceGrant("infrastructure.railgrid.ai", "instances", "describe", true),
+		testSubresourceGrant("infrastructure.railgrid.ai", "instances", "restart", false),
 	}, true)
 	assertNoWildcards(t, rules)
 
@@ -322,7 +382,7 @@ func TestBuildRules_ReadOnlyStripsWriteVerbs(t *testing.T) {
 }
 
 func TestBuildRules_EmptyBindingsStillYieldsRole(t *testing.T) {
-	rules := buildRules(nil, nil, false)
+	rules := buildTestRules(nil, nil, false)
 	assertNoWildcards(t, rules)
 	if findRule(t, rules, "core.kcp.io", "logicalclusters") == nil {
 		t.Fatalf("baseline rules missing: %+v", rules)
@@ -336,66 +396,14 @@ func TestBuildRules_EmptyBindingsStillYieldsRole(t *testing.T) {
 	}
 }
 
-func TestActionGrantsFromExport(t *testing.T) {
-	got := actionGrantsFromExport(&providersv1alpha1.ProviderExport{
-		Name: "databricks.providers.railgrid.ai",
-		Resources: []providersv1alpha1.ProviderExportResource{{
-			Name: "tables", APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table",
-			Actions: []providersv1alpha1.ProviderAction{{Name: "query_table", Version: "v1", ReadOnly: true}},
-		}, {
-			// No group in the apiVersion: nothing to key a grant on.
-			Name: "broken", APIVersion: "v1", Kind: "Broken",
-			Actions: []providersv1alpha1.ProviderAction{{Name: "poke", Version: "v1"}},
-		}},
-	})
-	want := []ActionGrant{{Group: "databricks.railgrid.ai", Resource: "tables", Name: "query_table", ReadOnly: true}}
-	if !slices.Equal(got, want) {
-		t.Fatalf("grants = %+v, want %+v", got, want)
-	}
-	if got := actionGrantsFromExport(nil); len(got) != 0 {
-		t.Fatalf("a provider with no export granted %+v", got)
-	}
-}
-
-// The coordinate a provider reviews is the action's NAME — the version is not
-// in any path. The parser enforces the documented name shape itself, mirroring
-// the CRD pattern, because pattern validation does not retro-validate objects
-// that predate the marker: a legacy entry must not be granted just because it
-// is stored.
-func TestActionGrantsFromExport_SkipsMalformedNames(t *testing.T) {
-	grantsFor := func(name string) []ActionGrant {
-		return actionGrantsFromExport(&providersv1alpha1.ProviderExport{
-			Name: "infrastructure.providers.railgrid.ai",
-			Resources: []providersv1alpha1.ProviderExportResource{{
-				Name: "instances", APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Instance",
-				Actions: []providersv1alpha1.ProviderAction{{Name: name, Version: "v1"}},
-			}},
-		})
-	}
-	for _, name := range []string{
-		"", "restart/v1", "restart/", "/restart", "Restart", "1restart", "restart.now",
-		strings.Repeat("a", 64),
-	} {
-		if got := grantsFor(name); len(got) != 0 {
-			t.Fatalf("name %q granted %+v, want skipped", name, got)
-		}
-	}
-	for _, name := range []string{"restart", "query_table", "a", "development-logs", strings.Repeat("a", 63)} {
-		got := grantsFor(name)
-		if len(got) != 1 || got[0].Name != name {
-			t.Fatalf("well-formed name %q = %+v, want exactly one grant on it", name, got)
-		}
-	}
-}
-
 func TestEnsureMCPIdentity_NeverBindsClusterAdmin(t *testing.T) {
 	ctx := context.Background()
 	srv := newServer("default", false)
 	kube := kubefake.NewSimpleClientset(populatedTokenSecret(srv.Name))
 	kcp := kcpfake.NewSimpleClientset(newBinding("code", bound("code.railgrid.ai", "repositories")))
 
-	r := &Reconciler{actionGrants: func(context.Context) ([]ActionGrant, error) { return nil, nil }}
-	rules, err := r.desiredRules(ctx, kcp, srv)
+	r := &Reconciler{}
+	rules, err := r.desiredRules(ctx, kcp, srv, "root:railgrid:tenants:org-a:workspace-a")
 	if err != nil {
 		t.Fatalf("desiredRules: %v", err)
 	}
@@ -453,7 +461,7 @@ func TestEnsureMCPRBAC_ReplacesClusterAdminBinding(t *testing.T) {
 		return false, nil, nil
 	})
 
-	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildRules(nil, nil, false)); err != nil {
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildTestRules(nil, nil, false)); err != nil {
 		t.Fatalf("ensureMCPRBAC: %v", err)
 	}
 	if deleted != 1 || created != 1 {
@@ -471,7 +479,7 @@ func TestEnsureMCPRBAC_ReplacesClusterAdminBinding(t *testing.T) {
 	}
 
 	// A second pass with the correct roleRef is a no-op on the binding.
-	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildRules(nil, nil, false)); err != nil {
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildTestRules(nil, nil, false)); err != nil {
 		t.Fatalf("second ensureMCPRBAC: %v", err)
 	}
 	if deleted != 1 || created != 1 {
@@ -507,7 +515,7 @@ func TestEnsureMCPRBAC_ConvergesBindingSubjectsAndOwnership(t *testing.T) {
 		return false, nil, nil
 	})
 
-	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildRules(nil, nil, false)); err != nil {
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildTestRules(nil, nil, false)); err != nil {
 		t.Fatalf("ensureMCPRBAC: %v", err)
 	}
 	if deleted != 0 || created != 0 {
@@ -530,7 +538,7 @@ func TestEnsureMCPRBAC_ConvergesBindingSubjectsAndOwnership(t *testing.T) {
 	if _, err := kube.RbacV1().ClusterRoleBindings().Update(ctx, got, metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("update binding: %v", err)
 	}
-	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildRules(nil, nil, false)); err != nil {
+	if err := ensureMCPRBAC(ctx, kube, srv, owner, "default-mcp", buildTestRules(nil, nil, false)); err != nil {
 		t.Fatalf("second ensureMCPRBAC: %v", err)
 	}
 	got, err = kube.RbacV1().ClusterRoleBindings().Get(ctx, "default-mcp", metav1.GetOptions{})
@@ -548,7 +556,7 @@ func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
 	ctx := context.Background()
 	srv := newServer("default", false)
 	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
-	rules := buildRules(nil, nil, false)
+	rules := buildTestRules(nil, nil, false)
 	orphaned := &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{Name: "railgrid:mcpserver:default"},
 		Rules:      rules,
@@ -583,58 +591,17 @@ func TestEnsureMCPRBAC_ReconcilesClusterRoleOwnership(t *testing.T) {
 	}
 }
 
-func TestCachedActionGrants_ReusesResultWithinTTL(t *testing.T) {
-	ctx := context.Background()
-	var calls int
-	grant := ActionGrant{Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "restart"}
-	src := cachedActionGrants(func(context.Context) ([]ActionGrant, error) {
-		calls++
-		return []ActionGrant{grant}, nil
-	}, time.Hour)
-
-	for range 3 {
-		got, err := src(ctx)
-		if err != nil {
-			t.Fatalf("cached source: %v", err)
-		}
-		if !slices.Equal(got, []ActionGrant{grant}) {
-			t.Fatalf("grants = %+v", got)
-		}
-	}
-	if calls != 1 {
-		t.Fatalf("upstream called %d times, want 1", calls)
-	}
-
-	// Expired entries refresh, and failures are never cached.
-	var failed int
-	failing := cachedActionGrants(func(context.Context) ([]ActionGrant, error) {
-		failed++
-		return nil, context.DeadlineExceeded
-	}, time.Hour)
-	for range 2 {
-		if _, err := failing(ctx); err == nil {
-			t.Fatal("expected the upstream error")
-		}
-	}
-	if failed != 2 {
-		t.Fatalf("errors were cached: upstream called %d times, want 2", failed)
-	}
-	if src := cachedActionGrants(nil, time.Hour); src != nil {
-		t.Fatal("a nil source must stay nil")
-	}
-}
-
 func TestEnsureMCPRBAC_SecondReconcileAddsRulesForNewBinding(t *testing.T) {
 	ctx := context.Background()
 	srv := newServer("default", false)
 	owner := metav1.OwnerReference{Kind: "MCPServer", Name: srv.Name, UID: srv.UID}
 	var kube kubernetes.Interface = kubefake.NewSimpleClientset()
 	kcp := kcpfake.NewSimpleClientset(newBinding("code", bound("code.railgrid.ai", "repositories")))
-	r := &Reconciler{actionGrants: func(context.Context) ([]ActionGrant, error) { return nil, nil }}
+	r := &Reconciler{}
 
 	reconcileRBAC := func() *rbacv1.ClusterRole {
 		t.Helper()
-		rules, err := r.desiredRules(ctx, kcp, srv)
+		rules, err := r.desiredRules(ctx, kcp, srv, "root:railgrid:tenants:org-a:workspace-a")
 		if err != nil {
 			t.Fatalf("desiredRules: %v", err)
 		}
@@ -672,7 +639,7 @@ func TestListBoundResources(t *testing.T) {
 		newBinding("a", bound("code.railgrid.ai", "repositories"), bound("code.railgrid.ai", "connections")),
 		newBinding("pending"), // not yet bound
 	)
-	got, err := listBoundResources(context.Background(), kcp)
+	got, err := listBoundResources(context.Background(), kcp, "root:railgrid:tenants:org-a:workspace-a")
 	if err != nil {
 		t.Fatalf("listBoundResources: %v", err)
 	}
@@ -695,13 +662,13 @@ func TestListBoundResources(t *testing.T) {
 // arrive through a catalog action either. Reads stay granted: listing edges and
 // their status is most of what the edge tools do.
 func TestBuildRules_EdgeHostsAreReadOnly(t *testing.T) {
-	rules := buildRules([]apisv1alpha2.BoundAPIResource{
+	rules := buildTestRules([]BoundResource{
 		bound("edges.railgrid.ai", "linuxservers"),
 		bound("edges.railgrid.ai", "macosservers"),
 		bound("edges.railgrid.ai", "kubernetesclusters"),
 		bound("edges.railgrid.ai", "services"),
-	}, []ActionGrant{
-		{Group: "edges.railgrid.ai", Resource: "linuxservers", Name: "enable_harness"},
+	}, []SubresourceGrant{
+		testSubresourceGrant("edges.railgrid.ai", "linuxservers", "enable_harness", false),
 	}, false)
 	assertNoWildcards(t, rules)
 
