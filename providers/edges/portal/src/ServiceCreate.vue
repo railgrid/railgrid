@@ -7,6 +7,7 @@ import type { Edge, EdgeServiceDraft, EdgeType, ErrorResponse } from './types'
 import CreateGuidance, { type CreateGuidanceValue } from './portalkit/CreateGuidance.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import { toast } from './portalkit/toast'
+import { servicePortError } from './serviceValidation'
 
 const props = withDefaults(defineProps<{
   initialEdgeType?: EdgeType | null
@@ -26,6 +27,7 @@ const edges = ref<Edge[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const error = ref<string | null>(null)
+const portError = ref<string | null>(null)
 const selectedEdgeKey = ref('')
 let active = true
 
@@ -184,6 +186,11 @@ async function onCreate(): Promise<void> {
   const edge = selectedEdge.value
   if (!edge) return
   applyHostUrl()
+  portError.value = servicePortError(draft.value.port)
+  if (portError.value) {
+    document.getElementById('service-create-port')?.focus()
+    return
+  }
   const byHost = targetMode.value === 'host'
   const host = byHost ? normalizeHost(draft.value.host) : ''
   if (hostRequired.value && (!byHost || !host)) return
@@ -200,7 +207,7 @@ async function onCreate(): Promise<void> {
       targetName: byHost ? '' : draft.value.targetName.trim(),
       scheme: draft.value.scheme || 'http',
       host: byHost ? host || undefined : undefined,
-      port: Number(draft.value.port) || 8123,
+      port: Number(draft.value.port),
       instructions: draft.value.instructions?.trim() || undefined,
     })
     if (!active) return
@@ -267,7 +274,7 @@ onUnmounted(() => {
       <template #icon><Server aria-hidden="true" /></template>
     </FirstRunGuide>
 
-    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" @submit.prevent="onCreate">
+    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" novalidate @submit.prevent="onCreate">
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields">
       <div class="service-create-grid service-create-grid--two">
@@ -302,10 +309,11 @@ onUnmounted(() => {
             <option value="https">https</option>
           </select>
         </label>
-        <label class="fld">
-          <span class="lbl">Port</span>
-          <input v-model="draft.port" type="number" min="1" max="65535" class="k-input" />
-        </label>
+        <div class="fld">
+          <label for="service-create-port" class="lbl">Port</label>
+          <input id="service-create-port" v-model="draft.port" type="number" min="1" max="65535" class="k-input" :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-create-port-error' : undefined" @input="portError = null" />
+          <span v-if="portError" id="service-create-port-error" class="error" role="alert">{{ portError }}</span>
+        </div>
       </div>
 
       <div class="fld">

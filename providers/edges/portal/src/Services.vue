@@ -39,6 +39,13 @@ const catalog = ref<CatalogEntry[]>([])
 function catalogFor(t?: string): CatalogEntry | undefined {
   return catalog.value.find((c) => c.type === t)
 }
+function credentialLabel(service: EdgeService): string {
+  const entry = catalogFor(service.serviceType)
+  if (!entry) return service.hasCredentials ? 'Configured' : 'Not checked'
+  if (!entry.auth || entry.auth === 'none') return 'Not required'
+  if (service.hasCredentials) return 'Configured'
+  return entry.credential.optional ? 'Not configured (optional)' : 'Missing'
+}
 // A one-entry fallback so the form still works if the catalog fetch fails.
 const GENERIC_FALLBACK: CatalogEntry = {
   type: 'generic', displayName: 'Generic HTTP service', category: 'Other',
@@ -75,7 +82,7 @@ const serviceRows = computed<Array<Record<string, unknown>>>(() => services.valu
   typeLabel: catalogFor(service.serviceType)?.displayName || service.serviceType || '—',
   target: `${service.host || `${service.targetNamespace ? `${service.targetNamespace}/` : ''}${service.targetName || '—'}`}:${service.port || ''}`,
   status: service.phase || 'Pending',
-  credentials: service.hasCredentials ? 'Configured' : 'Missing',
+  credentials: credentialLabel(service),
   actions: '',
 })))
 const showFirstRun = computed(() => loaded.value && !error.value && services.value.length === 0 && isCompleteFirstCursorPage({
@@ -448,7 +455,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
     <header class="edges-header">
       <div>
         <h1>Services</h1>
-        <p>Services running next to your edges (e.g. Home Assistant). Attach a token to make one Ready, and give it AI guidance — its tools appear in the MCP endpoint.</p>
+        <p>Declare services reachable from your edges, add credentials when required, and expose their tools to AI.</p>
       </div>
       <div v-if="(loaded || error) && !showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
@@ -513,7 +520,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       <template #typeLabel="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #target="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
-      <template #credentials="{ row }"><span :class="['credentials-status', row.hasCredentials ? 'credentials-status--configured' : 'muted']"><Check v-if="row.hasCredentials" :size="16" class="ok-check" aria-hidden="true" /><span>{{ row.hasCredentials ? 'Configured' : 'Missing' }}</span></span></template>
+      <template #credentials="{ row }"><span :class="['credentials-status', row.hasCredentials ? 'credentials-status--configured' : 'muted']"><Check v-if="row.hasCredentials" :size="16" class="ok-check" aria-hidden="true" /><span>{{ row.credentials }}</span></span></template>
       <template #actions="{ row }"><div class="row-actions"><ResourceTableEditButton :label="`Edit service ${String(row.name)}`" @click="openEdit(row as unknown as EdgeService)" /><ResourceTableDeleteButton :label="`Delete service ${String(row.name)}`" @click="onDelete(row as unknown as EdgeService)" /></div></template>
     </ResourceTable>
   </div>

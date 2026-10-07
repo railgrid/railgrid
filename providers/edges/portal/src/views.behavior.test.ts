@@ -138,6 +138,22 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
   }
 }
 
+async function renderServiceCollectionMarkup(): Promise<string> {
+  const source = Services as unknown as {
+    setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
+    ssrRender: (...args: any[]) => unknown
+  }
+  const Wrapper = {
+    async setup(props: Record<string, unknown>, context: Record<string, unknown>) {
+      const state = source.setup(props, context)
+      await Promise.all([state.loadCatalog(), state.refresh()])
+      return state
+    },
+    ssrRender: source.ssrRender,
+  }
+  return renderToString(createSSRApp(Wrapper))
+}
+
 async function renderServiceMarkup(props: Record<string, unknown>): Promise<string> {
   const source = ServiceEdit as unknown as {
     setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
@@ -257,6 +273,31 @@ afterEach(() => {
 })
 
 describe('edge list views', () => {
+  it('distinguishes optional, required, unsupported and configured credentials in the service collection', async () => {
+    api.fetchServiceCatalog.mockResolvedValue([
+      { type: 'generic', displayName: 'Generic', auth: 'bearer', credential: { optional: true } },
+      { type: 'none', displayName: 'None', auth: 'none', credential: {} },
+      { type: 'required', displayName: 'Required', auth: 'basic', credential: {} },
+    ])
+    api.listServicesPage.mockResolvedValue({ items: [
+      { ...service, name: 'optional', serviceType: 'generic', hasCredentials: false },
+      { ...service, name: 'none', serviceType: 'none', hasCredentials: false },
+      { ...service, name: 'required', serviceType: 'required', hasCredentials: false },
+      { ...service, name: 'configured', serviceType: 'required', hasCredentials: true },
+    ], continue: undefined })
+    const mounted = await mount(Services)
+    try {
+      await flush()
+      expect(mounted.instance.setupState.serviceRows.map((row: { credentials: string }) => row.credentials)).toEqual([
+        'Not configured (optional)', 'Not required', 'Missing', 'Configured',
+      ])
+      const markup = await renderServiceCollectionMarkup()
+      expect(markup).toContain('Not configured (optional)')
+      expect(markup).toContain('Not required')
+
+    } finally { mounted.unmount() }
+  })
+
   const views = [
     {
       label: 'services',
@@ -1112,6 +1153,86 @@ describe('edge list views', () => {
     } finally {
       mounted.unmount()
     }
+  })
+
+  it('retains a dirty configuration through Refresh and adopts a saved configuration explicitly', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, instructions: 'Stored', conditions: [] }
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.form.port = 12345
+      state.instructions = 'Unsaved instructions'
+      api.getService.mockResolvedValue({ ...detail, phase: 'Unreachable' })
+      await state.refreshDetail()
+      expect(state.serviceStatus).toBe('Unreachable')
+      expect(state.form.port).toBe(12345)
+      expect(state.instructions).toBe('Unsaved instructions')
+      api.getService.mockResolvedValue({ ...detail, port: 12345, instructions: 'Unsaved instructions' })
+      await state.onSaveConfig()
+      expect(api.updateEdgeService).toHaveBeenCalledWith(detail.name, expect.objectContaining({ port: 12345, instructions: 'Unsaved instructions' }))
+      expect(state.configurationDirty).toBe(false)
+    } finally { mounted.unmount() }
+  })
+
+  it('retains edits typed against a seeded snapshot before its first authoritative read settles', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, instructions: 'Seeded', conditions: [] }
+    const pending = deferred<typeof detail>()
+    api.getService.mockReturnValueOnce(pending.promise)
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      const state = mounted.instance.setupState
+      expect(state.readLoaded).toBe(false)
+      state.instructions = 'Typed before first read'
+      state.form.port = 12345
+      pending.resolve(detail)
+      await flush()
+      expect(state.instructions).toBe('Typed before first read')
+      expect(state.form.port).toBe(12345)
+      expect(state.readLoaded).toBe(true)
+    } finally { mounted.unmount() }
+  })
+
+  it('retains edits typed while Refresh is in flight', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, instructions: 'Stored', conditions: [] }
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      await flush()
+      const pending = deferred<typeof detail>()
+      api.getService.mockReturnValueOnce(pending.promise)
+      const state = mounted.instance.setupState
+      const refresh = state.refreshDetail()
+      state.instructions = 'Typed during read'
+      pending.resolve(detail)
+      await refresh
+      expect(state.instructions).toBe('Typed during read')
+    } finally { mounted.unmount() }
+  })
+
+  it('blocks invalid ports on service create and edit without sending a mutation', async () => {
+    const detail = { ...service, host: 'localhost', port: 80, conditions: [] }
+    api.getService.mockResolvedValue(detail)
+    api.listEdges.mockResolvedValue([edge])
+    const edit = await mount(ServiceEdit, { service: detail, serviceName: detail.name, catalog: [], edges: [edge] })
+    try {
+      await flush()
+      edit.instance.setupState.form.port = 0
+      await edit.instance.setupState.onSaveConfig()
+      expect(api.updateEdgeService).not.toHaveBeenCalled()
+      expect(edit.instance.setupState.portError).toContain('1 to 65535')
+    } finally { edit.unmount() }
+    const create = await mount(ServiceCreate)
+    try {
+      await flush()
+      create.instance.setupState.draft.name = 'new-service'
+      create.instance.setupState.targetMode = 'host'
+      create.instance.setupState.draft.port = 1.5
+      await create.instance.setupState.onCreate()
+      expect(api.createKubeEdgeService).not.toHaveBeenCalled()
+      expect(create.instance.setupState.portError).toContain('whole-number')
+    } finally { create.unmount() }
   })
 
   it('keeps MacOSServer services on host reachability in the editor', async () => {
