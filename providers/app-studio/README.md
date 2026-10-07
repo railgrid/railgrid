@@ -195,6 +195,38 @@ and Studio single-writer. See
 [`docs/app-studio-replica-awareness.md`](../../docs/app-studio-replica-awareness.md)
 for what is still project-affine.
 
+## Model API support
+
+App Studio uses Eino's native `agenticopenai` Responses adapter for GPT-6
+models, including GPT-6 Luna, Sol, Astra, and GPT-6.1 Sol. Astra and GPT-6.1 Sol
+require Responses for function calling ([OpenAI documentation](https://developers.openai.com/api/docs/guides/function-calling));
+Luna and Sol can use reasoning with tools through the same adapter. Existing OpenAI-compatible models continue
+to use Chat Completions, and Gemini uses Eino's native Gemini adapter.
+
+Enter the provider's API base URL, such as `https://api.openai.com/v1`, and
+the exact model ID. App Studio selects the operation endpoint automatically.
+A gateway serving GPT-6 must implement `/responses` as well as `/models` for
+discovery. Model connection checks use the same adapter as assistant runs.
+
+Responses requests use `store: false`. Tool continuations carry opaque,
+encrypted reasoning state with their tool calls; they do not depend on a
+server-side response ID or persist plaintext reasoning. Stream completion,
+token usage, tool arguments, and multimodal inputs are translated into the
+existing Eino conversation and recovery interfaces.
+
+The opt-in live test exercises streamed tool calling and continuation after
+a JSON history roundtrip. With `RAILGRID_TEST_OPENAI_API_KEY` supplied in the
+environment, run from this provider directory:
+
+```sh
+RAILGRID_TEST_OPENAI_MODEL=gpt-6.1-sol go test -count=1 -run '^TestProjectEinoResponsesLiveToolRoundTrip$' -v ./api
+```
+
+Without a key the live test skips; the regular HTTP fixture tests require no
+credentials or external model calls.
+Set `RAILGRID_TEST_OPENAI_REASONING=1` to include a checksum task that exercises
+encrypted reasoning continuation when the model returns it.
+
 ## Local message history
 
 `make run-provider-app-studio` starts/reuses a local Postgres container by

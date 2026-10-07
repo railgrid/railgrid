@@ -2169,7 +2169,7 @@ const llmProviderGuidance = computed(() =>
     ? 'Uses OpenAI’s standard API endpoint.'
     : isGoogleGeminiProvider.value
     ? 'Use a Gemini API key for Google AI Studio, or a service-account key for Vertex AI.'
-    : 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
+    : 'Use a provider or gateway that supports your model and GET /models. GPT-6 models use the Responses API; other models use Chat Completions.',
 )
 const llmModelHint = computed(() =>
   isGoogleServiceAccountMode.value

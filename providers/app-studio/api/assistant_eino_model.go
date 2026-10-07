@@ -119,8 +119,27 @@ func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (
 	case projectLLMProviderGoogle:
 		return newProjectEinoGeminiChatModel(ctx, settings)
 	default:
+		if projectModelUsesResponsesAPI(settings.Model) {
+			return newProjectEinoResponsesModel(ctx, settings)
+		}
 		return newProjectEinoOpenAIChatModel(ctx, settings)
 	}
+}
+
+// GPT-6 Astra and GPT-6.1 Sol require Responses for function calling. Use the
+// same transport for the GPT-6 family so Luna and Sol can also reason while
+// using tools. Other OpenAI-compatible models retain Chat Completions.
+func projectModelUsesResponsesAPI(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
+	for _, prefix := range []string{"gpt-6", "gpt6"} {
+		if m == prefix || strings.HasPrefix(m, prefix+"-") || strings.HasPrefix(m, prefix+".") {
+			return true
+		}
+	}
+	return false
 }
 
 func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
@@ -267,9 +286,12 @@ func projectTemperatureOptions(model string, temperature float32) []einomodel.Op
 // projectMaxTokensOptions returns the per-call completion budget option for the
 // given model. The OpenAI reasoning families that fix sampling parameters
 // (GPT-5/GPT-6, o1/o3/o4) also reject the legacy max_tokens field and accept
-// only max_completion_tokens; every other OpenAI-compatible provider keeps
-// the widely supported max_tokens.
+// only max_completion_tokens. The Responses adapter maps Eino's common token
+// budget to max_output_tokens; other providers keep the common max_tokens.
 func projectMaxTokensOptions(model string, maxTokens int) []einomodel.Option {
+	if projectModelUsesResponsesAPI(model) {
+		return []einomodel.Option{einomodel.WithMaxTokens(maxTokens)}
+	}
 	if !projectModelSupportsTemperature(model) {
 		return []einomodel.Option{openaimodel.WithMaxCompletionTokens(maxTokens)}
 	}
@@ -410,7 +432,7 @@ func projectEinoMessagesToChat(messages []*schema.Message) []chatMessage {
 			Content:    msg.Content,
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
-			ToolCalls:  projectEinoToolCallsToChat(msg.ToolCalls),
+			ToolCalls:  projectEinoToolCallsToChat(projectEinoResponsesToolCalls(msg)),
 			Extra:      projectAssistantDurableMessageExtra(msg.Extra),
 		}
 		out = append(out, converted)

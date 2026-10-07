@@ -57,6 +57,8 @@ func TestProjectMaxTokensOptions(t *testing.T) {
 		{model: "openai/gpt-5.2", wantCommonMaxTokens: false},
 		{model: "o3-mini", wantCommonMaxTokens: false},
 		{model: "o4-mini", wantCommonMaxTokens: false},
+		{model: "gpt-6.1-sol", wantCommonMaxTokens: true},
+		{model: "openai/gpt-6-luna", wantCommonMaxTokens: true},
 	}
 	for _, tc := range cases {
 		t.Run("model="+tc.model, func(t *testing.T) {

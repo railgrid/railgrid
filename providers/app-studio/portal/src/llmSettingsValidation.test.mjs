@@ -22,18 +22,18 @@ test('accepts an OpenAI-compatible API base URL', () => {
 test('rejects a full chat completions endpoint with a corrected base URL', () => {
   assert.equal(
     validateLLMBaseURL('openai-compatible', 'https://opencode.ai/zen/v1/chat/completions/'),
-    'Enter the API base URL, not the chat completions endpoint. Use https://opencode.ai/zen/v1; App Studio adds /chat/completions automatically.',
+    'Enter the API base URL, not the chat completions endpoint. Use https://opencode.ai/zen/v1; App Studio selects the model endpoint automatically.',
   )
 })
 
-test('explains that non-chat OpenAI endpoints are unsupported', () => {
+test('corrects model operation URLs to the provider base URL', () => {
   assert.equal(
     validateLLMBaseURL('openai-compatible', 'https://opencode.ai/zen/v1/responses'),
-    'This endpoint uses /responses, but the OpenAI-compatible provider requires a /chat/completions model. Choose a compatible model and enter its base URL.',
+    'Enter the API base URL, not the /responses endpoint. Use https://opencode.ai/zen/v1; App Studio selects the model endpoint automatically.',
   )
   assert.match(
     validateLLMBaseURL('openai-compatible', 'https://example.test/v1/messages'),
-    /requires a \/chat\/completions model/,
+    /Enter the API base URL, not the \/messages endpoint/,
   )
 })
 

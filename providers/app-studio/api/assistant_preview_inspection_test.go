@@ -397,7 +397,7 @@ func TestProjectAssistantModelCapabilitiesFailClosed(t *testing.T) {
 	if !projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: defaultProjectLLMProvider, Model: defaultProjectLLMModel}).VisionToolResults {
 		t.Fatal("default model lacks its cataloged image tool capability")
 	}
-	for _, model := range []string{"gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol", "openai/gpt-6.1-sol", "gpt6-sol", "gpt-6.1-sol-2026-10-01", "openai/gpt-6-luna-2026-10-01"} {
 		if !projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: defaultProjectLLMProvider, Model: model}).VisionToolResults {
 			t.Fatalf("current OpenAI-compatible model %q lacks its image capability", model)
 		}
