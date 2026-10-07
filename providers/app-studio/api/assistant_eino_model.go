@@ -131,8 +131,8 @@ func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSetti
 		HTTPClient:      &http.Client{},
 		ReasoningEffort: projectReasoningEffort(settings.Model),
 	}
-	// GPT-5 and the o-series reasoning models reject any temperature other than
-	// the fixed default of 1, so only request a custom temperature when the
+	// GPT-5/GPT-6 and the o-series reasoning models reject any temperature other
+	// than the fixed default of 1, so only request a custom temperature when the
 	// configured model supports it.
 	if projectModelSupportsTemperature(settings.Model) {
 		temperature := float32(0.2)
@@ -150,7 +150,10 @@ func projectReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
 	if idx := strings.LastIndex(m, "/"); idx >= 0 {
 		m = m[idx+1:]
 	}
-	if m == "gpt-5.6-luna" {
+	// OpenAI's GPT-6 Luna and Sol support function calling on Chat Completions
+	// only with reasoning_effort=none. Preserve that requirement for dated model
+	// snapshots as well as the aliases.
+	if m == "gpt-5.6-luna" || strings.HasPrefix(m, "gpt-6-luna") || strings.HasPrefix(m, "gpt-6-sol") {
 		return openaimodel.ReasoningEffortLevel("none")
 	}
 	return ""
@@ -231,9 +234,9 @@ func projectEinoAssistantBackfillMessageContent(_ context.Context, _ []*schema.M
 }
 
 // projectModelSupportsTemperature reports whether the given model accepts a
-// custom sampling temperature. OpenAI's GPT-5 family and the o-series reasoning
-// models (o1/o3/o4) fix temperature, top_p, and the penalties, and return an
-// error if a non-default value is sent.
+// custom sampling temperature. OpenAI's GPT-5/GPT-6 families and the o-series
+// reasoning models (o1/o3/o4) fix temperature, top_p, and the penalties, and
+// return an error if a non-default value is sent.
 func projectModelSupportsTemperature(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
@@ -244,7 +247,7 @@ func projectModelSupportsTemperature(model string) bool {
 		m = m[idx+1:]
 	}
 	switch {
-	case strings.HasPrefix(m, "gpt-5"), strings.HasPrefix(m, "gpt5"):
+	case strings.HasPrefix(m, "gpt-5"), strings.HasPrefix(m, "gpt5"), strings.HasPrefix(m, "gpt-6"), strings.HasPrefix(m, "gpt6"):
 		return false
 	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
 		return false
@@ -263,9 +266,9 @@ func projectTemperatureOptions(model string, temperature float32) []einomodel.Op
 
 // projectMaxTokensOptions returns the per-call completion budget option for the
 // given model. The OpenAI reasoning families that fix sampling parameters
-// (GPT-5, o1/o3/o4) also reject the legacy max_tokens field and accept only
-// max_completion_tokens; every other OpenAI-compatible provider keeps the
-// widely supported max_tokens.
+// (GPT-5/GPT-6, o1/o3/o4) also reject the legacy max_tokens field and accept
+// only max_completion_tokens; every other OpenAI-compatible provider keeps
+// the widely supported max_tokens.
 func projectMaxTokensOptions(model string, maxTokens int) []einomodel.Option {
 	if !projectModelSupportsTemperature(model) {
 		return []einomodel.Option{openaimodel.WithMaxCompletionTokens(maxTokens)}
