@@ -335,7 +335,7 @@ function friendlyError(error: unknown, fallback: string): string {
         <input
           v-model="query"
           type="search"
-          class="app-studio-touch-target h-9 w-full rounded-md border border-border-default bg-surface pl-9 pr-9 text-[12px] text-text-primary outline-none transition focus:border-accent/50"
+          class="app-studio-touch-target k-input skills-search-input h-9 min-w-0"
           placeholder="Search skills"
           aria-label="Search skills"
         />
@@ -438,19 +438,19 @@ function friendlyError(error: unknown, fallback: string): string {
 
     <Teleport to="#app-studio-overlay-root">
       <div v-if="selectedSkill" class="fixed inset-0 flex items-center justify-center bg-surface/60 p-4 [z-index:var(--app-studio-z-modal-backdrop)] backdrop-blur-[2px]" role="presentation" @mousedown.self="closeSkillDetail">
-        <section ref="detailDialogRef" tabindex="-1" class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`" :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined" @keydown="handleDetailKeydown">
-          <header class="flex items-start gap-4 px-6 pb-5 pt-6">
+        <section ref="detailDialogRef" tabindex="-1" class="skill-detail-dialog flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`" :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined" @keydown="handleDetailKeydown">
+          <header class="skill-detail-header flex items-start gap-4 px-6 pb-5 pt-6">
             <span class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-accent-subtle text-accent">
               <Plug class="h-7 w-7" :stroke-width="1.5" aria-hidden="true" />
             </span>
-            <div class="min-w-0 flex-1 pt-0.5">
+            <div class="skill-detail-heading min-w-0 flex-1 pt-0.5">
               <div class="flex flex-wrap items-baseline gap-x-2">
-                <h3 :id="`skill-detail-title-${selectedSkill.id}`" class="truncate text-[20px] font-semibold text-text-primary">{{ selectedSkill.name }}</h3>
+                <h3 :id="`skill-detail-title-${selectedSkill.id}`" class="skill-detail-title min-w-0 break-words text-[20px] font-semibold leading-tight text-text-primary">{{ selectedSkill.name }}</h3>
                 <span class="text-[16px] text-text-muted">Skill</span>
               </div>
               <p class="mt-1 text-[13px] leading-5 text-text-secondary">{{ selectedSkill.description || 'No description provided.' }}</p>
             </div>
-            <div class="mt-1 flex shrink-0 items-center gap-2">
+            <div class="skill-detail-actions mt-1 flex shrink-0 items-center gap-2">
               <span v-if="activationSkillID === selectedSkill.id" class="flex items-center gap-1 text-[11px] text-text-muted" role="status" aria-live="polite">
                 <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
                 <span>Saving…</span>
@@ -460,22 +460,18 @@ function friendlyError(error: unknown, fallback: string): string {
                 role="switch"
                 :aria-checked="selectedSkill.enabled !== false"
                 :aria-label="selectedSkill.enabled === false ? 'Enable skill' : 'Disable skill'"
-                class="flex h-11 w-12 shrink-0 items-center rounded-sm bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+                class="app-studio-touch-target flex h-11 w-11 shrink-0 items-center justify-center rounded-sm bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="actionBusy"
                 @click="toggleSelectedSkill"
               >
-                <span
-                  aria-hidden="true"
-                  class="relative block h-7 w-12 shrink-0 rounded-sm transition"
-                  :class="selectedSkill.enabled === false ? 'bg-border-default' : 'bg-accent'"
-                >
-                  <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
+                <span class="k-toggle" aria-hidden="true" :aria-checked="selectedSkill.enabled !== false">
+                  <span class="k-toggle__knob" />
                 </span>
               </button>
+              <button ref="detailCloseRef" type="button" class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
+                <X class="h-5 w-5" :stroke-width="1.75" />
+              </button>
             </div>
-            <button ref="detailCloseRef" type="button" class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
-              <X class="h-5 w-5" :stroke-width="1.75" />
-            </button>
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle px-6 py-5">
@@ -508,3 +504,32 @@ function friendlyError(error: unknown, fallback: string): string {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.skills-search-input {
+  padding-inline: 2.25rem;
+}
+
+.skill-detail-dialog {
+  container-type: inline-size;
+}
+
+@container (max-width: 540px) {
+  .skill-detail-header {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .skill-detail-heading {
+    min-width: 0;
+  }
+
+  .skill-detail-actions {
+    grid-column: 1 / -1;
+    justify-self: end;
+    margin-top: 0;
+  }
+}
+</style>

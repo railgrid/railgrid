@@ -31,6 +31,18 @@ import (
 	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 )
 
+// These are the expected capability coordinates, kept local to the tests so
+// assertions do not share implementation constants with projectidentity.
+const (
+	infraAPIGroup = "infrastructure.railgrid.ai"
+	codeAPIGroup  = "code.railgrid.ai"
+)
+
+var (
+	instanceDataPlaneVerbs = []string{"env", "exec", "log", "process", "proxy", "restart", "sync", "workspace"}
+	codeRepositoryActions  = []string{"commit", "stage-commit-bundle"}
+)
+
 // fakeIdentityHub stands in for the hub identity service: it records what it
 // was asked for and hands back a token per request.
 type fakeIdentityHub struct {
@@ -304,6 +316,50 @@ func TestProjectIdentityRulesFollowThePendingCommit(t *testing.T) {
 	}
 }
 
+func TestProjectIdentityRulesScopeProviderReferencesToAuditedActiveActions(t *testing.T) {
+	p := boundProject()
+	grantedAt := metav1.Now()
+	p.Spec.Environments[0].Bindings = append(p.Spec.Environments[0].Bindings, aiv1alpha1.ProjectProviderBindingSpec{
+		Name: "orders-table", Provider: "databricks", Kind: aiv1alpha1.ProjectBindingKindProviderReference,
+		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
+			Name: "orders", APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table", Resource: "tables",
+		},
+		AllowedActions: []aiv1alpha1.ProjectProviderActionSpec{
+			{Name: "query_table", Version: "v1", SchemaDigest: "sha256:" + strings.Repeat("a", 64), GrantedBy: "alice", GrantedAt: &grantedAt},
+			{Name: "drop_table", Version: "v1", SchemaDigest: "sha256:" + strings.Repeat("b", 64), GrantedBy: "alice", GrantedAt: &grantedAt, Revoked: true},
+			{Name: "unreviewed", Version: "v1", SchemaDigest: "sha256:" + strings.Repeat("c", 64)},
+		},
+	})
+
+	rules := projectIdentityRules(p)
+	read, ok := ruleFor(rules, "databricks.railgrid.ai", "tables", true)
+	if !ok || verbs(read) != "get" || namesOf(read) != "orders" {
+		t.Fatalf("provider-reference parent read = %#v (ok=%v), want get on orders", read, ok)
+	}
+	query, ok := ruleFor(rules, "databricks.railgrid.ai", "tables/query_table", true)
+	if !ok || verbs(query) != "create" || namesOf(query) != "orders" {
+		t.Fatalf("active action rule = %#v (ok=%v), want create on tables/query_table named orders", query, ok)
+	}
+	for _, rule := range rules {
+		if len(rule.APIGroups) != 1 || rule.APIGroups[0] != "databricks.railgrid.ai" {
+			continue
+		}
+		if len(rule.ResourceNames) == 0 {
+			t.Fatalf("provider-reference identity has a broad rule: %#v", rule)
+		}
+		if strings.Contains(strings.Join(rule.Resources, ","), "drop_table") || strings.Contains(strings.Join(rule.Resources, ","), "unreviewed") {
+			t.Fatalf("revoked or unaudited action was granted: %#v", rule)
+		}
+	}
+
+	p.Spec.Environments[0].Bindings[len(p.Spec.Environments[0].Bindings)-1].AllowedActions[0].Revoked = true
+	for _, rule := range projectIdentityRules(p) {
+		if len(rule.APIGroups) == 1 && rule.APIGroups[0] == "databricks.railgrid.ai" {
+			t.Fatalf("revoking the only active action retained a provider-reference rule: %#v", rule)
+		}
+	}
+}
+
 func TestProjectIdentityTokenIsMintedOnceAndRebuiltWhenBindingsChange(t *testing.T) {
 	hub := &fakeIdentityHub{}
 	r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
@@ -338,6 +394,43 @@ func TestProjectIdentityTokenIsMintedOnceAndRebuiltWhenBindingsChange(t *testing
 	}
 	if hub.posts[0]["clusterID"] != "cluster-a" {
 		t.Fatalf("clusterID = %v", hub.posts[0]["clusterID"])
+	}
+}
+
+func TestProjectIdentityTokenRejectsStaleGenerationAfterRevocation(t *testing.T) {
+	hub := &fakeIdentityHub{}
+	r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
+	old := boundProject()
+	old.Generation = 4
+	grantedAt := metav1.Now()
+	old.Spec.Environments[0].Bindings = append(old.Spec.Environments[0].Bindings, aiv1alpha1.ProjectProviderBindingSpec{
+		Name: "orders-table", Provider: "databricks", Kind: aiv1alpha1.ProjectBindingKindProviderReference,
+		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
+			Name: "orders", APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table", Resource: "tables",
+		},
+		AllowedActions: []aiv1alpha1.ProjectProviderActionSpec{{
+			Name: "query_table", Version: "v1", SchemaDigest: "sha256:" + strings.Repeat("a", 64),
+			GrantedBy: "alice@example.com", GrantedAt: &grantedAt,
+		}},
+	})
+	if token, err := r.identityToken(context.Background(), "cluster-a", old); err != nil || token != "token-1" {
+		t.Fatalf("initial identity token = %q, %v", token, err)
+	}
+
+	revoked := old.DeepCopy()
+	revoked.Generation++
+	revoked.Spec.Environments[0].Bindings[len(revoked.Spec.Environments[0].Bindings)-1].AllowedActions[0].Revoked = true
+	if token, err := r.identityToken(context.Background(), "cluster-a", revoked); err != nil || token != "token-2" {
+		t.Fatalf("revoked identity token = %q, %v", token, err)
+	}
+	if _, err := r.identityToken(context.Background(), "cluster-a", old); err == nil {
+		t.Fatal("stale Project generation refreshed a token with the revoked action")
+	}
+
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.posts) != 2 {
+		t.Fatalf("identity mints = %d, want the original and revoked rule sets only", len(hub.posts))
 	}
 }
 

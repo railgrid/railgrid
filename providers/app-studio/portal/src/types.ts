@@ -475,6 +475,38 @@ export interface ProjectIntegration {
   phase?: string
 }
 
+export interface AvailableProjectIntegration {
+  environment: string
+  alias: string
+  provider: string
+  kind: string
+  resourceRef: ProjectProviderResourceReference
+  /** Catalog metadata is descriptive; these actions are not persisted grants. */
+  actions: ProviderAction[]
+}
+
+export type ProjectIntegrationsDiscoveryState = 'available' | 'partial' | 'unavailable'
+
+export interface ProjectIntegrationsDiscoveryIssue {
+  code: string
+  message: string
+  provider?: string
+  resource?: string
+}
+
+export interface ProjectIntegrationsDiscovery {
+  state: ProjectIntegrationsDiscoveryState
+  issues: ProjectIntegrationsDiscoveryIssue[]
+}
+
+export interface ProjectIntegrationsResponse {
+  /** Persisted project bindings. */
+  items: ProjectIntegration[]
+  /** Read-only provider resources discovered for assistant use. */
+  available: AvailableProjectIntegration[]
+  discovery: ProjectIntegrationsDiscovery
+}
+
 export interface ProjectRepositoryCommit {
   name: string
   phase?: string

@@ -24,6 +24,7 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 
 	"github.com/railgrid/provider-app-studio/internal/crossprovider"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 )
 
 // A cross-provider call no longer needs to know which PROVIDER serves a
@@ -200,6 +201,18 @@ func (s *Server) UseProviderCallers(callers providerCallers) {
 	if s.tenantProviders == nil {
 		s.tenantProviders = providerLookupFor(callers)
 	}
+}
+
+// UseProjectIdentities installs the same hub-minted Project token cache the
+// reconciler uses. Nil disables integration invocation rather than falling
+// back to a caller bearer or App Studio's broader provider credential.
+func (s *Server) UseProjectIdentities(identities *scopedidentity.Cache) {
+	if s == nil || identities == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectIdentities = identities
 }
 
 // hubTokenFrom trims a bearer for the hub REST calls this provider makes as

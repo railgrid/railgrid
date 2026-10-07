@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Sparkles } from 'lucide-vue-next'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import type { ProjectCreateReadiness } from './createReadiness'
 
 const props = defineProps<{
@@ -29,29 +31,36 @@ const emit = defineEmits<{ connectModel: []; retry: []; finish: []; back: []; sk
 </script>
 
 <template>
-  <section class="mx-auto w-full max-w-[900px] rounded-lg border border-border-subtle bg-surface p-5 sm:p-8" aria-label="App Studio workspace setup">
-    <h2 class="text-[18px] font-semibold text-text-primary">Workspace setup</h2>
-    <ol class="k-first-run__journey my-6" aria-label="Workspace setup progress">
-      <li v-for="(step, index) in steps()" :key="step.label" class="k-first-run__step" :class="{ 'is-current': index === currentStep(), 'is-complete': index < currentStep() }" :aria-current="index === currentStep() ? 'step' : undefined">
-        <span class="k-first-run__marker" aria-hidden="true">{{ index + 1 }}</span>
-        <span class="k-first-run__step-copy"><strong>{{ step.label }}</strong><small>{{ step.description }}</small></span>
-      </li>
-    </ol>
-    <h1 class="mb-4 text-[26px] font-semibold text-text-primary">{{ gitStep() ? 'Connect Git' : completion ? 'App Studio is ready' : 'Connect an AI model' }}</h1>
-    <div v-if="!gitStep() && loading" role="status" aria-busy="true" class="py-8 text-[13px] text-text-secondary">Checking AI model setup…</div>
-    <div v-else-if="completion && !gitStep()" class="flex flex-wrap justify-between gap-3">
-      <button type="button" class="k-btn k-btn--ghost" @click="emit('back')">Back to projects</button>
-      <button type="button" class="k-btn k-btn--primary" @click="emit('finish')">Create your first project</button>
-    </div>
-    <div v-else class="grid gap-4">
-      <p class="text-[14px] leading-6 text-text-secondary">{{ gitStep() ? 'Git backs up your source and tracks changes. Development environments work without Git; publishing to production requires it.' : 'Connect a model to plan and build your projects.' }}</p>
-      <p class="text-[12px] leading-5 text-text-secondary" :role="setupError() ? 'alert' : undefined" :aria-live="setupError() ? 'assertive' : undefined">{{ setupError() || (gitStep() ? 'Connect Git now, or skip for now and connect it later.' : 'Credentials stay in this workspace and are tested before saving.') }}</p>
-      <div class="flex flex-wrap gap-3">
+  <FirstRunGuide
+    class="mx-auto w-full max-w-[900px]"
+    aria-label="App Studio workspace setup"
+    :title="gitStep() ? 'Connect Git' : completion ? 'App Studio is ready' : 'Connect an AI model'"
+    :description="gitStep() ? 'Git backs up your source and tracks changes. Development environments work without Git; publishing to production requires it.' : completion ? 'Your workspace is ready. Create your first project to start building.' : 'Connect a model to plan and build your projects.'"
+    primary-label="Connect AI model"
+    :steps="steps()"
+    :current-step="currentStep()"
+    :complete="completion"
+    :actions-visible="gitStep() || !loading"
+    journey-label="Workspace setup progress"
+  >
+    <template #icon><Sparkles :stroke-width="1.75" /></template>
+    <template #details>
+      <div v-if="loading || !completion || gitStep()" class="mt-2">
+        <p v-if="!gitStep() && loading" role="status" aria-busy="true">Checking AI model setup…</p>
+        <p v-else :role="setupError() ? 'alert' : undefined" :aria-live="setupError() ? 'assertive' : undefined">{{ setupError() || (gitStep() ? 'Connect Git now, or skip for now and connect it later.' : 'Credentials stay in this workspace and are tested before saving.') }}</p>
+      </div>
+    </template>
+    <template #actions>
+      <template v-if="completion && !gitStep()">
+        <button type="button" class="k-btn k-btn--ghost" @click="emit('back')">Back to projects</button>
+        <button type="button" class="k-btn k-btn--primary" @click="emit('finish')">Create your first project</button>
+      </template>
+      <template v-else>
         <a v-if="gitStep()" :href="git()?.status === 'provider-missing' ? codeCatalogUrl : codeConnectionsUrl" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ gitAction() }}</a>
         <button v-else type="button" class="k-btn k-btn--primary" @click="emit('connectModel')">Connect AI model</button>
         <button v-if="gitStep() || (gitSkipped && !git()?.ready)" type="button" class="k-btn k-btn--ghost" @click="gitStep() ? emit('skipGit') : emit('revisitGit')">{{ gitStep() ? 'Skip for now' : 'Back to Git' }}</button>
         <button v-if="gitStep() || llmError" type="button" class="k-btn k-btn--ghost" :disabled="gitStep() && gitLoading" @click="emit('retry')">{{ gitStep() && gitLoading ? 'Checking Git…' : 'Check again' }}</button>
-      </div>
-    </div>
-  </section>
+      </template>
+    </template>
+  </FirstRunGuide>
 </template>

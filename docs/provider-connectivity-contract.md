@@ -229,6 +229,61 @@ Rules:
    `RAILGRID_DEV_ALLOW_TENANT_QUERY`, which takes the bearer or the tenant
    from the query string, must be compiled out of shipped binaries.
 
+### App Studio caller context and optional integrations
+
+App Studio sharing and optional-provider discovery need a verified human
+context at the hub, even though kcp removes the human bearer before forwarding
+the verb. The hub's kcp ingress issues an `X-Railgrid-Action-Proof` for declared
+App Studio Project and Session verbs. It authenticates the person, obtains
+their native kcp identity with a SelfSubjectReview, and checks membership,
+the exact App Studio APIBinding, parent access, and the requested verb. It
+strips any incoming proof before issuing its own.
+
+The proof expires after two minutes and binds the user, groups, tenant,
+receiving provider, parent resource, verb, and HTTP method. A sharing invitation
+also binds its intended recipient. The proof is domain-separated
+from delegated identity proofs. App Studio forwards it only for the relevant
+hub calls, alongside its own provider ServiceAccount bearer. Redemption
+requires both the signature and a TokenReview in that provider's workspace;
+the hub repeats live membership, binding, and parent/verb authorization checks.
+A proof alone is not a Kubernetes credential.
+
+Sharing roster reads and invitations still pass through the declared and
+accepted HubAccess capabilities, rate limits, role caps, and membership route
+authorization. Only proofs from the corresponding sharing operations can
+reach those routes, and an invitation requires an initiating POST operation
+with the same recipient and member role.
+Neither an identity header nor the provider credential alone establishes a
+human caller.
+
+Optional integration discovery uses the same verified context for the catalog
+and the hub's read-only
+`GET /api/providers/{provider}/resources/{resource}?apiVersion={group/version}`.
+The latter accepts only ready, bound providers and advertised action-bearing
+resource kinds. The hub lists with the proved native identity, so kcp enforces
+the person's RBAC, and returns at most 1,000 resource names, UIDs, and resource
+versions. It returns no resource spec, status, annotations, or credentials.
+No provider-wide list permission is minted for App Studio.
+
+App Studio reports available resources separately from saved integrations and
+reports discovery failures explicitly. Reading the workbench does not save
+bindings. Turn-start discovery does not grant actions requiring explicit
+consent or restore revoked grants. Discovery retains catalog metadata for
+saved bindings so the workbench can collect explicit consent for additional
+actions. Creating or reactivating grants checks the caller's current access
+to the named target and action before saving; revocation does not require
+continued access to the target. Saved integrations use the Project's
+hub-minted scoped identity:
+named parent `get` and named, declared action coordinates only. API handlers
+and reconciliation share the identity rule builder and cache. Cross-provider
+invocation uses that Project identity; it does not forward the person's bearer
+or require a broad permission claim on an optional provider.
+
+When there is no human request, the read-only catalog also accepts a Project
+scoped identity after TokenReview in the addressed tenant and verification of
+its current hub-owned ScopedIdentity record and live Project UID. That path
+assigns no human role and cannot use the resource-discovery or membership APIs.
+
 ### Declare the verbs you serve
 
 A class (a) verb is **declared** in the CatalogEntry, beside the actions:
@@ -1071,4 +1126,3 @@ is not.
 | Subresource route table and adapter | `provider-sdk/serve/subresource.go`, `provider-sdk/serve/subresource_table.go` |
 | PermissionClaimPolicy generator | `hack/generate-permission-claim-policy.mjs` → `config/kcp/permissionclaimpolicy.yaml` |
 | PermissionClaimPolicy bootstrap (admin VW) | `pkg/hub/bootstrap/permissionclaimpolicy.go` |
-

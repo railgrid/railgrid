@@ -114,6 +114,10 @@ type controllerDeps struct {
 	// commit verbs it has claimed. Nil (REST-only dev) means no watches and
 	// deferred commits.
 	Callers *dataplane.Callers
+	// Identities is shared with the API integration gateway. It contains only
+	// refreshing token sources; each call still derives rules from the current
+	// Project object.
+	Identities *scopedidentity.Cache
 	// SessionSignals / ProjectSignals wake the Session and Project
 	// reconcilers on assistant and workspace transitions (nil: resync only).
 	SessionSignals *reconcilesignal.Bus
@@ -264,7 +268,10 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		return fmt.Errorf("project controller: message store does not support attachment lifecycle cleanup")
 	}
 
-	identities := scopedIdentities(deps)
+	identities := deps.Identities
+	if identities == nil {
+		identities = scopedIdentities(deps)
+	}
 	watches := dependencyWatches(deps)
 	if err := (&project.Reconciler{
 		Actions:       deps.Actions,

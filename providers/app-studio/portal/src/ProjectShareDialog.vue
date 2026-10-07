@@ -408,7 +408,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
     >
       <section
         ref="dialogRef"
-        class="relative [z-index:var(--app-studio-z-modal)] grid w-full max-w-xl gap-0 overflow-hidden rounded-lg border border-border-default bg-surface-raised shadow-xl"
+        class="k-modal k-modal--vanilla project-share-dialog relative [z-index:var(--app-studio-z-modal)] grid w-full max-w-xl gap-0"
         role="dialog"
         aria-modal="true"
         :aria-busy="loading"
@@ -423,7 +423,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
           <button
             ref="dialogCloseButton"
             type="button"
-            class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="k-btn app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center bg-transparent p-0 text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            style="padding: 0"
             aria-label="Close share dialog"
             :disabled="busy"
             @click="close"
@@ -461,14 +462,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
 
           <div v-else-if="loadState === 'error'" class="grid gap-3 rounded-md border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger" role="alert">
             <p>{{ loadError || 'Sharing settings could not be loaded.' }}</p>
-            <button type="button" class="app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
+            <button type="button" class="k-btn k-btn--text app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" style="padding: 0" @click="emit('retry')">Retry</button>
           </div>
 
           <template v-else>
             <div v-if="loadState === 'partial'" class="grid gap-2 rounded-md border border-warning/30 bg-warning-subtle px-3 py-3 text-[12px] leading-5 text-warning" role="status">
               <p>Some sharing details could not be refreshed. The data that did load is still available.</p>
               <p v-if="loadError || membersError" class="text-[11px]">{{ loadError || membersError }}</p>
-              <button type="button" class="app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
+              <button type="button" class="k-btn k-btn--text app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" style="padding: 0" @click="emit('retry')">Retry</button>
             </div>
 
             <section
@@ -493,7 +494,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 <p class="max-w-[42ch] text-[12px] leading-5 text-text-secondary">Deploy Production before choosing its audience or sharing its link.</p>
                 <button
                   type="button"
-                  class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   :disabled="busy"
                   @click="openPublishing"
                 >
@@ -509,7 +510,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </div>
                 <button
                   type="button"
-                  class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   :disabled="busy"
                   @click="editChannel('production')"
                 >
@@ -520,7 +521,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
               <div v-else class="grid gap-3 border-t border-border-subtle px-4 pb-4 pt-3 pl-[3.75rem] max-sm:pl-4">
                 <div v-if="link" class="grid gap-1.5">
                   <span class="text-[11px] font-medium text-text-secondary">Production link</span>
-                  <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2">
+                  <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-accent">
                     <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                     <input
                       ref="productionLinkInput"
@@ -530,12 +531,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       class="min-w-0 flex-1 truncate border-0 bg-transparent p-0 font-mono text-[11px] text-accent outline-none selection:bg-accent-subtle focus-visible:ring-2 focus-visible:ring-accent"
                       @focus="($event.target as HTMLInputElement).select()"
                     >
-                    <button type="button" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('production')">
+                    <button type="button" class="k-btn k-btn--text share-inline-action app-studio-touch-target items-center gap-1 font-medium hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('production')">
                       <Check v-if="productionCopyState === 'copied'" class="h-3.5 w-3.5 text-success" :stroke-width="1.75" aria-hidden="true" />
                       <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                       {{ productionCopyState === 'copied' ? 'Copied' : 'Copy' }}
                     </button>
-                    <a :href="link" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                    <a :href="link" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--text share-inline-action app-studio-touch-target items-center gap-1 font-medium hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
                       Open <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                     </a>
                   </div>
@@ -613,14 +614,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </section>
 
                 <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
-                  <button v-if="published" type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-danger/40 bg-danger-subtle px-3 text-[12px] font-medium text-danger transition hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy || !publicationStateAvailable" @click="emit('disable')">
+                  <button v-if="published" type="button" class="k-btn k-btn--danger app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy || !publicationStateAvailable" @click="emit('disable')">
                     <Loader2 v-if="disableBusy" class="mr-1 h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                     {{ disableBusy ? 'Disabling access…' : 'Disable access' }}
                   </button>
                   <span v-else />
                   <div class="flex items-center gap-2">
-                    <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy" @click="cancelChannel('production')">Cancel</button>
-                    <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none" :disabled="!canSaveProduction" @click="saveProductionAccess">
+                    <button type="button" class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="cancelChannel('production')">Cancel</button>
+                    <button type="button" class="k-btn k-btn--primary app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="!canSaveProduction" @click="saveProductionAccess">
                       <Loader2 v-if="productionSaveBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                       {{ productionSaveBusy ? (published ? 'Saving…' : 'Enabling…') : (published ? 'Save production access' : 'Enable production access') }}
                     </button>
@@ -653,21 +654,21 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   <p class="text-[12px] font-medium text-text-secondary">{{ previewAudienceSummary }}</p>
                   <p v-if="previewLink" class="mt-1 truncate font-mono text-[11px] text-text-muted">{{ previewLink }}</p>
                 </div>
-                <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="editChannel('preview')">Manage preview access</button>
+                <button type="button" class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="editChannel('preview')">Manage preview access</button>
               </div>
 
               <div v-else class="grid gap-3 border-t border-border-subtle px-4 pb-4 pt-3 pl-[3.75rem] max-sm:pl-4">
                 <div v-if="previewLink" class="grid gap-1.5">
                   <span class="text-[11px] font-medium text-text-secondary">Preview link</span>
-                  <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2">
+                  <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-accent">
                     <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                     <input ref="previewLinkInput" :value="previewLink" readonly aria-label="Development preview link" class="min-w-0 flex-1 truncate border-0 bg-transparent p-0 font-mono text-[11px] text-accent outline-none selection:bg-accent-subtle focus-visible:ring-2 focus-visible:ring-accent" @focus="($event.target as HTMLInputElement).select()">
-                    <button type="button" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('preview')">
+                    <button type="button" class="k-btn k-btn--text share-inline-action app-studio-touch-target items-center gap-1 font-medium hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="copyChannelLink('preview')">
                       <Check v-if="previewCopyState === 'copied'" class="h-3.5 w-3.5 text-success" :stroke-width="1.75" aria-hidden="true" />
                       <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                       {{ previewCopyState === 'copied' ? 'Copied' : 'Copy' }}
                     </button>
-                    <a :href="previewLink" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+                    <a :href="previewLink" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--text share-inline-action app-studio-touch-target items-center gap-1 font-medium hover:text-accent-hover hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
                       Open <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
                     </a>
                   </div>
@@ -734,8 +735,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </section>
 
                 <div class="flex items-center justify-end gap-2 border-t border-border-subtle pt-3">
-                  <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="busy" @click="cancelChannel('preview')">Cancel</button>
-                  <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none" :disabled="!canSavePreview" @click="savePreviewAccess">
+                  <button type="button" class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="busy" @click="cancelChannel('preview')">Cancel</button>
+                  <button type="button" class="k-btn k-btn--primary app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" :disabled="!canSavePreview" @click="savePreviewAccess">
                     <Loader2 v-if="previewSaveBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                     {{ previewSaveBusy ? 'Saving…' : 'Save preview access' }}
                   </button>
@@ -752,7 +753,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
           <p class="text-[11px] leading-4 text-text-muted">Production and Preview access are saved separately.</p>
           <button
             type="button"
-            class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-default bg-surface-overlay px-4 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="k-btn k-btn--ghost app-studio-touch-target h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             :disabled="busy || productionDraftDirty || previewDirty"
             @click="close"
           >
@@ -763,3 +764,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.project-share-dialog {
+  box-sizing: border-box;
+  width: min(36rem, 100%);
+}
+
+.share-inline-action {
+  padding: 4px 6px;
+  font-size: 11px;
+}
+</style>

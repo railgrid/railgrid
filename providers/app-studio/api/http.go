@@ -70,6 +70,10 @@ type identity struct {
 	// gate settled is one of those; there is no caller credential to try. A
 	// pointer so identity stays comparable; nil when no caller was stamped.
 	caller *dataplane.ProxiedIdentity
+	// actionProof is the opaque, short-lived hub signature attached to an
+	// authenticated kcp action. It carries no bearer token and is forwarded
+	// only to hub endpoints whose authorization is bound to that action.
+	actionProof string
 	// provider is the client the gate returned: this provider acting in
 	// clusterID through its export virtual workspace. Handlers act through it
 	// (clientFor); nil when the request did not come through the dispatcher.
@@ -120,6 +124,14 @@ func (s *Server) identityFromRequest(w http.ResponseWriter, r *http.Request) (id
 	}
 	s.resolveActor(r, &id)
 	s.resolveWorkspace(r.Context(), &id)
+	// The opaque proof is useful only alongside the same kcp-stamped human and
+	// workspace context the hub bound it to. Do not forward a raw header from a
+	// request that lacks either verified context; duplicates also fail closed.
+	if len(r.Header.Values(dataplane.HeaderActionProof)) == 1 && id.caller != nil &&
+		id.user != "" && id.userErr == nil && id.workspaceErr == nil &&
+		id.orgUUID != "" && id.workspaceUUID != "" {
+		id.actionProof = r.Header.Get(dataplane.HeaderActionProof)
+	}
 	// Every handler that resolves a caller can also touch that caller's
 	// project working-copy ledger, which since §9 Cut D.3 is
 	// `Project.status.workspace` rather than a file beside the tree
@@ -216,6 +228,15 @@ func (s *Server) setHubCallerHeaders(h http.Header, id identity) {
 	}
 }
 
+// setHubActionProofHeader forwards only the hub-minted, request-scoped proof.
+// Callers use it for hub operations that explicitly redeem App Studio action
+// proofs; it is not part of the generic tenant/header stamping contract.
+func (s *Server) setHubActionProofHeader(h http.Header, id identity) {
+	if id.actionProof != "" {
+		h.Set(dataplane.HeaderActionProof, id.actionProof)
+	}
+}
+
 // hubRequest clones r as the request the MCP helpers carry to the hub's MCP
 // aggregate (projectMCPRequest copies its Authorization and X-Railgrid-*
 // headers onto the call): a verb arrives with no Authorization — serve's
@@ -227,6 +248,9 @@ func (s *Server) hubRequest(r *http.Request, id identity) *http.Request {
 	}
 	out := r.Clone(r.Context())
 	out.Header.Del("Authorization")
+	// Action proofs are forwarded only by the specific membership and
+	// discovery clients that redeem them; do not leak one to generic MCP calls.
+	out.Header.Del(dataplane.HeaderActionProof)
 	s.setHubCallerHeaders(out.Header, id)
 	return out
 }
@@ -248,6 +272,9 @@ func (s *Server) hubHTTPClient(timeout time.Duration) *http.Client {
 // decides anything about the caller beyond the gate: a second object the verb
 // touches, a write the verb performs for them.
 func (s *Server) authorizeCaller(ctx context.Context, id identity, attrs dataplane.ResourceAttributes) (bool, error) {
+	if s != nil && s.integrationAccessReviewer != nil {
+		return s.integrationAccessReviewer(ctx, id, attrs)
+	}
 	provider := id.provider
 	if provider == nil {
 		if s == nil || s.callers == nil {

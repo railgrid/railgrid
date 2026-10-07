@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/hubapi"
 	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 const (
@@ -48,6 +50,7 @@ var projectActionSchemaDigestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // inject a deterministic resolver without opening a second HTTP server, while
 // production always uses fetchProviderActionCatalog.
 type providerActionCatalogResolver func(context.Context, identity) ([]providerCatalogEntry, error)
+type providerResourceDiscoveryResolver func(context.Context, identity, string, string, string, string) (providerResourceDiscoveryResponse, error)
 
 // These structs mirror the hub's /api/providers contract, whose four sections
 // follow CatalogEntry.spec one for one. The App Studio gateway only needs a
@@ -115,6 +118,7 @@ type providerCatalogAssistantResource struct {
 // from the pair (providerCatalogActionID). The hub also publishes the derived
 // id, which is deliberately not decoded here — one source beats two.
 type providerCatalogAction struct {
+	ID            string                       `json:"id"`
 	Name          string                       `json:"name"`
 	Version       string                       `json:"version"`
 	DisplayName   string                       `json:"displayName"`
@@ -195,7 +199,7 @@ type providerCatalogDeprecation struct {
 	Sunset        *metav1.Time `json:"sunset"`
 }
 
-func (s *Server) verifyProjectActionGrants(ctx context.Context, id identity, provider string, ref *aiv1alpha1.ProjectProviderResourceReference, actions []aiv1alpha1.ProjectProviderActionSpec, consentAccepted bool) ([]aiv1alpha1.ProjectProviderActionSpec, error) {
+func (s *Server) verifyProjectActionGrants(ctx context.Context, id identity, provider string, ref *aiv1alpha1.ProjectProviderResourceReference, actions []aiv1alpha1.ProjectProviderActionSpec, consentAccepted bool, projects ...*aiv1alpha1.Project) ([]aiv1alpha1.ProjectProviderActionSpec, error) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		return nil, newValidationError("provider is required")
@@ -207,7 +211,13 @@ func (s *Server) verifyProjectActionGrants(ctx context.Context, id identity, pro
 	if caller == "" {
 		return nil, newValidationError("authenticated caller is required to grant provider actions")
 	}
-	catalog, err := s.providerActionCatalog(ctx, id)
+	var catalog []providerCatalogEntry
+	var err error
+	if len(projects) > 0 && projects[0] != nil {
+		catalog, err = s.providerActionCatalogForProject(ctx, id, projects[0])
+	} else {
+		catalog, err = s.providerActionCatalog(ctx, id)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +292,21 @@ func (s *Server) providerActionCatalog(ctx context.Context, id identity) ([]prov
 	return s.fetchProviderActionCatalog(ctx, id)
 }
 
+// providerActionCatalogForProject fetches the read-only catalog with the
+// current Project's hub-minted scoped identity. Request proofs are bound to a
+// particular incoming action and are absent for workload or background
+// requests; they are not reused here.
+func (s *Server) providerActionCatalogForProject(ctx context.Context, id identity, project *aiv1alpha1.Project) ([]providerCatalogEntry, error) {
+	if s != nil && s.providerActionCatalogResolver != nil {
+		return s.providerActionCatalogResolver(ctx, id)
+	}
+	catalog, err := s.fetchProviderCatalogForProject(ctx, id, project)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.Items, nil
+}
+
 // errProjectActionDigestDrift marks a persisted grant whose schema digest no
 // longer matches the live catalog. Invocation maps it to 409 Conflict: the
 // grant must be re-verified (and re-consented where required) before the
@@ -295,8 +320,8 @@ func (e errProjectActionDigestDrift) Error() string { return e.message }
 // the provider data plane directly, this is where schema drift is caught —
 // the grant-time digest pin alone would let a provider schema bump go
 // unnoticed until the generated app breaks on changed output.
-func (s *Server) verifyProjectActionDigestForInvoke(ctx context.Context, id identity, provider string, ref *aiv1alpha1.ProjectProviderResourceReference, name, version, grantDigest string) error {
-	catalog, err := s.providerActionCatalog(ctx, id)
+func (s *Server) verifyProjectActionDigestForInvoke(ctx context.Context, id identity, project *aiv1alpha1.Project, provider string, ref *aiv1alpha1.ProjectProviderResourceReference, name, version, grantDigest string) error {
+	catalog, err := s.providerActionCatalogForProject(ctx, id, project)
 	if err != nil {
 		return fmt.Errorf("provider action catalog is unavailable: %w", err)
 	}
@@ -368,6 +393,104 @@ type providerCatalogFetchResponse struct {
 	Items []providerCatalogEntry `json:"items"`
 }
 
+type providerResourceMetadata struct {
+	Name            string `json:"name"`
+	UID             string `json:"uid"`
+	ResourceVersion string `json:"resourceVersion"`
+}
+
+type providerResourceDiscoveryItem struct {
+	Metadata providerResourceMetadata `json:"metadata"`
+}
+
+type providerResourceDiscoveryResponse struct {
+	APIVersion string                          `json:"apiVersion"`
+	Kind       string                          `json:"kind"`
+	Resource   string                          `json:"resource"`
+	Items      []providerResourceDiscoveryItem `json:"items"`
+	Truncated  bool                            `json:"truncated"`
+}
+
+type providerResourceDiscoveryHTTPError struct {
+	Status int
+}
+
+func (e providerResourceDiscoveryHTTPError) Error() string {
+	return fmt.Sprintf("provider resource discovery returned status %d", e.Status)
+}
+
+// fetchProviderResourceMetadata asks the hub to list one exact action-bearing
+// resource coordinate after it validates the signed context of the human
+// caller who reached App Studio. The provider bearer authenticates App Studio
+// to the hub; the proof is an opaque, short-lived delegation and no user bearer
+// is forwarded.
+func (s *Server) fetchProviderResourceMetadata(ctx context.Context, id identity, provider, apiVersion, kind, resource string) (providerResourceDiscoveryResponse, error) {
+	if s != nil && s.providerResourceDiscoveryResolver != nil {
+		response, err := s.providerResourceDiscoveryResolver(ctx, id, provider, apiVersion, kind, resource)
+		if err != nil {
+			return providerResourceDiscoveryResponse{}, err
+		}
+		if err := validateProviderResourceDiscoveryResponse(response, apiVersion, kind, resource); err != nil {
+			return providerResourceDiscoveryResponse{}, err
+		}
+		return response, nil
+	}
+	base := strings.TrimRight(strings.TrimSpace(s.hubBase), "/")
+	if base == "" {
+		return providerResourceDiscoveryResponse{}, errors.New("provider resource discovery hub endpoint is not configured")
+	}
+	if strings.TrimSpace(id.actionProof) == "" {
+		return providerResourceDiscoveryResponse{}, errors.New("provider resource discovery caller proof is missing")
+	}
+	provider = strings.TrimSpace(provider)
+	apiVersion = strings.TrimSpace(apiVersion)
+	resource = strings.TrimSpace(resource)
+	if provider == "" || apiVersion == "" || resource == "" || strings.ContainsAny(provider+resource, "/\\\r\n\x00 ") {
+		return providerResourceDiscoveryResponse{}, errors.New("provider resource discovery coordinate is invalid")
+	}
+	query := url.Values{}
+	query.Set("apiVersion", apiVersion)
+	endpoint := base + providerCatalogPath + "/" + url.PathEscape(provider) + "/resources/" + url.PathEscape(resource) + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return providerResourceDiscoveryResponse{}, fmt.Errorf("new provider resource discovery request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	s.setHubCallerHeaders(req.Header, id)
+	s.setHubActionProofHeader(req.Header, id)
+	client := s.hubHTTPClient(providerCatalogCallTimeout)
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errors.New("provider resource discovery redirect rejected")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return providerResourceDiscoveryResponse{}, fmt.Errorf("GET provider resource discovery: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, providerCatalogMaxResponseBytes))
+	if err != nil {
+		return providerResourceDiscoveryResponse{}, fmt.Errorf("read provider resource discovery response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return providerResourceDiscoveryResponse{}, providerResourceDiscoveryHTTPError{Status: resp.StatusCode}
+	}
+	var response providerResourceDiscoveryResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return providerResourceDiscoveryResponse{}, fmt.Errorf("decode provider resource discovery response: %w", err)
+	}
+	if err := validateProviderResourceDiscoveryResponse(response, apiVersion, kind, resource); err != nil {
+		return providerResourceDiscoveryResponse{}, err
+	}
+	return response, nil
+}
+
+func validateProviderResourceDiscoveryResponse(response providerResourceDiscoveryResponse, apiVersion, kind, resource string) error {
+	if response.APIVersion != apiVersion || response.Resource != resource || strings.TrimSpace(response.Kind) == "" || response.Kind != kind {
+		return errors.New("provider resource discovery response did not match the requested coordinate")
+	}
+	return nil
+}
+
 func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (providerCatalogFetchResponse, error) {
 	base := strings.TrimRight(strings.TrimSpace(s.hubBase), "/")
 	if base == "" {
@@ -382,12 +505,11 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 	// A hub REST call, made as the provider; the caller's workspace selection
 	// and name travel as headers the hub resolves the scope from.
 	s.setHubCallerHeaders(req.Header, id)
+	s.setHubActionProofHeader(req.Header, id)
 	client := &http.Client{
 		Timeout: providerCatalogCallTimeout,
-		// Catalog lookup uses the same explicitly configured local-hub TLS
-		// setting as the MCP client. Provider Action invocation deliberately
-		// uses projectProviderActionTransport instead, so this development
-		// escape hatch cannot weaken the action gateway's certificate checks.
+		// Catalog lookup honors the same explicit development hub TLS setting
+		// as the MCP and Project clients. Verification is enabled by default.
 		Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("provider action catalog redirect rejected")
@@ -409,6 +531,64 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&catalog); err != nil {
 		return providerCatalogFetchResponse{}, fmt.Errorf("decode provider catalog response: %w", err)
+	}
+	return catalog, nil
+}
+
+func (s *Server) fetchProviderCatalogForProject(ctx context.Context, id identity, project *aiv1alpha1.Project) (providerCatalogFetchResponse, error) {
+	base := strings.TrimRight(strings.TrimSpace(s.hubBase), "/")
+	if base == "" {
+		return providerCatalogFetchResponse{}, errors.New("provider catalog hub endpoint is not configured")
+	}
+	if !dataplane.IsClusterID(id.clusterID) || id.tenant != id.clusterID || strings.TrimSpace(id.orgUUID) == "" || strings.TrimSpace(id.workspaceUUID) == "" {
+		return providerCatalogFetchResponse{}, errors.New("project catalog lookup requires authoritative tenant, org, workspace, and cluster scope")
+	}
+	token, err := s.projectIdentityToken(ctx, id, project)
+	if err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("resolve Project identity for provider catalog: %w", err)
+	}
+	endpoint := base + providerCatalogPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("new Project provider catalog request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Railgrid-Org", id.orgUUID)
+	req.Header.Set("X-Railgrid-Workspace", id.workspaceUUID)
+	req.Header.Set(dataplane.HeaderTenant, id.tenant)
+	req.Header.Set(dataplane.HeaderCluster, id.clusterID)
+	providerConfig, err := s.anonymousProjectRESTConfig(endpoint)
+	if err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("configure Project provider catalog endpoint: %w", err)
+	}
+	transport, err := projectProviderActionTransport(providerConfig, s.mcpInsecureSkipTLSVerify)
+	if err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("configure Project provider catalog TLS: %w", err)
+	}
+	client := &http.Client{
+		Timeout:   providerCatalogCallTimeout,
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("project provider catalog redirect rejected")
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("GET Project provider catalog: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, providerCatalogMaxResponseBytes))
+	if err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("read Project provider catalog response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return providerCatalogFetchResponse{}, fmt.Errorf("GET Project provider catalog returned status %d", resp.StatusCode)
+	}
+	var catalog providerCatalogFetchResponse
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&catalog); err != nil {
+		return providerCatalogFetchResponse{}, fmt.Errorf("decode Project provider catalog response: %w", err)
 	}
 	return catalog, nil
 }

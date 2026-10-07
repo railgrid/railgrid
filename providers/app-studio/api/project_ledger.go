@@ -77,6 +77,9 @@ func (s *Server) projectLedgerFor(id identity) workspace.Ledger {
 	if s == nil {
 		return nil
 	}
+	// A request-scoped hub action proof is not part of the tenant client
+	// identity and must not be retained by the lazy ledger closure.
+	id.actionProof = ""
 	if s.projectClientFor == nil && id.provider == nil && (s.tenant == nil || id.clusterID == "") {
 		return nil
 	}

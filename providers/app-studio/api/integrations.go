@@ -13,8 +13,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +44,8 @@ const (
 var projectProviderActionCallTimeout = 2 * time.Minute
 
 var projectIntegrationIdentifierRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,62}$`)
+
+var errProjectIntegrationCallerDenied = errors.New("project integration caller is not authorized for the provider resource or action")
 
 // projectIntegrationAddRequest is intentionally generic: the binding
 // contract can point at resources owned by any provider. Invocation is
@@ -79,6 +79,34 @@ type projectIntegrationView struct {
 	ResourceRef    *aiv1alpha1.ProjectProviderResourceReference `json:"resourceRef,omitempty"`
 	AllowedActions []aiv1alpha1.ProjectProviderActionSpec       `json:"allowedActions,omitempty"`
 	Phase          string                                       `json:"phase,omitempty"`
+}
+
+type projectIntegrationCandidate struct {
+	Environment string                                       `json:"environment"`
+	Alias       string                                       `json:"alias"`
+	Provider    string                                       `json:"provider"`
+	Kind        aiv1alpha1.ProjectBindingKind                `json:"kind"`
+	ResourceRef *aiv1alpha1.ProjectProviderResourceReference `json:"resourceRef"`
+	Actions     []providerCatalogAction                      `json:"actions"`
+	Phase       string                                       `json:"phase"`
+}
+
+type integrationDiscoveryIssue struct {
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+	Provider string `json:"provider,omitempty"`
+	Resource string `json:"resource,omitempty"`
+}
+
+type integrationDiscoveryStatus struct {
+	State  string                      `json:"state"`
+	Issues []integrationDiscoveryIssue `json:"issues"`
+}
+
+type projectIntegrationsResponse struct {
+	Items     []projectIntegrationView      `json:"items"`
+	Available []projectIntegrationCandidate `json:"available"`
+	Discovery integrationDiscoveryStatus    `json:"discovery"`
 }
 
 type projectIntegrationInvokeRequest struct {
@@ -149,16 +177,17 @@ func (s *Server) addProjectIntegration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("at least one allowed action is required"))
 		return
 	}
-	actions, err = s.verifyProjectActionGrants(r.Context(), id, req.Provider, ref, actions, req.ConsentAccepted)
+	actions, err = s.verifyProjectActionGrants(r.Context(), id, req.Provider, ref, actions, req.ConsentAccepted, project)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := observeProjectProviderReference(r.Context(), c, aiv1alpha1.ProjectProviderBindingSpec{
-		Name: req.Alias, Provider: req.Provider,
-		Kind: aiv1alpha1.ProjectBindingKindProviderReference, ResourceRef: ref,
-	}); err != nil {
-		writeError(w, err)
+	if err := s.authorizeProjectProviderActions(r.Context(), id, ref, actions); err != nil {
+		if errors.Is(err, errProjectIntegrationCallerDenied) {
+			writeStatus(w, http.StatusForbidden, "Forbidden", err.Error())
+		} else {
+			writeStatus(w, http.StatusServiceUnavailable, "AuthorizationUnavailable", err.Error())
+		}
 		return
 	}
 
@@ -188,11 +217,15 @@ func (s *Server) addProjectIntegration(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
+	if _, err := s.projectIdentityToken(r.Context(), id, updated); err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ProjectIdentityUnavailable", "integration was saved, but its Project workload identity could not be refreshed: "+err.Error())
+		return
+	}
 	// Provider-resource instances are converged exclusively by the Project
 	// controller. Integration CRUD records the non-owning reference and reads
 	// the target below for truthful status; it must not synchronously create or
 	// update a provider-owned object.
-	phase := projectProviderBindingStatus(r.Context(), c, updated, newBinding, id).Phase
+	phase := s.projectIntegrationBindingStatus(r.Context(), c, updated, newBinding, id).Phase
 	if phase == "" {
 		phase = "Pending"
 	}
@@ -204,20 +237,14 @@ func (s *Server) listProjectIntegrations(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	project = projectWithLiveBindingStatus(r.Context(), c, project, id)
 	items := make([]projectIntegrationView, 0)
-	statusByKey := map[string]string{}
-	for _, envStatus := range project.Status.Environments {
-		for _, bindingStatus := range envStatus.Bindings {
-			statusByKey[envStatus.Name+"\x00"+bindingStatus.Name] = bindingStatus.Phase
-		}
-	}
 	for _, env := range project.Spec.Environments {
 		for _, binding := range env.Bindings {
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference {
 				continue
 			}
-			items = append(items, projectIntegrationViewForBinding(env.Name, binding, statusByKey[env.Name+"\x00"+binding.Name]))
+			status := s.projectIntegrationBindingStatus(r.Context(), c, project, binding, id)
+			items = append(items, projectIntegrationViewForBinding(env.Name, binding, status.Phase))
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -226,11 +253,16 @@ func (s *Server) listProjectIntegrations(w http.ResponseWriter, r *http.Request)
 		}
 		return items[i].Alias < items[j].Alias
 	})
-	writeJSON(w, http.StatusOK, ListResponse[projectIntegrationView]{Items: items})
+	discovery := s.discoverAutomaticProjectIntegrations(r.Context(), c, id, project)
+	available := availableProjectIntegrationCandidates(project, discovery)
+	response := projectIntegrationsResponse{
+		Items: items, Available: available, Discovery: discovery.status,
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) removeProjectIntegration(w http.ResponseWriter, r *http.Request) {
-	c, _, project, ok := s.requireProjectWithClient(w, r)
+	c, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -257,9 +289,13 @@ func (s *Server) removeProjectIntegration(w http.ResponseWriter, r *http.Request
 		writeStatus(w, http.StatusNotFound, "NotFound", fmt.Sprintf("project integration %q was not found", alias))
 		return
 	}
-	_, err := c.Projects().Update(r.Context(), next, metav1.UpdateOptions{})
+	updated, err := c.Projects().Update(r.Context(), next, metav1.UpdateOptions{})
 	if err != nil {
 		writeProjectError(w, err)
+		return
+	}
+	if _, err := s.projectIdentityToken(r.Context(), id, updated); err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ProjectIdentityUnavailable", "integration was removed, but its Project workload identity could not be narrowed: "+err.Error())
 		return
 	}
 	// Removal is a Project spec mutation only. The Project controller observes
@@ -296,10 +332,20 @@ func (s *Server) patchProjectIntegration(w http.ResponseWriter, r *http.Request)
 					writeError(w, err)
 					return
 				}
-				merged, mergeErr := s.mergeProjectIntegrationActions(r.Context(), id, binding.Provider, ref, binding.AllowedActions, actions, req.ConsentAccepted)
+				merged, mergeErr := s.mergeProjectIntegrationActions(r.Context(), id, project, binding.Provider, ref, binding.AllowedActions, actions, req.ConsentAccepted)
 				if mergeErr != nil {
 					writeError(w, mergeErr)
 					return
+				}
+				if authorizationActions := projectIntegrationActionsRequiringAuthorization(binding.AllowedActions, merged); len(authorizationActions) > 0 {
+					if authErr := s.authorizeProjectProviderActions(r.Context(), id, ref, authorizationActions); authErr != nil {
+						if errors.Is(authErr, errProjectIntegrationCallerDenied) {
+							writeStatus(w, http.StatusForbidden, "Forbidden", authErr.Error())
+						} else {
+							writeStatus(w, http.StatusServiceUnavailable, "AuthorizationUnavailable", authErr.Error())
+						}
+						return
+					}
 				}
 				binding.AllowedActions = merged
 				if _, contextErr := s.projectTemplateBindingContext(next, id); contextErr != nil {
@@ -317,7 +363,11 @@ func (s *Server) patchProjectIntegration(w http.ResponseWriter, r *http.Request)
 				}
 				// The target status is read through after the Project write. Runtime
 				// convergence is asynchronous and belongs to the Project controller.
-				phase := projectProviderBindingStatus(r.Context(), c, updated, updated.Spec.Environments[i].Bindings[j], id).Phase
+				if _, err := s.projectIdentityToken(r.Context(), id, updated); err != nil {
+					writeStatus(w, http.StatusServiceUnavailable, "ProjectIdentityUnavailable", "integration actions were updated, but its Project workload identity could not be refreshed: "+err.Error())
+					return
+				}
+				phase := s.projectIntegrationBindingStatus(r.Context(), c, updated, updated.Spec.Environments[i].Bindings[j], id).Phase
 				if phase == "" {
 					phase = "Pending"
 				}
@@ -403,7 +453,7 @@ func (s *Server) invokeProjectIntegration(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	if err := s.verifyProjectActionDigestForInvoke(r.Context(), id, binding.Provider, ref, name, version, schemaDigest); err != nil {
+	if err := s.verifyProjectActionDigestForInvoke(r.Context(), id, project, binding.Provider, ref, name, version, schemaDigest); err != nil {
 		var drift errProjectActionDigestDrift
 		if errors.As(err, &drift) {
 			writeStatus(w, http.StatusConflict, "Conflict", drift.Error())
@@ -412,8 +462,16 @@ func (s *Server) invokeProjectIntegration(w http.ResponseWriter, r *http.Request
 		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", err.Error())
 		return
 	}
+	if err := s.authorizeProjectProviderActions(r.Context(), id, ref, []aiv1alpha1.ProjectProviderActionSpec{{Name: name, Version: version, SchemaDigest: schemaDigest}}); err != nil {
+		if errors.Is(err, errProjectIntegrationCallerDenied) {
+			writeStatus(w, http.StatusForbidden, "Forbidden", err.Error())
+		} else {
+			writeStatus(w, http.StatusServiceUnavailable, "AuthorizationUnavailable", err.Error())
+		}
+		return
+	}
 
-	statusCode, envelope, err := s.forwardProjectProviderAction(r, id, binding.Provider, name, version, schemaDigest, ref, input)
+	statusCode, envelope, err := s.forwardProjectProviderAction(r, id, project, binding.Provider, name, version, schemaDigest, ref, input)
 	if err != nil {
 		writeProviderActionForwardError(w, statusCode, envelope, err)
 		return
@@ -643,22 +701,59 @@ func providerActionGVR(ref *aiv1alpha1.ProjectProviderResourceReference) (schema
 	return gv.WithResource(strings.TrimSpace(ref.Resource)), nil
 }
 
-// providerActionInvokeURL composes the URL of an action on the bound resource:
-// the kcp custom subresource {resource}/{action}, on App Studio's export
-// virtual workspace. The URL is the resource reference — cluster ID, group,
-// resource, name and action all live in the path, so the provider authorizes
-// exactly what was addressed and no identity travels in the body. The
-// contract version is not part of the path (the serving provider restores it
-// from its declaration); provider is the integration's label, for messages.
-func (s *Server) providerActionInvokeURL(ctx context.Context, provider, clusterID string, ref *aiv1alpha1.ProjectProviderResourceReference, action, version string) (string, error) {
-	if s == nil || s.callers == nil {
-		return "", fmt.Errorf("provider action %s/%s on %s is not addressable: no provider credential configured", action, version, provider)
+// authorizeProjectProviderActions repeats the target's parent-read and action
+// checks for the authenticated incoming caller. Discovery and persisted grants
+// are not substitutes for current authorization when a binding is created or
+// an action is invoked.
+func (s *Server) authorizeProjectProviderActions(ctx context.Context, id identity, ref *aiv1alpha1.ProjectProviderResourceReference, actions []aiv1alpha1.ProjectProviderActionSpec) error {
+	if id.caller == nil {
+		return fmt.Errorf("%w: no authenticated caller identity was stamped", errProjectIntegrationCallerDenied)
+	}
+	gvr, err := providerActionGVR(ref)
+	if err != nil {
+		return err
+	}
+	allowed, err := s.authorizeCaller(ctx, id, dataplane.ResourceAttributes{
+		Group: gvr.Group, Version: gvr.Version, Resource: gvr.Resource,
+		Name: strings.TrimSpace(ref.Name), Verb: "get",
+	})
+	if err != nil {
+		return fmt.Errorf("review caller access to %s/%s: %w", gvr.Resource, ref.Name, err)
+	}
+	if !allowed {
+		return fmt.Errorf("%w: caller cannot get %s/%s", errProjectIntegrationCallerDenied, gvr.Resource, ref.Name)
+	}
+	for _, action := range actions {
+		name := strings.TrimSpace(action.Name)
+		if name == "" {
+			continue
+		}
+		allowed, err := s.authorizeCaller(ctx, id, dataplane.ResourceAttributes{
+			Group: gvr.Group, Version: gvr.Version, Resource: gvr.Resource,
+			Subresource: name, Name: strings.TrimSpace(ref.Name), Verb: "create",
+		})
+		if err != nil {
+			return fmt.Errorf("review caller access to %s/%s/%s: %w", gvr.Resource, ref.Name, name, err)
+		}
+		if !allowed {
+			return fmt.Errorf("%w: caller cannot create %s/%s/%s", errProjectIntegrationCallerDenied, gvr.Resource, ref.Name, name)
+		}
+	}
+	return nil
+}
+
+// providerActionInvokeURL composes the tenant cluster's custom-subresource
+// URL. App Studio calls the target through the hub front door using the
+// Project-owned identity; it has no optional-provider Export-VW claim.
+func (s *Server) providerActionInvokeURL(provider, clusterID string, ref *aiv1alpha1.ProjectProviderResourceReference, action, version string) (string, error) {
+	if s == nil || strings.TrimSpace(s.hubBase) == "" {
+		return "", fmt.Errorf("provider action %s/%s on %s is not addressable: hub endpoint is not configured", action, version, provider)
 	}
 	gvr, err := providerActionGVR(ref)
 	if err != nil {
 		return "", err
 	}
-	endpoint, err := s.callers.ExportVerbURL(ctx, gvr, dataplane.Request{
+	endpoint, err := dataplane.SubresourceURL(strings.TrimRight(s.hubBase, "/"), gvr.Group, gvr.Version, dataplane.Request{
 		ClusterID: clusterID,
 		Resource:  gvr.Resource,
 		Name:      strings.TrimSpace(ref.Name),
@@ -670,15 +765,16 @@ func (s *Server) providerActionInvokeURL(ctx context.Context, provider, clusterI
 	return endpoint, nil
 }
 
-func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, provider, action, version, schemaDigest string, ref *aiv1alpha1.ProjectProviderResourceReference, input json.RawMessage) (int, projectProviderActionEnvelope, error) {
-	if _, err := validateActionsExternalURL(s.actionsExternalURL); err != nil {
-		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), err
+func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, project *aiv1alpha1.Project, provider, action, version, schemaDigest string, ref *aiv1alpha1.ProjectProviderResourceReference, input json.RawMessage) (int, projectProviderActionEnvelope, error) {
+	token, err := s.projectIdentityToken(r.Context(), id, project)
+	if err != nil {
+		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), fmt.Errorf("resolve Project identity for provider action: %w", err)
 	}
 	payload, err := json.Marshal(projectProviderActionInvokeRequest{Input: input})
 	if err != nil {
 		return http.StatusBadGateway, projectProviderActionEnvelope{}, fmt.Errorf("encode provider action request: %w", err)
 	}
-	endpoint, err := s.providerActionInvokeURL(r.Context(), provider, id.clusterID, ref, action, version)
+	endpoint, err := s.providerActionInvokeURL(provider, id.clusterID, ref, action, version)
 	if err != nil {
 		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), err
 	}
@@ -688,28 +784,29 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	// The call is made AS APP STUDIO, under its claim; the caller's name is a
-	// label for the far end's logs and authorizes nothing there. Correlation
-	// and deadline headers travel as before.
-	if id.user != "" {
-		req.Header.Set(dataplane.HeaderUser, id.user)
-	}
+	// The target provider authenticates this as the scoped Project workload
+	// identity. The human caller's bearer and display label never cross here.
+	req.Header.Set("Authorization", "Bearer "+token)
 	for _, header := range []string{"Idempotency-Key", "X-Request-ID", "X-Railgrid-Action-Deadline-Ms"} {
 		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
 			req.Header.Set(header, value)
 		}
 	}
 
-	// The provider's own credential and TLS, bounded and never following a
-	// redirect: a redirect would carry that credential somewhere the export
-	// virtual workspace did not name.
-	base, err := s.callers.ProviderHTTPClient()
+	// The transport verifies certificates and never follows a redirect. The
+	// Project token is scoped to this tenant and the rules derived from the
+	// saved integration references.
+	providerConfig, err := s.anonymousProjectRESTConfig(endpoint)
 	if err != nil {
-		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), fmt.Errorf("configure provider action transport: %w", err)
+		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), fmt.Errorf("configure Project action endpoint: %w", err)
+	}
+	transport, err := projectProviderActionTransport(providerConfig, s.mcpInsecureSkipTLSVerify)
+	if err != nil {
+		return http.StatusBadGateway, providerActionUnavailableEnvelope(provider, action, version, ref), fmt.Errorf("configure Project action transport: %w", err)
 	}
 	client := &http.Client{
 		Timeout:   projectProviderActionCallTimeout,
-		Transport: base.Transport,
+		Transport: transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("provider action redirect rejected")
 		},
@@ -737,43 +834,6 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 		return http.StatusBadGateway, envelope, nil
 	}
 	return resp.StatusCode, envelope, nil
-}
-
-// projectProviderActionTransport is intentionally independent of the MCP
-// transport. Provider Actions carry caller credentials and may reach a
-// production hub, so this path always uses certificate verification and never
-// retries with InsecureSkipVerify, even when the development MCP option is
-// enabled for unrelated assistant calls. An explicitly configured CA bundle
-// is appended to the system pool; it never replaces the host's normal trust.
-func projectProviderActionTransport(caBundle string) (http.RoundTripper, error) {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		if strings.TrimSpace(caBundle) != "" {
-			return nil, errors.New("custom Provider Actions CA requires an HTTP transport with TLS configuration")
-		}
-		return http.DefaultTransport, nil
-	}
-	transport := base.Clone()
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if transport.TLSClientConfig != nil {
-		tlsConfig = transport.TLSClientConfig.Clone()
-		if tlsConfig.MinVersion < tls.VersionTLS12 {
-			tlsConfig.MinVersion = tls.VersionTLS12
-		}
-	}
-	tlsConfig.InsecureSkipVerify = false
-	if bundle := strings.TrimSpace(caBundle); bundle != "" {
-		roots, err := x509.SystemCertPool()
-		if err != nil || roots == nil {
-			roots = x509.NewCertPool()
-		}
-		if !roots.AppendCertsFromPEM([]byte(bundle)) {
-			return nil, errors.New("configured Provider Actions CA bundle contains no PEM certificates")
-		}
-		tlsConfig.RootCAs = roots
-	}
-	transport.TLSClientConfig = tlsConfig
-	return transport, nil
 }
 
 func normalizeAndValidateProviderActionEnvelope(envelope *projectProviderActionEnvelope, provider, action, version string, ref *aiv1alpha1.ProjectProviderResourceReference, requestID string) error {
