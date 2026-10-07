@@ -7,7 +7,7 @@ import {
   applyInventoryPage, beginInventoryRequest, changeInventoryPager, createInventoryPager,
   isCurrentInventoryRequest, normalizeInventoryFilter,
 } from '../inventory-pager'
-import { age, edgeName, errorMessage, resourceLabel, useKueryApi } from '../kuery'
+import { age, edgeName, errorMessage, isNoEngagedEdgesError, resourceLabel, useKueryApi } from '../kuery'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import type { ResourceTableChange, TableFilterDefinition } from '../portalkit/table'
 
@@ -20,6 +20,7 @@ const rows = ref<Array<Record<string, unknown>>>([])
 const loaded = ref(false)
 const loading = ref(false)
 const error = ref('')
+const notEngaged = ref(false)
 const warnings = ref<string[]>([])
 const kindInput = ref('')
 const namespaceInput = ref('')
@@ -56,6 +57,7 @@ async function load(): Promise<void> {
   const request = begun.request
   loading.value = true
   error.value = ''
+  notEngaged.value = false
   try {
     const page = await api.value.inventoryPage({ pageSize: request.pageSize, cursor: request.cursor, count: true, filters: request.filters }, { signal: currentController.signal })
     if (!isCurrentInventoryRequest(pager.value, request.id)) return
@@ -70,6 +72,10 @@ async function load(): Promise<void> {
     loaded.value = true
   } catch (reason) {
     if (!isCurrentInventoryRequest(pager.value, request.id)) return
+    if (isNoEngagedEdgesError(reason)) {
+      notEngaged.value = true
+      return
+    }
     const message = errorMessage(reason, 'Retry this page or narrow the exact filters.')
     if (message) error.value = message
   } finally {
@@ -100,30 +106,43 @@ onBeforeUnmount(() => controller?.abort())
 <template>
   <section class="kuery-panel k-card" aria-labelledby="inventory-title">
     <div class="kuery-panel-head"><div><h2 id="inventory-title" class="kuery-panel-title">Fleet inventory</h2><p class="meta">Server-paginated inventory across connected edges. Name, Kind, and Namespace searches are exact and apply to the full fleet query.</p></div></div>
-    <form class="kuery-toolbar kuery-inventory-filters" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
-      <label>
-        <span class="kuery-sr-only">Exact Kind</span>
-        <input id="inventory-kind-filter" v-model="kindInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Kind (exact, e.g. Deployment)">
-      </label>
-      <label>
-        <span class="kuery-sr-only">Exact Namespace</span>
-        <input id="inventory-namespace-filter" v-model="namespaceInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Namespace (exact)">
-      </label>
-      <button class="k-btn k-btn--primary" type="submit">Apply filters</button>
-    </form>
-    <ResourceTable
-      class="kuery-inventory-table"
-      :columns="columns" :rows="rows" row-key="_key" aria-label="Fleet inventory" :loaded="loaded" :loading="loading"
-      refresh-mode="background" :error="error" :stale="loaded && !!error" retryable searchable search-placeholder="Exact resource name…"
-      :filters="filters" pagination-mode="server" :page="pager.page" :page-size="pager.pageSize" :page-size-options="[25, 50, 100]"
-      :query="pager.query" :filter-values="pager.filters" :cursor="pager.cursor" :page-info="pager.pageInfo"
-      empty-text="No synced objects. Connect an edge, then retry." combined-filter-empty-text="No objects match the exact search and selected filters."
-      :row-aria-label="row => `Inspect ${resourceLabel(row._object as ObjectResult)}`" @change="change" @row-click="inspect" @retry="load"
-    >
-      <template #edge="{ row }"><code>{{ row.edge }}</code></template>
-      <template #name="{ row }"><span class="name">{{ row.name }}</span></template>
-    </ResourceTable>
-    <div v-if="pager.paginationGap" class="kuery-warning" role="alert">Kuery reports more matching objects, but did not provide a continuation cursor. Narrow the exact filters or retry this page.<span v-if="warnings.length"> {{ warnings.join(' ') }}</span></div>
-    <div v-else-if="warnings.length" class="kuery-warning" role="status">{{ warnings.join(' ') }}</div>
+    <div v-if="notEngaged && !loaded" class="kuery-read-state" role="status">
+      <div class="kuery-error-copy">
+        <span>Your Kubernetes edge is connected, but Kuery has not started syncing it yet.</span>
+        <span class="meta">This can take a moment. If it continues, ask a workspace admin to confirm Kuery and Edges are enabled here.</span>
+      </div>
+      <button type="button" class="k-btn k-btn--ghost" @click="load">Check again</button>
+    </div>
+    <template v-else>
+      <div v-if="notEngaged" class="kuery-warning" role="status">
+        <span>The last inventory result is still shown, but Kuery is not currently syncing an edge in this workspace.</span>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Check again</button>
+      </div>
+      <form class="kuery-toolbar kuery-inventory-filters" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
+        <label>
+          <span class="kuery-sr-only">Exact Kind</span>
+          <input id="inventory-kind-filter" v-model="kindInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Kind (exact, e.g. Deployment)">
+        </label>
+        <label>
+          <span class="kuery-sr-only">Exact Namespace</span>
+          <input id="inventory-namespace-filter" v-model="namespaceInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Namespace (exact)">
+        </label>
+        <button class="k-btn k-btn--primary" type="submit">Apply filters</button>
+      </form>
+      <ResourceTable
+        class="kuery-inventory-table"
+        :columns="columns" :rows="rows" row-key="_key" aria-label="Fleet inventory" :loaded="loaded" :loading="loading"
+        refresh-mode="background" :error="error" :stale="loaded && (!!error || notEngaged)" retryable searchable search-placeholder="Exact resource name…"
+        :filters="filters" pagination-mode="server" :page="pager.page" :page-size="pager.pageSize" :page-size-options="[25, 50, 100]"
+        :query="pager.query" :filter-values="pager.filters" :cursor="pager.cursor" :page-info="pager.pageInfo"
+        empty-text="No synced objects. Connect an edge, then retry." combined-filter-empty-text="No objects match the exact search and selected filters."
+        :row-aria-label="row => `Inspect ${resourceLabel(row._object as ObjectResult)}`" @change="change" @row-click="inspect" @retry="load"
+      >
+        <template #edge="{ row }"><code>{{ row.edge }}</code></template>
+        <template #name="{ row }"><span class="name">{{ row.name }}</span></template>
+      </ResourceTable>
+      <div v-if="pager.paginationGap" class="kuery-warning" role="alert">Kuery reports more matching objects, but did not provide a continuation cursor. Narrow the exact filters or retry this page.<span v-if="warnings.length"> {{ warnings.join(' ') }}</span></div>
+      <div v-else-if="warnings.length" class="kuery-warning" role="status">{{ warnings.join(' ') }}</div>
+    </template>
   </section>
 </template>

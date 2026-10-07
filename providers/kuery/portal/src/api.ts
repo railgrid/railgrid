@@ -183,6 +183,8 @@ interface RunEnvelope {
   error?: { code?: string; message?: string; retryable?: boolean }
 }
 
+export const NO_ENGAGED_EDGES_CODE = 'not_engaged'
+
 /** RUN_VERB is the custom subresource kuery publishes on its SavedView kind. */
 export const RUN_VERB = 'run'
 
@@ -341,13 +343,15 @@ export function mapQueryStatus<T extends ObjectResult>(status: QueryStatus<T>): 
 export class KueryApiError extends Error {
   readonly status: number
   readonly body: string
+  readonly code: string | null
 
-  constructor(status: number, body: string, statusText = '') {
+  constructor(status: number, body: string, statusText = '', code: string | null = null) {
     const detail = body.trim()
     super(`kuery request failed (${status}): ${detail || statusText || 'unknown error'}`)
     this.name = 'KueryApiError'
     this.status = status
     this.body = body
+    this.code = code
   }
 }
 
@@ -392,7 +396,12 @@ export class KueryApi {
     // message: it is the one that says what to change.
     const envelope = isRecord(parsed) ? (parsed as RunEnvelope) : null
     if (envelope?.error) {
-      throw new KueryApiError(response.ok ? 422 : response.status, envelope.error.message || '', envelope.error.code || response.statusText)
+      throw new KueryApiError(
+        response.ok ? 422 : response.status,
+        envelope.error.message || '',
+        response.statusText,
+        envelope.error.code || null,
+      )
     }
     if (!response.ok) throw new KueryApiError(response.status, body, response.statusText)
     return decodeQueryStatus(envelope?.result ?? {})

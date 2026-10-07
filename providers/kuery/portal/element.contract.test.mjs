@@ -21,7 +21,7 @@ test('the provider contract is a thin reactive light-DOM Vue mount', () => {
 })
 
 test('top-level navigation and inventory use PortalKit contracts', () => {
-  assert.match(app, /import \{ Braces, Network, TableProperties \} from 'lucide-vue-next'/u)
+  assert.match(app, /import \{[^}]*\bBraces\b[^}]*\bNetwork\b[^}]*\bTableProperties\b[^}]*\} from 'lucide-vue-next'/u)
   assert.match(app, /import Tabs from '\.\/portalkit\/Tabs\.vue'/u)
   assert.match(app, /\{ id: 'topology', label: 'Topology', icon: Network \}/u)
   assert.match(app, /\{ id: 'inventory', label: 'Inventory', icon: TableProperties \}/u)
@@ -60,10 +60,10 @@ test('impact drill-down preserves mounted tab state and falls back to the host r
   assert.doesNotMatch(impact, /href="\/(?:ui\/)?providers\/kuery"/u)
 })
 
-// Edges and saved views come from the kube client, not from the provider: both
-// are ordinary objects in the tenant's own workspace, and the provider serves
-// exactly one tenant route (the query verb). The fencing contract is unchanged
-// — a late response must not overwrite a newer context's state.
+// Edges and the caller's scratch view come from the kube client, not from the
+// provider. The portal does not list every SavedView just to render a count.
+// The fencing contract is unchanged — a late response must not overwrite a
+// newer context's state.
 test('workspace discovery reads kube objects and fences late responses', () => {
   assert.match(app, /let requestID = 0/u)
   assert.match(app, /const current = \+\+requestID/u)
@@ -71,7 +71,8 @@ test('workspace discovery reads kube objects and fences late responses', () => {
   assert.match(app, /const request = requestContext\.value/u)
   assert.match(app, /const isCurrent = \(\): boolean => requestID === current/u)
   assert.match(app, /const kube = kubeClientFor\(request\)/u)
-  assert.match(app, /listEdges\(kube\), listSavedViews\(kube\)/u)
+  assert.match(app, /const discovered = await listEdges\(kube\)/u)
+  assert.doesNotMatch(app, /listSavedViews/u)
   assert.match(app, /if \(!isCurrent\(\)\) return[\s\S]*edges\.value = discovered/u)
   assert.match(app, /if \(isCurrent\(\)\) loading\.value = false/u)
   assert.match(app, /watch\(\[identity, token\],[\s\S]*currentIdentity === previousIdentity && currentToken !== previousToken/u)

@@ -155,6 +155,13 @@ railgrid-provider-kuery .kuery-inline-error {
   color: var(--color-danger);
 }
 
+railgrid-provider-kuery .kuery-error-copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+}
+
 railgrid-provider-kuery .kuery-warning {
   margin-top: 10px;
   border-color: color-mix(in srgb, var(--color-warning) 40%, transparent);

@@ -7,7 +7,7 @@ import {
   buildTopologyElements, deriveTopologyTree, forceLayoutOptions, graphKeyAction, IMPACT_RELATIONS, mountGraph, relationElements, themeStyle,
   type GraphHandle, type GraphHooks,
 } from '../graph'
-import { createKueryRequestContext, errorMessage, resourceLabel, useKueryApi } from '../kuery'
+import { createKueryRequestContext, errorMessage, isNoEngagedEdgesError, resourceLabel, useKueryApi } from '../kuery'
 import FormSelect from '../portalkit/FormSelect.vue'
 
 const props = defineProps<{ context: RailgridContext | null; edges: string[]; active: boolean; savedView: string }>()
@@ -18,6 +18,8 @@ const rows = ref<ObjectResult[]>([])
 const loaded = ref(false)
 const loading = ref(false)
 const error = ref('')
+const errorDetail = ref('')
+const notEngaged = ref(false)
 const incomplete = ref(false)
 const edge = ref('')
 const kind = ref('')
@@ -84,7 +86,7 @@ async function load(): Promise<void> {
   const request = requestContext.value
   const requestIdentity = request.identity
   loadController = controller
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = ''; errorDetail.value = ''; notEngaged.value = false
   const isCurrent = (): boolean => {
     if (loadController !== controller || loadGeneration !== requestGeneration) return false
     return requestContext.value.identity === requestIdentity
@@ -96,8 +98,13 @@ async function load(): Promise<void> {
     responseWarnings.value = result.warnings ?? []
   } catch (reason) {
     if (!isCurrent()) return
-    const message = errorMessage(reason, 'Retry the topology query or select one edge.')
-    if (message) error.value = message
+    if (isNoEngagedEdgesError(reason)) {
+      notEngaged.value = true
+      return
+    }
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
+    error.value = 'Could not load fleet topology.'
+    errorDetail.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
     if (isCurrent()) loading.value = false
   }
@@ -335,24 +342,71 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
 
 <template>
   <section ref="panel" class="kuery-panel k-card" :class="{ 'kuery-full': full }" aria-labelledby="topology-title">
-    <div class="kuery-panel-head"><div><h2 id="topology-title" class="kuery-panel-title">Fleet topology</h2><p class="meta">Activate a graph node to expand it, then activate it again to collapse. A→B means deleting A impacts B.</p></div><div class="kuery-view-switch" role="group" aria-label="Topology representation"><button v-for="value in ['graph','list']" :key="value" type="button" class="k-btn k-btn--ghost kuery-view-btn" :aria-pressed="representation === value" @click="representation = value as 'graph' | 'list'">{{ value === 'graph' ? 'Graph' : 'List' }}</button></div></div>
-    <p id="topology-bounds" class="meta">View bounds: up to 1,000 members per edge; relation expansion stops at depth 5 and returns at most 200 objects for Namespace membership. Expand all stops at 4,000 nodes or 30 rounds. The displayed topology may be partial at these bounds.</p>
-    <p v-if="representation === 'graph'" id="topology-help" class="meta">Focus the graph to pan with Arrow keys or W/A/S/D, zoom with +/−, enter full screen with F, and exit with Escape.</p>
-    <div class="kuery-toolbar kuery-topology-controls">
-      <label><span id="topology-layout-label">Layout</span><FormSelect v-model="layout" :options="layoutOptions" labelledby="topology-layout-label" /></label>
-      <label><span id="topology-edge-label">Edge</span><FormSelect v-model="edge" :options="edgeOptions" labelledby="topology-edge-label" /></label>
-      <label><span id="topology-kind-label">Kind</span><FormSelect v-model="kind" :options="kindOptions" labelledby="topology-kind-label" /></label>
-      <label><span id="topology-namespace-label">Namespace</span><FormSelect v-model="namespace" :options="namespaceOptions" labelledby="topology-namespace-label" /></label>
-      <button type="button" class="k-btn k-btn--ghost" :disabled="!graph || expandingAll" @click="expandAll">{{ expandingAll ? 'Expanding…' : 'Expand all' }}</button>
-      <button v-if="expandingAll" type="button" class="k-btn k-btn--ghost" @click="cancelExpandAll">Cancel expansion</button>
-      <button v-if="layoutRunning" type="button" class="k-btn k-btn--ghost" @click="stopLayout">Stop layout</button>
-      <button type="button" class="k-btn k-btn--ghost" :disabled="!graph" @click="resetGraph">Reset graph</button>
-      <button type="button" class="k-btn k-btn--ghost" @click="toggleFullscreen">{{ full ? 'Exit full screen' : 'Full screen' }}</button>
-    </div>
+    <div class="kuery-panel-head"><div><h2 id="topology-title" class="kuery-panel-title">Fleet topology</h2><p v-if="loaded" class="meta">Activate a graph node to expand it, then activate it again to collapse. A→B means deleting A impacts B.</p></div><div v-if="loaded" class="kuery-view-switch" role="group" aria-label="Topology representation"><button v-for="value in ['graph','list']" :key="value" type="button" class="k-btn k-btn--ghost kuery-view-btn" :aria-pressed="representation === value" @click="representation = value as 'graph' | 'list'">{{ value === 'graph' ? 'Graph' : 'List' }}</button></div></div>
+    <template v-if="loaded && !notEngaged">
+      <p id="topology-bounds" class="meta">View bounds: up to 1,000 members per edge; relation expansion stops at depth 5 and returns at most 200 objects for Namespace membership. Expand all stops at 4,000 nodes or 30 rounds. The displayed topology may be partial at these bounds.</p>
+      <p v-if="representation === 'graph'" id="topology-help" class="meta">Focus the graph to pan with Arrow keys or W/A/S/D, zoom with +/−, enter full screen with F, and exit with Escape.</p>
+      <div class="kuery-toolbar kuery-topology-controls">
+        <label><span id="topology-layout-label">Layout</span><FormSelect v-model="layout" :options="layoutOptions" labelledby="topology-layout-label" /></label>
+        <label><span id="topology-edge-label">Edge</span><FormSelect v-model="edge" :options="edgeOptions" labelledby="topology-edge-label" /></label>
+        <label><span id="topology-kind-label">Kind</span><FormSelect v-model="kind" :options="kindOptions" labelledby="topology-kind-label" /></label>
+        <label><span id="topology-namespace-label">Namespace</span><FormSelect v-model="namespace" :options="namespaceOptions" labelledby="topology-namespace-label" /></label>
+        <button type="button" class="k-btn k-btn--ghost" :disabled="!graph || expandingAll" @click="expandAll">{{ expandingAll ? 'Expanding…' : 'Expand all' }}</button>
+        <button v-if="expandingAll" type="button" class="k-btn k-btn--ghost" @click="cancelExpandAll">Cancel expansion</button>
+        <button v-if="layoutRunning" type="button" class="k-btn k-btn--ghost" @click="stopLayout">Stop layout</button>
+        <button type="button" class="k-btn k-btn--ghost" :disabled="!graph" @click="resetGraph">Reset graph</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="toggleFullscreen">{{ full ? 'Exit full screen' : 'Full screen' }}</button>
+      </div>
+    </template>
     <div v-if="loading && !loaded" class="kuery-read-state" role="status">Building fleet topology…</div>
-    <div v-else-if="error && !loaded" class="kuery-read-state kuery-error" role="alert">{{ error }} <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button></div>
+    <div v-else-if="notEngaged && !loaded" class="kuery-read-state" role="status">
+      <div class="kuery-error-copy">
+        <span>Your Kubernetes edge is connected, but Kuery has not started syncing it yet.</span>
+        <span class="meta">This can take a moment. If it continues, ask a workspace admin to confirm Kuery and Edges are enabled here.</span>
+      </div>
+      <button type="button" class="k-btn k-btn--ghost" @click="load">Check again</button>
+    </div>
+    <div v-else-if="error && !loaded" class="kuery-read-state kuery-error" role="alert">
+      <div class="kuery-error-copy">
+        <span>{{ error }}</span>
+        <details class="k-resource-technical">
+          <summary class="k-resource-technical__summary">
+            <span class="k-resource-technical__summary-label">Technical details</span>
+            <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
+          </summary>
+          <div class="k-resource-technical__body">
+            <section class="k-resource-technical__section">
+              <h3 class="k-resource-technical__section-title">Topology query</h3>
+              <div class="k-resource-technical__content"><pre class="k-resource-technical__pre">{{ errorDetail }}</pre></div>
+            </section>
+          </div>
+        </details>
+      </div>
+      <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+    </div>
     <div v-else>
-      <div v-if="error" class="kuery-inline-error" role="alert">Showing the last successful topology. {{ error }} <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button></div>
+      <div v-if="notEngaged && loaded" class="kuery-warning" role="status">
+        <span>The last successful topology is still shown, but Kuery is not currently syncing an edge in this workspace.</span>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Check again</button>
+      </div>
+      <div v-if="error" class="kuery-inline-error" role="alert">
+        <div class="kuery-error-copy">
+          <span>Could not refresh the topology. The last successful result is still shown.</span>
+          <details class="k-resource-technical">
+            <summary class="k-resource-technical__summary">
+              <span class="k-resource-technical__summary-label">Technical details</span>
+              <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
+            </summary>
+            <div class="k-resource-technical__body">
+              <section class="k-resource-technical__section">
+                <h3 class="k-resource-technical__section-title">Topology query</h3>
+                <div class="k-resource-technical__content"><pre class="k-resource-technical__pre">{{ errorDetail }}</pre></div>
+              </section>
+            </div>
+          </details>
+        </div>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+      </div>
       <div v-if="rows.length === 0" class="kuery-read-state" role="status">No clusters engaged. Connect a Kubernetes edge, then retry.</div>
       <div v-else-if="tree.edges.length === 0" class="kuery-read-state" role="status">No resources match the current topology filters.</div>
       <div v-else-if="representation === 'list'" class="kuery-topology-list" role="region" aria-label="Fleet topology list">
@@ -369,7 +423,7 @@ onBeforeUnmount(() => { loadGeneration += 1; fullscreenGeneration += 1; loadCont
         <div ref="graphHost" class="kuery-graph" role="region" aria-label="Fleet topology visualization" aria-describedby="topology-help topology-bounds" tabindex="0" @keydown="graphKeydown" />
       </div>
     </div>
-    <p v-if="incomplete" class="kuery-warning" role="status">Kuery reported response-level truncation for this query. That status does not identify relation-level bounds; the view limits above still apply.<span v-if="responseWarnings.length"> {{ responseWarnings.join(' ') }}</span></p>
+    <p v-if="loaded && incomplete" class="kuery-warning" role="status">Kuery reported response-level truncation for this query. That status does not identify relation-level bounds; the view limits above still apply.<span v-if="responseWarnings.length"> {{ responseWarnings.join(' ') }}</span></p>
     <p v-else-if="responseWarnings.length" class="kuery-warning" role="status">Kuery reported: {{ responseWarnings.join(' ') }} Relation-level bounds are listed above separately.</p>
     <p v-if="memberLimitReached" class="kuery-warning" role="status">At least one edge returned 1,000 members, its configured relation bound. Additional members may be omitted.</p>
     <p v-if="relationResponseTruncated" class="kuery-warning" role="status">Kuery reported response-level truncation during relation expansion. This does not identify which relation was bounded.</p>
