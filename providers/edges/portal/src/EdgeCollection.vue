@@ -82,7 +82,7 @@ onActivated(() => emit('activated'))
         <h1>Edges</h1>
         <p>Kubernetes clusters and Linux and MacOS hosts connected to this workspace.</p>
       </div>
-      <div v-if="!showFirstRun" class="header-actions">
+      <div v-if="(props.loaded || props.error) && !showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="props.foregroundLoading" @click="emit('refresh')">
           <RefreshCw :size="14" :class="{ spin: props.foregroundLoading }" aria-hidden="true" /> {{ props.foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>

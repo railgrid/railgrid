@@ -450,7 +450,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
         <h1>Services</h1>
         <p>Services running next to your edges (e.g. Home Assistant). Attach a token to make one Ready, and give it AI guidance — its tools appear in the MCP endpoint.</p>
       </div>
-      <div v-if="!showFirstRun" class="header-actions">
+      <div v-if="(loaded || error) && !showFirstRun" class="header-actions">
         <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: foregroundLoading }" aria-hidden="true" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
