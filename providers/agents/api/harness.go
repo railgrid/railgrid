@@ -771,15 +771,6 @@ func harnessTaskIDFor(agentName, agentUID, sessionID string) string {
 	return protocolIdentifierWithDigest(raw)
 }
 
-// harnessWorkspaceID names the runner directory this agent's turns run in.
-//
-// A "persistent" workspace is per agent and session, which is what makes a
-// conversation about a checkout coherent across turns; an "ephemeral" one is per
-// run, so nothing carries over.
-func harnessWorkspaceID(agent *agentsv1alpha1.Agent, sessionID, runID string) string {
-	return harnessWorkspaceIDForTask(agent, runID, harnessTaskIDFor(agent.Name, string(agent.UID), sessionID))
-}
-
 func harnessWorkspaceIDForTask(agent *agentsv1alpha1.Agent, runID, taskID string) string {
 	if cfg := agent.Spec.Harness(); cfg != nil && cfg.Workspace == agentsv1alpha1.HarnessWorkspaceEphemeral {
 		return protocolIdentifier("run-" + runID)

@@ -88,6 +88,7 @@ let mounted = false
 let initializedFor = ''
 let boundStore: AppStore | null = null
 let abort: AbortController | null = null
+const detachedStarts = new Set<AbortController>()
 let liveRunID = ''
 let liveRunSessionID = ''
 let streamingID = ''
@@ -377,11 +378,17 @@ function invalidateReads(): void {
   orphanReadSerial += 1
 }
 
-function invalidateStream(): void {
+function clearDetachedStarts(): void {
+  for (const controller of detachedStarts) controller.abort()
+  detachedStarts.clear()
+}
+
+function invalidateStream(preserveUnacknowledgedStart = false): void {
   resetApprovalRecovery()
   streamSerial += 1
   liveCancellationSerial += 1
-  abort?.abort()
+  if (preserveUnacknowledgedStart && abort && !liveRunID) detachedStarts.add(abort)
+  else abort?.abort()
   abort = null
   liveRunID = ''
   liveRunSessionID = ''
@@ -548,6 +555,7 @@ async function openAgent(): Promise<void> {
   const serial = ++openSerial
   const ownership = chatOwnershipSerial
   initializedFor = ''
+  clearDetachedStarts()
   invalidateStream()
   messageReadSerial += 1
   messagesLoading.value = false
@@ -771,7 +779,30 @@ async function send(): Promise<void> {
 
   try {
     for await (const event of api.chatStream(name, text, requestSession, controller.signal)) {
-      if (!streamIsCurrent(serial, controller, name, api)) return
+      if (!streamIsCurrent(serial, controller, name, api)) {
+        if (!detachedStarts.has(controller)) return
+        if (!contextIsCurrent(name, api)) {
+          controller.abort()
+          return
+        }
+        // Let an unacknowledged request reach its durable admission boundary.
+        // Aborting before start could drop the prompt before a run exists.
+        if (event.event === 'start') {
+          const data = event.data as StartData
+          toast('info', 'The run continues in its original thread.', {
+            label: 'View progress',
+            run: () => emit('navigate', { kind: 'run', id: data.runID }),
+          })
+        }
+        if (event.event === 'run_started' || event.event === 'done' || event.event === 'error') {
+          detachedStarts.delete(controller)
+          controller.abort()
+          void loadSessions(name, api)
+          if (event.event === 'error') toast('error', `The original thread could not start: ${(event.data as ErrorData).message || 'request failed'}`)
+          return
+        }
+        continue
+      }
       switch (event.event) {
         case 'start': {
           const data = event.data as StartData
@@ -950,6 +981,9 @@ async function send(): Promise<void> {
       }
     }
   } catch (error) {
+    if (detachedStarts.has(controller) && contextIsCurrent(name, api)) {
+      toast('error', `The original thread could not start: ${(error as Error).message}`)
+    }
     if (!streamIsCurrent(serial, controller, name, api)) return
     flushNow(serial)
     const clientStopped = (error as Error).name === 'AbortError' && stopRequested.value
@@ -958,6 +992,7 @@ async function send(): Promise<void> {
     })
     patchProgress(assistantID, { status: clientStopped ? 'stopping' : 'failed' })
   } finally {
+    detachedStarts.delete(controller)
     if (!streamIsCurrent(serial, controller, name, api)) return
     flushNow(serial)
     streaming.value = false
@@ -1086,8 +1121,24 @@ async function cancelOrphan(): Promise<void> {
   }
 }
 
+function detachConversationStream(): void {
+  if (!streaming.value) return
+  const runID = liveRunID
+  // Chat execution survives a disconnected observer. Invalidate this stream's
+  // generation before changing the selected session so even queued deltas and
+  // terminal frames cannot enter the destination transcript. Only Stop calls
+  // the provider's cancellation verb.
+  invalidateStream(!runID)
+  void loadSessions()
+  toast('info', runID ? 'The run continues in its original thread.' : 'The original request is still starting.', runID ? {
+    label: 'View progress',
+    run: () => emit('navigate', { kind: 'run', id: runID }),
+  } : undefined)
+}
+
 async function switchSession(id: string): Promise<void> {
-  if (!id || id === sessionID.value || streaming.value || selectingSessionID.value) return
+  if (!id || id === sessionID.value || selectingSessionID.value) return
+  detachConversationStream()
   claimChatOwnership()
   resetApprovalRecovery()
   selectingSessionID.value = id
@@ -1108,7 +1159,7 @@ async function switchSession(id: string): Promise<void> {
 }
 
 function newChat(): void {
-  if (streaming.value) return
+  detachConversationStream()
   claimChatOwnership()
   resetApprovalRecovery()
   messageReadSerial += 1
@@ -1139,6 +1190,18 @@ async function deleteSession(id = sessionID.value): Promise<void> {
   const authority = captureAuthority()
   const name = props.name
   try {
+    const blockedByLiveRun = async (): Promise<boolean> => {
+      const runs = await authority.api.listRuns({ agent: name, session: id })
+      if (!authorityIsCurrent(authority) || props.name !== name) return true
+      const live = runs.items.find(run => LIVE_RUN_PHASES.has(run.phase))
+      if (!live) return false
+      toast('info', 'Stop the run before deleting this thread.', {
+        label: 'View progress',
+        run: () => emit('navigate', { kind: 'run', id: live.id }),
+      })
+      return true
+    }
+    if (await blockedByLiveRun()) return
     const ok = await confirmDialog({
       title: 'Delete this chat?',
       message: 'The transcript is removed from the agent’s memory for this session.',
@@ -1146,6 +1209,9 @@ async function deleteSession(id = sessionID.value): Promise<void> {
       confirmLabel: 'Delete',
     })
     if (!ok || !authorityIsCurrent(authority)) return
+    // A turn may start while the confirmation is open. Re-read its native
+    // phase immediately before issuing the transcript deletion.
+    if (await blockedByLiveRun()) return
     await authority.api.deleteSession(name, id)
     if (!authorityIsCurrent(authority) || props.name !== name) return
     toast('ok', 'Chat deleted.')
@@ -1293,6 +1359,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearDetachedStarts()
   mounted = false
   initializedFor = ''
   invalidateReads()
@@ -1370,11 +1437,10 @@ defineExpose({
           panel-id="agents-conversation-rail"
           :threads="conversationItems"
           :active-thread-i-d="sessionID"
-          :disabled="streaming"
           :loading="sessionsLoading && !sessionsHasSnapshot"
           :selecting-thread-i-d="selectingSessionID"
           :actioning-thread-i-d="deletingSessionID"
-          :capabilities="{ create: true, delete: true }"
+          :capabilities="{ create: true, delete: !streaming }"
           :storage-scope="sessionRailScope"
           delete-label="Delete chat"
           @select="selectConversation"

@@ -93,10 +93,12 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		startedAt = time.Now().UTC()
 	}
 	// Claim so only one resolver resumes (double /approve, portal + channel).
-	if _, err := s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC()); err != nil {
+	claimed, err := s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC())
+	if err != nil {
 		log.Printf("resume: run %s: %v", run.ID, err)
 		return
 	}
+	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run
 	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
 	s.upgradeLegacyImageCheckpoint(ctx, agentScope, legacyRun, &ck.Engine)

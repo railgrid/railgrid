@@ -695,11 +695,6 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 // errNoCredential signals that an agent has no model credential assigned.
 var errNoCredential = errors.New("this agent has no model credential assigned — pick one on the Models tab")
 
-// buildChatModelCtx builds the model for an ordinary (chat-purpose) run.
-func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
-	return s.buildModelForPurpose(ctx, creds, agent, llm.PurposeChat)
-}
-
 // buildModelForPurpose resolves the agent's named model credential for a run
 // purpose and builds the Eino model from it. Agents reference a credential by
 // name in spec.backend.model.credentials[purpose]; the name is a ModelCredential in this
@@ -747,13 +742,6 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialR
 		return nil, errNoCredential
 	}
 	return llm.NewFallbackModel(members, built), nil
-}
-
-// primaryModelName resolves the model id of the agent's primary chat credential
-// for cost attribution. Best-effort: returns "" when unresolvable (cost then
-// falls back to 0 rather than erroring the run).
-func (s *Server) primaryModelName(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent) string {
-	return s.modelNameForPurpose(ctx, creds, agent, llm.PurposeChat)
 }
 
 // credentialNameForPurpose resolves which ModelCredential a run purpose lands
