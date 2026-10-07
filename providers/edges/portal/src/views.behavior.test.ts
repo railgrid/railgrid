@@ -661,20 +661,18 @@ describe('edge list views', () => {
     }
   })
 
-  it('restores Kubernetes prerequisite guidance when the last eligible edge disappears', async () => {
+  it('keeps first-run guidance current when the last eligible edge disappears', async () => {
     api.listWorkloadsPage.mockResolvedValueOnce({ items: [], continue: undefined })
     const mounted = await mount(Workloads)
     try {
       await flush()
       const state = mounted.instance.setupState
       expect(state.hasKubernetesEdges).toBe(true)
-      state.firstRunDismissed = true
-      expect(state.showFirstRun).toBe(false)
+      expect(state.showFirstRun).toBe(true)
 
       state.edges = [{ ...edge, type: 'server' }]
       await nextTick()
       expect(state.hasKubernetesEdges).toBe(false)
-      expect(state.firstRunDismissed).toBe(false)
       expect(state.showFirstRun).toBe(true)
     } finally {
       mounted.unmount()
