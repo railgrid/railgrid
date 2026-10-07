@@ -34,6 +34,7 @@ import (
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	openaisdk "github.com/openai/openai-go/v3"
 	"google.golang.org/genai"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -351,6 +352,14 @@ func projectEinoAssistantShouldRetryModelError(err error) bool {
 	if errors.As(err, &openAIError) {
 		return projectEinoAssistantRetryableHTTPStatus(openAIError.HTTPStatusCode)
 	}
+	var responsesError *openaisdk.Error
+	if errors.As(err, &responsesError) {
+		return projectEinoAssistantRetryableHTTPStatus(responsesError.StatusCode)
+	}
+	var responsesFailure *projectEinoResponsesFailureError
+	if errors.As(err, &responsesFailure) {
+		return responsesFailure.Code == "server_error" || responsesFailure.Code == "rate_limit_exceeded"
+	}
 	var geminiError genai.APIError
 	if errors.As(err, &geminiError) {
 		return projectEinoAssistantRetryableHTTPStatus(geminiError.Code)
@@ -387,6 +396,14 @@ func projectEinoAssistantContextWindowExceeded(err error) bool {
 	var openAIError *openaimodel.APIError
 	if errors.As(err, &openAIError) && projectEinoAssistantContextWindowMessage(openAIError.Message) {
 		return projectEinoAssistantContextWindowStatus(openAIError.HTTPStatusCode)
+	}
+	var responsesError *openaisdk.Error
+	if errors.As(err, &responsesError) && (responsesError.Code == "context_length_exceeded" || projectEinoAssistantContextWindowMessage(responsesError.Message)) {
+		return projectEinoAssistantContextWindowStatus(responsesError.StatusCode)
+	}
+	var responsesFailure *projectEinoResponsesFailureError
+	if errors.As(err, &responsesFailure) && responsesFailure.Code == "context_length_exceeded" {
+		return true
 	}
 	var geminiError genai.APIError
 	if errors.As(err, &geminiError) && projectEinoAssistantContextWindowMessage(geminiError.Message) {

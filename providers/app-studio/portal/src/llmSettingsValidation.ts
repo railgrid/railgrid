@@ -1,7 +1,7 @@
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
 const CHAT_COMPLETIONS_SUFFIX = '/chat/completions'
-const UNSUPPORTED_OPERATION_SUFFIXES = ['/responses', '/messages']
+const MODEL_OPERATION_SUFFIXES = ['/responses', '/messages']
 
 export type LLMCredentialMode = 'api-key' | 'service-account-json'
 
@@ -50,11 +50,12 @@ export function validateLLMBaseURL(provider: string, value: string): string {
   if (lowerPathname.endsWith(CHAT_COMPLETIONS_SUFFIX)) {
     const basePath = pathname.slice(0, -CHAT_COMPLETIONS_SUFFIX.length)
     const suggestedBaseURL = `${parsed.origin}${basePath}`
-    return `Enter the API base URL, not the chat completions endpoint. Use ${suggestedBaseURL}; App Studio adds /chat/completions automatically.`
+    return `Enter the API base URL, not the chat completions endpoint. Use ${suggestedBaseURL}; App Studio selects the model endpoint automatically.`
   }
-  const unsupportedSuffix = UNSUPPORTED_OPERATION_SUFFIXES.find((suffix) => lowerPathname.endsWith(suffix))
-  if (unsupportedSuffix) {
-    return `This endpoint uses ${unsupportedSuffix}, but the OpenAI-compatible provider requires a /chat/completions model. Choose a compatible model and enter its base URL.`
+  const operationSuffix = MODEL_OPERATION_SUFFIXES.find((suffix) => lowerPathname.endsWith(suffix))
+  if (operationSuffix) {
+    const suggestedBaseURL = `${parsed.origin}${pathname.slice(0, -operationSuffix.length)}`
+    return `Enter the API base URL, not the ${operationSuffix} endpoint. Use ${suggestedBaseURL}; App Studio selects the model endpoint automatically.`
   }
   return ''
 }
