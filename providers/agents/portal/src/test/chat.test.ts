@@ -107,6 +107,144 @@ async function chooseSession(el: HTMLElement, label: string): Promise<void> {
 }
 
 describe('chat streaming', () => {
+  it('rechecks native run activity after the delete confirmation', async () => {
+    const deleteSession = vi.fn()
+    let targetReads = 0
+    const listRuns = vi.fn(async ({ session: id }: { session: string }) => ({ items: id === 'target' && ++targetReads > 1
+      ? [{ id: 'just-started', phase: 'Running', sessionID: 'target' }]
+      : [] }))
+    const { el } = await mountChat(scripted([]), {
+      deleteSession, listRuns,
+      listSessions: () => Promise.resolve([session('current', 'Current thread'), session('target', 'Delete target')]),
+    })
+    const thread = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
+      .find(item => text(item).includes('Delete target'))!
+    thread.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(4)
+    resolveConfirm(true)
+    await settle(6)
+    expect(targetReads).toBe(2)
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect(text(document.querySelector('.k-toast--info'))).toContain('Stop the run before deleting this thread')
+  })
+
+  it('keeps a detached running thread until its run is stopped before deletion', async () => {
+    const deleteSession = vi.fn()
+    const live = { id: 'background-run', phase: 'Running', sessionID: 'background', agent: 'scout' }
+    const listRuns = vi.fn(async ({ session: id }: { session: string }) => ({ items: id === 'background' ? [live] : [] }))
+    const { el } = await mountChat(scripted([]), {
+      deleteSession, listRuns,
+      listSessions: () => Promise.resolve([session('current', 'Current thread'), session('background', 'Background work')]),
+    })
+    const thread = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
+      .find(item => text(item).includes('Background work'))!
+    thread.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(6)
+    expect(listRuns).toHaveBeenCalledWith({ agent: 'scout', session: 'background' })
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect(document.querySelector('.k-confirm')).toBeNull()
+    expect(text(document.querySelector('.k-toast--info'))).toContain('Stop the run before deleting this thread')
+    expect(text(el.querySelector('.k-ai-conversation-rail'))).toContain('Background work')
+  })
+
+  it('preserves an unacknowledged start until admission when another thread opens', async () => {
+    const admission = deferred<void>()
+    let signal!: AbortSignal
+    const cancelRun = vi.fn()
+    const listSessions = vi.fn().mockResolvedValue([])
+    const chatStream = async function* (_agent: string, _message: string, sessionID: string, controller: AbortSignal) {
+      signal = controller
+      await admission.promise
+      yield { event: 'start', data: { runID: 'late-admitted', sessionID } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'late-admitted', sessionID, status: 'running' } } as SSEEvent
+      yield { event: 'delta', data: { text: 'Original thread only' } } as SSEEvent
+    }
+    const { el } = await mountChat(chatStream, { cancelRun, listSessions })
+    await send(el, 'A request awaiting admission')
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+    await settle(4)
+    expect(signal.aborted).toBe(false)
+    expect(text(document.querySelector('.k-toast--info'))).toContain('request is still starting')
+    admission.resolve()
+    await settle(6)
+    expect(signal.aborted).toBe(true)
+    expect(cancelRun).not.toHaveBeenCalled()
+    expect(text(el.querySelector('.agents-log'))).not.toContain('Original thread only')
+    expect(listSessions.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it('starts another thread without canceling a running turn or admitting late stream frames', async () => {
+    const oldGate = deferred<void>()
+    const secondGate = deferred<void>()
+    const signals: AbortSignal[] = []
+    const cancelRun = vi.fn()
+    let call = 0
+    const chatStream = vi.fn(async function* (_agent: string, _message: string, sessionID: string, signal: AbortSignal) {
+      signals.push(signal)
+      const first = call++ === 0
+      yield { event: 'start', data: { runID: first ? 'run-old' : 'run-new', sessionID } } as SSEEvent
+      if (first) {
+        await oldGate.promise
+        yield { event: 'delta', data: { text: 'Old thread late delta' } } as SSEEvent
+        yield { event: 'done', data: { runID: 'run-old', content: 'Old thread final', status: 'completed' } } as SSEEvent
+      } else {
+        yield { event: 'delta', data: { text: 'New thread reply' } } as SSEEvent
+        await secondGate.promise
+      }
+    })
+    const { el } = await mountChat(chatStream, { cancelRun })
+    await send(el, 'First thread task')
+    const create = el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!
+    expect(create.disabled).toBe(false)
+    create.click()
+    await settle(6)
+    expect(signals[0].aborted).toBe(true)
+    expect(cancelRun).not.toHaveBeenCalled()
+    expect(text(el.querySelector('.agents-log'))).not.toContain('First thread task')
+    expect(text(document.querySelector('.k-toast--info'))).toContain('continues in its original thread')
+    await send(el, 'Second thread task')
+    expect(chatStream).toHaveBeenCalledTimes(2)
+    expect(chatStream.mock.calls[0][2]).not.toBe(chatStream.mock.calls[1][2])
+    oldGate.resolve()
+    await settle(6)
+    expect(text(el.querySelector('.agents-log'))).toContain('New thread reply')
+    expect(text(el.querySelector('.agents-log'))).not.toContain('Old thread')
+    expect(el.querySelector('.agents-stop')).not.toBeNull()
+    expect(signals[1].aborted).toBe(false)
+    secondGate.resolve()
+  })
+
+  it('selects another saved thread while a turn continues, then recovers the original run', async () => {
+    const gate = deferred<void>()
+    const cancelRun = vi.fn()
+    const listMessages = vi.fn(async (_agent: string, sessionID: string) => sessionID === 'other'
+      ? [{ id: 'other-reply', role: 'assistant', content: 'Other thread history' }]
+      : [{ id: 'original-reply', runID: 'running-original', role: 'assistant', content: 'Original progress' }])
+    const listRuns = vi.fn(async ({ session: sessionID }: { session: string }) => ({ items: sessionID === 'original'
+      ? [{ id: 'running-original', sessionID: 'original', phase: 'Running', agent: 'scout' }]
+      : [] }))
+    let signal!: AbortSignal
+    const chatStream = async function* (_agent: string, _message: string, _session: string, controller: AbortSignal) {
+      signal = controller
+      yield { event: 'start', data: { runID: 'running-original', sessionID: 'original' } } as SSEEvent
+      await gate.promise
+    }
+    const { el } = await mountChat(chatStream, {
+      cancelRun, listMessages, listRuns, getRun: vi.fn().mockResolvedValue({ id: 'running-original', phase: 'Running' }),
+      listSessions: () => Promise.resolve([session('original', 'Original thread'), session('other', 'Other thread')]),
+    })
+    await send(el, 'Continue original work')
+    await chooseSession(el, 'Other thread')
+    expect(signal.aborted).toBe(true)
+    expect(cancelRun).not.toHaveBeenCalled()
+    expect(text(el.querySelector('.agents-log'))).toContain('Other thread history')
+    await chooseSession(el, 'Original thread')
+    await settle(6)
+    expect(text(el.querySelector('.agents-log'))).toContain('Original progress')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
+    gate.resolve()
+  })
+
   it('recovers a running turn when the chat stream ends without a terminal frame', async () => {
     const getRun = vi.fn().mockResolvedValue({
       id: 'r-disconnected', agent: 'scout', sessionID: 's-disconnected', phase: 'Running',

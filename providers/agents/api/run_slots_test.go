@@ -33,7 +33,12 @@ import (
 func TestTheRunCeilingHandsWorkBackRatherThanRefusingIt(t *testing.T) {
 	bg := &background{slots: make(chan struct{}, 2)}
 
-	if !bg.tryAcquireSlot() || !bg.tryAcquireSlot() {
+	firstAcquired := bg.tryAcquireSlot()
+	if !firstAcquired {
+		t.Fatal("a fresh ceiling of 2 refused the first two runs")
+	}
+	secondAcquired := bg.tryAcquireSlot()
+	if !secondAcquired {
 		t.Fatal("a fresh ceiling of 2 refused the first two runs")
 	}
 	if bg.tryAcquireSlot() {
@@ -52,7 +57,12 @@ func TestTheRunCeilingHandsWorkBackRatherThanRefusingIt(t *testing.T) {
 	bg.releaseSlot()
 	bg.releaseSlot()
 	bg.releaseSlot()
-	if !bg.tryAcquireSlot() || !bg.tryAcquireSlot() {
+	firstAcquired = bg.tryAcquireSlot()
+	if !firstAcquired {
+		t.Fatal("the ceiling did not come back to 2")
+	}
+	secondAcquired = bg.tryAcquireSlot()
+	if !secondAcquired {
 		t.Fatal("the ceiling did not come back to 2")
 	}
 	if bg.tryAcquireSlot() {

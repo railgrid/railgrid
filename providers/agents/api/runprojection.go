@@ -31,7 +31,8 @@ package api
 // is a reporting problem; failing the run because the API server was slow is a
 // real one, and the second is worse. So saveRun logs and swallows, and the next
 // transition re-converges the object because each write sends the whole desired
-// status rather than a delta.
+// status rather than a delta. Conflicting object writes retry from fresh reads
+// inside the same bounded projection call.
 //
 // For UNATTENDED work it is required, and saveNewRun is what enforces that.
 // Nobody is holding a connection open for a schedule fire or an inbound
@@ -61,7 +62,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
@@ -100,7 +103,7 @@ func (s *Server) saveRun(ctx context.Context, scope store.Scope, run store.Run) 
 // worst case is an object with no row, which the reconciler finds, cannot
 // dispatch, and closes; and the producer is told either way.
 func (s *Server) saveNewRun(ctx context.Context, clusterID string, scope store.Scope, run store.Run) error {
-	if err := s.projectRunTo(ctx, clusterID, run); err != nil {
+	if err := s.projectRunTo(ctx, clusterID, run, nil); err != nil {
 		return fmt.Errorf("creating the Run object: %w", err)
 	}
 	if err := s.store.SaveRun(ctx, scope, run); err != nil {
@@ -126,13 +129,15 @@ func (s *Server) projectRun(ctx context.Context, scope store.Scope, run store.Ru
 	if !ok {
 		return
 	}
-	if err := s.projectRunTo(ctx, clusterID, run); err != nil {
+	if err := s.projectRunTo(ctx, clusterID, run, func(ctx context.Context) (store.Run, error) {
+		return s.store.GetRun(ctx, scope, run.ID)
+	}); err != nil {
 		log.Printf("agents: projecting run %s onto its Run object in %s: %v", run.ID, clusterID, err)
 	}
 }
 
 // projectRunTo is the projection itself, against a known cluster.
-func (s *Server) projectRunTo(ctx context.Context, clusterID string, run store.Run) error {
+func (s *Server) projectRunTo(ctx context.Context, clusterID string, run store.Run, readRun func(context.Context) (store.Run, error)) error {
 	if s == nil || s.bg == nil {
 		return fmt.Errorf("no virtual workspace: this provider has no tenant access")
 	}
@@ -146,7 +151,7 @@ func (s *Server) projectRunTo(ctx context.Context, clusterID string, run store.R
 	if err != nil {
 		return fmt.Errorf("reaching %s: %w", clusterID, err)
 	}
-	return s.writeRunObject(ctx, dyn, run)
+	return s.writeRunObject(ctx, dyn, run, readRun)
 }
 
 // deleteRunObject removes a Run object this process created and then could not
@@ -165,43 +170,83 @@ func (s *Server) deleteRunObject(ctx context.Context, clusterID, runID string) {
 }
 
 // writeRunObject converges one Run object on the stored run.
-func (s *Server) writeRunObject(ctx context.Context, dyn dynamic.Interface, run store.Run) error {
+func (s *Server) writeRunObject(ctx context.Context, dyn dynamic.Interface, run store.Run, readRun func(context.Context) (store.Run, error)) error {
 	runs := dyn.Resource(agentsclient.RunGVR)
 
-	existing, err := runs.Get(ctx, run.ID, metav1.GetOptions{})
-	switch {
-	case apierrors.IsNotFound(err):
-		created, cerr := s.createRunObject(ctx, dyn, run)
-		if cerr != nil {
-			return cerr
+	write := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		existing = created
-	case err != nil:
-		return fmt.Errorf("reading the Run object: %w", err)
-	}
+		existing, err := runs.Get(ctx, run.ID, metav1.GetOptions{})
+		switch {
+		case apierrors.IsNotFound(err):
+			created, cerr := s.createRunObject(ctx, dyn, run)
+			if cerr != nil {
+				return cerr
+			}
+			existing = created
+		case err != nil:
+			return fmt.Errorf("reading the Run object: %w", err)
+		}
+		// Read the object before the authoritative row on every attempt. A newer
+		// projection committed after this read conflicts with our status update;
+		// retrying then adopts the latest row rather than replaying captured Running
+		// over a terminal transition. Unattended admission has no row yet: its
+		// object-first projection deliberately uses the initial Pending snapshot.
+		latest := run
+		if readRun != nil {
+			latest, err = readRun(ctx)
+			if err != nil {
+				return fmt.Errorf("reading the stored run for projection: %w", err)
+			}
+		}
 
-	// Status is a subresource, so spec is untouched here by construction —
-	// which is what makes "spec is written once" true rather than merely
-	// intended.
-	desired := runStatusFor(run)
-	current, _, _ := unstructured.NestedMap(existing.Object, "status")
-	next, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired)
-	if err != nil {
-		return fmt.Errorf("encoding the Run status: %w", err)
-	}
-	if equalStatus(current, next) {
-		return nil
-	}
-	existing.Object["status"] = next
-	if _, err := runs.UpdateStatus(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		if apierrors.IsConflict(err) {
-			// Somebody wrote first. The next transition sends the whole status
-			// again, so there is nothing to merge and nothing to retry.
+		// Status is a subresource, so spec is untouched here by construction —
+		// which is what makes "spec is written once" true rather than merely
+		// intended.
+		desired := runStatusFor(latest)
+		currentPhase, _, _ := unstructured.NestedString(existing.Object, "status", "phase")
+		if finalRunPhase(currentPhase) && !finalRunPhase(desired.Phase) {
 			return nil
 		}
-		return fmt.Errorf("writing the Run status: %w", err)
+		if desired.Phase == agentsv1alpha1.RunPhasePending && currentPhase != "" && currentPhase != agentsv1alpha1.RunPhasePending {
+			return nil
+		}
+		current, _, _ := unstructured.NestedMap(existing.Object, "status")
+		next, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired)
+		if err != nil {
+			return fmt.Errorf("encoding the Run status: %w", err)
+		}
+		if equalStatus(current, next) {
+			return nil
+		}
+		existing.Object["status"] = next
+		if _, err := runs.UpdateStatus(ctx, existing, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("writing the Run status: %w", err)
+		}
+		return nil
 	}
-	return nil
+	var lastConflict error
+	err := wait.ExponentialBackoffWithContext(ctx, retry.DefaultRetry, func(context.Context) (bool, error) {
+		err := write()
+		if apierrors.IsConflict(err) {
+			lastConflict = err
+			return false, nil
+		}
+		return err == nil, err
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if wait.Interrupted(err) && lastConflict != nil {
+		return lastConflict
+	}
+	return err
+}
+
+// PendingApproval is resumable, so only these phases prohibit a return to work.
+func finalRunPhase(phase string) bool {
+	return phase == agentsv1alpha1.RunPhaseSucceeded || phase == agentsv1alpha1.RunPhaseFailed || phase == agentsv1alpha1.RunPhaseAborted
 }
 
 // createRunObject creates the Run for a stored run, owned by its Agent.
@@ -359,7 +404,7 @@ func equalStatus(current, next map[string]any) bool {
 	}
 	// Owner and conditions are written by the reconciler, not by the
 	// projection, so they are carried over rather than compared.
-	for _, key := range []string{"owner", "conditions", "deadlineAt", "observedGeneration"} {
+	for _, key := range []string{"owner", "claimedAt", "attempt", "conditions", "deadlineAt", "observedGeneration"} {
 		if value, ok := current[key]; ok {
 			next[key] = value
 		}
