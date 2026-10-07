@@ -55,10 +55,16 @@ railgrid-provider-quickstart .quickstart-panel {
 
 railgrid-provider-quickstart .quickstart-panel-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+railgrid-provider-quickstart .quickstart-row-result {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
 }
 
 railgrid-provider-quickstart .quickstart-panel-title {
