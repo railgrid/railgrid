@@ -53,7 +53,10 @@ import (
 // ===== fakes =====
 
 type fakeOps struct {
-	mu sync.Mutex
+	mu             sync.Mutex
+	mcpDeleteUID   string
+	mcpDeleteCalls int
+	mcpDeleteErr   error
 
 	// Storage
 	orgWorkspaces          map[string]bool              // orgUUID set
@@ -399,7 +402,13 @@ func (f *fakeOps) CreateMCPServer(_ context.Context, _, _, _, _ string, _ bool) 
 
 func (f *fakeOps) UpdateMCPServer(_ context.Context, _, _, _, _ string, _ bool) error { return nil }
 
-func (f *fakeOps) DeleteMCPServer(_ context.Context, _, _ string) error { return nil }
+func (f *fakeOps) DeleteMCPServer(_ context.Context, _, _, expectedUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mcpDeleteUID = expectedUID
+	f.mcpDeleteCalls++
+	return f.mcpDeleteErr
+}
 
 func (f *fakeOps) GetMCPServerToken(_ context.Context, clusterName, name string) (string, error) {
 	if clusterName == "" || name == "" {

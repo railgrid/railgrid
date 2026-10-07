@@ -119,7 +119,7 @@ type WorkspaceOps interface {
 	ListMCPServers(ctx context.Context, clusterName string) ([]kcp.MCPServerInfo, error)
 	CreateMCPServer(ctx context.Context, clusterName, name, displayName, instructions string, readOnly bool) error
 	UpdateMCPServer(ctx context.Context, clusterName, name, displayName, instructions string, readOnly bool) error
-	DeleteMCPServer(ctx context.Context, clusterName, name string) error
+	DeleteMCPServer(ctx context.Context, clusterName, name, expectedUID string) error
 	GetMCPServerToken(ctx context.Context, clusterName, name string) (string, error)
 
 	// EnsureProviderAPIBinding creates an APIBinding in the target
