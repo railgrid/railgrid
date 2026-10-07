@@ -52,6 +52,24 @@ grep -F 'console\.127\.0\.0\.1\.sslip\.io' "$state_dir/corefile" >/dev/null
 grep -F '|host\.docker\.internal)' "$state_dir/corefile" >/dev/null
 grep -F '172.18.0.1' "$state_dir/corefile" >/dev/null
 
+# Both IPv4-only hub aliases must answer AAAA with NOERROR and no records.
+# NXDOMAIN describes a nonexistent name and can invalidate the concurrent A
+# answer in musl clients. Unrelated names must still reach normal resolution.
+awk '
+  $1 == "template" && $2 == "IN" && $3 == "AAAA" { blocks++; inside = 1; next }
+  inside && $1 == "match" {
+    if ($2 == "^(console\\.127\\.0\\.0\\.1\\.sslip\\.io|host\\.docker\\.internal)\\.$") matches++
+  }
+  inside && $1 == "rcode" && $2 == "NOERROR" { success++ }
+  inside && $1 == "answer" { answers++ }
+  inside && $1 == "fallthrough" { fallback++ }
+  inside && $1 == "}" { inside = 0 }
+  END { exit !(blocks == 1 && matches == 1 && success == 1 && answers == 0 && fallback == 1) }
+' "$state_dir/corefile" || {
+  echo 'hub aliases must have an empty successful AAAA response with unrelated-name fallthrough' >&2
+  exit 1
+}
+
 # Tilt orders kcp-dns after preview-dns because both replace the same CoreDNS
 # field. The second helper must retain the first helper's independently managed
 # block, and its cleanup must leave the preview route intact.
