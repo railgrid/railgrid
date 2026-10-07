@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -1230,6 +1231,7 @@ var mcpServerGVR = schema.GroupVersionResource{Group: "railgrid.ai", Version: "v
 // MCPServerInfo is a portal-facing view of an MCPServer CR.
 type MCPServerInfo struct {
 	Name         string `json:"name"`
+	UID          string `json:"uid"`
 	DisplayName  string `json:"displayName,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
 	ReadOnly     bool   `json:"readOnly,omitempty"`
@@ -1289,6 +1291,7 @@ func mcpInfoFrom(obj *unstructured.Unstructured) MCPServerInfo {
 	refreshed, _, _ := unstructured.NestedString(obj.Object, "status", "toolsRefreshedTime")
 	return MCPServerInfo{
 		Name:               obj.GetName(),
+		UID:                string(obj.GetUID()),
 		DisplayName:        displayName,
 		Instructions:       instructions,
 		ReadOnly:           readOnly,
@@ -1389,12 +1392,25 @@ func (b *Bootstrapper) UpdateMCPServer(ctx context.Context, clusterName, name, d
 }
 
 // DeleteMCPServer removes an MCPServer; its identity objects GC via owner refs.
-func (b *Bootstrapper) DeleteMCPServer(ctx context.Context, clusterName, name string) error {
+func (b *Bootstrapper) DeleteMCPServer(ctx context.Context, clusterName, name, expectedUID string) error {
 	res, err := b.mcpClient(clusterName)
 	if err != nil {
 		return err
 	}
-	return res.Delete(ctx, name, metav1.DeleteOptions{})
+	// Older callers select the current object by name. Fence even that path to
+	// the object read here, so a replacement between GET and DELETE survives.
+	if expectedUID == "" {
+		obj, err := res.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		expectedUID = string(obj.GetUID())
+	}
+	if expectedUID == "" {
+		return errors.NewConflict(mcpServerGVR.GroupResource(), name, fmt.Errorf("MCP server identity is missing; refresh before deleting"))
+	}
+	uid := types.UID(expectedUID)
+	return res.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
 }
 
 // GetMCPServerToken reads the long-lived token for a named MCPServer by

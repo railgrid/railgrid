@@ -124,7 +124,16 @@ func (h *Handler) deleteMCPServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.mgr.bootstrapper.DeleteMCPServer(r.Context(), cluster, mux.Vars(r)["name"]); err != nil {
+	uidValues, hasUID := r.URL.Query()["uid"]
+	if hasUID && (len(uidValues) != 1 || strings.TrimSpace(uidValues[0]) == "") {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "uid must identify exactly one MCP server")
+		return
+	}
+	var expectedUID string
+	if hasUID {
+		expectedUID = uidValues[0]
+	}
+	if err := h.mgr.bootstrapper.DeleteMCPServer(r.Context(), cluster, mux.Vars(r)["name"], expectedUID); err != nil {
 		writeError(w, err)
 		return
 	}
