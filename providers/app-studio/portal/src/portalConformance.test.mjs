@@ -40,8 +40,8 @@ test('keeps dashboard tile snapshots visible across background refresh failures'
   assert.match(dashboardTile, /generation !== contextGeneration/)
 })
 
-test('keeps the project index unpainted until the empty-project route decision settles', () => {
-  assert.match(app, /const projectIndexRoutePending = computed\(\(\) =>[\s\S]*isProjectIndexRoute\.value[\s\S]*projects\.value\.length === 0[\s\S]*emptyProjectRedirectPending\.value/)
+test('keeps the project index unpainted while loading and exposes settled first-run guidance', () => {
+  assert.match(app, /const projectIndexRoutePending = computed\(\(\) =>[\s\S]*isProjectIndexRoute\.value[\s\S]*projects\.value\.length === 0[\s\S]*loading\.value \|\| !projectsLoaded\.value/)
 
   const routeGateStart = app.indexOf('<div v-else-if="projectIndexRoutePending"')
   const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"', routeGateStart)
@@ -54,7 +54,9 @@ test('keeps the project index unpainted until the empty-project route decision s
   const emptyListStart = app.indexOf('if (visibleProjectList.length === 0)')
   const pathStart = app.indexOf('const pathName = selectedNameFromPath.value', emptyListStart)
   const emptyList = app.slice(emptyListStart, pathStart)
-  assert.ok(emptyList.indexOf('emptyProjectRedirectPending.value = true') < emptyList.indexOf("props.navigate(CREATE_PROJECT_ROUTE, { replace: true })"))
+  assert.match(emptyList, /if \(!isProjectIndexRoute\.value\) props\.navigate\(CREATE_PROJECT_ROUTE, \{ replace: true \}\)/)
+  assert.doesNotMatch(app, /emptyProjectRedirectPending/)
+  assert.match(app, /<FirstRunGuide[\s\S]*v-if="projectsLoaded && !loading && !error && projects.length === 0"/)
 })
 
 test('presents Projects and Models through the shared tabs surface without a generic settings action', () => {

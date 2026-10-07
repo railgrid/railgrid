@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -42,6 +43,10 @@ func (c *testCallers) ProviderHTTPClient() (*http.Client, error) {
 		return c.http, nil
 	}
 	return http.DefaultClient, nil
+}
+
+func (c *testCallers) ProviderRESTConfig(target string) (*rest.Config, error) {
+	return &rest.Config{Host: target}, nil
 }
 
 // testExportBase is the export virtual-workspace URL the cross-provider tests

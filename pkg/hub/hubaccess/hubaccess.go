@@ -15,16 +15,17 @@ limitations under the License.
 */
 
 // Package hubaccess implements the hub-access half of the provider contract:
-// the hub REST capabilities a provider may exercise with the delegated user
-// token the hub hands it in place of the caller's bearer.
+// the hub REST capabilities a provider may exercise with an admitted caller
+// context, supplied either by a delegated user token or a short-lived action
+// proof minted at the authenticated kcp front door.
 //
 // A provider requests capabilities in its CatalogEntry (spec.hub.access) from
 // a closed set this package owns; it never names routes. A tenant accepts
 // them when enabling the provider, which records a Grant for the provider. The
-// Gate admits a delegated call only for a route that maps to a capability the
+// Gate admits a delegated or proof-backed call only for a route that maps to a capability the
 // provider both declares and was granted in that workspace, and marks the
 // request with the accepted limits (tenant.DelegatedCall). The person the
-// token stands for is still authorized by the tenant middleware and handlers
+// caller context represents is still authorized by the tenant middleware and handlers
 // exactly as if they had called: a provider never exceeds that person.
 package hubaccess
 

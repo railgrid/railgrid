@@ -20,7 +20,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"regexp"
 	"sort"
@@ -32,7 +34,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
-	"github.com/railgrid/provider-app-studio/tenant"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 const (
@@ -63,6 +65,7 @@ type automaticProviderCatalogAction struct {
 	name         string
 	version      string
 	schemaDigest string
+	catalog      providerCatalogAction
 }
 
 type automaticIntegrationTarget struct {
@@ -71,12 +74,14 @@ type automaticIntegrationTarget struct {
 	uid             string
 	resourceVersion string
 	actions         []aiv1alpha1.ProjectProviderActionSpec
+	catalogActions  []providerCatalogAction
 }
 
 type automaticIntegrationDiscovery struct {
 	targets             []automaticIntegrationTarget
 	failedResourceTypes map[string]struct{}
 	catalogUnavailable  bool
+	status              integrationDiscoveryStatus
 }
 
 const automaticIntegrationUpdateAttempts = 3
@@ -95,47 +100,102 @@ func (s *Server) materializeAutomaticProjectIntegrations(ctx context.Context, c 
 	if s == nil || c == nil || project == nil {
 		return project, nil
 	}
-	discovery := s.discoverAutomaticProjectIntegrations(ctx, c, id)
-	return materializeDiscoveredAutomaticProjectIntegrations(ctx, c, project, discovery.targets)
+	discovery := s.discoverAutomaticProjectIntegrations(ctx, c, id, project)
+	updated, err := materializeDiscoveredAutomaticProjectIntegrations(ctx, c, project, discovery.targets)
+	if err != nil || updated == nil || reflect.DeepEqual(project.Spec, updated.Spec) {
+		return updated, err
+	}
+	if _, err := s.projectIdentityToken(ctx, id, updated); err != nil {
+		return nil, fmt.Errorf("refresh Project identity after automatic integration discovery: %w", err)
+	}
+	return updated, nil
 }
 
-func (s *Server) discoverAutomaticProjectIntegrations(ctx context.Context, c *asclient.Client, id identity) automaticIntegrationDiscovery {
-	discovery := automaticIntegrationDiscovery{failedResourceTypes: map[string]struct{}{}}
+func (s *Server) discoverAutomaticProjectIntegrations(ctx context.Context, c *asclient.Client, id identity, project *aiv1alpha1.Project) automaticIntegrationDiscovery {
+	discovery := automaticIntegrationDiscovery{
+		failedResourceTypes: map[string]struct{}{},
+		status:              integrationDiscoveryStatus{State: "available", Issues: []integrationDiscoveryIssue{}},
+	}
 	if s == nil || c == nil {
+		discovery.status = unavailableIntegrationDiscovery("discovery_unavailable", "Provider integration discovery is unavailable.", "", "")
 		return discovery
 	}
-	catalog, err := s.providerActionCatalog(ctx, id)
+	catalog, err := s.providerActionCatalogForProject(ctx, id, project)
 	if err != nil {
 		discovery.catalogUnavailable = true
+		discovery.status = unavailableIntegrationDiscovery("catalog_unavailable", "The provider action catalog could not be loaded.", "", "")
 		return discovery
 	}
 	resources := automaticProviderCatalogResources(catalog)
 	targets := make([]automaticIntegrationTarget, 0)
+	resourceSuccesses := 0
 	for _, resource := range resources {
-		list, listErr := c.Resource(automaticProviderResource(resource.gvr, resource.kind, resource.resource), "").List(ctx, metav1.ListOptions{})
-		if listErr != nil || list == nil {
-			// A denied or temporarily unavailable provider resource must not
-			// turn an otherwise actionless assistant turn into a provider error.
+		list, listErr := s.fetchProviderResourceMetadata(ctx, id, resource.provider, resource.apiVersion, resource.kind, resource.resource)
+		if listErr != nil {
 			discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
+			discovery.addIssue(integrationIssueForResourceError(listErr, resource.provider, resource.resource))
 			continue
 		}
+		resourceSuccesses++
+		if list.Truncated {
+			discovery.addIssue(integrationDiscoveryIssue{Code: "results_truncated", Message: "Some provider resources were omitted because the discovery limit was reached.", Provider: resource.provider, Resource: resource.resource})
+		}
 		for _, object := range list.Items {
-			name := strings.TrimSpace(object.GetName())
+			name := strings.TrimSpace(object.Metadata.Name)
 			if name == "" {
 				continue
 			}
 			ref := &aiv1alpha1.ProjectProviderResourceReference{
 				Name: name, APIVersion: resource.apiVersion, Kind: resource.kind, Resource: resource.resource,
 			}
+			parentAllowed, authErr := s.authorizeCaller(ctx, id, dataplane.ResourceAttributes{
+				Group: resource.gvr.Group, Version: resource.gvr.Version, Resource: resource.resource,
+				Name: name, Verb: "get",
+			})
+			if authErr != nil {
+				discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Caller access to a discovered provider resource could not be verified.", Provider: resource.provider, Resource: resource.resource})
+				continue
+			}
+			if !parentAllowed {
+				discovery.addIssue(integrationDiscoveryIssue{Code: "resource_denied", Message: "The caller cannot read a discovered provider resource.", Provider: resource.provider, Resource: resource.resource})
+				continue
+			}
 			actions := make([]aiv1alpha1.ProjectProviderActionSpec, 0, len(resource.actions))
+			catalogActions := make([]providerCatalogAction, 0, len(resource.actions))
 			for _, action := range resource.actions {
-				actions = append(actions, aiv1alpha1.ProjectProviderActionSpec{
-					Name: action.name, Version: action.version, SchemaDigest: action.schemaDigest,
+				allowed, actionErr := s.authorizeCaller(ctx, id, dataplane.ResourceAttributes{
+					Group: resource.gvr.Group, Version: resource.gvr.Version, Resource: resource.resource,
+					Subresource: action.name, Name: name, Verb: "create",
 				})
+				if actionErr != nil {
+					discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Caller access to a provider action could not be verified.", Provider: resource.provider, Resource: resource.resource})
+					continue
+				}
+				if !allowed {
+					discovery.addIssue(integrationDiscoveryIssue{Code: "action_denied", Message: "The caller is not authorized for one or more provider actions.", Provider: resource.provider, Resource: resource.resource})
+					continue
+				}
+				catalogAction := action.catalog
+				if strings.TrimSpace(catalogAction.ID) == "" {
+					catalogAction.ID = action.name + "/" + action.version
+				}
+				catalogActions = append(catalogActions, catalogAction)
+				// Listing an action does not grant it. Actions requiring consent stay
+				// visible as candidates, where the explicit add flow can collect
+				// consentAccepted, but automatic turn-start materialization never
+				// grants them on the caller's behalf.
+				if !action.catalog.Consent.Required {
+					actions = append(actions, aiv1alpha1.ProjectProviderActionSpec{
+						Name: action.name, Version: action.version, SchemaDigest: action.schemaDigest,
+					})
+				}
+			}
+			if len(catalogActions) == 0 {
+				continue
 			}
 			targets = append(targets, automaticIntegrationTarget{
-				provider: resource.provider, ref: ref, uid: string(object.GetUID()),
-				resourceVersion: strings.TrimSpace(object.GetResourceVersion()), actions: actions,
+				provider: resource.provider, ref: ref, uid: object.Metadata.UID,
+				resourceVersion: strings.TrimSpace(object.Metadata.ResourceVersion), actions: actions, catalogActions: catalogActions,
 			})
 		}
 	}
@@ -143,7 +203,129 @@ func (s *Server) discoverAutomaticProjectIntegrations(ctx context.Context, c *as
 		return automaticProviderReferenceKey(targets[i].provider, targets[i].ref) < automaticProviderReferenceKey(targets[j].provider, targets[j].ref)
 	})
 	discovery.targets = targets
+	if len(discovery.status.Issues) > 0 {
+		discovery.status.State = "partial"
+		if resourceSuccesses == 0 {
+			discovery.status.State = "unavailable"
+		}
+	}
 	return discovery
+}
+
+func (d *automaticIntegrationDiscovery) addIssue(issue integrationDiscoveryIssue) {
+	if d == nil {
+		return
+	}
+	d.status.Issues = append(d.status.Issues, issue)
+}
+
+func unavailableIntegrationDiscovery(code, message, provider, resource string) integrationDiscoveryStatus {
+	return integrationDiscoveryStatus{
+		State:  "unavailable",
+		Issues: []integrationDiscoveryIssue{{Code: code, Message: message, Provider: provider, Resource: resource}},
+	}
+}
+
+func integrationIssueForResourceError(err error, provider, resource string) integrationDiscoveryIssue {
+	issue := integrationDiscoveryIssue{Code: "resource_unavailable", Message: "Provider resource discovery failed.", Provider: provider, Resource: resource}
+	var responseErr providerResourceDiscoveryHTTPError
+	if errors.As(err, &responseErr) {
+		switch responseErr.Status {
+		case http.StatusUnauthorized:
+			issue.Code = "caller_proof_rejected"
+			issue.Message = "The hub rejected the signed caller context for provider discovery."
+		case http.StatusForbidden:
+			issue.Code = "resource_denied"
+			issue.Message = "The caller cannot list this provider resource, or the provider is not enabled in this workspace."
+		case http.StatusNotFound:
+			issue.Code = "provider_unavailable"
+			issue.Message = "The provider resource is not currently available in this workspace."
+		default:
+			if responseErr.Status >= http.StatusInternalServerError {
+				issue.Code = "hub_unavailable"
+				issue.Message = "The hub could not complete provider resource discovery."
+			}
+		}
+	} else if strings.Contains(err.Error(), "caller proof is missing") {
+		issue.Code = "caller_proof_missing"
+		issue.Message = "The signed caller context is missing; retry from the workspace."
+	}
+	return issue
+}
+
+// availableProjectIntegrationCandidates returns discovered action metadata,
+// including actions still awaiting consent on existing bindings. It never
+// writes the Project or treats catalog metadata as a persisted grant.
+func availableProjectIntegrationCandidates(project *aiv1alpha1.Project, discovery automaticIntegrationDiscovery) []projectIntegrationCandidate {
+	if project == nil {
+		return []projectIntegrationCandidate{}
+	}
+	usedAliases := map[string]struct{}{}
+	for _, env := range project.Spec.Environments {
+		for _, binding := range env.Bindings {
+			if alias := strings.ToLower(strings.TrimSpace(binding.Name)); alias != "" {
+				usedAliases[alias] = struct{}{}
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	candidates := make([]projectIntegrationCandidate, 0, len(discovery.targets))
+	for _, target := range discovery.targets {
+		key := automaticProviderReferenceKey(target.provider, target.ref)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		bound := false
+		for _, env := range project.Spec.Environments {
+			for _, binding := range env.Bindings {
+				if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference || automaticProviderReferenceKey(binding.Provider, binding.ResourceRef) != key {
+					continue
+				}
+				bound = true
+				candidates = append(candidates, projectIntegrationCandidate{
+					Environment: env.Name, Alias: binding.Name, Provider: target.provider,
+					Kind: aiv1alpha1.ProjectBindingKindProviderReference, ResourceRef: target.ref.DeepCopy(),
+					Actions: append([]providerCatalogAction(nil), target.catalogActions...), Phase: "Available",
+				})
+			}
+		}
+		if bound {
+			continue
+		}
+		alias := automaticProviderIntegrationAlias(target.provider, target.ref, usedAliases)
+		usedAliases[strings.ToLower(alias)] = struct{}{}
+		actions := append([]providerCatalogAction(nil), target.catalogActions...)
+		candidates = append(candidates, projectIntegrationCandidate{
+			Environment: automaticProviderIntegrationEnvironment,
+			Alias:       alias,
+			Provider:    target.provider,
+			Kind:        aiv1alpha1.ProjectBindingKindProviderReference,
+			ResourceRef: target.ref.DeepCopy(),
+			Actions:     actions,
+			Phase:       "Available",
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.Provider != right.Provider {
+			return left.Provider < right.Provider
+		}
+		if left.ResourceRef.Kind != right.ResourceRef.Kind {
+			return left.ResourceRef.Kind < right.ResourceRef.Kind
+		}
+		if left.ResourceRef.Name != right.ResourceRef.Name {
+			return left.ResourceRef.Name < right.ResourceRef.Name
+		}
+		if left.Environment != right.Environment {
+			return left.Environment < right.Environment
+		}
+		return left.Alias < right.Alias
+	})
+	return candidates
 }
 
 func materializeDiscoveredAutomaticProjectIntegrations(ctx context.Context, c *asclient.Client, project *aiv1alpha1.Project, targets []automaticIntegrationTarget) (*aiv1alpha1.Project, error) {
@@ -151,7 +333,13 @@ func materializeDiscoveredAutomaticProjectIntegrations(ctx context.Context, c *a
 		return project, nil
 	}
 	next := project.DeepCopy()
-	changed := materializeAutomaticIntegrationTargets(next, targets)
+	materializable := make([]automaticIntegrationTarget, 0, len(targets))
+	for _, target := range targets {
+		if len(target.actions) > 0 {
+			materializable = append(materializable, target)
+		}
+	}
+	changed := materializeAutomaticIntegrationTargets(next, materializable)
 	if !changed {
 		// Automatic discovery only writes the Project's providerReference
 		// bindings. Provider-owned resources are converged by the Project
@@ -214,7 +402,9 @@ func automaticProviderCatalogResources(catalog []providerCatalogEntry) []automat
 					gvr: gv.WithResource(bound.Resource),
 				}
 			}
-			group.actions = append(group.actions, automaticProviderCatalogAction{name: name, version: version, schemaDigest: strings.TrimSpace(bound.Action.SchemaDigest)})
+			group.actions = append(group.actions, automaticProviderCatalogAction{
+				name: name, version: version, schemaDigest: strings.TrimSpace(bound.Action.SchemaDigest), catalog: bound.Action,
+			})
 			byKey[key] = group
 		}
 	}
@@ -264,18 +454,6 @@ func automaticCatalogActionIdentity(action providerCatalogAction) (string, strin
 
 func automaticProviderCatalogResourceKey(provider string, gvr schema.GroupVersionResource, kind, resource string) string {
 	return strings.TrimSpace(provider) + "\x00" + gvr.Group + "\x00" + gvr.Version + "\x00" + strings.TrimSpace(kind) + "\x00" + strings.TrimSpace(resource)
-}
-
-// automaticProviderResource carries the published plural resource name into
-// the tenant client. Kind+s is not correct for irregular plurals (and is
-// unnecessary because catalog actions already publish the exact resource
-// segment, which is also the REST path segment).
-func automaticProviderResource(gvr schema.GroupVersionResource, kind, resource string) tenant.Resource {
-	plural := strings.TrimSpace(resource)
-	if plural != "" {
-		plural = strings.ToUpper(plural[:1]) + plural[1:]
-	}
-	return tenant.Resource{GVR: gvr, Kind: strings.TrimSpace(kind), Plural: plural}
 }
 
 func automaticProviderReferenceKey(provider string, ref *aiv1alpha1.ProjectProviderResourceReference) string {

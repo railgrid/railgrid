@@ -33,6 +33,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *testing.T) {
@@ -66,6 +67,12 @@ func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *
 		})
 	}
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
+	server.integrationAccessReviewer = integrationTestAccessReview
+	server.projectIdentityTokenFor = func(context.Context, identity, *aiv1alpha1.Project) (string, error) { return "project-token", nil }
+	server.providerResourceDiscoveryResolver = func(_ context.Context, _ identity, provider, apiVersion, kind, resource string) (providerResourceDiscoveryResponse, error) {
+		items := []providerResourceDiscoveryItem{{Metadata: providerResourceMetadata{Name: "orders"}}, {Metadata: providerResourceMetadata{Name: "customers"}}}
+		return providerResourceDiscoveryResponse{APIVersion: apiVersion, Kind: kind, Resource: resource, Items: items}, nil
+	}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{
 			{
@@ -85,7 +92,13 @@ func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *
 		}, nil
 	}
 	c := asclient.NewFromDynamic(dyn)
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{user: "alice@example.com"}, project)
+	id := automaticIntegrationIdentity("alice@example.com")
+	discovery := server.discoverAutomaticProjectIntegrations(context.Background(), c, id, project)
+	candidates := availableProjectIntegrationCandidates(project, discovery)
+	if len(candidates) != 2 || candidates[0].Actions[0].ID != "query_table/v1" || !candidates[0].Actions[0].Consent.Required {
+		t.Fatalf("available candidates = %#v, want catalog actions with explicit consent metadata", candidates)
+	}
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, id, project)
 	if err != nil {
 		t.Fatalf("materialize automatic integrations: %v", err)
 	}
@@ -98,8 +111,8 @@ func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *
 		if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference || binding.ResourceRef == nil {
 			t.Fatalf("binding = %#v, want providerReference", binding)
 		}
-		if len(binding.AllowedActions) != 2 {
-			t.Fatalf("binding %q actions = %#v, want both eligible actions including consent-required", binding.Name, binding.AllowedActions)
+		if len(binding.AllowedActions) != 1 || binding.AllowedActions[0].Name != "update_table" {
+			t.Fatalf("binding %q actions = %#v, want only the non-consent-required action", binding.Name, binding.AllowedActions)
 		}
 		for _, action := range binding.AllowedActions {
 			if action.GrantedBy != automaticProviderActionGrantedBy || action.GrantedAt == nil || action.GrantedAt.IsZero() {
@@ -111,7 +124,24 @@ func TestMaterializeAutomaticProjectIntegrationsDiscoversActionsIdempotently(t *
 		t.Fatalf("automatic aliases = %#v, want collision-safe unique aliases", aliases)
 	}
 
-	second, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{user: "alice@example.com"}, got)
+	beforeDiscovery := got.DeepCopy()
+	boundCandidates := availableProjectIntegrationCandidates(got, discovery)
+	if len(boundCandidates) != 2 {
+		t.Fatalf("bound candidates = %#v, want consent metadata retained for both saved resources", boundCandidates)
+	}
+	for _, candidate := range boundCandidates {
+		if _, exists := aliases[candidate.Alias]; !exists || candidate.Environment != "development" {
+			t.Fatalf("candidate lost saved binding identity: %#v", candidate)
+		}
+		if len(candidate.Actions) != 2 || !candidate.Actions[0].Consent.Required {
+			t.Fatalf("candidate lost pending consent action: %#v", candidate.Actions)
+		}
+	}
+	if !reflect.DeepEqual(beforeDiscovery, got) {
+		t.Fatal("candidate discovery mutated saved grants")
+	}
+
+	second, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, id, got)
 	if err != nil {
 		t.Fatalf("repeat automatic materialization: %v", err)
 	}
@@ -128,7 +158,7 @@ func TestMaterializeAutomaticProjectIntegrationsPreservesRevocations(t *testing.
 	project.Spec.Environments[0].Bindings[0].AllowedActions[0].SchemaDigest = "sha256:" + "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	project.Spec.Environments[0].Bindings[0].AllowedActions[0].GrantedBy = "alice@example.com"
 	server, c := automaticIntegrationTestServer(t, project, []string{"orders"})
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{user: "bob@example.com"}, project)
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, automaticIntegrationIdentity("bob@example.com"), project)
 	if err != nil {
 		t.Fatalf("materialize automatic integrations: %v", err)
 	}
@@ -186,7 +216,7 @@ func TestMaterializeAutomaticProjectIntegrationsRetriesConflictAndPreservesConcu
 		return false, nil, nil
 	})
 
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{}, project)
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, automaticIntegrationIdentity("alice@example.com"), project)
 	if err != nil {
 		t.Fatalf("materialize automatic integrations after conflict: %v", err)
 	}
@@ -247,7 +277,7 @@ func TestMaterializeAutomaticProjectIntegrationsConflictWithExistingBindingSkips
 		return true, latest.DeepCopy(), nil
 	})
 
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{}, project)
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, automaticIntegrationIdentity("alice@example.com"), project)
 	if err != nil {
 		t.Fatalf("materialize automatic integrations with existing binding: %v", err)
 	}
@@ -278,7 +308,7 @@ func TestMaterializeAutomaticProjectIntegrationsNonConflictUpdateErrorDoesNotRet
 		return false, nil, nil
 	})
 
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), asclient.NewFromDynamic(dyn), identity{}, project)
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), asclient.NewFromDynamic(dyn), automaticIntegrationIdentity("alice@example.com"), project)
 	if err == nil || !strings.HasPrefix(err.Error(), "persist automatic provider integrations: ") {
 		t.Fatalf("non-conflict update result = project %v, err %v; want wrapped persistence error", got, err)
 	}
@@ -312,7 +342,7 @@ func TestMaterializeAutomaticProjectIntegrationsStopsAfterConflictAttemptLimit(t
 		return true, latest.DeepCopy(), nil
 	})
 
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), asclient.NewFromDynamic(dyn), identity{}, project)
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), asclient.NewFromDynamic(dyn), automaticIntegrationIdentity("alice@example.com"), project)
 	if got != nil || err == nil || !strings.HasPrefix(err.Error(), "persist automatic provider integrations: ") {
 		t.Fatalf("repeated conflict result = project %v, err %v; want wrapped conflict", got, err)
 	}
@@ -336,10 +366,12 @@ func TestMaterializeAutomaticProjectIntegrationsCatalogAndListFailuresAreBestEff
 	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{asclient.ProjectGVR: "ProjectList", testDatabricksTableGVR: "TableList"}, project)
 	c := asclient.NewFromDynamic(dyn)
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
+	server.integrationAccessReviewer = integrationTestAccessReview
+	server.projectIdentityTokenFor = func(context.Context, identity, *aiv1alpha1.Project) (string, error) { return "project-token", nil }
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return nil, errors.New("catalog unavailable")
 	}
-	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{}, project)
+	got, err := server.materializeAutomaticProjectIntegrations(context.Background(), c, automaticIntegrationIdentity("alice@example.com"), project)
 	if err != nil || got != project {
 		t.Fatalf("catalog failure result = project %p, err %v; want unchanged actionless turn state", got, err)
 	}
@@ -348,10 +380,10 @@ func TestMaterializeAutomaticProjectIntegrationsCatalogAndListFailuresAreBestEff
 			Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest,
 		}})}}, nil
 	}
-	dyn.PrependReactor("list", databricksTableResource, func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, errors.New("provider resource list unavailable")
-	})
-	got, err = server.materializeAutomaticProjectIntegrations(context.Background(), c, identity{}, project)
+	server.providerResourceDiscoveryResolver = func(context.Context, identity, string, string, string, string) (providerResourceDiscoveryResponse, error) {
+		return providerResourceDiscoveryResponse{}, errors.New("provider resource list unavailable")
+	}
+	got, err = server.materializeAutomaticProjectIntegrations(context.Background(), c, automaticIntegrationIdentity("alice@example.com"), project)
 	if err != nil || got != project {
 		t.Fatalf("resource-list failure result = project %p, err %v; want unchanged actionless turn state", got, err)
 	}
@@ -374,6 +406,15 @@ func automaticIntegrationTestServer(t *testing.T, project *aiv1alpha1.Project, n
 		asclient.ProjectGVR: "ProjectList", testDatabricksTableGVR: "TableList",
 	}, objects...)
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
+	server.integrationAccessReviewer = integrationTestAccessReview
+	server.projectIdentityTokenFor = func(context.Context, identity, *aiv1alpha1.Project) (string, error) { return "project-token", nil }
+	server.providerResourceDiscoveryResolver = func(_ context.Context, _ identity, _ string, apiVersion, kind, resource string) (providerResourceDiscoveryResponse, error) {
+		items := make([]providerResourceDiscoveryItem, 0, len(names))
+		for _, name := range names {
+			items = append(items, providerResourceDiscoveryItem{Metadata: providerResourceMetadata{Name: name}})
+		}
+		return providerResourceDiscoveryResponse{APIVersion: apiVersion, Kind: kind, Resource: resource, Items: items}, nil
+	}
 	server.providerActionCatalogResolver = func(context.Context, identity) ([]providerCatalogEntry, error) {
 		return []providerCatalogEntry{{Name: projectIntegrationProviderDatabricks, Ready: true, Export: testDatabricksTableExport([]providerCatalogAction{
 			{Name: projectIntegrationActionQueryTable, Version: projectIntegrationActionVersionV1, SchemaDigest: testProjectActionSchemaDigest},
@@ -381,6 +422,13 @@ func automaticIntegrationTestServer(t *testing.T, project *aiv1alpha1.Project, n
 		})}}, nil
 	}
 	return server, asclient.NewFromDynamic(dyn)
+}
+
+func automaticIntegrationIdentity(user string) identity {
+	return identity{
+		clusterID: "cluster-a", tenant: "cluster-a", user: user,
+		caller: &dataplane.ProxiedIdentity{User: user},
+	}
 }
 
 func automaticIntegrationFailureFixture(t *testing.T) (*Server, *aiv1alpha1.Project, *fake.FakeDynamicClient) {
@@ -396,4 +444,28 @@ func automaticIntegrationFailureFixture(t *testing.T) (*Server, *aiv1alpha1.Proj
 		t.Fatal("dynamic client is not a fake dynamic client")
 	}
 	return server, project, dyn
+}
+
+func TestAvailableIntegrationCandidatesRetainEnvironmentAndAlias(t *testing.T) {
+	project := projectWithTableIntegration(true)
+	development := project.Spec.Environments[0]
+	development.Name = "development"
+	development.Bindings[0].Name = "dev-orders"
+	production := *development.DeepCopy()
+	production.Name = "production"
+	production.Bindings[0].Name = "prod-orders"
+	project.Spec.Environments = []aiv1alpha1.ProjectEnvironmentSpec{development, production}
+	before := project.DeepCopy()
+	binding := development.Bindings[0]
+	discovery := automaticIntegrationDiscovery{targets: []automaticIntegrationTarget{{
+		provider: binding.Provider, ref: binding.ResourceRef,
+		catalogActions: []providerCatalogAction{{Name: "query_table", Version: "v1", SchemaDigest: testProjectActionSchemaDigest, Consent: providerCatalogActionConsent{Required: true}}},
+	}}}
+	candidates := availableProjectIntegrationCandidates(project, discovery)
+	if len(candidates) != 2 || candidates[0].Environment != "development" || candidates[0].Alias != "dev-orders" || candidates[1].Environment != "production" || candidates[1].Alias != "prod-orders" {
+		t.Fatalf("candidates = %#v, want each saved environment and alias", candidates)
+	}
+	if !reflect.DeepEqual(before, project) {
+		t.Fatal("candidate discovery mutated the Project")
+	}
 }

@@ -203,7 +203,7 @@ func (s *Server) prepareAutomaticProjectIntegrations(
 	project *aiv1alpha1.Project,
 	requested []projectAssistantContextResourceInput,
 ) (*aiv1alpha1.Project, []projectAssistantContextResourceReceipt, error) {
-	discovery := s.discoverAutomaticProjectIntegrations(ctx, c, id)
+	discovery := s.discoverAutomaticProjectIntegrations(ctx, c, id, project)
 	receipts, err := validateDiscoveredProjectAssistantContextResources(discovery, requested)
 	if err != nil {
 		return nil, nil, err

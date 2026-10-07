@@ -93,11 +93,11 @@ func FromContext(ctx context.Context) (TenantContext, bool) {
 	return tc, ok
 }
 
-// DelegatedCall marks a request made by a provider with a delegated user
-// token that the hub-access gate (pkg/hub/hubaccess) admitted: the provider,
-// the capability the route maps to, and the limits the tenant accepted.
-// Handlers read it to apply those limits on top of the person's own role; a
-// request without one is the person's own call.
+// DelegatedCall marks a request made by a provider that the hub-access gate
+// (pkg/hub/hubaccess) admitted: the provider, the capability the route maps
+// to, and the limits the tenant accepted. Handlers read it to apply those
+// limits on top of the person's own role; a request without one is the
+// person's own call.
 type DelegatedCall struct {
 	// User is the person the token stands for (User CR name).
 	User string
@@ -111,6 +111,11 @@ type DelegatedCall struct {
 	MaxRole string
 	// AllowInvite permits pre-provisioning an unknown email.
 	AllowInvite bool
+	// ActionProof marks a caller identity established by a short-lived proof
+	// minted at the authenticated kcp front door, rather than a delegated
+	// ServiceAccount token. The tenant resolver must prefer this verified
+	// person over the provider's bearer identity.
+	ActionProof bool
 }
 
 type delegatedCallKey struct{}

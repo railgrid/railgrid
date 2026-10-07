@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Check, Cpu, KeyRound, Loader2, Pencil, Plus, Star, Trash2 } from 'lucide-vue-next'
+import { Cpu, KeyRound, Loader2, Pencil, Plus, Star, Trash2 } from 'lucide-vue-next'
 import ModelConnectionCard from './agentkit/ModelConnectionCard.vue'
 import ModelConnectionForm from './agentkit/ModelConnectionForm.vue'
 import ModelUsageSection from './agentkit/ModelUsageSection.vue'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
+import InlineNotification from './portalkit/InlineNotification.vue'
 import type { LLMProviderPreset } from './llmDiscovery'
 import type { ProjectLLMDiscoveredModel, ProjectLLMSettings } from './types'
 
@@ -105,31 +107,25 @@ const emit = defineEmits<{
       <div class="shimmer h-24 w-full rounded bg-surface-overlay" />
       <div class="text-[12px] text-text-muted">Loading models…</div>
     </div>
-    <div v-else-if="loadError && !settings && !creationRoute" class="flex min-h-48 flex-col items-start justify-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
-      <div>{{ loadError }}</div>
-      <button type="button" class="k-btn k-btn--ghost" @click="emit('retry')">Retry</button>
-    </div>
+    <InlineNotification v-else-if="loadError && !settings && !creationRoute" tone="error" :message="loadError" action-label="Retry" @action="emit('retry')" />
 
     <template v-else>
       <div v-if="loading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
         <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
         Refreshing models…
       </div>
-      <div v-if="loadError" class="k-inline-notification k-inline-notification--error" role="alert">
-        <span>{{ loadError }}</span>
-        <button type="button" class="k-btn k-btn--ghost" @click="emit('retry')">Retry</button>
-      </div>
-      <div v-if="actionError" class="k-inline-notification k-inline-notification--error" role="alert">{{ actionError }}</div>
-      <div v-else-if="status" class="k-inline-notification k-inline-notification--success" role="status" aria-live="polite">{{ status }}</div>
-      <div v-if="testError && !editorOpen && !creationRoute" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</div>
-      <div v-else-if="testStatus && !editorOpen && !creationRoute" class="k-inline-notification k-inline-notification--success" role="status" aria-live="polite"><Check class="h-3.5 w-3.5" :stroke-width="2" />{{ testStatus }}</div>
+      <InlineNotification v-if="loadError" tone="error" :message="loadError" action-label="Retry" @action="emit('retry')" />
+      <InlineNotification v-if="actionError" tone="error" :message="actionError" />
+      <InlineNotification v-else-if="status" tone="success" :message="status" />
+      <InlineNotification v-if="testError && !editorOpen && !creationRoute" tone="error" :message="testError" />
+      <InlineNotification v-else-if="testStatus && !editorOpen && !creationRoute" tone="success" :message="testStatus" />
 
       <div v-if="settings?.models.length && !creationRoute && !editorOpen" class="k-model-grid">
         <ModelConnectionCard v-for="saved in settings.models" :key="saved.id" :name="saved.name" :model="saved.model" :endpoint="saved.baseURL" :configured="saved.configured" :is-default="saved.default" :busy="saving"
           :test-state="modelTests?.[saved.id]?.state" :test-tone="modelTests?.[saved.id]?.tone">
           <p v-if="saved.catalog" class="text-[11px] text-text-secondary">${{ saved.catalog.inputPer1M }} input · ${{ saved.catalog.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="text-[11px] text-text-secondary">Pricing unavailable</p>
           <p class="text-[11px] text-text-secondary">{{ saved.default ? 'Default for new projects' : 'Available in project model pickers' }}</p>
-          <p v-if="modelTests?.[saved.id]?.error" class="k-inline-notification k-inline-notification--error" role="alert">{{ modelTests[saved.id].error }}</p>
+          <InlineNotification v-if="modelTests?.[saved.id]?.error" tone="error" :message="modelTests[saved.id].error" />
           <template #actions>
 
             <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="saving" @click="emit('openEditor', saved.id)">
@@ -158,16 +154,21 @@ const emit = defineEmits<{
         </ModelConnectionCard>
       </div>
 
-      <div v-else-if="!editorOpen && !creationRoute" class="flex min-h-44 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border-subtle bg-surface px-5 py-8 text-center">
-        <div class="flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay text-text-muted"><Cpu class="h-5 w-5" :stroke-width="1.75" /></div>
-        <div>
-          <h4 class="text-[13px] font-semibold text-text-primary">No models configured</h4>
-          <p class="mt-1 max-w-md text-[12px] leading-5 text-text-muted">Connect a provider endpoint and credential before creating or chatting in projects.</p>
-        </div>
-        <button type="button" class="k-btn k-btn--primary" @click="emit('openEditor')">
-          <Plus class="h-4 w-4" :stroke-width="1.75" /> Connect model
-        </button>
-      </div>
+      <FirstRunGuide
+        v-else-if="!editorOpen && !creationRoute"
+        title="No models configured"
+        description="Connect a provider endpoint and credential before creating or chatting in projects."
+        primary-label="Connect model"
+        :primary-disabled="saving"
+        :steps="[
+          { label: 'Connect a provider', description: 'Add the endpoint and workspace credential.' },
+          { label: 'Choose and test a model', description: 'Verify the connection before saving.' },
+          { label: 'Use it in projects', description: 'Select the model when creating or chatting.' },
+        ]"
+        @primary="emit('openEditor')"
+      >
+        <template #icon><Cpu :stroke-width="1.75" /></template>
+      </FirstRunGuide>
 
       <ModelUsageSection v-if="!editorOpen && !creationRoute && settings?.models.length" provider="App Studio" />
 

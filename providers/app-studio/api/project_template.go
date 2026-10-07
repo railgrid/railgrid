@@ -471,10 +471,6 @@ func applyProjectDevelopmentTemplateWithContext(p *aiv1alpha1.Project, info proj
 	return nil
 }
 
-func validateActionsExternalURL(raw string) (string, error) {
-	return bindings.ValidateActionsExternalURL(raw)
-}
-
 func projectHasProviderActionGrant(p *aiv1alpha1.Project) bool {
 	return bindings.HasActiveProviderActionGrant(p)
 }

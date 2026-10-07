@@ -17,11 +17,14 @@ limitations under the License.
 package hubaccess
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +33,7 @@ import (
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/actionproof"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
@@ -71,15 +75,19 @@ type GrantReader interface {
 // Organization on one replica.
 const DefaultInvitesPerHour = 60
 
-// Gate admits provider calls made with a delegated user token to the hub
-// REST routes the provider contract allows, and nothing else.
+// Gate admits provider calls made with a delegated user token or a narrow
+// hub-signed action proof to the REST routes the provider contract allows.
 type Gate struct {
 	// Human resolves the caller's own credential (OIDC, static token, kcp
 	// ServiceAccount). When it succeeds the request is not a delegated call.
-	Human     tenant.UserResolver
-	Verify    VerifyFunc
-	Providers ProviderLookup
-	Grants    GrantReader
+	Human  tenant.UserResolver
+	Verify VerifyFunc
+	// ActionProof verifies a request-scoped proof minted at the authenticated
+	// kcp front door. Unlike a delegated ServiceAccount token, it is accepted
+	// only for the App Studio membership flows bound to the original action.
+	ActionProof *actionproof.Verifier
+	Providers   ProviderLookup
+	Grants      GrantReader
 	// PlatformDefault grants a platform provider the capabilities it declares
 	// in a workspace where no decision was recorded yet (no grant object).
 	// Platform providers are operator-installed and, under the default
@@ -94,12 +102,48 @@ type Gate struct {
 	limiter windowLimiter
 }
 
-// Middleware wraps the tenant-scoped routes. It runs before tenant.Middleware
-// and only acts on requests whose bearer is a ServiceAccount token that the
-// human resolver does not accept — i.e. a delegated token; for every other
-// request it is a pass-through and the tenant middleware decides as before.
+// Middleware wraps the tenant-scoped routes. It runs before tenant.Middleware.
+// Action proofs are verified and constrained first; requests without one use
+// the existing delegated-token path or pass through for the tenant middleware.
 func (g *Gate) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(r.Header.Values(actionproof.Header)) != 0 {
+			if !bearerLooksLikeServiceAccount(r) || g.ActionProof == nil {
+				writeStatus(w, http.StatusUnauthorized, "invalid hub action proof")
+				return
+			}
+			claims, err := g.ActionProof.Verify(r.Context(), r)
+			if err != nil {
+				klog.FromContext(r.Context()).V(2).Info("Hub action proof refused", "error", err, "method", r.Method, "path", r.URL.Path)
+				writeStatus(w, http.StatusUnauthorized, "invalid hub action proof")
+				return
+			}
+			if !actionProofAllowsMembershipRoute(claims, r) {
+				writeStatus(w, http.StatusForbidden, "the App Studio action proof does not authorize this membership request")
+				return
+			}
+			caller := Caller{
+				User:            claims.UserID,
+				OrgUUID:         claims.OrgUUID,
+				WorkspaceUUID:   claims.WorkspaceUUID,
+				Delegated:       true,
+				Provider:        claims.Provider,
+				ProviderOrgUUID: claims.ProviderOrgUUID,
+			}
+			call, status, reason := g.admit(r, caller)
+			logger := klog.FromContext(r.Context()).WithValues(
+				"provider", caller.Provider, "providerOrg", caller.ProviderOrgUUID, "user", caller.User,
+				"org", caller.OrgUUID, "workspace", caller.WorkspaceUUID, "method", r.Method, "path", r.URL.Path)
+			if status != 0 {
+				logger.Info("Action-proof hub access refused", "status", status, "reason", reason)
+				writeStatus(w, status, reason)
+				return
+			}
+			call.ActionProof = true
+			logger.V(2).Info("Action-proof hub access", "capability", call.Capability, "scope", call.Scope)
+			next.ServeHTTP(w, r.WithContext(tenant.WithDelegatedCall(r.Context(), call)))
+			return
+		}
 		if !bearerLooksLikeServiceAccount(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -133,6 +177,82 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(tenant.WithDelegatedCall(r.Context(), call)))
 	})
+}
+
+// actionProofAllowsMembershipRoute binds the narrow hub-access route to the
+// signed App Studio action. A publishing-grants write may read the roster
+// while validating a member, but only a POST action may invite; the roster
+// action itself is read-only. The target tenant is checked against the
+// signed tenant even when the request is routed through an org-level path.
+func actionProofAllowsMembershipRoute(claims actionproof.Claims, r *http.Request) bool {
+	if r == nil || claims.Provider != "app-studio" || claims.Group != "ai.railgrid.ai" ||
+		claims.Version != "v1alpha1" || claims.Resource != "projects" || claims.ParentName == "" {
+		return false
+	}
+
+	switch claims.Verb {
+	case "publishing-members":
+		if claims.Method != http.MethodGet {
+			return false
+		}
+	case "publishing-grants", "preview-grants":
+		if claims.Method != http.MethodGet && claims.Method != http.MethodPost {
+			return false
+		}
+	default:
+		return false
+	}
+
+	requirement, ok := Match(r.Method, r.URL.Path)
+	if !ok {
+		return false
+	}
+	parts := strings.Split(strings.Trim(path.Clean("/"+r.URL.Path), "/"), "/")
+	if len(parts) < 4 || parts[2] != claims.OrgUUID {
+		return false
+	}
+	if requirement.Scope == providersv1alpha1.HubAccessScopeWorkspace &&
+		(len(parts) != 6 || parts[4] != claims.WorkspaceUUID) {
+		return false
+	}
+	if r.Method == http.MethodPost {
+		return claims.Method == http.MethodPost &&
+			(claims.Verb == "publishing-grants" || claims.Verb == "preview-grants") &&
+			actionProofInviteBodyMatches(claims, r)
+	}
+	return r.Method == http.MethodGet
+}
+
+// actionProofInviteBodyMatches limits proof-backed membership writes to the
+// one invitation the original App Studio action named. The body is restored
+// for the normal membership handler, and malformed, oversized, or ambiguous
+// payloads fail closed before its authorization and mutation logic runs.
+func actionProofInviteBodyMatches(claims actionproof.Claims, r *http.Request) bool {
+	if r == nil || r.Body == nil || claims.InviteUser == "" || claims.InviteUser != strings.TrimSpace(claims.InviteUser) {
+		return false
+	}
+	const maxInviteBodyBytes = 64 << 10
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxInviteBodyBytes+1))
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) > maxInviteBodyBytes {
+		return false
+	}
+	var intent struct {
+		User   string `json:"user"`
+		Role   string `json:"role"`
+		Invite bool   `json:"invite"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&intent); err != nil {
+		return false
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return false
+	}
+	return intent.User != "" && intent.User == strings.TrimSpace(intent.User) &&
+		intent.User == claims.InviteUser && intent.Role == tenancyv1alpha1.MembershipRoleMember && intent.Invite
 }
 
 // admit decides one delegated call. A non-zero status refuses it.
@@ -224,6 +344,9 @@ func (g *Gate) resolveProvider(caller Caller) (providers.Provider, bool) {
 // for; anything else is the human resolver's decision.
 func DelegatedUserResolver(human tenant.UserResolver) tenant.UserResolver {
 	return tenant.UserResolverFunc(func(r *http.Request) (string, error) {
+		if call, ok := tenant.DelegatedCallFrom(r.Context()); ok && call.ActionProof && call.User != "" {
+			return call.User, nil
+		}
 		user, err := human.ResolveUser(r)
 		if err == nil {
 			return user, nil

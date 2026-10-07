@@ -1246,7 +1246,7 @@ defineExpose({
       :aria-label="placeholder"
       :data-placeholder="placeholder"
       :contenteditable="disabled ? 'false' : 'true'"
-      class="assistant-rich-composer min-h-[72px] w-full whitespace-pre-wrap break-words rounded-md border-0 bg-transparent px-3 py-2.5 pb-12 pr-14 text-[13px] leading-5 text-text-primary outline-none empty:before:pointer-events-none empty:before:text-text-muted empty:before:content-[attr(data-placeholder)]"
+      class="assistant-rich-composer min-h-10 w-full whitespace-pre-wrap break-words rounded-md border-0 bg-transparent px-3 py-2.5 text-[13px] leading-5 text-text-primary outline-none empty:before:pointer-events-none empty:before:text-text-muted empty:before:content-[attr(data-placeholder)]"
       @keydown="handleKeydown"
       @input="handleInput"
       @paste="handlePaste"
@@ -1263,7 +1263,7 @@ defineExpose({
       multiple
       @change="handleAttachmentInput"
     />
-    <div class="k-ai-composer__controls">
+    <div class="k-ai-composer__controls k-ai-composer__controls--flow">
       <div class="k-ai-composer__control-group">
         <div ref="addMenuRootRef" class="contents">
           <div v-if="attachmentMenuOpen" class="absolute bottom-11 left-1 [z-index:var(--app-studio-z-menu)] min-w-48 rounded-md border border-border-default bg-surface-overlay p-1.5 shadow-lg" role="menu" aria-label="Add">

@@ -593,6 +593,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// kcp API proxy: catch-all that forwards authenticated kubectl requests to kcp.
 	var kcpProxy *proxy.KCPProxy
+	var kcpAPIHandler http.Handler
 	if kcpConfig != nil && (authHandler != nil || len(s.opts.StaticAuthTokens) > 0) {
 		var verifier *oidc.IDTokenVerifier
 		if authHandler != nil {
@@ -620,6 +621,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}()
 		}
 		kcpProxy.SetBrowserSessionStore(browserSessionStore)
+		kcpAPIHandler = kcpProxy
 		kcpProxy.SetTrustedProxies(trustedProxies)
 		authRateLimit := authHandler.RateLimitMiddleware()
 		if authHandler != nil {
@@ -765,10 +767,28 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("creating delegated-identity proof key source: %w", err)
 			}
 			catalogWorkloads := &kcpTenantResolver{workloadConfig: bootstrapper, proofKeys: delegatedProofKeys}
+			catalogOwners, err := identity.NewDynamicOwnerProbe(kcpConfig)
+			if err != nil {
+				return fmt.Errorf("creating Project catalog owner probe: %w", err)
+			}
+			catalogScopedIdentity := &providerCatalogScopedIdentityResolver{
+				workspaces: bootstrapper,
+				records:    userClient.ScopedIdentities(),
+				owners:     catalogOwners,
+				clusterID:  newClusterIDResolver(kcpConfig),
+			}
+			actionProofBridge := newProviderActionProofBridge(kcpConfig, delegatedProofKeys, providerRegistry, kcpProxy.BrowserIdentity, membershipLookup)
+			actionProofVerifier := actionProofBridge.verifier()
+			kcpAPIHandler = actionProofBridge.wrap(kcpProxy)
 			providerListHandler.SetMiddleware(providerCatalogMiddleware(
 				tenant.OptionalOrgMiddleware(userResolver, membershipLookup),
-				catalogWorkloads.resolveWorkloadServiceAccount,
+				providerCatalogWorkloadVerifier(catalogWorkloads.resolveWorkloadServiceAccount, catalogScopedIdentity),
+				actionProofVerifier.Verify,
 			))
+			router.Handle("/api/providers/{provider}/resources/{resource}", &providerResourceDiscovery{
+				verify: actionProofVerifier.Verify, registry: providerRegistry,
+				bound: actionProofBridge.bound, client: actionProofResourceClient(kcpConfig),
+			}).Methods(http.MethodGet)
 			// A provider holding a delegated token in place of the caller's
 			// bearer may call only the hub REST capabilities its catalog entry
 			// declares (spec.hub.access) and the tenant accepted for it
@@ -777,6 +797,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// to the person the token stands for, whose own role still applies.
 			hubAccessGrants := hubaccess.NewStore(userClient)
 			hubAccessGate := &hubaccess.Gate{
+				ActionProof:     actionProofVerifier,
 				Human:           userResolver,
 				Verify:          catalogWorkloads.verifyHubAccessCaller,
 				Providers:       providerRegistry,
@@ -1262,7 +1283,7 @@ func (s *Server) Run(ctx context.Context) error {
 		//    hub's own /services/ handlers keep precedence.
 		if kcpProxy != nil {
 			if isKCPAPIPath(r.URL.Path) {
-				kcpProxy.ServeHTTP(w, r)
+				kcpAPIHandler.ServeHTTP(w, r)
 				return
 			}
 		}

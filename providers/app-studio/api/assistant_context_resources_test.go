@@ -236,7 +236,7 @@ func TestProjectAssistantContextResourceInheritedContinuationPreservesReceiptAft
 		},
 		UID: "predecessor-uid", ResourceVersion: "predecessor-rv", CatalogDigest: "sha256:predecessor-catalog",
 	}}
-	updated, got, err := server.prepareProjectAssistantContextResources(context.Background(), client, identity{user: "alice"}, project, projectAssistantContextResourceInputsFromReceipts(inherited), inherited)
+	updated, got, err := server.prepareProjectAssistantContextResources(context.Background(), client, automaticIntegrationIdentity("alice"), project, projectAssistantContextResourceInputsFromReceipts(inherited), inherited)
 	if err != nil {
 		t.Fatalf("prepare inherited continuation: %v", err)
 	}

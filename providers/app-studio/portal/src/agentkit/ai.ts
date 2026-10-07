@@ -73,6 +73,8 @@ export interface AIWorkbenchLauncherItemView {
   readonly subtitle?: string
   readonly iconURL?: string
   readonly icon?: Component
+  /** Optional task group. Omit to retain the single suggested section. */
+  readonly group?: string
 }
 
 /** Minimum identity used by the conversation rail. */

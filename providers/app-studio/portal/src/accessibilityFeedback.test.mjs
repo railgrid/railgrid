@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+const notification = await readFile(new URL('./portalkit/InlineNotification.vue', import.meta.url), 'utf8')
 const timestamp = await readFile(new URL('./agentkit/AITimestamp.vue', import.meta.url), 'utf8')
 const canonicalAgentKitConversation = await readFile(new URL('../../../../provider-sdk/agentkit/conversation.css', import.meta.url), 'utf8')
 const studioStyles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
@@ -41,7 +42,9 @@ test('announces asynchronous conversation and settings feedback', () => {
   assert.equal(followUpAlerts.length, 2)
   assert.equal(permissionAlerts.length, 2)
   assert.match(app, /v-else-if="developmentSyncStatus"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/)
-  assert.match(app, /v-if="projectSettingsError \|\| projectSettingsStatus"[\s\S]*:role="projectSettingsError \? 'alert' : 'status'"[\s\S]*:aria-live="projectSettingsError \? 'assertive' : 'polite'"[\s\S]*aria-atomic="true"/)
+  assert.match(app, /<InlineNotification\s+v-if="projectSettingsError \|\| projectSettingsStatus"\s+:tone="projectSettingsError \? 'error' : 'success'"/)
+  assert.match(notification, /const assertive = \(\) => props.tone === 'error'/)
+  assert.match(notification, /:role="liveRole\(\)"[\s\S]*:aria-live="liveMode\(\)"[\s\S]*aria-atomic="true"/)
   assert.match(app, /v-if="error && !projectDeletionError"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
   assert.match(app, /v-if="createSetupErrorMessage"[^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)
   assert.match(app, /v-if="error"[^>]*max-w-\[860px\][^>]*role="alert"[^>]*aria-live="assertive"[^>]*aria-atomic="true"/)

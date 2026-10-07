@@ -173,12 +173,13 @@ func TestProviderActionForwardingNeverRetriesWithInsecureTLS(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL), actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: true}
+	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL), actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: false}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	ref := &aiv1alpha1.ProjectProviderResourceReference{
 		Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items",
 	}
-	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
+	s.projectIdentityTokenFor = testProjectIdentityToken
+	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, projectIntegrationTestOwner(), "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected verified TLS failure against self-signed upstream")
 	}
@@ -193,15 +194,22 @@ func TestProviderActionForwardingNeverRetriesWithInsecureTLS(t *testing.T) {
 	}
 }
 
-// The forward rides the PROVIDER's HTTP client — the credential and TLS trust
-// of its kubeconfig, which is what reaches the export virtual workspace — not
-// a transport of this handler's own.
-func TestProviderActionForwardingUsesTheProviderHTTPClient(t *testing.T) {
+func projectIntegrationTestOwner() *aiv1alpha1.Project {
+	return &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}}
+}
+
+func testProjectIdentityToken(context.Context, identity, *aiv1alpha1.Project) (string, error) {
+	return "project-workload-token", nil
+}
+
+// The target provider sees only the Project's scoped identity; the App Studio
+// caller factory does not authenticate or authorize this cross-provider call.
+func TestProviderActionForwardingUsesTheProjectIdentity(t *testing.T) {
 	var calls atomic.Int32
 	ref := &aiv1alpha1.ProjectProviderResourceReference{
 		Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items",
 	}
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(projectProviderActionEnvelope{
@@ -213,29 +221,29 @@ func TestProviderActionForwardingUsesTheProviderHTTPClient(t *testing.T) {
 	callers := newTestCallers(nil, upstream.URL)
 	callers.http = upstream.Client()
 	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, callers: callers, actionsExternalURL: "https://hub.example", mcpInsecureSkipTLSVerify: true}
+	s.projectIdentityTokenFor = testProjectIdentityToken
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
-	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
+	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, projectIntegrationTestOwner(), "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
-		t.Fatalf("forward with the provider client = status %d envelope %#v err %v", status, envelope, err)
+		t.Fatalf("forward with the Project identity = status %d envelope %#v err %v", status, envelope, err)
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("upstream calls = %d, want one verified request", got)
 	}
 }
 
-// The forward is made AS APP STUDIO through its export virtual workspace: the
-// caller's spoofable scope headers and any bearer on the inbound request never
-// reach the provider; the kcp-authenticated caller travels as a label only.
-func TestProviderActionForwardingIsMadeAsTheProvider(t *testing.T) {
+// The forward is made as the Project-owned workload identity; no human bearer
+// or caller label is sent to the target provider.
+func TestProviderActionForwardingIsMadeAsTheProject(t *testing.T) {
 	ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items"}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for _, header := range []string{"X-Railgrid-Org", "X-Railgrid-Workspace", "X-Railgrid-Tenant", "Authorization"} {
+		for _, header := range []string{"X-Railgrid-Org", "X-Railgrid-Workspace", "X-Railgrid-Tenant", "X-Railgrid-User"} {
 			if got := r.Header.Get(header); got != "" {
 				t.Errorf("%s = %q, want none on a cross-provider verb", header, got)
 			}
 		}
-		if got := r.Header.Get("X-Railgrid-User"); got != "alice" {
-			t.Errorf("X-Railgrid-User = %q, want alice", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer project-workload-token" {
+			t.Errorf("Authorization = %q, want the Project-owned workload identity", got)
 		}
 		if got := r.URL.Path; got != "/clusters/cluster-a/apis/example/v1/items/item/lookup" {
 			t.Errorf("path = %q, want the claimed verb's kube path", got)
@@ -246,13 +254,14 @@ func TestProviderActionForwardingIsMadeAsTheProvider(t *testing.T) {
 	}))
 	defer upstream.Close()
 	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL), actionsExternalURL: "https://hub.example"}
+	s.projectIdentityTokenFor = testProjectIdentityToken
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request = stampTestCaller(request, testUserForToken("caller-token"))
 	request.Header.Set("X-Railgrid-Org", "spoofed")
 	request.Header.Set("X-Railgrid-Workspace", "spoofed")
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{
 		tenant: "cluster-a", workspacePath: "root:railgrid:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", clusterID: "cluster-a", user: "alice",
-	}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
+	}, projectIntegrationTestOwner(), "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
 		t.Fatalf("forward = status %d envelope %#v err %v", status, envelope, err)
 	}
@@ -276,7 +285,8 @@ func TestProviderActionForwardingRejectsRedirectWithoutLeakingBearer(t *testing.
 	s := &Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: redirect.URL, callers: newTestCallers(nil, redirect.URL), actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request = stampTestCaller(request, testUserForToken("caller-token"))
-	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
+	s.projectIdentityTokenFor = testProjectIdentityToken
+	status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "cluster-a"}, projectIntegrationTestOwner(), "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err == nil || status != http.StatusBadGateway || envelope.Error == nil {
 		t.Fatalf("redirect forward = status %d envelope %#v err %v", status, envelope, err)
 	}
@@ -348,6 +358,22 @@ func newIntegrationHTTPFixture(t *testing.T, project *aiv1alpha1.Project) *integ
 	f.hub = httptest.NewServer(http.HandlerFunc(f.serveProviderAction))
 	t.Cleanup(f.hub.Close)
 	return f
+}
+
+func integrationTestServer(t *testing.T, fixture *integrationHTTPFixture) *Server {
+	t.Helper()
+	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server.callers = newTestCallers(nil, fixture.hub.URL)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	server.actionsExternalURL = "https://actions.example"
+	server.providerActionCatalogResolver = integrationTestCatalogResolver
+	server.projectIdentityTokenFor = testProjectIdentityToken
+	server.integrationAccessReviewer = integrationTestAccessReview
+	server.projectProviderReferenceReader = func(context.Context, identity, *aiv1alpha1.Project, *aiv1alpha1.ProjectProviderResourceReference) (*unstructured.Unstructured, error) {
+		return fixture.table(t).DeepCopy(), nil
+	}
+	return server
 }
 
 // serveProviderAction emulates a provider's action as kcp serves it on App
@@ -573,7 +599,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
 		Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Demo"},
 	})
-	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server := integrationTestServer(t, fixture)
 	server.callers = newTestCallers(nil, fixture.hub.URL)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
@@ -628,20 +654,18 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	}
 	actionRequest := requests[0]
 	// The route IS the resource reference: cluster, group, resource, name and
-	// action are all addressed in the kube path of the claimed custom
-	// subresource on App Studio's export virtual workspace.
+	// action are addressed in the tenant's custom subresource path.
 	if actionRequest.URL != "/clusters/cluster-a/apis/databricks.railgrid.ai/v1alpha1/tables/orders/query_table" {
 		t.Fatalf("provider action URL = %q, want the claimed verb's kube path", actionRequest.URL)
 	}
-	// Made AS APP STUDIO: no caller bearer travels (the provider client
-	// authenticates), the caller is a label, and correlation and deadline
-	// headers are propagated.
-	if actionRequest.Headers.Get("Authorization") != "" ||
-		actionRequest.Headers.Get("X-Railgrid-User") != "alice@example.com" ||
+	// Made with the Project-owned scoped identity; no human bearer or user label
+	// travels, while correlation and deadline headers are propagated.
+	if actionRequest.Headers.Get("Authorization") != "Bearer project-workload-token" ||
+		actionRequest.Headers.Get("X-Railgrid-User") != "" ||
 		actionRequest.Headers.Get("Idempotency-Key") != "idem-1" ||
 		actionRequest.Headers.Get("X-Request-ID") != "request-1" ||
 		actionRequest.Headers.Get("X-Railgrid-Action-Deadline-Ms") != "45000" {
-		t.Fatalf("provider action caller headers = %#v, want no bearer, the caller label, correlation and deadline", actionRequest.Headers)
+		t.Fatalf("provider action caller headers = %#v, want Project identity, no user label, correlation and deadline", actionRequest.Headers)
 	}
 	for _, field := range []string{"provider", "action", "actionVersion", "schemaDigest", "resourceRef"} {
 		if _, present := actionRequest.Body[field]; present {
@@ -673,7 +697,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithDevelopmentRuntimeBinding())
 	fixture.setApplication(t, developmentApplicationObject())
-	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server := integrationTestServer(t, fixture)
 	server.callers = newTestCallers(nil, fixture.hub.URL)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
@@ -750,10 +774,11 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	fixture := newIntegrationHTTPFixture(t, initial)
 	fixture.setApplication(t, developmentApplicationObject())
 	before := fixture.project(t)
-	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server := integrationTestServer(t, fixture)
 	server.callers = newTestCallers(nil, fixture.hub.URL)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
+	server.actionsExternalURL = ""
 	server.providerActionCatalogResolver = integrationTestCatalogResolver
 	router := mux.NewRouter()
 	server.Register(router)
@@ -813,7 +838,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	fixture := newIntegrationHTTPFixture(t, initial)
 	fixture.setApplication(t, developmentApplicationObject())
 	before := fixture.project(t)
-	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server := integrationTestServer(t, fixture)
 	server.callers = newTestCallers(nil, fixture.hub.URL)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
@@ -846,7 +871,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 
 func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, projectWithTableIntegration(false))
-	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server := integrationTestServer(t, fixture)
 	server.callers = newTestCallers(nil, fixture.hub.URL)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
@@ -898,7 +923,7 @@ func TestProjectIntegrationInvokeRejectsBeforeHubForward(t *testing.T) {
 func TestProjectIntegrationInvokeForwardsGenericProviderAndInput(t *testing.T) {
 	fixture := newIntegrationHTTPFixture(t, integrationProjectWithProvider("other"))
 	fixture.providerName = "other"
-	server := NewWithWorkspace(fixture.proxy.Client(), nil, nil, fixture.hub.URL, false)
+	server := integrationTestServer(t, fixture)
 	server.callers = newTestCallers(nil, fixture.hub.URL)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
@@ -1043,11 +1068,11 @@ func TestProviderActionForwardingAcceptsSharedProviderEnvelopes(t *testing.T) {
 					_, _ = w.Write(data)
 				}))
 				defer upstream.Close()
-				s := &Server{hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL), actionsExternalURL: "https://actions.example"}
+				s := &Server{hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL), actionsExternalURL: "https://actions.example", projectIdentityTokenFor: testProjectIdentityToken}
 				request := httptest.NewRequest("POST", "/", nil)
 				request.Header.Set("X-Request-ID", "correlation")
 				request.Header.Set("Idempotency-Key", "stable-write-key")
-				status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "tenant"}, provider, "action", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{"title":"Draft"}`))
+				status, envelope, err := s.forwardProjectProviderAction(request, identity{clusterID: "tenant"}, projectIntegrationTestOwner(), provider, "action", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{"title":"Draft"}`))
 				if err != nil {
 					t.Fatal(err)
 				}

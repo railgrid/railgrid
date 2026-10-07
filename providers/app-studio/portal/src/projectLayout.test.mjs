@@ -13,10 +13,17 @@ test('defaults and persists the Projects layout through the shared browser prefe
   assert.match(app, /<LayoutSelector v-model="projectLayout"[^>]*aria-label="Project layout"/)
 })
 
-test('keeps the existing gallery as the grid branch after route resolution and uses the canonical table in list mode', () => {
-  const branchStart = app.indexOf('<template v-if="projectLayout === \'grid\'">')
+test('shares first-run guidance before the grid/list branches and keeps the gallery in grid mode', () => {
+  const guideStart = app.indexOf('<FirstRunGuide')
+  const branchStart = app.indexOf('<template v-else-if="projectLayout === \'grid\'">')
   const listStart = app.indexOf('<ResourceTable', branchStart)
-  assert.ok(branchStart >= 0 && listStart > branchStart)
+  assert.ok(guideStart >= 0 && branchStart > guideStart && listStart > branchStart)
+
+  const guide = app.slice(guideStart, branchStart)
+  assert.match(guide, /<FirstRunGuide[\s\S]*v-if="projectsLoaded && !loading && !error && projects\.length === 0"/)
+  assert.match(guide, /title="No projects yet\."/)
+  assert.match(guide, /description="Start with a project description and review the plan before anything is created\."/)
+  assert.match(guide, /primary-label="New project"[\s\S]*@primary="openNewProjectComposer"/)
 
   const grid = app.slice(branchStart, listStart)
   assert.match(grid, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,280px\),360px\)\)\] justify-start/)
@@ -25,8 +32,8 @@ test('keeps the existing gallery as the grid branch after route resolution and u
   assert.match(grid, /v-if="projectThumbnailURLs\[project\.name\]"/)
   assert.match(grid, /@click="enterProject\(project\)"/)
   assert.match(grid, /@click\.stop="requestDeleteProject\(project\)"/)
-  assert.match(grid, /No projects yet\./)
-  assert.match(grid, /Start with a project description and review the plan before anything is created\./)
+  assert.match(grid, /<StatusBadge :status="isProjectDeleting\(project\) \? 'Deleting…' : project\.phase \|\| 'Pending'/)
+  assert.doesNotMatch(grid, /No projects yet\.|Start with a project description and review the plan before anything is created\./)
   assert.match(grid, /No projects match this search\./)
 
   const list = app.slice(listStart, app.indexOf('</ResourceTable>', listStart))
@@ -42,7 +49,7 @@ test('adapts filtered projects into an interactive canonical list with isolated 
   assert.match(app, /name: project\.name,[\s\S]*uid: project\.uid \?\? '',[\s\S]*rowKey: `\$\{project\.name\}:\$\{project\.uid \?\? ''\}`,[\s\S]*description: project\.description \|\| project\.name,[\s\S]*phase: isProjectDeleting\(project\) \? 'Deleting…' : project\.phase \|\| 'Pending',[\s\S]*updated: projectTimestamp\(project\),[\s\S]*deleting: isProjectDeleting\(project\),[\s\S]*_project: project/)
   assert.match(app, /function projectFromTableRow\(row: Record<string, unknown>\): Project \| null/)
 
-  const listStart = app.indexOf('<ResourceTable', app.indexOf('<template v-if="projectLayout === \'grid\'">'))
+  const listStart = app.indexOf('<ResourceTable', app.indexOf('<template v-else-if="projectLayout === \'grid\'">'))
   const list = app.slice(listStart, app.indexOf('</ResourceTable>', listStart))
   assert.match(list, /:columns="projectTableColumns"/)
   assert.match(list, /:rows="projectTableRows"/)

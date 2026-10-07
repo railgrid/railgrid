@@ -15,6 +15,7 @@ const emit = defineEmits<{
 
 const root = ref<HTMLElement | null>(null)
 const triggerRef = ref<HTMLButtonElement | null>(null)
+const listboxRef = ref<HTMLElement | null>(null)
 const open = ref(false)
 const activeIndex = ref(0)
 const selected = computed(() => props.models.find((model) => model.id === props.selectedID) ?? props.models[0])
@@ -26,6 +27,19 @@ function selectedIndex(): number {
   return index >= 0 ? index : 0
 }
 
+function revealActiveOption() {
+  const listbox = listboxRef.value
+  const option = listbox?.querySelector<HTMLElement>(`[id="${activeOptionID.value}"]`)
+  if (!listbox || !option) return
+  const bounds = listbox.getBoundingClientRect()
+  const item = option.getBoundingClientRect()
+  const top = item.top - bounds.top - listbox.clientTop
+  const bottom = item.bottom - bounds.top - listbox.clientTop
+  // Scroll this list only; scrollIntoView can move the surrounding split pane.
+  if (top < 0) listbox.scrollTop += top
+  else if (bottom > listbox.clientHeight) listbox.scrollTop += bottom - listbox.clientHeight
+}
+
 function openPicker(direction: 0 | 1 | -1 = 0) {
   if (props.disabled || !props.models.length) return
   const current = selectedIndex()
@@ -35,7 +49,7 @@ function openPicker(direction: 0 | 1 | -1 = 0) {
       ? (current - 1 + props.models.length) % props.models.length
       : current
   open.value = true
-  void nextTick(() => document.getElementById(activeOptionID.value ?? '')?.scrollIntoView({ block: 'nearest' }))
+  void nextTick(revealActiveOption)
 }
 
 function closePicker(restoreFocus = true) {
@@ -57,7 +71,7 @@ function closeFromOutside(event: PointerEvent) {
 function moveActive(delta: number) {
   if (!props.models.length) return
   activeIndex.value = (activeIndex.value + delta + props.models.length) % props.models.length
-  void nextTick(() => document.getElementById(activeOptionID.value ?? '')?.scrollIntoView({ block: 'nearest' }))
+  void nextTick(revealActiveOption)
 }
 
 function handleTriggerKeydown(event: KeyboardEvent) {
@@ -77,7 +91,7 @@ function handleTriggerKeydown(event: KeyboardEvent) {
   if (open.value && (event.key === 'Home' || event.key === 'End')) {
     event.preventDefault()
     activeIndex.value = event.key === 'Home' ? 0 : props.models.length - 1
-    void nextTick(() => document.getElementById(activeOptionID.value ?? '')?.scrollIntoView({ block: 'nearest' }))
+    void nextTick(revealActiveOption)
     return
   }
   if (event.key === 'Tab' && open.value) {
@@ -129,10 +143,11 @@ watch(() => [props.selectedID, props.models.length, props.disabled] as const, ([
 
     <div
       v-if="open"
+      ref="listboxRef"
       :id="listboxID"
       role="listbox"
       aria-label="Choose model"
-      class="fixed inset-x-2 bottom-2 [z-index:var(--app-studio-z-dropdown)] max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-lg border border-border-default bg-surface-overlay p-1.5 shadow-xl md:absolute md:inset-x-auto md:bottom-9 md:left-0 md:max-h-72 md:w-72"
+      class="k-menu fixed inset-x-2 bottom-2 [z-index:var(--app-studio-z-dropdown)] max-h-[calc(100dvh-1rem)] overflow-y-auto md:absolute md:inset-x-auto md:bottom-9 md:right-0 md:max-h-72 md:w-72"
     >
       <button
         v-for="(model, index) in models"
@@ -142,8 +157,11 @@ watch(() => [props.selectedID, props.models.length, props.disabled] as const, ([
         role="option"
         tabindex="-1"
         :aria-selected="model.id === selected?.id"
-        class="app-studio-touch-target flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition hover:bg-surface-hover"
-        :class="activeIndex === index ? 'bg-surface-hover' : ''"
+        class="app-studio-touch-target k-menu-item items-start"
+        :class="{
+          'is-selected': model.id === selected?.id,
+          'bg-surface-overlay': activeIndex === index && model.id !== selected?.id,
+        }"
         @mousedown.prevent
         @mouseenter="activeIndex = index"
         @click="choose(model.id)"

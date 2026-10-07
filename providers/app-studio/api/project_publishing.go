@@ -851,6 +851,7 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	s.setHubCallerHeaders(req.Header, id)
+	s.setHubActionProofHeader(req.Header, id)
 	client := s.publishingHTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -972,6 +973,7 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 			return nil, err
 		}
 		s.setHubCallerHeaders(req.Header, id)
+		s.setHubActionProofHeader(req.Header, id)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("membership lookup: %w", err)

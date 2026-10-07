@@ -91,3 +91,37 @@ func TestActorIsReadFromHeadersBeforeTheAdapterAndUnresolvedWithout(t *testing.T
 		t.Fatalf("userErr = %v, want errNoActorLookup", id.userErr)
 	}
 }
+
+func TestIdentityCapturesOnlyOneHubActionProof(t *testing.T) {
+	s := &Server{
+		tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "workspace-a"),
+		tenantActors:     defaultTestActors.lookup,
+	}
+	r := httptest.NewRequest(http.MethodGet, testVerbPath("cluster-a", "projects", "demo", "publishing-members"), nil)
+	r = stampTestCaller(r, "test-user")
+	r.Header.Set(dataplane.HeaderActionProof, "signed-short-lived-proof")
+	id, ok := s.identityFromRequest(httptest.NewRecorder(), r)
+	if !ok || id.actionProof != "signed-short-lived-proof" {
+		t.Fatalf("identity proof = %q / ok=%v, want the one inbound action proof", id.actionProof, ok)
+	}
+
+	r.Header.Add(dataplane.HeaderActionProof, "second-value")
+	id, ok = s.identityFromRequest(httptest.NewRecorder(), r)
+	if !ok || id.actionProof != "" {
+		t.Fatalf("duplicate action-proof headers produced %q / ok=%v, want an empty proof", id.actionProof, ok)
+	}
+}
+
+func TestGenericHubRequestDoesNotForwardActionProof(t *testing.T) {
+	s := &Server{hubToken: "provider-token"}
+	r := httptest.NewRequest(http.MethodPost, "https://hub.example/mcp", nil)
+	r.Header.Set("Authorization", "Bearer caller-token")
+	r.Header.Set(dataplane.HeaderActionProof, "short-lived-proof")
+	out := s.hubRequest(r, identity{tenant: "cluster-a", clusterID: "cluster-a", user: "alice"})
+	if got := out.Header.Get(dataplane.HeaderActionProof); got != "" {
+		t.Fatalf("generic hub request forwarded action proof %q", got)
+	}
+	if got := out.Header.Get("Authorization"); got != "Bearer provider-token" {
+		t.Fatalf("generic hub request authorization = %q, want provider token", got)
+	}
+}

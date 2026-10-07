@@ -82,6 +82,7 @@ test('rejects stale catalog responses when serial, project, or context changes',
 
 test('binds search input to the filtered catalog and exposes a clear action', () => {
   assert.match(workbench, /v-model="query"/)
+  assert.match(workbench, /class="app-studio-touch-target k-input skills-search-input h-9 min-w-0"/)
   assert.match(workbench, /filterAssistantSkills\(localSkills\.value, query\.value\)/)
   assert.match(workbench, /v-for="skill in filteredSkills"/)
   assert.match(workbench, /aria-label="Clear skill search"/)
@@ -105,7 +106,9 @@ test('keeps skill buttons native and contains detail focus inside the provider o
 })
 
 test('keeps the skill switch compact inside a full touch target', () => {
-  assert.match(workbench, /role="switch"[\s\S]*class="flex h-11 w-12 shrink-0 items-center rounded-sm bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\/40/)
-  assert.match(workbench, /aria-hidden="true"[\s\S]*class="relative block h-7 w-12 shrink-0 rounded-sm transition"/)
-  assert.doesNotMatch(workbench, /role="switch"[\s\S]{0,300}app-studio-touch-target relative h-7 w-12/)
+  assert.match(workbench, /role="switch"[\s\S]*class="app-studio-touch-target flex h-11 w-11 shrink-0 items-center justify-center rounded-sm bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\/40/)
+  assert.match(workbench, /class="k-toggle" aria-hidden="true" :aria-checked="selectedSkill\.enabled !== false"/)
+  assert.match(workbench, /class="k-toggle__knob"/)
+  assert.match(workbench, /@container \(max-width: 540px\)[\s\S]*grid-template-columns: 56px minmax\(0, 1fr\)[\s\S]*grid-column: 1 \/ -1/)
+  assert.doesNotMatch(workbench, /skill-detail-title[^\n]*truncate/)
 })

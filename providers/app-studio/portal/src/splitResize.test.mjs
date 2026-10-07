@@ -8,7 +8,7 @@ const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const conversationRail = await readFile(new URL('./agentkit/AIConversationRail.vue', import.meta.url), 'utf8')
 const splitHelperSource = app.match(/function splitPercentFromPointer\([\s\S]*?\n\}/)?.[0]
 const splitBoundsSource = app.match(/const SPLIT_MIN_PERCENT = 32\nconst SPLIT_MAX_PERCENT = 68/)?.[0]
-const conversationMinimumConstantSource = app.match(/const CONVERSATION_BASE_MIN_WIDTH = 240/)?.[0]
+const conversationMinimumConstantSource = app.match(/const CONVERSATION_BASE_MIN_WIDTH = 360/)?.[0]
 const conversationMinimumHelperSource = app.match(/function conversationMinimumWidthForLayout\([\s\S]*?\n\}/)?.[0]
 assert.ok(splitHelperSource, 'App.vue should define the split-region pointer geometry helper')
 assert.ok(splitBoundsSource, 'App.vue should define split bounds')
@@ -83,7 +83,7 @@ export function createResizeHarness(rect = { left: 0, width: 1000 }) {
   const splitRegionWidth = { value: rect.width }
   const splitResizing = { value: false }
   const splitWidth = { value: 38 }
-  const conversationMinimumWidth = { value: 240 }
+  const conversationMinimumWidth = { value: 360 }
   let splitResizePointerID = null
   let splitResizeTarget = null
   const persisted = []
@@ -158,9 +158,9 @@ test('ignores unusable split-region geometry without producing a bad width', () 
 
 test('derives conversation minimum from anchored rail width without reserving flyout width', () => {
   const railStates = [
-    ['collapsed', 0, 240],
-    ['flyout', 0, 240],
-    ['anchored', 224, 464],
+    ['collapsed', 0, 360],
+    ['flyout', 0, 360],
+    ['anchored', 224, 584],
   ]
   for (const [state, layoutWidth, expectedMinimum] of railStates) {
     assert.equal(
@@ -169,9 +169,9 @@ test('derives conversation minimum from anchored rail width without reserving fl
       `${state} rail should contribute only its actual in-flow width`,
     )
   }
- assert.equal(splitPercentFromPointer(0, { left: 0, width: 1000 }, conversationMinimumWidthForLayout(0)), 32)
-  assert.ok(Math.abs(splitPercentFromPointer(0, { left: 0, width: 1000 }, conversationMinimumWidthForLayout(224)) - 46.4) < 0.000001)
- assert.equal(splitPercentFromPointer(0, { left: 0, width: 500 }, conversationMinimumWidthForLayout(224)), 68)
+  assert.equal(splitPercentFromPointer(0, { left: 0, width: 1000 }, conversationMinimumWidthForLayout(0)), 36)
+  assert.ok(Math.abs(splitPercentFromPointer(0, { left: 0, width: 1000 }, conversationMinimumWidthForLayout(224)) - 58.4) < 0.000001)
+  assert.equal(splitPercentFromPointer(0, { left: 0, width: 500 }, conversationMinimumWidthForLayout(224)), 68)
   assert.equal(splitPercentFromPointer(900, { left: 0, width: 1000 }, conversationMinimumWidthForLayout(0)), 68)
 })
 
@@ -207,8 +207,8 @@ test('keeps the title bar and conversation rail inside the resizable left group'
   const chatSectionStart = app.indexOf('<section class="flex min-h-[360px]', railStart)
   const chatSectionEnd = app.indexOf('>', chatSectionStart)
   const chatSection = app.slice(chatSectionStart, chatSectionEnd + 1)
-  assert.match(chatSection, /md:min-w-\[240px\]/)
-  assert.doesNotMatch(chatSection, /(?:^| )min-w-\[240px\]/)
+  assert.match(chatSection, /md:min-w-\[360px\]/)
+  assert.doesNotMatch(chatSection, /(?:^| )min-w-\[360px\]/)
 })
 
 test('keeps the main divider captured and keyboard accessible across terminal pointer paths', () => {
@@ -250,11 +250,11 @@ test('keeps workbench visibility independent from split width and tab state', ()
 test('reserves only an anchored desktop rail in the conversation minimum', () => {
   const harness = createConversationRailLayoutHarness()
   assert.equal(harness.layoutWidth.value, 224)
-  assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 464)
+  assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 584)
 
   harness.refs.anchored.value = false
   assert.equal(harness.layoutWidth.value, 0, 'a collapsed/flyout rail must not reserve width')
-  assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 240)
+  assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 360)
 
   harness.refs.anchored.value = true
   harness.refs.mobileOpen.value = true
@@ -266,7 +266,7 @@ test('reserves only an anchored desktop rail in the conversation minimum', () =>
   harness.refs.mobileViewport.value = false
   harness.refs.effectiveWidth.value = 312
   assert.equal(harness.layoutWidth.value, 312, 'the desktop rail should contribute its effective in-flow width')
-  assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 552)
+  assert.equal(conversationMinimumWidthForLayout(harness.layoutWidth.value), 672)
 })
 
 test('uses one captured pointer stream and cleans it up on every terminal path', () => {
@@ -342,20 +342,20 @@ test('ignores another pointer and keyboard-resizes within the live minimum', () 
   assert.equal(key('ArrowRight', true), true)
   assert.equal(harness.refs.splitWidth.value, 46)
   assert.equal(key('Home'), true)
-  assert.equal(harness.refs.splitWidth.value, 32)
+  assert.equal(harness.refs.splitWidth.value, 36)
   assert.equal(key('End'), true)
   assert.equal(harness.refs.splitWidth.value, 68)
 
   harness.refs.splitWidth.value = 40
   // The harness exposes the same live ref used by resizeWorkspace and the
   // keyboard handler, so an anchored rail can force the lower bound up.
-  harness.refs.conversationMinimumWidth.value = 464
+  harness.refs.conversationMinimumWidth.value = 584
   assert.equal(key('Home'), true)
-  assert.ok(Math.abs(harness.refs.splitWidth.value - 46.4) < 0.000001)
+  assert.ok(Math.abs(harness.refs.splitWidth.value - 58.4) < 0.000001)
 
-  harness.refs.splitWidth.value = 46.4
+  harness.refs.splitWidth.value = 58.4
   assert.equal(key('PageDown'), false, 'unrelated keys must not be consumed')
-  assert.equal(harness.refs.splitWidth.value, 46.4)
+  assert.equal(harness.refs.splitWidth.value, 58.4)
 })
 
 test('keeps the desktop split and mobile single-pane layout structurally distinct', () => {

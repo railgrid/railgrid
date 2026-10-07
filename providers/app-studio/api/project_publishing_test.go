@@ -35,6 +35,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 var (
@@ -121,11 +122,11 @@ func rawJSONForPublishing(value any) runtime.RawExtension {
 	return runtime.RawExtension{Raw: raw}
 }
 
-func setPublishingIdentity(r *http.Request) {
+func setPublishingIdentity(r *http.Request) *http.Request {
 	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	r.Header.Set("X-Railgrid-User", "alice")
-	r = stampTestCaller(r, testUserForToken("alice-token"))
+	return stampTestCaller(r, testUserForToken("alice-token"))
 }
 
 func publishingDo(t *testing.T, router *mux.Router, method, target, body string) *httptest.ResponseRecorder {
@@ -137,7 +138,7 @@ func publishingDo(t *testing.T, router *mux.Router, method, target, body string)
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, target, reader)
-	setPublishingIdentity(req)
+	req = setPublishingIdentity(req)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec
@@ -563,11 +564,13 @@ func staleGrantBinding(instance, user string) *unstructured.Unstructured {
 // org and workspace rosters for org-a / ws-1 (the tenant setPublishingIdentity
 // presents).
 type publishingHubStub struct {
-	URL          string
-	inviteMethod string
-	invitePath   string
-	inviteHeader http.Header
-	inviteBody   []byte
+	URL             string
+	inviteMethod    string
+	invitePath      string
+	inviteHeader    http.Header
+	inviteBody      []byte
+	orgRosterHeader http.Header
+	wsRosterHeader  http.Header
 }
 
 func newPublishingHubStub(t *testing.T, inviteStatus int, inviteBody string, orgRoster, wsRoster []publishingMember) *publishingHubStub {
@@ -582,8 +585,10 @@ func newPublishingHubStub(t *testing.T, inviteStatus int, inviteBody string, org
 			w.WriteHeader(inviteStatus)
 			_, _ = w.Write([]byte(inviteBody))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/orgs/org-a/memberships":
+			stub.orgRosterHeader = r.Header.Clone()
 			writeJSON(w, http.StatusOK, publishingMembersResponse{Items: orgRoster})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/orgs/org-a/workspaces/ws-1/memberships":
+			stub.wsRosterHeader = r.Header.Clone()
 			writeJSON(w, http.StatusOK, publishingMembersResponse{Items: wsRoster})
 		default:
 			http.NotFound(w, r)
@@ -676,6 +681,42 @@ func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 	}
 	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "railgrid:carol@example.com" {
 		t.Fatalf("grant bound %q, want the hub-reported RBAC identity", subject)
+	}
+}
+
+func TestMembershipHubCallsForwardTheCapturedActionProof(t *testing.T) {
+	const proof = "hub-signed-action-proof"
+	hub := newPublishingHubStub(t, http.StatusCreated,
+		`{"user":"user-carol","rbacIdentity":"railgrid:carol@example.com","email":"carol@example.com","role":"member","orgUUID":"org-a"}`,
+		[]publishingMember{{User: "user-bob", RBACIdentity: "railgrid:bob@example.com"}},
+		[]publishingMember{{User: "user-bob", RBACIdentity: "railgrid:bob@example.com"}})
+	server := &Server{
+		tenantWorkspaces: testWorkspaceLookup("cluster-a", "org-a", "ws-1"),
+		tenantActors:     defaultTestActors.lookup,
+		hubBase:          hub.URL,
+		hubToken:         "provider-hub-token",
+	}
+	request := httptest.NewRequest(http.MethodGet, testVerbPath("cluster-a", "projects", "demo", "publishing-members"), nil)
+	request = stampTestCaller(request, "test-user")
+	request.Header.Set(dataplane.HeaderActionProof, proof)
+	id, ok := server.identityFromRequest(httptest.NewRecorder(), request)
+	if !ok || id.actionProof != proof {
+		t.Fatalf("identity action proof = %q / ok=%v, want captured proof", id.actionProof, ok)
+	}
+	if _, err := server.currentPublishingMembers(request.Context(), id); err != nil {
+		t.Fatalf("currentPublishingMembers: %v", err)
+	}
+	if got := hub.orgRosterHeader.Get(dataplane.HeaderActionProof); got != proof {
+		t.Errorf("org roster proof = %q, want forwarded hub proof", got)
+	}
+	if got := hub.wsRosterHeader.Get(dataplane.HeaderActionProof); got != proof {
+		t.Errorf("workspace roster proof = %q, want forwarded hub proof", got)
+	}
+	if _, err := server.invitePublishingMember(request.Context(), id, "carol@example.com"); err != nil {
+		t.Fatalf("invitePublishingMember: %v", err)
+	}
+	if got := hub.inviteHeader.Get(dataplane.HeaderActionProof); got != proof {
+		t.Errorf("invite proof = %q, want forwarded hub proof", got)
 	}
 }
 

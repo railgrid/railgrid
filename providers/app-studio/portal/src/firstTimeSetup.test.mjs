@@ -91,6 +91,21 @@ test('completion hands off to normal project creation', async () => {
   assert.match(html, /App Studio is ready/)
   assert.match(html, /Create your first project/)
   assert.match(html, /gpt-5\.4/)
+  assert.equal((html.match(/Completed step/g) || []).length, 2)
+  assert.doesNotMatch(html, /aria-current="step"/)
+})
+
+test('model loading keeps setup actions hidden until readiness has settled', async () => {
+  for (const completion of [false, true]) {
+    const html = await render({
+      readiness: { gitConnection: { ready: true, status: 'ready' } },
+      loading: true,
+      completion,
+    })
+    assert.match(html, /Checking AI model setup/)
+    assert.match(html, /role="status" aria-busy="true"/)
+    assert.doesNotMatch(html, /<button/)
+  }
 })
 
 test('App gates the new-project composer behind setup', async () => {

@@ -47,10 +47,25 @@ const launcherID = safeConversationID('k-ai-workbench-launcher')
 const existingHeadingID = `${launcherID}-existing-heading`
 const suggestedHeadingID = `${launcherID}-suggested-heading`
 
-const sections = computed(() => [
-  { existing: true, items: props.existingTabs, heading: props.existingHeading, id: existingHeadingID },
-  { existing: false, items: props.suggestedItems, heading: props.suggestedHeading, id: suggestedHeadingID },
-].filter(section => !section.existing || section.items.length))
+const sections = computed(() => {
+  const groups = new Map<string, AIWorkbenchLauncherItemView[]>()
+  for (const item of props.suggestedItems) {
+    const heading = item.group || props.suggestedHeading
+    const items = groups.get(heading) || []
+    items.push(item)
+    groups.set(heading, items)
+  }
+  const suggested = [...groups].map(([heading, items], index) => ({
+    existing: false, items, heading, id: `${suggestedHeadingID}-${index}`,
+  }))
+  if (!suggested.length && !props.existingTabs.length) {
+    suggested.push({ existing: false, items: [], heading: props.suggestedHeading, id: suggestedHeadingID })
+  }
+  return [
+    ...(props.existingTabs.length ? [{ existing: true, items: props.existingTabs, heading: props.existingHeading, id: existingHeadingID }] : []),
+    ...suggested,
+  ]
+})
 
 function selectItem(existing: boolean, item: AIWorkbenchLauncherItemView, event: MouseEvent): void {
   if (existing) emit('select-existing', item.id, event)

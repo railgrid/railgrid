@@ -33,6 +33,7 @@ import (
 func (s *Server) mergeProjectIntegrationActions(
 	ctx context.Context,
 	id identity,
+	project *aiv1alpha1.Project,
 	provider string,
 	ref *aiv1alpha1.ProjectProviderResourceReference,
 	existing []aiv1alpha1.ProjectProviderActionSpec,
@@ -55,6 +56,7 @@ func (s *Server) mergeProjectIntegrationActions(
 		}
 		byKey[key] = grant
 	}
+	restrictionOnly := projectIntegrationActionPatchIsRestrictionOnly(byKey, normalized)
 
 	merged := make([]aiv1alpha1.ProjectProviderActionSpec, len(normalized))
 	toVerify := make([]aiv1alpha1.ProjectProviderActionSpec, 0, len(normalized))
@@ -99,10 +101,19 @@ func (s *Server) mergeProjectIntegrationActions(
 			continue
 		}
 
-		// Active declarations are checked against the current catalog even when
-		// their requested key and digest are unchanged. If verification succeeds,
-		// unchanged grants retain their original audit; a digest change or
-		// reactivation receives fresh grant audit.
+		if restrictionOnly {
+			// A patch that only preserves, removes, or revokes existing grants
+			// cannot expand Project authority. Keep unchanged grant records intact
+			// and allow the restriction to proceed without depending on the
+			// provider's current catalog or the caller's current access.
+			merged[index] = copyProjectProviderActionSpec(prior)
+			continue
+		}
+
+		// When a patch expands or changes authority, validate the complete active
+		// declaration against the current catalog and consent state. If
+		// verification succeeds, unchanged grants retain their original audit; a
+		// digest change or reactivation receives fresh grant audit.
 		toVerify = append(toVerify, next)
 		verifyIndexes = append(verifyIndexes, index)
 		preserveAudit = append(preserveAudit, !prior.Revoked && strings.TrimSpace(prior.SchemaDigest) == next.SchemaDigest)
@@ -111,7 +122,7 @@ func (s *Server) mergeProjectIntegrationActions(
 	if len(toVerify) == 0 {
 		return merged, nil
 	}
-	verified, err := s.verifyProjectActionGrants(ctx, id, provider, ref, toVerify, consentAccepted)
+	verified, err := s.verifyProjectActionGrants(ctx, id, provider, ref, toVerify, consentAccepted, project)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +141,76 @@ func (s *Server) mergeProjectIntegrationActions(
 		merged[verifyIndexes[index]] = grant
 	}
 	return merged, nil
+}
+
+// projectIntegrationActionPatchIsRestrictionOnly reports whether every active
+// desired grant already exists as active with the same schema digest. A false
+// result keeps catalog and consent verification on the complete active set
+// before any authority expansion is persisted.
+func projectIntegrationActionPatchIsRestrictionOnly(
+	existing map[string]aiv1alpha1.ProjectProviderActionSpec,
+	desired []aiv1alpha1.ProjectProviderActionSpec,
+) bool {
+	desiredByKey := make(map[string]aiv1alpha1.ProjectProviderActionSpec, len(desired))
+	for _, next := range desired {
+		desiredByKey[projectProviderActionKey(next.Name, next.Version)] = next
+	}
+
+	// An unchanged declaration is not a reduction: it must keep verifying the
+	// live catalog so a stale schema digest cannot be silently preserved by a
+	// no-op PATCH.
+	hasReduction := false
+	for key := range existing {
+		if _, retained := desiredByKey[key]; !retained {
+			hasReduction = true
+		}
+	}
+	for _, next := range desired {
+		key := projectProviderActionKey(next.Name, next.Version)
+		prior, found := existing[key]
+		if !found {
+			return false
+		}
+		if next.Revoked {
+			if !prior.Revoked {
+				hasReduction = true
+			}
+			continue
+		}
+		if prior.Revoked || strings.TrimSpace(prior.SchemaDigest) != strings.TrimSpace(next.SchemaDigest) {
+			return false
+		}
+	}
+	return hasReduction
+}
+
+// projectIntegrationActionsRequiringAuthorization returns active grants that
+// add or change the authority persisted on a Project. Existing active grants
+// with the same action coordinate and schema digest do not expand the grant
+// set; removals and revocations must remain possible after caller access is
+// withdrawn.
+func projectIntegrationActionsRequiringAuthorization(
+	existing []aiv1alpha1.ProjectProviderActionSpec,
+	merged []aiv1alpha1.ProjectProviderActionSpec,
+) []aiv1alpha1.ProjectProviderActionSpec {
+	priorByKey := make(map[string]aiv1alpha1.ProjectProviderActionSpec, len(existing))
+	for _, prior := range existing {
+		if key := projectProviderActionKey(prior.Name, prior.Version); key != "" {
+			priorByKey[key] = prior
+		}
+	}
+
+	var requiring []aiv1alpha1.ProjectProviderActionSpec
+	for _, next := range merged {
+		if next.Revoked {
+			continue
+		}
+		prior, found := priorByKey[projectProviderActionKey(next.Name, next.Version)]
+		if !found || prior.Revoked || strings.TrimSpace(prior.SchemaDigest) != strings.TrimSpace(next.SchemaDigest) {
+			requiring = append(requiring, next)
+		}
+	}
+	return requiring
 }
 
 func projectProviderActionKey(name, version string) string {

@@ -129,30 +129,6 @@ func observeProjectProviderBinding(ctx context.Context, c *asclient.Client, p *a
 	return c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Get(ctx, name, metav1.GetOptions{})
 }
 
-// observeProjectProviderReference performs the only reconciliation operation
-// permitted for a non-owning binding: a GET of the provider-owned object.
-// NotFound is represented by Pending status and is intentionally not a
-// reconcile failure, so a project can be created before an integration's
-// provider resource becomes available.
-func observeProjectProviderReference(ctx context.Context, c *asclient.Client, binding aiv1alpha1.ProjectProviderBindingSpec) error {
-	if binding.ResourceRef == nil {
-		return fmt.Errorf("provider reference %q requires resourceRef", binding.Name)
-	}
-	gvr, err := projectProviderResourceGVR(binding.ResourceRef)
-	if err != nil {
-		return err
-	}
-	name := strings.TrimSpace(binding.ResourceRef.Name)
-	if name == "" {
-		return fmt.Errorf("provider reference %q requires resourceRef.name", binding.Name)
-	}
-	_, err = c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
-}
-
 func (s *Server) deleteProjectProviderResources(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) error {
 	if c == nil || p == nil {
 		return nil
@@ -274,6 +250,45 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	if status.Phase == "" && binding.Kind == aiv1alpha1.ProjectBindingKindProviderReference {
 		// A referenced object that exists but publishes no phase of its own is
 		// usable as-is: the reference is satisfied.
+		status.Phase = "Ready"
+	}
+	return status
+}
+
+// projectIntegrationBindingStatus reads a non-owning provider reference with
+// the Project's name-scoped workload identity. App Studio's APIExport does not
+// claim optional integration groups, so the provider SA must never be used as
+// a fallback for these reads.
+func (s *Server) projectIntegrationBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) aiv1alpha1.ProjectProviderBindingStatus {
+	if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference {
+		return projectProviderBindingStatus(ctx, c, p, binding, id)
+	}
+	status := bindings.StatusFromObject(binding, nil)
+	active := false
+	for _, action := range binding.AllowedActions {
+		if !action.Revoked && strings.TrimSpace(action.GrantedBy) != "" && action.GrantedAt != nil && !action.GrantedAt.IsZero() {
+			active = true
+			break
+		}
+	}
+	if !active {
+		status.Phase = "Revoked"
+		return status
+	}
+	object, err := s.readProjectProviderReference(ctx, id, p, binding.ResourceRef)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return status
+		}
+		if apierrors.IsForbidden(err) {
+			status.Phase = "Forbidden"
+		} else {
+			status.Phase = "Unavailable"
+		}
+		return status
+	}
+	status = bindings.StatusFromObject(binding, object)
+	if status.Phase == "" {
 		status.Phase = "Ready"
 	}
 	return status

@@ -103,12 +103,14 @@ test('revoke payload preserves each grant digest and targets only the selected a
     allowedActions: [
       { name: 'query_table', version: 'v1', schemaDigest: digest, grantedBy: 'alice@example.com' },
       { name: 'describe_table', version: 'v1', schemaDigest: digest, grantedBy: 'alice@example.com' },
+      { name: 'insert_rows', version: 'v1', schemaDigest: digest, revoked: true, revokedBy: 'sam@example.com' },
     ],
   }
   assert.deepEqual(buildProjectIntegrationRevokePayload(integration, 'query_table', 'v1'), {
     allowedActions: [
       { name: 'query_table', version: 'v1', schemaDigest: digest, revoked: true },
       { name: 'describe_table', version: 'v1', schemaDigest: digest },
+      { name: 'insert_rows', version: 'v1', schemaDigest: digest, revoked: true },
     ],
     consentAccepted: true,
   })

@@ -2,6 +2,8 @@
 import { computed, nextTick } from 'vue'
 import { CircleAlert, ExternalLink, Loader2, RefreshCw, RotateCcw } from 'lucide-vue-next'
 
+import InlineNotification from './portalkit/InlineNotification.vue'
+import StatusBadge from './portalkit/StatusBadge.vue'
 import type { ProjectRepositoryCommit } from './types'
 import {
   adjacentHistoryCommit,
@@ -109,7 +111,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       </div>
     </div>
 
-    <div v-else-if="error && commits.length === 0" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ error }}</div>
+    <InlineNotification v-else-if="error && commits.length === 0" tone="error" :message="error" />
 
     <div v-else-if="commits.length === 0" class="grid gap-1 border-y border-dashed border-border-subtle py-4" role="status">
       <p class="text-[12px] font-medium text-text-secondary">No commits yet</p>
@@ -148,7 +150,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
             >
               <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                 <span class="min-w-0 flex-1 truncate text-[13px] font-semibold text-text-primary" :title="commit.message || 'No commit message'">{{ commit.message || 'No commit message' }}</span>
-                <span v-if="commit.phase && commit.phase !== 'Succeeded'" class="font-mono text-[10px] font-medium uppercase tracking-wide text-warning">{{ commit.phase }}</span>
+                <StatusBadge v-if="commit.phase && commit.phase !== 'Succeeded'" class="shrink-0" :status="commit.phase" />
               </span>
               <span class="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-text-muted">
                 <code class="font-mono text-text-secondary" :title="commit.commitSHA ? `Full commit SHA: ${commit.commitSHA}` : 'Commit SHA is not available'">{{ shortSHA(commit.commitSHA) }}</code>
@@ -164,8 +166,8 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       </div>
     </div>
 
-    <div v-if="error && commits.length > 0" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ error }}</div>
-    <div v-if="feedback" class="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] leading-5 text-success" role="status" aria-live="polite">{{ feedback }}</div>
+    <InlineNotification v-if="error && commits.length > 0" tone="error" :message="error" />
+    <InlineNotification v-if="feedback" tone="success" :message="feedback" />
 
     <footer class="grid gap-2 border-t border-border-subtle pt-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
