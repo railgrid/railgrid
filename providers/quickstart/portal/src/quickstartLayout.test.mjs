@@ -37,7 +37,7 @@ test('Quickstart reads its CRs with the kube client and calls the verb as a kcp 
   const element = await read('./element.ts')
 
   assert.match(element, /createKubeClient\(\{/)
-  assert.match(element, /cluster: this\._ctx\?\.tenant/)
+  assert.match(element, /cluster: ctx\?\.tenant/)
   assert.match(element, /\.verbPath\(greetings, name, 'greet'\)/)
   // The retired hub-proxied grammar must not come back in any spelling.
   assert.doesNotMatch(element, /\/dataplane\//)
@@ -58,4 +58,24 @@ test('Quickstart ships a dashboard tile built on the shared tile kit', async () 
   assert.match(tile, /createTilePoller/)
   assert.match(tile, /navigateFromTile/)
   assert.match(tile, /dashboardTileSemanticClass/)
+})
+
+
+test('Quickstart preserves the create draft through a failed request and restores useful focus', async () => {
+  const source = await read('./element.ts')
+  assert.match(source, /form\?\.addEventListener\('input'/)
+  assert.match(source, /name="name"[^\r\n]*value="\$\{escapeHTML\(this\._draftName\)\}/)
+  assert.match(source, /name="message"[^\r\n]*value="\$\{escapeHTML\(this\._draftMessage\)\}/)
+  const create = source.slice(source.indexOf('private async _create'), source.indexOf('// The data-plane verb.'))
+  assert.match(create, /if \(this\._busy \|\| !this\._canLoad\(\)\) return/)
+  assert.match(create, /await this\._kube\(ctx\)\.create[\s\S]*this\._draftName = ''[\s\S]*catch/)
+  assert.doesNotMatch(create.slice(create.indexOf('catch')), /_draft(?:Name|Message) = ''/)
+  assert.match(create, /this\._render\(\)[\s\S]*input\[name="name"\][\s\S]*\.focus\(\)/)
+})
+
+test('Quickstart greeting names keep host-owned detail navigation', async () => {
+  const source = await read('./element.ts')
+  assert.match(source, /data-open=/)
+  assert.match(source, /private _openDetail\(name: string\)/)
+  assert.match(source, /path:.*greetings.*name/)
 })
