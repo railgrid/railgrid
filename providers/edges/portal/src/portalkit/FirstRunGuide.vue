@@ -19,13 +19,19 @@ const props = withDefaults(defineProps<{
   title: string
   description: string
   primaryLabel: string
+  primaryDisabled?: boolean
   secondaryLabel?: string
   steps: readonly FirstRunStep[]
   currentStep?: number
+  complete?: boolean
+  actionsVisible?: boolean
   journeyLabel?: string
 }>(), {
   secondaryLabel: '',
+  primaryDisabled: false,
   currentStep: 0,
+  complete: false,
+  actionsVisible: true,
   journeyLabel: 'Getting started',
 })
 
@@ -36,7 +42,7 @@ const emit = defineEmits<{
 
 const id = useId().replace(/[^a-zA-Z0-9_-]/g, '-')
 const titleID = `k-first-run-${id}-title`
-const boundedCurrentStep = computed(() => Math.max(0, Math.min(props.currentStep, props.steps.length - 1)))
+const boundedCurrentStep = computed(() => props.complete ? props.steps.length : Math.max(0, Math.min(props.currentStep, props.steps.length - 1)))
 </script>
 
 <template>
@@ -46,14 +52,17 @@ const boundedCurrentStep = computed(() => Math.max(0, Math.min(props.currentStep
       <div class="k-first-run__copy">
         <h3 :id="titleID">{{ title }}</h3>
         <p>{{ description }}</p>
+        <slot name="details" />
       </div>
-      <div class="k-first-run__actions">
-        <button class="k-btn k-btn--primary" type="button" @click="emit('primary')">
-          {{ primaryLabel }} <ArrowRight :stroke-width="1.75" aria-hidden="true" />
-        </button>
-        <button v-if="secondaryLabel" class="k-btn k-btn--ghost" type="button" @click="emit('secondary')">
-          {{ secondaryLabel }}
-        </button>
+      <div v-if="actionsVisible" class="k-first-run__actions">
+        <slot name="actions">
+          <button class="k-btn k-btn--primary" type="button" :disabled="primaryDisabled" @click="emit('primary')">
+            {{ primaryLabel }} <ArrowRight :stroke-width="1.75" aria-hidden="true" />
+          </button>
+          <button v-if="secondaryLabel" class="k-btn k-btn--ghost" type="button" @click="emit('secondary')">
+            {{ secondaryLabel }}
+          </button>
+        </slot>
       </div>
     </div>
 

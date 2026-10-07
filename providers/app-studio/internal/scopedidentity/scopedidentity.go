@@ -46,8 +46,12 @@ type Cache struct {
 // entry is one owner's source plus the fingerprint of the rules it was built
 // from, so a change is detectable without minting a token to find out.
 type entry struct {
+	mu          sync.Mutex
 	source      *identityclient.TokenSource
 	fingerprint string
+	generation  int64
+	versioned   bool
+	released    bool
 }
 
 // New wraps a hub identity client. A nil client yields a cache that hands back
@@ -68,38 +72,64 @@ func (c *Cache) Enabled() bool { return c != nil && c.client != nil }
 // narrows: that is the difference from the create-if-absent ClusterRole this
 // replaced, where a removed binding never removed the access it carried.
 func (c *Cache) Token(ctx context.Context, owner identityclient.Owner, rules []rbacv1.PolicyRule) (string, error) {
+	return c.token(ctx, owner, 0, false, rules)
+}
+
+// TokenVersioned returns a Project token under a spec generation. Calls for
+// one owner are serialized through token mint/refresh, and a caller holding an
+// older Project generation cannot replace a source installed for a newer
+// generation. Status-derived rules may still change within one generation.
+func (c *Cache) TokenVersioned(ctx context.Context, owner identityclient.Owner, generation int64, rules []rbacv1.PolicyRule) (string, error) {
+	return c.token(ctx, owner, generation, true, rules)
+}
+
+func (c *Cache) token(ctx context.Context, owner identityclient.Owner, generation int64, versioned bool, rules []rbacv1.PolicyRule) (string, error) {
 	if !c.Enabled() {
 		return "", errors.New("the hub identity service is not configured")
 	}
-	token, err := c.sourceFor(owner, rules).Token(ctx)
+	entry := c.entryFor(owner)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.released {
+		return "", errors.New("project identity owner has been released")
+	}
+	if entry.versioned && !versioned {
+		return "", errors.New("versioned identity owner must use TokenVersioned")
+	}
+	if versioned && entry.versioned && generation < entry.generation {
+		return "", errors.New("stale Project generation cannot refresh its scoped identity")
+	}
+	fingerprint := Fingerprint(rules)
+	if entry.source == nil || entry.fingerprint != fingerprint || versioned && (!entry.versioned || generation > entry.generation) {
+		entry.source = identityclient.NewTokenSource(c.client, identityclient.Request{
+			Owner: owner, ClusterID: owner.ClusterID, Rules: rules,
+		})
+		entry.fingerprint = fingerprint
+		entry.versioned = versioned
+		if versioned {
+			entry.generation = generation
+		}
+	}
+	// Hold the per-owner lock for Token() too. TokenSource refreshes its token
+	// outside its own cache lock, so a concurrent older source must not finish
+	// minting after a newer rule set has replaced it.
+	token, err := entry.source.Token(ctx)
 	if err != nil {
 		return "", err
 	}
 	return token.Token, nil
 }
 
-// sourceFor returns the owner's source, rebuilding it when the rules it was
-// created with no longer match. Rebuilding on a change is what makes a removed
-// reference actually remove access: the old source would go on refreshing the
-// old rules, and the hub would go on honouring them, because a refresh is
-// idempotent on the owner tuple and says nothing about what the owner
-// references today.
-func (c *Cache) sourceFor(owner identityclient.Owner, rules []rbacv1.PolicyRule) *identityclient.TokenSource {
+func (c *Cache) entryFor(owner identityclient.Owner) *entry {
 	key := Key(owner)
-	print := Fingerprint(rules)
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if existing, ok := c.sources[key]; ok && existing.fingerprint == print {
-		return existing.source
+	if existing, ok := c.sources[key]; ok {
+		return existing
 	}
-	source := identityclient.NewTokenSource(c.client, identityclient.Request{
-		Owner:     owner,
-		ClusterID: owner.ClusterID,
-		Rules:     rules,
-	})
-	c.sources[key] = &entry{source: source, fingerprint: print}
-	return source
+	created := &entry{}
+	c.sources[key] = created
+	return created
 }
 
 // Release drops the owner's identity, here and at the hub. Call it from the
@@ -109,10 +139,17 @@ func (c *Cache) Release(ctx context.Context, owner identityclient.Owner) error {
 	if !c.Enabled() {
 		return nil
 	}
+	entry := c.entryFor(owner)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	entry.released = true
+	err := c.client.Release(ctx, owner.ClusterID, owner)
 	c.mu.Lock()
-	delete(c.sources, Key(owner))
+	if err == nil && c.sources[Key(owner)] == entry {
+		delete(c.sources, Key(owner))
+	}
 	c.mu.Unlock()
-	return c.client.Release(ctx, owner.ClusterID, owner)
+	return err
 }
 
 // Invalidate forgets an owner's source so the next Token mints fresh. For the
@@ -121,9 +158,11 @@ func (c *Cache) Invalidate(owner identityclient.Owner) {
 	if !c.Enabled() {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.sources, Key(owner))
+	entry := c.entryFor(owner)
+	entry.mu.Lock()
+	entry.source = nil
+	entry.fingerprint = ""
+	entry.mu.Unlock()
 }
 
 // Key identifies one identity: the workspace, the kind and the owner's UID.

@@ -56,7 +56,7 @@ test('composer mounts both current settings', async () => {
   assert.match(app, /<ResponseModePicker/)
   assert.match(app, /<ApprovalModePicker/)
   assert.match(app, /<template #controls>/)
-  assert.match(composer, /class="k-ai-composer__controls"/)
+  assert.match(composer, /class="k-ai-composer__controls k-ai-composer__controls--flow"/)
   assert.match(composer, /class="k-ai-composer__actions"/)
   assert.match(composer, /<slot name="controls" \/>/)
   assert.match(app, /rounded-md bg-accent text-on-accent/)

@@ -29,7 +29,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/railgrid/provider-sdk/dataplane"
 	"io"
 	"log"
 	"net/http"
@@ -39,6 +38,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -221,6 +222,11 @@ func runServe() {
 		os.Getenv("APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY") == "true" ||
 			hubInsecure,
 	)
+	projectIdentities := scopedIdentities(controllerDeps{
+		HubBase:     strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
+		HubInsecure: os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+	})
+	apiServer.UseProjectIdentities(projectIdentities)
 	attachmentRetention := parseRetention(os.Getenv("APP_STUDIO_ATTACHMENT_DRAFT_RETENTION"))
 	if attachmentRetention <= 0 {
 		attachmentRetention = store.DefaultAttachmentDraftRetention
@@ -411,6 +417,7 @@ func runServe() {
 			HubBase:       strings.TrimRight(os.Getenv("RAILGRID_HUB_URL"), "/"),
 			HubInsecure:   os.Getenv("RAILGRID_HUB_INSECURE") == "true",
 			Callers:       providerCallers,
+			Identities:    projectIdentities,
 			// Event-driven reconciles: the API publishes thread/turn and
 			// workspace transitions, the controllers subscribe.
 			SessionSignals: apiServer.SessionSignals(),

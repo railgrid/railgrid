@@ -36,6 +36,7 @@ import (
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
@@ -43,6 +44,7 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubmcp"
 	"github.com/railgrid/provider-app-studio/internal/reconcilesignal"
+	"github.com/railgrid/provider-app-studio/internal/scopedidentity"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -51,8 +53,7 @@ import (
 // Server holds the dependencies the project handlers need. clients builds a
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
-// for explicitly enabled local hub calls (MCP and action-catalog lookup), while
-// Provider Action invocation retains certificate validation; workspaces stores
+// for explicitly enabled local hub calls, including Project requests; workspaces stores
 // project files owned by App Studio; and assistantEngine runs project turns.
 type Server struct {
 	tenant *tenant.Client
@@ -83,6 +84,13 @@ type Server struct {
 	// catalog lookup. Production leaves it nil so grants always resolve via
 	// GET /api/providers, as the provider (hubToken).
 	providerActionCatalogResolver providerActionCatalogResolver
+	// providerResourceDiscoveryResolver is the test seam for the hub's
+	// signed-caller, metadata-only discovery endpoint.
+	providerResourceDiscoveryResolver providerResourceDiscoveryResolver
+	// projectIdentityTokenFor and projectProviderReferenceReader are narrow
+	// test seams. Production derives both from the shared hub-minted identity.
+	projectIdentityTokenFor        func(context.Context, identity, *aiv1alpha1.Project) (string, error)
+	projectProviderReferenceReader func(context.Context, identity, *aiv1alpha1.Project, *aiv1alpha1.ProjectProviderResourceReference) (*unstructured.Unstructured, error)
 	// hubToken is the bearer this provider presents on the hub's OWN REST API
 	// and MCP aggregate — the provider catalog, the membership rosters, the
 	// browser-session handoff, the workspace MCP endpoint. Those are not
@@ -109,6 +117,9 @@ type Server struct {
 	// leaves it nil: the actor is dataplane.ProxiedIdentity.User, and
 	// X-Railgrid-User is a label.
 	tenantActors actorLookup
+	// integrationAccessReviewer is a test seam for the caller SARs required
+	// before a provider reference/action is exposed, granted, or invoked.
+	integrationAccessReviewer func(context.Context, identity, dataplane.ResourceAttributes) (bool, error)
 	// tenantProviders reports whether a dependency is enabled in a workspace,
 	// by whether its claimed kinds are served through this provider's export.
 	tenantProviders providerLookup
@@ -117,6 +128,9 @@ type Server struct {
 	// of other providers this one has claimed, through its own export
 	// virtual workspace. Nil fails every verb closed.
 	callers providerCallers
+	// projectIdentities is shared with the Project reconciler so API action
+	// calls and workload code use one exact, refreshable Project-owned grant.
+	projectIdentities *scopedidentity.Cache
 	// llmDiscoveryHTTPClient is a narrow test seam for credential-scoped model
 	// catalog requests. Production uses a redirect-denying bounded client.
 	llmDiscoveryHTTPClient *http.Client

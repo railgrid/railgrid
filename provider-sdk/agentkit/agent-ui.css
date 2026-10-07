@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 8;
+  --railgrid-agent-ui-version: 9;
 }
 
 /* Conversation headers keep their neutral icon-only back control in the core
@@ -780,6 +780,17 @@ button.k-workbench-tab {
   align-items: center;
   gap: 8px;
 }
+/* Rich editors can keep controls in flow so labels remain available in narrow
+ * panes. Reserve the primary-action corner while letting groups wrap. */
+.k-ai-composer__controls--flow {
+  position: relative;
+  inset: auto;
+  flex-wrap: wrap;
+  margin: 0 48px 8px 8px;
+}
+.k-ai-composer__controls--flow .k-ai-composer__control-group { flex-wrap: wrap; }
+.k-ai-composer__controls--flow .k-ai-composer__control-group > :not(.contents),
+.k-ai-composer__controls--flow .k-ai-composer__actions { flex-shrink: 0; max-width: 100%; }
 .k-ai-composer__footer {
   display: flex;
   min-width: 0;

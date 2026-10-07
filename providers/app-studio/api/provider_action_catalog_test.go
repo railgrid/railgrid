@@ -28,8 +28,10 @@ import (
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	appskills "github.com/railgrid/provider-app-studio/skills"
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -44,6 +46,107 @@ func TestFetchProviderActionCatalogRejectsSelfSignedByDefault(t *testing.T) {
 	_, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: upstream.URL}).fetchProviderActionCatalog(context.Background(), identity{})
 	if err == nil {
 		t.Fatal("catalog lookup accepted a self-signed hub without an explicit insecure opt-in")
+	}
+}
+
+func TestFetchProviderCatalogForProjectUsesScopedTokenAndExactTenantHeaders(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		for name, want := range map[string]string{
+			"Authorization":         "Bearer project-workload-token",
+			"X-Railgrid-Org":        "org-a",
+			"X-Railgrid-Workspace":  "workspace-a",
+			dataplane.HeaderTenant:  "cluster-a",
+			dataplane.HeaderCluster: "cluster-a",
+		} {
+			if got := r.Header.Get(name); got != want {
+				t.Errorf("%s = %q, want %q", name, got, want)
+			}
+		}
+		for _, name := range []string{"X-Railgrid-User", dataplane.HeaderActionProof} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("%s = %q, want no caller label or request proof", name, got)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"name":"databricks","ready":true}]}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{hubBase: upstream.URL, callers: newTestCallers(nil, upstream.URL)}
+	server.projectIdentityTokenFor = testProjectIdentityToken
+	catalog, err := server.fetchProviderCatalogForProject(context.Background(), identity{
+		tenant: "cluster-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "workspace-a",
+		user: "alice@example.com", actionProof: "must-not-be-reused",
+	}, &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}})
+	if err != nil {
+		t.Fatalf("fetch Project catalog: %v", err)
+	}
+	if calls.Load() != 1 || len(catalog.Items) != 1 || catalog.Items[0].Name != "databricks" {
+		t.Fatalf("catalog calls/items = %d/%#v, want one databricks catalog", calls.Load(), catalog.Items)
+	}
+}
+
+func TestFetchProviderCatalogForProjectUsesVerifiedInternalHubTLS(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer project-workload-token" {
+			t.Errorf("Authorization = %q, want only the Project token", got)
+		}
+		for _, name := range []string{"X-Railgrid-User", "Impersonate-User", dataplane.HeaderActionProof} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("%s = %q, want no provider or human identity", name, got)
+			}
+		}
+		if r.TLS != nil && len(r.TLS.PeerCertificates) != 0 {
+			t.Errorf("provider client certificate was presented: %d peer certificates", len(r.TLS.PeerCertificates))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"name":"databricks","ready":true}]}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		hubBase:                  upstream.URL,
+		callers:                  newProjectIdentityTransportCallers(upstream.URL, testServerCertPEM(t, upstream)),
+		mcpInsecureSkipTLSVerify: true,
+	}
+	server.projectIdentityTokenFor = testProjectIdentityToken
+	catalog, err := server.fetchProviderCatalogForProject(context.Background(), identity{
+		tenant: "cluster-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "workspace-a",
+	}, &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}})
+	if err != nil {
+		t.Fatalf("fetch Project catalog with internal hub trust: %v", err)
+	}
+	if got := calls.Load(); got != 1 || len(catalog.Items) != 1 || catalog.Items[0].Name != "databricks" {
+		t.Fatalf("catalog calls/items = %d/%#v, want one databricks catalog", got, catalog.Items)
+	}
+}
+
+func TestFetchProviderCatalogForProjectRejectsUntrustedHubByDefault(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	server := &Server{
+		hubBase:                  upstream.URL,
+		callers:                  newProjectIdentityTransportCallers(upstream.URL, nil),
+		mcpInsecureSkipTLSVerify: false,
+	}
+	server.projectIdentityTokenFor = testProjectIdentityToken
+	_, err := server.fetchProviderCatalogForProject(context.Background(), identity{
+		tenant: "cluster-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "workspace-a",
+	}, &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}})
+	if err == nil {
+		t.Fatal("Project catalog accepted an untrusted hub without explicit hub TLS opt-in")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("untrusted hub received %d catalog requests", got)
 	}
 }
 
@@ -486,6 +589,20 @@ func TestFindProviderCatalogActionRejectsUnavailableMetadata(t *testing.T) {
 }
 
 func newIntegrationRouter(server *Server) *mux.Router {
+	if server.projectIdentityTokenFor == nil {
+		server.projectIdentityTokenFor = testProjectIdentityToken
+	}
+	if server.integrationAccessReviewer == nil {
+		server.integrationAccessReviewer = integrationTestAccessReview
+	}
+	if server.projectProviderReferenceReader == nil {
+		server.projectProviderReferenceReader = func(_ context.Context, _ identity, _ *aiv1alpha1.Project, ref *aiv1alpha1.ProjectProviderResourceReference) (*unstructured.Unstructured, error) {
+			return &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": ref.APIVersion, "kind": ref.Kind,
+				"metadata": map[string]any{"name": ref.Name},
+			}}, nil
+		}
+	}
 	router := mux.NewRouter()
 	server.Register(router)
 	return router

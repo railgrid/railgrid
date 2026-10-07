@@ -45,6 +45,10 @@ const (
 	HeaderRemoteUser        = "X-Remote-User"
 	HeaderRemoteGroup       = "X-Remote-Group"
 	HeaderRemoteExtraPrefix = "X-Remote-Extra-"
+	// HeaderActionProof carries a hub-signed, short-lived capability proof
+	// on selected provider actions. It is separate from requestheader identity
+	// and never carries the caller's bearer token.
+	HeaderActionProof = "X-Railgrid-Action-Proof"
 
 	// ComponentQuery is the query parameter that carries the component of a
 	// multi-component object on the kube path. The path itself cannot carry

@@ -42,6 +42,7 @@ import { api, isProjectAPIInitializingError, isProjectAPINotFoundError, ProjectA
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import ToastHost from './portalkit/ToastHost.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import Tabs from './portalkit/Tabs.vue'
 import AIConversationTurn from './agentkit/AIConversationTurn.vue'
 import AITurnProgress from './agentkit/AITurnProgress.vue'
@@ -466,6 +467,7 @@ interface WorkbenchLauncherItem {
   iconURL?: string
   builtInTab?: WorkbenchBuiltInTab
   providerTool?: ProviderTool
+  group?: string
 }
 
 interface LLMEditorSnapshot {
@@ -520,7 +522,7 @@ interface ProjectDevelopmentPreviewAuthorization {
 const SPLIT_WIDTH_KEY = 'railgrid:projects:split-width'
 const SPLIT_MIN_PERCENT = 32
 const SPLIT_MAX_PERCENT = 68
-const CONVERSATION_BASE_MIN_WIDTH = 240
+const CONVERSATION_BASE_MIN_WIDTH = 360
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
 const OPENAI_DEFAULT_MODEL = 'gpt-5.4'
@@ -664,7 +666,6 @@ const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
 const hasPendingReview = computed(() => pendingFollowUp.value !== null || pendingApproval.value !== null)
 const loading = ref(true)
 const projectsLoaded = ref(false)
-const emptyProjectRedirectPending = ref(false)
 const projectOpenLoading = ref(false)
 const threadHistoryLoading = ref(false)
 const selectingThreadID = ref('')
@@ -1895,7 +1896,7 @@ const modelCreateHeadingRef = ref<HTMLHeadingElement | null>(null)
 const projectIndexRoutePending = computed(() =>
   isProjectIndexRoute.value &&
   projects.value.length === 0 &&
-  (loading.value || !projectsLoaded.value || emptyProjectRedirectPending.value),
+  (loading.value || !projectsLoaded.value),
 )
 const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
 const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
@@ -2641,8 +2642,17 @@ const launcherProviderItems = computed<WorkbenchLauncherItem[]>(() => providerSh
 const launcherSuggestedItems = computed(() => {
   const q = workbenchLauncherQueryNormalized.value
   const items = [...launcherBuiltInItems.value, ...launcherProviderItems.value]
-  if (!q) return items
-  return items.filter((item) => `${item.title} ${item.subtitle}`.toLowerCase().includes(q))
+  const groups: Partial<Record<WorkbenchBuiltInTab, string>> = {
+    preview: 'Build and review', code: 'Build and review', review: 'Build and review',
+    publishing: 'Deploy and recover', history: 'Deploy and recover',
+    providers: 'Configure project', integrations: 'Configure project', settings: 'Configure project', skills: 'Configure project',
+  }
+  return items
+    .filter((item) => !workbench.value.tabs.some((tab) => item.builtInTab
+      ? tab.kind === item.builtInTab
+      : tab.kind === 'provider' && tab.providerTool?.id === item.providerTool?.id))
+    .map((item) => ({ ...item, group: item.builtInTab ? groups[item.builtInTab] : 'Provider tools' }))
+    .filter((item) => !q || `${item.title} ${item.subtitle} ${item.group || ''}`.toLowerCase().includes(q))
 })
 
 function isProjectToolProviderView(provider: ProviderItem, child: { displayName?: string; builtinRoute?: string }): boolean {
@@ -3154,7 +3164,6 @@ onBeforeUnmount(() => {
 
 async function load() {
   const requestGuard = beginProjectRequest()
-  emptyProjectRedirectPending.value = false
   // Invalidate every assistant-thread operation before resetting its visible
   // latches. The request/context guards keep late responses harmless while a
   // replacement load establishes the new project/thread state.
@@ -3229,10 +3238,8 @@ async function load() {
       return
     }
     if (visibleProjectList.length === 0) {
-      // Keep the unresolved index behind the neutral loading gate until the
-      // host commits the canonical create route. Without this latch Vue can
-      // paint one empty Projects frame between list settlement and routing.
-      emptyProjectRedirectPending.value = true
+      // Let the settled index show its first-run guide. Creation starts from
+      // the guide's action; a stale project URL still recovers to creation.
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
       resetThreadHistoryLatch()
@@ -3243,7 +3250,7 @@ async function load() {
       selected.value = null
       messages.value = []
       resetWorkbench()
-      props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
+      if (!isProjectIndexRoute.value) props.navigate(CREATE_PROJECT_ROUTE, { replace: true })
       return
     }
     const pathName = selectedNameFromPath.value
@@ -8687,8 +8694,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <h2 class="truncate text-[14px] font-medium text-text-primary">Projects</h2>
         <div class="flex shrink-0 items-center gap-2">
           <button
+            v-if="!projectsLoaded || loading || error || projects.length > 0"
             type="button"
-            class="app-studio-touch-target flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+            class="k-btn k-btn--primary"
             :disabled="busy"
             @click="openNewProjectComposer"
           >
@@ -8699,12 +8707,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </header>
 
       <section v-if="isProjectIndexRoute" class="pb-6">
-        <div class="mb-4 flex flex-wrap items-center gap-3">
+        <div v-if="projects.length > 0 || !projectsLoaded || loading" class="mb-4 flex flex-wrap items-center gap-3">
           <div class="relative w-full max-w-[260px]">
             <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
             <input
               v-model="projectQuery"
-              class="app-studio-touch-target h-9 w-full rounded-md border border-border-subtle bg-surface-raised py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+              class="k-input pl-8 pr-8"
               placeholder="Search"
               aria-label="Search projects"
               :disabled="loading || !projectsLoaded"
@@ -8750,7 +8758,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" :disabled="loading" @click="load">Retry</button>
         </div>
 
-        <template v-if="projectLayout === 'grid'">
+        <FirstRunGuide
+          v-if="projectsLoaded && !loading && !error && projects.length === 0"
+          title="No projects yet."
+          description="Start with a project description and review the plan before anything is created."
+          primary-label="New project"
+          :primary-disabled="busy"
+          :steps="[
+            { label: 'Describe your project', description: 'Explain what you want to build.' },
+            { label: 'Review the plan', description: 'Check the proposed project before creating it.' },
+            { label: 'Start building', description: 'Work with the assistant and preview your app.' },
+          ]"
+          @primary="openNewProjectComposer"
+        >
+          <template #icon><Folder :stroke-width="1.75" /></template>
+        </FirstRunGuide>
+
+        <template v-else-if="projectLayout === 'grid'">
           <div v-if="filteredProjects.length" class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),360px))] justify-start gap-5 pb-8">
             <article
               v-for="project in filteredProjects"
@@ -8804,7 +8828,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <div class="mt-1 line-clamp-2 min-h-[34px] text-[12px] leading-[17px] text-text-muted">
                     {{ project.description || project.name }}
                   </div>
-                  <div class="mt-3 text-[12px] text-text-muted">{{ projectTimestamp(project) }}</div>
+                  <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <StatusBadge :status="isProjectDeleting(project) ? 'Deleting…' : project.phase || 'Pending'" :tone="isProjectDeleting(project) ? 'warning' : null" />
+                    <span class="text-[12px] text-text-muted">{{ projectTimestamp(project) }}</span>
+                  </div>
                 </div>
               </button>
               <button
@@ -8836,16 +8863,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </div>
           <div v-else-if="error" class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted" role="status">
             Projects are unavailable. Use Retry above to load them again.
-          </div>
-          <div v-else-if="projects.length === 0" class="flex min-h-[260px] max-w-[520px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center">
-            <div>
-              <p class="text-[13px] font-medium text-text-primary">No projects yet.</p>
-              <p class="mt-1 text-[12px] leading-5 text-text-muted">Start with a project description and review the plan before anything is created.</p>
-            </div>
-            <button type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-semibold text-on-accent transition hover:bg-accent-hover" :disabled="busy" @click="openNewProjectComposer">
-              <Plus class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-              New project
-            </button>
           </div>
           <div v-else class="flex min-h-[260px] max-w-[520px] items-center justify-center rounded-lg border border-dashed border-border-subtle bg-surface-raised/50 p-8 text-center text-[13px] text-text-muted">
             No projects match this search.
@@ -8943,7 +8960,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <template #repository-options>
                   <div class="grid min-w-0 gap-2 text-[12px]">
                     <label class="k-checkbox-hit flex items-center gap-2 text-text-primary">
-                      <input v-model="createWithGit" type="checkbox" class="app-studio-touch-target" :disabled="projectCreationPending || !reviewedGitConnection" />
+                      <input v-model="createWithGit" type="checkbox" class="k-checkbox" :disabled="projectCreationPending || !reviewedGitConnection" />
                       Create a private Git repository (recommended)
                     </label>
                     <p class="text-text-secondary">{{ createWithGit ? 'Project source will be saved to a new private repository.' : 'Start without Git. Connect a repository later in project settings.' }}</p>
@@ -9349,7 +9366,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @toggle-pin="toggleThreadPin"
             @set-unread="setThreadUnread"
           />
-          <section class="flex min-h-[360px] min-w-0 flex-1 flex-col border-b border-border-subtle md:min-h-0 md:min-w-[240px] md:border-b-0 md:border-r">
+          <section class="flex min-h-[360px] min-w-0 flex-1 flex-col border-b border-border-subtle md:min-h-0 md:min-w-[360px] md:border-b-0 md:border-r">
       <div
         v-if="threadError"
         class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
@@ -10514,14 +10531,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           >
           <form class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3" @submit.prevent="saveProjectSettings">
             <div>
-              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Project</div>
+              <div class="text-[13px] font-semibold text-text-primary">Project</div>
               <p class="mt-1 text-[12px] text-text-muted">Update the project name and description shown in App Studio.</p>
             </div>
             <label class="grid gap-1.5">
               <span class="text-[12px] font-medium text-text-secondary">Name</span>
               <input
                 v-model="projectSettingsName"
-                class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                class="k-input min-w-0"
                 placeholder="Project name"
                 :disabled="projectSettingsSaving"
               />
@@ -10530,26 +10547,19 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <span class="text-[12px] font-medium text-text-secondary">Description</span>
               <textarea
                 v-model="projectSettingsDescription"
-                class="app-studio-touch-target min-h-[88px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                class="k-input min-h-[88px] min-w-0 resize-y leading-5"
                 placeholder="Describe this project"
                 :disabled="projectSettingsSaving"
               />
             </label>
-            <div
+            <InlineNotification
               v-if="projectSettingsError || projectSettingsStatus"
-              class="rounded-md border px-3 py-2 text-[12px]"
-              :role="projectSettingsError ? 'alert' : 'status'"
-              :aria-live="projectSettingsError ? 'assertive' : 'polite'"
-              aria-atomic="true"
-              :class="projectSettingsError
-                ? 'border-danger/30 bg-danger-subtle text-danger'
-                : 'border-success/30 bg-success-subtle text-success'"
-            >
-              {{ projectSettingsError || projectSettingsStatus }}
-            </div>
+              :tone="projectSettingsError ? 'error' : 'success'"
+              :message="projectSettingsError || projectSettingsStatus || ''"
+            />
             <div class="flex justify-end">
               <button
-                class="app-studio-touch-target inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                class="k-btn k-btn--primary"
                 :disabled="projectSettingsSaving || !projectSettingsName.trim()"
                 title="Save project details"
               >

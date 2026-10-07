@@ -26,6 +26,8 @@ import type {
   ProjectLLMSettings,
   ProjectLLMModelDiscovery,
   ProjectIntegration,
+  ProjectIntegrationsDiscovery,
+  ProjectIntegrationsResponse,
   ProjectProviderActionGrant,
   ProjectProviderResourceReference,
   ProjectCheckpoints,
@@ -301,6 +303,14 @@ async function request<T>(ctx: RailgridContext | null, method: string, path: str
     throw new ProjectAPIRequestError(detail, res.status)
   }
   return (text ? JSON.parse(text) : null) as T
+}
+
+function isProjectIntegrationsDiscovery(value: unknown): value is ProjectIntegrationsDiscovery {
+  if (!value || typeof value !== 'object') return false
+  const discovery = value as Partial<ProjectIntegrationsDiscovery>
+  return ['available', 'partial', 'unavailable'].includes(discovery.state ?? '') &&
+    Array.isArray(discovery.issues) &&
+    discovery.issues.every((issue) => typeof issue?.code === 'string' && typeof issue?.message === 'string')
 }
 
 async function requestBlob(ctx: RailgridContext | null, path: string, signal?: AbortSignal): Promise<Blob> {
@@ -1257,13 +1267,28 @@ export const api = {
     return requestBlob(ctx, `${projectURL(ctx, name, 'thumbnail')}${suffix}`)
   },
 
-  async listProjectIntegrations(ctx: RailgridContext | null, name: string): Promise<ProjectIntegration[]> {
-    const body = await request<ListResponse<ProjectIntegration>>(
+  async listProjectIntegrations(ctx: RailgridContext | null, name: string): Promise<ProjectIntegrationsResponse> {
+    const body = await request<Partial<ProjectIntegrationsResponse> | null>(
       ctx,
       'GET',
       `${projectURL(ctx, name, 'integrations')}`,
     )
-    return body.items ?? []
+    const items = Array.isArray(body?.items) ? body.items : []
+    const available = Array.isArray(body?.available) ? body.available : []
+    if (!body || !Array.isArray(body.items) || !Array.isArray(body.available) || !isProjectIntegrationsDiscovery(body.discovery)) {
+      return {
+        items,
+        available,
+        discovery: {
+          state: 'unavailable',
+          issues: [{
+            code: 'invalid-discovery-response',
+            message: 'Provider resource discovery could not be confirmed. Refresh to try again.',
+          }],
+        },
+      }
+    }
+    return { items, available, discovery: body.discovery }
   },
 
   async createProjectIntegration(
