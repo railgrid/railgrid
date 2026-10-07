@@ -63,6 +63,7 @@ interface FederatedProvider {
 }
 interface MCPServer {
   name: string
+  uid?: string
   displayName?: string
   instructions?: string
   readOnly?: boolean
@@ -473,22 +474,31 @@ async function remove(name: string) {
     (!expectedServer || servers.value.find((server) => server.name === name) === expectedServer)
   if (!sameDeleteTarget()) return
 
+  if (!expectedServer?.uid) {
+    mutationError.value = 'Refresh and review this MCP server before deleting it.'
+    return
+  }
+
   const b = base()
   if (!b) return
   pendingDeletion.value = name
   mutationError.value = null
   try {
-    const res = await authFetch(`${b}/${encodeURIComponent(name)}`, { tenant: true, method: 'DELETE' })
+    const res = await authFetch(`${b}/${encodeURIComponent(name)}?uid=${encodeURIComponent(expectedServer.uid)}`, { tenant: true, method: 'DELETE' })
+    if (res.status === 409) throw new Error('This MCP server changed after you loaded it. Refresh and review it before deleting.')
     if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`)
     if (!sameDeleteContext()) return
-    // A successful DELETE is authoritative for this object. Remove the local
-    // row and clear its credential before navigating, so recovery never
-    // depends on a second list request succeeding.
-    servers.value = servers.value.filter((server) => server.name !== name)
+    // A successful DELETE is authoritative only for the confirmed identity.
+    // A concurrent read can already have loaded a same-name replacement while
+    // the response was in flight. Keep that snapshot and its connection.
+    const replacementLoaded = servers.value.some((server) => server.name === name && server.uid !== expectedServer.uid)
+    servers.value = servers.value.filter((server) => server.name !== name || server.uid !== expectedServer.uid)
     pendingDeletion.value = null
-    connect.value = {}
-    connectRequestID += 1
-    if (selected.value === name) void router.replace({ name: 'mcp' })
+    if (!replacementLoaded) {
+      connect.value = {}
+      connectRequestID += 1
+      if (selected.value === name) void router.replace({ name: 'mcp' })
+    }
     // Reconcile the collection in the background. A transient list failure
     // is surfaced as stale collection state, but cannot strand the detail
     // route or leave it disabled in a deletion-pending state.

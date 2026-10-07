@@ -132,7 +132,7 @@ test('MCP reads preserve snapshots and expose recoverable failures', () => {
   assert.match(page, /connectError/)
   assert.match(page, /@click="loadConnect\(selectedServer\.name\)"/)
   assert.match(page, /Deleting this MCP server\. The last successful snapshot remains visible/)
-  assert.match(page, /servers\.value = servers\.value\.filter\(\(server\) => server\.name !== name\)/)
+  assert.match(page, /servers\.value = servers\.value\.filter\(\(server\) => server\.name !== name \|\| server\.uid !== expectedServer\.uid\)/)
   assert.match(page, /if \(selected\.value === name\) void router\.replace\(\{ name: 'mcp' \}\)/)
   assert.match(page, /void load\(\)/)
   assert.match(page, /connect\.value = \{\}/)
