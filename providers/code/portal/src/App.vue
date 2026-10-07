@@ -62,18 +62,31 @@ function activeJourneyPath(): string {
 // authority changes. This clears actionable old-workspace state immediately and
 // lets each unmounted refresh controller reject late responses.
 watch(
-  () => [props.ctx?.basePath, props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub, props.ctx?.user?.email] as const,
-  ([basePath, token, tenant, userSub]) => {
+  [
+    () => props.ctx?.basePath,
+    () => props.ctx?.token,
+    () => props.ctx?.tenant,
+    () => props.ctx?.user?.sub,
+    () => props.ctx?.user?.email,
+    () => props.ctx?.fetch,
+  ],
+  ([basePath, token, tenant, userSub, userEmail], previous) => {
+    const authority = [basePath, token, tenant, userSub, userEmail]
+    const authorityChanged = !previous.length || authority.some((value, index) => value !== previous[index])
     // This must run synchronously. The keyed route remount is a Vue render
     // effect and therefore happens later; an async form continuation can
     // otherwise commit between the context update and that unmount.
-    contextGeneration.value += 1
-    // The dialog is module-global, so remounting the routed page is not enough
-    // to revoke a confirmation opened under the previous authority.
-    resolveConfirm(false)
-    const nextDeletionAuthority = JSON.stringify([basePath ?? '', tenant ?? '', userSub ?? ''])
-    if (nextDeletionAuthority !== deletionAuthority) deletions.clear()
-    deletionAuthority = nextDeletionAuthority
+    if (authorityChanged) {
+      contextGeneration.value += 1
+      // The dialog is module-global, so remounting the routed page is not enough
+      // to revoke a confirmation opened under the previous authority.
+      resolveConfirm(false)
+      const nextDeletionAuthority = JSON.stringify([basePath ?? '', tenant ?? '', userSub ?? ''])
+      if (nextDeletionAuthority !== deletionAuthority) deletions.clear()
+      deletionAuthority = nextDeletionAuthority
+    }
+    // A replacement host transport belongs to the same scope; update the
+    // client without discarding its collection search, filters, and drafts.
     setBasePath(basePath)
     setAPIContext({ fetch: props.ctx?.fetch, token, tenant, user: userSub })
   },
