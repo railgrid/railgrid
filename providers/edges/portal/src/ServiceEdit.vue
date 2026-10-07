@@ -14,6 +14,7 @@ import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { toast } from './portalkit/toast'
+import { servicePortError } from './serviceValidation'
 
 // The route owns the resource identity. A list-row snapshot is optional and is
 // used only as a seed; every instance page performs an exact getService read so
@@ -59,6 +60,13 @@ function selectAction(action: string): void {
 const form = ref<EdgeServiceEdit>({})
 const instructions = ref('')
 const targetMode = ref<'host' | 'kube'>('host')
+const configurationBaseline = ref('')
+const portError = ref<string | null>(null)
+
+function configurationSnapshot(): string {
+  return JSON.stringify({ form: form.value, instructions: instructions.value, targetMode: targetMode.value })
+}
+const configurationDirty = computed(() => configurationSnapshot() !== configurationBaseline.value)
 
 function seedForm(next: EdgeService | null): void {
   form.value = next ? {
@@ -71,6 +79,8 @@ function seedForm(next: EdgeService | null): void {
   } : {}
   instructions.value = next?.instructions ?? ''
   targetMode.value = next?.host ? 'host' : next?.targetName ? 'kube' : 'host'
+  configurationBaseline.value = configurationSnapshot()
+  portError.value = null
 }
 seedForm(service.value)
 
@@ -116,7 +126,7 @@ function isNotFound(error: unknown): boolean {
   return (error as ErrorResponse)?.reason === 'NotFound'
 }
 
-async function load(): Promise<void> {
+async function load(resetDraft = false): Promise<void> {
   const name = currentName.value.trim()
   const generation = ++selectionGeneration
   const hadSnapshot = readLoaded.value && service.value !== null
@@ -133,7 +143,10 @@ async function load(): Promise<void> {
     const next = await getService(name)
     if (generation !== selectionGeneration) return
     service.value = next
-    seedForm(next)
+    // Refresh observations without discarding work entered in this editor,
+    // including edits made while the read was in flight. A successful config
+    // save explicitly adopts the saved object as the next draft baseline.
+    if (resetDraft || !configurationDirty.value) seedForm(next)
     readLoaded.value = true
   } catch (error) {
     if (generation !== selectionGeneration) return
@@ -269,7 +282,12 @@ async function refreshDetail(): Promise<void> {
 
 async function onSaveConfig(): Promise<void> {
   const name = currentName.value
-  if (!name || !service.value) return
+  if (!name || !service.value || busy.value || readLoading.value) return
+  portError.value = servicePortError(form.value.port)
+  if (portError.value) {
+    document.getElementById('service-edit-port')?.focus()
+    return
+  }
   const generation = selectionGeneration
   busy.value = true
   mutationError.value = null
@@ -278,7 +296,7 @@ async function onSaveConfig(): Promise<void> {
     await updateEdgeService(name, {
       serviceType: form.value.serviceType,
       scheme: form.value.scheme,
-      port: Number(form.value.port) || service.value.port,
+      port: Number(form.value.port),
       host: byHost ? form.value.host?.trim() : undefined,
       targetNamespace: form.value.targetNamespace,
       targetName: byHost ? '' : form.value.targetName,
@@ -287,7 +305,7 @@ async function onSaveConfig(): Promise<void> {
     })
     if (!active || generation !== selectionGeneration || currentName.value !== name) return
     toast('ok', `Service configuration saved for ${name}.`)
-    await load()
+    await load(true)
     emit('saved')
   } catch (error) {
     mutationError.value = errorMessage(error, 'Save failed')
@@ -450,7 +468,7 @@ onUnmounted(() => {
                 <label class="fld"><span class="lbl">Scheme</span>
                   <select v-model="form.scheme" class="k-input" :disabled="busy || !service || schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''"><option value="http">http</option><option value="https">https</option></select>
                 </label>
-                <label class="fld"><span class="lbl">Port</span><input v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" /></label>
+                <div class="fld"><label for="service-edit-port" class="lbl">Port</label><input id="service-edit-port" v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-edit-port-error' : undefined" @input="portError = null" /><span v-if="portError" id="service-edit-port-error" class="error" role="alert">{{ portError }}</span></div>
               </div>
               <div class="service-detail__target-mode" role="group" aria-labelledby="service-edit-target-label">
                 <span id="service-edit-target-label" class="lbl">Target</span>
@@ -465,7 +483,7 @@ onUnmounted(() => {
                 <label class="fld"><span class="lbl">Target service name</span><input v-model="form.targetName" class="k-input" :disabled="busy || !service" placeholder="home-assistant" /></label>
               </div>
               <label class="fld"><span class="lbl">AI instructions (optional)</span><textarea v-model="instructions" class="k-input" rows="3" :disabled="busy || !service" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea></label>
-              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="busy || !service" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> Save configuration</button></div>
+              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="busy || readLoading || !service" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> Save configuration</button></div>
             </ResourceSectionCard>
 
             <ResourceSectionCard class="service-detail__card" id="service-credentials" eyebrow="Access" title="Credentials" :description="credentialDescription">
