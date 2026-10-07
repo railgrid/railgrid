@@ -1,6 +1,6 @@
 import { computed, type Ref } from 'vue'
 
-import { createKueryApi, type KueryApi, type QuerySpec, type QueryStatus } from './api'
+import { createKueryApi, KueryApiError, NO_ENGAGED_EDGES_CODE, type KueryApi, type QuerySpec, type QueryStatus } from './api'
 import type { RailgridContext } from './element'
 import { createKueryRequestContext } from './request-context'
 import type { KueryRequestContext } from './request-context'
@@ -63,6 +63,10 @@ export function errorMessage(error: unknown, recovery: string): string {
   if (error instanceof DOMException && error.name === 'AbortError') return ''
   const detail = error instanceof Error ? error.message : String(error)
   return `${detail}. ${recovery}`
+}
+
+export function isNoEngagedEdgesError(error: unknown): boolean {
+  return error instanceof KueryApiError && error.code === NO_ENGAGED_EDGES_CODE
 }
 
 export function edgeName(cluster = ''): string { return cluster.split('/').pop() || cluster || '—' }

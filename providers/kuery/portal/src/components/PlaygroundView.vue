@@ -4,7 +4,7 @@ import { Play } from 'lucide-vue-next'
 
 import type { RailgridContext } from '../element'
 import type { QuerySpec } from '../api'
-import { errorMessage, useKueryApi } from '../kuery'
+import { errorMessage, isNoEngagedEdgesError, useKueryApi } from '../kuery'
 import { collectSchemaWords, createEditor, EXAMPLES, loadCodeMirror, type EditorHandle } from '../playground'
 import FormSelect from '../portalkit/FormSelect.vue'
 
@@ -18,6 +18,7 @@ const documentText = ref(JSON.stringify(EXAMPLES[0].spec, null, 2))
 const example = ref('')
 const result = ref('')
 const error = ref('')
+const notEngaged = ref(false)
 const running = ref(false)
 const editorError = ref('')
 let editor: EditorHandle | null = null
@@ -25,7 +26,7 @@ let controller: AbortController | null = null
 let schemaController: AbortController | null = null
 let generation = 0
 const exampleOptions = [{ value: '', label: 'Choose an example…' }, ...EXAMPLES.map((item, index) => ({ value: String(index), label: item.label }))]
-const resultStatus = computed(() => running.value ? 'Running query…' : error.value ? 'Query failed. Review the error and update the QuerySpec.' : result.value ? 'Query completed.' : 'Results will appear after you run a query.')
+const resultStatus = computed(() => running.value ? 'Running query…' : notEngaged.value ? 'Kuery is waiting for an edge to become available.' : error.value ? 'Query failed. Review the error and update the QuerySpec.' : result.value ? 'Query completed.' : 'Results will appear after you run a query.')
 
 async function mountEditor(): Promise<void> {
   if (!api.value) return
@@ -55,9 +56,15 @@ async function run(): Promise<void> {
   let spec: QuerySpec
   try { spec = JSON.parse(raw) as QuerySpec } catch (reason) { error.value = `Invalid JSON: ${reason instanceof Error ? reason.message : String(reason)}. Correct the QuerySpec and run it again.`; result.value = ''; return }
   controller?.abort(); const current = new AbortController(); controller = current
-  running.value = true; error.value = ''
+  running.value = true; error.value = ''; notEngaged.value = false
   try { result.value = JSON.stringify(await query(spec, current.signal), null, 2) }
-  catch (reason) { const message = errorMessage(reason, 'Check the QuerySpec, then run it again.'); if (message) error.value = message }
+  catch (reason) {
+    if (isNoEngagedEdgesError(reason)) notEngaged.value = true
+    else {
+      const message = errorMessage(reason, 'Check the QuerySpec, then run it again.')
+      if (message) error.value = message
+    }
+  }
   finally { if (controller === current) running.value = false }
 }
 
@@ -73,7 +80,15 @@ onBeforeUnmount(() => { controller?.abort(); schemaController?.abort(); generati
     <div class="kuery-toolbar"><label class="kuery-example"><span id="playground-example-label">Example</span><FormSelect :model-value="example" :options="exampleOptions" labelledby="playground-example-label" @update:model-value="chooseExample" /></label><button type="button" class="k-btn k-btn--primary" :disabled="running" @click="run"><Play :size="14" :stroke-width="1.75" aria-hidden="true" />{{ running ? 'Running…' : 'Run query' }}</button></div>
     <div class="pg-split">
       <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><div v-if="editorError" class="kuery-inline-error" role="status">{{ editorError }}</div><textarea v-if="fallback" v-model="documentText" class="pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
-      <section aria-labelledby="query-results-label"><h3 id="query-results-label" class="kuery-workbench-title">Query results</h3><p class="kuery-sr-only" role="status" aria-live="polite">{{ resultStatus }}</p><pre class="pg-result" :class="{ error: !!error }">{{ error || result || '// Results appear here after you run a query.' }}</pre></section>
+      <section aria-labelledby="query-results-label">
+        <h3 id="query-results-label" class="kuery-workbench-title">Query results</h3>
+        <p class="kuery-sr-only" role="status" aria-live="polite">{{ resultStatus }}</p>
+        <div v-if="notEngaged" class="kuery-read-state" role="status">
+          <span>Kuery has not started syncing an edge in this workspace yet. Check again in a moment.</span>
+          <button type="button" class="k-btn k-btn--ghost" :disabled="running" @click="run">Check again</button>
+        </div>
+        <pre class="pg-result" :class="{ error: !!error }">{{ error || result || '// Results appear here after you run a query.' }}</pre>
+      </section>
     </div>
     <details class="pg-docs"><summary>API and access</summary><p>A query is the <code>run</code> verb on a SavedView. This editor runs your own scratch view, <code>{{ savedView || '…' }}</code>; programmatic clients POST <code>{"input": {"query": …}}</code> to <code>/clusters/&lt;workspace&gt;/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/&lt;name&gt;/run</code> on the hub with an OIDC bearer token — the same kube path <code>kubectl</code> would use. You must be able to see the view and be granted <code>run</code> on it, so what you can query is exactly what your workspace RBAC allows.</p></details>
   </section>

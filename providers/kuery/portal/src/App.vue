@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Braces, Network, TableProperties } from 'lucide-vue-next'
+import { Braces, ChevronDown, Inbox, Network, TableProperties } from 'lucide-vue-next'
 
 import type { ObjectResult } from './api'
 import type { RailgridContext } from './element'
-import { createKueryRequestContext, errorMessage } from './kuery'
-import { ensurePlaygroundView, kubeClientFor, listEdges, listSavedViews, playgroundViewName, type SavedView } from './savedviews'
+import { createKueryRequestContext } from './kuery'
+import { ensurePlaygroundView, kubeClientFor, listEdges, playgroundViewName } from './savedviews'
 import ImpactView from './components/ImpactView.vue'
 import InventoryView from './components/InventoryView.vue'
 import PlaygroundView from './components/PlaygroundView.vue'
 import TopologyView from './components/TopologyView.vue'
+import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import Tabs from './portalkit/Tabs.vue'
+import { portalHref } from './portalkit/navigation'
 
 const props = defineProps<{ state: { context: RailgridContext | null } }>()
 const context = computed(() => props.state.context)
@@ -22,7 +24,6 @@ const active = ref<TabID>('topology')
 const visited = ref<Record<TabID, boolean>>({ topology: true, inventory: false, playground: false })
 const impact = ref<ObjectResult | null>(null)
 const edges = ref<string[]>([])
-const savedViews = ref<SavedView[]>([])
 // The signed-in user's scratch SavedView. Every ad-hoc query in this shell
 // runs as the 'run' verb on it, so there is no query surface outside the
 // tenant's own RBAC.
@@ -30,7 +31,16 @@ const scratchView = ref('')
 const loaded = ref(false)
 const loading = ref(false)
 const error = ref('')
+const errorDetail = ref('')
 let requestID = 0
+
+const edgeStatus = computed(() => `${edges.value.length} connected Kubernetes edge${edges.value.length === 1 ? '' : 's'}`)
+
+const firstRunSteps = [
+  { label: 'Connect a Kubernetes edge', description: 'Connect a cluster from the Edges provider in this workspace.' },
+  { label: 'Kuery starts syncing', description: 'Kuery makes the connected cluster available for queries.' },
+  { label: 'Explore your fleet', description: 'Browse resources in Inventory and relationships in Topology.' },
+] as const
 
 const tabs = [
   { id: 'topology', label: 'Topology', icon: Network },
@@ -45,14 +55,18 @@ function selectTab(id: string): void {
   }
 }
 
+function openEdgeConnection(): void {
+  window.location.assign(portalHref('/providers/edges/connect/edge'))
+}
+
+function errorDetailText(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason)
+}
+
 /**
- * load reads the workspace directly: its edges are KubernetesCluster CRs from
- * the edges provider's own binding, and its saved views are kuery's. Neither
- * goes through the provider any more — the provider has exactly one route, the
- * query verb, and a listing is not a query.
- *
- * It also makes sure the caller's scratch view exists, because every ad-hoc
- * query below runs as a verb on it.
+ * load reads connected KubernetesCluster CRs from the edges provider's own
+ * binding. It also makes sure the caller's scratch view exists, because every
+ * ad-hoc query below runs as a verb on it.
  */
 async function load(): Promise<void> {
   const current = ++requestID
@@ -67,19 +81,19 @@ async function load(): Promise<void> {
   }
   loading.value = true
   error.value = ''
+  errorDetail.value = ''
   try {
     const name = await playgroundViewName(request.user)
     await ensurePlaygroundView(kube, name, request.user)
-    const [discovered, views] = await Promise.all([listEdges(kube), listSavedViews(kube)])
+    const discovered = await listEdges(kube)
     if (!isCurrent()) return
     scratchView.value = name
     edges.value = discovered
-    savedViews.value = views
     loaded.value = true
   } catch (reason) {
     if (!isCurrent()) return
-    const message = errorMessage(reason, 'Retry, or check that Edges and Kuery are both enabled in this workspace.')
-    if (message) error.value = message
+    error.value = 'Could not check this workspace.'
+    errorDetail.value = errorDetailText(reason)
   } finally {
     if (isCurrent()) loading.value = false
   }
@@ -88,11 +102,11 @@ async function load(): Promise<void> {
 watch(identity, () => {
   impact.value = null
   edges.value = []
-  savedViews.value = []
   scratchView.value = ''
   loaded.value = false
   loading.value = false
   error.value = ''
+  errorDetail.value = ''
   void load()
 }, { immediate: true })
 
@@ -110,19 +124,67 @@ onBeforeUnmount(() => { requestID += 1 })
     <div v-show="!impact" class="kuery-collection-surfaces">
       <div class="kuery-topbar">
         <Tabs :tabs="tabs" :active="active" aria-label="Kuery views" @select="selectTab" />
-        <span class="k-badge" :class="edges.length ? 'k-badge--success' : 'k-badge--warning'" role="status" aria-live="polite" aria-atomic="true">
-          {{ loading && !loaded ? 'Discovering edges' : `${edges.length} edge${edges.length === 1 ? '' : 's'} connected` }}
-        </span>
-        <span v-if="loaded" class="k-badge" role="status">
-          {{ savedViews.length }} saved view{{ savedViews.length === 1 ? '' : 's' }}
+        <span v-if="loaded && edges.length > 0" class="k-badge k-badge--success" role="status" aria-live="polite" aria-atomic="true">
+          {{ edgeStatus }}
         </span>
       </div>
-      <div v-if="error" class="kuery-inline-error" role="alert">
-        <span>{{ error }}</span><button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+      <div v-if="error && loaded" class="kuery-inline-error" role="alert">
+        <div class="kuery-error-copy">
+          <span>Could not refresh workspace setup. The last loaded state is still shown.</span>
+          <details class="k-resource-technical">
+            <summary class="k-resource-technical__summary">
+              <span class="k-resource-technical__summary-label">Technical details</span>
+              <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
+            </summary>
+            <div class="k-resource-technical__body">
+              <section class="k-resource-technical__section">
+                <h3 class="k-resource-technical__section-title">Workspace read</h3>
+                <div class="k-resource-technical__content"><pre class="k-resource-technical__pre">{{ errorDetail }}</pre></div>
+              </section>
+            </div>
+          </details>
+        </div>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
-      <TopologyView v-show="active === 'topology'" :key="`${identity}:topology`" :context="context" :edges="edges" :saved-view="scratchView" :active="!impact && active === 'topology'" @inspect="impact = $event" />
-      <InventoryView v-if="visited.inventory" v-show="active === 'inventory'" :key="`${identity}:inventory`" :context="context" :edges="edges" :saved-view="scratchView" @inspect="impact = $event" />
-      <PlaygroundView v-if="visited.playground" v-show="active === 'playground'" :key="`${identity}:playground`" :context="context" :saved-view="scratchView" :active="!impact && active === 'playground'" />
+      <div v-if="!requestContext.ready" class="kuery-read-state" role="status">Waiting for workspace context…</div>
+      <div v-else-if="loading && !loaded" class="kuery-read-state" role="status">Checking workspace setup…</div>
+      <div v-else-if="error && !loaded" class="kuery-read-state kuery-error" role="alert">
+        <div class="kuery-error-copy">
+          <span>{{ error }}</span>
+          <details class="k-resource-technical">
+            <summary class="k-resource-technical__summary">
+              <span class="k-resource-technical__summary-label">Technical details</span>
+              <ChevronDown class="k-resource-technical__chevron" :size="14" aria-hidden="true" />
+            </summary>
+            <div class="k-resource-technical__body">
+              <section class="k-resource-technical__section">
+                <h3 class="k-resource-technical__section-title">Workspace read</h3>
+                <div class="k-resource-technical__content"><pre class="k-resource-technical__pre">{{ errorDetail }}</pre></div>
+              </section>
+            </div>
+          </details>
+        </div>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+      </div>
+      <FirstRunGuide
+        v-else-if="loaded && edges.length === 0"
+        title="Connect your first Kubernetes edge"
+        description="Kuery builds a searchable inventory and topology from Kubernetes resources in this workspace."
+        primary-label="Connect edge"
+        secondary-label="Check again"
+        :steps="firstRunSteps"
+        journey-label="Kuery setup"
+        @primary="openEdgeConnection"
+        @secondary="load"
+      >
+        <template #icon><Inbox :size="24" :stroke-width="1.5" aria-hidden="true" /></template>
+      </FirstRunGuide>
+      <template v-else-if="loaded">
+        <TopologyView v-show="active === 'topology'" :key="`${identity}:topology`" :context="context" :edges="edges" :saved-view="scratchView" :active="!impact && active === 'topology'" @inspect="impact = $event" />
+        <InventoryView v-if="visited.inventory" v-show="active === 'inventory'" :key="`${identity}:inventory`" :context="context" :edges="edges" :saved-view="scratchView" @inspect="impact = $event" />
+        <PlaygroundView v-if="visited.playground" v-show="active === 'playground'" :key="`${identity}:playground`" :context="context" :saved-view="scratchView" :active="!impact && active === 'playground'" />
+      </template>
+      <div v-else class="kuery-read-state" role="status">Checking workspace setup…</div>
     </div>
   </div>
 </template>
