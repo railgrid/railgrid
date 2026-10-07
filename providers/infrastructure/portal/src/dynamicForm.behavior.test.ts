@@ -33,6 +33,47 @@ function mountForm(schema: JSONSchema, initial: Record<string, unknown>) {
 }
 
 describe('DynamicForm collection editors', () => {
+  it('keeps labels concise and places described help after scalar and map controls', () => {
+    const { host } = mountForm({ type: 'object', properties: {
+      image: { type: 'string', description: 'Choose a container image.' },
+      env: { type: 'object', description: 'Add public environment values.', additionalProperties: { type: 'string' } },
+    } }, { image: 'nginx:alpine', env: {} })
+    const input = host.querySelector<HTMLInputElement>('input')!
+    const help = host.querySelector<HTMLElement>(`#${input.getAttribute('aria-describedby')}`)!
+    expect(input.labels?.[0]?.textContent).toBe('image')
+    expect(help.textContent).toBe('Choose a container image.')
+    expect(input.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const group = host.querySelector<HTMLElement>('[role="group"]')!
+    const mapHelp = host.querySelector<HTMLElement>(`#${group.getAttribute('aria-describedby')}`)!
+    expect(group.compareDocumentPosition(mapHelp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+  it('preserves fractional integers for validation and accepts a corrected whole number', async () => {
+    const { host, values, form } = mountForm({ type: 'object', properties: { replicas: { type: 'integer', minimum: 1 } } }, { replicas: 1 })
+    const input = host.querySelector<HTMLInputElement>('input')!
+    input.value = '1.5'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(input.value).toBe('1.5')
+    expect(values.value.replicas).toBe(1.5)
+    expect((await form.value!.validate()).valid).toBe(false)
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(document.activeElement).toBe(input)
+    input.value = '2'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(await form.value!.validate()).toEqual({ valid: true, values: { replicas: 2 } })
+  })
+
+  it('preserves exponent notation meaning for numeric scalars', async () => {
+    const { host, values, form } = mountForm({ type: 'object', properties: { count: { type: 'integer' }, limit: { type: 'number' } } }, {})
+    for (const input of host.querySelectorAll<HTMLInputElement>('input')) {
+      input.value = '1e2'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+    }
+    expect(values.value).toEqual({ count: 100, limit: 100 })
+    expect((await form.value!.validate()).valid).toBe(true)
+  })
   it('validates line-based scalar arrays before updating the model', async () => {
     const { host, values } = mountForm({
       type: 'object',

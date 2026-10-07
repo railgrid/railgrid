@@ -113,8 +113,10 @@ function inputType(type: string | undefined): string {
 }
 
 function coerce(type: string, raw: string | boolean): unknown {
-  if (type === 'integer') return raw === '' ? '' : parseInt(raw as string, 10)
-  if (type === 'number') return raw === '' ? '' : parseFloat(raw as string)
+  // Preserve the entered numeric value. Integer validation must reject a
+  // fraction instead of silently truncating it, and exponent notation must
+  // retain its meaning for both integer and number fields.
+  if (type === 'integer' || type === 'number') return raw === '' ? '' : Number(raw)
   if (type === 'boolean') return Boolean(raw)
   return raw
 }
@@ -547,7 +549,6 @@ defineExpose({ validate })
 
       <div v-else-if="isMapField(field)" class="dynform-row">
         <div :id="mapLabelID(field.name)" class="dynform-label">{{ field.name }}<span v-if="field.required" class="required">*</span></div>
-        <span v-if="field.description" :id="descriptionID(field.name)" class="dynform-desc">{{ field.description }}</span>
         <div class="dynform-map" role="group" :aria-labelledby="mapLabelID(field.name)" :aria-describedby="describedBy(field)">
           <div v-if="mapRows(field).length" class="dynform-map-head" aria-hidden="true"><span>Key</span><span>Value</span><span /></div>
           <div v-for="row in mapRows(field)" :key="row.id" class="dynform-map-row">
@@ -566,14 +567,13 @@ defineExpose({ validate })
           </div>
 		  <button class="k-btn k-btn--ghost dynform-map-add" type="button" :data-map-add="fieldID(field.name)" @click="addMapRow(field)"><Plus :size="14" :stroke-width="1.75" aria-hidden="true" /> Add entry</button>
         </div>
+        <span v-if="field.description" :id="descriptionID(field.name)" class="dynform-desc">{{ field.description }}</span>
         <span v-if="fieldErrors[field.name]" :id="errorID(field.name)" class="dynform-error" role="alert">{{ fieldErrors[field.name] }}</span>
       </div>
 
       <div v-else class="dynform-row">
         <label :for="fieldID(field.name)" :class="{ 'k-checkbox-hit': field.type === 'boolean' }">
           <span class="dynform-label">{{ field.name }}<span v-if="field.required" class="required">*</span></span>
-          <span v-if="field.description" :id="descriptionID(field.name)" class="dynform-desc">{{ field.description }}</span>
-          <span v-if="isScalarArray(field)" :id="arrayHintID(field.name)" class="dynform-desc">Enter one item per line.</span>
         </label>
         <textarea v-if="isScalarArray(field)" :id="fieldID(field.name)" class="k-input dynform-lines" :aria-describedby="describedBy(field, true)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :required="field.required" :value="arrayText(field)" rows="4" spellcheck="false" @input="updateScalarArray(field, $event.target as HTMLTextAreaElement)" />
         <textarea v-else-if="isComplexArray(field)" :id="fieldID(field.name)" class="k-input dynform-json" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :required="field.required" :value="complexArrayJSON(field)" rows="5" spellcheck="false" @input="updateComplexArray(field, $event.target as HTMLTextAreaElement)" />
@@ -582,6 +582,8 @@ defineExpose({ validate })
         </select>
         <input v-else-if="field.type === 'boolean'" :id="fieldID(field.name)" class="k-checkbox" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" type="checkbox" :checked="booleanInputValue(field)" @change="updateField(field, ($event.target as HTMLInputElement).checked)" />
         <input v-else :id="fieldID(field.name)" class="k-input" :aria-describedby="describedBy(field)" :aria-invalid="fieldErrors[field.name] ? 'true' : undefined" :type="inputType(field.type)" :required="field.required" :value="scalarInputValue(field)" :min="field.minimum" :max="field.maximum" :minlength="field.minLength" :maxlength="field.maxLength" :pattern="field.pattern" @input="updateField(field, coerce(field.type, ($event.target as HTMLInputElement).value))" />
+        <span v-if="field.description" :id="descriptionID(field.name)" class="dynform-desc">{{ field.description }}</span>
+        <span v-if="isScalarArray(field)" :id="arrayHintID(field.name)" class="dynform-desc">Enter one item per line.</span>
         <span v-if="fieldErrors[field.name]" :id="errorID(field.name)" class="dynform-error" role="alert">{{ fieldErrors[field.name] }}</span>
       </div>
     </template>

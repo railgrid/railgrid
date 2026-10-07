@@ -198,7 +198,6 @@ async function submit() {
             <div class="dynform-row">
               <label for="infrastructure-instance-name">
                 <span class="dynform-label">Instance name<span class="required">*</span></span>
-                <span class="dynform-desc">DNS-1123 subdomain. Lowercase alnum, '-', '.'.</span>
               </label>
               <input
                 id="infrastructure-instance-name"
@@ -211,9 +210,10 @@ async function submit() {
                 pattern="[a-z0-9]([-a-z0-9.]*[a-z0-9])?"
                 maxlength="253"
                 :aria-invalid="instanceNameFieldError ? 'true' : undefined"
-                :aria-describedby="instanceNameFieldError ? 'infrastructure-instance-name-error' : undefined"
+                :aria-describedby="instanceNameFieldError ? 'infrastructure-instance-name-error infrastructure-instance-name-help' : 'infrastructure-instance-name-help'"
                 @input="instanceNameFieldError = null"
               />
+              <span id="infrastructure-instance-name-help" class="dynform-desc">Use lowercase letters, numbers, hyphens, and periods. Start and end with a letter or number.</span>
               <span v-if="instanceNameFieldError" id="infrastructure-instance-name-error" class="dynform-error" role="alert">{{ instanceNameFieldError }}</span>
             </div>
           </div>
