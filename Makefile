@@ -708,6 +708,7 @@ verify-design-docs: ## Validate structured design-document metadata and emit its
 
 verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachability wiring
 	@bash hack/scripts/verify-tilt-browser-deployment.test.sh
+	@bash hack/scripts/configure-tilt-preview-dns.test.sh
 
 # --- Tool installation ---
 
