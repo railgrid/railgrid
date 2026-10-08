@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api'
+import type { RailgridContext } from '../types'
 import { AgentsDashboardTileElement } from '../element'
 import { createTilePoller } from '../portalkit/dashboardtile'
 import { agentFixture, settle, stubApi, text } from './helpers'
@@ -14,12 +15,12 @@ function deferred<T>() {
 const TAG = 'agents-dashboard-tile-vue-test'
 if (!customElements.get(TAG)) customElements.define(TAG, AgentsDashboardTileElement)
 
-async function mountTile(api: ApiClient): Promise<AgentsDashboardTileElement> {
+async function mountTile(api: ApiClient, context: Partial<RailgridContext> = {}): Promise<AgentsDashboardTileElement> {
   const tile = document.createElement(TAG) as AgentsDashboardTileElement
   document.body.appendChild(tile)
   await settle(tile)
   Object.assign(tile.api!, api)
-  tile.railgridContext = { tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws' }
+  tile.railgridContext = { tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws', ...context }
   await tile.load()
   await settle(tile)
   return tile
@@ -142,6 +143,73 @@ describe('agents dashboard tile refresh resilience', () => {
     expect(text(tile)).toContain('1 agent')
     expect(text(tile)).not.toContain('2 agents')
     expect(listAgents).toHaveBeenCalledTimes(2)
+    tile.remove()
+  })
+
+  it('keeps the loaded tile visible through host-managed token renewal and a failed refresh', async () => {
+    const hostFetch = vi.fn().mockResolvedValue(new Response())
+    const context = { token: 'original-token', user: { userId: 'alice' }, fetch: hostFetch }
+    const tile = await mountTile(stubApi({
+      listAgents: vi.fn().mockResolvedValue([agentFixture('scout')]),
+      listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }),
+      listSchedules: vi.fn().mockResolvedValue([]),
+    }), context)
+    expect(text(tile)).toContain('1 agent')
+
+    const refresh = deferred<ReturnType<typeof agentFixture>[]>()
+    const listAgents = vi.fn().mockImplementation(() => refresh.promise)
+    Object.assign(tile.api!, stubApi({
+      listAgents,
+      listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }),
+      listSchedules: vi.fn().mockResolvedValue([]),
+    }))
+    tile.railgridContext = {
+      tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws',
+      ...context, token: 'renewed-token',
+    }
+    await settle(tile)
+
+    expect(listAgents).toHaveBeenCalledOnce()
+    expect(text(tile)).toContain('1 agent')
+    expect(text(tile)).not.toContain('Loading agents')
+
+    refresh.reject(new Error('temporarily unavailable'))
+    await settle(tile)
+    expect(text(tile)).toContain('1 agent')
+    expect(text(tile.querySelector('[role="status"]'))).toContain('Showing the last loaded data')
+    expect(tile.querySelector('[role="alert"]')).toBeNull()
+    tile.remove()
+  })
+
+  it.each(['caller', 'workspace'])('clears a host-managed snapshot when the %s changes', async boundary => {
+    const hostFetch = vi.fn().mockResolvedValue(new Response())
+    const context = { token: 'original-token', user: { userId: 'alice' }, fetch: hostFetch }
+    const tile = await mountTile(stubApi({
+      listAgents: vi.fn().mockResolvedValue([agentFixture('scout')]),
+      listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }),
+      listSchedules: vi.fn().mockResolvedValue([]),
+    }), context)
+    expect(text(tile)).toContain('1 agent')
+
+    const refresh = deferred<ReturnType<typeof agentFixture>[]>()
+    Object.assign(tile.api!, stubApi({
+      listAgents: vi.fn().mockImplementation(() => refresh.promise),
+      listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }),
+      listSchedules: vi.fn().mockResolvedValue([]),
+    }))
+    tile.railgridContext = {
+      tenant: 'root:railgrid:tenants:org:ws', orgUUID: 'org', workspaceUUID: 'ws',
+      ...context,
+      ...(boundary === 'caller' ? { user: { userId: 'bob' } } : { workspaceUUID: 'other-workspace' }),
+    }
+    await settle(tile)
+    expect(text(tile)).toContain('Loading agents')
+    expect(text(tile)).not.toContain('1 agent')
+
+    refresh.reject(new Error('forbidden'))
+    await settle(tile)
+    expect(text(tile.querySelector('[role="alert"]'))).toContain('Failed to load: forbidden')
+    expect(text(tile)).not.toContain('1 agent')
     tile.remove()
   })
 

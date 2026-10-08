@@ -44,17 +44,26 @@ railgrid-provider-edges .header-actions button { flex: 0 0 auto; white-space: no
 @media (max-width: 720px) {
   railgrid-provider-edges .edges-header { align-items: stretch; flex-direction: column; }
   railgrid-provider-edges .header-actions { justify-content: flex-start; width: 100%; }
-  railgrid-provider-edges .types { grid-template-columns: minmax(0, 1fr); }
   railgrid-provider-edges .wiz-actions { align-items: stretch; flex-direction: column-reverse; }
-  railgrid-provider-edges .service-create-grid--two,
-  railgrid-provider-edges .service-create-grid--three,
-  railgrid-provider-edges .workload-create-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ── Inputs & labels ── */
 railgrid-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted, #5d5f78); }
 /* Labelled form field: label stacked above its control with a small gap. */
-railgrid-provider-edges .fld { display: flex; flex-direction: column; gap: 5px; }
+railgrid-provider-edges .fld { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+railgrid-provider-edges .fld > .lbl,
+railgrid-provider-edges .wiz label.lbl,
+railgrid-provider-edges fieldset > legend.lbl,
+railgrid-provider-edges label > .lbl {
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+railgrid-provider-edges .fld > input,
+railgrid-provider-edges .fld > select,
+railgrid-provider-edges .fld > textarea { min-width: 0; }
+railgrid-provider-edges .fld > span { overflow-wrap: anywhere; }
 railgrid-provider-edges .field-error { color: var(--color-danger, #ff5d5d); font-size: 11px; }
 /* Persistent help text under a form control (swapped for .field-error while invalid). */
 railgrid-provider-edges .field-help { color: var(--color-text-muted, #5d5f78); font-size: 11px; line-height: 1.4; }
@@ -66,6 +75,10 @@ railgrid-provider-edges .service-create-grid--three { grid-template-columns: min
 railgrid-provider-edges .service-create-target-modes { display: flex; flex-wrap: wrap; gap: 16px; }
 railgrid-provider-edges .service-create-target-modes label { align-items: center; cursor: pointer; display: inline-flex; gap: 6px; }
 railgrid-provider-edges .service-create-target-modes label.is-disabled { opacity: .5; }
+railgrid-provider-edges .service-create-read-error { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+railgrid-provider-edges .service-create-read-error > span { min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-edges .service-target-fieldset { min-width: 0; margin: 0; border: 0; padding: 0; }
+railgrid-provider-edges .service-target-fieldset legend { padding: 0; margin-bottom: 5px; }
 
 /* ── Cards ── */
 railgrid-provider-edges .wiz-card { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -74,8 +87,6 @@ railgrid-provider-edges .wiz-card h3 { margin: 0; font-size: 14px; font-weight: 
 
 /* ── Wizard ── */
 railgrid-provider-edges .wiz { margin: 0; }
-railgrid-provider-edges .wiz-hero h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--color-text-primary, #e9e9f2); }
-railgrid-provider-edges .wiz-hero p { margin: 4px 0 0; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
 railgrid-provider-edges .wiz-steps { margin: 16px 0; }
 railgrid-provider-edges .wiz-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
@@ -618,6 +629,10 @@ railgrid-provider-edges .service-detail__url { display: block; margin-top: 12px;
 railgrid-provider-edges .service-detail__mutation-error { margin-bottom: 0; }
 
 @media (max-width: 720px) {
+  railgrid-provider-edges .types,
+  railgrid-provider-edges .service-create-grid--two,
+  railgrid-provider-edges .service-create-grid--three,
+  railgrid-provider-edges .workload-create-grid { grid-template-columns: minmax(0, 1fr); }
   railgrid-provider-edges .service-detail__form-grid--three,
   railgrid-provider-edges .service-detail__form-grid--two { grid-template-columns: 1fr; }
   railgrid-provider-edges .service-detail__credential-row { align-items: stretch; flex-direction: column; }

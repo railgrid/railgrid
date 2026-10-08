@@ -4,29 +4,25 @@ import test from 'node:test'
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8')
 
-test('Quickstart renders its two cards with the canonical vocabulary', async () => {
+test('Quickstart keeps greeting creation on its own route using the canonical skeleton', async () => {
   const source = await read('./element.ts')
-  const panels = source.match(/<section class="k-card quickstart-panel">[\s\S]*?<\/section>/g) ?? []
-
-  assert.equal(panels.length, 2)
-  // Both cards drive real objects: a create form and the list of Greetings.
-  assert.match(panels[0], /data-form="create"/)
-  assert.match(panels[1], /_renderList\(\)/)
+  assert.match(source, /=== 'create\/greeting'/)
+  assert.match(source, /this\.innerHTML = createRoute \?/)
+  assert.match(source, /<form class="k-create-surface" data-form="create"/)
+  assert.match(source, /k-create-header/)
+  assert.match(source, /k-create-actions[\s\S]*data-cancel[\s\S]*Create greeting/)
+  assert.match(source, /data-create[\s\S]*New greeting/)
+  assert.match(source, /k-first-run__journey/)
+  assert.match(source, /_navigate\('create\/greeting'\)/)
 })
 
-test('Quickstart geometry is locally bounded and container responsive', async () => {
+test('Quickstart keeps the collection fluid and lets shared creation styles bound the form', async () => {
   const styles = await read('./style.css')
-  const grid = styles.match(/railgrid-provider-quickstart \.quickstart-grid\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
-
-  assert.match(grid, /width:\s*100%/)
-  assert.match(grid, /max-width:\s*64rem/)
-  assert.match(grid, /margin-inline:\s*auto/)
-  assert.match(grid, /grid-template-columns:\s*minmax\(0, 1fr\)/)
-  assert.match(styles, /container-name:\s*quickstart-provider/)
-  assert.match(styles, /container-type:\s*inline-size/)
-  assert.match(styles, /@container quickstart-provider \(min-width: 46rem\)[\s\S]*?repeat\(2, minmax\(0, 1fr\)\)/)
-  assert.match(styles, /@supports not \(container-type: inline-size\)[\s\S]*?@media \(min-width: 46rem\)[\s\S]*?repeat\(2, minmax\(0, 1fr\)\)/)
-  assert.doesNotMatch(styles, /@supports not \(container-type: inline-size\)[\s\S]*?@media \(min-width: \d+px\)/)
+  const page = styles.match(/railgrid-provider-quickstart \.quickstart-page\s*\{([^}]+)\}/)?.[1] ?? ''
+  assert.match(page, /width:\s*100%/)
+  assert.match(page, /min-width:\s*0/)
+  assert.doesNotMatch(page, /max-width:/)
+  assert.doesNotMatch(styles, /quickstart-grid/)
 })
 
 // Pillar 3's data rule: bound CRs are read and written with the kube client

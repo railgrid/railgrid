@@ -83,7 +83,7 @@ const emit = defineEmits<{
 <template>
   <section class="grid gap-4" :aria-label="creationRoute ? 'Connect model' : 'Models'">
     <header v-if="!creationRoute && !editorOpen" class="flex flex-wrap items-center justify-between gap-3">
-      <h2 v-if="routePage" class="m-0 text-[15px] font-semibold text-text-primary">Models</h2>
+      <h2 v-if="routePage" class="k-resource-page__title">Models</h2>
       <span
         v-if="!(loading && !settings) && (settings?.models.length ?? 0) > 0"
         class="ml-auto inline-flex"
@@ -102,19 +102,19 @@ const emit = defineEmits<{
     </header>
     <p v-if="routePage && !creationRoute && !editorOpen" class="text-[13px] text-text-muted">Configure the model credentials App Studio uses when creating and chatting in projects.</p>
 
-    <div v-if="loading && !settings && !creationRoute" class="grid min-h-48 content-start gap-3 rounded-md border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
+    <div v-if="loading && !settings && !loadError && !creationRoute" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
       <div class="shimmer h-4 w-36 rounded bg-surface-overlay" />
       <div class="shimmer h-24 w-full rounded bg-surface-overlay" />
       <div class="text-[12px] text-text-muted">Loading models…</div>
     </div>
-    <InlineNotification v-else-if="loadError && !settings && !creationRoute" tone="error" :message="loadError" action-label="Retry" @action="emit('retry')" />
+    <InlineNotification v-else-if="loadError && !settings && !creationRoute" tone="error" :message="loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
 
     <template v-else>
       <div v-if="loading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
         <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
         Refreshing models…
       </div>
-      <InlineNotification v-if="loadError" tone="error" :message="loadError" action-label="Retry" @action="emit('retry')" />
+      <InlineNotification v-if="loadError" tone="error" :message="loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
       <InlineNotification v-if="actionError" tone="error" :message="actionError" />
       <InlineNotification v-else-if="status" tone="success" :message="status" />
       <InlineNotification v-if="testError && !editorOpen && !creationRoute" tone="error" :message="testError" />

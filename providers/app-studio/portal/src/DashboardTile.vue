@@ -9,7 +9,8 @@
 // version live — and they live in different environments, so the tile reads
 // them off the environment list rather than the project phase.
 
-import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ChevronRight } from 'lucide-vue-next'
 import { api } from './api'
 import type { RailgridContext, Project, ProjectEnvironment } from './types'
 import {
@@ -24,24 +25,6 @@ import {
   type TilePoller,
 } from './portalkit/dashboardtile'
 import { ic } from './portalkit/icons'
-
-// Inline chevron — provider bundles are self-contained (no shared icon lib),
-// the same reason the infrastructure tile inlines its own.
-const ChevronRight = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [h('path', { d: 'm9 18 6-6-6-6' })],
-  )
 
 const props = defineProps<{ context: TileContext | null }>()
 
@@ -149,8 +132,11 @@ watch(
 
 <template>
   <div ref="rootRef" :class="tileClass.root">
-    <div v-if="loading && !hasSnapshot" :class="tileClass.message">Loading projects&hellip;</div>
-    <div v-else-if="error && !hasSnapshot" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }}</div>
+    <div v-if="loading && !hasSnapshot" :class="tileClass.message" role="status" aria-live="polite">Loading projects&hellip;</div>
+    <div v-else-if="error && !hasSnapshot" :class="tileClass.error" role="alert" aria-live="assertive">
+      Failed to load: {{ error }}
+      <button type="button" class="k-btn k-btn--ghost k-btn--sm" @click="poller?.refresh()">Retry</button>
+    </div>
 
     <template v-else>
       <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">
@@ -200,7 +186,7 @@ watch(
                 class="shrink-0 rounded px-1 py-px text-[10px] uppercase tracking-wide"
                 :class="row.production ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'"
               >prod</span>
-              <ChevronRight :class="tileClass.chevron" />
+              <ChevronRight :class="tileClass.chevron" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </li>
         </ul>

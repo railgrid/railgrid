@@ -69,7 +69,7 @@ const chooseMode = selectMode
       <ChevronDown class="h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="2" aria-hidden="true" />
     </button>
 
-    <Teleport to="body">
+    <Teleport to="#app-studio-overlay-root">
       <div
         v-if="open"
         :id="menuID"

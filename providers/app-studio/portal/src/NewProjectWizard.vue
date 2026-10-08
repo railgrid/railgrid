@@ -305,7 +305,7 @@ onMounted(async () => {
         </header>
 
         <div class="grid gap-2">
-          <label for="new-project-prompt" class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Project description</label>
+          <label for="new-project-prompt" class="text-[12px] font-medium text-text-secondary">Project description</label>
           <AssistantPreProjectComposer
             v-model="prompt"
             input-id="new-project-prompt"
@@ -319,7 +319,7 @@ onMounted(async () => {
           />
         </div>
 
-        <p v-if="error" role="alert" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">{{ error }}</p>
+        <p v-if="error" role="alert" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">{{ error }}</p>
       </div>
 
       <div class="k-create-actions flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -415,7 +415,7 @@ onMounted(async () => {
           </div>
 
           <div v-else-if="error" class="grid gap-4">
-            <div role="alert" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger">
+            <div role="alert" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger">
               <div class="font-semibold">Project details could not be prepared</div>
               <div class="mt-1">{{ error }}</div>
             </div>
@@ -431,12 +431,13 @@ onMounted(async () => {
 
           <div v-else class="grid gap-5">
             <label class="grid min-w-0 gap-2">
-              <span class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Project name</span>
+              <span class="text-[12px] font-medium text-text-secondary">Project name</span>
               <input
                 v-model="displayName"
                 type="text"
                 class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition placeholder:text-text-secondary focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
                 autocomplete="off"
+                aria-label="Project name"
                 aria-describedby="project-name-review"
               />
               <p id="project-name-review" class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">
@@ -446,10 +447,11 @@ onMounted(async () => {
             </label>
 
             <label class="grid min-w-0 gap-2">
-              <span class="text-[11px] font-semibold uppercase tracking-[0.1em] text-text-secondary">Template</span>
+              <span class="text-[12px] font-medium text-text-secondary">Template</span>
               <select
                 v-model="chosenTemplate"
                 class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
+                aria-label="Template"
                 aria-describedby="template-impact template-selection-review"
               >
                 <option value="">No template (start empty)</option>
@@ -504,7 +506,7 @@ onMounted(async () => {
               <p class="mt-1 text-[12px] leading-5 text-text-secondary">The project plan is preserved. Complete the required setup, then return here to create it.</p>
             </div>
             <div class="grid gap-2 sm:flex sm:flex-wrap">
-              <div v-for="item in setupItems ?? []" :key="item.id" class="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-border-subtle bg-surface px-2.5 py-2 text-[12px]">
+              <div v-for="item in setupItems ?? []" :key="item.id" class="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border-subtle bg-surface px-2.5 py-2 text-[12px]">
                 <span class="min-w-0 font-medium text-text-primary">{{ item.label }}</span>
                 <span v-if="item.status === 'ready'" class="font-medium text-success">Ready</span>
                 <span v-else-if="item.status === 'checking'" class="font-medium text-warning">Checking</span>

@@ -332,13 +332,14 @@ const announcement = computed(() => {
           class="k-checkbox"
           type="checkbox"
           role="switch"
+          aria-labelledby="edges-harness-enabled-label"
           aria-describedby="edges-harness-enabled-help"
           :checked="harnessOn"
           :disabled="controlsDisabled"
           @change="onToggle"
         />
         <span class="edge-harness__switch-text">
-          <span class="edge-harness__switch-title">
+          <span id="edges-harness-enabled-label" class="edge-harness__switch-title">
             <Bot :size="14" aria-hidden="true" /> Run coding harnesses on this machine
           </span>
           <span id="edges-harness-enabled-help" class="muted small">{{ switchHelp }}</span>
@@ -370,9 +371,9 @@ const announcement = computed(() => {
         which is why it is set here by whoever owns the machine rather than by
         whoever writes the agent.
       -->
-      <fieldset v-if="limitsExpanded" id="edges-harness-limits" class="edge-harness__choice">
+      <fieldset v-if="limitsExpanded" id="edges-harness-limits" class="edge-harness__choice" aria-describedby="edges-harness-permissions-help">
         <legend class="lbl">Permissions</legend>
-        <p class="muted small edge-harness__choice-hint">
+        <p id="edges-harness-permissions-help" class="muted small edge-harness__choice-hint">
           What a turn may do on this machine without stopping to ask. A caller cannot raise this.
         </p>
 
@@ -383,18 +384,20 @@ const announcement = computed(() => {
               class="k-radio"
               type="radio"
               name="edges-harness-permission"
+              :aria-labelledby="`edges-harness-permission-${option.id}-label`"
+              :aria-describedby="`edges-harness-permission-${option.id}-help`"
               :value="option.id"
               :disabled="controlsDisabled"
             />
             <span class="edge-harness__mode-text">
-              <span class="edge-harness__mode-title">{{ option.label }}</span>
-              <span class="muted small">{{ option.blurb }}</span>
+              <span :id="`edges-harness-permission-${option.id}-label`" class="edge-harness__mode-title">{{ option.label }}</span>
+              <span :id="`edges-harness-permission-${option.id}-help`" class="muted small">{{ option.blurb }}</span>
             </span>
           </label>
         </div>
 
         <label class="edge-harness__advanced">
-          <span class="lbl">Always allow <span class="muted small">— advanced</span></span>
+          <span id="edges-harness-tools-label" class="lbl">Always allow <span class="muted small">— advanced</span></span>
           <textarea
             v-model="allowedToolsText"
             class="k-input edge-harness__tools"
@@ -402,6 +405,7 @@ const announcement = computed(() => {
             spellcheck="false"
             :disabled="controlsDisabled"
             placeholder="WebSearch&#10;Bash(git *)"
+            aria-labelledby="edges-harness-tools-label"
             aria-describedby="edges-harness-tools-hint"
           />
           <span id="edges-harness-tools-hint" class="muted small">
@@ -414,7 +418,7 @@ const announcement = computed(() => {
         <div class="edge-harness__choice-actions">
           <button
             type="button"
-            class="k-btn k-btn--primary"
+            class="k-btn k-btn--ghost"
             :disabled="controlsDisabled || !limitsDirty"
             :aria-busy="saving || undefined"
             @click="onSaveLimits"
@@ -431,9 +435,9 @@ const announcement = computed(() => {
         was asked; the header's count and badge are what the collapsed card
         summarises with.
       -->
-      <fieldset v-if="selectionExpanded" id="edges-harness-choice" class="edge-harness__choice">
+      <fieldset v-if="selectionExpanded" id="edges-harness-choice" class="edge-harness__choice" aria-describedby="edges-harness-choice-help">
         <legend class="lbl">Harnesses offered</legend>
-        <p class="muted small edge-harness__choice-hint">
+        <p id="edges-harness-choice-help" class="muted small edge-harness__choice-hint">
           Ticking every harness is the same as offering every installed one, so that is what gets saved — a machine
           that gains a harness later then picks it up on its own.
         </p>
@@ -461,7 +465,7 @@ const announcement = computed(() => {
         <div class="edge-harness__choice-actions">
           <button
             type="button"
-            class="k-btn k-btn--primary"
+            class="k-btn k-btn--ghost"
             :disabled="controlsDisabled || !selectionDirty"
             :aria-busy="saving || undefined"
             @click="onSaveSelection"

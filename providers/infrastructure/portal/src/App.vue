@@ -50,7 +50,12 @@ let instanceTombstoneTenant: string | null | undefined
 // so a token rotation is invisible to this bundle unless the host also hands
 // it a new transport.
 watch(
-  () => [props.ctx?.basePath, props.ctx?.fetch, props.ctx?.tenant] as const,
+  [
+    () => props.ctx?.basePath,
+    () => props.ctx?.fetch,
+    () => props.ctx?.tenant,
+    () => props.ctx?.user?.userId ?? props.ctx?.user?.sub ?? props.ctx?.user?.email,
+  ],
   ([basePath, hostFetch, tenant]) => {
     // Keep the existing API setters as the public context boundary. Each
     // setter invalidates in-flight reads, while this owner remounts pages so

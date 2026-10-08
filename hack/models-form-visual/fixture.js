@@ -45,32 +45,24 @@ function hostHeaders(init) {
   headers.set('X-Railgrid-Workspace', 'workspace-test')
   return Object.fromEntries(headers.entries())
 }
-const agentsCredentials = [
-  {
-    name: 'everyday',
-    provider: 'openai-compatible',
-    baseURL: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
-    hasAPIKey: true,
-  },
-]
+const agentsCredentials = [{
+  apiVersion: 'agents.railgrid.ai/v1alpha1',
+  kind: 'ModelCredential',
+  metadata: { name: 'everyday', uid: 'fixture-model', resourceVersion: '1' },
+  spec: { provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini', secretRef: { name: 'fixture-credential' } },
+  status: { conditions: [{ type: 'Ready', status: 'True' }, { type: 'SecretResolved', status: 'True' }, { type: 'Reachable', status: 'True' }], models: ['gpt-4o-mini'] },
+}]
 
-const appSettings = {
-  provider: 'openai-compatible',
-  baseURL: 'https://api.openai.com/v1',
-  model: 'gpt-5.4',
-  configured: true,
-  defaultModelID: 'app-default',
-  models: [{
-    id: 'app-default',
-    name: 'Workspace default',
-    provider: 'openai-compatible',
-    baseURL: 'https://api.openai.com/v1',
-    model: 'gpt-5.4',
-    configured: true,
-    default: true,
-    catalog: { inputPer1M: 2.5, outputPer1M: 10, contextWindow: 128000, vision: true, toolCall: true },
-  }],
+// Represent the actual bound CRs. There is no model configuration REST route,
+// and the fixture contains no real credential values or network requests.
+const studio = {
+  apiVersion: 'ai.railgrid.ai/v1alpha1', kind: 'Studio',
+  metadata: { name: 'studio', uid: 'fixture-studio', resourceVersion: '1' },
+  spec: { llm: { defaultModel: 'app-default', models: [{
+    id: 'app-default', revisionID: 'fixture-revision', name: 'Workspace default',
+    provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4',
+  }] } },
+  status: { models: [{ id: 'app-default', configured: true }] },
 }
 
 const usage = {
@@ -90,7 +82,7 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
   headers: { 'Content-Type': 'application/json' },
 })
 
-function emptyList() { return { items: [] } }
+function emptyList() { return { metadata: { resourceVersion: '1' }, items: [] } }
 
 function streamResponse() {
   const stream = new ReadableStream({
@@ -109,11 +101,8 @@ function appFetch(input, init = {}) {
   const path = url.pathname
   calls.push({ provider: 'app', path, method: init.method || 'GET', headers: hostHeaders(init) })
   if (path === '/api/providers') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/app-studio/api/projects') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/app-studio/api/projects/create-readiness') return Promise.resolve(json({ gitConnection: { ready: true, status: 'ready' } }))
-  if (path === '/services/providers/app-studio/api/projects/llm-settings') return Promise.resolve(json(appSettings))
-  if (path === '/services/providers/app-studio/api/projects/import-repositories') return Promise.resolve(json({ repositories: [] }))
-  if (path === '/services/providers/app-studio/api/projects/development-templates') return Promise.resolve(json({ templates: [] }))
+  if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/studios/studio') return Promise.resolve(json(studio))
+  if (/^\/clusters\/workspace-test\/apis\/[^/]+\/[^/]+\/[^/]+$/.test(path)) return Promise.resolve(json(emptyList()))
   return Promise.resolve(json({ message: `fixture did not mock ${path}` }, 404))
 }
 
@@ -121,18 +110,12 @@ function agentsFetch(input, init = {}) {
   const url = new URL(String(input), location.origin)
   const path = url.pathname
   calls.push({ provider: 'agents', path, method: init.method || 'GET', headers: hostHeaders(init) })
-  if (path === '/services/providers/agents/api/events') return Promise.resolve(streamResponse())
-  if (path === '/services/providers/agents/api/agents') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/agents/api/connections') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/agents/api/toolsets') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/agents/api/schedules') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/agents/api/triggers') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/agents/api/inbox') return Promise.resolve(json(emptyList()))
-  if (path === '/services/providers/agents/api/oauth/providers') return Promise.resolve(json({ providers: {} }))
-  if (path === '/services/providers/agents/api/capabilities') return Promise.resolve(json({ providers: [] }))
-  if (path === '/services/providers/agents/api/credentials') return Promise.resolve(json({ items: agentsCredentials }))
-  if (path === '/services/providers/agents/api/catalog') return Promise.resolve(json([{ id: 'gpt-4o-mini', inputPer1M: 0.15, outputPer1M: 0.6, contextWindow: 128000, vision: true, toolCall: true }]))
-  if (path === '/services/providers/agents/api/usage') return Promise.resolve(json(usage))
+  if (path === '/services/providers/agents/oauth/providers') return Promise.resolve(json({ providers: {} }))
+  if (path === '/ui/providers/agents/model-catalog.json') return Promise.resolve(json([{ id: 'gpt-4o-mini', inputPer1M: 0.15, outputPer1M: 0.6, contextWindow: 128000, vision: true, toolCall: true }]))
+  if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelcredentials') return Promise.resolve(json({ metadata: { resourceVersion: '1' }, items: agentsCredentials }))
+  if (/^\/clusters\/workspace-test\/apis\/[^/]+\/[^/]+\/[^/]+$/.test(path)) return Promise.resolve(json(emptyList()))
+  if (/\/agents\/[^/]+\/events$/.test(path)) return Promise.resolve(streamResponse())
+  if (/\/agents\/[^/]+\/usage$/.test(path)) return Promise.resolve(json({ result: usage }))
   return Promise.resolve(json({ message: `fixture did not mock ${path}` }, 404))
 }
 
@@ -153,9 +136,9 @@ const context = {
   orgUUID: 'org-test',
   workspaceUUID: 'workspace-test',
   basePath: `/ui/providers/${provider === 'app' ? 'app-studio' : provider}`,
-  subPath: route,
+  subPath: route.replace(/^#\/?/, '').replace(/^\//, ''),
   theme,
-  user: { sub: 'visual-user' },
+  user: { userId: 'visual-user', sub: 'visual-user' },
   fetch: provider === 'agents' ? agentsFetch : appFetch,
 }
 

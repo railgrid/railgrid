@@ -3,6 +3,54 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from '../../portal/node_modules/typescript/lib/typescript.js'
+import { computed, effectScope, nextTick, reactive, ref, watch } from '../../portal/node_modules/vue/index.mjs'
+
+test('resource page background reads leave recovery idle and queued retries announce immediately', async () => {
+  const source = readFileSync(new URL('./ResourcePage.vue', import.meta.url), 'utf8')
+  const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const parsed = ts.createSourceFile('ResourcePage.ts', script, ts.ScriptTarget.Latest, true)
+  const names = new Set(['explicitReadState', 'showInitialError', 'initialReadPending', 'retryRequested', 'retrying', 'refreshAnnouncement', 'ariaBusy'])
+  const declarations = parsed.statements.filter(statement =>
+    (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => names.has(declaration.name.getText(parsed))))
+    || (ts.isFunctionDeclaration(statement) && statement.name?.text === 'requestRetry')
+    || statement.getText(parsed).startsWith('watch(() => props.loading,')
+    || statement.getText(parsed).startsWith('watch(() => props.error,'),
+  )
+  const code = ts.transpileModule(declarations.map(statement => statement.getText(parsed)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const props = reactive({ loaded: true, loading: true, error: 'Refresh unavailable', refreshMode: 'background', title: 'Repository' })
+  const emitted = []
+  const scope = effectScope()
+  const state = scope.run(() => runInNewContext(`${code}\n({ requestRetry, retrying, ariaBusy, showInitialError, initialReadPending, refreshAnnouncement })`, {
+    computed, ref, watch, props, emit: event => emitted.push(event),
+  }))
+  try {
+    assert.equal(state.retrying.value, false, 'a timer does not spin or disable recovery')
+    assert.equal(state.refreshAnnouncement.value, 'Updating Repository…')
+    state.requestRetry()
+    state.requestRetry()
+    assert.deepEqual(emitted, ['retry'])
+    assert.equal(state.retrying.value, true)
+    assert.equal(state.ariaBusy.value, true)
+    assert.equal(state.refreshAnnouncement.value, 'Retrying Repository…', 'queued retry has immediate feedback')
+    props.loading = false
+    await nextTick()
+    assert.equal(state.retrying.value, false)
+    props.loaded = false
+    assert.equal(state.showInitialError.value, true)
+    state.requestRetry()
+    assert.equal(state.initialReadPending.value, false, 'keep the useful error through retry')
+    assert.equal(state.ariaBusy.value, true, 'busy feedback precedes caller acknowledgement')
+    props.error = null
+    props.loaded = true
+    await nextTick()
+    assert.equal(state.retrying.value, false)
+    assert.equal(state.ariaBusy.value, false)
+  } finally {
+    scope.stop()
+  }
+})
 
 const component = readFileSync(new URL('./ResourceTable.vue', import.meta.url), 'utf8')
 const tableSource = readFileSync(new URL('./table.ts', import.meta.url), 'utf8')
@@ -106,6 +154,9 @@ test('empty inventory visibility preserves filtered and off-page selection contr
   assert.equal(state.selectionSurfaceVisible.value, false, 'empty inventory has no selection gutter')
   assert.equal(state.renderedColumnCount.value, 2, 'empty content spans only visible data columns')
   assert.equal(state.showControls.value, false, 'empty client inventory has no blank search toolbar')
+  context.props.loading = true
+  assert.equal(state.showControls.value, false, 'an authoritative empty snapshot keeps the same toolbar geometry during refresh')
+  context.props.loading = false
 
   context.props.rows = [{ app: 'Reports' }]
   assert.equal(state.selectionSurfaceVisible.value, true)
@@ -131,4 +182,68 @@ test('empty inventory visibility preserves filtered and off-page selection contr
   assert.match(component, /<thead v-if="!confirmedEmptyInventory \|\| selectedCount > 0"/)
   assert.match(component, /<th v-if="selectionSurfaceVisible" class="k-table__heading k-table__selection-heading"/)
   assert.match(component, /<span v-if="selectable" class="k-table__selection-live"/)
+})
+
+test('table retries keep useful errors, announce progress immediately, and serialize activation', async () => {
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const parsed = ts.createSourceFile('ResourceTable.ts', script, ts.ScriptTarget.Latest, true)
+  const names = new Set(['explicitReadState', 'retryRequested', 'retrying', 'showInitialError', 'initialReadPending', 'ariaBusy', 'tableAriaLabel', 'refreshAnnouncement'])
+  const declarations = parsed.statements.filter(statement =>
+    (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => names.has(declaration.name.getText(parsed))))
+    || (ts.isFunctionDeclaration(statement) && statement.name?.text === 'requestRetry')
+    || statement.getText(parsed).startsWith('watch(() => props.loading,')
+    || statement.getText(parsed).startsWith('watch(() => props.error,'),
+  )
+  const code = ts.transpileModule(declarations.map(statement => statement.getText(parsed)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const props = reactive({ loaded: false, loading: false, error: 'Connection unavailable', refreshMode: 'foreground', ariaLabel: 'Repositories' })
+  const emitted = []
+  const scope = effectScope()
+  const state = scope.run(() => runInNewContext(`${code}\n({ requestRetry, retrying, ariaBusy, showInitialError, initialReadPending, refreshAnnouncement })`, {
+    computed, ref, watch, props, filterPending: ref(false), emit: event => emitted.push(event),
+  }))
+  try {
+    state.requestRetry()
+    state.requestRetry()
+    assert.deepEqual(emitted, ['retry'], 'double activation emits one foreground read')
+    assert.equal(state.retrying.value, true)
+    assert.equal(state.ariaBusy.value, true, 'queued user retry exposes immediate busy feedback')
+    assert.equal(state.refreshAnnouncement.value, 'Retrying repositories…')
+    assert.equal(state.showInitialError.value, true, 'the useful initial error remains visible')
+    assert.equal(state.initialReadPending.value, false, 'retry does not replace the error with a skeleton')
+    props.loading = true
+    await nextTick()
+    props.loading = false
+    await nextTick()
+    assert.equal(state.retrying.value, false, 'failed retry can be invoked again after the caller settles')
+    assert.equal(state.ariaBusy.value, false)
+    props.loaded = true
+    props.error = null
+    props.loading = true
+    await nextTick()
+    assert.equal(state.refreshAnnouncement.value, 'Refreshing repositories…')
+    props.refreshMode = 'background'
+    assert.equal(state.refreshAnnouncement.value, 'Updating repositories…')
+    props.error = 'Background connection unavailable'
+    assert.equal(state.refreshAnnouncement.value, 'Updating repositories…', 'timer refresh is not announced as a user retry')
+    assert.equal(state.retrying.value, false, 'timer refresh does not spin or disable recovery actions')
+  } finally { scope.stop() }
+  assert.equal((component.match(/:disabled="retrying" :aria-busy="retrying \|\| undefined" @click="requestRetry"/g) || []).length, 2)
+  assert.match(component, /class="k-table__empty-label" role="status" aria-live="polite"/)
+})
+
+test('searchable table facets leave their teleported search field in source Tab order', () => {
+  const filter = readFileSync(new URL('./ResourceTableFilter.vue', import.meta.url), 'utf8')
+  const script = filter.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const parsed = ts.createSourceFile('ResourceTableFilter.ts', script, ts.ScriptTarget.Latest, true)
+  const handler = parsed.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'onSearchKeydown')
+  assert.ok(handler)
+  const code = ts.transpileModule(handler.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const events = []
+  const keydown = runInNewContext(`${code}\nonSearchKeydown`, {
+    closeFilter: () => events.push('close'), trigger: { value: { focus: () => events.push('focus source trigger') } },
+  })
+  keydown({ key: 'Tab', preventDefault: () => events.push('blocked native navigation') })
+  assert.deepEqual(events, ['close', 'focus source trigger'], 'popup closes and native Tab starts from the source anchor')
 })

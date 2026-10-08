@@ -103,6 +103,7 @@ function isLocked(): boolean {
           placeholder="e.g. my-claude"
           :pattern="namePattern"
           name="name"
+          aria-label="Name"
           required
           :disabled="isLocked() || nameDisabled"
           aria-required="true"
@@ -168,6 +169,7 @@ function isLocked(): boolean {
             v-if="secretKey === CODEX"
             id="harness-secret"
             :name="secretKey"
+            :aria-label="copyFor(secretKey).label"
             :value="secret"
             :class="['k-input', 'font-mono', 'text-[12px]', { 'border-danger': secretError }]"
             rows="6"
@@ -185,6 +187,7 @@ function isLocked(): boolean {
             v-else
             id="harness-secret"
             :name="secretKey"
+            :aria-label="copyFor(secretKey).label"
             :value="secret"
             :class="['k-input', 'h-10', { 'border-danger': secretError }]"
             type="password"
@@ -212,8 +215,8 @@ function isLocked(): boolean {
     <footer class="k-create-actions">
       <button type="button" class="k-btn k-btn--ghost" :disabled="isLocked()" @click="emit('cancel')">Cancel</button>
       <button type="submit" class="k-btn k-btn--primary" :disabled="isLocked() || saveDisabled">
-        <Loader2 v-if="busy" :size="14" class="animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
-        <Check v-else :size="14" :stroke-width="1.75" />
+        <Loader2 v-if="busy" :size="14" class="animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+        <Check v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
         {{ busy ? (editing ? 'Saving changes…' : 'Saving identity…') : editing ? 'Save changes' : 'Add identity' }}
       </button>
     </footer>

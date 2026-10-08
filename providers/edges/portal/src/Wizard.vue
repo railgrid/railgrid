@@ -223,11 +223,14 @@ function fmt(s: number) {
 </script>
 
 <template>
-  <div class="wiz">
-    <div class="wiz-hero">
-      <h1>Connect an edge</h1>
-      <p>A Kubernetes cluster, or a Linux or MacOS host, that you want to manage from this workspace.</p>
-    </div>
+  <div class="wiz k-create-page">
+    <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="saving" @click="leaveWizard('cancel')">
+      <ArrowLeft :size="14" aria-hidden="true" /> {{ props.cancelLabel }}
+    </button>
+    <header class="k-create-header">
+      <h1 class="k-create-title">Connect an edge</h1>
+      <p class="k-create-description">A Kubernetes cluster, or a Linux or MacOS host, that you want to manage from this workspace.</p>
+    </header>
 
     <ol class="wiz-steps k-wizard-steps" aria-label="Edge connection progress">
       <li v-for="(l, i) in stepLabels" :key="l"
@@ -240,42 +243,31 @@ function fmt(s: number) {
     <div v-if="error" class="banner error" role="alert" aria-live="assertive">{{ error }}</div>
 
     <!-- Step 1 -->
-    <div v-if="step === 1" class="wiz-card k-card k-create-surface--guided">
-      <div class="k-create-body--guided">
+    <form v-if="step === 1" class="k-create-surface k-create-surface--guided" :aria-busy="saving" @submit.prevent="canContinue && handleCreate()">
+      <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
           <label for="edge-name" class="lbl">Edge name</label>
-          <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
+          <input id="edge-name" v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" required :disabled="saving" />
 
           <fieldset class="types">
             <legend class="lbl">Type</legend>
             <label class="type" :class="{ sel: edgeType === 'kubernetes' }" for="edge-type-kubernetes">
-              <input id="edge-type-kubernetes" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="kubernetes" :disabled="edgeTypeLocked && props.requiredType !== 'kubernetes'" />
+              <input id="edge-type-kubernetes" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="kubernetes" :disabled="saving || (edgeTypeLocked && props.requiredType !== 'kubernetes')" />
               <Boxes :size="15" aria-hidden="true" /> <span><b>Kubernetes</b><small>Existing K8s cluster</small></span>
             </label>
             <label class="type" :class="{ sel: edgeType === 'server' }" for="edge-type-server">
-              <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" :disabled="edgeTypeLocked && props.requiredType !== 'server'" />
+              <input id="edge-type-server" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="server" :disabled="saving || (edgeTypeLocked && props.requiredType !== 'server')" />
               <Server :size="15" aria-hidden="true" /> <span><b>Linux</b><small>Bare-metal or VM: SSH, host services, local runner</small></span>
             </label>
             <label class="type" :class="{ sel: edgeType === 'macos' }" for="edge-type-macos">
-              <input id="edge-type-macos" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="macos" :disabled="edgeTypeLocked && props.requiredType !== 'macos'" />
+              <input id="edge-type-macos" v-model="edgeType" class="type-radio" name="edge-type" type="radio" value="macos" :disabled="saving || (edgeTypeLocked && props.requiredType !== 'macos')" />
               <Laptop :size="15" aria-hidden="true" /> <span><b>MacOS</b><small>Host services and local runner</small></span>
             </label>
           </fieldset>
           <p v-if="edgeTypeLocked" class="muted">This edge type is required to continue the originating {{ props.requiredType === 'kubernetes' ? 'workload' : 'resource' }} flow.</p>
 
           <label for="edge-labels" class="lbl">Labels <span class="muted">(optional)</span></label>
-          <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
-
-          <div class="wiz-actions">
-            <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="leaveWizard('cancel')">
-              <ArrowLeft :size="14" aria-hidden="true" /> {{ props.cancelLabel }}
-            </button>
-            <button type="button" class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
-              <Loader2 v-if="saving" :size="14" class="spin" aria-hidden="true" />
-              {{ saving ? 'Creating…' : 'Create & continue' }}
-              <ArrowRight v-if="!saving" :size="14" aria-hidden="true" />
-            </button>
-          </div>
+          <input id="edge-labels" v-model="labels" class="k-input" placeholder="env=prod, region=us-east" :disabled="saving" />
         </div>
         <CreateGuidance
           title="Configure the edge"
@@ -285,10 +277,19 @@ function fmt(s: number) {
           :next-steps="edgeNextSteps"
         />
       </div>
-    </div>
+      <div class="k-create-actions">
+        <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="leaveWizard('cancel')">Cancel</button>
+        <button type="submit" class="k-btn k-btn--primary" :disabled="!canContinue">
+          <Loader2 v-if="saving" :size="14" class="spin" aria-hidden="true" />
+          {{ saving ? 'Creating…' : 'Create & continue' }}
+          <ArrowRight v-if="!saving" :size="14" aria-hidden="true" />
+        </button>
+      </div>
+    </form>
 
     <!-- Step 2 -->
-    <div v-else-if="step === 2" class="wiz-card k-card">
+    <div v-else-if="step === 2" class="k-create-surface">
+      <div class="wiz-card">
       <h3 id="edge-wizard-step-heading" tabindex="-1">Install the agent on your {{ edgeType === 'kubernetes' ? 'Kubernetes cluster' : `${edgeTypeLabel(edgeType)} host` }}</h3>
       <p class="muted">Run one of the commands below from the target. This updates automatically when
         <b>{{ trimmed }}</b> connects.</p>
@@ -336,18 +337,21 @@ function fmt(s: number) {
       <span class="wiz-sr-only" role="status" aria-live="polite">{{ copyFeedback }}</span>
 
       <div class="waiting"><Loader2 :size="14" class="spin" aria-hidden="true" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
-      <div class="wiz-actions">
+      </div>
+      <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost" @click="leaveWizard('cancel')">{{ props.cancelLabel }}</button>
         <button type="button" class="k-btn k-btn--ghost" @click="leaveWizard('created')">Skip waiting — continue</button>
       </div>
     </div>
 
     <!-- Step 3 -->
-    <div v-else class="wiz-card k-card center">
+    <div v-else class="k-create-surface">
+      <div class="wiz-card center">
       <PartyPopper :size="30" aria-hidden="true" />
       <h3 id="edge-wizard-step-heading" tabindex="-1"><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>
-      <div class="wiz-actions">
+      </div>
+      <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--primary" @click="leaveWizard('created')">Continue <ArrowRight :size="14" aria-hidden="true" /></button>
       </div>
     </div>

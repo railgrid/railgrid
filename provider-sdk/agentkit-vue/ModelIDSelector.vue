@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 
 import { filterDiscoveredModels, modelSelectorGroupLabels, modelSelectorOptions, type ModelSelectorOption } from './modelIDSelection'
 import { ensureAgentUIStyles } from '../agentkit/styles'
@@ -153,6 +153,11 @@ function scrollActiveOption() {
 }
 
 function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Tab') {
+    closeSelector()
+    trigger.value?.focus()
+    return
+  }
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     moveActive(1)
@@ -218,6 +223,8 @@ onMounted(() => {
   window.addEventListener('resize', onViewportChange)
   window.addEventListener('scroll', onViewportChange, true)
 })
+
+onDeactivated(() => closeSelector())
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown)

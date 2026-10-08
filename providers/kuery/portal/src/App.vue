@@ -144,7 +144,7 @@ onBeforeUnmount(() => { requestID += 1 })
             </div>
           </details>
         </div>
-        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+        <button type="button" class="k-btn k-btn--ghost" :disabled="loading" :aria-busy="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <div v-if="!requestContext.ready" class="kuery-read-state" role="status">Waiting for workspace context…</div>
       <div v-else-if="loading && !loaded" class="kuery-read-state" role="status">Checking workspace setup…</div>
@@ -164,7 +164,7 @@ onBeforeUnmount(() => { requestID += 1 })
             </div>
           </details>
         </div>
-        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
+        <button type="button" class="k-btn k-btn--ghost" :disabled="loading" :aria-busy="loading" @click="load">{{ loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <FirstRunGuide
         v-else-if="loaded && edges.length === 0"

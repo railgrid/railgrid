@@ -82,8 +82,8 @@ onBeforeUnmount(() => { controller?.abort(); schemaController?.abort(); generati
     <div class="kuery-panel-head"><div><h2 id="playground-title" class="kuery-panel-title">Query playground</h2><p class="meta">Write a Kuery QuerySpec against your workspace. Autocomplete uses the live schema; press Ctrl/Cmd-Space for suggestions.</p></div></div>
     <div class="kuery-toolbar"><label class="kuery-example"><span id="playground-example-label">Example</span><FormSelect :model-value="example" :options="exampleOptions" labelledby="playground-example-label" @update:model-value="chooseExample" /></label><button type="button" class="k-btn k-btn--primary" :disabled="running" @click="run"><Play :size="14" :stroke-width="1.75" aria-hidden="true" />{{ running ? 'Running…' : 'Run query' }}</button></div>
     <div class="pg-split">
-      <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><div v-if="editorError" class="kuery-inline-error" role="status">{{ editorError }}</div><textarea v-if="fallback" v-model="documentText" class="pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
-      <section aria-labelledby="query-results-label">
+      <section aria-labelledby="query-editor-label"><h3 id="query-editor-label" class="kuery-workbench-title">QuerySpec editor</h3><div v-if="editorError" class="kuery-inline-error" role="status">{{ editorError }}</div><textarea v-if="fallback" v-model="documentText" class="k-input pg-fallback" aria-labelledby="query-editor-label" spellcheck="false" /><div v-else ref="editorHost" class="pg-editor" role="group" aria-labelledby="query-editor-label" /></section>
+      <section aria-labelledby="query-results-label" :aria-busy="running">
         <h3 id="query-results-label" class="kuery-workbench-title">Query results</h3>
         <p class="kuery-sr-only" role="status" aria-live="polite">{{ resultStatus }}</p>
         <div v-if="notEngaged" class="kuery-read-state" role="status">

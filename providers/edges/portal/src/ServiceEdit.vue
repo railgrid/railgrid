@@ -470,13 +470,13 @@ onUnmounted(() => {
                 </label>
                 <div class="fld"><label for="service-edit-port" class="lbl">Port</label><input id="service-edit-port" v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" :aria-invalid="portError ? 'true' : undefined" :aria-describedby="portError ? 'service-edit-port-error' : undefined" @input="portError = null" /><span v-if="portError" id="service-edit-port-error" class="error" role="alert">{{ portError }}</span></div>
               </div>
-              <div class="service-detail__target-mode" role="group" aria-labelledby="service-edit-target-label">
-                <span id="service-edit-target-label" class="lbl">Target</span>
+              <fieldset class="service-detail__target-mode service-target-fieldset">
+                <legend class="lbl">Target</legend>
                 <label class="k-checkbox-hit"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
                 <label class="k-checkbox-hit" :class="{ 'is-disabled': edgeIsHost }"><input v-model="targetMode" name="service-edit-target-mode" type="radio" value="kube" :disabled="busy || !service || edgeIsHost" /> Kubernetes Service</label>
-              </div>
+              </fieldset>
               <div v-if="targetMode === 'host'" class="service-detail__form-grid">
-                <label class="fld"><span class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" class="muted service-detail__field-help">{{ entry.hostHelp }}</span></label>
+                <label class="fld"><span id="service-edit-host-label" class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" aria-labelledby="service-edit-host-label" :aria-describedby="entry?.hostHelp ? 'service-edit-host-help' : undefined" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" id="service-edit-host-help" class="field-help service-detail__field-help">{{ entry.hostHelp }}</span></label>
               </div>
               <div v-else class="service-detail__form-grid service-detail__form-grid--two">
                 <label class="fld"><span class="lbl">Target namespace</span><input v-model="form.targetNamespace" class="k-input" :disabled="busy || !service" placeholder="home" /></label>
@@ -490,7 +490,7 @@ onUnmounted(() => {
               <template v-if="credentialsSupported">
                 <p class="muted service-detail__credential-hint">{{ entry?.credential.hint || 'Credential' }}{{ credentialsOptional ? ' (optional)' : '' }} — makes the service Ready when authentication is required.</p>
                 <div class="service-detail__credential-row">
-                  <label v-for="field in credFields" :key="field.key" class="fld"><span class="lbl">{{ field.label }}</span><input v-model="credInputs[field.key]" :type="field.secret ? 'password' : 'text'" class="k-input" :disabled="busy || !service" :placeholder="field.label" autocomplete="new-password" /><span v-if="field.help" class="muted service-detail__field-help">{{ field.help }}</span></label>
+                  <label v-for="field in credFields" :key="field.key" class="fld"><span :id="`service-edit-credential-${field.key}-label`" class="lbl">{{ field.label }}</span><input v-model="credInputs[field.key]" :type="field.secret ? 'password' : 'text'" class="k-input" :disabled="busy || !service" :aria-labelledby="`service-edit-credential-${field.key}-label`" :aria-describedby="field.help ? `service-edit-credential-${field.key}-help` : undefined" :placeholder="field.label" autocomplete="new-password" /><span v-if="field.help" :id="`service-edit-credential-${field.key}-help`" class="field-help service-detail__field-help">{{ field.help }}</span></label>
                   <button class="k-btn k-btn--ghost" type="button" :disabled="busy || !service || !credFilled" @click="onSaveCreds"><KeyRound :size="14" aria-hidden="true" /> {{ service?.hasCredentials ? 'Update' : 'Set' }} credentials</button>
                 </div>
               </template>

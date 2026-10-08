@@ -1200,7 +1200,7 @@ defineExpose({
               <button
                 v-if="chip.status === 'error' && chip.retryAction"
                 type="button"
-                class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 :aria-label="chip.retryAction === 'delete' ? `Retry attachment removal ${attachmentLabel(chip)}` : `Retry attachment upload ${attachmentLabel(chip)}`"
                 :title="chip.retryAction === 'delete' ? 'Retry removal' : 'Retry upload'"
                 @click="retryAttachment(chip)"
@@ -1210,7 +1210,7 @@ defineExpose({
               <button
                 v-if="chip.status !== 'deleting'"
                 type="button"
-                class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                class="app-studio-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
                 :aria-label="`Remove attachment ${attachmentLabel(chip)}`"
                 title="Remove attachment"
                 @click="removeAttachment(chip)"
@@ -1266,11 +1266,11 @@ defineExpose({
     <div class="k-ai-composer__controls k-ai-composer__controls--flow">
       <div class="k-ai-composer__control-group">
         <div ref="addMenuRootRef" class="contents">
-          <div v-if="attachmentMenuOpen" class="absolute bottom-11 left-1 [z-index:var(--app-studio-z-menu)] min-w-48 rounded-md border border-border-default bg-surface-overlay p-1.5 shadow-lg" role="menu" aria-label="Add">
+          <div v-if="attachmentMenuOpen" class="k-menu absolute bottom-11 left-1 [z-index:var(--app-studio-z-menu)] min-w-48" role="menu" aria-label="Add">
             <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Add</div>
             <button
               type="button"
-              class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target flex w-full k-menu-item text-left"
               role="menuitem"
               @click="openAttachmentPicker"
             >
@@ -1279,7 +1279,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="app-studio-touch-target flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-[12px] text-text-secondary hover:bg-surface-hover hover:text-text-primary"
+              class="app-studio-touch-target flex w-full k-menu-item text-left"
               role="menuitem"
               @click="openPalette"
             >

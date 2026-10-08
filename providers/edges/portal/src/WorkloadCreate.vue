@@ -344,7 +344,7 @@ onUnmounted(() => {
       <template #icon><Server aria-hidden="true" /></template>
     </FirstRunGuide>
 
-    <form v-else-if="app && props.mode === 'marketplace'" class="k-create-surface k-create-surface--wide k-create-surface--guided" @submit.prevent="submit">
+    <form v-else-if="app && props.mode === 'marketplace'" class="k-create-surface k-create-surface--wide k-create-surface--guided" :aria-busy="busy" @submit.prevent="submit">
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields">
       <label class="fld">
@@ -359,11 +359,12 @@ onUnmounted(() => {
         </select>
       </label>
       <label class="fld">
-        <span class="lbl">Target namespace</span>
+        <span id="marketplace-namespace-label" class="lbl">Target namespace</span>
         <input
           v-model="draft.targetNamespace"
           class="k-input"
           placeholder="default"
+          aria-labelledby="marketplace-namespace-label"
           :aria-invalid="targetNamespaceError ? 'true' : undefined"
           :aria-describedby="targetNamespaceError ? 'marketplace-namespace-error' : 'marketplace-namespace-help'"
         />
@@ -390,7 +391,7 @@ onUnmounted(() => {
       </div>
     </form>
 
-    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" @submit.prevent="submit">
+    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" :aria-busy="busy" @submit.prevent="submit">
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields">
       <label class="fld">
@@ -402,11 +403,12 @@ onUnmounted(() => {
         <input v-model="draft.image" class="k-input" placeholder="nginx:latest" />
       </label>
       <label class="fld">
-        <span class="lbl">Image pull secrets (comma-separated)</span>
+        <span id="workload-pull-secrets-label" class="lbl">Image pull secrets (comma-separated)</span>
         <input
           v-model="draft.imagePullSecrets"
           class="k-input"
           placeholder="ghcr-pull"
+          aria-labelledby="workload-pull-secrets-label"
           :aria-invalid="pullSecretsError ? 'true' : undefined"
           :aria-describedby="pullSecretsError ? 'workload-pull-secrets-error' : 'workload-pull-secrets-help'"
         />
@@ -427,11 +429,12 @@ onUnmounted(() => {
         </label>
       </div>
       <label class="fld">
-        <span class="lbl">Target namespace</span>
+        <span id="workload-namespace-label" class="lbl">Target namespace</span>
         <input
           v-model="draft.targetNamespace"
           class="k-input"
           placeholder="default"
+          aria-labelledby="workload-namespace-label"
           :aria-invalid="targetNamespaceError ? 'true' : undefined"
           :aria-describedby="targetNamespaceError ? 'workload-namespace-error' : 'workload-namespace-help'"
         />
@@ -439,11 +442,12 @@ onUnmounted(() => {
         <span v-else id="workload-namespace-help" class="field-help">Namespace on the edge cluster the Deployment and Service land in. It is created on each edge if missing and never deleted with the workload.</span>
       </label>
       <label class="fld">
-        <span class="lbl">Edge selector (key=value, comma-separated)</span>
+        <span id="workload-selector-label" class="lbl">Edge selector (key=value, comma-separated)</span>
         <input
           v-model="draft.selector"
           class="k-input"
           placeholder="env=dev"
+          aria-labelledby="workload-selector-label"
           :aria-invalid="selectorError ? 'true' : undefined"
           :aria-describedby="selectorError ? 'workload-selector-error' : undefined"
         />

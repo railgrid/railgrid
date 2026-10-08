@@ -85,7 +85,7 @@ function loadAgentHelper(options = {}) {
 
 test('AgentKit owns optional recipes and keeps the core contract separate', () => {
   assert.match(css, /--railgrid-agent-ui-canonical:\s*1;/)
-  assert.match(css, /--railgrid-agent-ui-version:\s*9;/)
+  assert.match(css, /--railgrid-agent-ui-version:\s*10;/)
   assert.match(source, /conversation\.css\?inline/)
   assert.match(css, /\.k-ai-conversation-layout\s*\{/)
   assert.match(css, /\.k-workbench-tabs\s*\{/)
@@ -94,7 +94,7 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
   assert.match(css, /\.k-model-connection\s*[,\{]/)
   assert.match(conversationCSS, /\.k-ai-turn-progress\s*\{/)
 
-  assert.match(coreCSS, /--railgrid-ui-core-version:\s*31;/)
+  assert.match(coreCSS, /--railgrid-ui-core-version:\s*32;/)
   assert.doesNotMatch(coreCSS, /--railgrid-ui-version/)
   assert.match(coreCSS, /\.k-back-action--icon-only\s*\{/)
   assert.doesNotMatch(coreCSS, /\.k-ai-|\.k-workbench-|\.k-model-/)
@@ -103,14 +103,14 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
 })
 
 test('AgentKit is opt-in, depends on core styles, and is idempotent', () => {
-  const helper = loadAgentHelper({ coreVersion: '31' })
+  const helper = loadAgentHelper({ coreVersion: '32' })
   assert.equal(helper.document.head.children.length, 0, 'loading the module must not inject styles')
 
   helper.ensureAgentUIStyles()
   assert.equal(helper.context.__coreCalls, 1)
   assert.deepEqual(helper.document.head.children.map(node => node.id), ['k-agent-ui'])
   assert.equal(helper.document.head.children[0].textContent, 'agent-css\nactivity-css\nconversation-css')
-  assert.equal(helper.document.head.children[0].getAttribute('data-railgrid-agent-ui-version'), '9')
+  assert.equal(helper.document.head.children[0].getAttribute('data-railgrid-agent-ui-version'), '10')
 
   helper.ensureAgentUIStyles()
   assert.equal(helper.document.head.children.length, 1)
@@ -118,16 +118,16 @@ test('AgentKit is opt-in, depends on core styles, and is idempotent', () => {
 
 test('AgentKit preserves stale style nodes and accepts current or newer hosts', () => {
   const staleNode = styleNode('k-agent-ui', 'stale-agent-css')
-  const stale = loadAgentHelper({ coreVersion: '31', agentVersion: '8', existingNodes: [staleNode] })
+  const stale = loadAgentHelper({ coreVersion: '32', agentVersion: '9', existingNodes: [staleNode] })
   stale.ensureAgentUIStyles()
-  assert.deepEqual(stale.document.head.children.map(node => node.id), ['k-agent-ui-v9'])
+  assert.deepEqual(stale.document.head.children.map(node => node.id), ['k-agent-ui-v10'])
   assert.equal(staleNode.textContent, 'stale-agent-css')
 
-  const current = loadAgentHelper({ coreVersion: '31', agentVersion: '9' })
+  const current = loadAgentHelper({ coreVersion: '32', agentVersion: '10' })
   current.ensureAgentUIStyles()
   assert.equal(current.document.head.children.length, 0)
 
-  const newer = loadAgentHelper({ coreVersion: '31', agentVersion: '10' })
+  const newer = loadAgentHelper({ coreVersion: '32', agentVersion: '11' })
   newer.ensureAgentUIStyles()
   assert.equal(newer.document.head.children.length, 0)
 })

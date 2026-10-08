@@ -60,6 +60,100 @@ async function render(props = {}) {
   return renderToString(createSSRApp(ModelsSettings, { ...baseProps, ...props }))
 }
 
+test('retains initial and stale model errors with one disabled busy retry action', async () => {
+  for (const settings of [null, {
+    provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4',
+    configured: true, defaultModelID: 'main',
+    models: [{ id: 'main', name: 'Main model', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
+  }]) {
+    const html = await render({ settings, loading: true, loadError: 'Could not load model settings.' })
+    assert.match(html, /Could not load model settings\./)
+    assert.match(html, /<button[^>]*class="k-inline-notification__action"[^>]*disabled[^>]*aria-label="Retrying models…"[^>]*aria-busy="true"[^>]*>Retrying models…<\/button>/)
+    assert.doesNotMatch(html, />Loading models…</)
+    if (settings) assert.match(html, /aria-label="Model Main model"/)
+  }
+})
+
+test('a pending model retry keeps its previous error until the read succeeds', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const load = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'loadLLMSettings')
+  assert.ok(load)
+  const { outputText } = ts.transpileModule(load.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const state = new Function('ref', `
+    const props = { ctx: { token: 'token' } };
+    let llmSettingsLoadSerial = 0;
+    const llmSettings = ref(null);
+    const llmSettingsLoading = ref(false);
+    const llmSettingsError = ref('Previous read failed');
+    const llmStatus = ref(null);
+    const llmActionError = ref(null);
+    let resolveRead;
+    const api = { getLLMSettings: () => new Promise(resolve => { resolveRead = resolve; }) };
+    const applyLLMSettings = settings => { llmSettings.value = settings; };
+    const handleProjectAPIInitializing = () => false;
+    ${outputText}
+    return { loadLLMSettings, llmSettings, llmSettingsLoading, llmSettingsError,
+      resolveRead: settings => resolveRead(settings) };
+  `)(ref)
+  const pending = state.loadLLMSettings()
+  assert.equal(state.llmSettingsLoading.value, true)
+  assert.equal(state.llmSettingsError.value, 'Previous read failed')
+  state.resolveRead({ models: [] })
+  await pending
+  assert.equal(state.llmSettingsLoading.value, false)
+  assert.equal(state.llmSettingsError.value, null)
+  assert.deepEqual(state.llmSettings.value, { models: [] })
+})
+
+test('changing an endpoint clears its typed replacement credential and verification immediately', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = new Set(['updateLLMBaseURL', 'clearLLMDiscovery', 'invalidateLLMConnectionTest'])
+  const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
+  assert.equal(functions.length, names.size)
+  const { outputText } = ts.transpileModule(functions.map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const state = new Function('ref', `
+    const llmBaseURL = ref('https://original-provider.example/v1');
+    const llmApiKey = ref('typed-replacement-key');
+    const llmName = ref('Saved model');
+    const llmModel = ref('custom-model');
+    const llmValidationAttempted = ref(true);
+    let llmDiscoverySerial = 0;
+    const llmDiscoveryLoading = ref(true);
+    const llmDiscoveredModels = ref([{ id: 'original-model' }]);
+    const llmDiscoveryError = ref(null);
+    const llmDiscoveryStatus = ref('1 model found');
+    let llmConnectionTestSerial = 0;
+    const llmTesting = ref(true);
+    const llmTestStatus = ref('Connection verified');
+    const llmTestError = ref(null);
+    const llmTestedFingerprint = ref('original-endpoint-fingerprint');
+    ${outputText}
+    return { updateLLMBaseURL, llmBaseURL, llmApiKey, llmName, llmModel, llmValidationAttempted,
+      llmTesting, llmTestStatus, llmTestedFingerprint, llmDiscoveredModels,
+      testSerial: () => llmConnectionTestSerial };
+  `)(ref)
+
+  state.updateLLMBaseURL('https://original-provider.example/v1')
+  assert.equal(state.llmApiKey.value, 'typed-replacement-key', 'an unchanged endpoint retains its local draft')
+  assert.equal(state.testSerial(), 0)
+
+  state.updateLLMBaseURL('https://different-provider.example/v1')
+  assert.equal(state.llmBaseURL.value, 'https://different-provider.example/v1')
+  assert.equal(state.llmApiKey.value, '', 'the old typed key cannot follow a new destination')
+  assert.equal(state.llmTesting.value, false)
+  assert.equal(state.llmTestStatus.value, null)
+  assert.equal(state.llmTestedFingerprint.value, '')
+  assert.equal(state.testSerial(), 1, 'pending verification is fenced off synchronously')
+  assert.deepEqual(state.llmDiscoveredModels.value, [])
+  assert.equal(state.llmValidationAttempted.value, false)
+  assert.equal(state.llmName.value, 'Saved model')
+  assert.equal(state.llmModel.value, 'custom-model')
+})
+
 test('presents multiple workspace models with explicit default and readiness state', async () => {
   const html = await render({
     settings: {

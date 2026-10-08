@@ -354,6 +354,7 @@ onUnmounted(() => {
 
           <ResourceSectionCard id="instance-conditions" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and generation freshness for this instance.">
             <ConditionsPanel
+              :show-title="false"
               :conditions="conditions"
               :generation="inst.generation"
               :observed-generation="conditionObservedGeneration"

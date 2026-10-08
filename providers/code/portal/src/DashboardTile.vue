@@ -108,7 +108,8 @@ onUnmounted(() => {
   refresh.stop()
 })
 watch(
-  [() => props.context?.tenant, () => props.context?.token, () => props.context?.orgUUID, () => props.context?.workspaceUUID],
+  [() => props.context?.tenant, () => props.context?.orgUUID, () => props.context?.workspaceUUID,
+    () => props.context?.user?.userId || props.context?.user?.sub || props.context?.user?.email],
   () => {
     repositories.value = []
     connections.value = []
@@ -119,6 +120,10 @@ watch(
     load()
   },
 )
+watch([() => props.context?.token, () => props.context?.fetch], () => {
+  refresh.invalidate()
+  load('background')
+})
 </script>
 
 <template>
@@ -127,7 +132,7 @@ watch(
       <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
 
     <template v-else>
-      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">Showing cached data. {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
+      <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">Showing cached data. {{ error }} <button type="button" class="k-dashboard-action" @click="load()">Retry</button></div>
       <span v-else-if="loading" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
@@ -161,28 +166,25 @@ watch(
             <button
               type="button"
               :class="tileClass.row"
+              :aria-label="`Open repository ${repo.repo || repo.name}, ${repo.ready ? 'ready' : 'not ready'}, connection ${repo.connectionRef}`"
               @click="navigateFromTile(rootRef, `repositories/${repo.name}`)"
             >
-              <!-- Dot carries the ready state; repeating it as a word would
-                   be two indicators for one fact. The trailing slot shows the
-                   connection instead, which is what you actually need when a
-                   repository is not ready. -->
               <span
                 :class="[tileClass.rowDot, repo.ready ? 'bg-success' : 'bg-warning']"
                 aria-hidden="true"
               />
               <span :class="tileClass.rowPrimary">{{ repo.repo || repo.name }}</span>
-              <span :class="tileClass.rowSecondary">{{ repo.connectionRef }}</span>
+              <span :class="tileClass.rowSecondary">{{ repo.connectionRef }} · {{ repo.ready ? 'Ready' : 'Not ready' }}</span>
               <ChevronRight :class="tileClass.chevron" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </li>
         </ul>
       </div>
 
-      <div v-else-if="stats.connections === 0" :class="tileClass.empty">
+      <div v-else-if="stats.connections === 0" :class="tileClass.empty" role="status" aria-live="polite">
         No git connection yet — connect a provider to create repositories.
       </div>
-      <div v-else :class="tileClass.empty">No repositories yet.</div>
+      <div v-else :class="tileClass.empty" role="status" aria-live="polite">No repositories yet.</div>
     </template>
   </div>
 </template>

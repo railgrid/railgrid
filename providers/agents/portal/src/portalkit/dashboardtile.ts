@@ -56,7 +56,7 @@ export const tileClass = {
   // Primary identifier — takes the slack and truncates.
   rowPrimary: 'min-w-0 flex-1 truncate text-[12px] text-text-primary',
   // Secondary fact (phase, age, template) — never truncates the primary away.
-  rowSecondary: 'shrink-0 truncate text-[10px] text-text-muted/70',
+  rowSecondary: 'shrink-0 truncate text-[10px] text-text-muted',
   // Leading status indicator on a row. One dot, one meaning, same size on
   // every tile — rows that lead with a full icon on one card and a dot on the
   // next read as two different lists.
@@ -99,6 +99,9 @@ export const dashboardTileSemanticClass: Record<keyof typeof tileClass, string> 
 // TileContext is the subset of railgridContext a tile needs. The console pushes
 // the full object; tiles only ever read these.
 export interface TileContext {
+  // The host's stable caller identity fences retained snapshots across account
+  // changes without discarding them on ordinary bearer renewal.
+  user?: { userId?: string; sub?: string; email?: string } | null
   // fetch is the host-owned transport (injects Authorization and the tenant
   // headers). Send every hub request through portalkit providerFetch(ctx).
   fetch?: ProviderFetch | null

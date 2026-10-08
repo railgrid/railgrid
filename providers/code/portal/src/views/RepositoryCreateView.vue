@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
 import { contextGenerationKey } from '../context'
@@ -245,13 +245,18 @@ async function submit(): Promise<void> {
     if (isCurrentMutation(generation, expectedContext)) formError.value = errMessage(e)
   } finally {
     operations.release(lock)
-    if (isCurrentMutation(generation, expectedContext)) submitting.value = false
+    if (mounted && generation === mutationGeneration) submitting.value = false
   }
 }
 
 onMounted(() => {
   mounted = true
   void loadRepositories()
+  void loadConnections()
+})
+watch(contextGeneration, () => {
+  if (!mounted) return
+  void loadRepositories(true)
   void loadConnections()
 })
 onUnmounted(() => {
@@ -309,7 +314,7 @@ onUnmounted(() => {
             </select>
           </label>
           <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
-          <label class="field field-check k-checkbox-hit"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
+          <label class="field field-check k-checkbox-hit"><input v-model="autoInit" class="k-checkbox" type="checkbox" /> Initialize with a README</label>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating repository…</span>
         </div>

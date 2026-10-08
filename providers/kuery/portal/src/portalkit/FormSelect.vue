@@ -7,7 +7,7 @@
      scope class because it is rendered outside the component root. -->
 <script setup lang="ts">
 import { Check, ChevronDown } from 'lucide-vue-next'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 
 export interface FormSelectOption {
@@ -268,6 +268,8 @@ onMounted(() => {
     window.addEventListener('scroll', onViewportChange, true)
   }
 })
+
+onDeactivated(() => closeSelect())
 
 onBeforeUnmount(() => {
   if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {

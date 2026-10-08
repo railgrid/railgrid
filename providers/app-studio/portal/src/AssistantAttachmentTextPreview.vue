@@ -45,7 +45,7 @@ onBeforeUnmount(() => { loadSerial += 1 })
 <template>
   <div
     v-if="assistantAttachmentIsText(file)"
-    class="mt-1.5 min-w-0 rounded-sm border border-border-subtle bg-surface px-2 py-1.5"
+    class="mt-1.5 min-w-0 rounded-lg border border-border-subtle bg-surface px-2 py-1.5"
     :aria-label="`${label} text preview`"
     :aria-busy="loading ? 'true' : undefined"
   >

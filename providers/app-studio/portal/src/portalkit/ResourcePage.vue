@@ -62,9 +62,10 @@ const showInitialLoading = useDelayedLoading(initialReadPending)
 // Retry event until the caller settles it. `loading` is the caller-owned
 // source of truth; ResourcePage never starts or cancels a read itself.
 const retryRequested = ref(false)
-const retrying = computed(() => retryRequested.value || (Boolean(props.loading) && Boolean(props.error)))
+const retrying = computed(() => retryRequested.value || (Boolean(props.loading) && Boolean(props.error)
+  && (showInitialError.value || props.refreshMode === 'foreground')))
 const refreshAnnouncement = computed(() => {
-  if (showInitialError.value && props.loading) return `Retrying ${props.title}…`
+  if (retrying.value) return `Retrying ${props.title}…`
   if (explicitReadState.value && props.loaded === true && props.loading) {
     return props.refreshMode === 'foreground'
       ? `Refreshing ${props.title}…`
@@ -72,7 +73,7 @@ const refreshAnnouncement = computed(() => {
   }
   return ''
 })
-const ariaBusy = computed(() => Boolean(props.loading) || initialReadPending.value)
+const ariaBusy = computed(() => Boolean(props.loading) || initialReadPending.value || retryRequested.value)
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
 const staleMessageLive = computed(() => props.refreshMode === 'background' ? 'polite' : 'assertive')
 

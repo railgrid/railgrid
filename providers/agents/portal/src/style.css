@@ -53,7 +53,7 @@ railgrid-provider-agents .agents-panel-head h3 { margin: 0; }
 railgrid-provider-agents :focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 
 /* --- agent card grid --- */
-railgrid-provider-agents .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); gap: 18px; }
+railgrid-provider-agents .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: 18px; }
 railgrid-provider-agents .agents-card {
   display: flex; flex-direction: column; gap: 10px; min-height: 160px; padding: 18px;
   text-align: left;
@@ -185,12 +185,14 @@ railgrid-provider-agents .agents-hint { font-size: 12px; color: var(--color-text
 railgrid-provider-agents .agents-fielderr { font-size: 12px; color: var(--color-danger, #ff5d5d); font-weight: 500; }
 railgrid-provider-agents .agents-secret-handoff {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
 }
 railgrid-provider-agents .agents-secret-handoff > div { display: flex; align-items: center; gap: 10px; min-width: 0; }
+railgrid-provider-agents .agents-secret-handoff > div:first-child { flex: 1 1 16rem; flex-wrap: wrap; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-secret-handoff code { color: var(--color-text-muted); letter-spacing: 0.08em; }
 railgrid-provider-agents .agents-secret-handoff-actions { flex-wrap: wrap; justify-content: flex-end; }
 
@@ -454,7 +456,7 @@ railgrid-provider-agents .agents-modeseg {
 }
 railgrid-provider-agents .agents-modebtn {
   background: transparent; color: var(--color-text-secondary, currentColor); border: 0; cursor: pointer;
-  padding: 5px 12px; border-radius: 3px; font: inherit; font-weight: 500; font-size: 13px;
+  padding: 5px 12px; border-radius: 4px; font: inherit; font-weight: 500; font-size: 13px;
 }
 railgrid-provider-agents .agents-modebtn.sel { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); box-shadow: none; }
 /* Assisted setup sits under the tool tiles as a quiet strip: deliberately
@@ -522,11 +524,11 @@ railgrid-provider-agents .agents-dash-head { display: flex; align-items: center;
 railgrid-provider-agents .agents-dash-head h3 { margin: 0; }
 railgrid-provider-agents .agents-dash-loading { padding: 0; text-align: center; }
 railgrid-provider-agents .agents-seg { display: inline-flex; background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); border-radius: 4px; padding: 2px; }
-railgrid-provider-agents .agents-seg button { border: 0; background: transparent; color: var(--color-text-secondary, #8a8ca6); font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 3px; cursor: pointer; }
+railgrid-provider-agents .agents-seg button { border: 0; background: transparent; color: var(--color-text-secondary, #8a8ca6); font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 4px; cursor: pointer; }
 railgrid-provider-agents .agents-seg button.on { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent-hover, #a18aff); box-shadow: none; }
 railgrid-provider-agents .agents-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 railgrid-provider-agents .agents-stat { padding: 12px 14px; }
-railgrid-provider-agents .agents-stat-v { font-size: 22px; font-weight: 700; color: var(--color-text-primary, #e9e9f2); line-height: 1.1; }
+railgrid-provider-agents .agents-stat-v { font-family: var(--font-display, "Archivo Variable", var(--font-sans, sans-serif)); font-size: 26px; font-stretch: 125%; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--color-text-primary, #e9e9f2); line-height: 1.1; }
 railgrid-provider-agents .agents-stat-k { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-muted, #5d5f78); margin-top: 4px; }
 railgrid-provider-agents .agents-stat-sub { font-size: 11px; color: var(--color-text-secondary, #8a8ca6); margin-top: 2px; }
 railgrid-provider-agents .agents-dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
@@ -542,7 +544,7 @@ railgrid-provider-agents .agents-bar-row { display: grid; grid-template-columns:
 railgrid-provider-agents .agents-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-secondary, #8a8ca6); }
 railgrid-provider-agents .agents-bar-track { height: 8px; border-radius: 2px; background: var(--color-surface-overlay, #171927); overflow: hidden; }
 railgrid-provider-agents .agents-bar-fill { height: 100%; border-radius: 2px; background: var(--color-accent, #8b6bff); }
-railgrid-provider-agents .agents-bar-val { font-size: 11px; color: var(--color-text-muted, #5d5f78); white-space: nowrap; }
+railgrid-provider-agents .agents-bar-val { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--color-text-muted, #5d5f78); white-space: nowrap; }
 railgrid-provider-agents .agents-model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
 railgrid-provider-agents .agents-model-card {
   display: flex; flex-direction: column; gap: 10px; padding: 16px;
@@ -555,6 +557,7 @@ railgrid-provider-agents .agents-model-title h4 { margin: 0; font-size: 15px; fo
 railgrid-provider-agents .agents-model-sub { font-size: 12px; color: var(--color-text-secondary, #8a8ca6); overflow: hidden; text-overflow: ellipsis; }
 railgrid-provider-agents .agents-model-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 railgrid-provider-agents .agents-chip { font-family: var(--agents-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 2.5px 8px; border-radius: 3px; background: var(--color-surface, #0a0b12); border: 1px solid color-mix(in srgb, currentColor 35%, transparent); color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents .agents-chip > svg { width: 12px; height: 12px; flex: none; stroke-width: 2; }
 railgrid-provider-agents .agents-chip-price { background: var(--color-accent-subtle); border-color: transparent; color: var(--color-accent, #8b6bff); font-weight: 600; }
 railgrid-provider-agents .agents-chip-warn { background: var(--color-warning-subtle); border-color: transparent; color: var(--color-warning, #f0a63a); }
 railgrid-provider-agents .agents-chip-btn { cursor: pointer; font-family: var(--agents-mono); }
@@ -567,7 +570,7 @@ railgrid-provider-agents .agents-chip-fallback { border-style: dashed; color: va
 railgrid-provider-agents .agents-model-meta .mono { font-size: 11px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 railgrid-provider-agents .agents-model-discovered { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 12px; padding: 8px; border-radius: 6px; background: var(--color-surface, #0a0b12); }
 railgrid-provider-agents .agents-discovered-head { flex-basis: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-railgrid-provider-agents .agents-discovered-filter { width: 140px; min-width: 0; font-size: 11px; padding: 3px 8px; border-radius: 3px; }
+railgrid-provider-agents .agents-discovered-filter { width: 140px; min-width: 0; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
 railgrid-provider-agents .agents-chip-current { background: var(--color-accent-subtle); border-color: transparent; color: var(--color-accent, #8b6bff); cursor: default; }
 railgrid-provider-agents .agents-model-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; flex-wrap: wrap; }
 railgrid-provider-agents .agents-model-actions button.secondary { font-size: 12.5px; }
@@ -605,7 +608,7 @@ railgrid-provider-agents .agents-err {
 @media (min-width: 768px) {
   railgrid-provider-agents .agents-desktop-rail-toggle {
     display: inline-flex; width: 32px; height: 32px; flex: none; align-items: center; justify-content: center;
-    border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--color-text-muted, #8587a1);
+    border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--color-text-muted, #8587a1);
     padding: 0; cursor: pointer; transition: border-color 0.12s, background 0.12s, color 0.12s;
   }
   railgrid-provider-agents .agents-desktop-rail-toggle:hover {
@@ -620,7 +623,7 @@ railgrid-provider-agents .agents-err {
 @media (max-width: 767px) {
   railgrid-provider-agents .agents-mobile-rail-toggle {
     display: flex; width: auto; min-width: 0; min-height: 36px; flex: 1 1 auto; align-items: center; gap: 7px;
-    border: 0; border-radius: 5px; background: transparent; color: var(--color-text-primary, #e9e9f2);
+    border: 0; border-radius: 4px; background: transparent; color: var(--color-text-primary, #e9e9f2);
     padding: 5px 0; font: inherit; font-size: 12px; font-weight: 600; text-align: left;
   }
   railgrid-provider-agents .agents-mobile-rail-toggle:hover,
@@ -752,6 +755,12 @@ railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
 /* Keep conversation targets generous on touch without expanding desktop
  * chrome. */
 @media (pointer: coarse), (any-pointer: coarse) {
+  railgrid-provider-agents :is(.agents-adv, .agents-setup) > summary {
+    box-sizing: border-box;
+    min-width: 44px;
+    min-height: 44px;
+    padding-block: 12px;
+  }
   railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle {
     width: 44px;
     height: 44px;

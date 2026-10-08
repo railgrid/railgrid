@@ -46,6 +46,7 @@ import WorkloadCreate from './WorkloadCreate.vue'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import HarnessCard from './HarnessCard.vue'
+import DashboardTile from './DashboardTile.vue'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import { edgeConnectPath } from './routes'
 
@@ -270,6 +271,97 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('edge dashboard read state', () => {
+  it.each([{ snapshot: [] }, { snapshot: [edge] }])('retains the authoritative snapshot through a failed background read', async ({ snapshot }) => {
+    api.listEdges.mockResolvedValue(snapshot)
+    const mounted = await mount(DashboardTile, { context: { tenant: 'tenant-a', user: { userId: 'user-a' } } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.loaded).toBe(true)
+      api.listEdges.mockRejectedValueOnce(new Error('Hub is unavailable'))
+      await state.refresh.request('background')
+      await flush()
+      expect(state.loaded).toBe(true)
+      expect(state.edges).toEqual(snapshot)
+      expect(state.error).toContain('Hub is unavailable')
+      expect(state.loading).toBe(false)
+    } finally { mounted.unmount() }
+  })
+
+  it('keeps rows through token renewal and fences a different caller', async () => {
+    const mounted = await mount(DashboardTile, { context: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' } } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const renewed = deferred<unknown[]>()
+      api.listEdges.mockReturnValueOnce(renewed.promise)
+      mounted.instance.props.context = { tenant: 'tenant-a', token: 'new-token', user: { userId: 'user-a' } }
+      await flush()
+      expect(state.loaded).toBe(true)
+      expect(state.edges).toEqual([edge])
+
+      api.listEdges.mockResolvedValueOnce([{ ...edge, name: 'caller-b-edge' }])
+      mounted.instance.props.context = { tenant: 'tenant-a', token: 'caller-b-token', user: { userId: 'user-b' } }
+      await flush()
+      expect(state.loaded).toBe(false)
+      expect(state.edges).toEqual([])
+      renewed.resolve([{ ...edge, name: 'stale-caller-a-edge' }])
+      await flush()
+      await flush()
+      expect(state.edges).toEqual([{ ...edge, name: 'caller-b-edge' }])
+    } finally { mounted.unmount() }
+  })
+})
+
+describe('edge shell read authority', () => {
+  it('preserves collection identity on token renewal and clears the actual host caller change', async () => {
+    const mounted = await mount(App, { ctx: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' }, subPath: '' } })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const generation = state.contextGeneration
+      const renewed = deferred<unknown[]>()
+      api.listEdges.mockReturnValueOnce(renewed.promise)
+      mounted.instance.props.ctx = { tenant: 'tenant-a', token: 'new-token', user: { userId: 'user-a' }, subPath: '' }
+      await flush()
+      expect(state.contextGeneration).toBe(generation)
+      expect(state.firstLoadDone).toBe(true)
+      expect(state.edges).toEqual([edge])
+      api.listEdges.mockResolvedValueOnce([{ ...edge, name: 'caller-b-edge' }])
+      mounted.instance.props.ctx = { tenant: 'tenant-a', token: 'caller-b-token', user: { userId: 'user-b' }, subPath: '' }
+      await flush()
+      expect(state.contextGeneration).toBeGreaterThan(generation)
+      expect(state.firstLoadDone).toBe(false)
+      expect(state.edges).toEqual([])
+      renewed.resolve([{ ...edge, name: 'stale-caller-a-edge' }])
+      await flush()
+      await flush()
+      expect(state.edges).toEqual([{ ...edge, name: 'caller-b-edge' }])
+    } finally { mounted.unmount() }
+  })
+})
+
+describe('service creation read recovery', () => {
+  it('retries failed prerequisites without replacing the creation draft', async () => {
+    api.listEdges.mockRejectedValueOnce(new Error('Hub is unavailable'))
+    const mounted = await mount(ServiceCreate)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'living-room-service'
+      state.draft.instructions = 'Living room lights'
+      expect(state.readError).toContain('Hub is unavailable')
+      await state.loadInputs()
+      await flush()
+      expect(state.readError).toBeNull()
+      expect(state.draft.name).toBe('living-room-service')
+      expect(state.draft.instructions).toBe('Living room lights')
+      expect(state.draft.edgeName).toBe(edge.name)
+    } finally { mounted.unmount() }
+  })
 })
 
 describe('edge list views', () => {

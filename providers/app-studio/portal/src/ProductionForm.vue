@@ -154,15 +154,15 @@ function inputID(path: string | string[]): string {
 </script>
 
 <template>
-  <div v-if="!schema" class="rounded-md border border-border-subtle bg-surface-overlay px-3 py-3 text-[12px] leading-5 text-text-muted" role="status">
+  <div v-if="!schema" class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-3 text-[12px] leading-5 text-text-muted" role="status">
     The selected template has not exposed its production inputs yet. Refresh to try again.
   </div>
-  <div v-else-if="fields.length === 0" class="rounded-md border border-border-subtle bg-surface-overlay px-3 py-3 text-[12px] leading-5 text-text-muted" role="status">
+  <div v-else-if="fields.length === 0" class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-3 text-[12px] leading-5 text-text-muted" role="status">
     This template has no additional production inputs.
   </div>
   <div v-else class="grid min-w-0 gap-4" aria-label="Production inputs">
     <template v-for="([name, field]) in fields" :key="name">
-      <fieldset v-if="hasProperties(field)" class="grid min-w-0 gap-3 rounded-md border border-border-subtle p-3" :aria-describedby="describedBy([name], field)">
+      <fieldset v-if="hasProperties(field)" class="grid min-w-0 gap-3 rounded-lg border border-border-subtle p-3" :aria-describedby="describedBy([name], field)">
         <legend class="px-1 text-[12px] font-semibold text-text-primary">{{ field.title || fieldLabel(name) }}</legend>
         <ProductionForm
           :schema="field"
@@ -178,7 +178,7 @@ function inputID(path: string | string[]): string {
         <p v-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[10px] text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
       </fieldset>
 
-      <fieldset v-else-if="isMap(field)" class="@container grid min-w-0 gap-2 rounded-md border border-border-subtle p-3" :aria-describedby="describedBy([name], field)">
+      <fieldset v-else-if="isMap(field)" class="@container grid min-w-0 gap-2 rounded-lg border border-border-subtle p-3" :aria-describedby="describedBy([name], field)">
         <legend class="px-1 text-[12px] font-semibold text-text-primary">{{ field.title || fieldLabel(name) }}</legend>
         <div v-for="([key, value]) in mapEntries([name])" :key="key" class="grid min-w-0 grid-cols-1 items-center gap-2 @lg:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_auto]">
           <label :for="inputID(`${name}.${key}.key`)" class="sr-only">{{ fieldLabel(name) }} key</label>

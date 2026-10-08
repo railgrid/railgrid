@@ -18,6 +18,7 @@ railgrid-provider-infrastructure .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
 }
 
 railgrid-provider-infrastructure .page-head {
@@ -25,12 +26,18 @@ railgrid-provider-infrastructure .page-head {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
+
+railgrid-provider-infrastructure .page-head > div { min-width: 0; }
 
 railgrid-provider-infrastructure .page-title {
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
+  font-family: var(--font-display, var(--font-sans));
+  font-stretch: 125%;
 }
 
 railgrid-provider-infrastructure .page-meta {
@@ -92,7 +99,13 @@ railgrid-provider-infrastructure .template-card:hover {
 
 /* Compact inline controls retain the canonical k-* focus/colour contract;
  * their surrounding value/table cell owns the spacing. */
-railgrid-provider-infrastructure .view-value-code { text-transform: none; }
+railgrid-provider-infrastructure .view-value-code { text-transform: none; max-width: 100%; white-space: normal; }
+railgrid-provider-infrastructure .view-value-text { min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-infrastructure .view-value-link { max-width: 100%; }
+railgrid-provider-infrastructure .view-value-copy { flex-shrink: 0; }
+@media (pointer: coarse), (any-pointer: coarse) {
+  railgrid-provider-infrastructure .view-value-link { min-height: 44px; min-width: 44px; }
+}
 railgrid-provider-infrastructure .instance-name-link {
   min-height: 0;
   padding: 0;
@@ -103,6 +116,8 @@ railgrid-provider-infrastructure .template-card-head {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 railgrid-provider-infrastructure .exposure-note {
@@ -116,6 +131,7 @@ railgrid-provider-infrastructure .exposure-note {
 railgrid-provider-infrastructure .template-card-title {
   font-weight: 600;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 railgrid-provider-infrastructure .template-card-desc {
@@ -132,6 +148,7 @@ railgrid-provider-infrastructure .template-card-foot {
   color: var(--color-text-muted, #5d5f78);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  font-family: var(--font-mono);
 }
 
 
@@ -383,6 +400,9 @@ railgrid-provider-infrastructure .stale-banner {
   gap: 10px;
   justify-content: space-between;
   padding: 10px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 railgrid-provider-infrastructure .empty-state,
@@ -399,6 +419,7 @@ railgrid-provider-infrastructure .empty-followup {
   gap: 8px;
   justify-content: center;
   min-height: 72px;
+  flex-wrap: wrap;
 }
 
 /* Instance detail keeps its route backlink outside the shared ResourcePage
@@ -448,6 +469,8 @@ railgrid-provider-infrastructure .instance-detail-title {
   align-items: center;
   display: flex;
   gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 railgrid-provider-infrastructure .instance-detail-head { justify-content: space-between; }
@@ -512,3 +535,20 @@ railgrid-provider-infrastructure .detail-field:last-child { border-bottom: 0; }
 railgrid-provider-infrastructure .detail-field dt { color: var(--color-text-muted, #5d5f78); flex: 0 0 160px; font-size: 12px; }
 railgrid-provider-infrastructure .detail-field dd { color: var(--color-text-secondary, #8a8ca6); margin: 0; min-width: 0; overflow-wrap: anywhere; }
 railgrid-provider-infrastructure .detail-empty { padding: 24px 16px; text-align: center; }
+
+@media (max-width: 640px) {
+  railgrid-provider-infrastructure .detail-field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  railgrid-provider-infrastructure .detail-field dt { flex-basis: auto; }
+  railgrid-provider-infrastructure .catalog-loading-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  railgrid-provider-infrastructure .instance-detail .spin { animation: none; }
+  railgrid-provider-infrastructure .template-card { transition: none; }
+}

@@ -12,7 +12,7 @@ withDefaults(defineProps<{ name: string; model: string; endpoint?: string; endpo
 <template>
   <article class="k-model-connection" :aria-label="`${resourceLabel} ${name}`" :aria-busy="busy">
     <div class="k-model-connection__heading">
-      <span class="k-model-connection__icon"><Cpu :stroke-width="1.75" /></span>
+      <span class="k-model-connection__icon" aria-hidden="true"><Cpu :stroke-width="1.75" /></span>
       <div class="k-model-connection__identity"><h3>{{ name }}</h3><p :title="model">{{ model }}</p></div>
       <StatusBadge v-if="isDefault" status="Default" tone="muted" />
     </div>
