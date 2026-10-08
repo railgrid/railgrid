@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 33;
+  --railgrid-ui-core-version: 34;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1988,7 +1988,7 @@ railgrid-resource-table-filter { display: contents; }
   outline: 0;
 }
 .k-table__filter:not(.is-active) .k-table__filter-trigger {
-  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
+  color: var(--color-text-muted, #8587a1);
 }
 .k-table__filter-trigger {
   align-items: center;
