@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -60,11 +61,19 @@ type Callers struct {
 	// /clusters/{id}: the provider identity has no RBAC inside a tenant
 	// workspace, only the standing its export gives it.
 	providerExport string
-	// providerEndpoint is the export virtual-workspace base URL once known:
-	// given by WithProviderEndpoint, or read from the APIExportEndpointSlice
-	// named after the export in the provider workspace on first use.
+	// providerEndpoint is the export virtual-workspace base URL when it was
+	// pinned with WithProviderEndpoint. Pinning skips discovery and the
+	// per-cluster choice below entirely.
 	providerEndpoint string
-	providerMu       sync.Mutex
+	// providerEndpoints is every URL the APIExportEndpointSlice publishes,
+	// read on first use. A sharded kcp publishes one per shard, and a shard's
+	// export virtual workspace serves only the logical clusters that shard
+	// holds -- so which one to use depends on the consumer.
+	providerEndpoints []string
+	// clusterEndpoint remembers, per consumer cluster, which published
+	// endpoint actually serves it, so the choice is made once.
+	clusterEndpoint map[string]string
+	providerMu      sync.Mutex
 
 	maxEntries int
 	ttl        time.Duration
@@ -327,7 +336,7 @@ func (c *Callers) AsProvider(clusterID string) (dynamic.Interface, error) {
 	if !IsClusterID(clusterID) {
 		return nil, fmt.Errorf("dataplane: %q is not a kcp logical-cluster ID", clusterID)
 	}
-	endpoint, err := c.exportEndpoint(context.Background())
+	endpoint, err := c.endpointForCluster(context.Background(), clusterID)
 	if err != nil {
 		return nil, err
 	}
@@ -346,17 +355,25 @@ func APIExportEndpointSlices() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha1", Resource: "apiexportendpointslices"}
 }
 
-// ExportEndpoint returns the provider's export virtual-workspace base URL
+// ExportEndpointForCluster returns the export virtual-workspace base URL
 // (…/services/apiexport/<cluster>/<export>), for callers that address another
 // provider's kinds or verbs through this provider's own export: a claimed
 // resource or custom subresource is reached at
 // <endpoint>/clusters/<tenant>/apis/<group>/<version>/<resource>/<name>[/<verb>]
 // with the provider's own credential.
-func (c *Callers) ExportEndpoint(ctx context.Context) (string, error) {
+//
+// It takes the consumer cluster because the answer depends on it: a sharded kcp
+// publishes one endpoint per shard and each serves only the clusters its shard
+// holds. An accessor that did not take one used to exist, and every caller of
+// it appended /clusters/{id} to a URL chosen without reference to {id}.
+func (c *Callers) ExportEndpointForCluster(ctx context.Context, clusterID string) (string, error) {
 	if c == nil || c.provider == nil {
-		return "", fmt.Errorf("dataplane: this provider has no provider-scoped config; ExportEndpoint needs WithProviderConfig")
+		return "", fmt.Errorf("dataplane: this provider has no provider-scoped config; ExportEndpointForCluster needs WithProviderConfig")
 	}
-	return c.exportEndpoint(ctx)
+	if !IsClusterID(clusterID) {
+		return "", fmt.Errorf("dataplane: %q is not a kcp logical-cluster ID", clusterID)
+	}
+	return c.endpointForCluster(ctx, clusterID)
 }
 
 // ProviderRESTConfig returns a copy of the provider's own rest.Config with its
@@ -390,7 +407,7 @@ func (c *Callers) ExportVerbURL(ctx context.Context, gvr schema.GroupVersionReso
 	if c == nil || c.provider == nil {
 		return "", fmt.Errorf("dataplane: this provider has no provider-scoped config; ExportVerbURL needs WithProviderConfig")
 	}
-	endpoint, err := c.exportEndpoint(ctx)
+	endpoint, err := c.endpointForCluster(ctx, r.ClusterID)
 	if err != nil {
 		return "", err
 	}
@@ -412,41 +429,124 @@ func (c *Callers) ProviderHTTPClient() (*http.Client, error) {
 	return client, nil
 }
 
-// exportEndpoint returns the export virtual-workspace base URL, reading it
-// once from the APIExportEndpointSlice named after the export in the provider
+// exportEndpoints returns every export virtual-workspace base URL, read once
+// from the APIExportEndpointSlice named after the export in the provider
 // workspace (which is what c.provider addresses). That slice is what the
 // provider's controllers watch tenant workspaces through already, so the
-// subresource path acts through exactly the same door.
-func (c *Callers) exportEndpoint(ctx context.Context) (string, error) {
+// subresource path acts through exactly the same door. A sharded kcp publishes
+// one URL per shard; endpointForCluster decides between them.
+func (c *Callers) exportEndpoints(ctx context.Context) ([]string, error) {
 	c.providerMu.Lock()
 	defer c.providerMu.Unlock()
 	if c.providerEndpoint != "" {
-		return c.providerEndpoint, nil
+		return []string{c.providerEndpoint}, nil
+	}
+	if len(c.providerEndpoints) > 0 {
+		return c.providerEndpoints, nil
 	}
 	if c.providerExport == "" {
-		return "", fmt.Errorf("dataplane: the subresource path needs the provider's export name (WithProviderConfig) or its virtual-workspace URL (WithProviderEndpoint)")
+		return nil, fmt.Errorf("dataplane: the subresource path needs the provider's export name (WithProviderConfig) or its virtual-workspace URL (WithProviderEndpoint)")
 	}
 	client, err := dynamic.NewForConfig(c.provider)
 	if err != nil {
-		return "", fmt.Errorf("dataplane: provider client: %w", err)
+		return nil, fmt.Errorf("dataplane: provider client: %w", err)
 	}
 	slice, err := client.Resource(APIExportEndpointSlices()).Get(ctx, c.providerExport, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("dataplane: reading APIExportEndpointSlice %s: %w", c.providerExport, err)
+		return nil, fmt.Errorf("dataplane: reading APIExportEndpointSlice %s: %w", c.providerExport, err)
 	}
 	endpoints, _, err := unstructured.NestedSlice(slice.Object, "status", "endpoints")
 	if err != nil {
-		return "", fmt.Errorf("dataplane: APIExportEndpointSlice %s: %w", c.providerExport, err)
+		return nil, fmt.Errorf("dataplane: APIExportEndpointSlice %s: %w", c.providerExport, err)
 	}
+	var urls []string
 	for _, e := range endpoints {
 		entry, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
 		if u, _ := entry["url"].(string); strings.TrimSpace(u) != "" {
-			c.providerEndpoint = strings.TrimRight(strings.TrimSpace(u), "/")
-			return c.providerEndpoint, nil
+			urls = append(urls, strings.TrimRight(strings.TrimSpace(u), "/"))
 		}
 	}
-	return "", fmt.Errorf("dataplane: APIExportEndpointSlice %s publishes no endpoint yet", c.providerExport)
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("dataplane: APIExportEndpointSlice %s publishes no endpoint yet", c.providerExport)
+	}
+	c.providerEndpoints = urls
+	return urls, nil
+}
+
+// endpointForCluster picks the export virtual-workspace URL that serves
+// clusterID.
+//
+// On one shard there is one URL and nothing to decide. On a sharded
+// installation the slice publishes one per shard, and a shard's export virtual
+// workspace only serves the logical clusters that shard holds -- so taking the
+// first published URL works for the consumers that happen to live on that
+// shard and fails for all the others, with kcp falling back to plain RBAC on
+// the provider's ServiceAccount and refusing:
+//
+//	subjectaccessreviews.authorization.k8s.io is forbidden: User
+//	"system:serviceaccount:default:provider" cannot create resource
+//	"subjectaccessreviews" ... access denied
+//
+// Nothing in the slice says which shard holds which cluster, so find out by
+// asking: a SubjectAccessReview is exactly the standing the APIExport's
+// accepted claim grants, so the endpoint where one can be created is the
+// endpoint that serves this consumer. The review is not persisted and its
+// answer is irrelevant here -- only whether the request was allowed at all.
+func (c *Callers) endpointForCluster(ctx context.Context, clusterID string) (string, error) {
+	endpoints, err := c.exportEndpoints(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(endpoints) == 1 {
+		return endpoints[0], nil
+	}
+
+	c.providerMu.Lock()
+	chosen, ok := c.clusterEndpoint[clusterID]
+	c.providerMu.Unlock()
+	if ok {
+		return chosen, nil
+	}
+
+	var errs []error
+	for _, endpoint := range endpoints {
+		if err := c.probeEndpoint(ctx, endpoint, clusterID); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", endpoint, err))
+			continue
+		}
+		c.providerMu.Lock()
+		if c.clusterEndpoint == nil {
+			c.clusterEndpoint = map[string]string{}
+		}
+		c.clusterEndpoint[clusterID] = endpoint
+		c.providerMu.Unlock()
+		return endpoint, nil
+	}
+	return "", fmt.Errorf("dataplane: no export virtual workspace serves cluster %s: %w", clusterID, errors.Join(errs...))
+}
+
+// probeEndpoint reports whether endpoint serves clusterID, by creating the
+// review the provider would create anyway.
+func (c *Callers) probeEndpoint(ctx context.Context, endpoint, clusterID string) error {
+	cfg := rest.CopyConfig(c.provider)
+	cfg.Host = endpoint + "/clusters/" + clusterID
+	client, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return err
+	}
+	review := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "authorization.k8s.io/v1",
+		"kind":       "SubjectAccessReview",
+		"spec": map[string]any{
+			// Anonymous, and an attribute nothing is expected to allow: the
+			// answer is not used, so the review stays a pure capability check.
+			"user":               "system:anonymous",
+			"resourceAttributes": map[string]any{"verb": "get", "resource": "subjectaccessreviews", "group": "authorization.k8s.io"},
+		},
+	}}
+	_, err = client.Resource(SubjectAccessReviews()).Create(ctx, review, metav1.CreateOptions{})
+	return err
 }
