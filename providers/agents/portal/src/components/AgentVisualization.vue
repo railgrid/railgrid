@@ -74,7 +74,7 @@ onBeforeUnmount(() => { generation++; resize?.disconnect(); observer?.disconnect
     </figcaption>
     <p v-if="loading" role="status">Preparing chart…</p>
     <p v-if="failed" role="status">The chart could not be displayed or exported. View the data below.</p>
-    <div ref="canvas" class="agents-visualization__canvas" :aria-label="chart.title" />
+    <div ref="canvas" class="agents-visualization__canvas" role="img" :aria-label="chart.title" />
     <p v-if="chart.source" class="agents-visualization__note">Source: {{ chart.source }}</p>
     <p v-if="chart.xType === 'temporal'" class="agents-visualization__note">Times shown in UTC.</p>
     <button type="button" class="k-btn k-btn--ghost" :disabled="loading || failed" @click="download">Download SVG</button>

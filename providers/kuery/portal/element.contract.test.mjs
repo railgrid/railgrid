@@ -117,7 +117,8 @@ test('playground editor and results fill the same split-row height', () => {
 
 test('4K geometry stays useful while mobile inventory filters reflow', () => {
   assert.match(styles, /\.kuery-graph\s*\{[^}]*height: clamp\(440px, calc\(100vh - 380px\), 1440px\);/u)
-  assert.match(styles, /\.kuery-inventory-table\s*\{[^}]*max-width: 96rem;/u)
+  assert.match(styles, /\.kuery-inventory-table\s*\{[^}]*width: 100%;/u)
+  assert.doesNotMatch(styles, /\.kuery-inventory-table\s*\{[^}]*max-width:/u)
   assert.match(styles, /\.kuery-inventory-filters\s*>\s*label\s*\{[^}]*flex: 1 1 200px;[^}]*min-width: 0;/u)
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.kuery-inventory-filters\s*>\s*label\s*\{[^}]*flex-basis: 100%;[^}]*width: 100%;/u)
 })
@@ -131,7 +132,7 @@ test('Kuery requests share one context-derived transport contract', () => {
   assert.doesNotMatch(requestContext, /headers\.Authorization/u)
   assert.match(requestContext, /headers\['X-Railgrid-Org'\] = orgUUID/u)
   assert.match(requestContext, /headers\['X-Railgrid-Workspace'\] = workspaceUUID/u)
-  assert.match(requestContext, /identity = JSON\.stringify\(\[basePath, token, orgUUID, workspaceUUID, cluster\]\)/u)
+  assert.match(requestContext, /identity = JSON\.stringify\(\[basePath, token, orgUUID, workspaceUUID, cluster, userIdentity\]\)/u)
   // ready is a transport-and-workspace check; a token check here would break
   // every view the day a host stops exposing railgridContext.token.
   assert.match(requestContext, /ready: !!basePath && !!cluster && \(hasHostFetch \|\| !!token\)/u)

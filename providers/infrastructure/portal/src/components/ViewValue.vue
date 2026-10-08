@@ -9,6 +9,7 @@
 import { ref } from 'vue'
 import { Check, Copy, ExternalLink } from 'lucide-vue-next'
 import type { ResolvedValue } from '../view'
+import { toast } from '../portalkit/toast'
 
 const props = withDefaults(defineProps<{ value: ResolvedValue; interactive?: boolean }>(), {
   interactive: true,
@@ -21,8 +22,7 @@ async function copy() {
     copied.value = true
     window.setTimeout(() => (copied.value = false), 1200)
   } catch {
-    // Clipboard blocked (insecure context / permissions) — no-op; the value
-    // is still visible and selectable.
+    toast('error', 'Could not copy this value. Select it and copy it manually.')
   }
 }
 </script>
@@ -37,10 +37,10 @@ async function copy() {
     :href="value.href"
     target="_blank"
     rel="noopener noreferrer"
-    class="inline-flex items-center gap-1 text-[12px] font-medium text-accent transition-colors hover:underline"
+    class="view-value-link inline-flex items-center gap-1 text-[12px] font-medium text-accent transition-colors hover:underline"
     @click.stop
   >
-    {{ value.text }}
+    <span class="view-value-text">{{ value.text }}</span>
     <ExternalLink :size="12" :stroke-width="1.75" class="opacity-70" aria-hidden="true" />
   </a>
 
@@ -48,7 +48,7 @@ async function copy() {
     v-else-if="value.type === 'code'"
     class="view-value-code k-badge k-badge--muted font-mono text-[11px]"
   >
-    {{ value.text }}
+    <span class="view-value-text">{{ value.text }}</span>
     <button
       type="button"
       class="k-btn k-btn--ghost k-icon-action view-value-copy"

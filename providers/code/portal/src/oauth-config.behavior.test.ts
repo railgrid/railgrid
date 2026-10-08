@@ -500,6 +500,7 @@ describe('connection creation authority fencing', () => {
     mocks.api.listConnections.mockReset()
       .mockResolvedValueOnce([])
       .mockReturnValueOnce(preflight.promise)
+      .mockResolvedValue([])
     mocks.api.connect.mockReset()
 
     const created = vi.fn()
@@ -525,6 +526,8 @@ describe('connection creation authority fencing', () => {
     expect(mocks.api.connect).not.toHaveBeenCalled()
     expect(mocks.toast).not.toHaveBeenCalled()
     expect(created).not.toHaveBeenCalled()
+    expect(findNode(root, node => node.type === 'button' && node.props.type === 'submit')?.props.disabled).toBe(false)
+    expect((findNode(root, node => node.props.placeholder === 'my-github') as (TreeNode & { value?: string }) | undefined)?.value).toBe('new-connection')
     app.unmount()
   })
 
@@ -547,9 +550,11 @@ describe('connection creation authority fencing', () => {
     contextGeneration.value += 1
     mutation.resolve({ name: 'new-connection' })
     await pendingSubmit
+    await settle()
 
     expect(mocks.toast).not.toHaveBeenCalled()
     expect(created).not.toHaveBeenCalled()
+    expect(findNode(root, node => node.type === 'button' && node.props.type === 'submit')?.props.disabled).toBe(false)
     app.unmount()
   })
 
@@ -558,6 +563,7 @@ describe('connection creation authority fencing', () => {
     mocks.api.listRepositories.mockReset()
       .mockResolvedValueOnce([])
       .mockReturnValueOnce(preflight.promise)
+      .mockResolvedValue([])
     mocks.api.listConnections.mockReset().mockResolvedValue([activeConnection])
     mocks.api.createRepository.mockReset()
 
@@ -582,6 +588,8 @@ describe('connection creation authority fencing', () => {
     expect(mocks.api.createRepository).not.toHaveBeenCalled()
     expect(created).not.toHaveBeenCalled()
     expect(textContent(root)).not.toContain('already exists.')
+    expect(findNode(root, node => node.type === 'button' && node.props.type === 'submit')?.props.disabled).toBe(false)
+    expect((findNode(root, node => node.props.placeholder === 'my-service') as (TreeNode & { value?: string }) | undefined)?.value).toBe('new-repository')
     app.unmount()
   })
 })

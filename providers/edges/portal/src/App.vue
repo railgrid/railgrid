@@ -120,7 +120,7 @@ const error = ref<string | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 // Nested list views keep their own cursor/cache authority. Remount them when
-// the shell changes tenant or token so a prior workspace's rows and cursors
+// the shell changes tenant or caller so a prior workspace's rows and cursors
 // cannot remain visible while the new context is loading.
 const contextGeneration = ref(0)
 
@@ -183,7 +183,7 @@ async function onDelete(edge: Edge) {
 
 // Re-auth + reload whenever the shell pushes a new context (token/workspace).
 watch(
-  () => [props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub] as const,
+  () => [props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email, props.ctx?.fetch] as const,
   ([token, tenant, userSub], previous) => {
     const authorityChanged = !previous || tenant !== previous[1] || userSub !== previous[2]
     setHostFetch(props.ctx?.fetch)

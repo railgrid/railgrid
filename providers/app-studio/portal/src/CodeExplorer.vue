@@ -860,9 +860,10 @@ onBeforeUnmount(releasePreview)
             spellcheck="false"
             autocomplete="off"
             :aria-invalid="newFileError ? 'true' : undefined"
+            :aria-describedby="newFileError ? 'app-studio-new-file-error' : undefined"
           />
         </label>
-        <p v-if="newFileError" class="text-[11px] text-danger" role="alert">{{ newFileError }}</p>
+        <p v-if="newFileError" id="app-studio-new-file-error" class="text-[11px] text-danger" role="alert">{{ newFileError }}</p>
         <div class="flex items-center gap-2">
           <button type="submit" class="k-btn k-btn--primary h-8" :disabled="writesDisabled">Create</button>
           <button type="button" class="k-btn k-btn--text h-8" @click="cancelNewFile">Cancel</button>
@@ -875,10 +876,10 @@ onBeforeUnmount(releasePreview)
         data-drop-dir=""
       >
         <p v-if="treeState === 'initial-error'" class="px-3 py-2 text-[12px] text-danger" role="alert">{{ treeError }}</p>
-        <div v-else-if="treeState === 'refresh-error'" class="mx-2 mb-2 grid gap-1 rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="alert" aria-live="polite">
+        <div v-else-if="treeState === 'refresh-error'" class="mx-2 mb-2 grid gap-1 rounded-lg border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="status" aria-live="polite">
           <span>{{ treeError }}</span>
           <span class="text-text-muted">Showing the last loaded tree.</span>
-          <button type="button" class="app-studio-touch-target inline-flex w-fit items-center rounded-sm font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" @click="refreshWorkspaceSnapshot">Retry refresh</button>
+          <button type="button" class="app-studio-touch-target inline-flex w-fit items-center rounded-md font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" @click="refreshWorkspaceSnapshot">Retry refresh</button>
         </div>
         <div v-else-if="treeState === 'initial-loading'" class="grid gap-2 px-3 py-3" role="status" aria-live="polite" aria-label="Loading workspace files">
           <span class="sr-only">Loading workspace files…</span>
@@ -1007,7 +1008,7 @@ onBeforeUnmount(releasePreview)
           </div>
           <div
             v-if="selectedIsImage"
-            class="grid min-h-40 place-items-center overflow-hidden rounded-md border border-border-subtle bg-surface-overlay p-3"
+            class="grid min-h-40 place-items-center overflow-hidden rounded-lg border border-border-subtle bg-surface-overlay p-3"
             :aria-busy="preview.status === 'loading' ? 'true' : undefined"
           >
             <img

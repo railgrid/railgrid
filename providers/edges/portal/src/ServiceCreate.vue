@@ -27,6 +27,7 @@ const edges = ref<Edge[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const error = ref<string | null>(null)
+const readError = ref<string | null>(null)
 const portError = ref<string | null>(null)
 const selectedEdgeKey = ref('')
 let active = true
@@ -182,7 +183,7 @@ const canCreate = computed(() => {
 })
 
 async function onCreate(): Promise<void> {
-  if (!canCreate.value) return
+  if (busy.value || loading.value || !canCreate.value) return
   const edge = selectedEdge.value
   if (!edge) return
   applyHostUrl()
@@ -220,24 +221,27 @@ async function onCreate(): Promise<void> {
   }
 }
 
-onMounted(async () => {
+async function loadInputs(): Promise<void> {
   loading.value = true
+  readError.value = null
   const [catalogResult, edgesResult] = await Promise.allSettled([fetchServiceCatalog(), listEdges()])
+  if (!active) return
   if (catalogResult.status === 'fulfilled' && catalogResult.value.length) {
     catalog.value = catalogResult.value
     if (!catalogFor(draft.value.serviceType)) draft.value.serviceType = catalogResult.value[0].type
   } else {
     catalog.value = [genericFallback]
-    if (catalogResult.status === 'rejected') error.value = (catalogResult.reason as ErrorResponse)?.message ?? 'Failed to load service catalog'
+    if (catalogResult.status === 'rejected') readError.value = (catalogResult.reason as ErrorResponse)?.message ?? 'Failed to load service types'
   }
   if (edgesResult.status === 'fulfilled') {
     edges.value = edgesResult.value
-    chooseInitialEdge()
+    if (!edges.value.some(edge => edgeKey(edge) === selectedEdgeKey.value)) chooseInitialEdge()
   } else {
-    error.value = (edgesResult.reason as ErrorResponse)?.message ?? 'Failed to load edges'
+    readError.value = (edgesResult.reason as ErrorResponse)?.message ?? 'Failed to load edges'
   }
   loading.value = false
-})
+}
+onMounted(loadInputs)
 onUnmounted(() => {
   active = false
 })
@@ -254,12 +258,16 @@ onUnmounted(() => {
     </header>
 
     <div v-if="error" class="banner error" role="alert">{{ error }}</div>
+    <div v-if="readError" class="banner error service-create-read-error" role="alert">
+      <span>{{ readError }}</span>
+      <button type="button" class="k-btn k-btn--ghost" :disabled="loading || busy" @click="loadInputs">Retry service types and edges</button>
+    </div>
     <div v-if="loading" class="waiting" role="status" aria-live="polite">
       <Loader2 :size="14" class="spin" aria-hidden="true" /> Loading service types and edges…
     </div>
 
     <FirstRunGuide
-      v-else-if="!error && edges.length === 0"
+      v-else-if="!error && !readError && edges.length === 0"
       title="Connect an edge first"
       description="A Service must run beside an edge before Railgrid can expose its endpoint and tools."
       primary-label="Connect edge"
@@ -274,7 +282,7 @@ onUnmounted(() => {
       <template #icon><Server aria-hidden="true" /></template>
     </FirstRunGuide>
 
-    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" novalidate @submit.prevent="onCreate">
+    <form v-else class="k-create-surface k-create-surface--wide k-create-surface--guided" :aria-busy="busy" novalidate @submit.prevent="onCreate">
       <div class="k-create-body k-create-body--guided">
       <div class="k-create-fields">
       <div class="service-create-grid service-create-grid--two">
@@ -316,9 +324,9 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="fld">
-        <span id="service-create-target-label" class="lbl">Target</span>
-        <div class="service-create-target-modes" role="group" aria-labelledby="service-create-target-label">
+      <fieldset class="fld service-target-fieldset">
+        <legend class="lbl">Target</legend>
+        <div class="service-create-target-modes">
           <label class="k-checkbox-hit">
             <input v-model="targetMode" name="service-create-target-mode" type="radio" value="host" /> <Globe2 :size="13" aria-hidden="true" /> Host / IP
           </label>
@@ -326,13 +334,13 @@ onUnmounted(() => {
             <input v-model="targetMode" name="service-create-target-mode" type="radio" value="kube" :disabled="selectedEdgeIsHost || hostRequired" /> Kubernetes Service
           </label>
         </div>
-      </div>
+      </fieldset>
 
       <div v-if="targetMode === 'host'" class="service-create-grid">
         <label class="fld">
-          <span class="lbl">Host {{ catalogFor(draft.serviceType)?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
-          <input v-model="draft.host" class="k-input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com" />
-          <span v-if="catalogFor(draft.serviceType)?.hostHelp" class="muted" style="font-size: 12px; margin-top: 4px;">{{ catalogFor(draft.serviceType)?.hostHelp }}</span>
+          <span id="service-create-host-label" class="lbl">Host {{ catalogFor(draft.serviceType)?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
+          <input v-model="draft.host" class="k-input" aria-labelledby="service-create-host-label" :aria-describedby="catalogFor(draft.serviceType)?.hostHelp ? 'service-create-host-help' : undefined" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com" />
+          <span v-if="catalogFor(draft.serviceType)?.hostHelp" id="service-create-host-help" class="field-help">{{ catalogFor(draft.serviceType)?.hostHelp }}</span>
         </label>
       </div>
       <div v-else class="service-create-grid service-create-grid--two">

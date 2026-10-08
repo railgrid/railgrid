@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 9;
+  --railgrid-agent-ui-version: 10;
 }
 
 /* Conversation headers keep their neutral icon-only back control in the core
@@ -1021,7 +1021,7 @@ button.k-workbench-tab {
 /* PR679 model connection and usage recipes. */
 .k-model-connection,.k-model-usage,.k-model-form{--km-b:var(--color-border-subtle, rgba(255, 255, 255, 0.07));--km-p:var(--color-text-primary, #e9e9f2);--km-t:var(--color-text-secondary, #8a8ca6);--km-m:var(--color-text-muted, #8587a1);--km-f:var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);}
 .k-model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),360px));gap:12px;}
-.k-model-connection{display:flex;flex-direction:column;gap:12px;min-width:0;padding:16px;border:1px solid var(--km-b);border-radius:6px;background:var(--color-surface, #0a0b12);}
+.k-model-connection{display:flex;flex-direction:column;gap:12px;min-width:0;padding:16px;border:1px solid var(--km-b);border-radius:6px;background:var(--color-surface-raised, #111320);}
 .k-model-connection__heading{display:flex;align-items:flex-start;gap:10px;}
 .k-model-connection__identity{min-width:0;flex:1;}
 .k-model-connection__identity h3{margin:0;font-size:13px;font-weight:600;color:var(--km-p);}
@@ -1160,7 +1160,7 @@ button.k-workbench-tab {
   width: 100%;
   min-height: 36px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
+  border-radius: 4px;
   background: var(--color-surface);
   padding: 7px 34px 7px 32px;
   color: var(--color-text-primary);
@@ -1190,7 +1190,7 @@ button.k-workbench-tab {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 5px;
+  border-radius: 4px;
   background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
@@ -1278,5 +1278,6 @@ button.k-workbench-tab {
 }
 
 @media (hover: none), (any-pointer: coarse) {
+  .k-ai-launcher__search > input { height: 44px; }
   .k-ai-launcher__search-clear { width: 44px; height: 44px; }
 }

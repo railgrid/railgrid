@@ -316,9 +316,9 @@ onUnmounted(() => {
       <template #name="{ row }"><strong><a v-if="row.htmlURL && !row.deleting" class="k-table-resource-link" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
       <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
       <template #visibility="{ value }"><span class="muted">{{ value === 'unknown' ? '—' : value }}</span></template>
-      <template #versionCount="{ value }"><span class="muted">{{ value || 0 }}</span></template>
+      <template #versionCount="{ value }"><span class="muted mono tabular-nums">{{ value || 0 }}</span></template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
-      <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">View <ExternalLink :size="12" aria-hidden="true" /></a></template>
+      <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" :aria-label="`View package ${String(row.name)} on the package host`" target="_blank" rel="noopener">View <ExternalLink :size="12" aria-hidden="true" /></a></template>
     </ResourceTable>
     <p class="muted">Packages appear automatically when artifacts are pushed (e.g. <code>docker push</code>, <code>npm publish</code>); the provider crawls each repository periodically.</p>
   </section>

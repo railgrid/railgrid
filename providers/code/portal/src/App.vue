@@ -38,6 +38,7 @@ const props = defineProps<{ ctx: RailgridContext | null }>()
 
 const route = computed<CodeRoute>(() => parseCodeSubPath(props.ctx?.subPath))
 const contextGeneration = ref(0)
+const viewGeneration = ref(0)
 provide(contextGenerationKey, contextGeneration)
 const contextInitialized = computed(() => props.ctx !== null)
 const deletions = createResourceDeletions()
@@ -50,7 +51,7 @@ let deletionAuthority = ''
 
 function journeyTenantKey(): string | null {
   if (!props.ctx?.tenant) return null
-  const caller = props.ctx.user?.sub ?? props.ctx.user?.email ?? null
+  const caller = props.ctx.user?.userId || props.ctx.user?.sub || props.ctx.user?.email || null
   return codeJourneyTenantKey(props.ctx.tenant, caller)
 }
 
@@ -58,15 +59,15 @@ function activeJourneyPath(): string {
   return (props.ctx?.subPath ?? '').replace(/^\/+|\/+$/g, '')
 }
 
-// Feed identity into the API client and remount the active route whenever its
-// authority changes. This clears actionable old-workspace state immediately and
-// lets each unmounted refresh controller reject late responses.
+// Feed authority into the API client and fence mutations synchronously.
+// Only caller/workspace identity changes remount routes; credential renewal
+// retains their useful snapshots, collection controls, and form drafts.
 watch(
   [
     () => props.ctx?.basePath,
     () => props.ctx?.token,
     () => props.ctx?.tenant,
-    () => props.ctx?.user?.sub,
+    () => props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email,
     () => props.ctx?.user?.email,
     () => props.ctx?.fetch,
   ],
@@ -82,7 +83,10 @@ watch(
       // to revoke a confirmation opened under the previous authority.
       resolveConfirm(false)
       const nextDeletionAuthority = JSON.stringify([basePath ?? '', tenant ?? '', userSub ?? ''])
-      if (nextDeletionAuthority !== deletionAuthority) deletions.clear()
+      if (nextDeletionAuthority !== deletionAuthority) {
+        viewGeneration.value += 1
+        deletions.clear()
+      }
       deletionAuthority = nextDeletionAuthority
     }
     // A replacement host transport belongs to the same scope; update the
@@ -93,7 +97,7 @@ watch(
   { immediate: true, flush: 'sync' },
 )
 watch(
-  () => [props.ctx?.tenant, props.ctx?.subPath, props.ctx?.user?.sub, props.ctx?.user?.email] as const,
+  () => [props.ctx?.tenant, props.ctx?.subPath, props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email] as const,
   () => {
     const tenantKey = journeyTenantKey()
     const activePath = activeJourneyPath()
@@ -213,7 +217,7 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
       <template v-else>
         <ConnectionCreateView
           v-if="route.create?.resource === 'connection'"
-          :key="`${contextGeneration}:create-connection:${route.create.method}`"
+          :key="`${viewGeneration}:create-connection:${route.create.method}`"
           :method="route.create.method"
           :deletions="deletions"
           @cancel="completeConnectionPrerequisite(false)"
@@ -221,15 +225,15 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
         />
         <RepositoryCreateView
           v-if="route.create?.resource === 'repository'"
-          :key="`${contextGeneration}:create-repository`"
+          :key="`${viewGeneration}:create-repository`"
           :deletions="deletions"
           @cancel="navigate('repositories', { replace: true })"
           @created="(n: string) => navigate('repositories/' + encodeURIComponent(n), { replace: true })"
           @create-connection="startRepositoryConnection"
         />
-        <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${contextGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
-        <RepoDetailView v-if="route.repo" :key="`${contextGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
-        <PackagesView v-if="route.page === 'packages'" :key="`${contextGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+        <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${viewGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
+        <RepoDetailView v-if="route.repo" :key="`${viewGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
+        <PackagesView v-if="route.page === 'packages'" :key="`${viewGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
 
         <!-- Keep collection-local query/filter/page/scroll state while a routed
              create or detail surface is active. The context key still drops the
@@ -237,7 +241,7 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
         <KeepAlive :max="1">
           <ConnectionsView
             v-if="route.page === 'connections' && !route.create && !route.connection"
-            :key="`${contextGeneration}:connections`"
+            :key="`${viewGeneration}:connections`"
             :deletions="deletions"
             @open="(n: string) => navigate('connections/' + encodeURIComponent(n))"
             @create="(method: 'token' | 'github') => navigate('create/connection/' + method)"
@@ -246,7 +250,7 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
         <KeepAlive :max="1">
           <RepositoriesView
             v-if="route.page === 'repositories' && !route.create && !route.repo"
-            :key="`${contextGeneration}:repositories`"
+            :key="`${viewGeneration}:repositories`"
             :deletions="deletions"
             @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))"
             @create="navigate('create/repository')"

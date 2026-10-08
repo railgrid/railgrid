@@ -1463,7 +1463,7 @@ defineExpose({
           </button>
         </div>
 
-        <div v-if="!hasModel" class="agents-warn-banner">
+        <div v-if="!hasModel" class="agents-warn-banner" role="status">
           No model assigned — pick a model credential in the Config tab to start chatting.
         </div>
 

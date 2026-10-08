@@ -25,6 +25,7 @@ const exposure = computed(() => {
   <button
     type="button"
     class="template-card k-card"
+    :aria-label="`Provision ${template.displayName || template.name}`"
     @click="$emit('select', template.name)"
   >
     <div class="template-card-head">

@@ -209,17 +209,19 @@ let activeSelectionTooltip: {
 let primaryTooltipRequest = 0
 
 const explicitReadState = computed(() => props.loaded !== null)
+const retryRequested = ref(false)
 const showInitialError = computed(() =>
   explicitReadState.value ? props.loaded === false && !!props.error : !!props.error,
 )
+const retrying = computed(() => retryRequested.value
+  || (!!props.loading && !!props.error && (showInitialError.value || props.refreshMode === 'foreground')),
+)
 const initialReadPending = computed(() =>
-  explicitReadState.value ? props.loaded === false : !!props.loading,
+  explicitReadState.value ? props.loaded === false && !props.error : !!props.loading,
 )
 const showInitialLoading = useDelayedLoading(initialReadPending)
 const ariaBusy = computed(() =>
-  explicitReadState.value
-    ? (!!props.loading && !(props.loaded === false && !!props.error)) || (props.loaded === false && !props.error) || filterPending.value
-    : !!props.loading || filterPending.value,
+  !!props.loading || initialReadPending.value || retryRequested.value || filterPending.value,
 )
 const filterOptions = computed(() => Object.fromEntries(
   props.filters.map(definition => [definition.key, isServerPagination.value
@@ -284,6 +286,18 @@ const noMatchText = computed(() => {
   return props.filterEmptyText
 })
 const tableAriaLabel = computed(() => props.ariaLabel?.trim() || 'Resource table')
+const refreshAnnouncement = computed(() => {
+  if (filterPending.value) return 'Updating table results…'
+  if (retryRequested.value || (props.loading && props.error && (showInitialError.value || props.refreshMode === 'foreground'))) {
+    return `Retrying ${tableAriaLabel.value.toLocaleLowerCase()}…`
+  }
+  if (explicitReadState.value && props.loading && props.loaded === true) {
+    return props.refreshMode === 'foreground'
+      ? `Refreshing ${tableAriaLabel.value.toLocaleLowerCase()}…`
+      : `Updating ${tableAriaLabel.value.toLocaleLowerCase()}…`
+  }
+  return ''
+})
 const visibleColumns = computed(() => props.columns.filter(column => column.key !== 'actions'))
 const actionsColumn = computed(() => props.columns.find(column => column.key === 'actions') ?? null)
 const skeletonColumns = computed(() => {
@@ -311,7 +325,7 @@ const hasConfiguredControls = computed(() =>
 )
 const showControls = computed(() =>
   hasConfiguredControls.value
-    && (isServerPagination.value || props.rows.length > 0 || activeFilters.value || !!props.loading),
+    && (isServerPagination.value || props.rows.length > 0 || activeFilters.value || (!!props.loading && props.loaded !== true)),
 )
 const showPagination = computed(() => {
   if (!paginationEnabled.value) return false
@@ -346,6 +360,21 @@ const emit = defineEmits<{
   'update:filterValues': [filters: TableFilterState]
   'update:selectedKeys': [keys: TableSelectionKey[]]
 }>()
+
+function requestRetry() {
+  if (retrying.value) return
+  // Keep the error useful and prevent repeated activation while a foreground
+  // retry waits for the caller to acknowledge or finish its serialized read.
+  retryRequested.value = true
+  emit('retry')
+}
+
+watch(() => props.loading, (loading, wasLoading) => {
+  if (wasLoading && !loading) retryRequested.value = false
+})
+watch(() => props.error, error => {
+  if (!error) retryRequested.value = false
+})
 
 watch([currentQuery, filterSignature], () => clearSelection(), { flush: 'sync' })
 watch(selectedCount, count => {
@@ -918,12 +947,12 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       aria-atomic="true"
       style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
     >
-      {{ filterPending ? 'Updating table results…' : explicitReadState && loading && loaded ? 'Updating…' : '' }}
+      {{ refreshAnnouncement }}
     </span>
     <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
       <AlertCircle class="k-table__error-icon" :stroke-width="1.75" aria-hidden="true" />
       <span class="k-table__error-message">{{ error }}</span>
-      <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
+      <button v-if="retryable" class="k-table__retry" type="button" :disabled="retrying" :aria-busy="retrying || undefined" @click="requestRetry">{{ retrying ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
     <div
@@ -972,7 +1001,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <span class="k-table__error-message">
           {{ stale ? 'Showing the last successful result. ' : '' }}{{ error }}
         </span>
-        <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
+        <button v-if="retryable" class="k-table__retry" type="button" :disabled="retrying" :aria-busy="retrying || undefined" @click="requestRetry">{{ retrying ? 'Retrying…' : 'Retry' }}</button>
       </div>
 
       <div v-if="showControls || selectionSurfaceVisible" class="k-table__toolbar-stack">
@@ -1133,7 +1162,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
             </td></tr>
             <tr v-else-if="visibleRows.length === 0"><td :colspan="renderedColumnCount" class="k-table__empty-cell">
               <Inbox class="k-table__empty-icon" :stroke-width="1.25" aria-hidden="true" />
-              <p class="k-table__empty-label">{{ activeFilters ? noMatchText : emptyText }}</p>
+              <p class="k-table__empty-label" role="status" aria-live="polite" aria-atomic="true">{{ activeFilters ? noMatchText : emptyText }}</p>
             </td></tr>
           </tbody>
         </table>

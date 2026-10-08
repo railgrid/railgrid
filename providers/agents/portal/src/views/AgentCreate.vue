@@ -338,6 +338,7 @@ async function submit(): Promise<void> {
                 v-model="name"
                 class="k-input"
                 name="name"
+                aria-label="Name"
                 placeholder="research-bot"
                 autocomplete="off"
                 required

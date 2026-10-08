@@ -385,7 +385,9 @@ interface LLMModelMutationGuard {
 
 function appContextFingerprint(ctx: RailgridContext | null): string {
   return JSON.stringify([
-    ctx?.token ?? '',
+    // Host-managed credential renewal preserves project and conversation
+    // snapshots. Legacy hosts still identify authority through their bearer.
+    ctx?.fetch ? '' : ctx?.token ?? '',
     ctx?.tenant ?? '',
     ctx?.orgUUID ?? '',
     ctx?.workspaceUUID ?? '',
@@ -3422,12 +3424,12 @@ async function loadLLMSettings() {
     return
   }
   llmSettingsLoading.value = true
-  llmSettingsError.value = null
   llmStatus.value = null
   llmActionError.value = null
   try {
     const settings = await api.getLLMSettings(props.ctx)
     if (serial !== llmSettingsLoadSerial) return
+    llmSettingsError.value = null
     applyLLMSettings(settings)
   } catch (e) {
     if (serial !== llmSettingsLoadSerial) return
@@ -4421,6 +4423,11 @@ function updateLLMCredentialMode(mode: LLMCredentialMode) {
 }
 
 function updateLLMBaseURL(value: string) {
+  if (value !== llmBaseURL.value) {
+    llmApiKey.value = ''
+    llmValidationAttempted.value = false
+    invalidateLLMConnectionTest()
+  }
   llmBaseURL.value = value
   clearLLMDiscovery()
 }
@@ -8729,7 +8736,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <X class="h-3.5 w-3.5" :stroke-width="1.75" />
             </button>
           </div>
-          <div class="min-w-[92px] rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-center text-[12px] font-medium text-text-muted" aria-live="polite">
+          <div class="min-w-[92px] rounded-lg border border-border-subtle bg-surface-raised px-3 py-2 text-center text-[12px] font-medium text-text-muted" aria-live="polite">
             <template v-if="projectsLoaded">
               {{ projects.length }} {{ projects.length === 1 ? 'project' : 'projects' }}
             </template>
@@ -8746,7 +8753,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           action-label="Retry deletion"
           @action="projectDeletionRetry?.()"
         />
-        <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+        <div v-if="error && !projectDeletionError" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
           <template v-if="isMissingCodeConnectionError(error)">
             You need to
             <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
@@ -9107,7 +9114,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                           Import project
                         </button>
                       </div>
-                      <div v-if="importError" class="rounded-md border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
+                      <div v-if="importError" class="rounded-lg border border-danger/30 bg-danger-subtle p-2 text-[12px] text-danger" role="alert">
                         {{ importError }}
                       </div>
                     </div>
@@ -9148,7 +9155,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <div
                     v-for="item in createSetupItemsForPrompt"
                     :key="item.id"
-                    class="flex min-h-10 flex-wrap items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface px-3 py-2"
+                    class="flex min-h-10 flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-2"
                   >
                     <div class="flex min-w-0 items-center gap-2">
                       <span
@@ -9206,7 +9213,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div id="app-studio-models-host" class="min-h-[420px]" />
       </section>
 
-      <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+      <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
           <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
@@ -9369,14 +9376,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <section class="flex min-h-[360px] min-w-0 flex-1 flex-col border-b border-border-subtle md:min-h-0 md:min-w-[360px] md:border-b-0 md:border-r">
       <div
         v-if="threadError"
-        class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
+        class="mx-3 mt-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
         role="alert"
         aria-live="assertive"
         aria-atomic="true"
       >
         {{ threadError }}
       </div>
-      <div v-if="error && !projectRouteFailure" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+      <div v-if="error && !projectRouteFailure" class="mx-3 mt-3 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
           <a :href="CODE_CONNECTIONS_URL" class="app-studio-touch-target font-medium underline underline-offset-2 hover:text-danger/80">
@@ -9407,13 +9414,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             tabindex="-1"
           >
           <div v-if="projectRouteFailure" class="flex min-h-full items-center justify-center py-6">
-            <div class="w-full max-w-[720px] rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
+            <div class="w-full max-w-[720px] rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
               <div class="font-medium">Project unavailable</div>
               <div class="mt-1">{{ error }}</div>
           <button type="button" class="app-studio-touch-target mt-3 font-medium underline underline-offset-2" @click="load">Retry project load</button>
             </div>
           </div>
-          <div v-else-if="conversationRefreshing" class="sticky top-0 z-10 mb-3 flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay/90 px-3 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
+          <div v-else-if="conversationRefreshing" class="sticky top-0 z-10 mb-3 flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-overlay/90 px-3 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
             <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
             Updating conversation…
           </div>
@@ -9730,6 +9737,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     :key="option.label"
                     type="button"
                     class="app-studio-touch-target rounded-md border px-3 py-2 text-left transition"
+                    :aria-pressed="followUpOptionSelected(pendingFollowUp.interrupt, question, option)"
                     :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
                     :disabled="followUpBusyState(pendingFollowUp.interrupt)"
                     @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
@@ -10034,7 +10042,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <template v-if="projectRouteLoading">
         <div class="min-h-0 flex-1 overflow-auto p-4" role="status" aria-live="polite" aria-busy="true">
-          <div class="grid gap-3 rounded-md border border-border-subtle bg-surface-raised/70 p-4">
+          <div class="grid gap-3 rounded-lg border border-border-subtle bg-surface-raised/70 p-4">
             <div class="shimmer h-4 w-36 rounded bg-surface-overlay" />
             <div class="shimmer h-3 w-3/4 rounded bg-surface-overlay" />
             <div class="mt-2 grid gap-2">
@@ -10052,7 +10060,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </template>
       <template v-else-if="projectRouteFailure">
         <div class="min-h-0 flex-1 overflow-auto p-4">
-          <div class="rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
+          <div class="rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
             <div class="font-medium">Project workspace unavailable</div>
             <div class="mt-1">{{ error }}</div>
             <button type="button" class="app-studio-touch-target mt-3 font-medium underline underline-offset-2" @click="load">Retry project load</button>
@@ -10098,13 +10106,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @sync="syncDevelopmentPreview"
             @open-browser="openDevelopmentPreviewInBrowser"
           />
-          <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+          <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
             {{ developmentSyncError || developmentPreviewAuthorizationError }}
           </div>
-          <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status" aria-live="polite" aria-atomic="true">
+          <div v-else-if="developmentSyncStatus" class="rounded-lg border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status" aria-live="polite" aria-atomic="true">
             {{ developmentSyncStatus }}
           </div>
-          <div v-if="developmentPreviewURL" class="relative min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-surface">
+          <div v-if="developmentPreviewURL" class="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-surface">
             <iframe
               ref="developmentPreviewFrameRef"
               :key="developmentPreviewFrameKey"
@@ -10123,7 +10131,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 			>
 				<div
 					:style="developmentPreviewAnnotationHoverStyle"
-					class="pointer-events-none absolute rounded-md border border-accent/40 bg-surface-overlay/95 px-2.5 py-2 text-[12px] leading-4 text-text-primary shadow-lg backdrop-blur"
+					class="pointer-events-none absolute rounded-lg border border-accent/40 bg-surface-overlay/95 px-2.5 py-2 text-[12px] leading-4 text-text-primary shadow-lg backdrop-blur"
 					role="tooltip"
 				>
 					<div class="flex items-start gap-1.5">
@@ -10190,7 +10198,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 				</div>
 			</div>
           </div>
-          <div v-else class="flex min-h-[360px] flex-1 items-center justify-center rounded-md border border-border-subtle bg-surface/80 p-6 text-center">
+          <div v-else class="flex min-h-[360px] flex-1 items-center justify-center rounded-lg border border-border-subtle bg-surface/80 p-6 text-center">
             <div class="max-w-xs">
               <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
                 <AppWindow class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
@@ -10265,7 +10273,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     v-for="option in question.options"
                     :key="option.label"
                     type="button"
-                    class="app-studio-touch-target rounded-lg border px-3 py-2 text-left transition"
+                    class="app-studio-touch-target rounded-md border px-3 py-2 text-left transition"
+                    :aria-pressed="followUpOptionSelected(pendingFollowUp.interrupt, question, option)"
                     :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
                     :disabled="followUpBusyState(pendingFollowUp.interrupt)"
                     @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
@@ -10339,7 +10348,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
             </template>
           </AIInterrupt>
-          <div v-else class="rounded-md border border-border-subtle bg-surface/80 p-3 text-[12px] text-text-muted">
+          <div v-else class="rounded-lg border border-border-subtle bg-surface/80 p-3 text-[12px] text-text-muted">
             No reviews are waiting.
           </div>
         </div>
@@ -10369,16 +10378,16 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <X class="h-3.5 w-3.5" :stroke-width="1.75" />
           </button>
         </div>
-        <div v-if="providerCatalogError" class="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
+        <div v-if="providerCatalogError" class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" :role="providerCatalogLoaded ? 'status' : 'alert'">
           <span>{{ providerCatalogError }}</span>
           <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
         </div>
-        <div v-if="providersLoading && !providerCatalogLoaded" class="flex min-h-40 items-center justify-center gap-2 rounded-md border border-dashed border-border-subtle p-3 text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
+        <div v-if="providersLoading && !providerCatalogLoaded" class="flex min-h-40 items-center justify-center gap-2 rounded-lg border border-dashed border-border-subtle p-3 text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
           <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
           Loading provider views...
         </div>
         <div v-else-if="providerCatalogLoaded || !providerCatalogError" class="grid gap-1.5">
-          <div v-if="providersLoading" class="flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
+          <div v-if="providersLoading" class="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
             <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
             Updating provider catalog…
           </div>
@@ -10428,8 +10437,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       >
         <div
           v-if="providerCatalogError && providerCatalogLoaded"
-          class="absolute inset-x-3 top-3 z-20 flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
-          role="alert"
+          class="absolute inset-x-3 top-3 z-20 flex flex-wrap items-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
+          role="status"
         >
           <span>{{ providerCatalogError }}</span>
           <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
@@ -10446,7 +10455,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
         <div
           v-else-if="providerCatalogError && !activeProviderTool"
-          class="absolute inset-3 z-20 flex flex-col items-start gap-2 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
+          class="absolute inset-3 z-20 flex flex-col items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
           role="alert"
         >
           <span>{{ providerCatalogError }}</span>
@@ -10465,7 +10474,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
         <div
           v-if="toolState === 'error'"
-          class="absolute inset-3 z-10 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
+          class="absolute inset-3 z-10 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
           role="alert"
           aria-live="assertive"
           aria-atomic="true"
@@ -10619,13 +10628,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </span>
               </label>
               <p v-if="messageStreaming" class="text-[11px] leading-4 text-text-muted">Wait for or stop the active assistant run before changing templates.</p>
-              <div v-if="developmentTemplatesError" class="flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
+              <div v-if="developmentTemplatesError" class="flex flex-wrap items-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
                 <span>{{ developmentTemplatesError }}</span>
                 <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadDevelopmentTemplates">Retry</button>
               </div>
               <div
                 v-if="developmentTemplateError || developmentTemplateStatus"
-                class="rounded-md border px-3 py-2 text-[12px]"
+                class="rounded-lg border px-3 py-2 text-[12px]"
                 :class="developmentTemplateError
                   ? 'border-danger/30 bg-danger-subtle text-danger'
                   : 'border-success/30 bg-success-subtle text-success'"
@@ -10664,7 +10673,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </span>
               </label>
               <p v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating access…</p>
-              <p v-if="developmentPreviewAccessError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
+              <p v-if="developmentPreviewAccessError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
             </section>
           </section>
           </div>

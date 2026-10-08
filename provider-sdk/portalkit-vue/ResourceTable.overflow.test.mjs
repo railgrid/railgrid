@@ -37,11 +37,13 @@ test('horizontal overflow guidance follows the scroll position and describes the
   assert.match(component, /class="k-table__scroll-hint"/)
 })
 
-test('table filter triggers meet the 44px coarse-pointer target contract', () => {
-  const filterTouchRules = styles.match(/@media \(pointer: coarse\) \{\s*\/\* The trigger owns the hit area\.[\s\S]*?\n\}/)?.[0]
-  assert.ok(filterTouchRules, 'coarse pointer table rules include the filter sizing contract')
+test('table filter triggers and options meet the 44px coarse and hybrid pointer target contract', () => {
+  const filterTouchRules = styles.match(/@media \(pointer: coarse\), \(any-pointer: coarse\) \{\s*\/\* The trigger owns the hit area\.[\s\S]*?\n\}/)?.[0]
+  assert.ok(filterTouchRules, 'coarse and hybrid pointer table rules include the filter sizing contract')
   assert.match(filterTouchRules, /\.k-table__filter \{ height: 46px; min-height: 46px; \}/)
   assert.match(filterTouchRules, /\.k-table__filter-trigger \{ height: 44px; min-height: 44px; \}/)
+  assert.match(filterTouchRules, /\.k-table__filter-option/)
+  assert.match(filterTouchRules, /\.k-table__filter-search input/)
 })
 
 test('current-page text remains readable on the accent tint in both themes', () => {

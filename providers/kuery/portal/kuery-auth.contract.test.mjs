@@ -19,6 +19,7 @@ const vite = await createServer({
   ssr: { external: ['vue'] },
 })
 const { useKueryApi } = await vite.ssrLoadModule('/src/kuery.ts')
+const { createKueryRequestContext } = await vite.ssrLoadModule('/src/request-context.ts')
 test.after(() => vite.close())
 
 const basePath = '/ui/providers/kuery'
@@ -89,4 +90,15 @@ test('stays uninitialised without a workspace or a saved view', () => {
   const ready = ref({ basePath, fetch: () => Promise.resolve(new Response('{}')), tenant: cluster, token: null })
   assert.equal(useKueryApi(ready, ref('')).api.value, null)
   assert.equal(useKueryApi(ready).api.value, null)
+})
+
+test('request and mounted-view identity fence same-workspace account changes while token refresh preserves scope', () => {
+  const firstContext = { basePath, tenant: cluster, token: 'first', fetch: () => Promise.resolve(new Response('{}')), user: { userId: 'first-user', email: 'shared@example.test' } }
+  const first = createKueryRequestContext(firstContext)
+  const second = createKueryRequestContext({ ...firstContext, user: { userId: 'second-user', email: 'shared@example.test' } })
+  assert.notEqual(first.identity, second.identity)
+  assert.notEqual(first.scopeIdentity, second.scopeIdentity)
+  const rotated = createKueryRequestContext({ ...firstContext, token: 'rotated' })
+  assert.equal(first.scopeIdentity, rotated.scopeIdentity)
+  assert.equal(first.user, 'shared@example.test', 'existing per-email scratch-view names stay stable')
 })

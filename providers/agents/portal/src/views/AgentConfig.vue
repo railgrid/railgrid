@@ -1118,8 +1118,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Budget</span>
         <div class="agents-grid2">
-          <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? 'agent-budget-usd-error' : undefined" /><span v-if="budgetUSDError" id="agent-budget-usd-error" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
-          <label>Monthly token cap<input v-model="budgetTokens" class="k-input" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? 'agent-budget-tokens-error' : undefined" /><span v-if="budgetTokensError" id="agent-budget-tokens-error" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
+          <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" aria-label="Monthly budget (USD)" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? 'agent-budget-usd-error' : undefined" /><span v-if="budgetUSDError" id="agent-budget-usd-error" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
+          <label>Monthly token cap<input v-model="budgetTokens" class="k-input" aria-label="Monthly token cap" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? 'agent-budget-tokens-error' : undefined" /><span v-if="budgetTokensError" id="agent-budget-tokens-error" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
         </div>
         <p class="agents-hint">Monthly caps apply to either backend and use usage reported by that backend; harness caps depend on usage reported by the runner.</p>
       </div>

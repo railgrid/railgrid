@@ -1,6 +1,6 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, useId, watch } from 'vue'
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
 
 import type { TableFilterDefinition, TableFilterOption } from './table'
@@ -151,6 +151,13 @@ function scrollActiveOption() {
 }
 
 function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Tab') {
+    // The search field is teleported after the page. Restore the source
+    // anchor synchronously so native Tab follows the surrounding controls.
+    closeFilter()
+    trigger.value?.focus()
+    return
+  }
   if (event.key === 'ArrowDown') {
     event.preventDefault()
     moveActive(1)
@@ -229,6 +236,8 @@ onMounted(() => {
     window.addEventListener('scroll', onViewportChange, true)
   }
 })
+
+onDeactivated(() => closeFilter())
 
 onBeforeUnmount(() => {
   if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {

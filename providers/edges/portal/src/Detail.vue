@@ -765,19 +765,25 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                     </div>
 
                     <!-- Connect form. -->
-                    <div v-if="connectFor === es.name" class="svc-connect">
-                      <input
-                        v-model="tokenInput" type="password" class="svc-input k-input"
-                        placeholder="Paste a long-lived access token" autocomplete="off"
-                        @keyup.enter="submitConnect"
-                      />
+                    <div v-if="connectFor === es.name" class="svc-connect" :aria-busy="connecting">
+                      <label class="fld" :for="`edge-service-token-${es.name}`">
+                        <span class="lbl">Access token</span>
+                        <input
+                          :id="`edge-service-token-${es.name}`"
+                          v-model="tokenInput" type="password" class="svc-input k-input"
+                          :aria-describedby="es.serviceType === 'home-assistant' ? `edge-service-token-${es.name}-help` : undefined"
+                          :disabled="connecting"
+                          placeholder="Paste a long-lived access token" autocomplete="new-password"
+                          @keyup.enter="submitConnect"
+                        />
+                      </label>
                       <div class="wiz-actions" style="justify-content: flex-start;">
                         <button type="button" class="k-btn k-btn--primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
                           <Plug :size="14" aria-hidden="true" /> {{ connecting ? 'Connecting…' : 'Save token' }}
                         </button>
                         <button type="button" class="k-btn k-btn--ghost" :disabled="connecting" @click="connectFor = null">Cancel</button>
                       </div>
-                      <p v-if="es.serviceType === 'home-assistant'" class="muted small">
+                      <p v-if="es.serviceType === 'home-assistant'" :id="`edge-service-token-${es.name}-help`" class="muted small">
                         Create one in Home Assistant → your profile → Security → Long-lived access tokens.
                       </p>
                     </div>

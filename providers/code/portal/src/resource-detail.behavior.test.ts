@@ -10,6 +10,7 @@ import { createResourceDeletions } from './refresh'
 const mocks = vi.hoisted(() => ({
   api: {
     getRepository: vi.fn(),
+    listRepositories: vi.fn(),
     listConnections: vi.fn(),
     listDeployKeys: vi.fn(),
     listCollaborators: vi.fn(),
@@ -133,8 +134,10 @@ vi.mock('./portalkit/ResourceTableDeleteButton.vue', async () => {
 
 import RepoDetailView from './views/RepoDetailView.vue'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
+import DashboardTile from './DashboardTile.vue'
 import repoSource from './views/RepoDetailView.vue?raw'
 import connectionSource from './views/ConnectionDetailView.vue?raw'
+import dashboardSource from './DashboardTile.vue?raw'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -241,6 +244,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
 
 ;(RepoDetailView as unknown as { render: unknown }).render = compileClientRender(repoSource, 'RepoDetailView.vue')
 ;(ConnectionDetailView as unknown as { render: unknown }).render = compileClientRender(connectionSource, 'ConnectionDetailView.vue')
+;(DashboardTile as unknown as { render: unknown }).render = compileClientRender(dashboardSource, 'DashboardTile.vue')
 
 function textContent(node: TreeNode): string {
   return node.text ?? node.children.map(textContent).join('')
@@ -266,12 +270,12 @@ async function settle(): Promise<void> {
   }
 }
 
-function mount(component: typeof RepoDetailView | typeof ConnectionDetailView, props: Record<string, unknown>) {
+function mount(component: typeof RepoDetailView | typeof ConnectionDetailView | typeof DashboardTile, props: Record<string, unknown>) {
   const root = createTreeElement('root')
   const app = renderer.createApp(component, props)
   app.provide(ssrContextKey, { modules: new Set<string>() })
-  app.mount(root)
-  return { app, root }
+  const proxy = app.mount(root) as unknown as { $: { props: Record<string, unknown>; setupState: Record<string, any> } }
+  return { app, root, instance: proxy.$ }
 }
 
 const repository: RepositoryDetail = {
@@ -509,5 +513,36 @@ describe('mounted resource deletion state', () => {
     expect(textContent(root)).not.toContain('Login')
     expect(textContent(root)).not.toContain('Scopes')
     app.unmount()
+  })
+})
+
+describe('Code dashboard read state', () => {
+  it('keeps the repository visible through credential renewal and fences a caller change', async () => {
+    mocks.api.listRepositories.mockResolvedValue([repository])
+    mocks.api.listConnections.mockResolvedValue([connection])
+    const { app, root, instance } = mount(DashboardTile, { context: { tenant: 'tenant-a', token: 'old-token', user: { userId: 'user-a' } } })
+    try {
+      await settle()
+      const state = instance.setupState
+      expect(state.loaded).toBe(true)
+      expect(findNode(root, node => node.type === 'button' && String(node.props['aria-label']).includes('Open repository'))).toBeDefined()
+
+      const renewal = deferred<typeof repository[]>()
+      mocks.api.listRepositories.mockReturnValueOnce(renewal.promise)
+      instance.props.context = { tenant: 'tenant-a', token: 'new-token', user: { userId: 'user-a' } }
+      await settle()
+      expect(state.loaded).toBe(true)
+      expect(state.repositories).toEqual([repository])
+
+      mocks.api.listRepositories.mockResolvedValueOnce([{ ...repository, name: 'caller-b-repository' }])
+      instance.props.context = { tenant: 'tenant-a', token: 'caller-b-token', user: { userId: 'user-b' } }
+      await settle()
+      expect(state.loaded).toBe(false)
+      expect(state.repositories).toEqual([])
+      renewal.resolve([{ ...repository, name: 'stale-caller-a-repository' }])
+      await settle()
+      await settle()
+      expect(state.repositories).toEqual([{ ...repository, name: 'caller-b-repository' }])
+    } finally { app.unmount() }
   })
 })

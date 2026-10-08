@@ -29,7 +29,9 @@ default; credentials and tokens never render.
 When exposed, the panel contains only sanitized configuration, health,
 metadata, or a read-only object snapshot. There is no separate visual variant
 documented here: use the shared panel inside a `ResourceSectionCard` rather
-than inventing a second technical container.
+than inventing a second technical container. When that parent already supplies
+a Conditions heading, pass `showTitle: false` to avoid repeating the heading;
+the default keeps the heading for standalone use.
 
 ## Behavior
 

@@ -2,7 +2,7 @@
 // under providers/*/portal/src/portalkit/; edit here and run
 // `make sync-portalkit`.
 
-import { nextTick, onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { nextTick, onBeforeUnmount, onDeactivated, ref, watch, type Ref } from 'vue'
 
 export interface AnchoredPopoverOptions {
   /** Fallback width used before the teleported panel has been measured. */
@@ -134,6 +134,8 @@ export function useAnchoredPopover(options: AnchoredPopoverOptions = {}): Anchor
       window.addEventListener('scroll', updatePosition, { capture: true, passive: true })
     }
   })
+
+  onDeactivated(() => close())
 
   onBeforeUnmount(() => {
     clearPositionListeners()

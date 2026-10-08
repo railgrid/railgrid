@@ -251,9 +251,9 @@ Agents uses `AIWorkspace` for its agent workbench. Run
 check source copies and explicit manifests, including the declared canonical-to-vendored core-component path mapping. Standalone runtime fallback
 CSS is imported through Vite's `?inline` path and may be minified in the
 bundle; the authored canonical rules and synced source copies remain
-byte-identical. The current contracts are core PortalKit version 31 (from
+byte-identical. The current contracts are core PortalKit version 32 (from
 `RAILGRID_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`) and AgentKit
-style/runtime version 8 (from `AGENT_UI_VERSION` in
+style/runtime version 10 (from `AGENT_UI_VERSION` in
 `provider-sdk/agentkit/styles.ts`). Desktop rails stretch
 to the flex row's cross-axis so content-sized conversation frames retain a
 visible panel; mobile rails keep their absolute inset overlay geometry. Run

@@ -37,11 +37,11 @@ const title = computed(() => {
     type="button"
     :disabled="!actionable"
     :title="title"
-    class="inline-flex items-center gap-1.5 rounded-sm border border-current/35 px-2 py-[2.5px] font-mono text-[10px] font-semibold uppercase tracking-[0.06em] transition-colors duration-150"
+    class="app-studio-touch-target inline-flex items-center gap-1.5 rounded-sm border border-current/35 px-2 py-[2.5px] font-mono text-[10px] font-semibold uppercase tracking-[0.06em] transition-colors duration-150"
     :class="[config.bg, config.text, actionable ? 'cursor-pointer hover:brightness-110' : 'cursor-default']"
     @click="actionable && emit('act', checkpoint)"
   >
-    <component :is="config.icon" class="h-3 w-3" :stroke-width="2" />
+    <component :is="config.icon" class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
     {{ checkpoint.label }}
   </button>
 </template>

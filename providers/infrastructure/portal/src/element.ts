@@ -17,7 +17,7 @@ export interface RailgridContext {
   fetch?: ProviderFetch | null
   /** @deprecated Read-only fallback for older hosts; use fetch. */
   token?: string | null
-  user?: { email?: string; sub?: string } | null
+  user?: { email?: string; sub?: string; userId?: string } | null
   tenant?: string | null
   theme?: 'light' | 'dark' | 'system'
   basePath?: string

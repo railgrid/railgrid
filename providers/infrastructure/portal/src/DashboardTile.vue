@@ -137,7 +137,13 @@ onUnmounted(() => {
   poller?.stop()
 })
 watch(
-  () => [props.context === null, props.context?.tenant, props.context?.token, props.context?.basePath] as const,
+  [
+    () => props.context === null,
+    () => props.context?.tenant,
+    () => props.context?.user?.userId ?? props.context?.user?.sub ?? props.context?.user?.email,
+    () => typeof props.context?.fetch === 'function' ? '' : props.context?.token,
+    () => props.context?.basePath,
+  ],
   () => {
     contextGeneration += 1
     if (tombstoneTenant !== props.context?.tenant) tombstones.clear()
@@ -155,7 +161,7 @@ watch(
 // future kro phase string doesn't render as "Failed" by mistake.
 const phaseDot: Record<string, string> = {
   Ready: 'bg-success',
-  Pending: 'bg-text-muted',
+  Pending: 'bg-warning',
   Deleting: 'bg-warning',
   Failed: 'bg-danger',
 }
@@ -195,7 +201,7 @@ function dotFor(phase: string) {
           <span class="tabular-nums">{{ stats.ready }}</span>
           <span :class="tileClass.statLabel">ready</span>
         </span>
-        <span v-if="stats.pending > 0" :class="[tileClass.stat, tileClass.statMuted]">
+        <span v-if="stats.pending > 0" :class="[tileClass.stat, tileClass.statWarn]">
           <Clock :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
           <span class="tabular-nums">{{ stats.pending }}</span>
           <span :class="tileClass.statLabel">pending</span>
@@ -257,7 +263,7 @@ function dotFor(phase: string) {
             Browse templates <ArrowRight :size="14" aria-hidden="true" />
           </button>
         </div>
-        <div class="mt-1 text-text-muted/70">
+        <div class="mt-1 text-text-muted">
           Provisioned before picking a workspace?
           <button
             type="button"
