@@ -870,7 +870,7 @@ func (a *Agent) newCredentialStore() *tunnel.CredentialStore {
 	// when the saved credential is for THIS hub and tenant: one left behind by
 	// an agent of the same name pointed at another hub, or at a workspace that
 	// no longer exists, would be presented forever and refused forever.
-	if credential, ok, err := LoadAgentCredential(edgeName); err != nil {
+	if credential, source, ok, err := a.loadSavedCredential(edgeName); err != nil {
 		klog.Background().Error(err, "could not read the saved agent credential; falling back to the join token")
 	} else if ok {
 		if reason := a.savedCredentialMismatch(credential); reason != "" {
@@ -879,10 +879,46 @@ func (a *Agent) newCredentialStore() *tunnel.CredentialStore {
 		} else {
 			_ = store.Adopt(credential)
 			klog.Background().Info("using the saved agent credential; the join token is only a fallback",
-				"edgeName", edgeName, "expiresAt", credential.ExpiresAt.Format(time.RFC3339))
+				"edgeName", edgeName, "source", source, "expiresAt", credential.ExpiresAt.Format(time.RFC3339))
 		}
 	}
 	return store
+}
+
+// Seams for tests; the real loaders in production.
+var (
+	loadAgentCredential      = LoadAgentCredential
+	loadCredentialFromSecret = LoadCredentialFromSecret
+)
+
+// loadSavedCredential reads the enrolment bundle a previous run persisted, from
+// either place Persist writes it, and reports which one it came from.
+//
+// Persist writes the bundle to disk and, in a pod, to the agent's Secret as
+// well. Reading only the file loses the credential on every pod restart,
+// because the file lives under $HOME inside the container: the agent then falls
+// back to its bootstrap join token, which only still works if the hub kept that
+// token's hash. So in-cluster the Secret is consulted whenever the file is
+// absent -- that is exactly the case the Secret exists for.
+func (a *Agent) loadSavedCredential(edgeName string) (tunnel.Credential, string, bool, error) {
+	credential, ok, err := loadAgentCredential(edgeName)
+	if err == nil && ok {
+		return credential, "file", true, nil
+	}
+	if !IsInCluster() {
+		return credential, "file", ok, err
+	}
+	// Remember a file-read failure, but still try the Secret: a pod restart
+	// makes a missing file the normal case, not a problem to report.
+	fileErr := err
+	credential, ok, err = loadCredentialFromSecret(edgeName)
+	if err != nil {
+		if fileErr != nil {
+			return tunnel.Credential{}, "", false, fmt.Errorf("reading the agent credential from disk (%v) and from its Secret: %w", fileErr, err)
+		}
+		return tunnel.Credential{}, "", false, fmt.Errorf("reading the agent credential from its Secret: %w", err)
+	}
+	return credential, "secret", ok, nil
 }
 
 // savedCredentialMismatch reports why a saved credential does not belong to
