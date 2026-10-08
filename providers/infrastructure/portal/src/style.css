@@ -36,8 +36,8 @@ railgrid-provider-infrastructure .page-title {
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
-  font-family: var(--font-display, var(--font-sans));
-  font-stretch: 125%;
+  font-family: var(--font-sans);
+  font-stretch: normal;
 }
 
 railgrid-provider-infrastructure .page-meta {

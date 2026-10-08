@@ -26,7 +26,7 @@ copied only to registered AgentKit consumers. They use the same tokens and
 | `.k-back-action` | Intrinsic-width, start-aligned borderless link; 12px/500 accent, 6px icon gap, hover underline, no control surface |
 | `.k-input` | 4px overlay input; focus is accent border, 3px subtle ring, and glow |
 | `.k-form-select` (`__trigger`, `__panel`, `__option`) | Accessible PortalKit single-select combobox using input/menu recipes |
-| `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over expanded tabular numeral |
+| `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over normal-width Instrument Sans tabular numeral |
 | `.k-menu` / `.k-menu-item` | Dropdown/context menu; selected is subtle accent and never glows |
 | `.k-layout-selector` | Controlled grid/list presentation menu with radio semantics and no glow |
 | `.k-kbd` | 9px mono uppercase shortcut key-cap, 3px, darker bottom edge |

@@ -127,7 +127,7 @@ async function createOrganization() {
       <section class="w-full max-w-md" aria-labelledby="organization-create-title">
         <div class="mb-5">
           <p class="k-eyebrow">New organization</p>
-          <h1 id="organization-create-title" class="type-display mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
+          <h1 id="organization-create-title" class="font-sans mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
             Create an organization
           </h1>
           <p class="mt-2 text-[12px] text-text-muted">Enter a name for your organization.</p>

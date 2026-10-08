@@ -9,9 +9,16 @@ The portal/provider roles are:
 
 | Surface | Role | Face | Usage |
 |---|---|---|---|
-| Portal/provider | `font-sans` | Instrument Sans Variable | Body and UI copy |
-| Portal/provider | `font-display` (`.type-display`) | Archivo Variable at `font-stretch: 125%` | Page titles, KPI numerals, RAILGRID wordmark |
+| Portal/provider | `font-sans` | Instrument Sans Variable | Body, UI copy, functional headings, KPI numerals |
+| Portal/provider | `font-display` (`.type-display`) | Archivo Variable at `font-stretch: 125%` | RAILGRID wordmark and occasional promotional brand surfaces only |
 | Portal/provider | `font-mono` | IBM Plex Mono | Identifiers, statuses, badges, table headers, timestamps, code |
+
+Functional page titles—including create/edit forms, resource details, organization
+selection, and operational dashboards—use Instrument Sans at normal width and
+weight 600 (semibold). Establish hierarchy with size and spacing, not an expanded
+face. Shared `.k-create-title` and `.k-resource-page__title` recipes own this
+contract. Do not apply `font-display` or `.type-display` to functional headings
+or dashboard numerals.
 
 Dex auth is a standalone fixed-dark document. Its local stylesheet embeds only
 Instrument Sans Variable (weight range 400–700) for sans copy and IBM Plex Mono
@@ -30,5 +37,5 @@ The dense scale is explicit: `text-[9px]`–`text-[10px]` for eyebrows, section
 labels, and badges (uppercase, tracked, weight 600); `text-[11px]` for nav
 items, chips, and small labels; `text-[12px]`–`text-[13px]` for body, table
 cells, and buttons; and `text-[14px]`–`text-[19px]` for headings. `.k-kpi` uses
-26px display type and `tabular-nums`. Numbers aligned in columns always use
+26px Instrument Sans and `tabular-nums`. Numbers aligned in columns always use
 `font-variant-numeric: tabular-nums`.

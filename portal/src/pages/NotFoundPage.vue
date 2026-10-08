@@ -15,7 +15,7 @@ import { Hexagon, ArrowLeft } from 'lucide-vue-next'
           <Hexagon class="h-10 w-10 text-text-muted/15" :stroke-width="1.25" />
         </div>
       </div>
-      <h1 class="type-display mt-6 text-7xl font-bold tracking-tighter text-text-primary">404</h1>
+      <h1 class="font-sans mt-6 text-7xl font-semibold tracking-tighter text-text-primary">404</h1>
       <p class="mt-2 text-[13px] text-text-muted">This page doesn't exist</p>
       <router-link
         to="/"

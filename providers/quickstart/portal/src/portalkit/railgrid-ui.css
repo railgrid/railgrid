@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 32;
+  --railgrid-ui-core-version: 33;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -49,8 +49,8 @@
   color: var(--color-text-secondary, #8a8ca6);
 }
 .k-kpi {
-  font-family: var(--font-display, "Archivo Variable", "Instrument Sans Variable", ui-sans-serif, sans-serif);
-  font-stretch: 125%;
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  font-stretch: normal;
   letter-spacing: -0.01em;
   font-size: 26px;
   font-weight: 600;
@@ -443,8 +443,8 @@ html.light .k-card {
 .k-create-title {
   margin: 0;
   color: var(--color-text-primary, #e9e9f2);
-  font-family: var(--font-display, 'Archivo Variable', sans-serif);
-  font-stretch: 125%;
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  font-stretch: normal;
   font-size: 18px;
   font-weight: 600;
   line-height: 1.25;
@@ -2657,8 +2657,8 @@ railgrid-resource-table-filter { display: contents; }
 .k-resource-page__title {
   margin: 0;
   color: var(--color-text-primary, #e9e9f2);
-  font-family: var(--font-display, 'Archivo Variable', sans-serif);
-  font-stretch: 125%;
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  font-stretch: normal;
   overflow-wrap: anywhere;
   font-weight: 600;
   font-size: 18px;
