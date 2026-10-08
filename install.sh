@@ -128,9 +128,12 @@ EOF
 shadow="$(command -v railgrid 2>/dev/null || true)"
 if [ -n "$shadow" ] && ! same_file "$shadow" "$target"; then
     cat <<EOF
-Note: railgrid also exists at ${shadow}, earlier on your \$PATH, which will
-      shadow this install -- \`railgrid\` still runs that one. To upgrade it
-      instead:
+Note: another railgrid comes earlier on your \$PATH and will shadow this
+      install -- \`railgrid\` still runs that one:
+
+          ${shadow}
+
+      To upgrade that copy instead:
 
     curl -fsSL https://downloads.railgrid.ai/install.sh \\
       | INSTALL_DIR="${shadow%/*}" sh
