@@ -19,9 +19,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,6 +207,63 @@ func TestSavedCredentialOnDiskIsPreferredToTheSecret(t *testing.T) {
 
 	if store.Token() != onDisk.Token {
 		t.Fatalf("store serves %q, want the credential from disk", store.Token())
+	}
+}
+
+// An unreadable credential on disk must still be reported when the Secret has
+// nothing to offer either. Swallowing it would drop the only diagnostic the
+// operator gets before the agent falls back to its join token, and a corrupt
+// file looks exactly like an agent that has never enrolled.
+func TestUnreadableCredentialOnDiskIsReportedWhenTheSecretIsEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+
+	const edgeName = "k8s-corrupt-file"
+	originalFileLoader := loadAgentCredential
+	loadAgentCredential = func(string) (tunnel.Credential, bool, error) {
+		return tunnel.Credential{}, false, errors.New("unexpected end of JSON input")
+	}
+	t.Cleanup(func() { loadAgentCredential = originalFileLoader })
+	stubSecretLoader(t, func(string) (tunnel.Credential, bool, error) {
+		return tunnel.Credential{}, false, nil // Secret exists but holds no bundle
+	})
+
+	_, _, ok, err := agentForCredentialTest(edgeName, "https://hub.example.com").loadSavedCredential(edgeName)
+	if ok {
+		t.Fatal("a credential was reported although neither store had one")
+	}
+	if err == nil {
+		t.Fatal("the unreadable file was swallowed; the operator gets no diagnostic")
+	}
+	if !strings.Contains(err.Error(), "unexpected end of JSON input") {
+		t.Fatalf("error %q does not mention the underlying file failure", err)
+	}
+}
+
+// But a *missing* file is the normal case on a pod restart, so it must stay
+// quiet when the Secret supplies the credential.
+func TestMissingCredentialFileIsNotAnErrorWhenTheSecretHasOne(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+
+	const edgeName = "k8s-missing-file"
+	stored := tunnel.Credential{
+		Token:     "credential-from-the-secret",
+		ExpiresAt: time.Now().Add(time.Hour),
+		HubURL:    "https://hub.example.com",
+		Name:      edgeName,
+	}
+	stubSecretLoader(t, func(string) (tunnel.Credential, bool, error) {
+		return stored, true, nil
+	})
+
+	_, source, ok, err := agentForCredentialTest(edgeName, stored.HubURL).loadSavedCredential(edgeName)
+	if err != nil {
+		t.Fatalf("a missing file must not be an error: %v", err)
+	}
+	if !ok || source != "secret" {
+		t.Fatalf("ok=%v source=%q, want true/\"secret\"", ok, source)
 	}
 }
 
