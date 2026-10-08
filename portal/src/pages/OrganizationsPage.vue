@@ -189,7 +189,7 @@ onMounted(() => { void loadOrganizations() })
       <section class="w-full max-w-2xl" aria-labelledby="organization-chooser-title">
         <div class="mb-5">
           <div class="min-w-0">
-            <h1 id="organization-chooser-title" class="type-display mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
+            <h1 id="organization-chooser-title" class="font-sans mt-2 text-[24px] font-semibold tracking-tight text-text-primary">
               Choose an organization to continue
             </h1>
           </div>

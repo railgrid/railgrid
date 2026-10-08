@@ -19,7 +19,7 @@ railgrid-provider-quickstart {
 railgrid-provider-quickstart .quickstart-page { display: grid; gap: 16px; min-width: 0; width: 100%; }
 railgrid-provider-quickstart .quickstart-page-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
 railgrid-provider-quickstart .quickstart-page-head > div { min-width: 0; }
-railgrid-provider-quickstart .quickstart-page-title { margin: 0 0 4px; color: var(--color-text-primary); font-family: var(--font-display, var(--font-sans)); font-stretch: 125%; font-size: 18px; font-weight: 600; line-height: 1.25; }
+railgrid-provider-quickstart .quickstart-page-title { margin: 0 0 4px; color: var(--color-text-primary); font-family: var(--font-sans); font-stretch: normal; font-size: 18px; font-weight: 600; line-height: 1.25; }
 
 railgrid-provider-quickstart .quickstart-panel {
   min-width: 0;
