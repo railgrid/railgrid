@@ -165,7 +165,9 @@ export function discoverProviders({ repoRoot, externalDir }) {
     }
   }
   scan(repoRoot, 'in-tree')
-  if (externalDir) {
+  const externalDirs = [...new Set((externalDir || '').split(',')
+    .map(dir => dir.trim()).filter(Boolean).map(dir => path.resolve(dir)))]
+  for (const externalDir of externalDirs) {
     if (!fs.existsSync(externalDir)) fail(`--external-providers-dir ${externalDir} does not exist`)
     const providersRoot = path.join(externalDir, 'providers')
     if (!fs.existsSync(providersRoot)) fail(`--external-providers-dir ${externalDir} has no providers/ directory`)
@@ -535,7 +537,7 @@ function usage() {
     '',
     'Options:',
     '  --check                         Fail if the committed file is stale',
-    '  --external-providers-dir DIR    Also scan DIR/providers/*/manifest.yaml',
+    '  --external-providers-dir DIRS   Comma-separated roots; scan each DIR/providers/*/manifest.yaml',
     '                                  (env RAILGRID_EXTERNAL_PROVIDERS_DIR)',
     '  --drop-unscanned                When writing, remove rules for claimers no',
     '                                  scanned provider exports',

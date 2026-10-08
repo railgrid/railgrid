@@ -706,6 +706,10 @@ verify-design-docs: ## Validate structured design-document metadata and emit its
 	@node hack/verify-design-docs.test.mjs
 	@node hack/verify-design-docs.mjs --catalog
 
+.PHONY: test-tilt-external-providers
+test-tilt-external-providers: ## Verify external provider checkout loading in both Tilt stacks
+	@python3 hack/scripts/verify-tilt-external-providers.test.py
+
 verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachability wiring
 	@bash hack/scripts/verify-tilt-browser-deployment.test.sh
 	@bash hack/scripts/configure-tilt-preview-dns.test.sh
@@ -1088,8 +1092,9 @@ REPLICA_COUNT ?= 1
 # Providers from another repository, added to the tilt / tilt-cluster session by that
 # repository's Tilt library (docs/external-providers-tilt.md). An empty
 # EXTERNAL_PROVIDERS_DIR disables them; an unset or empty EXTERNAL_PROVIDERS
-# loads every provider in that repository, or name one to load only it:
-#   make tilt EXTERNAL_PROVIDERS_DIR=../providers
+# loads every provider in those repositories, or name one with a single checkout:
+# Separate multiple checkout paths with commas:
+#   make tilt EXTERNAL_PROVIDERS_DIR=../providers,../experimental-providers
 #   make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 EXTERNAL_PROVIDERS_DIR ?=
 EXTERNAL_PROVIDERS ?= all
@@ -2796,7 +2801,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
