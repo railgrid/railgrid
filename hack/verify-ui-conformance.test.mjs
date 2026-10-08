@@ -480,6 +480,49 @@ test('keeps ResourceTable quiet color roles above their contrast floors in both 
   }
 })
 
+test('keeps inactive ResourceTable filter values above WCAG AA on the overlay in both themes', () => {
+  const host = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
+  const themes = [
+    host.match(/@theme\s*\{([\s\S]*?)\n\}/)?.[1] ?? '',
+    host.match(/html\.light\s*\{([\s\S]*?)\n\}/)?.[1] ?? '',
+  ]
+  const token = (block, name) => {
+    const value = block.match(new RegExp('--' + name + ':\\s*(#[0-9a-fA-F]{6});'))?.[1]
+    assert.ok(value, name + ' must be an opaque hex token for contrast verification')
+    return value
+  }
+  const channels = value => [1, 3, 5].map(offset => Number.parseInt(value.slice(offset, offset + 2), 16))
+  const luminance = color => color
+    .map(value => value / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0)
+  const contrast = (left, right) => {
+    const [lighter, darker] = [luminance(left), luminance(right)].sort((a, b) => b - a)
+    return (lighter + 0.05) / (darker + 0.05)
+  }
+  const rule = selector => {
+    const start = css.indexOf(selector + ' {')
+    assert.ok(start >= 0, 'canonical stylesheet contains ' + selector)
+    const end = css.indexOf('}', start)
+    assert.ok(end > start, selector + ' has a complete rule')
+    return css.slice(start, end)
+  }
+
+  assert.match(rule('.k-table__filter'), /background:\s*var\(--color-surface-overlay/)
+  assert.match(
+    rule('.k-table__filter:not(.is-active) .k-table__filter-trigger'),
+    /color:\s*var\(--color-text-muted,\s*#8587a1\);/,
+    'the inactive filter value inherits semantic muted text on its overlay surface',
+  )
+  for (const theme of themes) {
+    const muted = channels(token(theme, 'color-text-muted'))
+    const overlay = channels(token(theme, 'color-surface-overlay'))
+    const ratio = contrast(muted, overlay)
+    assert.ok(ratio >= 4.5, 'inactive filter text must meet WCAG AA on overlay (' + ratio.toFixed(2) + ':1)')
+  }
+})
+
 test('keeps selected and tinted PortalKit controls readable in both themes', () => {
   const host = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
