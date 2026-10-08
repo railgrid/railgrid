@@ -7,9 +7,12 @@
 # Environment variables:
 #   RAILGRID_VERSION    Install a specific version (default: latest GitHub release).
 #   INSTALL_DIR      Target directory (default: $HOME/.local/bin — no sudo
-#                    required). To install system-wide instead:
+#                    required; with HOME unset it must be given explicitly).
+#                    To install system-wide instead:
 #                      curl -fsSL https://downloads.railgrid.ai/install.sh \
 #                        | INSTALL_DIR=/usr/local/bin sudo -E sh
+#                    An agent registered with "agent join" runs the binary path
+#                    recorded in its systemd unit, so upgrade that path.
 #   RAILGRID_BASE_URL   Override the binary download base (default:
 #                    https://downloads.railgrid.ai/cli/railgrid).
 #   RAILGRID_HARNESS    Which coding harnesses a machine you register offers:
@@ -22,13 +25,36 @@
 set -eu
 
 REPO="railgrid/railgrid"
-INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 VERSION="${RAILGRID_VERSION:-}"
 BASE_URL="${RAILGRID_BASE_URL:-https://downloads.railgrid.ai/cli/railgrid}"
 HARNESS="${RAILGRID_HARNESS:-auto}"
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "missing required tool: $1"; }
+
+# `command -v` reports the PATH spelling, which can name the same file as
+# ${target} while differing textually -- a trailing slash in INSTALL_DIR, or a
+# symlinked bin directory. Compare identity so a clean install is never
+# reported as shadowed. -ef is outside POSIX but implemented by dash, bash, ash
+# and zsh; where it is missing the textual compare is the best available.
+same_file() {
+    [ "$1" = "$2" ] && return 0
+    [ -e "$1" ] && [ -e "$2" ] && [ "$1" -ef "$2" ] 2>/dev/null
+}
+
+# $HOME is not always set. `sudo sh`, `docker exec`, systemd units, cron and ssh
+# sessions without a login shell can all run without it, and under `set -u`
+# dereferencing it aborted this script with "HOME: parameter not set" -- which
+# names no fix and happens before anything is downloaded, so the install looks
+# like a no-op. Resolve the default only when it can be resolved.
+if [ -z "${INSTALL_DIR:-}" ]; then
+    [ -n "${HOME:-}" ] || err 'HOME is not set, so the default install directory ($HOME/.local/bin) cannot be resolved -- pass one explicitly, e.g. INSTALL_DIR=/usr/local/bin'
+    INSTALL_DIR="${HOME}/.local/bin"
+fi
+# Trailing slashes only make the printed paths ugly ("/usr/local/bin//railgrid").
+while [ "$INSTALL_DIR" != "/" ] && [ "${INSTALL_DIR%/}" != "$INSTALL_DIR" ]; do
+    INSTALL_DIR="${INSTALL_DIR%/}"
+done
 
 need curl
 need tar
@@ -94,6 +120,52 @@ cat <<EOF
 Installed railgrid ${VERSION} → ${target}
 
 EOF
+
+# A railgrid earlier on PATH shadows the one just installed, so `railgrid
+# version` keeps reporting the old build and the install looks ineffective. The
+# default INSTALL_DIR is $HOME/.local/bin, which is often not on PATH at all
+# while an older binary sits in /usr/local/bin.
+shadow="$(command -v railgrid 2>/dev/null || true)"
+if [ -n "$shadow" ] && ! same_file "$shadow" "$target"; then
+    cat <<EOF
+Note: another railgrid comes earlier on your \$PATH and will shadow this
+      install -- \`railgrid\` still runs that one:
+
+          ${shadow}
+
+      To upgrade that copy instead:
+
+    curl -fsSL https://downloads.railgrid.ai/install.sh \\
+      | INSTALL_DIR="${shadow%/*}" sh
+
+EOF
+fi
+
+# Installing a binary restarts nothing. An agent registered with
+# `railgrid agent join` keeps running its current build until its unit is
+# restarted, and the unit records the symlink-resolved path of whichever binary
+# registered it (os.Executable + EvalSymlinks), which can be neither ${target}
+# nor ${shadow}. So name the units and have the operator read the path off the
+# unit rather than assume one.
+if command -v systemctl >/dev/null 2>&1; then
+    units="$(systemctl list-units --all --no-legend --plain --type=service 'railgrid-agent-*' 2>/dev/null \
+        | awk '{print $1}' | tr '\n' ' ')"
+    units="${units% }"
+    if [ -n "$units" ]; then
+        cat <<EOF
+Note: an agent on this host keeps running the binary recorded in its unit until
+      that unit is restarted, and that path is resolved through symlinks when
+      the unit is written -- so read it off the unit rather than assuming:
+
+    systemctl show -p ExecStart --value ${units%% *}
+
+      Upgrade that path (INSTALL_DIR above), then restart:
+
+    systemctl restart ${units}
+
+EOF
+    fi
+fi
 
 case ":${PATH}:" in
     *":${INSTALL_DIR}:"*)
