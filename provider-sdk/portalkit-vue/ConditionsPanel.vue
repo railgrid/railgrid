@@ -17,6 +17,8 @@ const props = defineProps<{
   generation?: number
   observedGeneration?: number
   emptyText?: string
+  /** Hide the heading when a named parent section already supplies it. */
+  showTitle?: boolean
 }>()
 
 const reconciled = computed(() =>
@@ -43,7 +45,7 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
 
 <template>
   <div class="k-conditions">
-    <h3 class="k-conditions__title">Conditions</h3>
+    <h3 v-if="showTitle !== false" class="k-conditions__title">Conditions</h3>
     <p v-if="observedGeneration !== undefined && !reconciled" class="k-conditions__stale">
       Controller has not caught up - spec generation {{ generation }}, observed {{ observedGeneration }}.
     </p>
@@ -52,7 +54,7 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
         { key: 'type', label: 'Type' },
         { key: 'status', label: 'Status' },
         { key: 'reasonLabel', label: 'Reason' },
-        { key: 'messageLabel', label: 'Message' },
+        { key: 'messageLabel', label: 'Message', primary: true },
         { key: 'sinceLabel', label: 'Since' },
       ]"
       :rows="rows"
@@ -63,7 +65,7 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
       <template #type="{ value }"><span class="k-conditions__type">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" :tone="conditionTone(String(value))" /></template>
       <template #messageLabel="{ value }"><span class="k-conditions__message">{{ value }}</span></template>
-      <template #sinceLabel="{ value }"><span class="k-conditions__muted">{{ value }}</span></template>
+      <template #sinceLabel="{ value }"><span class="k-conditions__muted k-cell-mono">{{ value }}</span></template>
     </ResourceTable>
   </div>
 </template>

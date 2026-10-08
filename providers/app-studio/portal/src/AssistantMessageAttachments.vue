@@ -109,7 +109,7 @@ onBeforeUnmount(() => {
     <template v-for="attachment in attachments" :key="attachment.id">
       <div
         v-if="attachment.contentType.startsWith('image/')"
-        class="relative h-24 w-32 overflow-hidden rounded-md border border-border-subtle bg-surface-raised"
+        class="relative h-24 w-32 overflow-hidden rounded-lg border border-border-subtle bg-surface-raised"
         :title="`${attachment.filename} · ${attachment.contentType} · ${attachment.sizeBytes} bytes`"
         :aria-label="`${attachment.filename} image attachment`"
         :aria-busy="imagePreviews[attachment.id]?.status === 'loading'"

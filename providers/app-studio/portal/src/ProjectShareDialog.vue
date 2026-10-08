@@ -460,13 +460,13 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
             </div>
           </div>
 
-          <div v-else-if="loadState === 'error'" class="grid gap-3 rounded-md border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger" role="alert">
+          <div v-else-if="loadState === 'error'" class="grid gap-3 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-3 text-[12px] leading-5 text-danger" role="alert">
             <p>{{ loadError || 'Sharing settings could not be loaded.' }}</p>
             <button type="button" class="k-btn k-btn--text app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" style="padding: 0" @click="emit('retry')">Retry</button>
           </div>
 
           <template v-else>
-            <div v-if="loadState === 'partial'" class="grid gap-2 rounded-md border border-warning/30 bg-warning-subtle px-3 py-3 text-[12px] leading-5 text-warning" role="status">
+            <div v-if="loadState === 'partial'" class="grid gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-3 text-[12px] leading-5 text-warning" role="status">
               <p>Some sharing details could not be refreshed. The data that did load is still available.</p>
               <p v-if="loadError || membersError" class="text-[11px]">{{ loadError || membersError }}</p>
               <button type="button" class="k-btn k-btn--text app-studio-touch-target justify-self-start text-[11px] font-semibold underline underline-offset-2" style="padding: 0" @click="emit('retry')">Retry</button>
@@ -564,7 +564,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   </div>
                 </fieldset>
 
-                <p v-if="selectedMode === 'public'" class="rounded-md bg-warning-subtle px-3 py-2 text-[11px] leading-4 text-warning" role="status">
+                <p v-if="selectedMode === 'public'" class="rounded-lg bg-warning-subtle px-3 py-2 text-[11px] leading-4 text-warning" role="status">
                   Anyone with the link can use Production without signing in. Existing invitations remain saved if you switch back.
                 </p>
 
@@ -576,7 +576,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Production access only.</p>
                     </div>
                   </div>
-                  <p v-if="membersError" class="rounded-md bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="status">
+                  <p v-if="membersError" class="rounded-lg bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="status">
                     Viewer membership could not be refreshed. Existing viewers remain visible. <button type="button" class="app-studio-touch-target font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
                   </p>
                   <p v-if="modeDirty" class="text-[11px] leading-4 text-warning" role="status">Save Production access before managing people.</p>
@@ -696,7 +696,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   </div>
                 </fieldset>
 
-                <p v-if="selectedPreviewMode === 'public'" class="rounded-md bg-warning-subtle px-3 py-2 text-[11px] leading-4 text-warning" role="status">
+                <p v-if="selectedPreviewMode === 'public'" class="rounded-lg bg-warning-subtle px-3 py-2 text-[11px] leading-4 text-warning" role="status">
                   This Preview is mutable. Anyone with the link could see test data and future changes. Existing invitations remain saved if you switch back.
                 </p>
                 <p v-if="previewPending" class="text-[11px] leading-4 text-warning" role="status">Applying the new Preview access. The link keeps its previous visibility until the change lands.</p>
@@ -744,8 +744,8 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
               </div>
             </section>
 
-            <p v-if="error" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ error }}</p>
-            <p v-if="published && publication?.error && !publication?.ready" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publication.error }}</p>
+            <p v-if="error" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ error }}</p>
+            <p v-if="published && publication?.error && !publication?.ready" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publication.error }}</p>
           </template>
         </div>
 

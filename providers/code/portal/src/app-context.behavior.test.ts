@@ -154,6 +154,25 @@ function click(root: TreeNode, id: string): void {
 }
 
 describe('Code App context authority generation', () => {
+  it('retains view identity on credential renewal while fencing mutations and clearing a caller change', async () => {
+    const context = reactive<RailgridContext>({ basePath: '/ui/providers/code', tenant: 'same-tenant', token: 'token-a', user: { userId: 'user-a' }, subPath: 'connections' })
+    const root = node('root')
+    const app = renderer.createApp(App, { ctx: context })
+    app.provide(ssrContextKey, { modules: new Set<string>() })
+    const proxy = app.mount(root) as unknown as { $: { setupState: { viewGeneration: number; contextGeneration: number } } }
+    const state = proxy.$.setupState
+    const viewGeneration = state.viewGeneration
+    const mutationGeneration = state.contextGeneration
+    try {
+      context.token = 'token-b'
+      await nextTick()
+      expect(state.viewGeneration).toBe(viewGeneration)
+      expect(state.contextGeneration).toBeGreaterThan(mutationGeneration)
+      context.user = { userId: 'user-b' }
+      await nextTick()
+      expect(state.viewGeneration).toBeGreaterThan(viewGeneration)
+    } finally { app.unmount() }
+  })
   it('preserves collection authority through route and theme context replacements', async () => {
     captured.generation = undefined
     const context = ref<RailgridContext>({
@@ -259,7 +278,7 @@ describe('Code App context authority generation', () => {
         basePath: '/ui/providers/code',
         token: 'token-a',
         tenant: 'root:tenant-a',
-        user: { sub: 'user-a' },
+        user: { userId: 'user-a' },
         subPath: 'repositories',
       })
       const root = node('root')
@@ -270,7 +289,7 @@ describe('Code App context authority generation', () => {
 
       context.subPath = 'create/connection/token'
       await nextTick()
-      context.user = { sub: 'user-b' }
+      context.user = { userId: 'user-b' }
       context.token = 'token-b'
       await nextTick()
       click(root, 'complete-connection')

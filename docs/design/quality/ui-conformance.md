@@ -13,7 +13,7 @@ unexpected assets.
 
 Standalone bundles use the shared `styles.ts` handoff. The computed
 `--railgrid-ui-canonical: 1` marker preserves a host stylesheet only when its
-`--railgrid-ui-version` is compatible with the current version 31 contract. A
+`--railgrid-ui-core-version` is compatible with the current version 32 contract. A
 stale or unversioned host remains untouched while canonical CSS imported
 through Vite's `?inline` loader is appended under a versioned fallback ID.
 Vite may minify that runtime fallback; the authored stylesheet and synced

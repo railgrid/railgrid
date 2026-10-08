@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-import { createApp, nextTick, type App } from 'vue'
+import { createApp, h, nextTick, ref, type App } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import DashboardTile from './DashboardTile.vue'
 import { api } from './api'
+import type { TileContext } from './portalkit/dashboardtile'
 
 vi.mock('./api', () => ({
   api: { listInstances: vi.fn() },
@@ -89,5 +90,41 @@ describe('Infrastructure dashboard tile refresh lifecycle', () => {
 
     host.querySelector<HTMLButtonElement>('.group')?.click()
     expect(navigate).toHaveBeenCalledWith({ path: 'instances/demo%20instance' })
+  })
+
+  it('keeps a snapshot across theme and token pushes but fences same-workspace account changes', async () => {
+    const oldRead = deferred<{ items: never[]; identities: never[] }>()
+    const newRead = deferred<{ items: never[]; identities: never[] }>()
+    const context = ref<TileContext & { theme?: string }>({
+      tenant: 'cluster-a', user: { userId: 'first' }, fetch: async () => new Response('{}'), token: 'old',
+    })
+    vi.mocked(api.listInstances)
+      .mockResolvedValueOnce({ items: [], identities: [] })
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(newRead.promise)
+    app = createApp({ render: () => h(DashboardTile, { context: context.value }) })
+    app.mount(host)
+    await flush()
+    expect(api.listInstances).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('No instances yet')
+
+    context.value = { ...context.value, token: 'rotated', theme: 'dark' }
+    await flush()
+    expect(api.listInstances).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('No instances yet')
+
+    vi.advanceTimersByTime(30_000)
+    await flush()
+    expect(api.listInstances).toHaveBeenCalledTimes(2)
+    context.value = { ...context.value, user: { userId: 'second' } }
+    await flush()
+    expect(host.textContent).not.toContain('No instances yet')
+    oldRead.resolve({ items: [], identities: [] })
+    await flush()
+    expect(api.listInstances).toHaveBeenCalledTimes(3)
+    expect(host.textContent).not.toContain('No instances yet')
+    newRead.resolve({ items: [], identities: [] })
+    await flush()
+    expect(host.textContent).toContain('No instances yet')
   })
 })

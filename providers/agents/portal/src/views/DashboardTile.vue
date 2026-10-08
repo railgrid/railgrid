@@ -133,7 +133,9 @@ function authorityKey(context: RailgridContext | null): string {
     context.user?.sub,
     context.user?.userId,
     context.user?.email,
-    context.token,
+    // Host-owned fetch renews credentials without changing the caller. The
+    // legacy bearer remains an authority boundary when no host fetch exists.
+    context.fetch ? '' : context.token,
     context.basePath,
   ].map(part => part ?? '').join('\u0000')
 }

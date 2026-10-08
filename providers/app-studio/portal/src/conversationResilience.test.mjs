@@ -11,6 +11,85 @@ const state = await import(`data:text/javascript;base64,${Buffer.from(outputText
 const message = (id, content) => ({ id, projectID: 'p', role: 'assistant', content, createdAt: '2026-01-01T00:00:00Z' })
 const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', mode: 'default', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
 
+// Run the actual context watcher and fingerprint with Vue reactivity. The
+// service callbacks stand in for resets/reads so this checks the authority
+// boundary without starting unrelated preview or assistant services.
+async function contextStateHarness(t, initialContext) {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const statements = ast.statements.filter(node => {
+    if (ts.isFunctionDeclaration(node)) return node.name?.text === 'appContextFingerprint'
+    if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false
+    const call = node.expression
+    const source = call.arguments[0]
+    return call.expression.getText(ast) === 'watch' && source && ts.isArrowFunction(source) &&
+      source.body.getText(ast) === 'appContextFingerprint(props.ctx)'
+  })
+  assert.equal(statements.length, 2)
+  const { outputText } = ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  return scope.run(() => new Function('ref', 'watch', 'initialContext', `
+    const context = ref(initialContext);
+    const props = { get ctx() { return context.value; } };
+    const selected = ref({ name: 'project-a' });
+    const messages = ref([{ id: 'turn-a', content: 'Loaded conversation' }]);
+    const prompt = ref('Unsubmitted draft');
+    let resets = 0;
+    let reads = 0;
+    const invalidateProjectContextState = () => {
+      resets++;
+      selected.value = null;
+      messages.value = [];
+      prompt.value = '';
+    };
+    const isCreateModelRoute = ref(false);
+    const openLLMEditor = () => {};
+    const load = () => { reads++; };
+    const loadProviders = () => {};
+    const loadCreateReadiness = () => {};
+    const loadLLMSettings = () => {};
+    const loadImportRepositories = () => {};
+    const loadDevelopmentTemplates = () => {};
+    ${outputText}
+    return { context, selected, messages, prompt, resets: () => resets, reads: () => reads };
+  `)(ref, watch, initialContext))
+}
+
+test('host-managed token renewal preserves the loaded project, conversation and draft', async t => {
+  const context = { tenant: 'tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', user: { sub: 'alice' }, token: 'original-token', fetch: async () => Response.json({}) }
+  const h = await contextStateHarness(t, context)
+  h.context.value = { ...context, token: 'renewed-token', fetch: async () => Response.json({}) }
+
+  assert.equal(h.resets(), 0)
+  assert.equal(h.reads(), 0)
+  assert.equal(h.selected.value?.name, 'project-a')
+  assert.equal(h.messages.value[0]?.content, 'Loaded conversation')
+  assert.equal(h.prompt.value, 'Unsubmitted draft')
+})
+
+test('caller and workspace transitions still reset host-managed snapshots immediately', async t => {
+  const context = { tenant: 'tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', user: { sub: 'alice' }, token: 'token', fetch: async () => Response.json({}) }
+  for (const change of [{ user: { sub: 'bob' } }, { workspaceUUID: 'workspace-b' }, { tenant: 'tenant-b' }]) {
+    const h = await contextStateHarness(t, context)
+    h.context.value = { ...context, ...change }
+    assert.equal(h.resets(), 1)
+    assert.equal(h.reads(), 1)
+    assert.equal(h.selected.value, null)
+    assert.deepEqual(h.messages.value, [])
+    assert.equal(h.prompt.value, '')
+  }
+})
+
+test('legacy bearer-only credential changes remain an authority boundary', async t => {
+  const context = { tenant: 'tenant-a', orgUUID: 'org-a', workspaceUUID: 'workspace-a', user: { sub: 'alice' }, token: 'original-token' }
+  const h = await contextStateHarness(t, context)
+  h.context.value = { ...context, token: 'different-token' }
+  assert.equal(h.resets(), 1)
+  assert.equal(h.selected.value, null)
+})
+
 // Execute the actual App stop-state boundaries with Vue reactivity, without
 // mounting unrelated project/preview services or duplicating their logic.
 async function stopStateHarness(t) {

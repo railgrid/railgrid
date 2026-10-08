@@ -910,14 +910,14 @@ onUnmounted(() => {
                 <select id="repository-managing-connection" v-model="selectedConn" class="k-input" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
                   <option v-for="c in connectionChoices" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
                 </select>
-                <button class="k-btn k-btn--primary" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection"><ArrowLeftRight :size="14" aria-hidden="true" />{{ changingConn ? 'Changing…' : 'Change' }}</button>
+                <button class="k-btn k-btn--ghost" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection"><ArrowLeftRight :size="14" aria-hidden="true" />{{ changingConn ? 'Changing…' : 'Change' }}</button>
               </div>
               <span v-if="connectionsLoading && !connectionsLoaded" class="muted" role="status" aria-live="polite">Loading connections…</span>
               <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
                 <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span><button class="k-btn k-btn--ghost" type="button" @click="loadConnections()">Retry</button>
               </div>
               <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
-              <p v-if="ownerWillChange" class="conn-warn"><AlertTriangle :size="15" class="warn-ic" /> Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> — this re-targets the repo to a different account and may create a new repo there.</p>
+              <p v-if="ownerWillChange" class="conn-warn"><AlertTriangle :size="15" class="warn-ic" aria-hidden="true" /> Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> — this re-targets the repo to a different account and may create a new repo there.</p>
               <p v-else-if="selectedConn !== repo.connectionRef" class="muted">Same owner — only the managing credential changes.</p>
               <span v-if="connError" class="error" role="alert">{{ connError }}</span>
               </div>
@@ -938,11 +938,11 @@ onUnmounted(() => {
           <div v-if="accessExpanded" id="repository-access-content" class="grid-2">
           <div v-if="repo" class="repo-domain-block">
             <div class="panel-head"><h3 class="panel-title">Deploy keys</h3><span v-if="keysLoaded" class="muted">{{ keyRows.length }}</span></div>
-            <form class="form" @submit.prevent="addKey">
+            <form class="form" :aria-busy="keySubmitting" @submit.prevent="addKey">
               <label class="field"><span class="field-label">Title</span><input v-model="keyTitle" class="k-input" :disabled="repositoryDeleting" placeholder="ci-deploy" autocomplete="off" /></label>
-              <label class="field"><span class="field-label">Public key (leave empty to generate)</span><textarea v-model="keyPublic" class="k-input" :disabled="repositoryDeleting" rows="2" placeholder="ssh-ed25519 AAAA…" /></label>
-              <label class="field field-check k-checkbox-hit"><input v-model="keyReadOnly" type="checkbox" :disabled="repositoryDeleting" /> read-only</label>
-              <div class="code-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
+              <label class="field"><span id="repository-deploy-key-label" class="field-label">Public key (optional)</span><textarea v-model="keyPublic" class="k-input" :disabled="repositoryDeleting" rows="2" aria-labelledby="repository-deploy-key-label" aria-describedby="repository-deploy-key-help" placeholder="ssh-ed25519 AAAA…" /><span id="repository-deploy-key-help" class="muted">Leave empty to generate a key.</span></label>
+              <label class="field field-check k-checkbox-hit"><input v-model="keyReadOnly" class="k-checkbox" type="checkbox" :disabled="repositoryDeleting" /> Read-only</label>
+              <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
               <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
             </form>
             <p v-if="keyDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ keyDeleteError }}</p>
@@ -955,10 +955,10 @@ onUnmounted(() => {
           </div>
           <div v-if="repo" class="repo-domain-block">
             <div class="panel-head"><h3 class="panel-title">Collaborators</h3><span v-if="collabsLoaded" class="muted">{{ collabRows.length }}</span></div>
-            <form class="form" @submit.prevent="addCollab">
+            <form class="form" :aria-busy="collabSubmitting" @submit.prevent="addCollab">
               <label class="field"><span class="field-label">Username</span><input v-model="collabUser" class="k-input" :disabled="repositoryDeleting" placeholder="octocat" autocomplete="off" /></label>
               <label class="field"><span class="field-label">Permission</span><select v-model="collabPerm" class="k-input" :disabled="repositoryDeleting"><option value="pull">pull</option><option value="push">push</option><option value="admin">admin</option></select></label>
-              <div class="code-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
+              <div class="code-form-actions"><button class="k-btn k-btn--ghost" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
             </form>
             <p v-if="collabDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ collabDeleteError }}</p>
             <ResourceTable aria-label="Repository collaborators" :columns="collabColumns" :rows="collabRows" row-key="name" :loaded="collabsLoaded" :loading="collabsLoading" :refresh-mode="collabRefreshMode" :error="collabsError" :stale="collabsLoaded && !!collabsError" retryable searchable search-placeholder="Search collaborators…" :filters="[{ key: 'permission', label: 'Permission' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No collaborators." :interactive="false" @retry="loadCollaborators">
@@ -988,9 +988,9 @@ onUnmounted(() => {
               <template #name="{ row }"><strong><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" class="k-table-resource-link" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
               <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
               <template #visibility="{ value }"><span class="muted">{{ value === 'unknown' ? '—' : value }}</span></template>
-              <template #versionCount="{ value }"><span class="muted">{{ value || 0 }}</span></template>
+              <template #versionCount="{ value }"><span class="muted mono tabular-nums">{{ value || 0 }}</span></template>
               <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
-              <template #url="{ row }"><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">View <ExternalLink :size="12" aria-hidden="true" /></a></template>
+              <template #url="{ row }"><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" :href="String(row.htmlURL)" :aria-label="`View package ${String(row.name)} on the package host`" target="_blank" rel="noopener">View <ExternalLink :size="12" aria-hidden="true" /></a></template>
             </ResourceTable>
             <p class="muted">Packages appear automatically when artifacts are pushed (e.g. <code>docker push</code>, <code>npm publish</code>).</p>
           </div>

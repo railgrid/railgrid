@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import test from 'node:test'
 import ts from '../../portal/node_modules/typescript/lib/typescript.js'
-import { computed, effectScope, nextTick, reactive, ref, watch } from '../../portal/node_modules/vue/index.mjs'
+import { computed, createRenderer, defineComponent, effectScope, h, KeepAlive, nextTick, onBeforeUnmount, onDeactivated, reactive, ref, watch } from '../../portal/node_modules/vue/index.mjs'
 
 const component = readFileSync(new URL('./ActionMenu.vue', import.meta.url), 'utf8')
 const layoutSelector = readFileSync(new URL('./LayoutSelector.vue', import.meta.url), 'utf8')
@@ -337,4 +337,81 @@ test('standalone style recovery executes the stale/current/newer host matrix', (
   newerHost.ensureRailgridUIStyles()
   assert.equal(newerHost.document.head.children.length, 0)
   assert.equal(newerHost.document.getElementById('k-railgrid-ui').textContent, 'future-host-css')
+})
+
+test('cached popup owners close their production state on KeepAlive deactivation', async () => {
+  const node = type => ({ type, children: [], parent: null })
+  const renderer = createRenderer({
+    createElement: node, createText: node, createComment: node,
+    setText() {}, setElementText() {}, patchProp() {},
+    parentNode: item => item.parent,
+    nextSibling: item => item.parent?.children[item.parent.children.indexOf(item) + 1] ?? null,
+    insert(item, parent, anchor) {
+      if (item.parent) item.parent.children.splice(item.parent.children.indexOf(item), 1)
+      item.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, item)
+    },
+    remove(item) {
+      if (item.parent) item.parent.children.splice(item.parent.children.indexOf(item), 1)
+      item.parent = null
+    },
+  })
+  const popoverSource = readFileSync(new URL('./useAnchoredPopover.ts', import.meta.url), 'utf8')
+  const popoverParsed = ts.createSourceFile('popover.ts', popoverSource, ts.ScriptTarget.Latest, true)
+  const popoverFunction = popoverParsed.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'useAnchoredPopover')
+  const popoverCode = ts.transpileModule(popoverFunction.getText(popoverParsed).replace(/^export /, ''), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const popoverSetup = () => runInNewContext(`${popoverCode}\nuseAnchoredPopover()`, { ref, watch, nextTick, onBeforeUnmount, onDeactivated })
+  assert.match(component, /useAnchoredPopover\(/, 'ActionMenu delegates popup geometry and lifecycle to the tested owner')
+  const fixtures = [{ name: 'ActionMenu / anchored popover', setup: popoverSetup }]
+  for (const [name, path, closeName] of [
+    ['FormSelect', './FormSelect.vue', 'closeSelect'],
+    ['ResourceTableFilter', './ResourceTableFilter.vue', 'closeFilter'],
+    ['ModelIDSelector', '../agentkit-vue/ModelIDSelector.vue', 'closeSelector'],
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8')
+    assert.match(source, /<Teleport[^>]*to="body"/)
+    const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+    const parsed = ts.createSourceFile(`${name}.ts`, script, ts.ScriptTarget.Latest, true)
+    const declarations = parsed.statements.filter(statement =>
+      (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => ['open', 'query'].includes(declaration.name.getText(parsed))))
+      || (ts.isFunctionDeclaration(statement) && statement.name?.text === closeName)
+      || statement.getText(parsed).startsWith('onDeactivated('),
+    )
+    const code = ts.transpileModule(declarations.map(statement => statement.getText(parsed)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+    fixtures.push({ name, setup: () => runInNewContext(`${code}\n({ open })`, { ref, nextTick, onDeactivated }) })
+  }
+  for (const fixture of fixtures) {
+    const active = ref(true)
+    let state
+    const Popup = defineComponent({ name: fixture.name, setup() { state = fixture.setup(); return () => h('div') } })
+    const Other = defineComponent({ name: 'Other', setup: () => () => h('div') })
+    const Host = defineComponent({ setup: () => () => h(KeepAlive, null, { default: () => active.value ? h(Popup) : h(Other) }) })
+    const app = renderer.createApp(Host)
+    app.mount(node('root'))
+    try {
+      state.open.value = true
+      await nextTick()
+      assert.equal(state.open.value, true, fixture.name)
+      active.value = false
+      await nextTick()
+      await nextTick()
+      assert.equal(state.open.value, false, `${fixture.name} cannot leave a teleported panel open on another route`)
+      active.value = true
+      await nextTick()
+      assert.equal(state.open.value, false, `${fixture.name} returns with its popup closed`)
+    } finally { app.unmount() }
+  }
+})
+
+test('model search popup Tab returns to its source anchor before native navigation', () => {
+  const source = readFileSync(new URL('../agentkit-vue/ModelIDSelector.vue', import.meta.url), 'utf8')
+  const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const parsed = ts.createSourceFile('ModelIDSelector.ts', script, ts.ScriptTarget.Latest, true)
+  const handler = parsed.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'onSearchKeydown')
+  const code = ts.transpileModule(handler.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const events = []
+  const keydown = runInNewContext(`${code}\nonSearchKeydown`, { closeSelector: () => events.push('close'), trigger: { value: { focus: () => events.push('focus') } } })
+  keydown({ key: 'Tab', preventDefault: () => events.push('blocked') })
+  assert.deepEqual(events, ['close', 'focus'])
 })

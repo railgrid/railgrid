@@ -35,6 +35,7 @@ export class KueryDashboardTile extends HTMLElement {
   private _edges: string[] = []
   private _views: SavedView[] = []
   private _loading = true
+  private _loaded = false
   private _error: string | null = null
   private _contextGeneration = 0
   private _connected = false
@@ -49,6 +50,7 @@ export class KueryDashboardTile extends HTMLElement {
       this._views = []
       this._error = null
       this._loading = true
+      this._loaded = false
       if (this._connected) this._render()
     }
     this._poller?.refresh()
@@ -88,6 +90,7 @@ export class KueryDashboardTile extends HTMLElement {
       this._views = []
       this._error = null
       this._loading = false
+      this._loaded = true
       this._render()
       return
     }
@@ -97,11 +100,15 @@ export class KueryDashboardTile extends HTMLElement {
       this._edges = edges
       this._views = views
       this._error = null
+      this._loaded = true
     } catch (e) {
       if (!isCurrent()) return
-      this._edges = []
-      this._views = []
-      this._error = isBenignTileError(e) ? null : tileErrorText(e)
+      if (isBenignTileError(e)) {
+        this._edges = []
+        this._views = []
+        this._error = null
+        this._loaded = true
+      } else this._error = tileErrorText(e)
     } finally {
       if (!isCurrent()) return
       this._loading = false
@@ -114,12 +121,12 @@ export class KueryDashboardTile extends HTMLElement {
   }
 
   private _render(): void {
-    if (this._loading) {
+    if (this._loading && !this._loaded) {
       this._commit(`<div class="${dashboardTileSemanticClass.message}" role="status" aria-live="polite" aria-atomic="true">Loading edges…</div>`)
       return
     }
-    if (this._error) {
-      this._commit(`<div class="${dashboardTileSemanticClass.error}" role="alert">Failed to load: ${escapeHTML(this._error)}</div>`)
+    if (this._error && !this._loaded) {
+      if (this._commit(`<div class="${dashboardTileSemanticClass.error}" role="alert">Failed to load: ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></div>`)) this._bindRetry()
       return
     }
 
@@ -153,14 +160,20 @@ export class KueryDashboardTile extends HTMLElement {
         : `<p class="${dashboardTileSemanticClass.empty}">No edges to query yet — enroll one in Edges first.</p>`
 
     const liveText = `${this._views.length} saved ${this._views.length === 1 ? 'view' : 'views'} over ${this._edges.length} engaged ${this._edges.length === 1 ? 'edge' : 'edges'}.`
-    const html = `<span class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true">${liveText}</span><div class="${dashboardTileSemanticClass.root}"><div class="${dashboardTileSemanticClass.stats}">${stats}</div>${body}</div>`
+    const error = this._error ? `<p class="${dashboardTileSemanticClass.error}" role="alert">Showing the last successful result. ${escapeHTML(this._error)} <button class="k-dashboard-action" type="button" data-retry>Retry</button></p>` : ''
+    const html = `<span class="kuery-tile-live" role="status" aria-live="polite" aria-atomic="true">${liveText}</span><div class="${dashboardTileSemanticClass.root}"><div class="${dashboardTileSemanticClass.stats}">${stats}</div>${error}${body}</div>`
     if (!this._commit(html)) return
+    this._bindRetry()
 
     for (const el of Array.from(this.querySelectorAll<HTMLButtonElement>('button[data-view]'))) {
       // The shell is the only destination this provider has; opening it is the
       // useful action.
       el.addEventListener('click', () => this._navigate(''))
     }
+  }
+
+  private _bindRetry(): void {
+    this.querySelector<HTMLButtonElement>('[data-retry]')?.addEventListener('click', () => this._poller?.refresh())
   }
 
   private _commit(html: string): boolean {

@@ -13,16 +13,16 @@ const deferred = () => {
 }
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve() }
 
-function harness(client) {
+function harness(client, render = false) {
   const exports = {}
   vm.runInNewContext(javascript, {
-    exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } },
+    exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } dispatchEvent() { return true } },
     require: name => name.endsWith('/kube') ? { createKubeClient: options => client(options) }
-      : name.endsWith('/tenant') ? { providerFetch: ctx => ctx.fetch } : { ic: () => '' },
-    Set, Map, Date,
+      : name.endsWith('/tenant') ? { providerFetch: ctx => ctx.fetch } : name.endsWith('/toast') ? { toast: () => {} } : { ic: () => '' },
+    Set, Map, Date, CustomEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init) } },
   })
   const element = new exports.QuickstartElement()
-  element._render = () => {}
+  if (!render) element._render = () => {}
   element.connectedCallback()
   return element
 }
@@ -122,4 +122,103 @@ test('removing the element fences outstanding reads and clears pending actions',
   await flush()
   assert.equal(element._items.length, 0)
   assert.equal(element._greetPending.size, 0)
+})
+
+test('creation is route owned and keeps a draft through cancellation, return, and a failed save', async () => {
+  const element = harness(() => ({ list: async () => ({ items: [] }), create: async () => { throw new Error('offline') } }), true)
+  element.railgridContext = { ...context('tenant'), subPath: '' }
+  await flush()
+  assert.match(element.innerHTML, /Create your first greeting/)
+  assert.doesNotMatch(element.innerHTML, /data-form="create"/)
+  element.railgridContext = { ...context('tenant'), subPath: 'create/greeting' }
+  assert.match(element.innerHTML, /data-form="create"/)
+  assert.doesNotMatch(element.innerHTML, /quickstart-list/)
+  element._draftName = 'kept-name'
+  element._draftMessage = 'kept message'
+  element.railgridContext = { ...context('tenant'), subPath: '' }
+  element.railgridContext = { ...context('tenant'), subPath: 'create/greeting' }
+  assert.match(element.innerHTML, /value="kept-name"/)
+  await element._create('kept-name', 'kept message')
+  assert.equal(element._draftName, 'kept-name')
+  assert.equal(element._draftMessage, 'kept message')
+  assert.match(element.innerHTML, /role="alert">offline/)
+})
+
+test('successful creation returns to the collection and clears the submitted draft', async () => {
+  const element = harness(() => ({ list: async () => ({ items: [{ metadata: { name: 'created' } }] }), create: async () => ({}) }))
+  element.railgridContext = { ...context('tenant'), subPath: 'create/greeting' }
+  await flush()
+  const routes = []
+  element._navigate = path => routes.push(path)
+  element._draftName = 'created'
+  element._draftMessage = 'a message'
+  await element._create('created', 'a message')
+  assert.equal(element._draftName, '')
+  assert.equal(element._draftMessage, '')
+  assert.deepEqual(routes, [''])
+})
+
+test('real host userId changes invalidate greeting drafts and snapshots', async () => {
+  const element = harness(() => ({ list: async () => ({ items: [] }) }))
+  element.railgridContext = { ...context('tenant'), user: { userId: 'first', email: 'same@example.test' } }
+  await flush()
+  element._draftName = 'old draft'
+  element.railgridContext = { ...context('tenant'), user: { userId: 'second', email: 'same@example.test' } }
+  assert.equal(element._draftName, '')
+  assert.equal(element._loaded, false)
+})
+
+const tileSource = await readFile(new URL('./tile.ts', import.meta.url), 'utf8')
+const tileJavascript = ts.transpileModule(tileSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
+function tileHarness(client) {
+  const exports = {}
+  vm.runInNewContext(tileJavascript, {
+    exports, HTMLElement: class { querySelector() { return null } querySelectorAll() { return [] } },
+    require: name => name.endsWith('/kube') ? { createKubeClient: options => client(options) }
+      : name.endsWith('/tenant') ? { providerFetch: ctx => ctx?.fetch }
+      : name.endsWith('/element') ? { escapeHTML: value => value }
+      : {
+        createTilePoller: () => ({ start() {}, stop() {}, refresh() {} }),
+        dashboardTileSemanticClass: new Proxy({}, { get: (_object, property) => String(property) }),
+        hasWorkspaceContext: ctx => !!ctx?.tenant, isBenignTileError: () => false,
+        mostRecent: items => items, tileErrorText: error => error.message,
+      },
+  })
+  const element = new exports.QuickstartDashboardTileElement()
+  element.connectedCallback()
+  return element
+}
+
+test('dashboard transient failure retains the successful snapshot with retry and recovers', async () => {
+  let fail = false
+  const element = tileHarness(() => ({ listAll: async () => { if (fail) throw new Error('offline'); return [{ metadata: { name: 'kept' } }] } }))
+  element.railgridContext = { tenant: 'tenant', fetch: async () => ({}) }
+  await element._load()
+  fail = true
+  await element._load()
+  assert.equal(element._items[0].metadata.name, 'kept')
+  assert.match(element.innerHTML, /Showing the last successful result/)
+  assert.match(element.innerHTML, /data-retry/)
+  fail = false
+  await element._load()
+  assert.equal(element._error, '')
+})
+
+test('dashboard late responses cannot cross a workspace, user, or disconnected boundary', async () => {
+  const pending = deferred()
+  const element = tileHarness(() => ({ listAll: () => pending.promise }))
+  element.railgridContext = { tenant: 'tenant', user: { userId: 'old' }, fetch: async () => ({}) }
+  const read = element._load()
+  element.railgridContext = { tenant: 'tenant', user: { userId: 'new' }, fetch: async () => ({}) }
+  pending.resolve([{ metadata: { name: 'old-user-result' } }])
+  await read
+  assert.equal(element._items.length, 0)
+  const later = deferred()
+  const removed = tileHarness(() => ({ listAll: () => later.promise }))
+  removed.railgridContext = { tenant: 'tenant', fetch: async () => ({}) }
+  const removedRead = removed._load()
+  removed.disconnectedCallback()
+  later.resolve([{ metadata: { name: 'late' } }])
+  await removedRead
+  assert.equal(removed._items.length, 0)
 })

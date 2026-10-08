@@ -13,39 +13,13 @@
 
 railgrid-provider-quickstart {
   display: block;
-  container-name: quickstart-provider;
-  container-type: inline-size;
-}
-
-railgrid-provider-quickstart .quickstart-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr);
-  margin-inline: auto;
-  max-width: 64rem;
   min-width: 0;
-  width: 100%;
 }
 
-/* Two panels stay readable at roughly 23rem each, including their inset
- * padding and the grid gap. Container queries keep this decision tied to the
- * provider's available column rather than to the browser viewport. */
-@supports (container-type: inline-size) {
-  @container quickstart-provider (min-width: 46rem) {
-    railgrid-provider-quickstart .quickstart-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-}
-
-/* Keep the same narrow-first layout in browsers without container queries. */
-@supports not (container-type: inline-size) {
-  @media (min-width: 46rem) {
-    railgrid-provider-quickstart .quickstart-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-}
+railgrid-provider-quickstart .quickstart-page { display: grid; gap: 16px; min-width: 0; width: 100%; }
+railgrid-provider-quickstart .quickstart-page-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+railgrid-provider-quickstart .quickstart-page-head > div { min-width: 0; }
+railgrid-provider-quickstart .quickstart-page-title { margin: 0 0 4px; color: var(--color-text-primary); font-family: var(--font-display, var(--font-sans)); font-stretch: 125%; font-size: 18px; font-weight: 600; line-height: 1.25; }
 
 railgrid-provider-quickstart .quickstart-panel {
   min-width: 0;
@@ -74,12 +48,6 @@ railgrid-provider-quickstart .quickstart-panel-title {
   letter-spacing: 0.04em;
   color: var(--color-text-secondary, currentColor);
   text-transform: uppercase;
-}
-
-railgrid-provider-quickstart .quickstart-form {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 8px;
 }
 
 railgrid-provider-quickstart .quickstart-field {
@@ -117,6 +85,7 @@ railgrid-provider-quickstart .quickstart-row {
 railgrid-provider-quickstart .quickstart-row-name {
   flex: 0 0 auto;
   font-weight: 600;
+  font-family: var(--font-mono);
 }
 
 railgrid-provider-quickstart .quickstart-row-message {
@@ -132,6 +101,8 @@ railgrid-provider-quickstart .quickstart-row-observed {
   flex: 0 0 auto;
   font-size: 11px;
   color: var(--color-text-muted, inherit);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 railgrid-provider-quickstart .quickstart-empty {
@@ -147,7 +118,18 @@ railgrid-provider-quickstart .quickstart-empty {
 railgrid-provider-quickstart .quickstart-error {
   margin: 8px 0 0;
   font-size: 11px;
-  color: var(--color-text-error);
+  color: var(--color-danger);
+}
+
+railgrid-provider-quickstart .quickstart-read-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 railgrid-provider-quickstart .quickstart-greeted {

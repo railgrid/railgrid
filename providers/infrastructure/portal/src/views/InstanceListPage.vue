@@ -4,6 +4,8 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
 import { api, isContextChangedError } from '../api'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import { Package } from 'lucide-vue-next'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { toast } from '../portalkit/toast'
@@ -42,6 +44,12 @@ const page = ref(1)
 const pageSize = ref(10)
 const query = ref('')
 const filterValues = ref<TableFilterState>({ template: '', status: '' })
+const firstRun = computed(() => loaded.value && items.value.length === 0 && !hasActiveFilters(query.value, filterValues.value))
+const firstRunSteps = [
+  { label: 'Choose a template', description: 'Browse the infrastructure templates available in this workspace.' },
+  { label: 'Configure your instance', description: 'Name the instance and set the template inputs.' },
+  { label: 'Follow provisioning', description: 'The instance page shows progress and the resources it creates.' },
+]
 const cursor = ref<string | null>(null)
 const pageInfo = ref<{ hasNext: boolean; nextCursor: string | null } | null>(null)
 // Client mode becomes a ready local authority after a complete cursor walk (or
@@ -434,7 +442,7 @@ onUnmounted(() => {
       </div>
       <div class="instance-list-actions">
         <span class="refresh-cadence">auto-refresh {{ refreshCadence() / 1000 }}s</span>
-        <button type="button" class="k-btn k-btn--primary" @click="emit('navigate', 'catalog')">Browse templates</button>
+        <button v-if="!firstRun" type="button" class="k-btn k-btn--primary" @click="emit('navigate', 'catalog')">Browse templates</button>
       </div>
     </header>
 
@@ -443,7 +451,26 @@ onUnmounted(() => {
       <button type="button" class="k-btn k-btn--ghost" @click="deleteError = null">Dismiss</button>
     </div>
 
+    <template v-if="firstRun">
+      <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
+      <div v-if="error" class="stale-banner" role="alert">
+        <span>Showing the last successful result. {{ error }}</span>
+        <button type="button" class="k-btn k-btn--ghost" @click="load('foreground')">Retry</button>
+      </div>
+      <FirstRunGuide
+        title="Provision your first instance"
+        description="Infrastructure templates create and manage resources for this workspace. Choose a template to get started."
+        primary-label="Browse templates"
+        :steps="firstRunSteps"
+        journey-label="Infrastructure provisioning"
+        @primary="emit('navigate', 'catalog')"
+      >
+        <template #icon><Package :size="24" :stroke-width="1.5" aria-hidden="true" /></template>
+      </FirstRunGuide>
+    </template>
+
     <ResourceTable
+      v-else
       :columns="columns"
       :rows="rows"
       aria-label="Infrastructure instances"
@@ -507,7 +534,7 @@ onUnmounted(() => {
       </template>
     </ResourceTable>
 
-    <div v-if="loaded && items.length === 0" class="empty-followup">
+    <div v-if="loaded && !firstRun && items.length === 0" class="empty-followup">
       <span>Each workspace has its own instances.</span>
       <button type="button" class="k-btn k-btn--ghost" @click="emit('navigate', 'catalog')">Browse templates</button>
     </div>

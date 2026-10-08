@@ -19,12 +19,14 @@ railgrid-provider-kuery .kuery-shell {
   display: grid;
   gap: 12px;
   width: 100%;
+  min-width: 0;
 }
 
 railgrid-provider-kuery .kuery-collection-surfaces {
   display: grid;
   gap: 12px;
   width: 100%;
+  min-width: 0;
 }
 
 railgrid-provider-kuery .kuery-topbar {
@@ -36,6 +38,7 @@ railgrid-provider-kuery .kuery-topbar {
 }
 
 railgrid-provider-kuery .kuery-panel {
+  min-width: 0;
   padding: 14px 16px;
   color: var(--color-text-primary, inherit);
 }
@@ -114,8 +117,13 @@ railgrid-provider-kuery .kuery-inventory-filters {
 }
 
 railgrid-provider-kuery .kuery-inventory-filters > label {
+  display: grid;
+  gap: 4px;
   flex: 1 1 200px;
   min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 railgrid-provider-kuery .kuery-inventory-filters .kuery-control {
@@ -142,6 +150,9 @@ railgrid-provider-kuery .kuery-read-state {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 10px 12px;
   border: 1px solid var(--color-border-subtle, transparent);
   border-radius: 6px;
@@ -172,7 +183,6 @@ railgrid-provider-kuery .kuery-warning {
 
 railgrid-provider-kuery .kuery-inventory-table {
   width: 100%;
-  max-width: 96rem;
 }
 
 railgrid-provider-kuery .name {
@@ -374,7 +384,7 @@ railgrid-provider-kuery .kuery-panel:fullscreen .kuery-graph {
 
 railgrid-provider-kuery .pg-split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
   align-items: stretch;
 }
@@ -527,6 +537,8 @@ railgrid-provider-kuery .legend-item {
   gap: 5px;
   font-size: 11px;
   color: var(--color-text-secondary, inherit);
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 railgrid-provider-kuery .legend-item dt {

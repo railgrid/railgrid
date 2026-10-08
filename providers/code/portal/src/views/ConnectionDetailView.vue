@@ -329,8 +329,8 @@ onUnmounted(() => {
                 <dl class="props connection-detail__facts">
                   <dt>Provider</dt><dd>{{ conn.provider }}</dd>
                   <dt>Type</dt><dd>{{ conn.type }}</dd>
-                  <dt>Owner</dt><dd>{{ conn.owner }}</dd>
-                  <dt v-if="conn.login">Login</dt><dd v-if="conn.login">{{ conn.login }}</dd>
+                  <dt>Owner</dt><dd class="mono">{{ conn.owner }}</dd>
+                  <dt v-if="conn.login">Login</dt><dd v-if="conn.login" class="mono">{{ conn.login }}</dd>
                   <dt v-if="conn.scopes.length">Scopes</dt>
                   <dd v-if="conn.scopes.length">
                     <code v-for="scope in conn.scopes" :key="scope" class="chip">{{ scope }}</code>

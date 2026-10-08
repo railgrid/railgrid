@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
 import { contextGenerationKey } from '../context'
@@ -313,7 +313,7 @@ async function submit(): Promise<void> {
   } catch (e) {
     if (isCurrentMutation(generation, expectedContext)) formError.value = errMessage(e)
   } finally {
-    if (isCurrentMutation(generation, expectedContext)) submitting.value = false
+    if (mounted && generation === mutationGeneration) submitting.value = false
   }
 }
 
@@ -354,6 +354,12 @@ onUnmounted(() => {
 // Register the listener after setup so a popup callback cannot race a route
 // change before the component has mounted.
 onMounted(() => window.addEventListener('message', onMessage))
+
+watch(contextGeneration, () => {
+  if (!mounted) return
+  void loadConnections()
+  if (isGitHub.value) void loadOAuthConfig()
+})
 </script>
 
 <template>

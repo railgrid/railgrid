@@ -12,8 +12,8 @@ it('Code collections stay cached across routed create and detail surfaces', () =
   expect(app).toMatch(/<KeepAlive :max="1">[\s\S]*<RepositoriesView/)
   expect(app).toMatch(/!route\.create && !route\.connection/)
   expect(app).toMatch(/!route\.create && !route\.repo/)
-  expect(app).toMatch(/:key="`\$\{contextGeneration\}:connections`"/)
-  expect(app).toMatch(/:key="`\$\{contextGeneration\}:repositories`"/)
+  expect(app).toMatch(/:key="`\$\{viewGeneration\}:connections`"/)
+  expect(app).toMatch(/:key="`\$\{viewGeneration\}:repositories`"/)
 })
 
 it('GitHub OAuth configuration failures settle and expose retry actions', () => {
@@ -34,7 +34,7 @@ it('create routes fence every async continuation on the synchronous authority ge
     expect(source).toMatch(/function isCurrentMutation\(/)
     expect(source).toMatch(/if \(!isCurrentMutation\(generation, expectedContext\)\) return/)
     expect(source).toMatch(/if \(isCurrentMutation\(generation, expectedContext\)\) formError\.value/)
-    expect(source).toMatch(/if \(isCurrentMutation\(generation, expectedContext\)\) submitting\.value = false/)
+    expect(source).toMatch(/if \(mounted && generation === mutationGeneration\) submitting\.value = false/)
   }
 })
 

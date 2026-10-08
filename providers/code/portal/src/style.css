@@ -43,6 +43,7 @@ railgrid-provider-code .page-head {
   justify-content: space-between;
   gap: 16px;
 }
+railgrid-provider-code .page-head > div { min-width: 0; }
 railgrid-provider-code .page-title {
   margin: 0 0 4px;
   font-size: 15px;
@@ -540,6 +541,7 @@ railgrid-provider-code .form {
 }
 railgrid-provider-code .field {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 4px;
 }
@@ -565,6 +567,7 @@ railgrid-provider-code .muted {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
+railgrid-provider-code .mono { font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace); }
 railgrid-provider-code .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
@@ -581,6 +584,8 @@ railgrid-provider-code .read-error {
 }
 railgrid-provider-code .read-error > span {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
   line-height: 1.45;
 }
 railgrid-provider-code .mutation-error {
@@ -625,4 +630,12 @@ railgrid-provider-code code {
   border-radius: 4px;
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
   font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  railgrid-provider-code .page-head { flex-direction: column; align-items: stretch; }
+  railgrid-provider-code .page-head > button { align-self: flex-start; }
+  railgrid-provider-code .read-error { align-items: flex-start; flex-direction: column; }
+  railgrid-provider-code .conn-edit { align-items: stretch; flex-direction: column; }
+  railgrid-provider-code .conn-edit > button { align-self: flex-start; }
 }

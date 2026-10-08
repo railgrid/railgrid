@@ -8,7 +8,7 @@ export interface KueryRequestContextInput {
   orgUUID?: string | null
   workspaceUUID?: string | null
   basePath?: string
-  user?: { email?: string; sub?: string } | null
+  user?: { email?: string; sub?: string; userId?: string } | null
 }
 
 /** Immutable request inputs captured before an async Kuery read starts. */
@@ -62,9 +62,10 @@ export function createKueryRequestContext(context: KueryRequestContextInput | nu
   const orgUUID = present(context?.orgUUID)
   const workspaceUUID = present(context?.workspaceUUID)
   const cluster = present(context?.tenant) || ''
-  const user = present(context?.user?.email) || present(context?.user?.sub) || ''
-  const scopeIdentity = JSON.stringify([basePath, orgUUID, workspaceUUID, cluster])
-  const identity = JSON.stringify([basePath, token, orgUUID, workspaceUUID, cluster])
+  const user = present(context?.user?.email) || present(context?.user?.sub) || present(context?.user?.userId) || ''
+  const userIdentity = present(context?.user?.userId) || present(context?.user?.sub) || present(context?.user?.email) || ''
+  const scopeIdentity = JSON.stringify([basePath, orgUUID, workspaceUUID, cluster, userIdentity])
+  const identity = JSON.stringify([basePath, token, orgUUID, workspaceUUID, cluster, userIdentity])
   const headers: Record<string, string> = {}
   if (orgUUID) headers['X-Railgrid-Org'] = orgUUID
   if (workspaceUUID) headers['X-Railgrid-Workspace'] = workspaceUUID

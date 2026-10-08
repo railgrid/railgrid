@@ -120,11 +120,11 @@ onBeforeUnmount(() => controller?.abort())
       </div>
       <form class="kuery-toolbar kuery-inventory-filters" aria-label="Filter fleet inventory" @submit.prevent="applyFacetFilters">
         <label>
-          <span class="kuery-sr-only">Exact Kind</span>
+          <span>Kind</span>
           <input id="inventory-kind-filter" v-model="kindInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Kind (exact, e.g. Deployment)">
         </label>
         <label>
-          <span class="kuery-sr-only">Exact Namespace</span>
+          <span>Namespace</span>
           <input id="inventory-namespace-filter" v-model="namespaceInput" class="k-input kuery-control" type="text" autocomplete="off" placeholder="Namespace (exact)">
         </label>
         <button class="k-btn k-btn--primary" type="submit">Apply filters</button>
@@ -132,7 +132,7 @@ onBeforeUnmount(() => controller?.abort())
       <ResourceTable
         class="kuery-inventory-table"
         :columns="columns" :rows="rows" row-key="_key" aria-label="Fleet inventory" :loaded="loaded" :loading="loading"
-        refresh-mode="background" :error="error" :stale="loaded && (!!error || notEngaged)" retryable searchable search-placeholder="Exact resource name…"
+        refresh-mode="foreground" :error="error" :stale="loaded && (!!error || notEngaged)" retryable searchable search-placeholder="Exact resource name…"
         :filters="filters" pagination-mode="server" :page="pager.page" :page-size="pager.pageSize" :page-size-options="[25, 50, 100]"
         :query="pager.query" :filter-values="pager.filters" :cursor="pager.cursor" :page-info="pager.pageInfo"
         empty-text="No synced objects. Connect an edge, then retry." combined-filter-empty-text="No objects match the exact search and selected filters."

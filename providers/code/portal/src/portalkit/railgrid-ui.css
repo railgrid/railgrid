@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 31;
+  --railgrid-ui-core-version: 32;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -228,7 +228,7 @@ html.light .k-card {
   flex: none;
   max-width: 50%;
   overflow: hidden;
-  color: color-mix(in srgb, var(--color-text-muted, #8587a1) 70%, transparent);
+  color: var(--color-text-muted, #8587a1);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -374,7 +374,7 @@ html.light .k-card {
   outline-offset: 2px;
 }
 .k-back-action:active { transform: none; }
-.k-back-action svg { flex: none; }
+.k-back-action svg { flex: none; width: 14px; height: 14px; }
 /* The back arrow follows the document direction while retaining one Lucide
  * icon source in ResourceBackLink. */
 .k-back-action:dir(rtl) svg { transform: scaleX(-1); }
@@ -431,8 +431,11 @@ html.light .k-card {
  * surface, and a right-aligned Cancel → primary footer. Providers own field
  * content and may opt into the wide surface for dense provisioning tasks. */
 .k-create-page {
+  display: block;
   width: 100%;
   min-width: 0;
+  font-size: 14px;
+  line-height: 21px;
 }
 .k-create-header {
   margin-block: 14px 22px;
@@ -440,9 +443,15 @@ html.light .k-card {
 .k-create-title {
   margin: 0;
   color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-display, 'Archivo Variable', sans-serif);
+  font-stretch: 125%;
   font-size: 18px;
   font-weight: 600;
   line-height: 1.25;
+}
+.k-create-title:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
 }
 .k-create-description {
   max-width: 42rem;
@@ -2552,12 +2561,14 @@ railgrid-resource-table-filter { display: contents; }
 /* Coarse pointers need a full touch target even though desktop tables stay
  * intentionally dense. Keep row shortcuts visible as well: hover is not a
  * dependable affordance for touch, pen, or hybrid input. */
-@media (pointer: coarse) {
+@media (pointer: coarse), (any-pointer: coarse) {
   /* The trigger owns the hit area. Its frame needs room for a 44px button
    * between the 1px borders because the frame clips its grid contents. */
   .k-table__filter { height: 46px; min-height: 46px; }
   .k-table__filter-trigger { height: 44px; min-height: 44px; }
   .k-table__search-input,
+  .k-table__filter-search input,
+  .k-table__filter-option,
   .k-table__filter,
   .k-table__page-size-select {
     min-height: 44px;
@@ -2646,6 +2657,8 @@ railgrid-resource-table-filter { display: contents; }
 .k-resource-page__title {
   margin: 0;
   color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-display, 'Archivo Variable', sans-serif);
+  font-stretch: 125%;
   overflow-wrap: anywhere;
   font-weight: 600;
   font-size: 18px;

@@ -1,6 +1,6 @@
 <template>
   <div
-    class="grid min-h-[410px] content-start gap-4 rounded-md border border-border-subtle bg-surface-overlay/50 p-3"
+    class="grid min-h-[410px] content-start gap-4 rounded-lg border border-border-subtle bg-surface-overlay/50 p-3"
     role="status"
     aria-live="polite"
     aria-busy="true"
