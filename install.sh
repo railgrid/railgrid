@@ -7,9 +7,12 @@
 # Environment variables:
 #   RAILGRID_VERSION    Install a specific version (default: latest GitHub release).
 #   INSTALL_DIR      Target directory (default: $HOME/.local/bin — no sudo
-#                    required). To install system-wide instead:
+#                    required; with HOME unset it must be given explicitly).
+#                    To install system-wide instead:
 #                      curl -fsSL https://downloads.railgrid.ai/install.sh \
 #                        | INSTALL_DIR=/usr/local/bin sudo -E sh
+#                    An agent registered with "agent join" runs the binary path
+#                    recorded in its systemd unit, so upgrade that path.
 #   RAILGRID_BASE_URL   Override the binary download base (default:
 #                    https://downloads.railgrid.ai/cli/railgrid).
 #   RAILGRID_HARNESS    Which coding harnesses a machine you register offers:
@@ -22,13 +25,22 @@
 set -eu
 
 REPO="railgrid/railgrid"
-INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 VERSION="${RAILGRID_VERSION:-}"
 BASE_URL="${RAILGRID_BASE_URL:-https://downloads.railgrid.ai/cli/railgrid}"
 HARNESS="${RAILGRID_HARNESS:-auto}"
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "missing required tool: $1"; }
+
+# $HOME is not always set. `sudo sh`, `docker exec`, systemd units, cron and ssh
+# sessions without a login shell can all run without it, and under `set -u`
+# dereferencing it aborted this script with "HOME: parameter not set" -- which
+# names no fix and happens before anything is downloaded, so the install looks
+# like a no-op. Resolve the default only when it can be resolved.
+if [ -z "${INSTALL_DIR:-}" ]; then
+    [ -n "${HOME:-}" ] || err 'HOME is not set, so the default install directory ($HOME/.local/bin) cannot be resolved -- pass one explicitly, e.g. INSTALL_DIR=/usr/local/bin'
+    INSTALL_DIR="${HOME}/.local/bin"
+fi
 
 need curl
 need tar
@@ -94,6 +106,27 @@ cat <<EOF
 Installed railgrid ${VERSION} → ${target}
 
 EOF
+
+# A railgrid earlier on PATH shadows the one just installed, so `railgrid
+# version` keeps reporting the old build and the install looks ineffective. This
+# is easy to hit: the default INSTALL_DIR is $HOME/.local/bin, often not on PATH
+# at all, while an older binary sits in /usr/local/bin -- which is also the path
+# `railgrid agent join` records in the systemd unit it writes, so upgrading only
+# $HOME/.local/bin leaves a registered agent running the old binary.
+shadow="$(command -v railgrid 2>/dev/null || true)"
+if [ -n "$shadow" ] && [ "$shadow" != "$target" ]; then
+    cat <<EOF
+Note: railgrid also exists at ${shadow}, earlier on your \$PATH, which will
+      shadow this install. To upgrade that copy instead:
+
+    curl -fsSL https://downloads.railgrid.ai/install.sh \\
+      | INSTALL_DIR="${shadow%/*}" sh
+
+      An agent joined with \`railgrid agent join\` keeps running the binary path
+      recorded in its systemd unit, so upgrade that path to upgrade the agent.
+
+EOF
+fi
 
 case ":${PATH}:" in
     *":${INSTALL_DIR}:"*)
