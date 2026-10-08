@@ -528,7 +528,7 @@ railgrid-provider-agents .agents-seg button { border: 0; background: transparent
 railgrid-provider-agents .agents-seg button.on { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent-hover, #a18aff); box-shadow: none; }
 railgrid-provider-agents .agents-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 railgrid-provider-agents .agents-stat { padding: 12px 14px; }
-railgrid-provider-agents .agents-stat-v { font-family: var(--font-display, "Archivo Variable", var(--font-sans, sans-serif)); font-size: 26px; font-stretch: 125%; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--color-text-primary, #e9e9f2); line-height: 1.1; }
+railgrid-provider-agents .agents-stat-v { font-family: var(--font-sans, "Instrument Sans Variable", sans-serif); font-size: 26px; font-stretch: normal; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--color-text-primary, #e9e9f2); line-height: 1.1; }
 railgrid-provider-agents .agents-stat-k { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-muted, #5d5f78); margin-top: 4px; }
 railgrid-provider-agents .agents-stat-sub { font-size: 11px; color: var(--color-text-secondary, #8a8ca6); margin-top: 2px; }
 railgrid-provider-agents .agents-dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }

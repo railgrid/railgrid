@@ -126,7 +126,8 @@ body {
 
 /*
  * Display face (Söhne-Breit role). Archivo's width axis expanded to its max
- * (125%) — used for page titles, KPI numerals and the RAILGRID wordmark.
+ * (125%) — reserved for the RAILGRID wordmark and promotional brand surfaces.
+ * Functional headings and KPI numerals use Instrument Sans at normal width.
  * `font-stretch` drives the wdth axis on the variable font; if a target
  * browser mishandles it, swap to `font-variation-settings: "wdth" 125`.
  */
