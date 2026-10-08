@@ -130,3 +130,104 @@ func TestRestartWithSavedCredentialUsesItBeforeEdgeRegistration(t *testing.T) {
 		t.Fatalf("uploaded SSH credentials = %+v, want the operator's rotated username and password", gotRequest.credentials)
 	}
 }
+
+// A pod restart is the case the in-cluster Secret exists for: the agent's
+// filesystem is gone, so the enrolment bundle can only come from the Secret.
+// Reading only the file made the agent fall back to its bootstrap join token on
+// every pod restart, which the hub refuses once that token has been rotated or
+// orphaned -- the edge then stays Disconnected for good.
+func TestPodRestartLoadsTheCredentialFromItsSecret(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // a fresh pod: no credential on disk
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+
+	const edgeName = "k8s-restart"
+	stored := tunnel.Credential{
+		Token:     "credential-from-the-secret",
+		TokenType: "Bearer",
+		ExpiresAt: time.Now().Add(time.Hour),
+		HubURL:    "https://hub.example.com",
+		ClusterID: "tenant-cluster",
+		Resource:  "kubernetesclusters",
+		Name:      edgeName,
+	}
+	secretReads := 0
+	stubSecretLoader(t, func(name string) (tunnel.Credential, bool, error) {
+		secretReads++
+		if name != edgeName {
+			t.Errorf("secret loader called for %q, want %q", name, edgeName)
+		}
+		return stored, true, nil
+	})
+
+	store := agentForCredentialTest(edgeName, stored.HubURL).newCredentialStore()
+
+	if secretReads == 0 {
+		t.Fatal("the agent never looked in its Secret; a pod restart would fall back to the join token")
+	}
+	adopted, ok := store.Current()
+	if !ok {
+		t.Fatal("pod restart did not adopt the credential stored in the Secret")
+	}
+	if adopted.Token != stored.Token {
+		t.Fatalf("adopted token = %q, want the credential from the Secret", adopted.Token)
+	}
+	if store.Token() != stored.Token {
+		t.Fatalf("store serves %q, want the credential from the Secret rather than the join token", store.Token())
+	}
+}
+
+// The file still wins when it is there, and the Secret is not consulted at all:
+// outside a pod there is no Secret to read, and inside one the two copies are
+// written together.
+func TestSavedCredentialOnDiskIsPreferredToTheSecret(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+
+	const edgeName = "k8s-disk-wins"
+	onDisk := tunnel.Credential{
+		Token:     "credential-from-disk",
+		TokenType: "Bearer",
+		ExpiresAt: time.Now().Add(time.Hour),
+		HubURL:    "https://hub.example.com",
+		ClusterID: "tenant-cluster",
+		Resource:  "kubernetesclusters",
+		Name:      edgeName,
+	}
+	if err := SaveAgentCredential(edgeName, onDisk); err != nil {
+		t.Fatalf("saving test credential: %v", err)
+	}
+	stubSecretLoader(t, func(string) (tunnel.Credential, bool, error) {
+		t.Error("the Secret was read although a credential was present on disk")
+		return tunnel.Credential{}, false, nil
+	})
+
+	store := agentForCredentialTest(edgeName, onDisk.HubURL).newCredentialStore()
+
+	if store.Token() != onDisk.Token {
+		t.Fatalf("store serves %q, want the credential from disk", store.Token())
+	}
+}
+
+// agentForCredentialTest builds the minimum Agent newCredentialStore needs.
+// Going through New() would also build a downstream cluster config, which is
+// unrelated to credential loading and fails wherever no kubeconfig exists.
+func agentForCredentialTest(edgeName, hubURL string) *Agent {
+	options := NewOptions()
+	options.EdgeName = edgeName
+	options.HubURL = hubURL
+	// Installed service arguments keep the bootstrap token after enrolment; the
+	// saved credential must win over it.
+	options.Token = "stale-bootstrap-token"
+	options.Type = AgentTypeKubernetes
+	options.InsecureSkipTLSVerify = true
+	return &Agent{opts: options}
+}
+
+// stubSecretLoader swaps the in-cluster Secret loader for the duration of a
+// test; the real one builds its own in-cluster client.
+func stubSecretLoader(t *testing.T, fn func(string) (tunnel.Credential, bool, error)) {
+	t.Helper()
+	original := loadCredentialFromSecret
+	loadCredentialFromSecret = fn
+	t.Cleanup(func() { loadCredentialFromSecret = original })
+}
