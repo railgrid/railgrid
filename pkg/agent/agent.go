@@ -918,6 +918,14 @@ func (a *Agent) loadSavedCredential(edgeName string) (tunnel.Credential, string,
 		}
 		return tunnel.Credential{}, "", false, fmt.Errorf("reading the agent credential from its Secret: %w", err)
 	}
+	if !ok && fileErr != nil {
+		// The Secret holds nothing either, so a file that could not be read is
+		// still the most useful thing to report: the agent is about to fall
+		// back to its join token, and a corrupt or unreadable credential on
+		// disk is the sort of thing an operator should be told about rather
+		// than left to infer from a later 401.
+		return tunnel.Credential{}, "", false, fmt.Errorf("reading the agent credential from disk: %w", fileErr)
+	}
 	return credential, "secret", ok, nil
 }
 

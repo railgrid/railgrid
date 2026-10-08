@@ -94,9 +94,22 @@ alternative is the credential that never expires, which is what this replaced.
 
 ## Restarting with both a join token and a saved credential
 
+> Where to look when an agent re-enrols unexpectedly: for a pod, the
+> `credential.json` key of its `railgrid-agent-<edge>-kubeconfig` Secret, since
+> the file under `~/.railgrid` is gone on every restart; for a host agent, the
+> file. The agent logs which of the two it adopted (`source=file` or
+> `source=secret`), and logs an unreadable file rather than silently falling
+> back to the join token.
+
 The agent persists each issued credential at
 `~/.railgrid/agent-<edge>.credential.json` so a restart does not need a new
-join token. On start it adopts that file only when it is for **this** target:
+join token. In Kubernetes mode it also writes the bundle into its own
+`railgrid-agent-<edge>-kubeconfig` Secret, under the `credential.json` key,
+because a pod's filesystem does not survive a restart — and reads it back from
+there whenever the file is absent. A server or macOS agent has a real
+filesystem and uses the file alone.
+
+On start it adopts whichever copy it found only when it is for **this** target:
 the hub base URL matches `--hub-url`, the cluster ID matches `--cluster` when
 one was given, and the credential has not expired. Anything else is logged and
 ignored, and the agent enrols with the join token it was started with. This is
@@ -107,7 +120,7 @@ credential forever.
 If the provider still answers a connect with **401** while the agent holds both
 a saved credential and a join token, the next attempt presents the other one,
 and they alternate until one is accepted. A successful enrolment overwrites the
-saved file. A valid saved credential loses nothing from this: the join token is
+saved copies. A valid saved credential loses nothing from this: the join token is
 cleared on the first successful join, so it is refused and the credential is
 tried again on the following attempt.
 
