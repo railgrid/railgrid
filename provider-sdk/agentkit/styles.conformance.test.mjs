@@ -94,7 +94,7 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
   assert.match(css, /\.k-model-connection\s*[,\{]/)
   assert.match(conversationCSS, /\.k-ai-turn-progress\s*\{/)
 
-  assert.match(coreCSS, /--railgrid-ui-core-version:\s*33;/)
+  assert.match(coreCSS, /--railgrid-ui-core-version:\s*34;/)
   assert.doesNotMatch(coreCSS, /--railgrid-ui-version/)
   assert.match(coreCSS, /\.k-back-action--icon-only\s*\{/)
   assert.doesNotMatch(coreCSS, /\.k-ai-|\.k-workbench-|\.k-model-/)
@@ -103,7 +103,7 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
 })
 
 test('AgentKit is opt-in, depends on core styles, and is idempotent', () => {
-  const helper = loadAgentHelper({ coreVersion: '33' })
+  const helper = loadAgentHelper({ coreVersion: '34' })
   assert.equal(helper.document.head.children.length, 0, 'loading the module must not inject styles')
 
   helper.ensureAgentUIStyles()
@@ -118,16 +118,16 @@ test('AgentKit is opt-in, depends on core styles, and is idempotent', () => {
 
 test('AgentKit preserves stale style nodes and accepts current or newer hosts', () => {
   const staleNode = styleNode('k-agent-ui', 'stale-agent-css')
-  const stale = loadAgentHelper({ coreVersion: '33', agentVersion: '9', existingNodes: [staleNode] })
+  const stale = loadAgentHelper({ coreVersion: '34', agentVersion: '9', existingNodes: [staleNode] })
   stale.ensureAgentUIStyles()
   assert.deepEqual(stale.document.head.children.map(node => node.id), ['k-agent-ui-v10'])
   assert.equal(staleNode.textContent, 'stale-agent-css')
 
-  const current = loadAgentHelper({ coreVersion: '33', agentVersion: '10' })
+  const current = loadAgentHelper({ coreVersion: '34', agentVersion: '10' })
   current.ensureAgentUIStyles()
   assert.equal(current.document.head.children.length, 0)
 
-  const newer = loadAgentHelper({ coreVersion: '33', agentVersion: '11' })
+  const newer = loadAgentHelper({ coreVersion: '34', agentVersion: '11' })
   newer.ensureAgentUIStyles()
   assert.equal(newer.document.head.children.length, 0)
 })
