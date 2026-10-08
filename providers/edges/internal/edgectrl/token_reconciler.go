@@ -89,12 +89,7 @@ func (r *TokenReconciler) Reconcile(ctx context.Context, req mcreconcile.Request
 		return r.issueToken(ctx, c, edge, cs, "RegenerateRequested", "Bootstrap join token regenerated on request.", logger)
 	}
 
-	// Nothing to do if the token already exists or the edge is already registered.
-	registered := meta.FindStatusCondition(cs.Conditions, edgeapi.ConnectionConditionRegistered)
-	if registered != nil && registered.Status == metav1.ConditionTrue {
-		return ctrl.Result{}, nil
-	}
-	if cs.JoinToken != "" {
+	if !needsJoinToken(cs) {
 		return ctrl.Result{}, nil
 	}
 
@@ -125,6 +120,37 @@ func (r *TokenReconciler) issueToken(ctx context.Context, c client.Client, edge 
 
 	logger.Info("Join token generated for edge", "edge", edge.GetName(), "reason", reason)
 	return ctrl.Result{}, nil
+}
+
+// needsJoinToken reports whether this edge still has to have a bootstrap token
+// minted for it. Explicit rotation (AnnotationRegenerateJoinToken) does not go
+// through here.
+func needsJoinToken(cs *edgeapi.ConnectionStatus) bool {
+	// Already registered: the agent has a durable credential.
+	registered := meta.FindStatusCondition(cs.Conditions, edgeapi.ConnectionConditionRegistered)
+	if registered != nil && registered.Status == metav1.ConditionTrue {
+		return false
+	}
+	// A token is already outstanding, waiting for an agent to use it.
+	if cs.JoinToken != "" {
+		return false
+	}
+	// A hash with no plaintext means a token was issued AND an agent enrolled
+	// with it: registration clears status.joinToken and keeps only the hash, so
+	// that agent can re-enroll with the same token later.
+	//
+	// Minting a replacement here is what broke edges across an agent restart.
+	// The hub clears joinToken with a MergePatch sent before it records the rest
+	// of the registration, and the Registered condition is written afterwards by
+	// the lifecycle reconciler -- so there is a window in which the token looks
+	// absent and the edge does not look registered yet. Regenerating inside that
+	// window overwrites JoinTokenHash with the digest of a token nobody holds,
+	// and the hub's follow-up clear then destroys that token's plaintext too.
+	// The agent, whose join token is now orphaned, is refused forever.
+	if cs.JoinTokenHash != "" {
+		return false
+	}
+	return true
 }
 
 // generateJoinToken returns a cryptographically random 32-byte base64url-encoded token.
