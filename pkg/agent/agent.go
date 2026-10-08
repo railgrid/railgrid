@@ -1010,6 +1010,43 @@ func (a *Agent) shouldSetupSSHCredentials() bool {
 	return a.agentType == AgentTypeServer && (a.opts.Token == "" || a.hasIssuedCredential())
 }
 
+// retrySSHCredentials re-attempts a handover that failed at startup, so that a
+// hub-side failure heals without anyone restarting the agent. It gives up only
+// when the agent is shutting down: there is no number of attempts after which
+// not having SSH becomes correct.
+func (a *Agent) retrySSHCredentials(ctx context.Context, logger klog.Logger, hubClient *railgridclient.Client) {
+	retryUntilSuccess(ctx, logger, 30*time.Second, 10*time.Minute, "SSH credentials",
+		func(ctx context.Context) error {
+			return a.setupSSHCredentials(ctx, logger, hubClient)
+		})
+}
+
+// retryUntilSuccess re-attempts attempt with exponential backoff until it
+// succeeds or ctx is done. There is deliberately no attempt limit: the point is
+// a capability that is missing until the other side can serve it, and no number
+// of failures makes going without it correct.
+func retryUntilSuccess(ctx context.Context, logger klog.Logger, initial, max time.Duration, what string, attempt func(context.Context) error) {
+	backoff := initial
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if err := attempt(ctx); err != nil {
+			logger.V(2).Info("still refused; will retry", "what", what,
+				"err", err.Error(), "retryIn", backoff.String())
+			backoff *= 2
+			if backoff > max {
+				backoff = max
+			}
+			continue
+		}
+		logger.Info("handed over after an earlier failure", "what", what)
+		return
+	}
+}
+
 // runServerMode is the host mode: no downstream Kubernetes API. LinuxServer
 // hosts additionally expose SSH; MacOSServer hosts use the same reverse tunnel
 // and Service proxy without requiring sshd.
@@ -1047,7 +1084,17 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// the bootstrap token is still present in the service arguments.
 	if a.shouldSetupSSHCredentials() {
 		if err := a.setupSSHCredentials(ctx, logger, hubClient); err != nil {
-			return fmt.Errorf("setting up SSH credentials: %w", err)
+			// Not fatal, and it used to be. SSH is one capability of an edge:
+			// the tunnel, kubectl and workloads do not depend on it, and this
+			// runs before the tunnel is dialled -- so returning here took the
+			// whole agent down, systemd restarted it into the same failure, and
+			// a hub-side problem with this one call turned an edge that would
+			// otherwise be serving into one that never connects at all.
+			//
+			// Keep trying in the background instead, so the capability comes
+			// back on its own once the hub can accept it.
+			logger.Error(err, "could not hand the SSH credentials to the provider; connecting without SSH and retrying in the background")
+			go a.retrySSHCredentials(ctx, logger, hubClient)
 		}
 	} else if a.agentType == AgentTypeServer {
 		logger.Info("Join-token mode: skipping SSH credential setup (hub manages credentials)")
