@@ -7,12 +7,13 @@ your checkout:
 
 ```sh
 make tilt EXTERNAL_PROVIDERS_DIR=../providers
+make tilt EXTERNAL_PROVIDERS_DIR=../providers,../experimental-providers
 make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers
 make tilt-cluster EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 
 # Equivalent flags for a direct `tilt up`:
 tilt up -f Tiltfile.cluster -- \
-  --external-providers-dir=../providers \
+  --external-providers-dir=../providers,../experimental-providers \
   --external-providers=all
 ```
 
@@ -46,7 +47,17 @@ Tiltfile log. The rest of the session still starts. Naming that provider
 explicitly (`EXTERNAL_PROVIDERS=<name>`) turns the missing prerequisite into
 an error.
 
-Relative directories are resolved from the Railgrid checkout.
+`EXTERNAL_PROVIDERS_DIR`, `--external-providers-dir`, and the environment fallback
+accept comma-separated checkout paths in both stacks. Quote the value if paths
+contain spaces. Relative directories are resolved from the Railgrid checkout;
+blank entries are ignored and repeated absolute paths are loaded once. Each
+checkout must provide `hack/tilt/providers.tilt`. The same comma-separated value
+also works with `make permission-claim-policy` and `make verify-provider-contract`.
+
+The provider selection is passed to each checkout's library. Use `all` when
+loading multiple repositories; to select one provider by name, supply only its
+checkout. Provider resource names and host ports must be distinct across all
+loaded repositories.
 
 ## The contract a provider repository implements
 

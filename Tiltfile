@@ -12,7 +12,7 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
-config.define_string('external-providers-dir')
+config.define_string('external-providers-dir', usage='Comma-separated external provider checkout paths')
 config.define_string('external-providers')
 # Run kcp from a published image instead of the server compiled into the hub,
 # so a kcp change can be tried without moving this repository's kcp dependency.
@@ -1293,9 +1293,17 @@ local_resource(
 # also relays their scoped kcp access: the admin kubeconfig's kcp address is
 # loopback-only.
 # ---------------------------------------------------------------------------
-external_providers_dir = cfg.get('external-providers-dir', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS_DIR', '')
-if external_providers_dir:
+# Comma-separated checkout roots; preserve spaces inside individual paths.
+external_providers_dirs = cfg.get('external-providers-dir', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS_DIR', '')
+external_providers_seen = []
+for external_providers_dir in external_providers_dirs.split(','):
+    external_providers_dir = external_providers_dir.strip()
+    if not external_providers_dir:
+        continue
     external_providers_dir = os.path.abspath(external_providers_dir)
+    if external_providers_dir in external_providers_seen:
+        continue
+    external_providers_seen.append(external_providers_dir)
     external_providers_lib = os.path.join(external_providers_dir, 'hack', 'tilt', 'providers.tilt')
     if not os.path.exists(external_providers_lib):
         fail('--external-providers-dir %s has no hack/tilt/providers.tilt; see docs/external-providers-tilt.md' % external_providers_dir)

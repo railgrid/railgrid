@@ -242,6 +242,22 @@ test('an external providers directory is scanned the same way, and its name is n
   assert.ok(!result.yaml.includes(fixture.externalDir))
 })
 
+test('multiple external checkout paths are scanned once each', () => {
+  const external = name => ({
+    [`providers/${name}/manifest.yaml`]: manifest({ exportName: `${name}.providers.railgrid.ai`, requires: REQUIRES_CODE }),
+    [`providers/${name}/config/kcp/apiexport-${name}.providers.railgrid.ai.yaml`]: apiExport({ name: `${name}.providers.railgrid.ai`, groups: [`${name}.railgrid.ai`] }),
+  })
+  const first = fixtureRepo({}, { external: external('first') })
+  const second = fixtureRepo({}, { external: external('second') })
+  const result = generate({
+    repoRoot: first.repoRoot,
+    externalDir: ` ${first.externalDir}, ${second.externalDir},,${first.externalDir}/. `,
+  })
+  assert.deepEqual(claims(result).map(rule => rule.claimer), [
+    'first.railgrid.ai', 'fixture.railgrid.ai', 'second.railgrid.ai',
+  ])
+})
+
 test('a provider defined in both trees is an error, not a last-one-wins merge', () => {
   const external = {
     'providers/fixture/manifest.yaml': manifest({ requires: REQUIRES_CODE_AND_EDGES }),
