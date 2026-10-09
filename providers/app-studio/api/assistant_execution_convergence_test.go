@@ -82,7 +82,7 @@ type projectAssistantSnapshotCapturePort struct {
 	project *aiv1alpha1.Project
 }
 
-func (*projectAssistantSnapshotCapturePort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (*projectAssistantSnapshotCapturePort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	return nil, false, nil
 }
 

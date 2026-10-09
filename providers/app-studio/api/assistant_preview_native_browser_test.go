@@ -48,7 +48,7 @@ type countingNativeBrowserToolPort struct {
 	discoverBrowserCalls int
 }
 
-func (p fakeNativeBrowserToolPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (p fakeNativeBrowserToolPort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	return nil, false, nil
 }
 
@@ -60,7 +60,7 @@ func (p fakeNativeBrowserToolPort) DiscoverBrowser(context.Context, identity, pr
 	return p.tools, p.browserErr
 }
 
-func (p *countingNativeBrowserToolPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (p *countingNativeBrowserToolPort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	p.discoverMCPCalls++
 	return []projectAssistantTool{projectAssistantToolFunc{spec: projectAssistantToolSpec{
 		Name:       "mcp_refresh_" + string(rune('0'+p.discoverMCPCalls)),

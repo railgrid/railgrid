@@ -82,9 +82,10 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 	var syncs atomic.Int32
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		store:      store.NewMemoryStore(),
-		workspaces: workspaces,
-		hubBase:    upstream.URL,
+		store:                   store.NewMemoryStore(),
+		workspaces:              workspaces,
+		hubBase:                 upstream.URL,
+		projectIdentityTokenFor: testProjectIdentityToken,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
 		},
@@ -209,6 +210,7 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 				store:                        store.NewMemoryStore(),
 				workspaces:                   workspaces,
 				hubBase:                      upstream.URL,
+				projectIdentityTokenFor:      testProjectIdentityToken,
 				projectClientFor:             func(identity) (*asclient.Client, error) { return client, nil },
 				developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error { return nil },
 			}
@@ -265,9 +267,10 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		store:      store.NewMemoryStore(),
-		workspaces: workspaces,
-		hubBase:    upstream.URL,
+		store:                   store.NewMemoryStore(),
+		workspaces:              workspaces,
+		hubBase:                 upstream.URL,
+		projectIdentityTokenFor: testProjectIdentityToken,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
 		},
@@ -424,6 +427,7 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 		store:                        store.NewMemoryStore(),
 		workspaces:                   workspaces,
 		hubBase:                      upstream.URL,
+		projectIdentityTokenFor:      testProjectIdentityToken,
 		projectClientFor:             func(identity) (*asclient.Client, error) { return client, nil },
 		developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error { return nil },
 	}

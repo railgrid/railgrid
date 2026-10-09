@@ -11,8 +11,9 @@ You may obtain a copy of the License at
 // Package hubmcp is a minimal MCP JSON-RPC client for code provider tools —
 // the canonical (and only) cross-provider path for pushing file contents,
 // since commit bundles live on the code provider's own filesystem. The Project
-// reconciler uses it as the project's ServiceAccount (the HTTP layer keeps its
-// own MCP path in api/, made as the provider with its hub token).
+// reconciler uses it as the project's scoped identity (the HTTP layer keeps
+// its own MCP path in api/, made as that same Project identity — see
+// Server.projectMCPRequest).
 //
 // Talks to the hub's AGGREGATE MCP endpoint (the per-tenant "default"
 // MCPServer), with provider-namespaced tool names (code__commit_files). The

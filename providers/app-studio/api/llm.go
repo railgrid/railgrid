@@ -1677,7 +1677,7 @@ func truncateProjectToolInfo(value string) string {
 	return strings.TrimSpace(value[:projectToolInfoLimit-3]) + "..."
 }
 
-func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings projectLLMSettings) ([]chatTool, error) {
+func (s *Server) loadProjectMCPTools(r *http.Request, id identity, project *aiv1alpha1.Project, settings projectLLMSettings) ([]chatTool, error) {
 	if id.tenant == "" {
 		return nil, errors.New("tenant context missing")
 	}
@@ -1686,7 +1686,7 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 	// registry retains the retired preview wrappers for legacy event decoding,
 	// but they must not be advertised as new callable capabilities.
 	out := projectAssistantChatToolsForSpecs(projectAssistantAllToolSpecs(registry.Tools(false)))
-	mcpTools, codeCommitAvailable, err := s.loadProjectMCPAssistantTools(r, id, settings)
+	mcpTools, codeCommitAvailable, err := s.loadProjectMCPAssistantTools(r, id, project, settings)
 	if err != nil {
 		return out, err
 	}
@@ -1708,7 +1708,7 @@ func (s *Server) loadProjectMCPTools(r *http.Request, id identity, settings proj
 	return out, nil
 }
 
-func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, project *aiv1alpha1.Project, _ projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	if id.tenant == "" {
 		return nil, false, errors.New("tenant context missing")
 	}
@@ -1716,7 +1716,11 @@ func (s *Server) loadProjectMCPAssistantTools(r *http.Request, id identity, _ pr
 		return nil, false, errors.New("no workspace cluster on request (X-Railgrid-Cluster missing) — cannot address the tenant MCP endpoint")
 	}
 	mcpEndpoint := s.mcpEndpoint(id.clusterID)
-	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, s.hubRequest(r, id), id.tenant, s.mcpInsecureSkipTLSVerify)
+	hubReq, err := s.projectMCPRequest(r.Context(), r, id, project)
+	if err != nil {
+		return nil, false, err
+	}
+	tools, err := fetchProjectMCPTools(r.Context(), mcpEndpoint, hubReq, id.tenant, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		return nil, false, err
 	}

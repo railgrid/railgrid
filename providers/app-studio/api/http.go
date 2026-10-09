@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -31,6 +32,8 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/tenantaccess"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // identity is the per-request caller context of a data-plane verb.
@@ -197,18 +200,27 @@ func (s *Server) resolveWorkspace(ctx context.Context, id *identity) {
 // provider credential configured, or the request carries no cluster ID.
 var errNoWorkspaceLookup = errors.New("workspace lookup unavailable (no provider credential configured or no cluster on the request)")
 
-// setHubCallerHeaders stamps a request to the hub's OWN REST API or MCP
-// aggregate — the provider catalog, the membership rosters, the browser
-// handoff, the workspace MCP endpoint. Those are not data-plane verbs and a
-// verb carries no caller credential to forward to them, so they are made as
-// this provider (Server.hubToken) with the kcp-authenticated caller's name and
-// the request's workspace selection as the headers the hub resolves a
-// provider caller's scope from. A process with no hub token sends none, and
-// the hub answers as it does any unauthenticated caller.
+// setHubCallerHeaders stamps a request to the hub's OWN REST API — the
+// provider catalog, the membership rosters, the browser handoff. Those are
+// not data-plane verbs and a verb carries no caller credential to forward to
+// them, so they are made as this provider (Server.hubToken) with the
+// kcp-authenticated caller's name and the request's workspace selection as
+// the headers the hub resolves a provider caller's scope from. A process with
+// no hub token sends none, and the hub answers as it does any unauthenticated
+// caller.
+//
+// It is NOT for the MCP aggregate: see projectMCPRequest.
 func (s *Server) setHubCallerHeaders(h http.Header, id identity) {
 	if s != nil && s.hubToken != "" {
 		h.Set("Authorization", "Bearer "+s.hubToken)
 	}
+	setHubScopeHeaders(h, id)
+}
+
+// setHubScopeHeaders stamps the addressing headers a hub call carries: the
+// workspace's cluster ID, its org / workspace UUIDs, and the caller's name as
+// a display label. None of them authorizes anything.
+func setHubScopeHeaders(h http.Header, id identity) {
 	if id.tenant != "" {
 		h.Set(dataplane.HeaderTenant, id.tenant)
 	}
@@ -223,36 +235,55 @@ func (s *Server) setHubCallerHeaders(h http.Header, id identity) {
 	}
 	if id.user != "" {
 		// A display label for the hub's and the downstream provider's logs;
-		// the identity that authorizes the call is the provider's bearer.
+		// never the identity that authorizes the call.
 		h.Set(dataplane.HeaderUser, id.user)
 	}
 }
 
 // setHubActionProofHeader forwards only the hub-minted, request-scoped proof.
 // Callers use it for hub operations that explicitly redeem App Studio action
-// proofs; it is not part of the generic tenant/header stamping contract.
+// proofs; generic hub requests must never carry it.
 func (s *Server) setHubActionProofHeader(h http.Header, id identity) {
 	if id.actionProof != "" {
 		h.Set(dataplane.HeaderActionProof, id.actionProof)
 	}
 }
 
-// hubRequest clones r as the request the MCP helpers carry to the hub's MCP
-// aggregate (projectMCPRequest copies its Authorization and X-Railgrid-*
-// headers onto the call): a verb arrives with no Authorization — serve's
-// adapter removed it — so the call is made as the provider, with the caller's
-// name as a label.
-func (s *Server) hubRequest(r *http.Request, id identity) *http.Request {
+// projectMCPRequest clones r as the request the MCP helpers carry to the hub's
+// MCP aggregate (projectMCPRequest copies its Authorization and X-Railgrid-*
+// headers onto the call), authenticated as the PROJECT's hub-minted scoped
+// identity.
+//
+// A verb arrives with no Authorization — serve's adapter removed it — so
+// there is no caller bearer to forward, and the provider's own token is the
+// wrong substitute: the aggregate admits only identities that hold `use` on
+// the MCPServer in the tenant workspace, which the provider's ServiceAccount
+// (in the provider's own workspace) never does, and every provider behind the
+// aggregate acts as whatever bearer it receives. The Project identity is the
+// one credential made for this: minted by the hub against the Project's
+// persisted rules, name-scoped to the instances, repository and provider
+// references that Project owns, TTL'd and collected with the Project. Without
+// a persisted Project there is no identity to call as, and the call is
+// refused rather than made as somebody else.
+func (s *Server) projectMCPRequest(ctx context.Context, r *http.Request, id identity, p *aiv1alpha1.Project) (*http.Request, error) {
 	if r == nil {
-		return nil
+		return nil, errors.New("no inbound request to derive the MCP call from")
 	}
-	out := r.Clone(r.Context())
+	token, err := s.projectIdentityToken(ctx, id, p)
+	if err != nil {
+		return nil, fmt.Errorf("project identity for the workspace MCP aggregate: %w", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("project identity for the workspace MCP aggregate: empty token")
+	}
+	out := r.Clone(ctx)
+	// Never the provider's hub token, never an inbound bearer, never an
+	// action proof: the Project identity is the only credential on this call.
 	out.Header.Del("Authorization")
-	// Action proofs are forwarded only by the specific membership and
-	// discovery clients that redeem them; do not leak one to generic MCP calls.
 	out.Header.Del(dataplane.HeaderActionProof)
-	s.setHubCallerHeaders(out.Header, id)
-	return out
+	setHubScopeHeaders(out.Header, id)
+	out.Header.Set("Authorization", "Bearer "+token)
+	return out, nil
 }
 
 // hubHTTPClient is the client for hub REST calls: the same TLS knob the MCP
