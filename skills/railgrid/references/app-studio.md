@@ -215,7 +215,7 @@ PUT    $AS/projects/<p>/files-content?path=<p>       body = raw file bytes
 DELETE $AS/projects/<p>/files-content?path=<p>       optional If-Match
 GET    $AS/projects/<p>/files-raw?path=<p>[&download=1]   raw bytes
 POST   $AS/projects/<p>/files-upload                 multipart
-POST   $AS/projects/<p>/hydrate-workspace            {ref?} → {repositoryRef,ref,commitSHA,written[],sourceRevision,skipped[]}   git → workspace via code__checkout_repository; 400 / 502 / 503 "project workspace store is not configured"
+POST   $AS/projects/<p>/hydrate-workspace            {ref?} → {repositoryRef,ref,commitSHA,written[],sourceRevision,skipped[]}   git → workspace via the code `repositories/checkout` verb, as App Studio; 400 / 502 / 503 "project workspace store is not configured"
 POST   $AS/projects/<p>/restore-workspace            {commitSHA:"<full sha>",expectedSourceRevision:<ProjectView.sourceRevision, number or numeric string>} → {commitSHA,written[],deleted[],sourceRevision,skipped[]?}   409 when the revision moved; restoring an older commit deletes files and the reconciler commits the deletions; a restored commit without a workflow builds nothing (`build.status: none`)
 POST   $AS/projects/<p>/scaffold                     → {template,scaffold{repository,ref},seeded}   re-seed template starter files into an EMPTY workspace; 400 no template, 422 NoScaffold
 ```
@@ -702,13 +702,12 @@ become `interrupted` (`continue/<turn>` resumes).
 | App Studio → data plane client | response ≤ 96 MiB (`development data plane <verb>: response exceeds … bytes`) |
 | Assistant MCP calls | response ≤ 96 MiB (`MCP <method> response exceeds … bytes`) |
 
-Capability gating: App Studio sends base64 to, or asks base64 from, only a
-component that advertises it — `code__commit_files` must declare
-`files[].encoding`, `code__checkout_repository` must declare
-`binaryEncoding` (both read from `tools/list`, cached 10 min per cluster), a
-dev agent must list `base64` in `syncEncodings` (infrastructure `process`
-verb). Otherwise binaries are skipped and stay uncommitted/unsynced; text is
-never blocked. The workspace digest encodes a binary as `0xfe`, 8-byte length
+Capability gating: the code provider is never probed — commit
+(`repositories/commit`) and checkout (`repositories/checkout`) are verbs
+whose input declares the encoding, so binaries always travel as base64 in
+both directions. A dev agent must list `base64` in `syncEncodings`
+(infrastructure `process` verb); otherwise binaries are skipped and stay
+unsynced; text is never blocked. The workspace digest encodes a binary as `0xfe`, 8-byte length
 and its SHA-256.
 
 ## 7. Portal features and the verbs behind them

@@ -465,10 +465,10 @@ fc -N "$AS/sessions/t1/events" > events.log   # SSE; ends after turn.completed /
 - A small app in one turn: ~3 min; a follow-up feature: ~1 min.
 
 **When git integration is down.** The code provider is unavailable when
-`railgrid app sync` fails with `checkout repository: provider MCP error -32602:
-unknown tool "code__checkout_repository"`, `railgrid commit` or `fmcp` answers
-`unknown tool "code__…"`, and `GET $HUB/api/providers` shows `code`
-`ready: false` (section 8). You can still run your code in the dev sandbox:
+`railgrid app sync` fails with `checkout repository: checkout: …` (an HTTP
+502/503 or `action_unavailable` from the `repositories/checkout` verb),
+`railgrid commit` or `fmcp` answers `unknown tool "code__…"`, and
+`GET $HUB/api/providers` shows `code` `ready: false` (section 8). You can still run your code in the dev sandbox:
 upload each changed file with `PUT $AS/projects/<p>/files-content?path=<path>`
 (route C below). The upload schedules a dev sync; `POST $AS/projects/<p>/sync-development`
 forces one and reports each component. This reaches the workspace and the

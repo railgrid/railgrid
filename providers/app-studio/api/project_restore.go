@@ -24,7 +24,8 @@ import (
 	"strconv"
 	"strings"
 
-	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -113,10 +114,6 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		writeProjectError(w, err)
 		return
 	}
-	if strings.TrimSpace(id.clusterID) == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request — cannot address the tenant MCP endpoint")
-		return
-	}
 
 	scope := projectWorkspaceScope(id, project)
 	currentRevision, err := s.workspaces.SourceRevision(r.Context(), scope)
@@ -129,9 +126,14 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		writeStatus(w, http.StatusConflict, "Conflict", "project files changed since History was loaded; refresh History and try again")
 		return
 	}
-	checkout, err := s.checkoutProjectRepository(r, id, project, repositoryRef, req.CommitSHA)
+	checkout, err := s.checkoutProjectRepository(r.Context(), id, repositoryRef, req.CommitSHA)
 	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+		writeStatus(w, http.StatusBadGateway, "BadGateway", fmt.Sprintf("checkout repository at commit %s: %v", req.CommitSHA, err))
 		return
 	}
 	files, err := exactRestoreFiles(req.CommitSHA, checkout)
@@ -167,33 +169,9 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *Server) checkoutProjectRepository(r *http.Request, id identity, project *aiv1alpha1.Project, repositoryRef, commitSHA string) (checkoutToolResult, error) {
-	hubReq, err := s.projectMCPRequest(r.Context(), r, id, project)
-	if err != nil {
-		return checkoutToolResult{}, err
-	}
-	raw, err := callProjectMCPTool(
-		r.Context(),
-		s.mcpEndpoint(id.clusterID),
-		hubReq,
-		id.tenant,
-		s.mcpInsecureSkipTLSVerify,
-		projectToolCodeCheckoutRepository,
-		s.checkoutArgs(r.Context(), r, id, project, map[string]any{"repositoryRef": repositoryRef, "ref": commitSHA}),
-	)
-	if err != nil {
-		return checkoutToolResult{}, fmt.Errorf("checkout repository at commit %s: %w", commitSHA, err)
-	}
-	var checkout checkoutToolResult
-	if err := json.Unmarshal([]byte(raw), &checkout); err != nil {
-		return checkoutToolResult{}, fmt.Errorf("decode checkout result: %w", err)
-	}
-	return checkout, nil
-}
-
 // checkoutSkipReasons are the suffixes the Code provider's checkout appends to
 // every skipped repository path, e.g. "public/logo.png (binary)" (see the Code
-// provider's backend/github/checkout.go and mcpserver/tools_checkout.go).
+// provider's backend/github/checkout.go and commitexec/checkout.go).
 var checkoutSkipReasons = []string{" (binary)", " (file too large)", " (file-count cap)", " (total-size cap)"}
 
 // checkoutSkippedPaths extracts the repository paths from checkout skip
@@ -228,7 +206,7 @@ func checkoutSkippedPath(entry string) (string, bool) {
 // requested by History, and decodes its files (base64 binaries included),
 // before any workspace mutation is attempted. Paths the checkout skipped are
 // not an error: the restore preserves their current workspace copies.
-func exactRestoreFiles(requestedSHA string, checkout checkoutToolResult) ([]workspace.File, error) {
+func exactRestoreFiles(requestedSHA string, checkout codecommit.Checkout) ([]workspace.File, error) {
 	requestedSHA = strings.TrimSpace(requestedSHA)
 	returnedSHA := strings.TrimSpace(checkout.CommitSHA)
 	if returnedSHA != requestedSHA {
@@ -236,7 +214,7 @@ func exactRestoreFiles(requestedSHA string, checkout checkoutToolResult) ([]work
 	}
 	files := make([]workspace.File, 0, len(checkout.Files))
 	for _, file := range checkout.Files {
-		data, err := file.bytes()
+		data, err := hubmcp.DecodeWireContent(file.Content, file.Encoding)
 		if err != nil {
 			return nil, fmt.Errorf("checkout file %q: %w", file.Path, err)
 		}

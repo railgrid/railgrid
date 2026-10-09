@@ -574,7 +574,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if req.Project == nil {
 					return "", errors.New("no project on this run")
 				}
-				resp, err := s.hydrateWorkspaceFromRepository(ctx, req.Identity, req.Project, req.HTTPRequest, projectToolString(req.Arguments["ref"]))
+				resp, err := s.hydrateWorkspaceFromRepository(ctx, req.Identity, req.Project, projectToolString(req.Arguments["ref"]))
 				if err != nil {
 					return "", err
 				}
