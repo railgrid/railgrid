@@ -96,6 +96,25 @@ type BranchesRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// CheckoutRequest is the payload of the "checkout" custom subresource on repositories.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=checkout,scope=Cluster
+type CheckoutRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // CommentsRequest is the payload of the "comments" custom subresource on repositories.
 //
 // +kubebuilder:object:root=true

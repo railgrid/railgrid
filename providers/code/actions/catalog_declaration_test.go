@@ -101,11 +101,12 @@ func declaredVerbs(entry catalogEntrySpec) map[string]map[string]struct{} {
 // TestServedButUncataloguedVerbsAreDeclaredAsVerbs closes the gap that made
 // stage-snapshot and stage-commit-bundle ungrantable.
 //
-// Both are served on the actions grammar and gated exactly like a catalogued
-// action, but they are deliberately absent from actions[]: their bodies exceed
-// limits.maxInputBytes, which the CatalogEntry API caps at 1 MiB, so no honest
-// action declaration exists (docs/provider-actions.md, "Uncatalogued
-// large-upload verbs").
+// They, and checkout, are served on the actions grammar and gated exactly like
+// a catalogued action, but they are deliberately absent from actions[]: the
+// bodies they carry exceed limits.maxInputBytes (capped at 1 MiB) or
+// limits.maxOutputBytes (capped at 64 MiB) by the CatalogEntry API, so no
+// honest action declaration exists (docs/provider-actions.md, "Uncatalogued
+// large-transfer verbs").
 //
 // The hub's identity policy (pkg/hub/identity/policy.go, clause C) mints
 // `create` on {resource}/{verb} only for a coordinate the owning provider
@@ -131,14 +132,14 @@ func TestServedButUncataloguedVerbsAreDeclaredAsVerbs(t *testing.T) {
 		}
 	}
 
-	// The two known exceptions, pinned by name: if either ever became a
+	// The three known exceptions, pinned by name: if any ever became a
 	// catalogued action the assertion above would still pass, and this says
 	// out loud which verbs the carve-out covers today. It is also what lets
 	// catalogentry.go route every declared verb to the actions handler without
-	// naming either of them.
-	for _, verb := range []string{StageSnapshot, StageCommitBundle} {
+	// naming any of them.
+	for _, verb := range []string{StageSnapshot, StageCommitBundle, Checkout} {
 		if _, ok := declared[repositories.Resource][verb]; !ok {
-			t.Errorf("%s is the uncatalogued large-upload carve-out and must stay declared under spec.export.resources[repositories].verbs", verb)
+			t.Errorf("%s is the uncatalogued large-transfer carve-out and must stay declared under spec.export.resources[repositories].verbs", verb)
 		}
 	}
 }

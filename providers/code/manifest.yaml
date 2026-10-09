@@ -62,6 +62,10 @@ spec:
             description: "Stage a source tree and return the bundleRef/bundleDigest pair the catalogued commit names instead of inline files. Uncatalogued large upload; input is not schema-declared, see docs/provider-actions.md §Uncatalogued large-upload verbs."
             stream: false
             readOnly: false
+          - name: checkout
+            description: "Read a Repository's tree at a ref and return the files inline: the commit flow in reverse, created as the provider behind the gate so a consumer needs no write on repositorycheckouts. Uncatalogued large transfer; a tree can exceed the 64 MiB an action may declare as output, see docs/provider-actions.md §Uncatalogued large-transfer verbs."
+            stream: false
+            readOnly: true
         # Fourteen catalogued actions on a Repository; the fifteenth
         # (mint-registry-token) hangs off connections below. Keep this list and
         # the served set in actions/server.go together.

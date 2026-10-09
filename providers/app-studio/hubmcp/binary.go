@@ -13,7 +13,6 @@ package hubmcp
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,17 +25,15 @@ import (
 // UTF-8 text without NUL bytes and "base64" (standard, padded) otherwise.
 // Sizes and limits are measured on decoded bytes.
 //
-// Capability gating applies to CHECKOUT only: code__checkout_repository is a
-// tool, and an older Code provider cannot return binary blobs, so the opt-in
-// is sent only when its schema advertises a "binaryEncoding" input. Commit has
-// no gate — it is the repositories/commit/v1 ACTION, whose declared schema
-// carries the encoding for every file, so there is nothing to discover.
+// Nothing on the Code provider is capability-gated any more: commit is the
+// repositories/commit/v1 action and checkout the repositories/checkout verb,
+// and both declare the encoding on their own input, so there is nothing to
+// discover from a tool schema. The CapabilityCache below remains for the
+// development agent's sync, which still advertises base64 through /status.
 
 const (
 	EncodingUTF8   = "utf-8"
 	EncodingBase64 = "base64"
-
-	ToolCheckoutRepository = "code__checkout_repository"
 
 	// CommitTextMaxBytes is the Code provider's per-file text bound.
 	CommitTextMaxBytes = 2 << 20
@@ -75,39 +72,6 @@ func DecodeWireContent(content, encoding string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported file encoding %q", encoding)
 	}
-}
-
-// CheckoutSupportsBinaryEncoding reports whether the catalog's
-// code__checkout_repository can return binaries as base64.
-func CheckoutSupportsBinaryEncoding(tools []Tool) bool {
-	return toolSchemaHas(tools, ToolCheckoutRepository, "properties", "binaryEncoding")
-}
-
-func toolSchemaHas(tools []Tool, name string, path ...string) bool {
-	for _, tool := range tools {
-		if tool.Name == name {
-			return SchemaHasPath(tool.InputSchema, path...)
-		}
-	}
-	return false
-}
-
-// SchemaHasPath walks nested JSON-schema object keys.
-func SchemaHasPath(schema json.RawMessage, path ...string) bool {
-	var node any
-	if len(schema) == 0 || json.Unmarshal(schema, &node) != nil {
-		return false
-	}
-	for _, key := range path {
-		object, ok := node.(map[string]any)
-		if !ok {
-			return false
-		}
-		if node, ok = object[key]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // CapabilityCache remembers one capability answer per key (a workspace

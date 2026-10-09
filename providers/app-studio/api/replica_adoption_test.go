@@ -16,7 +16,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +24,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/internal/projectledger"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -36,28 +36,20 @@ func TestProjectAdoptionPreservesRetainedSource(t *testing.T) {
 	for _, state := range []string{"retained", "deleted", "no-git", "missing", "metadata-only", "stale", "new-incarnation"} {
 		t.Run(state, func(t *testing.T) {
 			ctx := context.Background()
-			checkouts := 0
-			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				var rpc struct {
-					Method string `json:"method"`
-				}
-				_ = json.NewDecoder(r.Body).Decode(&rpc)
-				if rpc.Method == "tools/list" {
-					// The binary-capability probe is not a checkout.
-					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{}}})
-					return
-				}
-				checkouts++
-				payload := `{"ref":"main","commitSHA":"git-sha","files":[{"path":"index.ts","content":"Git source"}]}`
-				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": payload}}}})
-			}))
-			defer hub.Close()
+			// The Code provider's checkout verb, as App Studio's export
+			// virtual workspace serves it; checkouts counts the Git reads
+			// adoption triggered.
+			hub, checkoutCalls := checkoutVerbServer(t, codecommit.Checkout{Ref: "main", CommitSHA: "git-sha", Files: []codecommit.CheckoutFile{{Path: "index.ts", Content: "Git source"}}}, nil)
+			checkouts := func() int {
+				checkoutCalls.mu.Lock()
+				defer checkoutCalls.mu.Unlock()
+				return len(checkoutCalls.calls)
+			}
 			p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}, Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "demo-repo"}}}
 			if state == "no-git" {
 				p.Spec.Repository = nil
 			}
-			c := newProjectCreationTestClient()
+			c := newProjectCreationTestClient(testCodeRepository("demo-repo", "demo-repo-uid"))
 			p, err := c.Projects().Create(ctx, p, metav1.CreateOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -115,16 +107,16 @@ func TestProjectAdoptionPreservesRetainedSource(t *testing.T) {
 				scope = projectWorkspaceScope(id, p)
 			}
 			// Reopen the same volume, with a different pod identity and IP.
-			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, projectIdentityTokenFor: testProjectIdentityToken, workspaces: workspace.NewFileStore(root), projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
+			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, callers: newTestCallers(nil, hub.URL), projectIdentityTokenFor: testProjectIdentityToken, workspaces: workspace.NewFileStore(root), projectClientFor: func(identity) (*asclient.Client, error) { return c, nil }}
 			s.SetReplicaRouting("new-pod", "10.0.0.2:8091", "")
 			req := httptest.NewRequest(http.MethodGet, "/api/projects/demo/files", nil)
 			s.adoptProject(req, id, p.Name, store.ReplicaClaim{OwnerReplica: "old-pod", OwnerAddr: "10.0.0.1:8091"}, true, store.ReplicaClaim{Revision: int64(floor)})
 			retained := state == "retained" || state == "deleted" || state == "no-git"
-			if retained && checkouts != 0 {
-				t.Fatalf("retained source triggered %d Git checkouts", checkouts)
+			if retained && checkouts() != 0 {
+				t.Fatalf("retained source triggered %d Git checkouts", checkouts())
 			}
-			if !retained && checkouts != 1 {
-				t.Fatalf("missing/stale source triggered %d Git checkouts", checkouts)
+			if !retained && checkouts() != 1 {
+				t.Fatalf("missing/stale source triggered %d Git checkouts", checkouts())
 			}
 			got, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: "index.ts"})
 			if state == "deleted" {

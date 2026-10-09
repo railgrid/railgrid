@@ -495,9 +495,12 @@ the other settled; moving the assistant's tool onto the same action is open
 work.
 
 The reverse direction is `hydrate_workspace`: it reads the repository tree
-through the Code provider's `code__checkout_repository` tool and writes it into
-the workspace (tracked files are overwritten, workspace-only files stay), then
-schedules a development sync. Because it discards uncommitted edits to tracked
+through the Code provider's `repositories/checkout` verb — as App Studio,
+under its own claim, the same way commits go out; the verb creates the
+transient `RepositoryCheckout` as the Code provider, so neither App Studio nor
+the Project's hub-minted identity needs a write on that kind — and writes it
+into the workspace (tracked files are overwritten, workspace-only files stay),
+then schedules a development sync. Because it discards uncommitted edits to tracked
 files, the tool always pauses for the user's approval, in every approval mode
 except Never, and is offered only in Default mode on implementation turns. The
 same operation is reachable without the assistant through

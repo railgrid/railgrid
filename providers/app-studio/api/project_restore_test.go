@@ -34,6 +34,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -42,11 +43,11 @@ func TestExactRestoreFilesRejectsWrongOrIncompleteCheckout(t *testing.T) {
 	requested := strings.Repeat("a", 40)
 	for _, test := range []struct {
 		name     string
-		checkout checkoutToolResult
+		checkout codecommit.Checkout
 		want     string
 	}{
-		{name: "wrong commit", checkout: checkoutToolResult{CommitSHA: strings.Repeat("b", 40)}, want: "instead of requested commit"},
-		{name: "bad encoding", checkout: checkoutToolResult{CommitSHA: requested, Files: []checkoutToolFile{{Path: "a.bin", Content: "x", Encoding: "hex"}}}, want: "unsupported file encoding"},
+		{name: "wrong commit", checkout: codecommit.Checkout{CommitSHA: strings.Repeat("b", 40)}, want: "instead of requested commit"},
+		{name: "bad encoding", checkout: codecommit.Checkout{CommitSHA: requested, Files: []codecommit.CheckoutFile{{Path: "a.bin", Content: "x", Encoding: "hex"}}}, want: "unsupported file encoding"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := exactRestoreFiles(requested, test.checkout); err == nil || !strings.Contains(err.Error(), test.want) {
@@ -73,18 +74,16 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 		t.Fatal(err)
 	}
 
-	upstream := restoreCheckoutServer(t, checkoutToolResult{
+	upstream, checkouts := checkoutVerbServer(t, codecommit.Checkout{
 		CommitSHA: commitSHA,
-		Files:     []checkoutToolFile{{Path: "app.txt", Content: "restored\n"}},
+		Files:     []codecommit.CheckoutFile{{Path: "app.txt", Content: "restored\n"}},
 	}, nil)
-	defer upstream.Close()
-
 	var syncs atomic.Int32
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                   store.NewMemoryStore(),
 		workspaces:              workspaces,
-		hubBase:                 upstream.URL,
+		callers:                 newTestCallers(nil, upstream.URL),
 		projectIdentityTokenFor: testProjectIdentityToken,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
@@ -109,6 +108,12 @@ func TestRestoreProjectWorkspaceReplacesExactTreeAndSchedulesDevelopmentSync(t *
 	}
 	if restored.CommitSHA != commitSHA || restored.SourceRevision != expectedRevision+1 || len(restored.Written) != 1 || restored.Written[0] != "app.txt" || len(restored.Deleted) != 1 || restored.Deleted[0] != "stale.txt" {
 		t.Fatalf("restore response = %#v", restored)
+	}
+	// The verb was addressed at the project's Repository, pinned by the UID
+	// the fixture gave it, at exactly the selected commit, with binaries
+	// requested — the input declares the encoding, nothing is probed.
+	if call := checkouts.last(t); call.Repository != "repo-a" || call.Input["repositoryUID"] != testFixtureRepositoryUID || call.Input["ref"] != commitSHA || call.Input["binaryEncoding"] != "base64" {
+		t.Fatalf("checkout call = %#v", call)
 	}
 	app, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "app.txt"})
 	if err != nil || app.Content != "restored\n" {
@@ -199,17 +204,16 @@ func TestRestoreProjectWorkspaceKeepsSkippedFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			upstream := restoreCheckoutServer(t, checkoutToolResult{
+			upstream, _ := checkoutVerbServer(t, codecommit.Checkout{
 				CommitSHA: commitSHA,
-				Files:     []checkoutToolFile{{Path: "app.txt", Content: "restored\n"}},
+				Files:     []codecommit.CheckoutFile{{Path: "app.txt", Content: "restored\n"}},
 				Skipped:   test.skipped,
 			}, nil)
-			defer upstream.Close()
 			server := &Server{
 				tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 				store:                        store.NewMemoryStore(),
 				workspaces:                   workspaces,
-				hubBase:                      upstream.URL,
+				callers:                      newTestCallers(nil, upstream.URL),
 				projectIdentityTokenFor:      testProjectIdentityToken,
 				projectClientFor:             func(identity) (*asclient.Client, error) { return client, nil },
 				developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error { return nil },
@@ -255,21 +259,20 @@ func TestRestoreProjectWorkspaceRejectsMutationDuringCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstream := restoreCheckoutServer(t, checkoutToolResult{
+	upstream, _ := checkoutVerbServer(t, codecommit.Checkout{
 		CommitSHA: commitSHA,
-		Files:     []checkoutToolFile{{Path: "app.txt", Content: "old commit\n"}},
+		Files:     []codecommit.CheckoutFile{{Path: "app.txt", Content: "old commit\n"}},
 	}, func() {
 		if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "app.txt", Content: "newer edit\n"}); err != nil {
 			t.Errorf("concurrent edit: %v", err)
 		}
 	})
-	defer upstream.Close()
 
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                   store.NewMemoryStore(),
 		workspaces:              workspaces,
-		hubBase:                 upstream.URL,
+		callers:                 newTestCallers(nil, upstream.URL),
 		projectIdentityTokenFor: testProjectIdentityToken,
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return client, nil
@@ -306,7 +309,7 @@ func TestRestoreProjectWorkspaceRejectsStaleHistorySelectionBeforeCheckout(t *te
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:      store.NewMemoryStore(),
 		workspaces: workspaces,
-		// No hubBase is deliberate: a stale request must fail before checkout.
+		// No callers is deliberate: a stale request must fail before checkout.
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 	}
 	response := httptest.NewRecorder()
@@ -327,42 +330,6 @@ func restoreRequest(commitSHA string, expectedSourceRevision uint64) *http.Reque
 	request = stampTestCaller(request, testUserForToken("test-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
-}
-
-func restoreCheckoutServer(t *testing.T, checkout checkoutToolResult, beforeResponse func()) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request struct {
-			Method string `json:"method"`
-			Params struct {
-				Name      string         `json:"name"`
-				Arguments map[string]any `json:"arguments"`
-			} `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Errorf("decode MCP request: %v", err)
-		}
-		if request.Method == "tools/list" {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{}}})
-			return
-		}
-		if request.Params.Name != projectToolCodeCheckoutRepository || request.Params.Arguments["ref"] != checkout.CommitSHA {
-			t.Errorf("checkout request = %#v", request.Params)
-		}
-		if beforeResponse != nil {
-			beforeResponse()
-		}
-		raw, _ := json.Marshal(checkout)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result": map[string]any{
-				"content": []map[string]any{{"type": "text", "text": string(raw)}},
-			},
-		})
-	}))
 }
 
 // ProjectView reports sourceRevision as a number, but REST callers that carry
@@ -417,16 +384,15 @@ func TestRestoreProjectWorkspaceAcceptsQuotedSourceRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstream := restoreCheckoutServer(t, checkoutToolResult{
+	upstream, _ := checkoutVerbServer(t, codecommit.Checkout{
 		CommitSHA: commitSHA,
-		Files:     []checkoutToolFile{{Path: "app.txt", Content: "restored\n"}},
+		Files:     []codecommit.CheckoutFile{{Path: "app.txt", Content: "restored\n"}},
 	}, nil)
-	defer upstream.Close()
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                        store.NewMemoryStore(),
 		workspaces:                   workspaces,
-		hubBase:                      upstream.URL,
+		callers:                      newTestCallers(nil, upstream.URL),
 		projectIdentityTokenFor:      testProjectIdentityToken,
 		projectClientFor:             func(identity) (*asclient.Client, error) { return client, nil },
 		developmentSyncAfterMutation: func(identity, *aiv1alpha1.Project, string) error { return nil },

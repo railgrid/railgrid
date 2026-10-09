@@ -8,8 +8,9 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package codecommit asks the Code provider to commit files, as App Studio,
-// through App Studio's own APIExport virtual workspace.
+// Package codecommit asks the Code provider to commit files — and, in the
+// other direction, to read them back — as App Studio, through App Studio's
+// own APIExport virtual workspace.
 //
 // There is exactly one way to commit a project's files and this is it. Two
 // callers use it:
@@ -19,11 +20,15 @@ You may obtain a copy of the License at
 //   - the assistant's commit_project_files tool (api), when the human asked
 //     for the commit.
 //
-// Both make the call AS THIS PROVIDER. `repositories/commit` and
-// `repositories/stage-commit-bundle` are kcp custom subresources the Code
-// provider publishes on its export; App Studio CLAIMS them (manifest.yaml
-// spec.requires[].resources[]), the tenant accepts the claim at Enable,
-// and kcp serves each on App Studio's virtual workspace at
+// And there is exactly one way to load a repository's tree into the
+// workspace: Checkout, which hydrate, restore and repository import (api)
+// all run.
+//
+// Every call is made AS THIS PROVIDER. `repositories/commit`,
+// `repositories/stage-commit-bundle` and `repositories/checkout` are kcp
+// custom subresources the Code provider publishes on its export; App Studio
+// CLAIMS them (manifest.yaml spec.requires[].resources[]), the tenant accepts
+// the claim at Enable, and kcp serves each on App Studio's virtual workspace at
 //
 //	<export VW>/clusters/{tenant}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}
 //
@@ -42,6 +47,15 @@ You may obtain a copy of the License at
 // result whose shape was whatever prose the tool returned. None of that was
 // the contract. The action's schema declares the encoding, so there is nothing
 // to probe; its result is `{commit: {name, uid}}`, the object to watch.
+//
+// Checkout replaced the `code__checkout_repository` tool for the same reasons
+// and one more: the tool creates the transient RepositoryCheckout as the
+// bearer it is handed, and the Project's hub-minted identity — the only
+// credential App Studio may present to the MCP aggregate — can never hold a
+// write on another provider's kind (pkg/hub/identity/policy.go mints `get`
+// on foreign resources and `create` on declared foreign verbs, nothing
+// else). The verb creates the CR as the Code provider behind its gate, so
+// the claim on the coordinate is the whole grant.
 //
 // Nothing here waits for the commit to land. The RepositoryCommit the action
 // creates is the durable thing, and the Project reconciler's watch on it is
@@ -72,13 +86,15 @@ import (
 )
 
 const (
-	// Action and StageBundleAction are the two verbs this package invokes on a
-	// Repository. They are named here, in manifest.yaml's spec.requires entries
-	// (repositories/commit, repositories/stage-commit-bundle) and in the
-	// project identity's clause-C rules (controller/project/identity.go), and
-	// nowhere else.
+	// Action, StageBundleAction and CheckoutAction are the three verbs this
+	// package invokes on a Repository. They are named here, in manifest.yaml's
+	// spec.requires entries (repositories/commit,
+	// repositories/stage-commit-bundle, repositories/checkout) and — for the
+	// commit pair — in the project identity's clause-C rules
+	// (controller/project/identity.go), and nowhere else.
 	Action            = "commit"
 	StageBundleAction = "stage-commit-bundle"
+	CheckoutAction    = "checkout"
 	// ActionVersion is the commit action's contract version. It is not part of
 	// the kube path — the Code provider restores it from its own declaration —
 	// and is kept for the identity rules that still name it.
@@ -94,9 +110,14 @@ const (
 	// gave up first.
 	Timeout = 200 * time.Second
 
-	// maxResponseBytes bounds an action envelope. Both verbs return a handful
-	// of identifiers; anything larger is a wrong endpoint.
+	// maxResponseBytes bounds a commit envelope. Both commit verbs return a
+	// handful of identifiers; anything larger is a wrong endpoint.
 	maxResponseBytes = 1 << 20
+
+	// CheckoutMaxResponseBytes bounds a checkout envelope: the Code
+	// provider's 48 MiB of decoded files, as base64, in JSON, with headroom
+	// (its own declared bound is 72 MiB).
+	CheckoutMaxResponseBytes = 96 << 20
 )
 
 // File is one write or deletion in a commit, in the action's own wire shape.
@@ -227,12 +248,77 @@ func (c *Client) stage(ctx context.Context, req Request) (StagedBundle, error) {
 	return staged, nil
 }
 
-// invoke POSTs one action envelope and decodes its result.
+// CheckoutRequest is one read of a Repository's tree.
+//
+// RepositoryUID pins the read the same way Request.RepositoryUID pins a
+// commit: the provider refuses a UID that does not match its own read of the
+// named Repository.
+type CheckoutRequest struct {
+	// Cluster is the tenant workspace's logical-cluster ID.
+	Cluster string
+
+	RepositoryRef string
+	RepositoryUID string
+
+	// Ref is a branch, tag or commit SHA; empty reads the default branch.
+	Ref string
+}
+
+// CheckoutFile is one checked-out file. Encoding is omitted for UTF-8 text
+// and "base64" for a binary file.
+type CheckoutFile struct {
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Encoding string `json:"encoding,omitempty"`
+}
+
+// Checkout is what the checkout verb hands back: the tree at the resolved
+// ref, and the repository paths it left out (binaries past a limit, too many
+// files), each suffixed with the reason in parentheses.
+type Checkout struct {
+	Ref       string         `json:"ref"`
+	CommitSHA string         `json:"commitSHA"`
+	Files     []CheckoutFile `json:"files"`
+	Skipped   []string       `json:"skipped"`
+}
+
+// Checkout reads the repository's tree at req.Ref. Binary files are always
+// asked for as base64: the verb's input declares the encoding, so — unlike
+// the MCP tool it replaced — there is no capability to probe first.
+func (c *Client) Checkout(ctx context.Context, req CheckoutRequest) (Checkout, error) {
+	if c == nil || c.Callers == nil {
+		return Checkout{}, fmt.Errorf("no provider credential configured to reach the Code provider with")
+	}
+	input := map[string]any{
+		"repositoryUID":  req.RepositoryUID,
+		"binaryEncoding": "base64",
+	}
+	if ref := strings.TrimSpace(req.Ref); ref != "" {
+		input["ref"] = ref
+	}
+	encoded, err := json.Marshal(map[string]any{"input": input})
+	if err != nil {
+		return Checkout{}, err
+	}
+	var out Checkout
+	if err := c.invokeBounded(ctx, req.Cluster, req.RepositoryRef, CheckoutAction, encoded, CheckoutMaxResponseBytes, &out); err != nil {
+		return Checkout{}, err
+	}
+	return out, nil
+}
+
+// invoke POSTs one commit envelope and decodes its result.
 func (c *Client) invoke(ctx context.Context, req Request, action string, body []byte, out any) error {
+	return c.invokeBounded(ctx, req.Cluster, req.RepositoryRef, action, body, maxResponseBytes, out)
+}
+
+// invokeBounded POSTs one action envelope at the Repository the route names
+// and decodes its result, reading at most maxBytes of the response.
+func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, action string, body []byte, maxBytes int64, out any) error {
 	endpoint, err := c.Callers.ExportVerbURL(ctx, RepositoriesGVR, dataplane.Request{
-		ClusterID: req.Cluster,
+		ClusterID: cluster,
 		Resource:  crossprovider.RepositoriesResource,
-		Name:      req.RepositoryRef,
+		Name:      repositoryRef,
 		Verb:      action,
 	})
 	if err != nil {
@@ -256,9 +342,12 @@ func (c *Client) invoke(ctx context.Context, req Request, action string, body []
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return fmt.Errorf("%s: %w", action, err)
+	}
+	if int64(len(payload)) > maxBytes {
+		return fmt.Errorf("%s: response exceeds %d bytes", action, maxBytes)
 	}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
@@ -273,6 +362,11 @@ func (c *Client) invoke(ctx context.Context, req Request, action string, body []
 		return fmt.Errorf("%s: HTTP %d with a malformed response", action, resp.StatusCode)
 	}
 	if envelope.Error != nil && envelope.Error.Code != "" {
+		if message := strings.TrimSpace(envelope.Error.Message); message != "" && message != strings.ReplaceAll(envelope.Error.Code, "_", " ") {
+			// The provider only words an error when the detail is the
+			// consumer's to act on (a checkout's controller message).
+			return fmt.Errorf("%s: %s: %s", action, envelope.Error.Code, message)
+		}
 		return fmt.Errorf("%s: %s", action, envelope.Error.Code)
 	}
 	if resp.StatusCode/100 != 2 {

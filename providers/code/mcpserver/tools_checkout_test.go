@@ -33,6 +33,7 @@ import (
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/commitexec"
 )
 
 // checkoutFixture stands in for the checkout controller: every created
@@ -72,7 +73,7 @@ func checkoutFixture(t *testing.T) (*dynamicfake.FakeDynamicClient, *commitbundl
 			"bundleRef": map[string]any{"name": bundle.Name, "digest": bundle.Digest},
 			"skipped":   []any{"dist/huge.bin (file too large)"},
 		}
-		if err := dyn.Tracker().Create(repositoryCheckoutsGVR, obj, "", metav1.CreateOptions{}); err != nil {
+		if err := dyn.Tracker().Create(commitexec.RepositoryCheckoutsGVR, obj, "", metav1.CreateOptions{}); err != nil {
 			return true, nil, err
 		}
 		return true, obj, nil
@@ -117,7 +118,7 @@ func TestCheckoutRepositoryWithoutOptInNeverEmitsEncoding(t *testing.T) {
 	if _, set := (*annotations)[codev1alpha1.AnnotationCheckoutBinaryEncoding]; set {
 		t.Fatalf("checkout without binaryEncoding was annotated: %v", *annotations)
 	}
-	if len(out.Files) != 1 || out.Files[0] != (checkoutFileOutput{Path: "README.md", Content: "# demo"}) {
+	if len(out.Files) != 1 || out.Files[0] != (commitexec.CheckoutFile{Path: "README.md", Content: "# demo"}) {
 		t.Fatalf("files = %#v, want only the text file", out.Files)
 	}
 	if strings.Join(out.Skipped, "|") != "dist/huge.bin (file too large)|public/logo.png (binary)" {
@@ -140,7 +141,7 @@ func TestCheckoutRepositoryWithOptInReturnsBase64(t *testing.T) {
 	if got := (*annotations)[codev1alpha1.AnnotationCheckoutBinaryEncoding]; got != "base64" {
 		t.Fatalf("binary-encoding annotation = %q, want base64", got)
 	}
-	want := []checkoutFileOutput{
+	want := []commitexec.CheckoutFile{
 		{Path: "README.md", Content: "# demo"},
 		{Path: "public/logo.png", Content: logo, Encoding: "base64"},
 	}

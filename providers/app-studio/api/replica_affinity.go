@@ -486,7 +486,7 @@ func (s *Server) adoptProject(r *http.Request, id identity, projectName string, 
 	if retained {
 		return
 	}
-	hydrated, err := s.hydrateWorkspaceFromRepository(ctx, id, p, r, "")
+	hydrated, err := s.hydrateWorkspaceFromRepository(ctx, id, p, "")
 	if err != nil {
 		var validationErr *ValidationError
 		if errors.As(err, &validationErr) {
