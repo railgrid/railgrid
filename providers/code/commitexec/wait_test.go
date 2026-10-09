@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-package mcpserver
+package commitexec
 
 import (
 	"context"
@@ -43,15 +43,15 @@ func checkoutObject(name, phase string) *unstructured.Unstructured {
 	return obj
 }
 
-var checkoutTerminal = phaseIn(string(codev1alpha1.RepositoryCheckoutPhaseSucceeded), string(codev1alpha1.RepositoryCheckoutPhaseFailed))
+var checkoutTerminal = PhaseIn(string(codev1alpha1.RepositoryCheckoutPhaseSucceeded), string(codev1alpha1.RepositoryCheckoutPhaseFailed))
 
 // An object that is already terminal returns from the initial list, without
 // waiting for a watch event.
 func TestWaitForPhaseReturnsTerminalObjectImmediately(t *testing.T) {
 	dyn := newTenantFake(checkoutObject("done", "Succeeded"), checkoutObject("other", "Failed"))
-	obj, done, err := waitForPhase(context.Background(), dyn, repositoryCheckoutsGVR, "RepositoryCheckout", "done", 5*time.Second, checkoutTerminal)
+	obj, done, err := WaitForPhase(context.Background(), dyn, RepositoryCheckoutsGVR, "RepositoryCheckout", "done", 5*time.Second, checkoutTerminal)
 	if err != nil || !done || obj == nil || obj.GetName() != "done" {
-		t.Fatalf("waitForPhase = %v, %v, %v; want the terminal object", obj, done, err)
+		t.Fatalf("WaitForPhase = %v, %v, %v; want the terminal object", obj, done, err)
 	}
 }
 
@@ -63,12 +63,12 @@ func TestWaitForPhaseObservesLaterTransition(t *testing.T) {
 		// A sibling's transition must not satisfy the wait.
 		_ = dyn.Tracker().Add(checkoutObject("other", "Succeeded"))
 		time.Sleep(50 * time.Millisecond)
-		_ = dyn.Tracker().Update(repositoryCheckoutsGVR, checkoutObject("pending", "Failed"), "")
+		_ = dyn.Tracker().Update(RepositoryCheckoutsGVR, checkoutObject("pending", "Failed"), "")
 	}()
 	start := time.Now()
-	obj, done, err := waitForPhase(context.Background(), dyn, repositoryCheckoutsGVR, "RepositoryCheckout", "pending", 5*time.Second, checkoutTerminal)
+	obj, done, err := WaitForPhase(context.Background(), dyn, RepositoryCheckoutsGVR, "RepositoryCheckout", "pending", 5*time.Second, checkoutTerminal)
 	if err != nil || !done || obj == nil {
-		t.Fatalf("waitForPhase = %v, %v, %v; want done", obj, done, err)
+		t.Fatalf("WaitForPhase = %v, %v, %v; want done", obj, done, err)
 	}
 	if phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase"); phase != "Failed" {
 		t.Fatalf("phase = %q, want Failed", phase)
@@ -93,9 +93,9 @@ func TestWaitForPhaseObservesLaterTransition(t *testing.T) {
 // Timing out is not a failure: the last state seen comes back with done=false.
 func TestWaitForPhaseTimeoutReturnsLastSeen(t *testing.T) {
 	dyn := newTenantFake(checkoutObject("pending", "Running"))
-	obj, done, err := waitForPhase(context.Background(), dyn, repositoryCheckoutsGVR, "RepositoryCheckout", "pending", 100*time.Millisecond, checkoutTerminal)
+	obj, done, err := WaitForPhase(context.Background(), dyn, RepositoryCheckoutsGVR, "RepositoryCheckout", "pending", 100*time.Millisecond, checkoutTerminal)
 	if err != nil || done {
-		t.Fatalf("waitForPhase = %v, %v, %v; want a clean timeout", obj, done, err)
+		t.Fatalf("WaitForPhase = %v, %v, %v; want a clean timeout", obj, done, err)
 	}
 	if obj == nil || obj.GetName() != "pending" {
 		t.Fatalf("last seen = %v, want the pending object", obj)
@@ -104,15 +104,15 @@ func TestWaitForPhaseTimeoutReturnsLastSeen(t *testing.T) {
 	// The caller's context ending is the same clean timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	obj, done, err = waitForPhase(ctx, dyn, repositoryCheckoutsGVR, "RepositoryCheckout", "pending", time.Minute, checkoutTerminal)
+	obj, done, err = WaitForPhase(ctx, dyn, RepositoryCheckoutsGVR, "RepositoryCheckout", "pending", time.Minute, checkoutTerminal)
 	if err != nil || done {
-		t.Fatalf("waitForPhase = %v, %v, %v; want a clean timeout", obj, done, err)
+		t.Fatalf("WaitForPhase = %v, %v, %v; want a clean timeout", obj, done, err)
 	}
 
 	// An object that does not exist is a failure, not a timeout.
-	obj, done, err = waitForPhase(context.Background(), dyn, repositoryCheckoutsGVR, "RepositoryCheckout", "missing", 50*time.Millisecond, checkoutTerminal)
+	obj, done, err = WaitForPhase(context.Background(), dyn, RepositoryCheckoutsGVR, "RepositoryCheckout", "missing", 50*time.Millisecond, checkoutTerminal)
 	if done || obj != nil || err == nil || !strings.Contains(err.Error(), `get RepositoryCheckout "missing"`) {
-		t.Fatalf("waitForPhase = %v, %v, %v; want a lookup error", obj, done, err)
+		t.Fatalf("WaitForPhase = %v, %v, %v; want a lookup error", obj, done, err)
 	}
 }
 
@@ -121,10 +121,10 @@ func TestWaitForPhaseDeletedIsAnError(t *testing.T) {
 	dyn := newTenantFake(checkoutObject("pending", "Running"))
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		_ = dyn.Tracker().Delete(repositoryCheckoutsGVR, "", "pending", metav1.DeleteOptions{})
+		_ = dyn.Tracker().Delete(RepositoryCheckoutsGVR, "", "pending", metav1.DeleteOptions{})
 	}()
-	_, done, err := waitForPhase(context.Background(), dyn, repositoryCheckoutsGVR, "RepositoryCheckout", "pending", 5*time.Second, checkoutTerminal)
+	_, done, err := WaitForPhase(context.Background(), dyn, RepositoryCheckoutsGVR, "RepositoryCheckout", "pending", 5*time.Second, checkoutTerminal)
 	if done || err == nil || !strings.Contains(err.Error(), `RepositoryCheckout "pending" was deleted`) {
-		t.Fatalf("waitForPhase = %v, %v; want a deletion error", done, err)
+		t.Fatalf("WaitForPhase = %v, %v; want a deletion error", done, err)
 	}
 }

@@ -377,8 +377,8 @@ func repositorySpec(in createRepositoryInput, repoName string) map[string]any {
 // state seen (nil when none was), so the caller can report the phase the
 // commit was still in and its rate-limit condition.
 func waitRepositoryCommit(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
-	obj, _, err := waitForPhase(ctx, dyn, repositoryCommitsGVR, "RepositoryCommit", name, timeout,
-		phaseIn(string(codev1alpha1.RepositoryCommitPhaseSucceeded), string(codev1alpha1.RepositoryCommitPhaseFailed)))
+	obj, _, err := commitexec.WaitForPhase(ctx, dyn, repositoryCommitsGVR, "RepositoryCommit", name, timeout,
+		commitexec.PhaseIn(string(codev1alpha1.RepositoryCommitPhaseSucceeded), string(codev1alpha1.RepositoryCommitPhaseFailed)))
 	if err != nil {
 		return nil, err
 	}
@@ -428,24 +428,12 @@ func repositoryCommitFilePaths(obj *unstructured.Unstructured) []string {
 }
 
 func repositoryCommitConditionMessage(obj *unstructured.Unstructured) string {
-	if msg, ok := repositoryCommitReadyCondition(obj)["message"].(string); ok && msg != "" {
-		return msg
-	}
-	return "unknown error"
+	return commitexec.ConditionMessage(obj)
 }
 
 // repositoryCommitReadyCondition returns the Ready condition, or nil.
 func repositoryCommitReadyCondition(obj *unstructured.Unstructured) map[string]any {
-	if obj == nil {
-		return nil
-	}
-	conds, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	for _, raw := range conds {
-		if cond, ok := raw.(map[string]any); ok && cond["type"] == codev1alpha1.ConditionReady {
-			return cond
-		}
-	}
-	return nil
+	return commitexec.ReadyCondition(obj)
 }
 
 func putIf(m map[string]any, k, v string) {
