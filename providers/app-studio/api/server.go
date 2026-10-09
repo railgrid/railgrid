@@ -92,11 +92,13 @@ type Server struct {
 	projectIdentityTokenFor        func(context.Context, identity, *aiv1alpha1.Project) (string, error)
 	projectProviderReferenceReader func(context.Context, identity, *aiv1alpha1.Project, *aiv1alpha1.ProjectProviderResourceReference) (*unstructured.Unstructured, error)
 	// hubToken is the bearer this provider presents on the hub's OWN REST API
-	// and MCP aggregate — the provider catalog, the membership rosters, the
-	// browser-session handoff, the workspace MCP endpoint. Those are not
-	// data-plane verbs and are still reached on the hub; a verb carries no
-	// caller credential to forward there, so they are made as the provider,
-	// with the kcp-authenticated caller's name as the X-Railgrid-User label.
+	// — the provider catalog, the membership rosters, the browser-session
+	// handoff. Those are not data-plane verbs and are still reached on the
+	// hub; a verb carries no caller credential to forward there, so they are
+	// made as the provider, with the kcp-authenticated caller's name as the
+	// X-Railgrid-User label. It is never presented to the workspace MCP
+	// aggregate: those calls are made as the Project's hub-minted scoped
+	// identity (projectMCPRequest).
 	hubToken                     string
 	mcpInsecureSkipTLSVerify     bool
 	previewInsecureSkipTLSVerify bool
@@ -427,7 +429,7 @@ func tenantClientFor(callers dataplane.ProviderCallerFactory) *tenant.Client {
 }
 
 // SetHubToken installs the bearer this provider presents on the hub's own REST
-// API and MCP aggregate (see Server.hubToken).
+// API (see Server.hubToken).
 func (s *Server) SetHubToken(token string) {
 	if s == nil {
 		return

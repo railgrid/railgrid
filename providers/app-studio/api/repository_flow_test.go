@@ -279,9 +279,11 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 	// provider — the capability is the repositories/commit/v1 action now, not
 	// a code__ entry in the aggregate's catalogue.
 	server.tenantProviders = testProviders(testCommitProvider)
+	server.projectIdentityTokenFor = testProjectIdentityToken
 	tools, err := server.loadProjectMCPTools(
 		httptest.NewRequest(http.MethodPost, "/", nil),
 		identity{tenant: "root:org-a:ws-1", clusterID: "cluster-ws-1"},
+		&aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid-demo"}},
 		projectLLMSettings{},
 	)
 	if err != nil {
@@ -335,6 +337,7 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
+	server.projectIdentityTokenFor = testProjectIdentityToken
 	server.tenantProviders = testProviders(testCommitProvider)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
@@ -413,6 +416,7 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
+	server.projectIdentityTokenFor = testProjectIdentityToken
 	project := projectWithRepository("demo-repo", "demo", "github")
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"

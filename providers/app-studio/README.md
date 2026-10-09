@@ -147,7 +147,7 @@ Environment variables consumed by the binary:
 | Var | Purpose |
 |---|---|
 | `PORT` | Listen port (default `8081`) |
-| `RAILGRID_HUB_URL` | Hub base URL for the hub's own REST API (provider catalog, membership rosters, browser-session handoff) and the workspace MCP aggregate, called as the provider with its hub token |
+| `RAILGRID_HUB_URL` | Hub base URL for the hub's own REST API (provider catalog, membership rosters, browser-session handoff), called as the provider with its hub token, and for the workspace MCP aggregate, called as the Project's hub-minted scoped identity |
 | `RAILGRID_HUB_PUBLIC_URL` | Browser-reachable HTTPS hub origin for private preview authorization redirects and one-use browser-session handoffs; may differ from the internal `RAILGRID_HUB_URL`, and private browser inspection fails closed when unset or invalid |
 | `RAILGRID_HUB_TOKEN` | Bearer token for the heartbeat |
 | `RAILGRID_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |

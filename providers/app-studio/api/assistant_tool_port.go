@@ -20,13 +20,15 @@ import (
 	"context"
 	"errors"
 	"net/http"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // projectAssistantToolPort keeps HTTP transport at the App Studio orchestration
 // boundary. Eino receives capability-scoped tool metadata and invokes tools
 // through this port; it never receives the caller's HTTP request.
 type projectAssistantToolPort interface {
-	DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error)
+	DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error)
 	Invoke(context.Context, projectAssistantTool, projectAssistantToolCallRequest) (string, error)
 }
 
@@ -42,11 +44,11 @@ func newProjectAssistantHTTPToolPort(server *Server, request *http.Request) proj
 	return projectAssistantHTTPToolPort{server: server, request: request}
 }
 
-func (p projectAssistantHTTPToolPort) DiscoverMCP(ctx context.Context, id identity, settings projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (p projectAssistantHTTPToolPort) DiscoverMCP(ctx context.Context, id identity, project *aiv1alpha1.Project, settings projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	if p.server == nil || p.request == nil {
 		return nil, false, errors.New("the App Studio tool transport is not configured")
 	}
-	return p.server.loadProjectMCPAssistantTools(p.request.WithContext(ctx), id, settings)
+	return p.server.loadProjectMCPAssistantTools(p.request.WithContext(ctx), id, project, settings)
 }
 
 func (p projectAssistantHTTPToolPort) Invoke(ctx context.Context, tool projectAssistantTool, req projectAssistantToolCallRequest) (string, error) {
@@ -56,6 +58,12 @@ func (p projectAssistantHTTPToolPort) Invoke(ctx context.Context, tool projectAs
 	if tool == nil {
 		return "", errors.New("an App Studio tool is required")
 	}
-	req.HTTPRequest = p.server.hubRequest(p.request.WithContext(ctx), req.Identity)
+	// Every aggregate MCP call a tool makes is authenticated as the Project's
+	// own hub-minted identity; a tool that cannot obtain one does not run.
+	httpReq, err := p.server.projectMCPRequest(ctx, p.request, req.Identity, req.Project)
+	if err != nil {
+		return "", err
+	}
+	req.HTTPRequest = httpReq
 	return tool.Call(ctx, req)
 }

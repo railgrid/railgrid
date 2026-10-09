@@ -39,7 +39,7 @@ import (
 
 type projectAssistantV2DirectToolPort struct{}
 
-func (projectAssistantV2DirectToolPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (projectAssistantV2DirectToolPort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	return nil, false, nil
 }
 
@@ -51,7 +51,7 @@ type projectAssistantV2CountingCommitPort struct {
 	calls int
 }
 
-func (*projectAssistantV2CountingCommitPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (*projectAssistantV2CountingCommitPort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	return nil, false, nil
 }
 

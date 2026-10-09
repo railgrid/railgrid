@@ -40,10 +40,10 @@ import (
 
 func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The MCP aggregate is the hub's own: reached as the provider, with
-		// the caller's name as a label.
-		if got := r.Header.Get("Authorization"); got != "Bearer provider-hub-token" {
-			t.Fatalf("Authorization = %q, want the provider's hub token", got)
+		// The MCP aggregate is reached as the Project's own hub-minted
+		// identity, never as the provider; the caller's name is a label.
+		if got := r.Header.Get("Authorization"); got != "Bearer project-workload-token" {
+			t.Fatalf("Authorization = %q, want the Project identity", got)
 		}
 		if got := r.Header.Get("X-Railgrid-User"); got != "alice" {
 			t.Fatalf("X-Railgrid-User = %q, want alice", got)
@@ -69,7 +69,7 @@ func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, hubToken: "provider-hub-token"}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, hubToken: "provider-hub-token", projectIdentityTokenFor: testProjectIdentityToken}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	run, err := s.fetchProjectBuildRun(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a", user: "alice"}, p, req, "70aed526")
@@ -114,6 +114,7 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return asclient.NewFromDynamic(dynamicClient), nil
 		},
+		projectIdentityTokenFor: testProjectIdentityToken,
 	}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
 		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
@@ -159,6 +160,7 @@ func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) 
 		projectClientFor: func(identity) (*asclient.Client, error) {
 			return asclient.NewFromDynamic(dynamicClient), nil
 		},
+		projectIdentityTokenFor: testProjectIdentityToken,
 	}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
 		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
@@ -210,7 +212,7 @@ func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
 			}))
 			t.Cleanup(mcp.Close)
 
-			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
+			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken}
 			p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 			req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 			req = stampTestCaller(req, testUserForToken("caller-token"))
@@ -264,7 +266,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
 	req = stampTestCaller(req, testUserForToken("caller-token"))
@@ -316,7 +318,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL}
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken}
 	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
 	req := httptest.NewRequest(http.MethodPost, "/rebuild", nil)
 	req = stampTestCaller(req, testUserForToken("caller-token"))

@@ -53,9 +53,10 @@ func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
 	bindTestProjectLedgerTo(fixture.workspaces, client)
 	fixture.server = &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "workspace-a")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		store:            store.NewMemoryStore(),
-		workspaces:       fixture.workspaces,
-		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
+		store:                   store.NewMemoryStore(),
+		workspaces:              fixture.workspaces,
+		projectClientFor:        func(identity) (*asclient.Client, error) { return client, nil },
+		projectIdentityTokenFor: testProjectIdentityToken,
 		developmentSyncAfterMutation: func(_ identity, _ *aiv1alpha1.Project, action string) error {
 			if action != projectActionWorkspaceFileWrite {
 				t.Errorf("sync action = %q", action)

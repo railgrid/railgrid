@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 func TestProjectAssistantResearchPhraseRequested(t *testing.T) {
@@ -121,7 +123,7 @@ type researchCapabilityFakePort struct {
 	invoked          []string
 }
 
-func (p *researchCapabilityFakePort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (p *researchCapabilityFakePort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	return nil, false, nil
 }
 
@@ -281,7 +283,7 @@ type researchCapabilityDiscoveryPort struct {
 	researchCapabilityFakePort
 }
 
-func (p *researchCapabilityDiscoveryPort) DiscoverMCP(context.Context, identity, projectLLMSettings) ([]projectAssistantTool, bool, error) {
+func (p *researchCapabilityDiscoveryPort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
 	return researchCapabilityAgentsTools(), false, nil
 }
 
