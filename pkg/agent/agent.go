@@ -1034,12 +1034,15 @@ func retryUntilSuccess(ctx context.Context, logger klog.Logger, initial, max tim
 		case <-time.After(backoff):
 		}
 		if err := attempt(ctx); err != nil {
-			logger.V(2).Info("still refused; will retry", "what", what,
-				"err", err.Error(), "retryIn", backoff.String())
+			// Work out the next wait before reporting it: "retryIn" is a
+			// promise about what happens next, and logging the delay that has
+			// just elapsed tells an operator the wrong recovery schedule.
 			backoff *= 2
 			if backoff > max {
 				backoff = max
 			}
+			logger.V(2).Info("still refused; will retry", "what", what,
+				"err", err.Error(), "retryIn", backoff.String())
 			continue
 		}
 		logger.Info("handed over after an earlier failure", "what", what)

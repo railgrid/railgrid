@@ -209,3 +209,100 @@ func TestAsProviderReportsWhenNoEndpointServesTheCluster(t *testing.T) {
 		t.Fatalf("err = %v, want it to name the cluster that is unserved", err)
 	}
 }
+
+// The published endpoint set is not fixed: kcp publishes a shard's URL only
+// once the export has a consumer there, so it grows as workspaces on new
+// shards enable the provider. Caching it for the life of the process meant a
+// factory that first saw one shard never saw the second, and sent that
+// shard's consumers to the one endpoint it knew -- the refusal this change
+// exists to prevent.
+func TestAsProviderPicksUpAShardPublishedLater(t *testing.T) {
+	const (
+		export     = "edges.providers.railgrid.ai"
+		onNewShard = "24192sxym7m5edtu"
+	)
+
+	// Shard A is published from the start and does not serve the consumer.
+	shardA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","code":403,"reason":"Forbidden","message":"forbidden"}`))
+	}))
+	defer shardA.Close()
+
+	// Shard B serves it, and is published only later.
+	var shardBCalls atomic.Int32
+	shardB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		shardBCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","status":{"allowed":false}}`))
+	}))
+	defer shardB.Close()
+
+	var bPublished atomic.Bool
+	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		eps := `{"url":"` + shardA.URL + `/services/apiexport/abc/` + export + `"}`
+		if bPublished.Load() {
+			eps += `,{"url":"` + shardB.URL + `/services/apiexport/abc/` + export + `"}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apiVersion":"apis.kcp.io/v1alpha1","kind":"APIExportEndpointSlice","metadata":{"name":"` + export + `"},"status":{"endpoints":[` + eps + `]}}`))
+	}))
+	defer kcp.Close()
+
+	base := &rest.Config{Host: kcp.URL + "/clusters/root:railgrid:providers:edges", BearerToken: "provider-token"}
+	callers, err := NewCallerFactory(base, WithProviderConfig(base, export))
+	if err != nil {
+		t.Fatalf("NewCallerFactory: %v", err)
+	}
+
+	// First lookup, while only shard A exists. One endpoint means nothing to
+	// choose between, so A comes back and nothing is remembered for the
+	// cluster.
+	first, err := callers.endpointForCluster(t.Context(), onNewShard)
+	if err != nil {
+		t.Fatalf("first endpointForCluster: %v", err)
+	}
+	if !strings.HasPrefix(first, shardA.URL) {
+		t.Fatalf("first endpoint = %q, want shard A while it is the only one published", first)
+	}
+
+	// The consumer's shard now has the export, so kcp publishes its URL.
+	bPublished.Store(true)
+
+	// Without a refresh this keeps returning shard A forever. The refresh
+	// interval is squeezed rather than waited out.
+	callers.providerMu.Lock()
+	callers.endpointRefresh = 0
+	callers.providerMu.Unlock()
+
+	got, err := callers.endpointForCluster(t.Context(), onNewShard)
+	if err != nil {
+		t.Fatalf("endpointForCluster after the slice grew: %v", err)
+	}
+	if !strings.HasPrefix(got, shardB.URL) {
+		t.Fatalf("endpoint = %q, want shard B once it is published", got)
+	}
+	if shardBCalls.Load() == 0 {
+		t.Fatal("shard B was never probed; the endpoint set was not re-read")
+	}
+}
+
+// A choice already made is dropped when the published set changes, so a
+// consumer is not pinned to an endpoint that has gone away.
+func TestEndpointSetChangeInvalidatesTheClusterChoice(t *testing.T) {
+	c := &Callers{
+		clusterEndpoint:   map[string]string{"24192sxym7m5edtu": "https://old.example/services/apiexport/abc/x"},
+		providerEndpoints: []string{"https://old.example/services/apiexport/abc/x"},
+	}
+	if !sameEndpoints([]string{"https://old.example/services/apiexport/abc/x"}, c.providerEndpoints) {
+		t.Fatal("sameEndpoints should ignore nothing when the sets match")
+	}
+	if sameEndpoints([]string{"https://new.example/services/apiexport/abc/x"}, c.providerEndpoints) {
+		t.Fatal("sameEndpoints must notice a different set")
+	}
+	// Order is kcp's choice and must not count as a change.
+	a := []string{"https://one.example/x", "https://two.example/x"}
+	if !sameEndpoints(a, []string{a[1], a[0]}) {
+		t.Fatal("sameEndpoints must compare as a set, not a list")
+	}
+}
