@@ -98,8 +98,12 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 	if ref = strings.TrimSpace(ref); ref != "" {
 		args["ref"] = ref
 	}
-	args = s.checkoutArgs(ctx, httpReq, id, args)
-	raw, err := callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), s.hubRequest(httpReq, id), id.tenant, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
+	args = s.checkoutArgs(ctx, httpReq, id, p, args)
+	hubReq, err := s.projectMCPRequest(ctx, httpReq, id, p)
+	if err != nil {
+		return projectHydrateResponse{}, err
+	}
+	raw, err := callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), hubReq, id.tenant, s.mcpInsecureSkipTLSVerify, projectToolCodeCheckoutRepository, args)
 	if err != nil {
 		return projectHydrateResponse{}, fmt.Errorf("checkout repository: %w", err)
 	}

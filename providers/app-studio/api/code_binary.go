@@ -17,6 +17,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/hubmcp"
 )
 
@@ -35,7 +36,7 @@ import (
 // codeCheckoutBinaryEncoding reports whether code__checkout_repository can
 // return binaries. A failed probe answers false for this call only (nothing is
 // cached).
-func (s *Server) codeCheckoutBinaryEncoding(ctx context.Context, r *http.Request, id identity) bool {
+func (s *Server) codeCheckoutBinaryEncoding(ctx context.Context, r *http.Request, id identity, project *aiv1alpha1.Project) bool {
 	cluster := strings.TrimSpace(id.clusterID)
 	if checkout, ok := s.codeCheckoutBinary.Get(cluster); ok {
 		return checkout
@@ -43,7 +44,12 @@ func (s *Server) codeCheckoutBinaryEncoding(ctx context.Context, r *http.Request
 	if r == nil || cluster == "" {
 		return false
 	}
-	tools, err := fetchProjectMCPTools(ctx, s.mcpEndpoint(cluster), s.hubRequest(r, id), id.tenant, s.mcpInsecureSkipTLSVerify)
+	hubReq, err := s.projectMCPRequest(ctx, r, id, project)
+	if err != nil {
+		klog.V(2).Infof("read Code provider tool catalog for cluster %s: %v", cluster, err)
+		return false
+	}
+	tools, err := fetchProjectMCPTools(ctx, s.mcpEndpoint(cluster), hubReq, id.tenant, s.mcpInsecureSkipTLSVerify)
 	if err != nil {
 		klog.V(2).Infof("read Code provider tool catalog for cluster %s: %v", cluster, err)
 		return false
@@ -71,8 +77,8 @@ func (f checkoutToolFile) bytes() ([]byte, error) {
 }
 
 // checkoutArgs adds the binary opt-in when the provider supports it.
-func (s *Server) checkoutArgs(ctx context.Context, r *http.Request, id identity, args map[string]any) map[string]any {
-	if s.codeCheckoutBinaryEncoding(ctx, r, id) {
+func (s *Server) checkoutArgs(ctx context.Context, r *http.Request, id identity, project *aiv1alpha1.Project, args map[string]any) map[string]any {
+	if s.codeCheckoutBinaryEncoding(ctx, r, id, project) {
 		args["binaryEncoding"] = hubmcp.EncodingBase64
 	}
 	return args
