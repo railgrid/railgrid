@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 )
@@ -44,6 +45,11 @@ type CallerFactory interface {
 const (
 	DefaultCallerCacheSize = 512
 	DefaultCallerCacheTTL  = 10 * time.Minute
+	// DefaultEndpointRefresh bounds how long the published endpoint set may go
+	// unchecked. It is not a cache for speed: the set changes in normal
+	// operation, and a stale one sends a consumer to a shard that cannot serve
+	// it.
+	DefaultEndpointRefresh = time.Minute
 )
 
 // Callers is the default CallerFactory: host and CA from the provider's own
@@ -73,7 +79,13 @@ type Callers struct {
 	// clusterEndpoint remembers, per consumer cluster, which published
 	// endpoint actually serves it, so the choice is made once.
 	clusterEndpoint map[string]string
-	providerMu      sync.Mutex
+	// providerEndpointsRead is when providerEndpoints was last read, and
+	// endpointRefresh how stale it may get. The set is not fixed: kcp publishes
+	// a shard's URL only once the export has a consumer there, so it grows as
+	// workspaces on new shards enable the provider.
+	providerEndpointsRead time.Time
+	endpointRefresh       time.Duration
+	providerMu            sync.Mutex
 
 	maxEntries int
 	ttl        time.Duration
@@ -183,10 +195,11 @@ func NewHubCallerFactory(hubBase string, caCertData []byte, insecure bool, opts 
 
 func newCallers(base *rest.Config, opts ...CallerOption) *Callers {
 	c := &Callers{
-		base:       base,
-		maxEntries: DefaultCallerCacheSize,
-		ttl:        DefaultCallerCacheTTL,
-		cache:      map[string]*callerEntry{},
+		base:            base,
+		maxEntries:      DefaultCallerCacheSize,
+		ttl:             DefaultCallerCacheTTL,
+		endpointRefresh: DefaultEndpointRefresh,
+		cache:           map[string]*callerEntry{},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -435,13 +448,14 @@ func (c *Callers) ProviderHTTPClient() (*http.Client, error) {
 // provider's controllers watch tenant workspaces through already, so the
 // subresource path acts through exactly the same door. A sharded kcp publishes
 // one URL per shard; endpointForCluster decides between them.
-func (c *Callers) exportEndpoints(ctx context.Context) ([]string, error) {
+func (c *Callers) exportEndpoints(ctx context.Context, force bool) ([]string, error) {
 	c.providerMu.Lock()
 	defer c.providerMu.Unlock()
 	if c.providerEndpoint != "" {
 		return []string{c.providerEndpoint}, nil
 	}
-	if len(c.providerEndpoints) > 0 {
+	fresh := time.Since(c.providerEndpointsRead) < c.endpointRefresh
+	if !force && fresh && len(c.providerEndpoints) > 0 {
 		return c.providerEndpoints, nil
 	}
 	if c.providerExport == "" {
@@ -453,6 +467,11 @@ func (c *Callers) exportEndpoints(ctx context.Context) ([]string, error) {
 	}
 	slice, err := client.Resource(APIExportEndpointSlices()).Get(ctx, c.providerExport, metav1.GetOptions{})
 	if err != nil {
+		// A refresh that fails leaves the previous set in place: it is the best
+		// thing known, and a transient read must not take the data plane down.
+		if len(c.providerEndpoints) > 0 {
+			return c.providerEndpoints, nil
+		}
 		return nil, fmt.Errorf("dataplane: reading APIExportEndpointSlice %s: %w", c.providerExport, err)
 	}
 	endpoints, _, err := unstructured.NestedSlice(slice.Object, "status", "endpoints")
@@ -472,8 +491,23 @@ func (c *Callers) exportEndpoints(ctx context.Context) ([]string, error) {
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("dataplane: APIExportEndpointSlice %s publishes no endpoint yet", c.providerExport)
 	}
+	if !sameEndpoints(urls, c.providerEndpoints) {
+		// A choice made against the old set may name an endpoint that is gone,
+		// or miss one that now serves a consumer better: decide again.
+		c.clusterEndpoint = nil
+	}
 	c.providerEndpoints = urls
+	c.providerEndpointsRead = time.Now()
 	return urls, nil
+}
+
+// sameEndpoints compares the published set regardless of the order kcp
+// happened to list it in.
+func sameEndpoints(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return sets.New(a...).Equal(sets.New(b...))
 }
 
 // endpointForCluster picks the export virtual-workspace URL that serves
@@ -496,21 +530,49 @@ func (c *Callers) exportEndpoints(ctx context.Context) ([]string, error) {
 // endpoint that serves this consumer. The review is not persisted and its
 // answer is irrelevant here -- only whether the request was allowed at all.
 func (c *Callers) endpointForCluster(ctx context.Context, clusterID string) (string, error) {
-	endpoints, err := c.exportEndpoints(ctx)
+	endpoints, err := c.exportEndpoints(ctx, false)
 	if err != nil {
 		return "", err
 	}
+	if endpoint, ok := c.chosenEndpoint(clusterID); ok {
+		return endpoint, nil
+	}
 	if len(endpoints) == 1 {
+		// Nothing to choose between. Probing would only turn a precise error
+		// from the real call ("the claim was not accepted") into a vague one.
 		return endpoints[0], nil
 	}
 
-	c.providerMu.Lock()
-	chosen, ok := c.clusterEndpoint[clusterID]
-	c.providerMu.Unlock()
-	if ok {
-		return chosen, nil
+	endpoint, errs := c.probeAll(ctx, endpoints, clusterID)
+	if endpoint != "" {
+		return endpoint, nil
 	}
 
+	// Nothing served it. The set may simply be out of date -- a shard's URL
+	// appears only once the export has a consumer there -- so look again before
+	// giving up, ignoring the refresh interval.
+	refreshed, rerr := c.exportEndpoints(ctx, true)
+	if rerr == nil && !sameEndpoints(refreshed, endpoints) {
+		if endpoint, moreErrs := c.probeAll(ctx, refreshed, clusterID); endpoint != "" {
+			return endpoint, nil
+		} else {
+			errs = append(errs, moreErrs...)
+		}
+	}
+	return "", fmt.Errorf("dataplane: no export virtual workspace serves cluster %s: %w", clusterID, errors.Join(errs...))
+}
+
+// chosenEndpoint returns the endpoint already settled on for clusterID.
+func (c *Callers) chosenEndpoint(clusterID string) (string, bool) {
+	c.providerMu.Lock()
+	defer c.providerMu.Unlock()
+	endpoint, ok := c.clusterEndpoint[clusterID]
+	return endpoint, ok
+}
+
+// probeAll returns the first endpoint that serves clusterID, remembering it,
+// or every reason none did.
+func (c *Callers) probeAll(ctx context.Context, endpoints []string, clusterID string) (string, []error) {
 	var errs []error
 	for _, endpoint := range endpoints {
 		if err := c.probeEndpoint(ctx, endpoint, clusterID); err != nil {
@@ -525,7 +587,7 @@ func (c *Callers) endpointForCluster(ctx context.Context, clusterID string) (str
 		c.providerMu.Unlock()
 		return endpoint, nil
 	}
-	return "", fmt.Errorf("dataplane: no export virtual workspace serves cluster %s: %w", clusterID, errors.Join(errs...))
+	return "", errs
 }
 
 // probeEndpoint reports whether endpoint serves clusterID, by creating the
