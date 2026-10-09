@@ -15,8 +15,8 @@ skills/railgrid/
   SKILL.md                     orientation, rules, playbooks (start here)
   .claude-plugin/plugin.json   Claude Code plugin: this skill plus the `railgrid mcp proxy` MCP server
   references/cli.md            env, app, commit, sandbox, mcp (proxy, url, claude, codex)
-  references/access.md         CLI, auth, org/workspace IDs, hub REST, URL grammar, kube REST by cluster
-  references/app-studio.md     App Studio CRDs and every REST route
+  references/access.md         CLI, auth, org/workspace IDs, hub REST, the verb URL grammar, kube REST by cluster
+  references/app-studio.md     App Studio CRDs and every verb on them
   references/code.md           GitHub connections, repositories, commits, CI status
   references/infrastructure.md templates, instances, URLs, access gate, dev sandboxes
   references/agents.md         agents, runs, channels, schedules, deep research
@@ -103,7 +103,12 @@ directory travels as package resources.
 Everything in the skill was read from the railgrid source and docs on
 2026-09-09, then corrected against a live hub the same day. The MCP-first
 guidance (`railgrid mcp proxy`, `fmcp`) was checked against a local hub on
-2026-09-13. Route tables,
+2026-09-13. On 2026-10-09 every reference was re-verified against the source
+after the provider REST surfaces (`/services/providers/<p>/api/*`) were
+retired: every provider call is now a kube path on the workspace cluster, a
+CR or a custom-subresource verb
+`/clusters/<cluster>/apis/<group>/<version>/<resource>/<name>/<verb>`, and
+`railgrid env` exports `AS` as App Studio's kube API base. Route tables,
 CRD fields, and MCP tool names are the parts most likely to drift. When you
 change one of those in the repo, update the matching reference file in the
 same PR. `references/troubleshooting.md` is the list of error strings and

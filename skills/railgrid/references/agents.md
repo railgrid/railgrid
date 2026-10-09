@@ -1,13 +1,29 @@
 # Agents provider reference
 
-From a coding agent, use the `agents__*` MCP tools (section 7) through
-`railgrid mcp proxy`. REST base `https://<hub>/services/providers/agents`
-(written `$AG`; headers as for every provider: bearer, `X-Railgrid-Org`,
-`X-Railgrid-Workspace`) is the same API plus what MCP leaves out: streaming
-chat, sessions and messages, the inbox, usage and pricing, the event stream,
-run cancellation and `idempotencyKey`.
+From a coding agent, use the `agents__*` MCP tools (section 8) through
+`railgrid mcp proxy`. Everything else is the kube API of your workspace:
+the CRs below with `kubectl` (context `railgrid`) or kube REST at
+`$HUB/clusters/$CLUSTER/…` with your bearer, and the provider's **verbs**,
+which are kcp custom subresources on the same API:
+
+```
+$HUB/clusters/$CLUSTER/apis/agents.railgrid.ai/v1alpha1/{resource}/{name}/{verb}[/{tail}]
+```
+
+There is no `/services/providers/agents/api/*` any more (and no `/s2s/*`);
+`AG=$HUB/services/providers/agents` only still serves `/mcp`, the browser
+OAuth routes and the anonymous inbound webhooks (section 3). A verb carries
+only the bearer — no `X-Railgrid-Org`/`-Workspace` headers; the cluster in
+the path is the workspace.
 
 ## 1. CRDs (`agents.railgrid.ai/v1alpha1`, cluster-scoped)
+
+`kubectl get agents` (short `agt`), `modelcredentials` (`modelcred`), `runs`,
+`connections` (`conn`), `schedules` (`sched`), `triggers` (`trig`),
+`toolsets` (`ts`). Every kind carries a `Validated` condition: the
+reconciler reports cross-object mistakes (unknown `agentRef`, unknown tool
+family, a grant without `core`, a channel conflict…) on the object instead
+of a 400 at write time, so read `status.conditions` after `kubectl apply`.
 
 ### Agent
 
@@ -15,36 +31,63 @@ run cancellation and `idempotencyKey`.
 |---|---|
 | `displayName` (required), `description` | |
 | `systemPrompt` (≤ 32 KiB) | Persona injected at the head of every run |
-| `models {chat, background, compaction}` | Purpose → model credential name; `chat` is the fallback for all |
-| `modelFallbacks[]` | Tried when the chat model errors (before the first streamed token) |
+| `backend.type model\|harness` (default `model`) | Where turns execute: in the provider against a chat model, or on a coding harness on an edge (section 5) |
+| `backend.model {credentials {chat, background, compaction}, fallbacks[]}` | Purpose → ModelCredential name; `chat` is the fallback for all. `fallbacks` are tried when the chat credential errors before the first streamed token. Replaces the former `models`/`modelFallbacks` |
+| `backend.harness {edgeRef {kind, name}, credentialRef, model?, workspace persistent\|ephemeral}` | Section 5. CEL: `type: harness` requires `harness` and rejects `model` |
 | `autonomy suggest\|ask\|auto` (default `ask`) | Approval posture |
 | `delegates[]` | Agents this one may `delegate` to |
 | `tools.interactive` / `tools.background` | `ToolGrant {families[], connections[], toolsets[], requireApproval[]}` |
 | `memory {enabled (true), maxNotes}` | |
-| `limits {maxToolTurns 16 (cap 32), timeoutSeconds 3600, maxSpawnsPerRun 10 (cap 20), maxConcurrentSpawns 4 (cap 8)}` | |
+| `limits {maxToolTurns, timeoutSeconds (3600), maxSpawnsPerRun 10 (cap 20), maxConcurrentSpawns 4 (cap 8)}` | |
 | `budget {window day\|month, usdLimit, tokenLimit}` | Breach suspends schedules and background runs; chat stays |
 | `channels[] {name, connectionRef, primary}` | Named channel roles |
 
-Status: `phase Ready|Suspended` (stamped on create and by the provider's background loop), `lastRunAt` and `usage {windowStart, tokens, usd}` (updated when a run finishes), `suspendedReason`.
+Status: `phase Ready|Suspended`, `suspendedReason`, `lastRunAt`, `usage
+{windowStart, tokens, usd}`, `backend {type, service, harness {name,
+version}}` (what a run will execute on, resolved), conditions `Validated`,
+`ModelCredentialsReady` and `BackendReady`.
 
-Tool families: `core` (always: memory, self-scheduling, notify, ask,
-delegate), `web` (`web_fetch`; `web_search` needs a `websearch` connection),
-`github` (hosted GitHub MCP toolset from a `github` connection), `mcp`
-(tools from `mcp` connections as `<connection>__<tool>`), `edges` (aggregate
-MCP, interactive runs only, never opt-in), `spawn` (`spawn` and `join`
-worker tools), `files` (declared but not implemented).
+Tool families (`families[]`): `core` (always kept: `memory_save`/`memory_list`,
+`schedule_create`/`update`/`delete`/`schedules_list`, `notify`, `ask`, `wait`,
+`delegate` when `delegates` is set), `web` (`web_fetch`; `web_search` needs a
+`websearch` connection), `github` (tools from a `github` connection), `mcp`
+(tools from `mcp` connections as `<connection>__<tool>`), `spawn` (`spawn`
+and `join`), `visualization` (`visualize_data`, inline charts in portal chat),
+`edges` (the workspace MCP aggregate, interactive runs only, never opt-in),
+`files` (accepted by validation, not wired to any tool).
+
+### ModelCredential
+
+The model endpoint an agent uses, as an object; the key stays in a Secret.
+Section 2.
+
+### Run
+
+One execution of an agent. **Runs are CRs now** — list, get and watch them
+with `kubectl get runs` (columns Agent, Trigger, Phase, Started). The object
+is a projection: `spec {agentRef, trigger, sessionID, parentRunRef,
+delivery, idempotencyKey, inputPreview (≤ 2 KiB), repository}` and `status
+{phase Pending|Running|PendingApproval|Succeeded|Failed|Aborted, message,
+startedAt, finishedAt, deadlineAt, attempt, usage {inputTokens,
+outputTokens, usdMicros, usd, durationMS}, transcriptRef {sessionID,
+messages, toolCalls}, result (repository runs)}`. The object's name is the
+run id. Nobody creates a Run by hand (the `run` verb on the agent does);
+deleting one purges its transcript and trace, and deleting an agent
+garbage-collects its runs (ownerReference). The transcript, the step trace
+and the answer are not on the object: they come from the `trace` verb,
+`agents__get_run`, or the `messages` verb (section 4).
 
 ### Connection
 
 `spec.type`: `github`, `mcp`, `websearch`, `edges` (marker only), `http`,
 `telegram`, `slack`, `smtp`, `discord`. Fields: `displayName`,
-`auth secret|oauth`, `oauth {provider github|google|slack, scopes}`,
-`secretRef` (default `railgrid-agents-conn-<name>`, key `token`; Slack signing
-secret and Telegram secret under `signing_secret`), `baseURL`, `channel`
-(chat id, channel id, email, webhook URL), `config` map (`instance:` names an
-infrastructure instance for in-workspace MCP or search backends; `agent:`
-overrides the one-inbound-agent rule). Status: `phase`, `webhookPath`,
-`oauthConnected`, `tokenExpiresAt`.
+`auth secret|oauth`, `oauth {provider github|google|slack, scopes,
+authorizeURL, tokenURL}`, `secretRef` (default `railgrid-agents-conn-<name>`,
+key `token`; the Secret is labelled `railgrid.ai/owner: agents`), `baseURL`,
+`channel` (chat id, channel id, email, webhook URL), `config` map
+(`instance:` names an infrastructure instance that backs an `mcp` or
+`websearch` connection). Status: `phase`, `message`, `webhookPath`,
+`oauthConnected`, `tokenExpiresAt`, conditions.
 
 ### Schedule
 
@@ -55,17 +98,17 @@ overrides the one-inbound-agent rule). Status: `phase`, `webhookPath`,
 
 ### Trigger
 
-`agentRef`, `source webhook|github`, `connectionRef`, `filter {eventType, match, header.<name>}`,
-`task`, `channelRef`, `suspend`. Status: `webhookPath` (contains a secret),
-`lastFired`, `lastRunID`.
+`agentRef`, `source webhook|github`, `connectionRef`, `filter {eventType,
+match, header.<name>}`, `task`, `channelRef`, `suspend`. Status:
+`webhookPath` (contains a secret), `lastFired`, `lastRunID`.
 
 ### Toolset
 
 `displayName`, `description`, `families[]`, `connections[]`,
-`requireApproval[]`; merged into an agent's grant by name.
+`requireApproval[]`; merged into an agent's grant by name. Status `usedBy`.
 
-Runs, sessions, messages, memory, and the inbox are **not** CRDs; they live
-in the provider's Postgres and are reachable only through REST or MCP.
+Sessions, messages, memory, the step trace and the inbox are **not** CRs;
+they live in the provider's Postgres behind the verbs in section 3.
 
 Minimal agent:
 
@@ -77,7 +120,8 @@ spec:
   displayName: Researcher
   systemPrompt: You are a careful research assistant. Cite sources.
   autonomy: auto
-  models: { chat: main, background: cheap }
+  backend:
+    model: { credentials: { chat: main, background: cheap } }
   tools:
     interactive: { families: [core, web, spawn], connections: [search] }
     background:  { families: [core, web] }
@@ -87,156 +131,287 @@ spec:
     - { name: primary, connectionRef: my-telegram, primary: true }
 ```
 
+Enabling the provider: `agents` requires `infrastructure` **and** `edges`
+to be enabled in the workspace first (the hub refuses otherwise).
+
 ## 2. Model credentials
 
-Only OpenAI-compatible endpoints are implemented (`provider` is
-`openai-compatible`, `openai`, or empty). The tenant supplies the key. Each
-credential is a Secret `railgrid-agents-model-<name>` in namespace `default`
-with keys `provider`, `baseURL`, `model`, `apiKey`. Presets: OpenAI
-`https://api.openai.com/v1`, Anthropic `https://api.anthropic.com/v1`,
-OpenRouter `https://openrouter.ai/api/v1`. Purposes: `chat` (strong),
-`background` (cheap; workers, heartbeats), `compaction`.
+A `ModelCredential` is `spec {provider, baseURL, model, secretRef {name},
+secretKey (default apiKey)}` plus a Secret in namespace `default` that
+**must** carry the label `railgrid.ai/owner: agents` (unlabelled, it saves
+fine and is invisible to every unattended run). Providers:
 
-```
-GET    /api/credentials                      keys redacted
-POST   /api/credentials                      {name, provider?, baseURL?, model, apiKey}
-DELETE /api/credentials/{name}
-POST   /api/credentials/{name}/test          → {ok, latencyMS, error, models[]}
-GET    /api/catalog                          curated pricing and context windows
-GET    /api/usage?days=30                    rollups by agent, model, day (max 90)
-```
+- **Chat endpoints** — `openai-compatible` (default) and `openai`: anything
+  speaking Chat Completions + `GET /models` (OpenAI `https://api.openai.com/v1`,
+  Anthropic's compat endpoint `https://api.anthropic.com/v1`, OpenRouter
+  `https://openrouter.ai/api/v1`, a local gateway). `baseURL` is required.
+  Model-backed agents run on these only; the tenant brings the key.
+- **Harness identities** — `claude-code` (Secret key `oauthToken`, a
+  `claude setup-token` value, or `apiKey`, an Anthropic key) and `codex`
+  (Secret key `auth.json`). No endpoint, never probed; used only by
+  `backend.harness.credentialRef` (section 5).
 
-## 3. REST routes
+Status: conditions `SecretResolved`, `Reachable` (`GET {baseURL}/models`
+answered; always True for a harness identity), `Ready` (both), plus
+`models[]` (the **chat-capable** ids the endpoint served, catalog-known
+first), `lastProbeTime`, `lastProbeError`. Purposes on the agent: `chat`
+(strong), `background` (cheap; workers, heartbeats), `compaction`.
 
-```
-GET    /healthz  /api/whoami  /api/capabilities   (capabilities: which providers the aggregate federates)
-GET|POST /api/agents ; GET|PUT|DELETE /api/agents/{name}
-GET    /api/agents/{name}/sessions ; DELETE /api/agents/{name}/sessions/{session}
-GET    /api/agents/{name}/messages?session=&limit=&cursor=
-POST   /api/agents/{name}/chat                {message, sessionID?}  SSE events: start {runID,sessionID}, run_started, assistant_message {content, phase commentary|final}, tool_start {name,args}, tool_end {name,result,durationMS,error}, unlabeled `data: {"text":…}` deltas, done {finalContent,status,usage} | approval_required | error. Interactive: edge tools appear as `edges__edges__<tool>` (verified, ~12 s for one pods_list)
-POST   /api/agents/{name}/runs                {task, sessionId?, idempotencyKey?, wait? (≤120), callback {url, secret}?} → 202 {runId, phase} or 200 {runId, phase, run}
-GET    /api/runs?agent=&phase=&trigger=&class=&session=&parent=&since=&until=&cursor=&limit=(≤200)
-GET    /api/runs/{id}                         {…summary, input, output, sources[], pending {inboxID, tool, args}, steps[{tool,args,result,outcome,error,durationMS}], children[]}
-GET    /api/runs/{id}/wait?timeoutSeconds=    long-poll (default 60, cap 300)
-POST   /api/runs/{id}/cancel                  → 202
-GET    /api/events                            SSE: run phase changes and inbox activity
-GET|POST /api/schedules ; GET|PUT|DELETE /api/schedules/{name} ; POST /api/schedules/{name}/run → 202 {runID}
-GET|POST /api/triggers ; GET|PUT|DELETE /api/triggers/{name} ; POST /api/triggers/{name}/run
-GET|POST /api/toolsets ; GET|PUT|DELETE /api/toolsets/{name}
-GET|POST /api/connections ; GET|PUT|DELETE /api/connections/{name}
-POST   /api/connections/{name}/test           real outbound send
-POST   /api/connections/{name}/enable-inbound {publicBaseURL} → {webhookPath, webhookURL, registered, note}
-GET    /api/oauth/providers ; POST /api/connections/{name}/oauth/authorize {publicBaseURL} → {authorizeURL}
-GET    /api/inbox?state=pending ; POST /api/inbox/{id}/resolve {decision approve|deny|answer, response?}
-POST   /s2s/clusters/{cluster}/agents/{name}/runs ; GET /s2s/clusters/{cluster}/runs/{id}[/wait]     ServiceAccount callers
-POST   /webhooks/triggers/{cluster}/{name}/{token} ; POST /webhooks/channels/{cluster}/{name}/{token}   anonymous inbound
+```bash
+kubectl create secret generic railgrid-agents-model-openai -n default --from-literal=apiKey=sk-…
+kubectl label secret railgrid-agents-model-openai -n default railgrid.ai/owner=agents
+kubectl apply -f - <<'EOF'
+apiVersion: agents.railgrid.ai/v1alpha1
+kind: ModelCredential
+metadata: { name: openai }
+spec: { provider: openai-compatible, baseURL: https://api.openai.com/v1, model: gpt-4o, secretRef: { name: railgrid-agents-model-openai } }
+EOF
+kubectl get modelcredentials          # PROVIDER MODEL READY
 ```
 
-Create and update bodies use flat fields: `name`, `displayName`,
-`description`, `systemPrompt`, `autonomy`, `modelCredential`,
-`modelFallbacks`, `budgetTokens`, `budgetUSD`, `delegates`, `channels`,
-`interactiveFamilies`, `backgroundFamilies`, `interactiveToolsets`,
-`backgroundToolsets`, `interactiveConnections`, `backgroundConnections`.
-`maxToolTurns` and `timeoutSeconds` (≥ 0) set `spec.limits` on both create
-and update (and on `agents__create_agent`/`update_agent`). Only fields you
-send change; list fields replace wholesale.
+Verbs on the credential (section 3): `test` (a real chat round-trip,
+optional body `{"model":"<id>"}` to probe another id) and `discover`
+(re-read `/models`, refresh status). The curated price/context-window
+catalog is no longer a route; it ships with the portal bundle
+(`model-catalog.json`).
 
-Schedules: `POST /api/schedules` takes
-`{name, agentRef, type cron|wakeup|heartbeat, schedule?, timeZone?, runAt?, task?, checklist?, suspend?, channelRef?}`
-(e.g. `{"name":"digest-hourly","agentRef":"digest","type":"cron","schedule":"0 * * * *","timeZone":"UTC","task":"…"}`);
-`POST …/schedules/{name}/run` → 202 `{"runID":…}`, then
-`GET /api/runs/{runID}/wait`. `GET /api/schedules/{name}` (and
-`…/triggers/{name}`, `…/toolsets/{name}`) return one object in the list shape.
+## 3. Verbs (kcp custom subresources)
 
-## 4. Invocation semantics
+`V=$HUB/clusters/$CLUSTER/apis/agents.railgrid.ai/v1alpha1`; every call is
+`curl -H "Authorization: Bearer $TOKEN"` (kube REST, no tenant headers;
+`kubectl get --raw`/`create --raw` with the `railgrid` context works for the
+same paths without the `/clusters/…` prefix). kcp authorizes the HTTP method
+as the RBAC verb on `{resource}/{verb}` and the provider then checks you can
+`get` the object; a workspace member passes, a ServiceAccount needs RBAC on
+`agents.railgrid.ai` `agents/run` (and `get` on `agents`) — the old
+`agents/delegate` hook is gone.
 
-- `POST /runs` and `agents__run_agent` are **API runs**: background tool
-  grant, no `edges__*` tools, no channel notification, detached from the HTTP
-  request. `wait` is capped at 120 s; `PendingApproval` counts as settled
-  for waiters.
-- `web_fetch` is anonymous. Its first line is `HTTP <code> <final URL>`, plus
-  `(redirected from <URL>)` after a redirect. A private or restricted railgrid
-  app answers with the access gate's redirect to `/auth/apps/authorize`;
-  `web_fetch` stops there and returns `This is a private railgrid app … No
-  content was fetched.` Agents can't mint app tokens (ServiceAccounts are
-  refused), so give an agent public endpoints only or pass the data in `task`.
-- Chat (`/chat`, the portal) and channel messages are **interactive** runs:
+```
+POST   $V/agents/{a}/chat                 {message, sessionID? ("default")}  SSE: start {runID,sessionID}, run_started, assistant_message {content, phase commentary|final}, delta {text}, tool_start {id,name,args}, tool_end {name,result,durationMS,error}, approval_required {runID,inboxID,kind approval|question,tool,args,question}, done {runID,content,finalContent,status,usage} | error. Interactive: edge tools appear as edges__<provider>__<tool> (e.g. edges__edges__pods_list)
+POST   $V/agents/{a}/run                  {task, sessionId?, idempotencyKey?, wait? (≤120), callback {url, secret}?, repository?} → 202 {runId, phase, reused?} or 200 {runId, phase, reused?, run}
+GET    $V/agents/{a}/sessions             → {items}
+DELETE $V/agents/{a}/session/{sessionID}  erase one transcript
+GET    $V/agents/{a}/messages?session=&limit=(≤500)&cursor=   → {items, nextCursor}
+GET    $V/agents/{a}/usage?days=30        rollups (cap 90): {windowDays, total, byAgent, byModel, series}
+GET    $V/agents/{a}/inbox?state=pending  → {items} (this agent's approvals and questions)
+POST   $V/agents/{a}/inbox-resolve/{id}   {decision approve|deny|answer, response?} → the item; resumes the paused run
+GET    $V/agents/{a}/events               SSE, this agent only: event: run {id,agent,trigger,phase,…} | inbox {id,state,agent,runID}
+POST   $V/modelcredentials/{c}/test       {model?} → {ok, latencyMS, error, models[]}
+POST   $V/modelcredentials/{c}/discover   → chat-capable model ids; refreshes status.models
+GET    $V/runs/{id}/trace                 {…summary, input, output, sources[], pending {inboxID, kind, tool, args}, steps[{tool,args,result,outcome,error,durationMS}], children[], harness {attemptID, sessionID}?, repository?, result?}
+GET    $V/runs/{id}/wait?timeoutSeconds=  long-poll (default 60, cap 300) → the same shape
+POST   $V/runs/{id}/cancel                → 202 {id, cancelling}; 409 when already settled
+POST   $V/runs/{id}/artifact              {name: git-result.json|git-result.bundle} → {name, digest, size, mediaType, data (base64)}
+POST   $V/connections/{c}/test            real outbound send → {status: sent}
+POST   $V/connections/{c}/enable-inbound  {publicBaseURL} → {webhookPath, webhookURL, registered, note}  (telegram, slack)
+POST   $V/connections/{c}/authorize       {publicBaseURL} → {authorizeURL}  (OAuth; finish in a browser)
+POST   $V/schedules/{s}/run               → 202 {runID}
+POST   $V/triggers/{t}/run                → 202 {runID}
+```
+
+Still hub-proxied under `$AG=$HUB/services/providers/agents` (not verbs):
+`/mcp`, `GET /oauth/providers`, `/oauth/callback`, `/healthz`, and the
+anonymous inbound `POST /webhooks/triggers/{cluster}/{name}/{token}` and
+`POST /webhooks/channels/{cluster}/{name}/{token}` (`status.webhookPath`
+appended to the hub URL).
+
+Removed outright: `/api/*` CRUD (use kubectl), `/api/whoami`,
+`/api/capabilities` (read `MCPServer.status.federatedProviders` or
+`agents__list_tool_families .providers`), `/api/catalog`, `/api/runs` list
+(`kubectl get runs`), `/s2s/*`. The flat create/update bodies
+(`modelCredential`, `interactiveFamilies`, …) survive only on the MCP tools.
+
+## 4. Runs and invocation semantics
+
+- `POST …/agents/{a}/run` and `agents__run_agent` are **API runs** (trigger
+  `api`): background tool grant, no `edges__*` tools, no channel
+  notification, detached from the request. `wait` is capped at 120 s;
+  `PendingApproval` counts as settled for waiters. The run executes as the
+  **agent** (the provider through its export), never as the caller, so
+  starting a run lends it nothing of yours.
+- Poll with `kubectl get run <id> -w` (phase, usage, timings), read the
+  answer from `…/runs/{id}/trace` `.output` (or `.run.output` on a `run`
+  that waited, or `agents__get_run`).
+- `idempotencyKey` is unique per agent: a retry with the same key returns
+  the existing run (`200`, `reused: true`) instead of starting another. Only
+  the verb has it; `agents__run_agent` does not.
+- Callback: `POST` to `callback.url` on settle, signed `X-Railgrid-Signature`
+  (HMAC-SHA256 with `callback.secret`), 3 attempts, payload `{runId, agent,
+  phase, output, sources, message, usage, finishedAt}`. Best-effort; polling
+  is the reliable path.
+- `cancel` is durable: a run executing elsewhere, queued, or parked on a
+  harness is stopped when it next checks; the response says `cancelling`.
+- `web_fetch` is anonymous. Its first line is `HTTP <code> <final URL>`,
+  plus `(redirected from <URL>)` after a redirect. A private or restricted
+  railgrid app answers with the access gate's redirect to
+  `/auth/apps/authorize`; `web_fetch` stops there and returns `This is a
+  private railgrid app: its access gate redirects to sign-in (…), and
+  web_fetch cannot sign in. No content was fetched.` Agents can't mint app
+  tokens, so give an agent public endpoints only or pass the data in `task`.
+  `maxChars` raises the returned text from 12 000 up to 64 KiB.
+- Chat (`chat`, the portal) and channel messages are **interactive** runs:
   interactive grant plus the aggregate MCP as `edges__<provider>__<tool>`
-  (three segments), acting as the calling user.
-- Callback: signed with `X-Railgrid-Signature` (HMAC-SHA256 with `callback.secret`),
-  3 attempts, payload `{runId, agent, phase, output, sources, usage, finishedAt}`.
-- S2S: the caller's ServiceAccount needs `create` (and `get`) on
-  `agents.railgrid.ai` `agents/delegate` for that agent name; 503 means the
-  provider has no virtual-workspace connection. Never verified end to end
-  against live kcp per the design doc.
+  (three segments), acting as the calling user. Sessions are independent
+  threads; several can run at once.
+- Schedules/triggers fired by `run` or by their own clock are background
+  runs that deliver to the `channelRef` (or primary) channel.
 
-## 5. Deep research
+## 5. Harness-backed agents (Claude Code / Codex on an edge)
 
-Grant `spawn` plus `web` (portal checkbox "Research fan-out"). Tools:
-`spawn {task, instructions?, tools?, maxToolTurns?}` and
-`join {taskIds?, timeoutSeconds?}`. Workers are child runs of the same agent
-with trigger `spawn`, fresh context, `background` model, families
-intersected with the parent's grant, never `edges`; results clipped to 8 KiB;
-sources parsed from a trailing `Sources:` block. Limits: 4 concurrent
-(cap 8), 10 per run (cap 20), depth 2, worker turns 8 (cap 16), join 300 s
-(cap 900). The run tree from `GET /api/runs/{id}` is the research trace.
+An agent can run its turns on a coding harness installed on one of the
+workspace's host edges instead of the in-process model loop:
 
-## 6. Channels
+```yaml
+spec:
+  backend:
+    type: harness
+    harness:
+      edgeRef: { kind: LinuxServer, name: build-01 }   # LinuxServer | MacOSServer, never a cluster
+      credentialRef: claude-main   # ModelCredential with provider claude-code | codex
+      model: sonnet                # optional, passed to the harness
+      workspace: persistent        # persistent (one directory across turns) | ephemeral
+```
+
+- Which harness answers is derived from the credential's provider
+  (`claude-code` → Claude Code, `codex` → Codex); the credential is sent
+  with each turn and never stored on the machine.
+- The machine offers harnesses through `spec.harness.mode auto|none|explicit`
+  on the `LinuxServer`/`MacOSServer` (`auto` is the default: everything
+  installed). `kubectl get linuxserver build-01 -o jsonpath='{.status.harnesses}'`
+  shows `{name: claude|codex, detected, enabled, ready, version}`; the edges
+  provider publishes each runner as a `Service` named `<edge>-<selector>`
+  (`build-01-claude`, `build-01-codex`, type `runner`) whose
+  `status.harness.name` is the advertised name (`claude-code`, `codex`).
+- `status.backend` on the Agent and the `BackendReady` condition
+  (`UnknownEdgeRef`, `HarnessServiceMissing`, `HarnessNotReady`,
+  `UnsupportedHarnessCredential`, `BackendUnknown`) say whether a run will
+  dispatch; `ModelCredentialsReady` is `NotApplicable`.
+- The harness brings its own tools: `spec.tools`, `delegates`,
+  `limits.maxToolTurns`/`maxSpawns*`, `backend.model`, and `autonomy`
+  `suggest`/`auto` are rejected as `Validated=False` `MeaninglessForHarness`.
+  A permission prompt the machine's mode does not pre-approve parks the run
+  in `PendingApproval` as an inbox item; `inbox-resolve` (approve/deny/answer)
+  resumes the same turn. `chat` works and keeps one harness session per
+  conversation; `trace` carries `harness {attemptID, sessionID}`.
+- **Repository runs**: `run` with `repository {repositoryID, baseCommit (40
+  hex), cloneSource {remoteURL, username?, token?}, commitMessage?,
+  requiredCapabilities?, requiredToolchains?, requiredEnvironment?,
+  verification {names, commands}?, approvedInput?, maxDurationSeconds?}` (no
+  `sessionId`; refused on a model-backed agent) runs in a fresh clone of that
+  commit and exports a Git result: `status.result {baseCommit, commit, tree,
+  noChanges, resultDigest, bundleDigest, bundleSize}`, bytes via the
+  `artifact` verb (`git-result.json`, `git-result.bundle`).
+
+Details: `docs/edge-harness.md`, `docs/local-runner.md`.
+
+## 6. Deep research
+
+Grant `spawn` plus `web` (portal preset "Research fan-out"). Tools:
+`spawn {task, instructions?, tools?, maxToolTurns?}` → `{taskId}` and
+`join {taskIds?, timeoutSeconds? (default 300, cap 900)}`. Workers are child
+runs of the same agent with trigger `spawn`, fresh context, the
+`background` credential, families intersected with the parent's grant,
+never `edges`; results clipped to 8 KiB; sources parsed from a trailing
+`Sources:` block. Limits: 4 concurrent (cap 8), 10 per run (cap 20), depth
+2, worker turns 8 (cap 16). The run tree is `…/runs/{id}/trace .children`,
+`agents__get_run .children`, or `kubectl get runs` filtered on
+`spec.parentRunRef`.
+
+## 7. Channels
 
 | Channel | Direction | Fields | Inbound verification |
 |---|---|---|---|
-| Telegram | in + out | `secret` bot token, `channel` chat id | Auto-registered via `setWebhook`; nothing to paste |
-| Slack bot | in + out | `secret` `xoxb-…` (chat:write), `channel` `C…`, `signingSecret` | Signature over raw body; `enable-inbound` refuses without the signing secret; paste the returned URL into Event Subscriptions |
+| Telegram | in + out | `secret` bot token, `channel` chat id | Auto-registered via `setWebhook` with a generated secret token; nothing to paste |
+| Slack bot | in + out | `secret` `xoxb-…` (chat:write), `channel` `C…`, `signingSecret` | Signature over raw body; `enable-inbound` refuses without the signing secret; paste the returned `webhookURL` into Event Subscriptions |
 | Slack incoming webhook | out | `channel` = webhook URL | |
 | Discord bot | in + out | `secret` bot token, `channel` home channel, MESSAGE CONTENT intent | Gateway WebSocket, no webhook |
 | Discord webhook | out | `channel` = webhook URL | |
 | SMTP | out | `secret` password, `channel` recipient, `config {host, port, from, username}` | |
 
-One connection can be the inbound channel of one agent (409 otherwise).
-Session commands from a channel: `/new`, `/status`, `/inbox`, `/approve N`,
-`/deny N`, `/answer N <text>`. Trigger payloads are quarantined as untrusted;
-channel messages are the user's own turn.
+One connection can be the inbound channel of one agent; a second binding is
+reported as `Validated=False` `ChannelConflict`. Session commands from a
+channel: `/new`, `/status`, `/inbox`, `/approve N`, `/deny N`,
+`/answer N <text>`. Trigger payloads are quarantined as untrusted; channel
+messages are the user's own turn. Duplicate deliveries are acknowledged
+without a second run.
 
-## 7. MCP tools (`agents__*`)
+## 8. MCP tools (`agents__*`)
 
-Runs: `run_agent {agent, task, sessionId?, wait?≤120}` (no `idempotencyKey`; use REST when a retry must not start a second run),
-`get_run {runId, wait?≤300}`, `list_runs {agent?, phase?, trigger?, session?, parent?, limit?}`.
+Runs: `run_agent {agent, task, sessionId?, wait?≤120}` → `{runId, phase,
+output?, sources?, message?, status}` (side-effecting; no `idempotencyKey` —
+use the `run` verb when a retry must not start a second run),
+`get_run {runId, wait?≤300}` → `{…, output, sources, steps[{tool,outcome,error,durationMS}], children[], usage}`,
+`list_runs {agent?, phase?, trigger?, session?, parent?, limit? (20, max 100)}`.
 
-Agents: `list_agents`, `get_agent {name}`, `create_agent {name, displayName?, description?, systemPrompt?, autonomy?, modelCredential?, modelFallbacks?, budgetTokens?, budgetUSD?, channels?, maxToolTurns?, timeoutSeconds?}`,
-`update_agent {name, …the same fields…, delegates?, interactiveFamilies?, backgroundFamilies?, interactiveToolsets?, backgroundToolsets?, interactiveConnections?, backgroundConnections?}`,
-`delete_agent {name}`. **`create_agent` takes no tool grants**: create, then
-`update_agent` with the families, toolsets and connections. Only fields you
-pass change; list fields replace the stored list, so read with `get_agent`
-before appending.
+Agents: `list_agents`, `get_agent {name}` (full settings incl. `backend` and
+`tools`), `create_agent {name, displayName?, description?, systemPrompt?,
+autonomy?, modelCredential?, modelFallbacks?, budgetTokens?, budgetUSD?,
+channels?, maxToolTurns?, timeoutSeconds?}`, `update_agent {name, …the same
+fields…, delegates?, interactiveFamilies?, backgroundFamilies?,
+interactiveToolsets?, backgroundToolsets?, interactiveConnections?,
+backgroundConnections?}`, `delete_agent {name}` (**destructive**: also purges
+conversations, memory and run history). **`create_agent` takes no tool
+grants**: create, then `update_agent` with the families, toolsets and
+connections. Only fields you pass change; list fields replace the stored
+list (`core` is always re-added), so read with `get_agent` before appending.
+`modelCredential` sets `backend.model.credentials.chat`; `budgetUSD`/
+`budgetTokens` set a monthly budget. A harness backend is written with
+kubectl, not these tools.
 
-Credentials: `list_model_credentials`, `save_model_credential {name, model, provider?, baseURL?, apiKey?}`,
-`delete_model_credential`, `test_model_credential`.
+Credentials: `list_model_credentials` (`{name, provider, baseURL, model,
+ready, models[]}`, keys never returned), `save_model_credential {name, model,
+provider? (openai-compatible), baseURL? (https://api.openai.com/v1),
+apiKey?}` (writes the labelled Secret under key `apiKey`; omit `apiKey` to
+keep the stored key), `test_model_credential {name}` (`GET /models` →
+`{ok, latencyMS, error, models[]}`), `delete_model_credential {name}`
+(**destructive**, removes the Secret too).
 
-Connections: `list_connections`, `create_connection {name, type, displayName?, baseURL?, channel?, config?, secret?, signingSecret?}`,
-`update_connection`, `delete_connection`, `test_connection`.
+Connections: `list_connections`, `create_connection {name, type,
+displayName?, baseURL?, channel?, config?, secret?, signingSecret?}`,
+`update_connection {name, displayName?, baseURL?, channel?, config?,
+secret?, signingSecret?}`, `delete_connection {name}` (**destructive**),
+`test_connection {name}` (sends a real message).
 
-Toolsets: `list_toolsets`, `create_toolset {name, displayName?, description?, families?, connections?, requireApproval?}`, `update_toolset`, `delete_toolset`.
+Toolsets: `list_toolsets`, `create_toolset {name, displayName?, description?,
+families?, connections?, requireApproval?}`, `update_toolset`,
+`delete_toolset {name}` (**destructive**; linking agents silently lose the grant).
 
-Schedules: `list_schedules`, `create_schedule {name, agentRef, type, schedule?, timeZone?, runAt?, task?, checklist?, suspend?, channelRef?}`, `update_schedule`, `delete_schedule`, `run_schedule`.
+Schedules: `list_schedules`, `create_schedule {name, agentRef, type,
+schedule?, timeZone?, runAt?, task?, checklist?, suspend?, channelRef?}`,
+`update_schedule {name, schedule?, timeZone?, runAt?, task?, checklist?,
+suspend?, channelRef?}`, `delete_schedule {name}` (**destructive**),
+`run_schedule {name}` → `{runID, status}` (output goes to the channel).
 
-Triggers: `list_triggers`, `create_trigger {name, agentRef, source, connectionRef?, filter?, task?, suspend?, channelRef?}`, `update_trigger`, `delete_trigger`, `run_trigger`.
+Triggers: `list_triggers` (rows include the secret-bearing `webhookPath`),
+`create_trigger {name, agentRef, source webhook|github, connectionRef?,
+filter?, task?, suspend?, channelRef?}`, `update_trigger {name, task?,
+source?, connectionRef?, filter?, suspend?, channelRef?}`,
+`delete_trigger {name}` (**destructive**), `run_trigger {name}` → `{runID, status}`.
 
-Discovery: `list_tool_families`.
+Discovery: `list_tool_families` → `{families[{name, description}],
+providers[] (federated through the aggregate), note}`.
 
-Deliberately absent: OAuth connect (browser only) and inbox resolution (a
-human approves). Secrets are write-only. If an MCP tool answers "open the
-agents UI once, then retry", the provider has not yet recorded the
-cluster → org/workspace mapping for background execution; load the Agents
-portal page once.
+Deliberately absent: OAuth connect (browser only), inbox resolution (a human
+approves; use the portal or the `inbox-resolve` verb), run cancel, usage,
+sessions/messages, and `discover` (verbs only). Secrets are write-only. If a
+run tool answers "this workspace is not mapped yet — open the agents UI
+once, then retry", load the Agents portal page once so the provider records
+the cluster → org/workspace mapping.
 
-## 8. Relationships
+## 9. Relationships
 
-- App Studio delegates research to agents through `agents__run_agent` and
-  friends when the workspace has at least one agent and the provider is
-  federated; transport timeout is stretched to `wait + 30 s`.
-- Interactive agent runs get every federated provider's tools, including
-  `edges__edges__pods_exec` on connected clusters, as the calling user.
-- Infrastructure is optional: with it, `searxng` and `browser` instances back
-  `web_search` and a Playwright MCP; background runs reach the data plane
-  with a per-agent ServiceAccount `railgrid-agent-<agent>` (read-only on
-  `infrastructure.railgrid.ai`).
+- Interactive runs get every federated provider's tools through the
+  workspace MCP aggregate, including `edges__edges__pods_exec` on connected
+  clusters, as the calling user; the provider list is
+  `MCPServer.status.federatedProviders`.
+- Other MCP consumers (App Studio, another agent holding `edges`) delegate
+  through `agents__run_agent`/`get_run`; stretch the client timeout past
+  `wait`.
+- Infrastructure backs `searxng` (`web_search`) and `browser` (Playwright
+  MCP) instances named by a connection's `config.instance`; the agent reaches
+  them as the provider through `instances/proxy`. The only per-agent
+  identity is minted by the hub (TTL'd, scoped to the instances the agent's
+  connections name); the provider writes no ServiceAccounts or RBAC into
+  your workspace.
+- Edges supplies the harness hosts (section 5); both `edges` and
+  `infrastructure` must be enabled before `agents` can be.
