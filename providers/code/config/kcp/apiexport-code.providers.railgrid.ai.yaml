@@ -127,6 +127,15 @@ spec:
           kind: DataPlaneEndpointSlice
           name: code.providers.railgrid.ai
   - group: code.railgrid.ai
+    name: repositories/checkout
+    schema: v261009-5e2e8e28.checkout.code.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: code.providers.railgrid.ai
+  - group: code.railgrid.ai
     name: repositories/comments
     schema: v260924-87f1980f.comments.code.railgrid.ai
     storage:

@@ -25,8 +25,9 @@ const testClusterID = "aaaaaaaaaaaaaaaa"
 
 // TestSubresourceRoutesComeFromTheManifest derives the table the way runServe
 // does — through subresourceRoutes, pointed at this provider's real
-// manifest.yaml — and proves every catalogued action and both uncatalogued
-// upload verbs come out, each pointed at the handler that actually serves it.
+// manifest.yaml — and proves every catalogued action and all three
+// uncatalogued transfer verbs come out, each pointed at the handler that
+// actually serves it.
 func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 	t.Setenv("RAILGRID_CATALOGENTRY_FILE", "manifest.yaml")
 
@@ -35,11 +36,12 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		t.Fatalf("subresourceRoutes: %v", err)
 	}
 
-	// Fifteen catalogued actions plus the two upload verbs: every coordinate
-	// this provider serves, and every one is an actions-handler coordinate at
-	// the one contract version — code registers no data-plane handler at all.
-	if len(routes) != 17 {
-		t.Errorf("routes has %d coordinates, want 17: %v", len(routes), keys(routes))
+	// Fifteen catalogued actions plus the three transfer verbs: every
+	// coordinate this provider serves, and every one is an actions-handler
+	// coordinate at the one contract version — code registers no data-plane
+	// handler at all.
+	if len(routes) != 18 {
+		t.Errorf("routes has %d coordinates, want 18: %v", len(routes), keys(routes))
 	}
 	for coordinate, route := range routes {
 		if !route.Action || route.Version != "v1" {
@@ -53,6 +55,7 @@ func TestSubresourceRoutesComeFromTheManifest(t *testing.T) {
 		"connections/mint-registry-token",
 		"repositories/stage-snapshot",
 		"repositories/stage-commit-bundle",
+		"repositories/checkout",
 	} {
 		if _, ok := routes[coordinate]; !ok {
 			t.Errorf("routes is missing %q; got %v", coordinate, keys(routes))
