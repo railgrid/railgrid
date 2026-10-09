@@ -14,82 +14,70 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 )
 
-// codeBinaryHub fakes the tenant MCP aggregate for CHECKOUT, which is still a
-// tool: tools/list optionally advertises the binaryEncoding opt-in, and
-// tools/call records the arguments it receives. Commit is not here any more —
-// it is the repositories/commit/v1 action (commit_action_test.go).
-type codeBinaryHub struct {
-	advertise bool
-	calls     []map[string]any
-	checkout  string
-}
-
-func (h *codeBinaryHub) serve(t *testing.T) *httptest.Server {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string `json:"method"`
-			Params struct {
-				Name      string         `json:"name"`
-				Arguments map[string]any `json:"arguments"`
-			} `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode MCP request: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		result := map[string]any{}
-		switch req.Method {
-		case "tools/list":
-			checkoutProps := map[string]any{"repositoryRef": map[string]any{}}
-			if h.advertise {
-				checkoutProps["binaryEncoding"] = map[string]any{"type": "string"}
-			}
-			result["tools"] = []any{
-				map[string]any{"name": projectToolCodeCheckoutRepository, "inputSchema": map[string]any{"properties": checkoutProps}},
-			}
-		case "tools/call":
-			h.calls = append(h.calls, map[string]any{"name": req.Params.Name, "arguments": req.Params.Arguments})
-			result["content"] = []any{map[string]any{"type": "text", "text": h.checkout}}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
-	}))
-	t.Cleanup(server.Close)
-	return server
-}
-
+// A hydrate asks the checkout verb for binaries as base64 unconditionally —
+// the verb's input declares the encoding, so there is no tool schema to
+// probe first — and writes the decoded bytes into the workspace.
 func TestHydrateRequestsAndWritesBase64Binaries(t *testing.T) {
 	image := testPNG(2048)
-	checkout, _ := json.Marshal(checkoutToolResult{Ref: "main", CommitSHA: "sha", Files: []checkoutToolFile{
+	upstream, checkouts := checkoutVerbServer(t, codecommit.Checkout{Ref: "main", CommitSHA: "sha", Files: []codecommit.CheckoutFile{
 		{Path: "public/logo.png", Content: base64.StdEncoding.EncodeToString(image), Encoding: "base64"},
 		{Path: "index.html", Content: "<html></html>\n"},
-	}})
-	hub := &codeBinaryHub{advertise: true, checkout: string(checkout)}
-	upstream := hub.serve(t)
+	}}, nil)
 	f := newProjectFilesFixture(t)
-	f.server.hubBase = upstream.URL
 	f.server.callers = newTestCallers(nil, upstream.URL)
 	f.server.developmentSyncAfterMutation = func(identity, *aiv1alpha1.Project, string) error { return nil }
-	resp, err := f.server.hydrateWorkspaceFromRepository(context.Background(), identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a"}, f.project, httptest.NewRequest(http.MethodPost, "/", nil), "")
+	resp, err := f.server.hydrateWorkspaceFromRepository(context.Background(), identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a"}, f.project, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(resp.Written) != 2 || len(resp.Skipped) != 0 {
 		t.Fatalf("hydrate = %#v", resp)
 	}
-	args := hub.calls[len(hub.calls)-1]["arguments"].(map[string]any)
-	if args["binaryEncoding"] != "base64" {
-		t.Fatalf("checkout args = %v, want binaryEncoding opt-in", args)
+	call := checkouts.last(t)
+	if call.Input["binaryEncoding"] != "base64" {
+		t.Fatalf("checkout input = %v, want binaryEncoding base64", call.Input)
+	}
+	if _, set := call.Input["ref"]; set {
+		t.Fatalf("checkout input = %v, want no ref for the default branch", call.Input)
 	}
 	got, err := f.workspaces.ReadFileBytes(context.Background(), f.scope, "public/logo.png", 0)
 	if err != nil || !bytes.Equal(got, image) {
 		t.Fatalf("hydrated binary mismatch: %v", err)
+	}
+}
+
+// A file the verb returns with an encoding App Studio cannot decode is
+// skipped with its reason, never written as text.
+func TestHydrateSkipsFilesWithUnknownEncoding(t *testing.T) {
+	upstream, _ := checkoutVerbServer(t, codecommit.Checkout{Ref: "main", CommitSHA: "sha", Files: []codecommit.CheckoutFile{
+		{Path: "weird.bin", Content: "0x00", Encoding: "hex"},
+		{Path: "index.html", Content: "<html></html>\n"},
+	}}, nil)
+	f := newProjectFilesFixture(t)
+	f.server.callers = newTestCallers(nil, upstream.URL)
+	f.server.developmentSyncAfterMutation = func(identity, *aiv1alpha1.Project, string) error { return nil }
+	resp, err := f.server.hydrateWorkspaceFromRepository(context.Background(), identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a"}, f.project, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Written) != 1 || resp.Written[0] != "index.html" || len(resp.Skipped) != 1 || resp.Skipped[0] != `weird.bin (checkout: unsupported file encoding "hex")` {
+		t.Fatalf("hydrate = %#v", resp)
+	}
+}
+
+// Without a provider credential the hydrate fails before any call: there is
+// no fallback to a user or project token for a cross-provider verb.
+func TestHydrateRequiresProviderCredential(t *testing.T) {
+	f := newProjectFilesFixture(t)
+	f.server.callers = nil
+	_, err := f.server.hydrateWorkspaceFromRepository(context.Background(), identity{orgUUID: "org-a", workspaceUUID: "workspace-a", clusterID: "cluster-a"}, f.project, "")
+	if err == nil || err.Error() != "no provider credential configured; cannot reach the Code provider" {
+		t.Fatalf("err = %v", err)
 	}
 }

@@ -70,11 +70,11 @@ cap. Consent is not required. Its input schema permits only optional exact
 optional `truncated` flag. The declaration's schema digest is
 `sha256:9d466354d5434778c39c74123156aba76510128b0d48c5f521836770561ab853`.
 
-### Uncatalogued large-upload verbs
+### Uncatalogued large-transfer verbs
 
-Two verbs in the tree are served on the action grammar and gated exactly like a
-catalogued action, yet appear in no `CatalogEntry`. Both belong to the code
-provider:
+Three verbs in the tree are served on the action grammar and gated exactly
+like a catalogued action, yet appear in no `CatalogEntry`. All belong to the
+code provider:
 
 - `stage-snapshot` uploads a git bundle (25 MiB decoded, 36 MiB on the wire)
   and returns an opaque `bundleRef` that the catalogued `prepare-snapshot` and
@@ -84,21 +84,32 @@ provider:
   `bundleRef`/`bundleDigest` pair the catalogued `commit` names instead of
   inline `files`. A commit whose files fit the 1 MiB ceiling never touches it;
   App Studio, which commits whole generated applications, normally does.
+- `checkout` is the transfer in the other direction: it reads a repository's
+  tree at a ref and returns the files inline (48 MiB decoded, 64 MiB as
+  base64 plus the envelope, 500 files), creating the transient
+  `RepositoryCheckout` **as the provider** behind the gate. It exists so a
+  consumer that holds no write on `repositorycheckouts` in the tenant
+  workspace — another provider under its claim, or a hub-minted scoped
+  identity, which is never minted a write on a foreign kind — can still read
+  a repository; the `checkout_repository` MCP tool runs the same executor as
+  the caller. App Studio hydrates and restores a project workspace through
+  it.
 
 They are uncatalogued because the catalog cannot describe them honestly.
-`limits.maxInputBytes` is capped at 1 MiB by the CatalogEntry API itself
-(`validateProviderActionLimits` in `apis/providers/v1alpha1/actions.go`, and
-the CRD's `maximum: 1048576`), and the hub fails a whole CatalogEntry closed
-when one declaration is malformed. Declaring 64 KiB for a 25 MiB upload would
-be a lie the hub compiles and App Studio pins a schema digest over; declaring
-25 MiB would be rejected, taking the provider's other fourteen actions down
-with it. The honest declaration does not exist, so the verbs are documented
-here instead of misdeclared there.
+`limits.maxInputBytes` is capped at 1 MiB and `limits.maxOutputBytes` at
+64 MiB by the CatalogEntry API itself (`validateProviderActionLimits` in
+`apis/providers/v1alpha1/actions.go`, and the CRD's `maximum`), and the hub
+fails a whole CatalogEntry closed when one declaration is malformed.
+Declaring 64 KiB for a 25 MiB upload would be a lie the hub compiles and App
+Studio pins a schema digest over; declaring 25 MiB would be rejected, taking
+the provider's other fourteen actions down with it. The honest declaration
+does not exist, so the verbs are documented here instead of misdeclared there.
 
 The exception is narrow. A verb qualifies only when all four hold:
 
-1. it exists to carry a bounded artifact larger than the catalog's input
-   ceiling, and it returns a handle rather than the artifact;
+1. it exists to carry a bounded artifact larger than a catalog ceiling, in
+   either direction: an upload returns a handle rather than the artifact, a
+   download returns a transient read whose request object is reclaimed;
 2. it is declared as a data-plane verb (under its resource's
    `spec.export.resources[].verbs`) so it is
    published as a custom subresource and gated exactly like an action — kcp
@@ -114,11 +125,11 @@ The exception is narrow. A verb qualifies only when all four hold:
 A verb that misses any of the four is catalogued or removed. The cost of the
 exception is real and intended: because they are not in the catalog, App Studio
 cannot grant them through a project binding, so only a caller whose workspace
-RBAC already allows `create` on `repositories/stage-snapshot` or
-`repositories/stage-commit-bundle` can invoke them. A project identity that
-needs to commit more than a mebibyte therefore carries the staging verb as an
-explicit clause-C rule next to `repositories/commit`, and a consumer that only
-ever commits small inputs carries neither.
+RBAC already allows `create` on `repositories/stage-snapshot`,
+`repositories/stage-commit-bundle` or `repositories/checkout` can invoke them.
+A project identity that needs to commit more than a mebibyte therefore carries
+the staging verb as an explicit clause-C rule next to `repositories/commit`,
+and a consumer that only ever commits small inputs carries neither.
 
 ## Project grants and audit
 
