@@ -216,14 +216,24 @@ shape and behind the same gate, with its own `create` grant on
 inline bundle. Source trees use the second: `stage-commit-bundle`, gated on
 `repositories/stage-commit-bundle`, which stores a file list (48 MiB decoded,
 500 files) and returns the `bundleRef`/`bundleDigest` pair `commit` names.
-These two are the provider's only **uncatalogued** verbs: a body that
+The third goes the other way: `checkout`, gated on `repositories/checkout`,
+reads the tree at a ref (`{repositoryUID, ref?, binaryEncoding?}`) and returns
+the files inline, the same `{repositoryRef, name, phase, ref, commitSHA,
+files[], skipped[]}` the `checkout_repository` MCP tool returns — both run
+`commitexec.Checkout`. What the verb adds is who writes: the transient
+`RepositoryCheckout` is created **as the provider** behind the gate, so a
+consumer needs `create` on the verb and nothing on the kind. The tool creates
+it as the bearer it was handed, which a hub-minted scoped identity or a
+foreign provider never has; App Studio hydrates and restores a workspace
+through the verb for exactly that reason.
+These three are the provider's only **uncatalogued** verbs: a body that
 large cannot be declared under a catalogued action's `limits`, which caps
-`maxInputBytes` at 1 MiB, so they are declared as plain `verbs` on
-`repositories` instead (`spec.export.resources[]`) — which keeps their
-coordinate grantable without pretending a schema exists. The exception and the four conditions a verb must
-meet to claim it are in
+`maxInputBytes` at 1 MiB and `maxOutputBytes` at 64 MiB, so they are declared
+as plain `verbs` on `repositories` instead (`spec.export.resources[]`) —
+which keeps their coordinate grantable without pretending a schema exists.
+The exception and the four conditions a verb must meet to claim it are in
 [docs/provider-actions.md](../../docs/provider-actions.md) §"Uncatalogued
-large-upload verbs"; the handle's scoping, TTL and quotas, and why the store is
+large-transfer verbs"; the handle's scoping, TTL and quotas, and why the store is
 allowed to exist at all, are in
 [docs/code-provider-architecture.md](../../docs/code-provider-architecture.md)
 §9. The runtime needs Git and writable bundle storage; the image includes Git

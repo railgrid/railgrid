@@ -113,6 +113,13 @@ var served = map[string]dataplane.Limits{
 		MaxInputBytes:  MaxInputBytes,
 		MaxOutputBytes: MaxOutputBytes,
 	},
+	// checkout is the large-transfer verb in the other direction: a small
+	// input, and up to a whole source tree back (checkout.go).
+	Checkout: {
+		Timeout:        actionTimeout,
+		MaxInputBytes:  64 << 10,
+		MaxOutputBytes: MaxCheckoutOutputBytes,
+	},
 	// mint-clone-token is bound to a Repository, so it is served here rather
 	// than in connectionActions: the grant to clone one repository must not
 	// follow from a grant on the Connection every repository shares.
@@ -172,6 +179,9 @@ var statusFor = map[string]int{
 	"bundle_unavailable":           http.StatusUnprocessableEntity,
 	"clone_token_unavailable":      http.StatusBadGateway,
 	"commit_not_created":           http.StatusBadGateway,
+	"checkout_not_created":         http.StatusBadGateway,
+	"checkout_not_completed":       http.StatusGatewayTimeout,
+	"checkout_failed":              http.StatusBadGateway,
 	"upstream_outcome_unconfirmed": http.StatusBadGateway,
 }
 
@@ -318,15 +328,18 @@ func wireError(code string) *actionwire.Error {
 // provider in the request's cluster; visible is the provider's read of the
 // Repository the gate returned.
 func (s *Server) run(ctx context.Context, provider dynamic.Interface, identity dataplane.ProxiedIdentity, req dataplane.Request, visible *unstructured.Unstructured, raw json.RawMessage) (any, *actionwire.Error) {
-	// The commit verbs take their own input and never reach a git host: they
-	// write this provider's bundle store and a RepositoryCommit, which the
-	// commit controller applies. They therefore skip resolve() — there is no
-	// credential to load — and pin the Repository themselves (commit.go).
+	// The commit and checkout verbs take their own input and never reach a
+	// git host themselves: they write this provider's bundle store and a
+	// RepositoryCommit or RepositoryCheckout, which the matching controller
+	// applies. They therefore skip resolve() — there is no credential to load
+	// — and pin the Repository themselves (commit.go, checkout.go).
 	switch req.Verb {
 	case Commit:
 		return s.commit(ctx, provider, req, visible, raw)
 	case StageCommitBundle:
 		return s.stageCommitBundle(ctx, req, visible, raw)
+	case Checkout:
+		return s.checkout(ctx, provider, req, visible, raw)
 	case MintCloneToken:
 		// A clone credential is minted from the Connection's own credential
 		// material, not fetched from a git host, so this verb takes its own

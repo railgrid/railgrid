@@ -24,6 +24,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
+	"github.com/railgrid/provider-code/commitexec"
 )
 
 var repositoryBuildStatusesGVR = codev1alpha1.SchemeGroupVersion.WithResource("repositorybuildstatuses")
@@ -194,7 +195,7 @@ func runBuildStatusRequest(ctx context.Context, dyn dynamic.Interface, repositor
 		"apiVersion": codev1alpha1.SchemeGroupVersion.String(),
 		"kind":       "RepositoryBuildStatus",
 		"metadata": map[string]any{
-			"name":   checkoutObjectName(repositoryRef, time.Now()),
+			"name":   commitexec.CheckoutObjectName(repositoryRef, time.Now()),
 			"labels": map[string]any{codev1alpha1.LabelRepository: repositoryRef},
 		},
 		"spec": spec,
@@ -228,8 +229,8 @@ func runBuildStatusRequest(ctx context.Context, dyn dynamic.Interface, repositor
 // phase. A timeout returns (nil, nil) — never a non-terminal object — so the
 // caller surfaces "did not complete in time" rather than a misleading failure.
 func waitRepositoryBuildStatus(ctx context.Context, dyn dynamic.Interface, name string, timeout time.Duration) (*unstructured.Unstructured, error) {
-	obj, done, err := waitForPhase(ctx, dyn, repositoryBuildStatusesGVR, "RepositoryBuildStatus", name, timeout,
-		phaseIn(string(codev1alpha1.RepositoryBuildStatusPhaseSucceeded), string(codev1alpha1.RepositoryBuildStatusPhaseFailed)))
+	obj, done, err := commitexec.WaitForPhase(ctx, dyn, repositoryBuildStatusesGVR, "RepositoryBuildStatus", name, timeout,
+		commitexec.PhaseIn(string(codev1alpha1.RepositoryBuildStatusPhaseSucceeded), string(codev1alpha1.RepositoryBuildStatusPhaseFailed)))
 	if err != nil || !done {
 		return nil, err
 	}

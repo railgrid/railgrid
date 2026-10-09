@@ -221,16 +221,30 @@ inline `files`, re-reads it digest-verified, and creates the same
 `RepositoryCommit`. A staged bundle nobody commits is reclaimed by the same
 one-hour sweeper as any other orphan.
 
-`stage-snapshot` and `stage-commit-bundle` are the provider's only
+`stage-snapshot`, `stage-commit-bundle` and `checkout` are the provider's only
 **uncatalogued** verbs: a 25 MiB or 48 MiB body cannot be declared under
 `spec.export.resources[].actions[].limits.maxInputBytes`, which the CatalogEntry API
-caps at 1 MiB. Both are declared as data-plane verbs, so they are custom
-subresources `repositories/{verb}` at
+caps at 1 MiB, and a 48 MiB tree coming back cannot be declared under
+`limits.maxOutputBytes`, capped at 64 MiB. All three are declared as
+data-plane verbs, so they are custom subresources `repositories/{verb}` at
 `/clusters/{id}/apis/code.railgrid.ai/v1alpha1/repositories/{name}/{verb}`
 and gated exactly like every catalogued action. The exception, and the four conditions a
 verb has to meet to claim it, are written down in
-[provider-actions.md](./provider-actions.md) §"Uncatalogued large-upload
+[provider-actions.md](./provider-actions.md) §"Uncatalogued large-transfer
 verbs".
+
+`checkout` is the commit flow in reverse and the verb projection of the
+`checkout_repository` MCP tool: both run `commitexec.Checkout`, which creates
+a transient `RepositoryCheckout`, waits for the checkout controller to read
+the tree through the git backend into the commit-bundle store, returns the
+bundle's files inline and reclaims both. The verb creates the CR **as the
+provider** once kcp has authorized `create` on `repositories/checkout` and the
+gate has reviewed `get` on the Repository, so a consumer holds no write on the
+kind; the tool creates it as the bearer it was handed. A hub-minted scoped
+identity is never minted a write on another provider's kind
+(`pkg/hub/identity/policy.go`), which is why App Studio reads a project's
+repository through the verb, as itself, under its `repositories/checkout`
+claim.
 
 ---
 
