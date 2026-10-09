@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, watchEffect, type ComputedRef, type Ref, type StyleValue } from 'vue'
-import { setLayoutInsets } from '@/composables/useLayoutInsets'
+import { claimLayoutInsets } from '@/composables/useLayoutInsets'
 
 export type DockMode = 'float' | 'left' | 'right' | 'top' | 'bottom'
 
@@ -336,6 +336,10 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
 
   watch(floatRef, observeFloatingDock)
 
+  // Claimed in setup so this instance is the live inset writer before the
+  // outgoing page's deferred onUnmounted release runs (see useLayoutInsets).
+  const layoutInsets = claimLayoutInsets()
+
   onMounted(() => {
     disposed = false
     window.addEventListener('pointermove', onDragMove)
@@ -361,7 +365,10 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
     }
     // TerminalDock outlives routed layouts. Never carry this page's dock
     // clearance into standalone shells such as platform admin or login.
-    setLayoutInsets({ left: '0px', right: '0px', bottom: '0px' })
+    // The release is a no-op when the next page's AppLayout has already
+    // claimed the insets (Vue runs onUnmounted post-flush, after that
+    // instance's setup), so a stale reset cannot wipe the live rail width.
+    layoutInsets.release()
   })
 
   const isDefaultFloat = computed(() => !isDragging.value && dockState.value.mode === 'float' && dockState.value.x < 0)
@@ -398,7 +405,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
   // dock, so publish the same reactive inset contract as the former inline
   // implementation.
   watchEffect(() => {
-    setLayoutInsets({
+    layoutInsets.set({
       left: layoutInsetsStyle.value['--app-inset-left'],
       right: layoutInsetsStyle.value['--app-inset-right'],
       bottom: layoutInsetsStyle.value['--app-inset-bottom'],
