@@ -290,3 +290,45 @@ func stubSecretLoader(t *testing.T, fn func(string) (tunnel.Credential, bool, er
 	loadCredentialFromSecret = fn
 	t.Cleanup(func() { loadCredentialFromSecret = original })
 }
+
+// A capability the hub momentarily cannot serve must not be given up on. The
+// SSH-credential handover used to be fatal, so a 500 from the provider took the
+// whole agent down and systemd restarted it into the same failure; it now
+// retries in the background while the edge serves everything else.
+func TestRetryUntilSuccessKeepsTryingAndStops(t *testing.T) {
+	attempts := 0
+	retryUntilSuccess(t.Context(), klog.Background(), time.Millisecond, 5*time.Millisecond, "test",
+		func(context.Context) error {
+			attempts++
+			if attempts < 3 {
+				return errors.New("HTTP 500")
+			}
+			return nil
+		})
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want it to keep trying until it succeeded (3)", attempts)
+	}
+}
+
+// Shutdown is the one thing that ends the retry.
+func TestRetryUntilSuccessStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		retryUntilSuccess(ctx, klog.Background(), time.Millisecond, 2*time.Millisecond, "test",
+			func(context.Context) error {
+				attempts++
+				if attempts == 2 {
+					cancel()
+				}
+				return errors.New("still failing")
+			})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryUntilSuccess did not return after its context was cancelled")
+	}
+}

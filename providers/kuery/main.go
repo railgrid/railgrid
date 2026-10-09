@@ -223,12 +223,12 @@ func runServe() {
 		ProviderConfig: providerCfg,
 		// Edges are reached through kuery's own export virtual workspace, as
 		// the provider, under the claims the tenant accepted.
-		ExportEndpoint:     callers.ExportEndpoint,
-		ProviderRESTConfig: callers.ProviderRESTConfig,
-		APIExportName:      apiExportName,
-		Sync:               kc.Sync,
-		Store:              kc.Store,
-		Readiness:          ready,
+		ExportEndpointForCluster: callers.ExportEndpointForCluster,
+		ProviderRESTConfig:       callers.ProviderRESTConfig,
+		APIExportName:            apiExportName,
+		Sync:                     kc.Sync,
+		Store:                    kc.Store,
+		Readiness:                ready,
 	})
 	if err != nil {
 		log.Fatalf("engagement controller: %v", err)

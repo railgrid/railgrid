@@ -53,7 +53,7 @@ import (
 func TestEdgeConfigReachesTheEdgeThroughKuerysExport(t *testing.T) {
 	const endpoint = "https://kcp.example:6443/services/apiexport/abc123/kuery.providers.railgrid.ai"
 	c := &Controller{cfg: Config{
-		ExportEndpoint: func(context.Context) (string, error) { return endpoint + "/", nil },
+		ExportEndpointForCluster: func(context.Context, string) (string, error) { return endpoint + "/", nil },
 		ProviderRESTConfig: func(target string) (*rest.Config, error) {
 			return &rest.Config{Host: target, BearerToken: "provider-token", TLSClientConfig: rest.TLSClientConfig{Insecure: true}}, nil
 		},

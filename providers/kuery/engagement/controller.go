@@ -181,14 +181,16 @@ type Config struct {
 	// settings are reused for the per-edge edgeproxy data path; its bearer
 	// token is not (see the package comment).
 	ProviderConfig *rest.Config
-	// ExportEndpoint resolves kuery's own export virtual-workspace base URL
-	// (dataplane.Callers.ExportEndpoint). An edge's Kubernetes API is reached
+	// ExportEndpointForCluster resolves kuery's own export virtual-workspace
+	// base URL for one consumer cluster
+	// (dataplane.Callers.ExportEndpointForCluster): on a sharded kcp the URL
+	// depends on which shard holds that cluster. An edge's Kubernetes API is reached
 	// THROUGH it: <endpoint>/clusters/<tenant>/apis/edges.railgrid.ai/v1alpha1/
 	// kubernetesclusters/<edge>/k8s, with the provider's own credential. kcp
 	// serves that path because the tenant accepted kuery's claim on
 	// kubernetesclusters and kubernetesclusters/k8s, forwards it to the edges
 	// provider under kuery's identity, and the edges gate trusts that claim.
-	ExportEndpoint func(ctx context.Context) (string, error)
+	ExportEndpointForCluster func(ctx context.Context, clusterID string) (string, error)
 	// ProviderRESTConfig returns the provider's credential and TLS settings
 	// with the host replaced (dataplane.Callers.ProviderRESTConfig).
 	ProviderRESTConfig func(target string) (*rest.Config, error)
@@ -265,8 +267,8 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("engagement: ProviderConfig, Sync, and Store are required")
 	}
 
-	if cfg.ExportEndpoint == nil || cfg.ProviderRESTConfig == nil {
-		return nil, fmt.Errorf("engagement: ExportEndpoint and ProviderRESTConfig are required (dataplane.Callers with WithProviderConfig)")
+	if cfg.ExportEndpointForCluster == nil || cfg.ProviderRESTConfig == nil {
+		return nil, fmt.Errorf("engagement: ExportEndpointForCluster and ProviderRESTConfig are required (dataplane.Callers with WithProviderConfig)")
 	}
 
 	// One shard for the life of the process: the replica's claim identity must
@@ -879,10 +881,10 @@ func (c *Controller) dropLocal(ctx context.Context, storeName string, releaseCla
 // the edges gate trusts the claim. No per-workspace identity is minted: the
 // credential is the provider's own, and the claim is the authorization.
 func (c *Controller) edgeConfig(ctx context.Context, cluster, edgeName string) (*rest.Config, error) {
-	if c.cfg.ExportEndpoint == nil || c.cfg.ProviderRESTConfig == nil {
-		return nil, fmt.Errorf("engagement: no export virtual-workspace resolver configured (Config.ExportEndpoint / ProviderRESTConfig)")
+	if c.cfg.ExportEndpointForCluster == nil || c.cfg.ProviderRESTConfig == nil {
+		return nil, fmt.Errorf("engagement: no export virtual-workspace resolver configured (Config.ExportEndpointForCluster / ProviderRESTConfig)")
 	}
-	endpoint, err := c.cfg.ExportEndpoint(ctx)
+	endpoint, err := c.cfg.ExportEndpointForCluster(ctx, cluster)
 	if err != nil {
 		return nil, err
 	}
