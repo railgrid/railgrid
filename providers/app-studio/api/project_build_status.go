@@ -98,7 +98,7 @@ func (s *Server) getProjectBuildLogs(ctx context.Context, id identity, p *aiv1al
 	if err != nil {
 		return "", err
 	}
-	return s.callProjectBuildWorkflow(ctx, id, httpReq, projectToolCodeBuildStatus, args, candidates)
+	return s.callProjectBuildWorkflow(ctx, id, p, httpReq, projectToolCodeBuildStatus, args, candidates)
 }
 
 // rebuildProject re-runs the build workflow without a code change (retry a
@@ -118,7 +118,7 @@ func (s *Server) rebuildProject(ctx context.Context, id identity, p *aiv1alpha1.
 	if err != nil {
 		return "", err
 	}
-	return s.callProjectBuildWorkflow(ctx, id, httpReq, projectToolCodeRebuild, args, candidates)
+	return s.callProjectBuildWorkflow(ctx, id, p, httpReq, projectToolCodeRebuild, args, candidates)
 }
 
 func (s *Server) projectBuildWorkflowCandidates(ctx context.Context, id identity, p *aiv1alpha1.Project) ([]string, error) {
@@ -161,11 +161,15 @@ func (s *Server) projectBuildWorkflowCandidates(ctx context.Context, id identity
 // receive compatibility candidates. Fallback happens only on an error; every
 // successful response, including found=false, is authoritative. args retains
 // the caller's exact ref.
-func (s *Server) callProjectBuildWorkflow(ctx context.Context, id identity, httpReq *http.Request, toolName string, args map[string]any, candidates []string) (string, error) {
+func (s *Server) callProjectBuildWorkflow(ctx context.Context, id identity, p *aiv1alpha1.Project, httpReq *http.Request, toolName string, args map[string]any, candidates []string) (string, error) {
 	endpoint := s.mcpEndpoint(id.clusterID)
+	hubReq, err := s.projectMCPRequest(ctx, httpReq, id, p)
+	if err != nil {
+		return "", err
+	}
 	errorsByCandidate := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		raw, err := callProjectMCPTool(ctx, endpoint, s.hubRequest(httpReq, id), id.tenant, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
+		raw, err := callProjectMCPTool(ctx, endpoint, hubReq, id.tenant, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
 		if err == nil {
 			return raw, nil
 		}

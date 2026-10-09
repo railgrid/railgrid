@@ -212,7 +212,7 @@ func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
 		}
 		return discovery
 	}
-	mcpTools, includeCommitBridge, mcpErr := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.LLM)
+	mcpTools, includeCommitBridge, mcpErr := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.Project, req.LLM)
 	if mcpErr == nil {
 		discovery.IncludeCommitBridge = includeCommitBridge
 		discovery.MCPTools = mcpTools

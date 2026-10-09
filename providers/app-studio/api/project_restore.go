@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -128,7 +129,7 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		writeStatus(w, http.StatusConflict, "Conflict", "project files changed since History was loaded; refresh History and try again")
 		return
 	}
-	checkout, err := s.checkoutProjectRepository(r, id, repositoryRef, req.CommitSHA)
+	checkout, err := s.checkoutProjectRepository(r, id, project, repositoryRef, req.CommitSHA)
 	if err != nil {
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
@@ -166,15 +167,19 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *Server) checkoutProjectRepository(r *http.Request, id identity, repositoryRef, commitSHA string) (checkoutToolResult, error) {
+func (s *Server) checkoutProjectRepository(r *http.Request, id identity, project *aiv1alpha1.Project, repositoryRef, commitSHA string) (checkoutToolResult, error) {
+	hubReq, err := s.projectMCPRequest(r.Context(), r, id, project)
+	if err != nil {
+		return checkoutToolResult{}, err
+	}
 	raw, err := callProjectMCPTool(
 		r.Context(),
 		s.mcpEndpoint(id.clusterID),
-		s.hubRequest(r, id),
+		hubReq,
 		id.tenant,
 		s.mcpInsecureSkipTLSVerify,
 		projectToolCodeCheckoutRepository,
-		s.checkoutArgs(r.Context(), r, id, map[string]any{"repositoryRef": repositoryRef, "ref": commitSHA}),
+		s.checkoutArgs(r.Context(), r, id, project, map[string]any{"repositoryRef": repositoryRef, "ref": commitSHA}),
 	)
 	if err != nil {
 		return checkoutToolResult{}, fmt.Errorf("checkout repository at commit %s: %w", commitSHA, err)

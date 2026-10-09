@@ -23,7 +23,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/railgrid/provider-sdk/dataplane"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // staticActors is an actorLookup over a fixed user→user table, standing in
@@ -112,16 +116,46 @@ func TestIdentityCapturesOnlyOneHubActionProof(t *testing.T) {
 	}
 }
 
-func TestGenericHubRequestDoesNotForwardActionProof(t *testing.T) {
+func TestProjectMCPRequestCarriesOnlyTheProjectIdentity(t *testing.T) {
 	s := &Server{hubToken: "provider-token"}
+	s.projectIdentityTokenFor = func(_ context.Context, _ identity, p *aiv1alpha1.Project) (string, error) {
+		if p == nil || p.Name != "demo" {
+			t.Fatalf("project identity requested for %#v, want the demo Project", p)
+		}
+		return "project-token", nil
+	}
 	r := httptest.NewRequest(http.MethodPost, "https://hub.example/mcp", nil)
 	r.Header.Set("Authorization", "Bearer caller-token")
 	r.Header.Set(dataplane.HeaderActionProof, "short-lived-proof")
-	out := s.hubRequest(r, identity{tenant: "cluster-a", clusterID: "cluster-a", user: "alice"})
-	if got := out.Header.Get(dataplane.HeaderActionProof); got != "" {
-		t.Fatalf("generic hub request forwarded action proof %q", got)
+	id := identity{tenant: "cluster-a", clusterID: "cluster-a", user: "alice"}
+	out, err := s.projectMCPRequest(context.Background(), r, id, &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid-demo"}})
+	if err != nil {
+		t.Fatalf("projectMCPRequest: %v", err)
 	}
-	if got := out.Header.Get("Authorization"); got != "Bearer provider-token" {
-		t.Fatalf("generic hub request authorization = %q, want provider token", got)
+	if got := out.Header.Get(dataplane.HeaderActionProof); got != "" {
+		t.Fatalf("MCP request forwarded action proof %q", got)
+	}
+	// The aggregate admits a tenant identity holding `use` on the MCPServer
+	// and forwards that bearer to every provider; the provider's own token is
+	// neither admitted nor the identity the tools should act as.
+	if got := out.Header.Get("Authorization"); got != "Bearer project-token" {
+		t.Fatalf("MCP request authorization = %q, want the Project identity", got)
+	}
+	if got := out.Header.Get(dataplane.HeaderUser); got != "alice" {
+		t.Fatalf("X-Railgrid-User = %q, want the caller's name as a label", got)
+	}
+	if r.Header.Get("Authorization") != "Bearer caller-token" {
+		t.Fatal("projectMCPRequest mutated the inbound request")
+	}
+}
+
+func TestProjectMCPRequestRefusesWithoutAProjectIdentity(t *testing.T) {
+	s := &Server{hubToken: "provider-token"}
+	s.projectIdentityTokenFor = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
+		return "", errors.New("identity service down")
+	}
+	r := httptest.NewRequest(http.MethodPost, "https://hub.example/mcp", nil)
+	if _, err := s.projectMCPRequest(context.Background(), r, identity{clusterID: "cluster-a"}, &aiv1alpha1.Project{}); err == nil {
+		t.Fatal("projectMCPRequest succeeded without a Project identity; it must not fall back to the provider token")
 	}
 }
