@@ -179,7 +179,8 @@ test('dock movement supports pointer input and keyboard placement', () => {
   assert.match(navigationDock, /window\.removeEventListener\('pointermove', onDragMove\)/)
   assert.match(navigationDock, /window\.removeEventListener\('pointerup', onDragEnd\)/)
   assert.match(navigationDock, /window\.removeEventListener\('pointercancel', onDragEnd\)/)
-  assert.match(navigationDock, /setLayoutInsets\(\{ left: '0px', right: '0px', bottom: '0px' \}\)/)
+  assert.match(navigationDock, /const layoutInsets = claimLayoutInsets\(\)/)
+  assert.match(navigationDock, /layoutInsets\.release\(\)/)
   assert.match(navigationDock, /function onDragHandleKeydown\(event: KeyboardEvent\)/)
   for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown']) {
     assert.match(navigationDock, new RegExp(key))
