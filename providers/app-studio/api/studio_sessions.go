@@ -84,11 +84,18 @@ func (s *Server) deleteSessionCR(ctx context.Context, c *asclient.Client, thread
 
 // The Studio is written when a workspace first creates a project, so the
 // reconciler has the search backend warm before the assistant needs it.
-// Once per process per workspace: a Studio someone has since edited is left
-// exactly as it is.
+// Once per process per workspace — but only once every shared service has
+// its instance reference resolved. A fresh workspace races its infrastructure
+// APIBinding: the first project can be created before the searxng/browser
+// Templates are visible, and a Studio written then carries no resourceRef for
+// the service. The reconciler parks such a service in Pending ("waiting for
+// the … template to be resolved") and never re-resolves it, so the API keeps
+// retrying on later project creations until every reference is in place. A
+// Studio someone has since edited is otherwise left exactly as it is.
 var studioEnsured sync.Map // clusterID → struct{}
 
-// ensureStudio writes the workspace's Studio if it is missing.
+// ensureStudio writes the workspace's Studio if it is missing, and fills in any
+// shared-service reference it is still missing.
 func (s *Server) ensureStudio(ctx context.Context, c *asclient.Client, id identity) {
 	if c == nil || id.clusterID == "" {
 		return
@@ -98,10 +105,12 @@ func (s *Server) ensureStudio(ctx context.Context, c *asclient.Client, id identi
 	}
 	if existing, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{}); err == nil {
 		// A Studio created before a service existed (e.g. browser, added after
-		// search) is missing that service's block. Retrofit it so existing
-		// workspaces gain the backend without recreating the Studio.
-		s.retrofitStudioServices(ctx, c, existing)
-		studioEnsured.Store(id.clusterID, struct{}{})
+		// search), or while its Template was not yet resolvable, is missing
+		// that service's reference. Retrofit it so existing workspaces gain
+		// the backend without recreating the Studio.
+		if s.retrofitStudioServices(ctx, c, existing) {
+			studioEnsured.Store(id.clusterID, struct{}{})
+		}
 		return
 	} else if !apierrors.IsNotFound(err) {
 		// The APIBinding may not have caught up with the schemas yet.
@@ -117,38 +126,78 @@ func (s *Server) ensureStudio(ctx context.Context, c *asclient.Client, id identi
 			"browser": map[string]any{"size": "small"},
 		},
 	}}
-	if ref := s.searchResourceRef(ctx, c); ref != nil {
-		setStudioResourceRef(st, "search", ref)
-	}
-	if ref := s.browserResourceRef(ctx, c); ref != nil {
-		setStudioResourceRef(st, "browser", ref)
+	resolved := true
+	for _, svc := range studioSharedServices {
+		ref := svc.resourceRef(s, ctx, c)
+		if ref == nil {
+			resolved = false
+			continue
+		}
+		setStudioResourceRef(st, svc.name, ref)
 	}
 	if _, err := c.Resource(studioResource, "").Create(ctx, st, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		log.Printf("creating the studio for workspace %s: %v", id.clusterID, err)
 		return
 	}
-	studioEnsured.Store(id.clusterID, struct{}{})
+	if resolved {
+		studioEnsured.Store(id.clusterID, struct{}{})
+	} else {
+		log.Printf("studio for workspace %s created with an unresolved shared service; it is retrofitted on the next project creation", id.clusterID)
+	}
 	log.Printf("studio created for workspace %s (search %s, browser %s)", id.clusterID, studioSearchInstanceName, studioBrowserInstanceName)
 }
 
-// retrofitStudioServices adds spec blocks for shared services introduced after
-// a Studio was first created (today: browser). It patches only what is missing,
-// so a workspace whose Studio predates the browser backend gains it without a
-// recreate. It is a no-op until the studios schema carries the field — kcp
-// prunes unknown fields, so the write simply does not persist before then.
-func (s *Server) retrofitStudioServices(ctx context.Context, c *asclient.Client, st *unstructured.Unstructured) {
-	if resource, _, _ := unstructured.NestedString(st.Object, "spec", "browser", "resourceRef", "resource"); strings.TrimSpace(resource) != "" {
-		return // browser already present
+// studioSharedService is one backend the Studio owns and every project shares.
+// Its resourceRef is resolved by the API from the infrastructure Template, so
+// the reconciler never reads Templates. Keep in step with controller/studio.
+type studioSharedService struct {
+	name        string // spec block: "search" / "browser"
+	resourceRef func(s *Server, ctx context.Context, c *asclient.Client) *aiv1alpha1.ProjectProviderResourceReference
+}
+
+var studioSharedServices = []studioSharedService{
+	{name: "search", resourceRef: (*Server).searchResourceRef},
+	{name: "browser", resourceRef: (*Server).browserResourceRef},
+}
+
+// retrofitStudioServices fills in the spec block of every shared service the
+// Studio is missing a resourceRef for, whether the service was introduced after
+// the Studio was first created or its Template was simply not resolvable at the
+// time. It patches only what is missing, so a workspace whose Studio predates a
+// backend gains it without a recreate, and a service the workspace disabled is
+// left alone. It reports whether every service now has its reference, so the
+// caller knows whether to stop retrying. It is a no-op until the studios schema
+// carries the field — kcp prunes unknown fields, so the write simply does not
+// persist before then.
+func (s *Server) retrofitStudioServices(ctx context.Context, c *asclient.Client, st *unstructured.Unstructured) (complete bool) {
+	complete = true
+	changed := false
+	for _, svc := range studioSharedServices {
+		if disabled, _, _ := unstructured.NestedBool(st.Object, "spec", svc.name, "disabled"); disabled {
+			continue
+		}
+		if resource, _, _ := unstructured.NestedString(st.Object, "spec", svc.name, "resourceRef", "resource"); strings.TrimSpace(resource) != "" {
+			continue // already present
+		}
+		ref := svc.resourceRef(s, ctx, c)
+		if ref == nil {
+			complete = false
+			continue
+		}
+		if size, _, _ := unstructured.NestedString(st.Object, "spec", svc.name, "size"); strings.TrimSpace(size) == "" {
+			_ = unstructured.SetNestedField(st.Object, "small", "spec", svc.name, "size")
+		}
+		setStudioResourceRef(st, svc.name, ref)
+		changed = true
 	}
-	ref := s.browserResourceRef(ctx, c)
-	if ref == nil {
-		return
+	if !changed {
+		return complete
 	}
-	_ = unstructured.SetNestedField(st.Object, "small", "spec", "browser", "size")
-	setStudioResourceRef(st, "browser", ref)
 	if _, err := c.Resource(studioResource, "").Update(ctx, st, metav1.UpdateOptions{}); err != nil {
-		log.Printf("retrofitting browser onto studio for workspace %s: %v", st.GetName(), err)
+		log.Printf("retrofitting shared services onto studio for workspace %s: %v", st.GetName(), err)
+		return false
 	}
+	return complete
 }
 
 // setStudioResourceRef writes a resolved instance reference under
