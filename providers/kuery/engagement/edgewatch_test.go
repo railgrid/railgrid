@@ -160,7 +160,7 @@ func reconcileFixture(t *testing.T) (*Controller, *managerCache) {
 	}
 	// An empty export endpoint makes the edge URL relative, so engage fails
 	// fast in-process instead of dialling anything.
-	c.cfg.ExportEndpoint = func(context.Context) (string, error) { return "", nil }
+	c.cfg.ExportEndpointForCluster = func(context.Context, string) (string, error) { return "", nil }
 	c.cfg.ProviderRESTConfig = func(target string) (*rest.Config, error) { return &rest.Config{Host: target}, nil }
 	return c, cache
 }
