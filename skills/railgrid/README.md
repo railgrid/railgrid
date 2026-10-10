@@ -103,7 +103,12 @@ directory travels as package resources.
 Everything in the skill was read from the railgrid source and docs on
 2026-09-09, then corrected against a live hub the same day. The MCP-first
 guidance (`railgrid mcp proxy`, `fmcp`) was checked against a local hub on
-2026-09-13. On 2026-10-09 every reference was re-verified against the source
+2026-09-13. On 2026-10-10 five test projects were driven end to end on a
+hosted hub (CLI, raw verbs, MCP, assistant, adopted repo, bare Instance);
+what that surfaced — `--wait` semantics, the `preview` verb, the
+`.gitignore`/restart trap, adopted-repo prerequisites, instant 502s from
+App Studio's git calls — is in SKILL.md 4.3–4.6 and section 8, cli.md
+section 9 and troubleshooting.md. On 2026-10-09 every reference was re-verified against the source
 after the provider REST surfaces (`/services/providers/<p>/api/*`) were
 retired: every provider call is now a kube path on the workspace cluster, a
 CR or a custom-subresource verb
@@ -125,7 +130,7 @@ another list it will trust for too long.
 
 Section 8 of `SKILL.md` and `references/troubleshooting.md` collect what only
 shows up when you actually drive a hub:
-Cloudflare blocking non-browser HTTP clients, calling MCP tools from a shell
+the hub's front-door proxy blocking non-browser HTTP clients, calling MCP tools from a shell
 (`fmcp`), org-scoped providers missing for token-based MCP clients, and the
 states that look like failures but are only latency. Add to it whenever a session
 loses time to something that was not in the code.

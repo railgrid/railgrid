@@ -50,8 +50,15 @@ Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and
 ## Developer workflow
 
 - [railgrid app](railgrid_app.md) — Manage App Studio projects: list, create, status, sync, promote, publish
+  - [railgrid app checkpoints](railgrid_app_checkpoints.md) — Show each stage on the way to production and why it is not done yet
   - [railgrid app create](railgrid_app_create.md) — Create a project (repository, scaffold commit and dev instance)
+  - [railgrid app files](railgrid_app_files.md) — List, read, write and delete files in a project's workspace
+    - [railgrid app files get](railgrid_app_files_get.md) — Print a workspace file (text or binary) to stdout or --out
+    - [railgrid app files ls](railgrid_app_files_ls.md) — List the workspace files with their sizes
+    - [railgrid app files put](railgrid_app_files_put.md) — Write a workspace file from a local file (or stdin); binaries are fine
+    - [railgrid app files rm](railgrid_app_files_rm.md) — Delete a workspace file (the reconciler commits the deletion)
   - [railgrid app list](railgrid_app_list.md) — List App Studio projects
+  - [railgrid app preview](railgrid_app_preview.md) — Show or set who can open the development preview (Dev URL)
   - [railgrid app promote](railgrid_app_promote.md) — Promote the latest built commit (or --commit) to production
   - [railgrid app publish](railgrid_app_publish.md) — Set production visibility: public, restricted or private
   - [railgrid app status](railgrid_app_status.md) — Show a project's repository, commits, promotion and publishing state
@@ -59,6 +66,7 @@ Global flags: `--kubeconfig` (default `$KUBECONFIG`, then `~/.kube/config`) and
 - [railgrid commit](railgrid_commit.md) — Record local git commits through railgrid (code__commit_files)
 - [railgrid env](railgrid_env.md) — Print shell exports for calling the hub as you
 - [railgrid mcp](railgrid_mcp.md) — MCP endpoints for AI clients (Claude Code, Cursor, Codex)
+  - [railgrid mcp call](railgrid_mcp_call.md) — Call one provider tool on the workspace MCP endpoint, as you
   - [railgrid mcp claude](railgrid_mcp_claude.md) — Add the workspace MCP server to Claude Code
   - [railgrid mcp codex](railgrid_mcp_codex.md) — Add the workspace MCP server to Codex
   - [railgrid mcp proxy](railgrid_mcp_proxy.md) — Serve the workspace MCP endpoint over stdio, authenticated as you

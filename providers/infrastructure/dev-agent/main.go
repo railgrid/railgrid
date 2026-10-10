@@ -1211,10 +1211,11 @@ func decodeSyncContent(file syncFile) (content []byte, binary bool, err error) {
 	case "", syncEncodingUTF8:
 		return []byte(file.Content), false, nil
 	case syncEncodingBase64:
-		if strings.ContainsAny(file.Content, "\r\n") {
-			return nil, true, fmt.Errorf("file %q: base64 content must not contain line breaks", file.Path)
-		}
-		decoded, err := base64.StdEncoding.Strict().DecodeString(file.Content)
+		// Wrapped base64 (76-column line breaks from `base64` on some
+		// systems) is normalized rather than rejected: the digest and every
+		// consumer cover the decoded bytes, so one byte sequence still has one
+		// accepted meaning.
+		decoded, err := base64.StdEncoding.Strict().DecodeString(stripBase64Whitespace(file.Content))
 		if err != nil {
 			return nil, true, fmt.Errorf("file %q: invalid base64 content: %v", file.Path, err)
 		}
@@ -1222,6 +1223,22 @@ func decodeSyncContent(file syncFile) (content []byte, binary bool, err error) {
 	default:
 		return nil, false, fmt.Errorf("file %q: unsupported encoding %q (want %q or %q)", file.Path, file.Encoding, syncEncodingUTF8, syncEncodingBase64)
 	}
+}
+
+// stripBase64Whitespace drops the line breaks, tabs and spaces that
+// line-wrapping encoders insert; everything else is left for the strict
+// decoder to judge.
+func stripBase64Whitespace(s string) string {
+	if !strings.ContainsAny(s, "\r\n\t ") {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t', ' ':
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // decodeSyncFiles cleans every path and strictly decodes every entry. With

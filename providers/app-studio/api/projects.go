@@ -508,6 +508,15 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		if _, err := s.hydrateWorkspaceFromRepository(ctx, id, updated, ""); err != nil {
 			klog.V(1).Infof("repository import hydrate failed for project %s: %v", updated.Name, err)
 			_ = emitProjectCreationStatus(onStatus, "Repository import incomplete — retry from project settings")
+		} else if selectedTemplate != nil {
+			// An imported tree rarely carries the template's CI workflow, and
+			// without it nothing ever builds an image. Add that one file (and
+			// only it); the reconciler commits it like any workspace write.
+			if workflow, err := s.seedMissingBuildWorkflow(ctx, id, updated, *selectedTemplate); err != nil {
+				klog.V(1).Infof("seeding build workflow for adopted project %s: %v", updated.Name, err)
+			} else if workflow != "" {
+				_ = emitProjectCreationStatus(onStatus, "Added the template's build workflow "+workflow)
+			}
 		}
 	}
 	return updated, nil

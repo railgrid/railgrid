@@ -19,10 +19,12 @@ package api
 import (
 	"context"
 	"net/http"
+	"path"
 	"strings"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // Project lifecycle checkpoints — the four gates a project passes through on
@@ -85,12 +87,15 @@ func (s *Server) projectCheckpoints(ctx context.Context, c *asclient.Client, id 
 	template := s.checkpointTemplate(templateName)
 	git := s.checkpointGit(repo)
 	ci := s.checkpointCI(repo, git.State)
+	if ci.State == projectCheckpointStateDone && templateName != "" {
+		ci = s.checkpointBuildWorkflow(ctx, c, id, p, templateName, ci)
+	}
 
 	// The build check is the promotion gate used by the production checkpoint.
 	// It is a no-op ("unsupported") for template-less projects.
 	build, err := s.checkProjectBuild(ctx, c, id, p)
 	if err != nil {
-		build = projectBuildCheckResult{Status: "unavailable", Note: err.Error()}
+		build = projectBuildCheckResult{Status: "unavailable", Note: err.Error() + providerClaimHint(err)}
 	}
 	production := s.checkpointProduction(ctx, c, id, p, templateName, build)
 
@@ -182,6 +187,44 @@ func (s *Server) checkpointCI(repo *ProjectRepositoryView, gitState string) proj
 		Message: "Commit the project source, including any repository-owned workflow supplied by its template.",
 	}
 	return cp
+}
+
+// checkpointBuildWorkflow downgrades a committed Source checkpoint when the
+// workspace has no copy of the workflow the template declares: the commits
+// are real, but nothing will ever build an image from them, which otherwise
+// shows up only as a promotion that stays at build=none forever.
+func (s *Server) checkpointBuildWorkflow(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string, cp projectCheckpoint) projectCheckpoint {
+	if s.workspaces == nil {
+		return cp
+	}
+	info, err := fetchProjectTemplate(ctx, c, templateName)
+	if err != nil || info.BuildWorkflowPath == "" {
+		return cp
+	}
+	want := path.Clean(strings.TrimPrefix(info.BuildWorkflowPath, "/"))
+	files, err := s.workspaces.ListFiles(ctx, projectWorkspaceScope(id, p), workspace.ListOptions{})
+	if err != nil || files.Truncated {
+		return cp
+	}
+	for _, f := range files.Files {
+		if path.Clean(f.Path) == want {
+			return cp
+		}
+	}
+	cp.State = projectCheckpointStateBlocked
+	cp.Reason = "The repository has no " + want + ", the build workflow template " + templateName + " declares; nothing builds an image until it exists."
+	cp.Remediation = &projectCheckpointRemediation{
+		Kind:    projectCheckpointFixManual,
+		Message: "Add the template's workflow: POST the project's scaffold verb (it seeds only the missing workflow into a non-empty workspace), or commit the file from the scaffold repository" + scaffoldRepositoryHint(info) + ".",
+	}
+	return cp
+}
+
+func scaffoldRepositoryHint(info projectTemplateInfo) string {
+	if info.ScaffoldRepo == "" {
+		return ""
+	}
+	return " (" + info.ScaffoldRepo + ")"
 }
 
 func (s *Server) checkpointProduction(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string, build projectBuildCheckResult) projectCheckpoint {

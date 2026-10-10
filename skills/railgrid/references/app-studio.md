@@ -215,9 +215,9 @@ PUT    $AS/projects/<p>/files-content?path=<p>       body = raw file bytes
 DELETE $AS/projects/<p>/files-content?path=<p>       optional If-Match
 GET    $AS/projects/<p>/files-raw?path=<p>[&download=1]   raw bytes
 POST   $AS/projects/<p>/files-upload                 multipart
-POST   $AS/projects/<p>/hydrate-workspace            {ref?} → {repositoryRef,ref,commitSHA,written[],sourceRevision,skipped[]}   git → workspace via the code `repositories/checkout` verb, as App Studio; 400 / 502 / 503 "project workspace store is not configured"
+POST   $AS/projects/<p>/hydrate-workspace            {ref?} → {repositoryRef,ref,commitSHA,written[],sourceRevision,skipped[]}   git → workspace via the code `repositories/checkout` verb, as App Studio; 400 / 502 / 503 "project workspace store is not configured"; an instant 502 from the hub's front door while `code` is Ready = App Studio's own call failing (the automatic hydrate after a commit fails the same way; SKILL.md section 8)
 POST   $AS/projects/<p>/restore-workspace            {commitSHA:"<full sha>",expectedSourceRevision:<ProjectView.sourceRevision, number or numeric string>} → {commitSHA,written[],deleted[],sourceRevision,skipped[]?}   409 when the revision moved; restoring an older commit deletes files and the reconciler commits the deletions; a restored commit without a workflow builds nothing (`build.status: none`)
-POST   $AS/projects/<p>/scaffold                     → {template,scaffold{repository,ref},seeded}   re-seed template starter files into an EMPTY workspace; 400 no template, 422 NoScaffold
+POST   $AS/projects/<p>/scaffold                     → {template,scaffold{repository,ref},seeded}   re-seed template starter files into an EMPTY workspace; a non-empty one answers 200 with `seeded: 0` (nothing overwritten); 400 no template, 422 NoScaffold. `scaffold.repository` is the public scaffold repo (`https://github.com/railgrid/scaffold-simple-webapp`), handy for copying `.github/workflows/build.yaml` into an adopted repo
 ```
 
 `files-content` GET: text beyond 256 KiB is `truncated` with no `version`; a
@@ -238,7 +238,12 @@ Writes share one gate: 503 `project workspace store is not
 configured`, 409 `project is being deleted`, 409
 `wait for or stop the active assistant run before changing project files`.
 Every write marks the paths uncommitted (the reconciler commits them) and
-schedules a dev sync, like an assistant edit.
+schedules a dev sync, like an assistant edit. Measured on a hosted hub: the
+reconciler's commit landed ~30 s after a `PUT`, one commit per burst of
+writes (`Update api/server.mjs`, `Update 2 files`); content identical to the
+branch head resolves the `RepositoryCommit` to the **existing** head SHA
+(`Succeeded`, no new commit), which is how an adopted tree becomes
+promotable without changing it.
 
 - `PUT files-content`: body is the whole file (≤ 25 MiB binary, 256 KiB text;
   413 `file exceeds the 26214400-byte binary limit` or
@@ -288,7 +293,7 @@ GET  $AS/projects/<p>/development-status                 raw instance status
 POST $AS/projects/<p>/authorize-development-preview      → {target,ready,previewURL,message,reason,desiredAccess,observedAccess,accessConverged}
 POST $AS/projects/<p>/preview-bridge-sessions            {generation:<uuid>,protocolVersion:1,portalInstanceID:<uuid>} + Origin header → 201 {status available,sessionID,generation,capability,previewOrigin,portalOrigin,expiresAt} | 200 {status:"unsupported"}; 409 preview not ready
 DELETE $AS/projects/<p>/preview-bridge-sessions/<session>   204
-GET|POST|DELETE $AS/projects/<p>/preview                 → {mode,url,converged,supported,grants[]}; POST {mode public|restricted} (aliases members|private; empty keeps the mode); DELETE = private again and drops every preview grant (200 even without a dev environment); converges in ~20–30 s
+GET|POST|DELETE $AS/projects/<p>/preview                 → {mode,url,converged,supported,grants[]}; POST {mode public|restricted} (aliases members|private; empty keeps the mode); DELETE = private again and drops every preview grant (200 even without a dev environment); default mode is `restricted`; `public` converged in ~10 s on a hosted hub (anonymous curl 200), allow 20–30 s. No CLI command; `railgrid app status` does not show the mode
 GET|POST $AS/projects/<p>/preview-grants ; POST …/preview-grants/<grant> (revoke)    same bodies and rules as publishing-grants
 ```
 

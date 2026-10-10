@@ -14,6 +14,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path"
+	"strings"
 
 	"k8s.io/klog/v2"
 
@@ -81,6 +83,46 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	return len(files), nil
 }
 
+// seedMissingBuildWorkflow writes the template's CI workflow (the one file
+// App Studio's build check and promotion look for) from the scaffold into a
+// workspace that has content but no such file: an adopted repository, or a
+// project that predates the workflow. Nothing else from the scaffold is
+// touched, so the tree stays the user's. Returns the path it wrote, or "".
+func (s *Server) seedMissingBuildWorkflow(ctx context.Context, id identity, p *aiv1alpha1.Project, info projectTemplateInfo) (string, error) {
+	if s.workspaces == nil || p == nil || info.ScaffoldRepo == "" || info.BuildWorkflowPath == "" {
+		return "", nil
+	}
+	scope := projectWorkspaceScope(id, p)
+	want := path.Clean(strings.TrimPrefix(info.BuildWorkflowPath, "/"))
+	existing, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("listing workspace: %w", err)
+	}
+	for _, f := range existing.Files {
+		if path.Clean(f.Path) == want {
+			return "", nil
+		}
+	}
+	files, err := scaffold.Fetch(ctx, info.ScaffoldRepo, info.ScaffoldRef)
+	if err != nil {
+		return "", fmt.Errorf("fetching scaffold %s@%s: %w", info.ScaffoldRepo, info.ScaffoldRef, err)
+	}
+	for _, f := range files {
+		if path.Clean(f.Path) != want {
+			continue
+		}
+		if err := s.workspaces.ApplyFiles(ctx, scope, []workspace.File{f}); err != nil {
+			return "", fmt.Errorf("seeding %s: %w", want, err)
+		}
+		if _, err := s.workspaces.AddUncommittedPaths(ctx, scope, []string{f.Path}); err != nil {
+			return "", fmt.Errorf("tracking %s: %w", want, err)
+		}
+		s.signalProject(id.workspaceUUID, p.Name)
+		return f.Path, nil
+	}
+	return "", fmt.Errorf("scaffold %s@%s has no %s", info.ScaffoldRepo, info.ScaffoldRef, want)
+}
+
 // repositoryBoilerplatePaths are the root files a git host writes when it
 // initializes an empty repository (and that hydration then copies into the
 // workspace). A workspace holding nothing else has no application code to
@@ -131,11 +173,26 @@ func (s *Server) reseedProjectScaffold(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"template": info.Name,
 		"scaffold": map[string]string{"repository": info.ScaffoldRepo, "ref": info.ScaffoldRef},
 		"seeded":   seeded,
-	})
+	}
+	if seeded == 0 {
+		// The workspace already has content, so the full scaffold stays out;
+		// the one file worth adding on its own is the build workflow, without
+		// which the project never becomes promotable.
+		workflow, err := s.seedMissingBuildWorkflow(r.Context(), id, project, info)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		if workflow != "" {
+			resp["seeded"] = 1
+			resp["seededWorkflow"] = workflow
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // emitScaffoldSeed runs the seed step during creation with a wizard status

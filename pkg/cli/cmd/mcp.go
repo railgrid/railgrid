@@ -38,7 +38,7 @@ func newMCPCommand() *cobra.Command {
 		Long:  `Commands for interacting with the railgrid MCP endpoint.`,
 	}
 
-	cmd.AddCommand(newMCPURLCommand())
+	cmd.AddCommand(newMCPCallCommand(), newMCPURLCommand())
 	cmd.AddCommand(newMCPClaudeCommand())
 	cmd.AddCommand(newMCPCodexCommand())
 	cmd.AddCommand(newMCPProxyCommand())

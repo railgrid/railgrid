@@ -1405,7 +1405,6 @@ func TestSyncRejectsInvalidEncodings(t *testing.T) {
 		"invalid base64":         {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "@@@@", Encoding: "base64"}}}, "invalid base64"},
 		"unpadded base64":        {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "AA", Encoding: "base64"}}}, "invalid base64"},
 		"non-canonical base64":   {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "QR==", Encoding: "base64"}}}, "invalid base64"},
-		"base64 with line break": {syncRequest{Files: []syncFile{{Path: "a.bin", Content: "AAAA\nAAAA", Encoding: "base64"}}}, "line breaks"},
 		"authoritative NUL text": {syncRequest{Files: textWithNUL, SourceRevision: 1, SourceDigest: nulDigest}, "UTF-8 text without NUL"},
 	} {
 		rec, _ := doSync(t, srv, tc.req)
@@ -1461,5 +1460,21 @@ func TestSyncDecodedLimitsReturn413(t *testing.T) {
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Errorf("%s: status=%d body=%q, want 413", name, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestStripBase64Whitespace(t *testing.T) {
+	for in, want := range map[string]string{
+		"AAAA":            "AAAA",
+		"AAAA\nAAAA\n":    "AAAAAAAA",
+		"AA AA\r\n\tAA==": "AAAAAA==",
+		"":                "",
+	} {
+		if got := stripBase64Whitespace(in); got != want {
+			t.Errorf("stripBase64Whitespace(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if _, binary, err := decodeSyncContent(syncFile{Path: "a.bin", Content: "aGVs\nbG8=\n", Encoding: "base64"}); err != nil || !binary {
+		t.Fatalf("wrapped base64 rejected: binary=%v err=%v", binary, err)
 	}
 }

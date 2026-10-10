@@ -181,11 +181,14 @@ func newAppCommand() *cobra.Command {
   railgrid app create shop --template application --display-name Shop --wait
   railgrid app status shop
   railgrid app sync shop
+  railgrid app preview shop --mode public      # share the Dev URL before production exists
   railgrid app promote shop --hostname-prefix shop
   railgrid app publish shop --mode public
 
 Develop with 'railgrid sandbox' against <project>-dev and record commits with
-'railgrid commit <repository ref>' (the ref is shown by 'railgrid app status').`,
+'railgrid commit <repository ref>' (the ref is shown by 'railgrid app status').
+'railgrid app checkpoints' explains a blocked promotion; 'railgrid app files'
+reads and writes the project workspace directly.`,
 	}
 	target.addFlags(cmd)
 	cmd.AddCommand(
@@ -195,6 +198,9 @@ Develop with 'railgrid sandbox' against <project>-dev and record commits with
 		newAppSyncCommand(&target),
 		newAppPromoteCommand(&target),
 		newAppPublishCommand(&target),
+		newAppPreviewCommand(&target),
+		newAppCheckpointsCommand(&target),
+		newAppFilesCommand(&target),
 	)
 	return cmd
 }
@@ -495,6 +501,9 @@ func runAppCreate(ctx context.Context, out, errOut io.Writer, target hubTarget, 
 	}
 	_, err = fmt.Fprintf(out, "project %s created (phase %s, template %s, repository %s)\n",
 		p.Name, formatStringOrDash(p.Phase), formatStringOrDash(p.Template), repo)
+	if err == nil && wait && p.Template != "" && environmentURL(p.Environments, "development") == "" {
+		_, _ = fmt.Fprintf(errOut, "railgrid app: the repository and scaffold commit are ready; the %s-dev instance keeps coming up for another 1–2 min ('railgrid app status %s' shows its Dev URL)\n", p.Name, p.Name)
+	}
 	return err
 }
 
@@ -514,11 +523,15 @@ func appScaffolded(p appProjectView) bool {
 
 // appStatus is what `railgrid app status` gathers; -o json prints it whole.
 type appStatus struct {
-	Project         json.RawMessage `json:"project"`
-	Promotion       json.RawMessage `json:"promotion,omitempty"`
-	PromotionError  string          `json:"promotionError,omitempty"`
-	Publishing      json.RawMessage `json:"publishing,omitempty"`
-	PublishingError string          `json:"publishingError,omitempty"`
+	Project          json.RawMessage `json:"project"`
+	Promotion        json.RawMessage `json:"promotion,omitempty"`
+	PromotionError   string          `json:"promotionError,omitempty"`
+	Publishing       json.RawMessage `json:"publishing,omitempty"`
+	PublishingError  string          `json:"publishingError,omitempty"`
+	Preview          json.RawMessage `json:"preview,omitempty"`
+	PreviewError     string          `json:"previewError,omitempty"`
+	Checkpoints      json.RawMessage `json:"checkpoints,omitempty"`
+	CheckpointsError string          `json:"checkpointsError,omitempty"`
 }
 
 func newAppStatusCommand(target *hubTarget) *cobra.Command {
@@ -545,6 +558,12 @@ func newAppStatusCommand(target *hubTarget) *cobra.Command {
 			}
 			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, args[0], "publishing"), nil, &st.Publishing); err != nil {
 				st.PublishingError = err.Error()
+			}
+			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, args[0], "preview"), nil, &st.Preview); err != nil {
+				st.PreviewError = err.Error()
+			}
+			if err := s.do(ctx, http.MethodGet, projectVerbURL(s, args[0], "checkpoints"), nil, &st.Checkpoints); err != nil {
+				st.CheckpointsError = err.Error()
 			}
 			if output == "json" {
 				return printJSON(cmd.OutOrStdout(), st)
@@ -605,7 +624,17 @@ func printAppStatus(w io.Writer, st appStatus, now time.Time) error {
 	} else {
 		printRow(tw, "Repository:", "-")
 	}
-	printRow(tw, "Dev URL:", formatStringOrDash(environmentURL(p.Environments, "development")))
+	devURL := environmentURL(p.Environments, "development")
+	printRow(tw, "Dev URL:", formatStringOrDash(devURL))
+	if devURL == "" && p.Template != "" && !p.Deleting {
+		printRow(tw, "", "(the development instance is still coming up; 1–2 min after creation)")
+	}
+	if len(st.Preview) > 0 {
+		var pv appPreviewView
+		if err := json.Unmarshal(st.Preview, &pv); err == nil && pv.Supported {
+			printRow(tw, "Preview:", previewSummary(pv))
+		}
+	}
 
 	if len(st.Promotion) > 0 {
 		var pr appPromotionView
@@ -644,6 +673,18 @@ func printAppStatus(w io.Writer, st appStatus, now time.Time) error {
 		}
 	} else if st.PublishingError != "" {
 		printRow(tw, "Publishing:", "unavailable: "+oneLine(st.PublishingError, 100))
+	}
+	if len(st.Checkpoints) > 0 {
+		var cp appCheckpointsView
+		if err := json.Unmarshal(st.Checkpoints, &cp); err == nil {
+			for i, line := range blockedCheckpoints(cp) {
+				label := ""
+				if i == 0 {
+					label = "Blocked:"
+				}
+				printRow(tw, label, line)
+			}
+		}
 	}
 	return tw.Flush()
 }
@@ -742,7 +783,7 @@ func formatAgeAt(now, t time.Time) string {
 }
 
 func newAppSyncCommand(target *hubTarget) *cobra.Command {
-	var output string
+	var output, from string
 	cmd := &cobra.Command{
 		Use:   "sync <name>",
 		Short: "Load the repository into the project workspace and sync it to <name>-dev",
@@ -754,17 +795,92 @@ works against <name>-dev.
 Use this rather than 'railgrid sandbox sync' on an App Studio dev instance: App
 Studio owns that instance's file set, and a sandbox sync replaces it. Files
 the sync left out (binaries a component's dev agent cannot take, files over
-the size limits) are listed per component.`,
+the size limits) are listed per component.
+
+With --from <dir> the local files under <dir> (a clone, or any tree laid out
+like the repository) are pushed straight into <name>-dev instead: an additive
+sync that leaves the workspace store and git alone, so nothing is committed
+and nothing is replaced. Use it to try a change before 'railgrid commit', or
+when loading the workspace from git is not working.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(output); err != nil {
 				return err
 			}
+			if from != "" {
+				return runAppSyncFrom(cmdContext(cmd), cmd.OutOrStdout(), cmd.ErrOrStderr(), *target, args[0], from, output)
+			}
 			return runAppSync(cmdContext(cmd), cmd.OutOrStdout(), cmd.ErrOrStderr(), *target, args[0], output)
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
+	cmd.Flags().StringVar(&from, "from", "", "Push the files under this local directory into <name>-dev (additive; skips git and the workspace store)")
 	return cmd
+}
+
+// devSyncTool is the infrastructure provider's additive sandbox sync, routed
+// per component by the template's workspacePath prefixes.
+const devSyncTool = "infrastructure__dev_sync"
+
+type devSyncResult struct {
+	Instance   string `json:"instance"`
+	Components map[string]struct {
+		Files    int          `json:"files"`
+		Response syncResponse `json:"response"`
+	} `json:"components"`
+}
+
+// runAppSyncFrom pushes a local tree into <name>-dev through
+// infrastructure__dev_sync. Binary files travel base64 on one line (the
+// agent rejects wrapped base64), text as is.
+func runAppSyncFrom(ctx context.Context, out, errOut io.Writer, target hubTarget, name, dir, output string) error {
+	paths, err := listSyncFiles(ctx, dir)
+	if err != nil {
+		return err
+	}
+	local, err := readSyncFiles(dir, paths)
+	if err != nil {
+		return err
+	}
+	files, _, err := buildSyncFiles(local, true)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no files to sync under %s", dir)
+	}
+	s, err := newHubSession(ctx, target)
+	if err != nil {
+		return err
+	}
+	mcp, err := s.newMCPClient(ctx)
+	if err != nil {
+		return err
+	}
+	instance := name + "-dev"
+	_, _ = fmt.Fprintf(errOut, "railgrid app: pushing %d file(s) from %s into %s (additive; git and the workspace store untouched)\n", len(files), dir, instance)
+	raw, err := mcp.callTool(ctx, devSyncTool, map[string]any{"instance": instance, "files": files})
+	if err != nil {
+		return fmt.Errorf("%s failed: %w", devSyncTool, err)
+	}
+	if output == "json" {
+		return printJSON(out, raw)
+	}
+	var res devSyncResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return fmt.Errorf("decoding %s result: %w", devSyncTool, err)
+	}
+	names := make([]string, 0, len(res.Components))
+	for c := range res.Components {
+		names = append(names, c)
+	}
+	sort.Strings(names)
+	for _, c := range names {
+		r := res.Components[c].Response
+		_, _ = fmt.Fprintf(out, "%s/%s: %s, %d changed, %d deleted, restarted=%v, revision %d\n", instance, c, formatStringOrDash(r.Phase), len(r.Changed), len(r.Deleted), r.Restarted, r.SourceRevision)
+	}
+	_, _ = fmt.Fprintf(out, "nothing was committed; record the change with 'railgrid commit' when it is ready\n")
+	return nil
 }
 
 func runAppSync(ctx context.Context, out, errOut io.Writer, target hubTarget, name, output string) error {

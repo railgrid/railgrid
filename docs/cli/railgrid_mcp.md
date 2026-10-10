@@ -26,6 +26,7 @@ railgrid mcp [flags]
 ### SEE ALSO
 
 * [railgrid](railgrid.md)	 - railgrid: an open-source control plane for platform teams
+* [railgrid mcp call](railgrid_mcp_call.md)	 - Call one provider tool on the workspace MCP endpoint, as you
 * [railgrid mcp claude](railgrid_mcp_claude.md)	 - Add the workspace MCP server to Claude Code
 * [railgrid mcp codex](railgrid_mcp_codex.md)	 - Add the workspace MCP server to Codex
 * [railgrid mcp proxy](railgrid_mcp_proxy.md)	 - Serve the workspace MCP endpoint over stdio, authenticated as you
