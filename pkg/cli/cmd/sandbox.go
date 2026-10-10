@@ -479,11 +479,11 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 	}
 	var proc processStatus
 	if err := s.do(ctx, http.MethodGet, componentURL(s, instance, component, "process"), nil, &proc); err != nil {
-		return 0, err
+		return 0, sandboxLookupHint(err, instance)
 	}
 	if proc.SourceRevision == 0 || proc.SourceDigest == "" {
 		if project := appStudioProjectForInstance(ctx, s, instance); project != "" {
-			return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid app sync %s' first (exec needs an authoritative sync, and %s is managed by App Studio project %s, so 'railgrid sandbox sync' would replace its file set)", instance, component, project, instance, project)
+			return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid app sync %s' (or 'railgrid app sync %s --from <dir>') first (exec needs a synced source revision, and %s is managed by App Studio project %s, so 'railgrid sandbox sync' would replace its file set)", instance, component, project, project, instance, project)
 		}
 		return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid sandbox sync %s %s <dir>' first (exec needs an authoritative sync; a restart that rewrote a synced file, such as an older simple-webapp start command appending to .gitignore, clears it too, and a no-op re-sync restores it)", instance, component, instance, component)
 	}
@@ -762,7 +762,7 @@ func newSandboxStatusCommand(target *hubTarget) *cobra.Command {
 			}
 			var raw json.RawMessage
 			if err := s.do(ctx, http.MethodGet, statusURL, nil, &raw); err != nil {
-				return err
+				return sandboxLookupHint(err, args[0])
 			}
 			if output == "json" {
 				return printJSON(cmd.OutOrStdout(), raw)
@@ -860,4 +860,15 @@ func oneLine(s string, n int) string {
 		return string(r[:n-1]) + "…"
 	}
 	return s
+}
+
+// sandboxLookupHint explains the most common 404 on a sandbox command: the
+// project name was given where the instance name was wanted. An App Studio
+// project's development instance is "<project>-dev", and nothing else in a
+// workspace is reachable under the bare project name.
+func sandboxLookupHint(err error, instance string) error {
+	if err == nil || strings.HasSuffix(instance, "-dev") || !strings.Contains(err.Error(), "HTTP 404") {
+		return err
+	}
+	return fmt.Errorf("%w\n  (no instance %q; an App Studio project's development instance is named %s-dev)", err, instance, instance)
 }

@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 func TestAppPreviewCommand(t *testing.T) {
@@ -193,7 +195,7 @@ func TestAppSyncFromPushesThroughDevSync(t *testing.T) {
 
 	var called string
 	var files []syncFile
-	hub.handle("POST /mcp", func(w http.ResponseWriter, r *http.Request) {
+	hub.handle("POST "+apiurl.MCPServerPath("cl-b", "default"), func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Method string `json:"method"`
 			Params struct {
