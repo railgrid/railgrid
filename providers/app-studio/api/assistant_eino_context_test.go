@@ -24,10 +24,48 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/store"
 )
+
+func TestProjectEinoAssistantLiveRefreshReadsProjectOnceAndClearsRemovedRepository(t *testing.T) {
+	current := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid"},
+		Spec:       aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "current-repo"}},
+	}
+	dyn := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	reads := 0
+	dyn.PrependReactor("get", "projects", func(clienttesting.Action) (bool, runtime.Object, error) {
+		reads++
+		obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(current)
+		return true, &unstructured.Unstructured{Object: obj}, err
+	})
+	runState := newProjectEinoAssistantRunState()
+	req := projectAssistantRunRequest{
+		Project: current.DeepCopy(), Client: asclient.NewFromDynamic(dyn),
+		Continuation: &projectAssistantCheckpointState{ProjectRepositoryRef: "checkpoint-repo"},
+	}
+	lifecycle := projectEinoAssistantLifecycleMiddleware(req, runState).(*projectEinoAssistantLifecycle)
+	if err := lifecycle.refreshLiveRequestContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 1 || runState.ProjectRepositoryRef() != "current-repo" {
+		t.Fatalf("first refresh: project reads=%d repository=%q, want one read and current repository", reads, runState.ProjectRepositoryRef())
+	}
+	current.Spec.Repository = nil
+	if err := lifecycle.refreshLiveRequestContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 || runState.ProjectRepositoryRef() != "" || lifecycle.req.Repository != nil {
+		t.Fatalf("removed repository refresh: reads=%d repository=%q view=%#v", reads, runState.ProjectRepositoryRef(), lifecycle.req.Repository)
+	}
+}
 
 func TestProjectEinoAssistantLifecycleAppendsIncrementalLiveContextUpdates(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()

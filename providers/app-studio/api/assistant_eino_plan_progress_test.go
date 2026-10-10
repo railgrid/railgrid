@@ -480,6 +480,64 @@ func TestProjectEinoAssistantWriteTodosIsVisibleOnlyInDefaultMode(t *testing.T) 
 	}
 }
 
+func TestProjectEinoInitialPlanToolIsVisibleOnlyWithRunLocalAuthority(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "run-initial-plan-tool-visibility")
+	grant := projectAssistantInitialCreationPlan("Build a storefront")
+	hasInitialPlanTool := func(req projectAssistantRunRequest, state *projectEinoAssistantRunState) bool {
+		t.Helper()
+		tools, err := projectEinoAssistantToolsForDiscovery(context.Background(), h.server, req, state, projectEinoAssistantToolDiscovery{})
+		if err != nil {
+			t.Fatalf("build assistant tools: %v", err)
+		}
+		for _, tool := range tools {
+			info, err := tool.Info(context.Background())
+			if err != nil {
+				t.Fatalf("read tool info: %v", err)
+			}
+			if info != nil && info.Name == projectToolDefineInitialProjectPlan {
+				return true
+			}
+		}
+		return false
+	}
+
+	if hasInitialPlanTool(h.req, newProjectEinoAssistantRunState()) {
+		t.Fatal("ordinary project turn exposed the initial-build planning tool")
+	}
+	if result, err := (projectEinoAssistantTool{req: h.req, runState: newProjectEinoAssistantRunState()}).invokeInitialProjectPlanTool(
+		context.Background(),
+		"call-without-initial-authority",
+		projectAssistantToolSpec{Name: projectToolDefineInitialProjectPlan, Risk: projectAssistantToolRiskPlan},
+		map[string]any{"summary": "Build the storefront"},
+	); err != nil || !strings.Contains(result, "initial project planning is unavailable") {
+		t.Fatalf("initial plan tool without run-local authority = (%q, %v), want independent rejection", result, err)
+	}
+
+	initialReq := h.req
+	initialReq.InitialApprovedPlan = &grant
+	if !hasInitialPlanTool(initialReq, newProjectEinoAssistantRunState()) {
+		t.Fatal("server-approved initial project turn omitted its planning tool")
+	}
+
+	restoredState := newProjectEinoAssistantRunState()
+	restoredState.ApprovePlan(grant)
+	if !hasInitialPlanTool(h.req, restoredState) {
+		t.Fatal("resumed run-local initial build omitted its planning tool")
+	}
+
+	readOnlyState := newProjectEinoAssistantRunState()
+	readOnlyState.ApprovePlan(grant)
+	readOnlyState.ClearApprovedPlan()
+	readOnlyReq := h.req
+	readOnlyReq.CollaborationMode = projectAssistantCollaborationModeReview
+	if projectAssistantInitialBuildActive(readOnlyReq, readOnlyState) {
+		t.Fatal("read-only resumed turn retained run-local initial-build authority")
+	}
+	if hasInitialPlanTool(readOnlyReq, readOnlyState) {
+		t.Fatal("read-only resumed turn exposed the initial-build planning tool")
+	}
+}
+
 func TestProjectEinoAssistantWriteTodosRejectsTrailingPayload(t *testing.T) {
 	if _, err := projectEinoAssistantPlanProgressFromWriteTodos(
 		`{"todos":[{"content":"Inspect","activeForm":"Inspecting","status":"in_progress"}]} {}`,

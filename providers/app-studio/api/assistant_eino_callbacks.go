@@ -26,6 +26,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -63,23 +64,45 @@ func newProjectEinoAssistantModelCallbackHandler(
 		auditRecorder:   auditRecorder,
 	}
 	return callbacks.NewHandlerBuilder().
-		OnStartFn(func(ctx context.Context, _ *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+			if !projectEinoAssistantIsChatModelCallback(info) {
+				return ctx
+			}
 			recorder.recordModelInput(ctx, input)
 			return ctx
 		}).
-		OnEndFn(func(ctx context.Context, _ *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+			if !projectEinoAssistantIsChatModelCallback(info) {
+				return ctx
+			}
 			recorder.recordModelOutput(ctx, output)
 			return ctx
 		}).
-		OnEndWithStreamOutputFn(func(ctx context.Context, _ *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
+		OnEndWithStreamOutputFn(func(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
+			if !projectEinoAssistantIsChatModelCallback(info) {
+				// Eino gives each stream callback its own reader copy. Close this
+				// handler's unused copy without reading it; other callbacks and the
+				// model caller retain their independent streams.
+				if output != nil {
+					output.Close()
+				}
+				return ctx
+			}
 			recorder.recordModelStream(ctx, output)
 			return ctx
 		}).
-		OnErrorFn(func(ctx context.Context, _ *callbacks.RunInfo, err error) context.Context {
+		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
+			if !projectEinoAssistantIsChatModelCallback(info) {
+				return ctx
+			}
 			recorder.recordModelError(ctx, err)
 			return ctx
 		}).
 		Build()
+}
+
+func projectEinoAssistantIsChatModelCallback(info *callbacks.RunInfo) bool {
+	return info != nil && info.Component == components.ComponentOfChatModel
 }
 
 type projectEinoAssistantModelCallbackRecorder struct {
@@ -98,14 +121,26 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelInput(ctx context
 		return
 	}
 	// The callback runs after Eino has copied the state into the model input and
-	// immediately before the provider call. Remove model-only attachment
-	// messages from the graph state while retaining the callback's input slice,
-	// so an interrupt/cancel checkpoint cannot persist verified image bytes.
+	// before invoking the configured model wrapper. A local wrapper can still
+	// reject the call before the base provider is invoked, so this observation
+	// does not prove that a provider request was dispatched. Remove model-only
+	// attachment messages from graph state while retaining the callback's input
+	// slice, so an interrupt/cancel checkpoint cannot persist verified image
+	// bytes.
 	_ = compose.ProcessState[*adk.State](ctx, func(_ context.Context, state *adk.State) error {
 		state.Messages = projectEinoAssistantMessagesWithoutAttachments(state.Messages)
 		return nil
 	})
 	ordinal := r.runState.CurrentModelCallOrdinal()
+	if r.auditRecorder != nil {
+		// The callback receives the final Eino message list passed into the
+		// configured model wrapper: Deep's instruction and any model-only wrapper
+		// additions are present, while HTTP framing and headers are not.
+		r.auditRecorder.updateModelCallInputSize(
+			ordinal,
+			projectAssistantAuditMeasureInput(modelInput.Messages),
+		)
+	}
 	attachments := projectAssistantModelInputEvents(modelInput.Messages, ordinal)
 	if len(attachments) > 0 {
 		r.mu.Lock()

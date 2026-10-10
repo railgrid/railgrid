@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -41,10 +42,8 @@ type projectEinoAssistantLifecycle struct {
 	runState              *projectEinoAssistantRunState
 	server                *Server
 	req                   projectAssistantRunRequest
-	repositoryRef         string
 	workspace             *workspace.FileStore
 	workspaceScope        workspace.Scope
-	repositoryView        func(context.Context) (*ProjectRepositoryView, error)
 	auditRecorder         *projectAssistantRunAuditRecorder
 	steering              <-chan projectAssistantSteeringInput
 	activateSteering      func(context.Context, []projectAssistantSteeringInput) error
@@ -65,7 +64,6 @@ func projectEinoAssistantLifecycleMiddleware(
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 		runState:                     runState,
 		req:                          req,
-		repositoryRef:                projectEinoAssistantProjectRepositoryRef(req),
 		workspace:                    req.Workspace,
 		workspaceScope:               req.WorkspaceScope,
 		auditRecorder:                req.auditRecorder,
@@ -74,19 +72,6 @@ func projectEinoAssistantLifecycleMiddleware(
 	}
 	if len(servers) > 0 {
 		lifecycle.server = servers[0]
-	}
-	if req.Client != nil && req.Project != nil {
-		lifecycle.repositoryView = func(ctx context.Context) (*ProjectRepositoryView, error) {
-			runCtx, err := refreshProjectAssistantWorkflowRunContext(ctx, projectAssistantWorkflowRunContext{
-				Client:     req.Client,
-				Project:    req.Project,
-				Repository: req.Repository,
-			})
-			if err != nil {
-				return nil, err
-			}
-			return runCtx.Repository, nil
-		}
 	}
 	return lifecycle
 }
@@ -102,6 +87,8 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	if state == nil {
 		return ctx, state, nil
 	}
+	boundaryStarted := time.Now()
+	defer projectEinoAssistantLogPreparation(ctx, m.req, "model_boundary", boundaryStarted)
 	if err := projectEinoAssistantValidateHistoricalAttachmentMessages(state.Messages); err != nil {
 		return ctx, state, err
 	}
@@ -117,10 +104,17 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 			return ctx, state, err
 		}
 	}
-	if err := m.refreshLiveRequestContext(ctx); err != nil {
+	liveContextStarted := time.Now()
+	liveContextCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	liveContextErr := m.refreshLiveRequestContext(liveContextCtx)
+	projectAssistantLogPreparationWithRateLimiterWaits(liveContextCtx, m.req, "live_context_refresh", liveContextStarted)
+	if err := liveContextErr; err != nil {
 		return ctx, state, err
 	}
-	if err := m.refreshExecutableToolContext(ctx, state); err != nil {
+	executableContextStarted := time.Now()
+	executableContextErr := m.refreshExecutableToolContext(ctx, state)
+	projectEinoAssistantLogPreparation(ctx, m.req, "executable_context_refresh", executableContextStarted)
+	if err := executableContextErr; err != nil {
 		return ctx, state, err
 	}
 	if !m.runState.TakeSteeringDeferral() {
@@ -141,7 +135,11 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 			return ctx, state, err
 		}
 	}
-	if err := m.rewriteLiveContext(ctx, state); err != nil {
+	rewriteStarted := time.Now()
+	rewriteCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	rewriteErr := m.rewriteLiveContext(rewriteCtx, state)
+	projectAssistantLogPreparationWithRateLimiterWaits(rewriteCtx, m.req, "live_context_rewrite", rewriteStarted)
+	if err := rewriteErr; err != nil {
 		return ctx, state, err
 	}
 	// rewriteLiveContext round-trips model state through the durable chat
@@ -151,10 +149,14 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	if err := m.rehydrateAttachmentMessages(ctx, state); err != nil {
 		return ctx, state, err
 	}
+	// Compaction and resume can replace earlier full read receipts with a
+	// summary. Reconcile the durable proof against the exact messages that will
+	// reach this model call before advancing the response ordinal.
+	m.runState.ReconcileModelVisibleReadFileProofs(state.Messages)
 	ordinal := m.runState.NextModelCallOrdinal()
 	if m.auditRecorder != nil {
 		sourceRevision, verifiedRevision := m.runState.SourceMutationRevisions()
-		if err := m.auditRecorder.recordModelCall(
+		if err := m.auditRecorder.recordModelCallWithInputSize(
 			ctx,
 			ordinal,
 			sourceRevision,
@@ -162,7 +164,7 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 			rolloutBudgetRemaining,
 			state.ToolInfos,
 			nil,
-			projectAssistantAuditInputBytes(state.Messages, state.ToolInfos),
+			projectAssistantAuditMeasureInputForModel(state.Messages, m.req.LLM, state.ToolInfos),
 		); err != nil {
 			return ctx, state, err
 		}
@@ -497,8 +499,8 @@ func (m *projectEinoAssistantLifecycle) refreshExecutableToolContext(
 		}
 		name := projectAssistantToolKey(info.Name)
 		currentNames[name] = struct{}{}
-		if wrapped, isWrapped := tool.(projectEinoAssistantTool); isWrapped &&
-			wrapped.searchSelectionRequired && !m.runState.DynamicToolSelected(name) {
+		if guarded, isGuarded := tool.(projectEinoAssistantDynamicSelectionRequired); isGuarded &&
+			guarded.RequiresDynamicToolSelection() && !m.runState.DynamicToolSelected(name) {
 			continue
 		}
 		if _, exists := exposedNames[name]; exists {
@@ -602,7 +604,11 @@ func (m *projectEinoAssistantLifecycle) refreshLiveRequestContext(ctx context.Co
 			m.req.Repository = current.Repository
 		}
 	}
-	m.refreshRepositoryState(ctx)
+	// The project refresh already resolves the repository. Publish that same
+	// view to tool state instead of fetching both resources a second time.
+	if m.runState != nil {
+		m.runState.SetProjectRepositoryRef(projectLinkedRepositoryRef(m.req.Project))
+	}
 	// newAgent resolves the first request's executable tool set immediately
 	// before this hook runs. Reuse the native browser catalog captured for this
 	// run/checkpoint while refreshing aggregate MCP discovery for later samples.
@@ -892,20 +898,6 @@ func projectEinoAssistantActivateSteeringInputs(
 		}
 	}
 	return len(inputs), nil
-}
-
-func (m *projectEinoAssistantLifecycle) refreshRepositoryState(ctx context.Context) {
-	if m == nil || m.runState == nil || m.repositoryView == nil {
-		return
-	}
-	repository, err := m.repositoryView(ctx)
-	if err != nil || repository == nil {
-		return
-	}
-	if ref := strings.TrimSpace(repository.Ref); ref != "" {
-		m.repositoryRef = ref
-		m.runState.SetProjectRepositoryRef(ref)
-	}
 }
 
 func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
