@@ -88,15 +88,25 @@ func TestCredentialEnvironmentValidation(t *testing.T) {
 		{"github token", []EnvironmentVariable{{Name: "GH_TOKEN", Value: "x"}, {Name: "GITHUB_TOKEN", Value: "x"}}, ""},
 		{"lower-case name", []EnvironmentVariable{{Name: "gh_token", Value: "x"}}, "not an upper-case variable name"},
 		{"empty name", []EnvironmentVariable{{Name: "", Value: "x"}}, "not an upper-case variable name"},
-		{"home", []EnvironmentVariable{{Name: "HOME", Value: "/tmp"}}, "set by the runner"},
-		{"path", []EnvironmentVariable{{Name: "PATH", Value: "/evil"}}, "set by the runner"},
-		{"harness credential", []EnvironmentVariable{{Name: "ANTHROPIC_API_KEY", Value: "x"}}, "set by the runner"},
-		{"claude config", []EnvironmentVariable{{Name: "CLAUDE_CONFIG_DIR", Value: "/x"}}, "set by the runner"},
-		{"git config", []EnvironmentVariable{{Name: "GIT_CONFIG_GLOBAL", Value: "/x"}}, "set by the runner"},
-		{"git transport", []EnvironmentVariable{{Name: "GIT_SSH_COMMAND", Value: "sh"}}, "set by the runner"},
-		{"loader", []EnvironmentVariable{{Name: "LD_PRELOAD", Value: "/x.so"}}, "set by the runner"},
-		{"dyld", []EnvironmentVariable{{Name: "DYLD_INSERT_LIBRARIES", Value: "/x"}}, "set by the runner"},
-		{"xdg", []EnvironmentVariable{{Name: "XDG_CONFIG_HOME", Value: "/x"}}, "set by the runner"},
+		// Everything outside the allow-list is refused, whatever it would do:
+		// relocate the child, re-authenticate it, run code at start, redirect
+		// its traffic, or send the token to another host.
+		{"home", []EnvironmentVariable{{Name: "HOME", Value: "/tmp"}}, "not allowed"},
+		{"path", []EnvironmentVariable{{Name: "PATH", Value: "/evil"}}, "not allowed"},
+		{"harness credential", []EnvironmentVariable{{Name: "ANTHROPIC_API_KEY", Value: "x"}}, "not allowed"},
+		{"claude config", []EnvironmentVariable{{Name: "CLAUDE_CONFIG_DIR", Value: "/x"}}, "not allowed"},
+		{"git config", []EnvironmentVariable{{Name: "GIT_CONFIG_GLOBAL", Value: "/x"}}, "not allowed"},
+		{"git transport", []EnvironmentVariable{{Name: "GIT_SSH_COMMAND", Value: "sh"}}, "not allowed"},
+		{"loader", []EnvironmentVariable{{Name: "LD_PRELOAD", Value: "/x.so"}}, "not allowed"},
+		{"dyld", []EnvironmentVariable{{Name: "DYLD_INSERT_LIBRARIES", Value: "/x"}}, "not allowed"},
+		{"xdg", []EnvironmentVariable{{Name: "XDG_CONFIG_HOME", Value: "/x"}}, "not allowed"},
+		{"node options", []EnvironmentVariable{{Name: "NODE_OPTIONS", Value: "--require /x.js"}}, "not allowed"},
+		{"bash env", []EnvironmentVariable{{Name: "BASH_ENV", Value: "/x.sh"}}, "not allowed"},
+		{"proxy", []EnvironmentVariable{{Name: "HTTPS_PROXY", Value: "http://mitm:8080"}}, "not allowed"},
+		{"extra ca certs", []EnvironmentVariable{{Name: "NODE_EXTRA_CA_CERTS", Value: "/x.pem"}}, "not allowed"},
+		{"gh host", []EnvironmentVariable{{Name: "GH_HOST", Value: "evil.example"}}, "not allowed"},
+		{"gh config dir", []EnvironmentVariable{{Name: "GH_CONFIG_DIR", Value: "/x"}}, "not allowed"},
+		{"github api url", []EnvironmentVariable{{Name: "GITHUB_API_URL", Value: "https://evil.example"}}, "not allowed"},
 		{"duplicate", []EnvironmentVariable{{Name: "GH_TOKEN", Value: "a"}, {Name: "GH_TOKEN", Value: "b"}}, "twice"},
 		{"empty value", []EnvironmentVariable{{Name: "GH_TOKEN", Value: ""}}, "is empty"},
 		{"newline", []EnvironmentVariable{{Name: "GH_TOKEN", Value: "a\nb"}}, "invalid whitespace"},
@@ -105,7 +115,7 @@ func TestCredentialEnvironmentValidation(t *testing.T) {
 		{"too many", func() []EnvironmentVariable {
 			out := make([]EnvironmentVariable, 0, maxCredentialEnvironment+1)
 			for i := 0; i <= maxCredentialEnvironment; i++ {
-				out = append(out, EnvironmentVariable{Name: "V" + strings.Repeat("A", i), Value: "x"})
+				out = append(out, EnvironmentVariable{Name: "GH_TOKEN", Value: "x"})
 			}
 			return out
 		}(), "more than"},

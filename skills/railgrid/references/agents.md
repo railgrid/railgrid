@@ -293,10 +293,15 @@ spec:
   authenticate as that connection — the way a reviewer agent posts to a pull
   request. It travels like the harness credential (dispatch data, in the
   runner's memory, never on the machine's disk, sent again on every resume).
-  Claude Code only: Codex runs with its network disabled. A fine-grained PAT
-  scoped to the repositories to review with pull-request write is the right
-  token. `BackendReady` reports `UnknownConnectionRef` when the connection is
-  missing and `InvalidSpec` when it is not a github one.
+  Claude Code only: Codex runs with its network disabled. The harness reads
+  only the connection's own Secret (`railgrid-agents-conn-<name>`); a custom
+  `secretRef` on the connection fails the turn. Bring the narrowest token that
+  works — a fine-grained PAT limited to the repositories to review with
+  `pull_requests: write` and `contents: read`, on a bot account that cannot
+  approve or merge — because the harness reads untrusted PR text while holding
+  it, and redaction is exact-match only. `BackendReady` reports
+  `UnknownConnectionRef` when the connection is missing and `InvalidSpec` when
+  it is not a github one.
 - The harness brings its own tools: `spec.tools`, `delegates`,
   `limits.maxToolTurns`/`maxSpawns*`, `backend.model`, and `autonomy`
   `suggest`/`auto` are rejected as `Validated=False` `MeaninglessForHarness`.

@@ -178,9 +178,9 @@ type HarnessCredential struct {
 	// turn runs with, exported into the harness child's environment under the
 	// names given — a GitHub token as GH_TOKEN is the case this exists for. It
 	// is dispatch data like Value: stripped with it, held in memory for the
-	// attempt, and sent again on every resume. The runner refuses a name an
-	// adapter sets itself (HOME, PATH, the harness's own variables, git's
-	// configuration and transport), so nothing here can redirect the harness.
+	// attempt, and sent again on every resume. The runner accepts only the
+	// names on its allow-list (GH_TOKEN, GITHUB_TOKEN): a caller may bring a
+	// credential, never configure the child's environment.
 	Environment []EnvironmentVariable `json:"environment,omitempty"`
 }
 

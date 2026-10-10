@@ -67,8 +67,8 @@ type Credential struct {
 	// credentials the caller wants the turn to run with, exported into the
 	// child's environment under the names given (a GitHub token as GH_TOKEN,
 	// say). They travel, live and die exactly as Value does — per launch, in
-	// memory, never on disk — and the runner has already refused any name an
-	// adapter sets itself (HOME, the harness's own variables, git's).
+	// memory, never on disk — and the runner has already refused every name
+	// outside its allow-list, so an adapter sees only credential names.
 	Environment []EnvironmentVariable
 }
 
