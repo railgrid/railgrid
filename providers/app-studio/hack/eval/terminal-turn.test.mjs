@@ -101,16 +101,16 @@ test("polls exact turn then exact thread items and returns a successful evaluati
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(String(url));
-    if (String(url).endsWith("/turns/turn-1")) {
+    if (String(url).endsWith("/turn-status/turn-1")) {
       return new Response(JSON.stringify({ turn: { id: "turn-1", status: "completed" }, effectiveSettings: settings }), { status: 200 });
     }
-    if (String(url).endsWith("/assistant/threads/thread-1/items")) {
+    if (String(url).endsWith("/sessions/thread-1/items")) {
       return new Response(JSON.stringify({ items: [{ id: "answer", turnID: "turn-1", type: "agentMessage", phase: "final_answer", status: "completed", content: "done" }] }), { status: 200 });
     }
     return new Response("{}", { status: 404 });
   };
   const result = await evaluateTerminalTurn({
-    baseURL: "https://app-studio.example/services/providers/app-studio",
+    baseURL: "https://app-studio.example", cluster: "cluster-a",
     project: "demo project", thread: "thread-1", turn: "turn-1", token: "caller-token",
     expectedSettings: settings, intervalMs: 0, timeoutMs: 100, fetchImpl,
   });
@@ -118,24 +118,24 @@ test("polls exact turn then exact thread items and returns a successful evaluati
   assert.equal(result.classification, "success");
   assert.equal(result.finalAnswer.id, "answer");
   assert.deepEqual(calls, [
-    "https://app-studio.example/services/providers/app-studio/api/projects/demo%20project/assistant/threads/thread-1/turns/turn-1",
-    "https://app-studio.example/services/providers/app-studio/api/projects/demo%20project/assistant/threads/thread-1/items",
+    "https://app-studio.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/sessions/thread-1/turn-status/turn-1",
+    "https://app-studio.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/sessions/thread-1/items",
   ]);
-  assert.equal(calls.some((url) => url.endsWith("/turns/active")), false);
+  assert.equal(calls.some((url) => url.endsWith("/turn-status/active")), false);
 });
 
 test("completed turn with commentary only is inconsistent", async () => {
   const fetchImpl = async (url) => {
-    if (String(url).endsWith("/turns/turn-commentary")) {
+    if (String(url).endsWith("/turn-status/turn-commentary")) {
       return new Response(JSON.stringify({ turn: { id: "turn-commentary", status: "completed" }, effectiveSettings: settings }), { status: 200 });
     }
-    if (String(url).endsWith("/assistant/threads/thread-commentary/items")) {
+    if (String(url).endsWith("/sessions/thread-commentary/items")) {
       return new Response(JSON.stringify({ items: [{ id: "commentary", turnID: "turn-commentary", type: "agentMessage", phase: "commentary", status: "completed", content: "progress" }] }), { status: 200 });
     }
     return new Response("{}", { status: 404 });
   };
   const result = await evaluateTerminalTurn({
-    baseURL: "https://app-studio.example", project: "demo", thread: "thread-commentary", turn: "turn-commentary",
+    baseURL: "https://app-studio.example", cluster: "cluster-a", project: "demo", thread: "thread-commentary", turn: "turn-commentary",
     expectedSettings: settings, intervalMs: 0, timeoutMs: 100, fetchImpl,
   });
   assert.equal(result.ok, false);
@@ -147,13 +147,13 @@ test("evaluateTerminalTurn cannot pass a wrong provider or model without expecte
   let calls = 0;
   const fetchImpl = async (url) => {
     calls += 1;
-    if (String(url).endsWith("/turns/turn-wrong-settings")) {
+    if (String(url).endsWith("/turn-status/turn-wrong-settings")) {
       return new Response(JSON.stringify({
         turn: { id: "turn-wrong-settings", status: "completed" },
         effectiveSettings: { provider: "wrong-provider", model: "wrong-model" },
       }), { status: 200 });
     }
-    if (String(url).endsWith("/assistant/threads/thread-wrong-settings/items")) {
+    if (String(url).endsWith("/sessions/thread-wrong-settings/items")) {
       return new Response(JSON.stringify({ items: [{
         id: "answer", turnID: "turn-wrong-settings", type: "agentMessage", phase: "final_answer", status: "completed", content: "done",
       }] }), { status: 200 });
@@ -161,7 +161,7 @@ test("evaluateTerminalTurn cannot pass a wrong provider or model without expecte
     return new Response("{}", { status: 404 });
   };
   const result = await evaluateTerminalTurn({
-    baseURL: "https://app-studio.example", project: "demo", thread: "thread-wrong-settings", turn: "turn-wrong-settings",
+    baseURL: "https://app-studio.example", cluster: "cluster-a", project: "demo", thread: "thread-wrong-settings", turn: "turn-wrong-settings",
     intervalMs: 0, timeoutMs: 100, fetchImpl,
   });
   assert.equal(result.ok, false);
@@ -173,7 +173,7 @@ test("evaluateTerminalTurn cannot pass a wrong provider or model without expecte
 test("pollExactTurn rejects a response for another turn", async () => {
   await assert.rejects(
     pollExactTurn({
-      baseURL: "https://example.test", project: "demo", thread: "thread", turn: "wanted", timeoutMs: 50,
+      baseURL: "https://example.test", cluster: "cluster-a", project: "demo", thread: "thread", turn: "wanted", timeoutMs: 50,
       fetchImpl: async () => new Response(JSON.stringify({ turn: { id: "other", status: "completed" } }), { status: 200 }),
     }),
     (error) => error.code === "inconsistent" && /did not match/.test(error.message),
@@ -185,7 +185,7 @@ test("pollExactTurn aborts a never-settling fetch at the deadline", async () => 
   const startedAt = Date.now();
   await assert.rejects(
     pollExactTurn({
-      baseURL: "https://example.test", project: "demo", thread: "thread", turn: "wanted", timeoutMs: 25,
+      baseURL: "https://example.test", cluster: "cluster-a", project: "demo", thread: "thread", turn: "wanted", timeoutMs: 25,
       fetchImpl: async (_url, request) => {
         requestSignal = request.signal;
         return new Promise(() => {});
@@ -196,4 +196,38 @@ test("pollExactTurn aborts a never-settling fetch at the deadline", async () => 
   assert.ok(requestSignal instanceof AbortSignal);
   assert.equal(requestSignal.aborted, true);
   assert.ok(Date.now() - startedAt < 500);
+});
+
+test("accepts a cluster-addressed hub endpoint without spoofing caller headers", async () => {
+  let requestedURL;
+  let headers;
+  const result = await pollExactTurn({
+    baseURL: "https://example.test/clusters/cluster-a/", thread: "thread-1", turn: "turn-1",
+    token: "caller-token", user: "ignored-user", tenant: "ignored-tenant", timeoutMs: 100,
+    fetchImpl: async (url, request) => {
+      requestedURL = String(url);
+      headers = request.headers;
+      return Response.json({ turn: { id: "turn-1", status: "completed" } });
+    },
+  });
+  assert.equal(result.turn.status, "completed");
+  assert.equal(requestedURL, "https://example.test/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/sessions/thread-1/turn-status/turn-1");
+  assert.equal(headers.get("Authorization"), "Bearer caller-token");
+  for (const name of ["X-Railgrid-User", "X-Railgrid-Tenant", "X-Railgrid-Cluster"]) assert.equal(headers.has(name), false);
+});
+
+test("rejects retired provider routes, workspace paths and mismatched cluster addressing", async () => {
+  for (const options of [
+    { baseURL: "https://example.test/services/providers/app-studio", cluster: "cluster-a" },
+    { baseURL: "https://example.test", cluster: "root:tenant:workspace" },
+    { baseURL: "https://example.test/clusters/cluster-a", cluster: "cluster-b" },
+    { baseURL: "https://example.test" },
+    { baseURL: "https://user:password@example.test", cluster: "cluster-a" },
+  ]) {
+    let calls = 0;
+    await assert.rejects(pollExactTurn({ ...options, thread: "thread", turn: "turn", timeoutMs: 100,
+      fetchImpl: async () => { calls++; return Response.json({}); },
+    }), (error) => error.code === "invalid_input");
+    assert.equal(calls, 0);
+  }
 });

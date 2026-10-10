@@ -226,6 +226,26 @@ func TestProjectAssistantRunStateUnknownBrowserReceiptCannotVerifyInteraction(t 
 	}
 }
 
+func TestProjectAssistantRunStateNotExecutedBrowserReceiptDoesNotBecomeInteractionEvidence(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	state.RecordToolMessage(chatMessage{
+		Role: "tool", Name: "browser_click",
+		Content: `{"status":"not_executed","outcome":"not_executed","replayed":false,"error":"preflight failed"}`,
+	})
+	if state.NativeBrowserInteractionPending() {
+		t.Fatal("not_executed interaction left a pending interaction")
+	}
+	if evidence := state.CompletionEvidence(); evidence.PreviewInteractionVerified || evidence.PreviewEvidenceOutcome != "failed" {
+		t.Fatalf("not_executed interaction evidence = %#v, want failed and unverified", evidence)
+	}
+
+	state.RecordToolMessage(chatMessage{Role: "tool", Name: browserMCPToolSnapshot, Content: nativeBrowserValidSnapshotReceipt})
+	if evidence := state.CompletionEvidence(); evidence.PreviewInteractionVerified || evidence.PreviewEvidenceOutcome == "interactions_verified" {
+		t.Fatalf("later snapshot certified a click that was never dispatched: %#v", evidence)
+	}
+}
+
 func TestProjectAssistantRunStateUnverifiableBrowserObservationIsNotEvidence(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.RecordSourceMutation()

@@ -18,7 +18,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -62,31 +61,43 @@ func TestProjectEinoAssistantTruncateModelToolOutputPreservesEndsAndMetadata(t *
 	}
 }
 
-func TestProjectEinoAssistantTruncateModelToolOutputDowngradesReadEvidence(t *testing.T) {
+func TestProjectEinoAssistantLiteralReadFileProjectionClearsClippedEvidence(t *testing.T) {
 	const maxBytes = projectEinoAssistantModelToolOutputMaxBytes
-	content := "// projected App.jsx\n" + strings.Repeat("const projectedReadMarker = true;\n", 1200)
-	raw := `{"path":"src/App.jsx","content":` + quoteJSON(content) + `,"size":100000,"version":"sha256:projected-app","complete":true}`
+	const htmlLiteral = `<section data-note="A&B">café 雪</section>`
+	content := "// projected App.jsx\n" + strings.Repeat("const markup = `"+htmlLiteral+"`;\n", 500)
+	raw, err := projectAssistantSourceReadResult(map[string]any{
+		"path": "src/App.jsx", "content": content, "size": len(content),
+		"version": "sha256:projected-app", "complete": true,
+	})
+	if err != nil {
+		t.Fatalf("encode original read_file result: %v", err)
+	}
+	if strings.Contains(raw, `\u003c`) || strings.Contains(raw, `\u003e`) || strings.Contains(raw, `\u0026`) {
+		t.Fatalf("original read_file result unexpectedly HTML-escaped source text: %s", raw[:testMinInt(len(raw), 120)])
+	}
 
-	got := projectEinoAssistantTruncateModelToolOutput(raw, maxBytes)
+	got, ok := projectEinoAssistantProjectModelReadFileOutput(raw, maxBytes)
+	if !ok {
+		t.Fatal("expected structured local read_file result to be projected")
+	}
 	if got == raw || len(got) > maxBytes {
 		t.Fatalf("read projection = %d bytes; want a changed result within %d", len(got), maxBytes)
 	}
-	var projected struct {
-		Path                     string `json:"path"`
-		Content                  string `json:"content"`
-		Version                  string `json:"version"`
-		Complete                 bool   `json:"complete"`
-		ModelProjectionTruncated bool   `json:"modelProjectionTruncated"`
+	projected, ok := projectEinoAssistantParseLiteralReadFileOutput(got)
+	if !ok {
+		t.Fatalf("literal read projection did not parse:\n%s", got)
 	}
-	if err := json.Unmarshal([]byte(got), &projected); err != nil {
-		t.Fatalf("read projection is not valid JSON: %v\n%s", err, got)
-	}
-	if projected.Path != "src/App.jsx" || projected.Version != "" || projected.Complete || !projected.ModelProjectionTruncated {
+	if projected.path != "src/App.jsx" || projected.version != "" || projected.complete || !projected.truncated {
 		t.Fatalf("read envelope metadata = %#v; want path retained and full-read evidence cleared", projected)
 	}
-	if !strings.Contains(projected.Content, "projected App.jsx") ||
-		!strings.Contains(projected.Content, projectEinoAssistantToolOutputTruncationNotice) {
-		t.Fatalf("read content lost projection evidence: %q", projected.Content)
+	if strings.Contains(got, `\u003c`) || strings.Contains(got, `\u003e`) || strings.Contains(got, `\u0026`) {
+		t.Fatalf("truncated model-facing source escaped literal HTML characters: %s", got[:testMinInt(len(got), 180)])
+	}
+	if !utf8.ValidString(projected.shown) ||
+		!strings.Contains(projected.shown, "projected App.jsx") ||
+		!strings.Contains(projected.shown, htmlLiteral) ||
+		!strings.Contains(got, "Warning: source read or model output was truncated") {
+		t.Fatalf("read content lost literal source or truncation evidence: %q", projected.shown)
 	}
 }
 

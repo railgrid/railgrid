@@ -205,7 +205,7 @@ func TestProjectAssistantExistingMutationRequiresSameTurnRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.RunState.RecordObservedReadFileVersion(read.Path, read.Version)
+	recordProjectAssistantModelVisibleReadForTest(req.RunState, read.Path, read.Version, false)
 	eff, err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", read.Version)
 	if err != nil {
 		t.Fatalf("canonical complete observed read rejected: %v", err)

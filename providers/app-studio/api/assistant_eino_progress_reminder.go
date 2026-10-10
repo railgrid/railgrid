@@ -29,8 +29,8 @@ const (
 	// Keep the cadence bounded by model samples rather than wall-clock timers:
 	// Eino can be suspended at a permission/follow-up boundary, and a timer
 	// would otherwise race the durable turn state.
-	projectEinoAssistantProgressReminderSilenceModelCalls = 3
-	projectEinoAssistantProgressReminderMaxAttempts       = 3
+	projectEinoAssistantProgressReminderSilenceModelCalls = 18
+	projectEinoAssistantProgressReminderMaxAttempts       = 1
 	projectEinoAssistantProgressReminderMaxAcceptedCount  = 1024
 )
 
@@ -70,28 +70,30 @@ func projectEinoAssistantProgressReminderInstruction(reminder projectEinoAssista
 		context += ": " + detail
 	}
 	return fmt.Sprintf(
-		"User-visible progress is overdue. report_progress is available. Call it now with one concise completed outcome and your next direction or blocker, then continue working. Context: %s. This reminder is advisory and non-blocking; do not force a tool choice, stop, or wait.",
+		"A user update may be useful for this substantial work. If meaningful progress has occurred and no recent update covers it, use report_progress once with a concise outcome and next direction or blocker; otherwise continue without adding a tool call. Checklist changes and simple edits alone do not need a separate update. Context: %s. This reminder is advisory and non-blocking; do not force a tool choice, stop, or wait.",
 		context,
 	)
 }
 
 func projectEinoAssistantPlanPhaseTransition(previous, next projectAssistantPlanSnapshot) bool {
-	if len(next.Steps) == 0 {
+	if len(previous.Steps) == 0 || len(next.Steps) == 0 {
 		return false
 	}
-	if len(previous.Steps) == 0 {
-		for _, step := range next.Steps {
-			if step.Status == "in_progress" || step.Status == "completed" {
-				return true
+	activeStep := func(snapshot projectAssistantPlanSnapshot) (string, bool) {
+		for _, step := range snapshot.Steps {
+			if strings.TrimSpace(step.Status) == "in_progress" {
+				return strings.TrimSpace(step.Content), true
 			}
 		}
+		return "", false
+	}
+	previousActive, previousHasActive := activeStep(previous)
+	nextActive, nextHasActive := activeStep(next)
+	if !previousHasActive || !nextHasActive || previousActive == "" || nextActive == "" || previousActive == nextActive {
 		return false
 	}
-	if len(previous.Steps) != len(next.Steps) {
-		return true
-	}
-	for index := range next.Steps {
-		if strings.TrimSpace(previous.Steps[index].Status) != strings.TrimSpace(next.Steps[index].Status) {
+	for _, step := range next.Steps {
+		if strings.TrimSpace(step.Content) == previousActive && strings.TrimSpace(step.Status) == "completed" {
 			return true
 		}
 	}

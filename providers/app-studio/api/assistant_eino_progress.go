@@ -71,7 +71,7 @@ func (projectEinoAssistantProgressTool) Info(context.Context) (*schema.ToolInfo,
 	}
 	return &schema.ToolInfo{
 		Name:        projectEinoAssistantReportProgressTool,
-		Desc:        "Show a brief model-authored progress message to the user without ending the current App Studio turn. Use it when App Studio requires a phase update; then continue the work.",
+		Desc:        "Show a brief model-authored progress message to the user without ending the current App Studio turn. Use it for a meaningful update during larger ongoing work; checklist edits and simple changes do not need a separate update.",
 		ParamsOneOf: schema.NewParamsOneOfByJSONSchema(&parameters),
 	}, nil
 }

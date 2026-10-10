@@ -57,6 +57,108 @@ func TestAssistantRegistryExposesStrictOrdinaryWorkspaceMutationTools(t *testing
 			t.Fatalf("edit_file contract missing %q", want)
 		}
 	}
+	for _, want := range []string{
+		`source text '\path' (one backslash)`,
+		`JSON value '"\\path"'`,
+		`source text '\\path' (two backslashes)`,
+		`JSON value '"\\\\path"'`,
+	} {
+		if !strings.Contains(edit.Description, want) {
+			t.Fatalf("edit_file description missing exact JSON example %q: %s", want, edit.Description)
+		}
+	}
+	read, _ := registry.Spec(projectToolReadFile)
+	for _, want := range []string{"UTF-8 source is shown literally", "collision-safe fence", "decoded from JSON once", "clipped/ranged results"} {
+		if !strings.Contains(read.Description, want) {
+			t.Fatalf("read_file description missing %q: %s", want, read.Description)
+		}
+	}
+	var editSchema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(edit.Parameters, &editSchema); err != nil {
+		t.Fatalf("decode edit_file schema: %v", err)
+	}
+	for name, want := range map[string]string{
+		"oldString": "Exact source characters to find after JSON decoding",
+		"newString": "Exact source characters to insert after JSON decoding; one intended source backslash is one U+005C character",
+	} {
+		if !strings.Contains(editSchema.Properties[name].Description, want) {
+			t.Fatalf("edit_file %s schema description = %q, want %q", name, editSchema.Properties[name].Description, want)
+		}
+	}
+}
+
+func TestAssistantReadAndEditPreserveLiteralSourceCharacters(t *testing.T) {
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-literals"}
+	const marker = "__LITERAL_SOURCE_MARKER__"
+	if _, err := files.WriteFile(ctx, scope, workspace.WriteOptions{Path: "literal-source.txt", Content: marker + "\n"}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: files}
+	registry := projectAssistantLocalToolRegistry(server)
+	read, _ := registry.Get(projectToolReadFile)
+	edit, _ := registry.Get(projectToolEditFile)
+	activeRead := newProjectEinoAssistantServerTool(server, read, projectAssistantRunRequest{WorkspaceScope: scope}, newProjectEinoAssistantRunState())
+	activeInfo, err := activeRead.Info(ctx)
+	if err != nil {
+		t.Fatalf("build active read_file tool info: %v", err)
+	}
+	if !strings.Contains(activeInfo.Desc, "UTF-8 source is shown literally") || !strings.Contains(activeInfo.Desc, "decoded from JSON once") {
+		t.Fatalf("active model-facing read_file description = %q; want literal-source contract", activeInfo.Desc)
+	}
+	activeEdit := newProjectEinoAssistantServerTool(server, edit, projectAssistantRunRequest{WorkspaceScope: scope}, newProjectEinoAssistantRunState())
+	activeEditInfo, err := activeEdit.Info(ctx)
+	if err != nil {
+		t.Fatalf("build active edit_file tool info: %v", err)
+	}
+	for _, want := range []string{`JSON value '"\\path"'`, `JSON value '"\\\\path"'`} {
+		if !strings.Contains(activeEditInfo.Desc, want) {
+			t.Fatalf("active model-facing edit_file description = %q; want explicit one-versus-two-backslash example %q", activeEditInfo.Desc, want)
+		}
+	}
+	decodeRead := func(raw string) string {
+		t.Helper()
+		var result struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			t.Fatalf("decode read_file result: %v (%s)", err, raw)
+		}
+		return result.Content
+	}
+	readArgs := map[string]any{"file_path": "literal-source.txt", "offset": 1, "limit": 2000}
+	before, err := read.Call(ctx, projectAssistantToolCallRequest{WorkspaceScope: scope, Arguments: readArgs})
+	if err != nil {
+		t.Fatalf("initial read_file: %v", err)
+	}
+	if got := decodeRead(before); got != marker+"\n" {
+		t.Fatalf("initial read content = %q, want marker unchanged", got)
+	}
+
+	// This one string covers literal single and double backslashes, regex
+	// escapes, a JSON-looking escape, quotes, Unicode, and HTML-like text.
+	const replacement = `one=\alpha pair=\\beta regex=\d+\s+\w+ escape=\n <tag data-x="&">café 雪</tag>`
+	mutation, err := edit.Call(ctx, projectAssistantToolCallRequest{WorkspaceScope: scope, Arguments: map[string]any{
+		"path": "literal-source.txt", "oldString": marker, "newString": replacement,
+	}})
+	if err != nil {
+		t.Fatalf("edit_file: %v (%s)", err, mutation)
+	}
+	after, err := read.Call(ctx, projectAssistantToolCallRequest{WorkspaceScope: scope, Arguments: readArgs})
+	if err != nil {
+		t.Fatalf("read_file after edit: %v", err)
+	}
+	if got, want := decodeRead(after), replacement+"\n"; got != want {
+		t.Fatalf("read-back source bytes differ\n got: %q\nwant: %q", got, want)
+	}
+	if strings.Contains(after, `\u003c`) {
+		t.Fatalf("source read JSON unexpectedly HTML-escaped literal text: %s", after)
+	}
 }
 
 func TestAssistantOrdinaryWorkspaceMutationToolsPerformCreateEditDeleteMove(t *testing.T) {
@@ -93,12 +195,11 @@ func TestAssistantOrdinaryWorkspaceMutationToolsPerformCreateEditDeleteMove(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.RecordObservedReadFileVersion(current.Path, current.Version)
 	current, err = files.ReadFile(ctx, scope, workspace.ReadOptions{Path: "src/App.tsx"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.RecordObservedReadFileVersion(current.Path, current.Version)
+	recordProjectAssistantModelVisibleReadForTest(state, current.Path, current.Version, false)
 	if result, err := call(projectToolMoveFile, map[string]any{"sourcePath": "src/App.tsx", "destinationPath": "src/Main.tsx", "expectedVersion": current.Version}, state, false); err != nil || result.Operation != projectToolMoveFile || result.PreviousPath != "src/App.tsx" {
 		t.Fatalf("move = %#v, %v", result, err)
 	}
@@ -106,7 +207,7 @@ func TestAssistantOrdinaryWorkspaceMutationToolsPerformCreateEditDeleteMove(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.RecordObservedReadFileVersion(current.Path, current.Version)
+	recordProjectAssistantModelVisibleReadForTest(state, current.Path, current.Version, false)
 	if result, err := call(projectToolDeleteFile, map[string]any{"path": "src/Main.tsx", "expectedVersion": current.Version}, state, false); err != nil || result.Operation != projectToolDeleteFile {
 		t.Fatalf("delete = %#v, %v", result, err)
 	}

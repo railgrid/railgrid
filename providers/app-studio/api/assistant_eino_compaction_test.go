@@ -802,6 +802,7 @@ func TestProjectEinoAssistantFinalProseOverThresholdEndsWithoutCompaction(t *tes
 func TestProjectEinoAssistantCheckpointedInputKeepsOnlyConversationalPayload(t *testing.T) {
 	replacement := []chatMessage{
 		{Role: "system", Content: projectEinoAssistantV2DeepInstruction},
+		{Role: "system", Content: projectEinoAssistantV2DeepInstructionWithoutNativeBrowser},
 		{Role: "system", Content: projectEinoAssistantProjectPromptPrefix + "stale project metadata"},
 		{Role: "system", Content: projectEinoAssistantSessionSnapshotPrefix + " stale snapshot"},
 		{Role: "system", Content: "Databricks guidance: stale tool contract"},
@@ -810,7 +811,7 @@ func TestProjectEinoAssistantCheckpointedInputKeepsOnlyConversationalPayload(t *
 		{Role: "tool", Name: "read_file", ToolCallID: "call-1", Content: "file contents"},
 		{Role: "user", Content: projectEinoAssistantCompactionSummaryPrefix + "\ncheckpoint summary"},
 	}
-	want := cloneChatMessages(replacement[4:])
+	want := cloneChatMessages(replacement[5:])
 	want[1].ToolCalls[0].Type = "function"
 	runState := newProjectEinoAssistantRunState()
 	runState.SetToolPrompt("new tool prompt that must not move the checkpoint summary")
@@ -823,6 +824,56 @@ func TestProjectEinoAssistantCheckpointedInputKeepsOnlyConversationalPayload(t *
 	}
 	if got := projectEinoMessagesToChat(input); !reflect.DeepEqual(got, want) {
 		t.Fatalf("conversation payload = %#v, want %#v", got, want)
+	}
+}
+
+func TestProjectEinoAssistantCanonicalCompactionContextUsesDiscoveryScopedInstruction(t *testing.T) {
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "demo-uid"}}
+	tool := projectAssistantToolFunc{spec: projectAssistantToolSpec{Name: "browser_snapshot"}}
+	tests := []struct {
+		name        string
+		discovery   projectEinoAssistantToolDiscovery
+		wantPrompt  string
+		wantBrowser bool
+	}{
+		{
+			name:       "native browser absent",
+			discovery:  projectEinoAssistantToolDiscovery{Prompt: "Preview inspection capability: inspect_development_preview remains available."},
+			wantPrompt: projectEinoAssistantV2DeepInstructionWithoutNativeBrowser,
+		},
+		{
+			name:        "native browser catalog discovered",
+			discovery:   projectEinoAssistantToolDiscovery{BrowserTools: []projectAssistantTool{tool}},
+			wantPrompt:  projectEinoAssistantV2DeepInstruction,
+			wantBrowser: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runState := newProjectEinoAssistantRunState()
+			runState.SetToolDiscovery(test.discovery)
+			messages, err := projectEinoAssistantCanonicalCompactionContext(context.Background(), projectAssistantRunRequest{
+				Project: project,
+			}, runState)
+			if err != nil {
+				t.Fatalf("build canonical compaction context: %v", err)
+			}
+			if len(messages) == 0 || messages[0].Role != schema.System || messages[0].Content != test.wantPrompt {
+				t.Fatalf("compaction deep instruction = %#v, want %q", messages, test.wantPrompt)
+			}
+			if got := strings.Contains(messages[0].Content, projectEinoAssistantNativeBrowserInstruction); got != test.wantBrowser {
+				t.Fatalf("compaction browser guidance present = %t, want %t", got, test.wantBrowser)
+			}
+			if !test.wantBrowser && !strings.Contains(messages[0].Content, "Do not claim rendered content, interactions, data flow") {
+				t.Fatal("browserless compaction instruction lost common verification protection")
+			}
+			if !test.wantBrowser && !strings.Contains(messages[0].Content, "Never call commit_project_files unless the user explicitly asked") {
+				t.Fatal("browserless compaction instruction lost repository scope protection")
+			}
+			if !test.wantBrowser && !strings.Contains(messages[len(messages)-1].Content, test.discovery.Prompt) {
+				t.Fatal("browserless compaction context lost compatibility inspector guidance")
+			}
+		})
 	}
 }
 

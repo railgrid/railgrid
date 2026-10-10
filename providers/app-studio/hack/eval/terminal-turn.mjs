@@ -65,18 +65,35 @@ function encodePathSegment(value, label) {
   return encodeURIComponent(text);
 }
 
-function routeURL(baseURL, project, thread, turn, suffix = "") {
-  const base = String(baseURL ?? "").trim().replace(/\/+$/, "");
-  if (!base) throw new EvaluationError("invalid_input", "base URL is required");
-  const projectsBase = base.endsWith("/api/projects") ? base : `${base}/api/projects`;
-  return `${projectsBase}/${encodePathSegment(project, "project")}/assistant/threads/${encodePathSegment(thread, "thread")}/turns/${encodePathSegment(turn, "turn")}${suffix}`;
+function sessionsBaseURL(baseURL, cluster) {
+  let base;
+  try {
+    base = new URL(String(baseURL ?? "").trim());
+  } catch {
+    throw new EvaluationError("invalid_input", "base URL must be an absolute hub URL");
+  }
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
+    throw new EvaluationError("invalid_input", "base URL must be an HTTP(S) hub URL without credentials, query, or fragment");
+  }
+  const path = base.pathname.replace(/\/+$/, "");
+  const addressedCluster = /^\/clusters\/([a-zA-Z0-9-]+)$/.exec(path)?.[1];
+  const requestedCluster = String(cluster ?? "").trim();
+  const clusterID = addressedCluster ?? requestedCluster;
+  if (!/^[a-zA-Z0-9-]+$/.test(clusterID)) {
+    throw new EvaluationError("invalid_input", "a logical cluster ID is required; workspace paths are not accepted");
+  }
+  if (path && !addressedCluster || addressedCluster && requestedCluster && addressedCluster !== requestedCluster) {
+    throw new EvaluationError("invalid_input", "base URL must be the hub origin or the matching /clusters/ID endpoint");
+  }
+  return `${base.origin}/clusters/${clusterID}/apis/ai.railgrid.ai/v1alpha1/sessions`;
 }
 
-function threadItemsURL(baseURL, project, thread) {
-  const base = String(baseURL ?? "").trim().replace(/\/+$/, "");
-  if (!base) throw new EvaluationError("invalid_input", "base URL is required");
-  const projectsBase = base.endsWith("/api/projects") ? base : `${base}/api/projects`;
-  return `${projectsBase}/${encodePathSegment(project, "project")}/assistant/threads/${encodePathSegment(thread, "thread")}/items`;
+function routeURL(options) {
+  return `${sessionsBaseURL(options.baseURL, options.cluster)}/${encodePathSegment(options.thread, "thread")}/turn-status/${encodePathSegment(options.turn, "turn")}`;
+}
+
+function threadItemsURL(options) {
+  return `${sessionsBaseURL(options.baseURL, options.cluster)}/${encodePathSegment(options.thread, "thread")}/items`;
 }
 
 function requestHeaders(options = {}) {
@@ -85,9 +102,6 @@ function requestHeaders(options = {}) {
   if (options.token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${String(options.token).trim()}`);
   }
-  if (options.user && !headers.has("X-Railgrid-User")) headers.set("X-Railgrid-User", String(options.user).trim());
-  if (options.tenant && !headers.has("X-Railgrid-Tenant")) headers.set("X-Railgrid-Tenant", String(options.tenant).trim());
-  if (options.cluster && !headers.has("X-Railgrid-Cluster")) headers.set("X-Railgrid-Cluster", String(options.cluster).trim());
   if (options.org && !headers.has("X-Railgrid-Org")) headers.set("X-Railgrid-Org", String(options.org).trim());
   if (options.workspace && !headers.has("X-Railgrid-Workspace")) headers.set("X-Railgrid-Workspace", String(options.workspace).trim());
   return headers;
@@ -216,7 +230,7 @@ export async function pollExactTurn(options = {}) {
   try {
     while (true) {
       attempts += 1;
-      const payload = await fetchJSON(routeURL(options.baseURL, options.project, options.thread, options.turn), {
+      const payload = await fetchJSON(routeURL(options), {
         ...options,
         signal: controller.signal,
         timeoutMs: undefined,
@@ -406,7 +420,7 @@ export async function evaluateTerminalTurn(options = {}) {
         finalAnswer: null,
       };
     }
-    const itemsPayload = await fetchJSON(threadItemsURL(options.baseURL, options.project, options.thread), options);
+    const itemsPayload = await fetchJSON(threadItemsURL(options), options);
     const selected = selectFinalAnswer(itemsPayload, String(options.turn).trim());
     const classification = classifyTerminalTurn({
       turn: polled.turn,
@@ -511,8 +525,8 @@ function usage() {
   return [
     "Poll one exact App Studio assistant turn and verify its terminal contract.",
     "",
-    "Usage: node terminal-turn.mjs --base-url URL --project NAME --thread ID --turn ID [options]",
-    "  --token TOKEN --user USER --tenant TENANT --cluster CLUSTER",
+    "Usage: node terminal-turn.mjs --base-url HUB_URL --cluster CLUSTER_ID --thread ID --turn ID [options]",
+    "  --token TOKEN --org ORG --workspace WORKSPACE",
     "  --expected-settings JSON (or individual --expected-* settings)",
     "  --timeout-ms N --interval-ms N",
   ].join("\n");

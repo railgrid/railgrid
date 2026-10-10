@@ -296,8 +296,8 @@ func TestProjectEinoAssistantCurrentImageStillReportsModelInputProgress(t *testi
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, runState, nil)
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{Messages: state.Messages})
-	handler.OnEnd(ctx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("I can see it.", nil)})
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{Messages: state.Messages})
+	handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("I can see it.", nil)})
 	if len(events) != 2 || events[0].Status != "started" || events[1].Status != "completed" || events[0].ID != "image-input-"+receipt.ID {
 		t.Fatalf("current image lifecycle events = %#v", events)
 	}
@@ -339,8 +339,8 @@ func TestProjectEinoAssistantMultipleCurrentImagesEmitOneOrderedLifecycleWithout
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, runState, nil)
-	callbackCtx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{Messages: state.Messages})
-	handler.OnEnd(callbackCtx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("Compared them.", nil)})
+	callbackCtx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{Messages: state.Messages})
+	handler.OnEnd(callbackCtx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("Compared them.", nil)})
 
 	if len(events) != 4 {
 		t.Fatalf("mixed image lifecycle events = %#v, want one start/end pair per current image", events)
@@ -591,8 +591,8 @@ func TestProjectEinoAssistantLifecycleReportsLaterRehydrateFailureAfterPriorImag
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, runState, nil)
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{Messages: state.Messages})
-	handler.OnEnd(ctx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("I can see it.", nil)})
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{Messages: state.Messages})
+	handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("I can see it.", nil)})
 	if len(events) != 2 || events[0].Status != "started" || events[1].Status != "completed" {
 		t.Fatalf("first image lifecycle events = %#v, want started then completed", events)
 	}

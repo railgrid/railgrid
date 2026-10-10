@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -238,14 +239,23 @@ func (s *Server) listProjectIntegrations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	items := make([]projectIntegrationView, 0)
+	statusCtx, statusWaitObservation := projectAssistantObserveRateLimiterWaits(r.Context())
+	statusStarted := time.Now()
+	providerReferenceCount := 0
 	for _, env := range project.Spec.Environments {
 		for _, binding := range env.Bindings {
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference {
 				continue
 			}
-			status := s.projectIntegrationBindingStatus(r.Context(), c, project, binding, id)
+			providerReferenceCount++
+			status := s.projectIntegrationBindingStatus(statusCtx, c, project, binding, id)
 			items = append(items, projectIntegrationViewForBinding(env.Name, binding, status.Phase))
 		}
+	}
+	if providerReferenceCount > 0 {
+		fields := []any{"providerReferenceBindings", providerReferenceCount, "duration", time.Since(statusStarted)}
+		fields = append(fields, projectAssistantRateLimiterWaitLogFields("rateLimiter", statusWaitObservation.Snapshot())...)
+		klog.FromContext(statusCtx).Info("App Studio integration binding status completed", fields...)
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Environment != items[j].Environment {

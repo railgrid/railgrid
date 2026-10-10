@@ -115,24 +115,37 @@ type projectAssistantAuditTool struct {
 }
 
 type projectAssistantAuditModelCall struct {
-	Ordinal                   int      `json:"ordinal"`
-	SourceRevision            uint64   `json:"sourceRevision,omitempty"`
-	VerifiedRevision          uint64   `json:"verifiedRevision,omitempty"`
-	RolloutBudgetRemaining    *int64   `json:"rolloutBudgetRemainingTokens,omitempty"`
-	VisibleTools              []string `json:"visibleTools,omitempty"`
-	ToolContractDigest        string   `json:"toolContractDigest,omitempty"`
-	Outcome                   string   `json:"outcome,omitempty"`
-	RequestedTools            []string `json:"requestedTools,omitempty"`
-	TransportErrorObserved    bool     `json:"transportErrorObserved,omitempty"`
-	AtOffsetMS                int64    `json:"atOffsetMs"`
-	FirstResponseAtOffsetMS   *int64   `json:"firstResponseAtOffsetMs,omitempty"`
-	ToolCallStartedAtOffsetMS *int64   `json:"toolCallStartedAtOffsetMs,omitempty"`
-	CompletedAtOffsetMS       *int64   `json:"completedAtOffsetMs,omitempty"`
-	InputBytes                int64    `json:"inputBytes,omitempty"`
-	PromptTokens              int64    `json:"promptTokens,omitempty"`
-	CachedPromptTokens        int64    `json:"cachedPromptTokens,omitempty"`
-	CompletionTokens          int64    `json:"completionTokens,omitempty"`
-	TotalTokens               int64    `json:"totalTokens,omitempty"`
+	Ordinal                int      `json:"ordinal"`
+	SourceRevision         uint64   `json:"sourceRevision,omitempty"`
+	VerifiedRevision       uint64   `json:"verifiedRevision,omitempty"`
+	RolloutBudgetRemaining *int64   `json:"rolloutBudgetRemainingTokens,omitempty"`
+	VisibleTools           []string `json:"visibleTools,omitempty"`
+	ToolContractDigest     string   `json:"toolContractDigest,omitempty"`
+	Outcome                string   `json:"outcome,omitempty"`
+	RequestedTools         []string `json:"requestedTools,omitempty"`
+	// TransportErrorObserved marks a failure reported by the model callback.
+	// Known local pre-dispatch guards, such as the organization spend cap, are
+	// excluded; this flag is not inferred from ProviderInputObserved.
+	TransportErrorObserved    bool   `json:"transportErrorObserved,omitempty"`
+	AtOffsetMS                int64  `json:"atOffsetMs"`
+	FirstResponseAtOffsetMS   *int64 `json:"firstResponseAtOffsetMs,omitempty"`
+	ToolCallStartedAtOffsetMS *int64 `json:"toolCallStartedAtOffsetMs,omitempty"`
+	CompletedAtOffsetMS       *int64 `json:"completedAtOffsetMs,omitempty"`
+	InputBytes                int64  `json:"inputBytes,omitempty"`
+	// ProviderInputObserved distinguishes the lifecycle estimate recorded before
+	// a model call from a later measurement of the message slice at the model
+	// callback. It does not prove that a provider HTTP request was dispatched and
+	// does not represent the full HTTP payload or tokenized input.
+	ProviderInputObserved bool  `json:"providerInputObserved,omitempty"`
+	MessageBytes          int64 `json:"messageBytes,omitempty"`
+	SystemMessageBytes    int64 `json:"systemMessageBytes,omitempty"`
+	HistoryMessageBytes   int64 `json:"historyMessageBytes,omitempty"`
+	MessageFramingBytes   int64 `json:"messageFramingBytes,omitempty"`
+	ToolContractBytes     int64 `json:"toolContractBytes,omitempty"`
+	PromptTokens          int64 `json:"promptTokens,omitempty"`
+	CachedPromptTokens    int64 `json:"cachedPromptTokens,omitempty"`
+	CompletionTokens      int64 `json:"completionTokens,omitempty"`
+	TotalTokens           int64 `json:"totalTokens,omitempty"`
 }
 
 type projectAssistantAuditFailure struct {
@@ -398,6 +411,32 @@ func (r *projectAssistantRunAuditRecorder) recordModelCall(
 	deferredToolInfos []*schema.ToolInfo,
 	inputBytes ...int64,
 ) error {
+	var inputSize projectAssistantAuditInputSize
+	if len(inputBytes) > 0 && inputBytes[0] > 0 {
+		inputSize.InputBytes = inputBytes[0]
+	}
+	return r.recordModelCallWithInputSize(
+		ctx,
+		ordinal,
+		sourceRevision,
+		verifiedRevision,
+		rolloutBudgetRemaining,
+		toolInfos,
+		deferredToolInfos,
+		inputSize,
+	)
+}
+
+func (r *projectAssistantRunAuditRecorder) recordModelCallWithInputSize(
+	ctx context.Context,
+	ordinal int,
+	sourceRevision uint64,
+	verifiedRevision uint64,
+	rolloutBudgetRemaining *int64,
+	toolInfos []*schema.ToolInfo,
+	deferredToolInfos []*schema.ToolInfo,
+	inputSize projectAssistantAuditInputSize,
+) error {
 	if r == nil || ordinal <= 0 {
 		return nil
 	}
@@ -409,9 +448,12 @@ func (r *projectAssistantRunAuditRecorder) recordModelCall(
 		VisibleTools:           projectAssistantAuditToolNames(toolInfos, deferredToolInfos),
 		ToolContractDigest:     projectAssistantAuditToolContractDigest(toolInfos, deferredToolInfos),
 		AtOffsetMS:             projectAssistantAuditOffsetMS(r.started, time.Now().UTC()),
-	}
-	if len(inputBytes) > 0 && inputBytes[0] > 0 {
-		entry.InputBytes = inputBytes[0]
+		InputBytes:             inputSize.InputBytes,
+		MessageBytes:           inputSize.MessageBytes,
+		SystemMessageBytes:     inputSize.SystemMessageBytes,
+		HistoryMessageBytes:    inputSize.HistoryMessageBytes,
+		MessageFramingBytes:    inputSize.MessageFramingBytes,
+		ToolContractBytes:      inputSize.ToolContractBytes,
 	}
 	r.mu.Lock()
 	stats := r.ensureModelCallStatsLocked()
@@ -429,10 +471,54 @@ func (r *projectAssistantRunAuditRecorder) recordModelCall(
 	if entry.InputBytes > 0 {
 		stats.InputBytes += entry.InputBytes
 	}
+	stats.MessageBytes += entry.MessageBytes
+	stats.SystemMessageBytes += entry.SystemMessageBytes
+	stats.HistoryMessageBytes += entry.HistoryMessageBytes
+	stats.MessageFramingBytes += entry.MessageFramingBytes
+	stats.ToolContractBytes += entry.ToolContractBytes
 	r.updateRunLocked()
 	raw := r.auditSnapshotLocked()
 	r.mu.Unlock()
 	return r.persistSnapshot(ctx, raw)
+}
+
+// updateModelCallInputSize replaces the lifecycle's pre-model estimate with
+// the exact message slice observed by the provider callback. The callback runs
+// after Deep has added its instruction and after model wrappers have applied
+// transient evidence, progress reminders, or context recovery. Keep this
+// update in memory: the existing response/error callback persists the snapshot
+// shortly afterward, avoiding an extra storage write on the model path.
+func (r *projectAssistantRunAuditRecorder) updateModelCallInputSize(
+	ordinal int,
+	messageSize projectAssistantAuditInputSize,
+) {
+	if r == nil || ordinal <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := len(r.audit.ModelCalls) - 1; index >= 0; index-- {
+		entry := &r.audit.ModelCalls[index]
+		if entry.Ordinal != ordinal {
+			continue
+		}
+		stats := r.ensureModelCallStatsLocked()
+		messageSize.ToolContractBytes = entry.ToolContractBytes
+		messageSize.InputBytes = messageSize.MessageBytes + entry.ToolContractBytes
+		stats.InputBytes += messageSize.InputBytes - entry.InputBytes
+		stats.MessageBytes += messageSize.MessageBytes - entry.MessageBytes
+		stats.SystemMessageBytes += messageSize.SystemMessageBytes - entry.SystemMessageBytes
+		stats.HistoryMessageBytes += messageSize.HistoryMessageBytes - entry.HistoryMessageBytes
+		stats.MessageFramingBytes += messageSize.MessageFramingBytes - entry.MessageFramingBytes
+		entry.InputBytes = messageSize.InputBytes
+		entry.ProviderInputObserved = true
+		entry.MessageBytes = messageSize.MessageBytes
+		entry.SystemMessageBytes = messageSize.SystemMessageBytes
+		entry.HistoryMessageBytes = messageSize.HistoryMessageBytes
+		entry.MessageFramingBytes = messageSize.MessageFramingBytes
+		r.updateRunLocked()
+		return
+	}
 }
 
 // ensureModelCallStatsLocked initializes the v2 rollup lazily so decoding an
@@ -522,20 +608,173 @@ func projectAssistantAuditToolContractDigest(groups ...[]*schema.ToolInfo) strin
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// projectAssistantAuditInputBytes measures the model-visible request without
-// retaining its payload. It intentionally counts serialized messages and tool
-// contracts only; callers persist the aggregate size, never the bytes.
-func projectAssistantAuditInputBytes(messages []*schema.Message, toolSets ...[]*schema.ToolInfo) int64 {
-	var total int64
-	if raw, err := json.Marshal(projectEinoMessagesToChat(messages)); err == nil {
-		total += int64(len(raw))
+type projectAssistantAuditInputSize struct {
+	InputBytes          int64
+	MessageBytes        int64
+	SystemMessageBytes  int64
+	HistoryMessageBytes int64
+	MessageFramingBytes int64
+	ToolContractBytes   int64
+}
+
+type projectAssistantAuditToolProtocol uint8
+
+const (
+	projectAssistantAuditToolProtocolChat projectAssistantAuditToolProtocol = iota
+	projectAssistantAuditToolProtocolResponses
+	projectAssistantAuditToolProtocolUnsupported
+)
+
+// projectAssistantAuditToolProtocolForModel selects the request shape used by
+// the production model factory. Google has a different tool wire format, so
+// its audit size remains the conservative full ToolInfo serialization.
+func projectAssistantAuditToolProtocolForModel(settings projectLLMSettings) projectAssistantAuditToolProtocol {
+	provider := strings.ToLower(strings.TrimSpace(settings.Provider))
+	if provider != "" && provider != defaultProjectLLMProvider {
+		return projectAssistantAuditToolProtocolUnsupported
 	}
-	for _, tools := range toolSets {
-		if raw, err := json.Marshal(tools); err == nil {
-			total += int64(len(raw))
+	if projectModelUsesResponsesAPI(settings.Model) {
+		return projectAssistantAuditToolProtocolResponses
+	}
+	return projectAssistantAuditToolProtocolChat
+}
+
+// projectAssistantAuditWireToolContractBytes mirrors the selected OpenAI
+// adapter's request projection: tool name, description, schema, and protocol
+// fields only. ToolInfo.Extra and original parameter metadata are audit
+// internals and are not sent with the model request.
+func projectAssistantAuditWireToolContractBytes(protocol projectAssistantAuditToolProtocol, toolSets ...[]*schema.ToolInfo) int64 {
+	if protocol == projectAssistantAuditToolProtocolUnsupported {
+		return projectAssistantAuditToolContractFallbackBytes(toolSets...)
+	}
+	type chatFunction struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+		Parameters  any    `json:"parameters"`
+	}
+	type chatTool struct {
+		Type     string        `json:"type"`
+		Function *chatFunction `json:"function,omitempty"`
+	}
+	type responsesFunction struct {
+		Type        string `json:"type"`
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+		Parameters  any    `json:"parameters"`
+		Strict      bool   `json:"strict"`
+	}
+
+	var chatProjected []chatTool
+	var responsesProjected []responsesFunction
+	projectedCount := 0
+	for _, toolSet := range toolSets {
+		for _, info := range toolSet {
+			if info == nil {
+				return projectAssistantAuditToolContractFallbackBytes(toolSets...)
+			}
+			projectedInfo := info
+			if protocol == projectAssistantAuditToolProtocolResponses && info.ParamsOneOf == nil {
+				copy := *info
+				copy.ParamsOneOf = schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{})
+				projectedInfo = &copy
+			}
+			parameters, err := projectedInfo.ToJSONSchema()
+			if err != nil {
+				return projectAssistantAuditToolContractFallbackBytes(toolSets...)
+			}
+			projectedCount++
+			if protocol == projectAssistantAuditToolProtocolResponses {
+				responsesProjected = append(responsesProjected, responsesFunction{
+					Type: "function", Name: info.Name, Description: info.Desc, Parameters: parameters,
+					Strict: false,
+				})
+			} else {
+				chatProjected = append(chatProjected, chatTool{Type: "function", Function: &chatFunction{
+					Name: info.Name, Description: info.Desc, Parameters: parameters,
+				}})
+			}
 		}
 	}
-	return total
+	if projectedCount == 0 {
+		return 0
+	}
+	var value any = chatProjected
+	if protocol == projectAssistantAuditToolProtocolResponses {
+		value = responsesProjected
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return projectAssistantAuditToolContractFallbackBytes(toolSets...)
+	}
+	return int64(len(raw))
+}
+
+// projectAssistantAuditToolContractFallbackBytes preserves the previous
+// conservative serialized-size count when a tool cannot be projected.
+func projectAssistantAuditToolContractFallbackBytes(toolSets ...[]*schema.ToolInfo) int64 {
+	var size int64
+	for _, tools := range toolSets {
+		raw, err := json.Marshal(tools)
+		if err != nil {
+			continue
+		}
+		size += int64(len(raw))
+	}
+	return size
+}
+
+// projectAssistantAuditMeasureInput counts the serialized model-input
+// projection without retaining its contents. System and history counts are
+// sums of individual serialized message objects; MessageFramingBytes accounts
+// for the surrounding message-array delimiters and separators. These are not a
+// complete provider payload estimate: HTTP headers, transport framing, outer
+// request fields, and provider-side tokenization are outside this projection.
+func projectAssistantAuditMeasureInput(messages []*schema.Message, toolSets ...[]*schema.ToolInfo) projectAssistantAuditInputSize {
+	return projectAssistantAuditMeasureInputForProtocol(messages, projectAssistantAuditToolProtocolChat, toolSets...)
+}
+
+func projectAssistantAuditMeasureInputForModel(
+	messages []*schema.Message,
+	settings projectLLMSettings,
+	toolSets ...[]*schema.ToolInfo,
+) projectAssistantAuditInputSize {
+	return projectAssistantAuditMeasureInputForProtocol(messages, projectAssistantAuditToolProtocolForModel(settings), toolSets...)
+}
+
+func projectAssistantAuditMeasureInputForProtocol(
+	messages []*schema.Message,
+	protocol projectAssistantAuditToolProtocol,
+	toolSets ...[]*schema.ToolInfo,
+) projectAssistantAuditInputSize {
+	var size projectAssistantAuditInputSize
+	chatMessages := projectEinoMessagesToChat(messages)
+	if raw, err := json.Marshal(chatMessages); err == nil {
+		size.MessageBytes = int64(len(raw))
+	}
+	var individualMessageBytes int64
+	for _, message := range chatMessages {
+		raw, err := json.Marshal(message)
+		if err != nil {
+			continue
+		}
+		messageBytes := int64(len(raw))
+		individualMessageBytes += messageBytes
+		if message.Role == string(schema.System) {
+			size.SystemMessageBytes += messageBytes
+		} else {
+			size.HistoryMessageBytes += messageBytes
+		}
+	}
+	size.MessageFramingBytes = max(size.MessageBytes-individualMessageBytes, 0)
+	size.ToolContractBytes = projectAssistantAuditWireToolContractBytes(protocol, toolSets...)
+	size.InputBytes = size.MessageBytes + size.ToolContractBytes
+	return size
+}
+
+// projectAssistantAuditInputBytes remains the aggregate-only compatibility
+// helper for callers that need the existing privacy-safe total.
+func projectAssistantAuditInputBytes(messages []*schema.Message, toolSets ...[]*schema.ToolInfo) int64 {
+	return projectAssistantAuditMeasureInput(messages, toolSets...).InputBytes
 }
 
 func (r *projectAssistantRunAuditRecorder) rolloutBudgetSnapshot() *projectAssistantRolloutBudgetState {
@@ -750,6 +989,13 @@ func (r *projectAssistantRunAuditRecorder) recordModelResponseChunk(ctx context.
 
 func (r *projectAssistantRunAuditRecorder) recordModelTransportError(ctx context.Context, modelErr error) {
 	if r == nil || modelErr == nil {
+		return
+	}
+	// The spend wrapper checks the organization cap before calling its base
+	// model. Eino may wrap that local rejection in a NodeRunError before it
+	// reaches this callback; it is a failed model attempt, but no provider
+	// transport was involved.
+	if projectEinoAssistantOrgSpendCapExceeded(modelErr) {
 		return
 	}
 	r.mu.Lock()

@@ -46,15 +46,22 @@ func projectAssistantToolHasEffect(spec projectAssistantToolSpec) bool {
 
 // projectAssistantRequireMutationRead enforces read-before-mutation and
 // returns the AUTHORITATIVE expectedVersion the caller must pass to the
-// workspace mutation. For an existing file this is the version recorded by a
-// complete same-turn read — NOT whatever token the model supplied. Models
-// routinely fabricate a git-blob-style hash instead of echoing the opaque
-// version from their read result, and correcting them in the error text does
-// not reliably work. The safety the version exists for is preserved: a
-// complete read must have happened this turn, and the workspace layer still
-// rejects the returned version if the file changed on disk since that read.
+// workspace mutation. For an existing file this is the version from a
+// complete read result already shown to the model in an earlier response —
+// NOT whatever token the model supplied. Models routinely fabricate a
+// git-blob-style hash instead of echoing the opaque version from their read
+// result, and correcting them in the error text does not reliably work. The
+// workspace layer still rejects the returned version if the file changed on
+// disk since that read.
 func projectAssistantRequireMutationRead(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) (string, error) {
-	return projectAssistantResolveMutationVersion(ctx, req, workspaces, rawPath, true, expectedVersions...)
+	return projectAssistantResolveMutationVersionWithOptions(ctx, req, workspaces, rawPath, true, false, expectedVersions...)
+}
+
+// projectAssistantRequireMutationReadAllowBinary is used only by move_file and
+// delete_file. A binary read has no source text to show, but its exact version
+// and path metadata can still identify the object for those operations.
+func projectAssistantRequireMutationReadAllowBinary(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) (string, error) {
+	return projectAssistantResolveMutationVersionWithOptions(ctx, req, workspaces, rawPath, true, true, expectedVersions...)
 }
 
 // projectAssistantResolveEditVersion preserves a recorded read version when
@@ -67,6 +74,18 @@ func projectAssistantResolveEditVersion(ctx context.Context, req projectAssistan
 }
 
 func projectAssistantResolveMutationVersion(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, requireRead bool, expectedVersions ...string) (string, error) {
+	return projectAssistantResolveMutationVersionWithOptions(ctx, req, workspaces, rawPath, requireRead, false, expectedVersions...)
+}
+
+func projectAssistantResolveMutationVersionWithOptions(
+	ctx context.Context,
+	req projectAssistantToolCallRequest,
+	workspaces *workspace.FileStore,
+	rawPath string,
+	requireRead bool,
+	allowBinary bool,
+	expectedVersions ...string,
+) (string, error) {
 	expectedVersion := ""
 	if len(expectedVersions) > 0 {
 		expectedVersion = strings.TrimSpace(expectedVersions[0])
@@ -97,11 +116,41 @@ func projectAssistantResolveMutationVersion(ctx context.Context, req projectAssi
 		if !requireRead {
 			return "", nil
 		}
-		return "", fmt.Errorf("mutation of existing file %q requires a complete same-turn read first: call read_file at offset 1 covering the whole file (a partial or ranged read does not authorize an edit)", path)
+		return "", projectAssistantCompleteReadRequiredError(path, false, !allowBinary)
 	}
-	// A complete read happened this turn — authorize the mutation using that
-	// read's version, whatever the model passed.
+	if !requireRead {
+		return observed, nil
+	}
+	proof, hasVisibleProof := req.RunState.ModelVisibleReadFileVersion(path)
+	if !hasVisibleProof || proof.Version != observed {
+		return "", projectAssistantCompleteReadRequiredError(path, true, !allowBinary)
+	}
+	if proof.ModelCallOrdinal >= req.RunState.CurrentModelCallOrdinal() {
+		if allowBinary {
+			return "", fmt.Errorf("mutation of existing file %q requires read_file to finish in an earlier model response; call the mutation after the read result has returned", path)
+		}
+		return "", fmt.Errorf("replace_file for %q requires read_file to finish in an earlier model response; call replace_file after the read result has returned, or use edit_file with an exact oldString/newString match for a targeted change", path)
+	}
+	if proof.Binary && !allowBinary {
+		return "", fmt.Errorf("replace_file requires a complete UTF-8 text read; %q is binary and has no visible source text", path)
+	}
+	// A complete read result was visible in a prior model response. Use the
+	// server-observed version rather than trusting a model-supplied token; the
+	// workspace layer still rejects it if the file changed since that read.
 	return observed, nil
+}
+
+func projectAssistantCompleteReadRequiredError(path string, serverReadObserved, suggestExactEdit bool) error {
+	if serverReadObserved {
+		if suggestExactEdit {
+			return fmt.Errorf("mutation of existing file %q requires a complete read_file result that was fully shown to the model in an earlier response; the read may have been truncated by the model-output limit. For targeted changes to a large text file, use edit_file with an exact oldString/newString match instead of rereading the whole file", path)
+		}
+		return fmt.Errorf("mutation of existing file %q requires a complete read_file result that was fully shown to the model in an earlier response; the read may have been truncated by the model-output limit", path)
+	}
+	if suggestExactEdit {
+		return fmt.Errorf("mutation of existing file %q requires a complete same-turn read first: call read_file at offset 1 covering the whole file (a partial or ranged read does not authorize the mutation); for targeted changes to a large text file, use edit_file with an exact oldString/newString match", path)
+	}
+	return fmt.Errorf("mutation of existing file %q requires a complete same-turn read first: call read_file at offset 1 covering the whole file (a partial or ranged read does not authorize the mutation)", path)
 }
 
 // projectAssistantPermissionForV2 keeps collaboration mode, approval policy,

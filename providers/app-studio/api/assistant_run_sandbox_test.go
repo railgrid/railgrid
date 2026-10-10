@@ -1573,12 +1573,16 @@ func (f *sandboxSyncObservingPreviewInspector) Inspect(_ context.Context, _ proj
 }
 
 type sandboxClientFake struct {
-	mu             sync.Mutex
-	response       projectAssistantSandboxWorkspaceResponse
-	execResponse   projectSandboxExecResponse
-	execCalls      int
-	workspaceCalls int
-	requests       []projectAssistantSandboxWorkspaceRequest
+	mu                sync.Mutex
+	response          projectAssistantSandboxWorkspaceResponse
+	execResponse      projectSandboxExecResponse
+	execErr           error
+	execCalls         int
+	execRequests      []projectSandboxExecRequest
+	execContextErrors []error
+	execHasDeadline   []bool
+	workspaceCalls    int
+	requests          []projectAssistantSandboxWorkspaceRequest
 }
 
 type sandboxRevisionDomainFake struct {
@@ -1689,10 +1693,17 @@ func (f *sandboxClientFake) Workspace(ctx context.Context, _ identity, _ dataPla
 	return f.response, nil
 }
 
-func (f *sandboxClientFake) Exec(context.Context, identity, dataPlaneRef, projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+func (f *sandboxClientFake) Exec(ctx context.Context, _ identity, _ dataPlaneRef, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execCalls++
+	f.execRequests = append(f.execRequests, request)
+	f.execContextErrors = append(f.execContextErrors, ctx.Err())
+	_, hasDeadline := ctx.Deadline()
+	f.execHasDeadline = append(f.execHasDeadline, hasDeadline)
+	if f.execErr != nil {
+		return projectSandboxExecResponse{}, f.execErr
+	}
 	if strings.TrimSpace(f.execResponse.State) != "" {
 		return f.execResponse, nil
 	}

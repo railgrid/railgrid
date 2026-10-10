@@ -20,11 +20,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-app-studio/store"
@@ -236,6 +240,203 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 	}
 	if len(call.RequestedTools) != 1 || call.RequestedTools[0] != projectEinoAssistantWriteTodosTool {
 		t.Fatalf("requested tools = %#v, want write_todos", call.RequestedTools)
+	}
+}
+
+func TestProjectAssistantAuditInputBreakdownCountsWithoutPersistingPayloads(t *testing.T) {
+	const (
+		systemSecret    = "private system instruction"
+		userSecret      = "private user request"
+		assistantSecret = "private assistant history"
+		toolSecret      = "private tool description"
+	)
+	messages := []*schema.Message{
+		schema.SystemMessage(systemSecret),
+		schema.UserMessage(userSecret),
+		schema.AssistantMessage(assistantSecret, nil),
+	}
+	tools := []*schema.ToolInfo{{Name: projectToolReadFile, Desc: toolSecret}}
+	inputSize := projectAssistantAuditMeasureInput(messages, tools)
+	if inputSize.InputBytes != inputSize.MessageBytes+inputSize.ToolContractBytes {
+		t.Fatalf("input bytes = %#v, want message bytes plus tool contract bytes", inputSize)
+	}
+	if inputSize.SystemMessageBytes <= 0 || inputSize.HistoryMessageBytes <= 0 || inputSize.ToolContractBytes <= 0 {
+		t.Fatalf("input component breakdown omitted a non-empty category: %#v", inputSize)
+	}
+	if inputSize.SystemMessageBytes+inputSize.HistoryMessageBytes+inputSize.MessageFramingBytes != inputSize.MessageBytes {
+		t.Fatalf("message components do not sum to serialized message bytes: %#v", inputSize)
+	}
+	if projectAssistantAuditInputBytes(messages, tools) != inputSize.InputBytes {
+		t.Fatalf("aggregate helper = %d, breakdown total = %d", projectAssistantAuditInputBytes(messages, tools), inputSize.InputBytes)
+	}
+
+	run := &store.AssistantRun{ID: "run-input-breakdown"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	if err := recorder.recordModelCallWithInputSize(context.Background(), 1, 0, 0, nil, tools, nil, inputSize); err != nil {
+		t.Fatalf("record model call input size: %v", err)
+	}
+	for _, forbidden := range []string{systemSecret, userSecret, assistantSecret, toolSecret} {
+		if strings.Contains(string(run.Audit), forbidden) {
+			t.Fatalf("input audit leaked %q: %s", forbidden, run.Audit)
+		}
+	}
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.ModelCalls) != 1 {
+		t.Fatalf("model calls = %#v, want one", audit.ModelCalls)
+	}
+	call := audit.ModelCalls[0]
+	if call.InputBytes != inputSize.InputBytes ||
+		call.MessageBytes != inputSize.MessageBytes ||
+		call.SystemMessageBytes != inputSize.SystemMessageBytes ||
+		call.HistoryMessageBytes != inputSize.HistoryMessageBytes ||
+		call.MessageFramingBytes != inputSize.MessageFramingBytes ||
+		call.ToolContractBytes != inputSize.ToolContractBytes {
+		t.Fatalf("model call byte breakdown = %#v, want %#v", call, inputSize)
+	}
+	stats := audit.ModelCallStats
+	if stats == nil || stats.InputBytes != inputSize.InputBytes ||
+		stats.MessageBytes != inputSize.MessageBytes ||
+		stats.SystemMessageBytes != inputSize.SystemMessageBytes ||
+		stats.HistoryMessageBytes != inputSize.HistoryMessageBytes ||
+		stats.MessageFramingBytes != inputSize.MessageFramingBytes ||
+		stats.ToolContractBytes != inputSize.ToolContractBytes {
+		t.Fatalf("model call size rollup = %#v, want %#v", stats, inputSize)
+	}
+}
+
+func TestProjectAssistantAuditToolContractBytesMatchOpenAIWire(t *testing.T) {
+	tools := []*schema.ToolInfo{{
+		Name: "read_file",
+		Desc: "Read a project file.",
+		Extra: map[string]any{
+			projectEinoToolParametersExtraKey: `{"type":"object","properties":{"path":{"type":"string","description":"Project-relative path."}},"required":["path"]}`,
+			"risk":                            "read",
+			"auditOnly":                       "must-not-reach-model",
+		},
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"path": {Type: schema.String, Desc: "Project-relative path.", Required: true},
+		}),
+	}}
+	messages := []*schema.Message{schema.UserMessage("Read the project file.")}
+	for _, test := range []struct {
+		name     string
+		model    string
+		wantPath string
+		response string
+	}{
+		{
+			name:     "chat completions",
+			model:    "gpt-4o",
+			wantPath: "/v1/chat/completions",
+			response: `{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+		},
+		{
+			name:     "responses",
+			model:    "gpt-6.1-sol",
+			wantPath: "/v1/responses",
+			response: projectResponsesFixtureText,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			type capturedRequest struct {
+				path string
+				body []byte
+			}
+			requests := make(chan capturedRequest, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				raw, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Errorf("read model request: %v", err)
+				}
+				requests <- capturedRequest{path: req.URL.Path, body: raw}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.response)
+			}))
+			defer upstream.Close()
+
+			settings := projectLLMSettings{
+				Provider: defaultProjectLLMProvider,
+				BaseURL:  upstream.URL + "/v1",
+				Model:    test.model,
+				APIKey:   "test-key",
+			}
+			requestTools := tools
+			if projectModelUsesResponsesAPI(test.model) {
+				requestTools = append(append([]*schema.ToolInfo(nil), tools...), &schema.ToolInfo{Name: "get_status"})
+			}
+			inputSize := projectAssistantAuditMeasureInputForModel(messages, settings, requestTools)
+			model, err := newProjectEinoChatModel(context.Background(), settings)
+			if err != nil {
+				t.Fatalf("create fixture model: %v", err)
+			}
+			if _, err := model.Generate(context.Background(), messages, einomodel.WithTools(requestTools)); err != nil {
+				t.Fatalf("generate fixture request: %v", err)
+			}
+			captured := <-requests
+			if captured.path != test.wantPath {
+				t.Fatalf("model request path = %q, want %q", captured.path, test.wantPath)
+			}
+			var request struct {
+				Tools json.RawMessage `json:"tools"`
+			}
+			if err := json.Unmarshal(captured.body, &request); err != nil {
+				t.Fatalf("decode captured model request: %v", err)
+			}
+			if len(request.Tools) == 0 {
+				t.Fatalf("captured model request omitted tools: %s", captured.body)
+			}
+			if got := int64(len(request.Tools)); got != inputSize.ToolContractBytes {
+				t.Fatalf("audited tool contract bytes = %d, captured wire tools bytes = %d", inputSize.ToolContractBytes, got)
+			}
+			if projectModelUsesResponsesAPI(test.model) {
+				var responseTools []struct {
+					Name       string `json:"name"`
+					Parameters struct {
+						Type string `json:"type"`
+					} `json:"parameters"`
+					Strict bool `json:"strict"`
+				}
+				if err := json.Unmarshal(request.Tools, &responseTools); err != nil {
+					t.Fatalf("decode captured Responses tools: %v", err)
+				}
+				if len(responseTools) != 2 || responseTools[1].Name != "get_status" || responseTools[1].Parameters.Type != "object" || responseTools[1].Strict {
+					t.Fatalf("captured Responses tools = %#v, want normalized empty object schema and strict=false", responseTools)
+				}
+			}
+			if strings.Contains(string(captured.body), "auditOnly") || strings.Contains(string(captured.body), "parametersJSON") || strings.Contains(string(captured.body), "must-not-reach-model") {
+				t.Fatalf("audit-only ToolInfo.Extra leaked to model request: %s", captured.body)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantAuditToolContractBytesFallbackKeepsFullToolSet(t *testing.T) {
+	tools := []*schema.ToolInfo{{Name: "read_file", Desc: "Read a project file."}, nil}
+	fallback, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := projectAssistantAuditWireToolContractBytes(projectAssistantAuditToolProtocolChat, tools); got != int64(len(fallback)) {
+		t.Fatalf("fallback tool bytes = %d, want prior full ToolInfo count %d", got, len(fallback))
+	}
+}
+
+func TestProjectAssistantAuditUnsupportedToolProtocolKeepsFullToolInfoCount(t *testing.T) {
+	tools := []*schema.ToolInfo{{Name: "read_file", Desc: "Read a project file."}}
+	fallback, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := projectAssistantAuditMeasureInputForModel(
+		[]*schema.Message{schema.UserMessage("Read the project file.")},
+		projectLLMSettings{Provider: projectLLMProviderGoogle, Model: "gemini-fast"},
+		tools,
+	)
+	if size.ToolContractBytes != int64(len(fallback)) {
+		t.Fatalf("unsupported protocol tool bytes = %d, want conservative ToolInfo count %d", size.ToolContractBytes, len(fallback))
 	}
 }
 

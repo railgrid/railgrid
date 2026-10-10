@@ -337,15 +337,24 @@ with `POST .../assistant/threads/{thread}/reviews` and may provide bounded revie
 instructions. It reports evidence-backed findings and is never an automatic
 completion gate. `Default` follows the user's request directly and exposes the
 current evidence tools plus these source-mutation tools: `create_file`,
-`replace_file`, `edit_file`, `delete_file`, and `move_file`. `read_file` returns
-bounded structured data; only a complete read carries the opaque `version`
-needed for a mutation, while partial reads are inspection-only. `create_file`
-is always create-only: it never replaces an existing file and has no
-phase-dependent or initial-build variant. `replace_file` atomically replaces a
-whole file and requires the exact `expectedVersion` from a complete same-turn
-read. `edit_file` performs exact `oldString`/`newString` replacement (with an
-explicit `replaceAll` option) and, like `delete_file` and `move_file`, requires
-that complete same-turn read plus its `expectedVersion`; move destinations must
+`replace_file`, `edit_file`, `delete_file`, and `move_file`. The read endpoint
+and durable tool ledger retain structured JSON receipts. The model receives a
+bounded projection that renders text source as literal UTF-8, so newlines,
+quotes, backslashes, Unicode, and HTML-like characters are source characters.
+Copy those characters unchanged into `oldString`/`newString`, using normal JSON
+serialization for the tool-call arguments; do not escape the source a second
+time. Only a complete read whose text and version remain visible in an earlier
+model response proves the source for `replace_file`, `delete_file`, or
+`move_file`. Partial or
+model-clipped reads do not prove the whole file, and clipping clears the
+version. A complete binary read can prove a version for delete or move only.
+`create_file` is always create-only: it never replaces an existing file and has
+no phase-dependent or initial-build variant. `replace_file` atomically replaces
+a whole UTF-8 text file using the exact `expectedVersion` from that visible
+complete read. `edit_file` performs exact `oldString`/`newString` replacement
+(with an explicit `replaceAll` option) under the workspace mutation lock; a
+separate read and version are optional, so use an exact targeted edit for a
+large file that cannot be shown in one complete read. Move destinations must
 be unused. Paths are normalized and authorized by the server, and stale,
 ambiguous, partial, or otherwise invalid mutations fail without changing the
 file. There is no patch grammar and no backwards-compatibility alias. Mutation
@@ -365,15 +374,18 @@ cutover and are not exposed to clients.
 
 Every model response batch is admitted before dispatch. Tool-call IDs are
 deterministic, malformed calls and conflicting IDs fail closed, and the model's
-call order and cardinality are preserved. Eino retains native concurrent
-execution and ordered rejoin, while a run-scoped reader/writer gate permits
-only explicitly parallel-safe reads to overlap; effects, unknown tools, and
-MCP tools are exclusive. An append-only
-`AssistantRunEvent` ledger records each admitted call and exact model-visible
-result together with its typed semantic disposition. Model-call audit entries
-also bind the visible tool contracts to a stable schema digest. The ledger
-provides idempotency within the active run and between concurrent workers; it
-is not a provider-restart continuation mechanism.
+call order and cardinality are preserved. A path-conflict dependency graph
+orders calls that touch the same workspace paths in model order; independent
+safe reads may overlap. A later conflicting call is deferred if an earlier
+operation is awaiting approval or did not finish safely. Eino retains native
+concurrent execution and ordered rejoin, while a run-scoped reader/writer gate
+keeps effects, unknown tools, and MCP tools exclusive. The append-only
+`AssistantRunEvent` ledger retains each admitted call's durable structured
+receipt and typed semantic disposition; the bounded model-facing projection
+may differ from that receipt. Model-call audit entries also bind visible tool
+contracts to a stable schema digest. The ledger provides idempotency within the
+active run and between concurrent workers; it is not a provider-restart
+continuation mechanism.
 
 Transient setup failures and incomplete model streams retry from the current
 accepted turn history. Partial responses are discarded before tools can be

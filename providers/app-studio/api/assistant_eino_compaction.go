@@ -50,16 +50,24 @@ const (
 type projectEinoAssistantContextRecoveryModel struct {
 	einomodel.BaseChatModel
 	maxAttempts int
+	runState    *projectEinoAssistantRunState
 }
 
-func projectEinoAssistantModelWithContextRecovery(base einomodel.BaseChatModel) einomodel.BaseChatModel {
+func projectEinoAssistantModelWithContextRecovery(
+	base einomodel.BaseChatModel,
+	runStates ...*projectEinoAssistantRunState,
+) einomodel.BaseChatModel {
 	if base == nil {
 		return nil
 	}
-	return &projectEinoAssistantContextRecoveryModel{
+	model := &projectEinoAssistantContextRecoveryModel{
 		BaseChatModel: base,
 		maxAttempts:   projectEinoAssistantCompactionMaxContextRecoveryAttempts,
 	}
+	if len(runStates) > 0 {
+		model.runState = runStates[0]
+	}
+	return model
 }
 
 func (m *projectEinoAssistantContextRecoveryModel) Generate(
@@ -84,6 +92,12 @@ func (m *projectEinoAssistantContextRecoveryModel) Generate(
 			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
 		}
 		current = trimmed
+		if m.runState != nil {
+			// The next provider attempt may no longer contain a previously visible
+			// source receipt. Drop any mutation proof that the retry input cannot
+			// support before the model samples a response from this reduced input.
+			m.runState.ReconcileModelVisibleReadFileProofs(current)
+		}
 	}
 }
 
@@ -109,6 +123,11 @@ func (m *projectEinoAssistantContextRecoveryModel) Stream(
 			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
 		}
 		current = trimmed
+		if m.runState != nil {
+			// Keep authorization aligned with the exact input sent on a recovered
+			// streaming attempt, just as for Generate above.
+			m.runState.ReconcileModelVisibleReadFileProofs(current)
+		}
 	}
 }
 
@@ -715,7 +734,7 @@ func projectEinoAssistantCanonicalCompactionContext(
 	}
 
 	contextMessages := []chatMessage{
-		{Role: "system", Content: projectEinoAssistantV2DeepInstruction},
+		{Role: "system", Content: projectEinoAssistantDeepInstructionForRun(runState)},
 		{Role: "system", Content: projectSystemPromptForMode(
 			currentReq.Project,
 			currentReq.Repository,

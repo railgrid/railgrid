@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -63,77 +64,79 @@ type projectEinoAssistantRunState struct {
 	mu         sync.Mutex
 	callbackMu sync.Mutex
 
-	messages                         []chatMessage
-	lastToolMessages                 []chatMessage
-	toolEvidence                     []chatMessage
-	toolCalls                        []chatToolCall
-	seenToolCalls                    map[string]int
-	turn                             int
-	turnPolicy                       projectAssistantTurnPolicy
-	projectRepositoryRef             string
-	toolPrompt                       string
-	toolDiscovery                    *projectEinoAssistantToolDiscovery
-	nativeBrowserToolCatalog         []projectMCPTool
-	nativeBrowserCatalogCached       bool
-	agentOptimizationMode            string
-	dynamicToolCatalogDigest         string
-	selectedDynamicToolNames         map[string]struct{}
-	skillSnapshot                    *appskills.Snapshot
-	catalogDigest                    string
-	selectedSkillReceipts            map[string]projectAssistantSkillReceipt
-	loadedSkillReceipts              map[string]projectAssistantSkillReceipt
-	selectedContextResourceReceipts  []projectAssistantContextResourceReceipt
-	contentParts                     []projectAssistantContentPart
-	sessionSnapshot                  *projectEinoAssistantSessionSnapshot
-	rolloutBudget                    *projectEinoAssistantRolloutBudget
-	restoredRolloutBudget            *projectAssistantRolloutBudgetState
-	permissionBarrier                bool
-	approvedPlan                     *projectAssistantApprovedPlan
-	executionPlan                    *projectAssistantApprovedPlan
-	planProgress                     projectAssistantPlanSnapshot
-	sourceMutationRevision           uint64
-	verifiedMutationRevision         uint64
-	commitRequired                   bool
-	committedMutationRevision        uint64
-	commitAttemptedRevision          uint64
-	verifiedWorkspaceDigest          string
-	committedWorkspaceDigest         string
-	checkedMutationRevision          uint64
-	verificationAttempted            bool
-	verificationOutcome              string
-	verificationSummary              string
-	verificationBlockers             []string
-	previewEvidence                  projectAssistantPreviewEvidence
-	nativeBrowserInteractionPending  bool
-	developmentSyncRevision          uint64
-	developmentSyncStatus            string
-	developmentSyncFailure           string
-	developmentSyncRetry             uint64
-	developmentSyncChanged           chan struct{}
-	completedReadCalls               map[string]uint64
-	observedReadFilePaths            map[string]struct{}
-	readFileVersions                 map[string]string
-	successfulMutationPaths          map[string]struct{}
-	mutationRecoveryAttempts         map[string]projectAssistantMutationRecoveryAttempt
-	mutationRecoveryRefs             map[string]struct{}
-	mutationRecoveryIdentities       map[string]projectAssistantMutationRecoveryIdentity
-	readFileCoverage                 map[string][]projectEinoAssistantLineRange
-	repeatedActionSignature          string
-	repeatedActionToolName           string
-	repeatedActionCount              int
-	runtimeWarmupAttempts            int
-	modelCallOrdinal                 int
-	completedModelInputIDs           map[string]struct{}
-	transientToolResults             map[string]string
-	transientPreviewImages           map[string]projectEinoAssistantTransientPreviewImage
-	transientToolResultCount         uint64
-	lastProgressMessage              string
-	acceptedProgressCount            int
-	lastAcceptedProgressModelCall    int
-	progressReminder                 *projectEinoAssistantProgressReminder
-	progressReminderAttempts         int
-	progressReminderSilenceTriggered bool
-	deferSteeringOnce                bool
+	messages                             []chatMessage
+	lastToolMessages                     []chatMessage
+	toolEvidence                         []chatMessage
+	toolCalls                            []chatToolCall
+	seenToolCalls                        map[string]int
+	turn                                 int
+	turnPolicy                           projectAssistantTurnPolicy
+	projectRepositoryRef                 string
+	toolPrompt                           string
+	toolDiscovery                        *projectEinoAssistantToolDiscovery
+	nativeBrowserToolCatalog             []projectMCPTool
+	nativeBrowserCatalogCached           bool
+	agentOptimizationMode                string
+	dynamicToolCatalogDigest             string
+	selectedDynamicToolNames             map[string]struct{}
+	selectedDynamicToolModelCallOrdinals map[string]int
+	skillSnapshot                        *appskills.Snapshot
+	catalogDigest                        string
+	selectedSkillReceipts                map[string]projectAssistantSkillReceipt
+	loadedSkillReceipts                  map[string]projectAssistantSkillReceipt
+	selectedContextResourceReceipts      []projectAssistantContextResourceReceipt
+	contentParts                         []projectAssistantContentPart
+	sessionSnapshot                      *projectEinoAssistantSessionSnapshot
+	rolloutBudget                        *projectEinoAssistantRolloutBudget
+	restoredRolloutBudget                *projectAssistantRolloutBudgetState
+	permissionBarrier                    bool
+	approvedPlan                         *projectAssistantApprovedPlan
+	executionPlan                        *projectAssistantApprovedPlan
+	planProgress                         projectAssistantPlanSnapshot
+	sourceMutationRevision               uint64
+	verifiedMutationRevision             uint64
+	commitRequired                       bool
+	committedMutationRevision            uint64
+	commitAttemptedRevision              uint64
+	verifiedWorkspaceDigest              string
+	committedWorkspaceDigest             string
+	checkedMutationRevision              uint64
+	verificationAttempted                bool
+	verificationOutcome                  string
+	verificationSummary                  string
+	verificationBlockers                 []string
+	previewEvidence                      projectAssistantPreviewEvidence
+	nativeBrowserInteractionPending      bool
+	developmentSyncRevision              uint64
+	developmentSyncStatus                string
+	developmentSyncFailure               string
+	developmentSyncRetry                 uint64
+	developmentSyncChanged               chan struct{}
+	completedReadCalls                   map[string]uint64
+	observedReadFilePaths                map[string]struct{}
+	readFileVersions                     map[string]string
+	modelVisibleReadFileVersions         map[string]projectAssistantModelVisibleReadFileVersion
+	successfulMutationPaths              map[string]struct{}
+	mutationRecoveryAttempts             map[string]projectAssistantMutationRecoveryAttempt
+	mutationRecoveryRefs                 map[string]struct{}
+	mutationRecoveryIdentities           map[string]projectAssistantMutationRecoveryIdentity
+	readFileCoverage                     map[string][]projectEinoAssistantLineRange
+	repeatedActionSignature              string
+	repeatedActionToolName               string
+	repeatedActionCount                  int
+	runtimeWarmupAttempts                int
+	modelCallOrdinal                     int
+	completedModelInputIDs               map[string]struct{}
+	transientToolResults                 map[string]string
+	transientPreviewImages               map[string]projectEinoAssistantTransientPreviewImage
+	transientToolResultCount             uint64
+	lastProgressMessage                  string
+	acceptedProgressCount                int
+	lastAcceptedProgressModelCall        int
+	progressReminder                     *projectEinoAssistantProgressReminder
+	progressReminderAttempts             int
+	progressReminderSilenceTriggered     bool
+	deferSteeringOnce                    bool
 	// contextGeneration identifies the active model-visible history window.
 	// Compaction increments it after replacing history so lifecycle context
 	// reconstruction cannot rely on a digest from the previous window.
@@ -166,6 +169,16 @@ type projectAssistantSandboxInitAttempt struct {
 type projectAssistantMutationRecoveryIdentity struct {
 	Operation string `json:"operation"`
 	Target    string `json:"target"`
+}
+
+// projectAssistantModelVisibleReadFileVersion records a complete read result
+// after the model-facing output projection. A server-observed version alone
+// does not prove that the model saw the complete text (the output may have
+// been truncated to fit the model input limit).
+type projectAssistantModelVisibleReadFileVersion struct {
+	Version          string `json:"version"`
+	ModelCallOrdinal int    `json:"modelCallOrdinal"`
+	Binary           bool   `json:"binary,omitempty"`
 }
 
 // projectAssistantMutationRecoveryAttempt is durable, server-owned retry
@@ -205,21 +218,23 @@ func (s *projectEinoAssistantRunState) EmitToolCall(
 
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 	return &projectEinoAssistantRunState{
-		seenToolCalls:              map[string]int{},
-		selectedDynamicToolNames:   map[string]struct{}{},
-		selectedSkillReceipts:      map[string]projectAssistantSkillReceipt{},
-		loadedSkillReceipts:        map[string]projectAssistantSkillReceipt{},
-		completedReadCalls:         map[string]uint64{},
-		readFileVersions:           map[string]string{},
-		readFileCoverage:           map[string][]projectEinoAssistantLineRange{},
-		successfulMutationPaths:    map[string]struct{}{},
-		mutationRecoveryAttempts:   map[string]projectAssistantMutationRecoveryAttempt{},
-		mutationRecoveryRefs:       map[string]struct{}{},
-		mutationRecoveryIdentities: map[string]projectAssistantMutationRecoveryIdentity{},
-		transientToolResults:       map[string]string{},
-		transientPreviewImages:     map[string]projectEinoAssistantTransientPreviewImage{},
-		developmentSyncChanged:     make(chan struct{}),
-		turnPolicy:                 projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
+		seenToolCalls:                        map[string]int{},
+		selectedDynamicToolNames:             map[string]struct{}{},
+		selectedDynamicToolModelCallOrdinals: map[string]int{},
+		selectedSkillReceipts:                map[string]projectAssistantSkillReceipt{},
+		loadedSkillReceipts:                  map[string]projectAssistantSkillReceipt{},
+		completedReadCalls:                   map[string]uint64{},
+		readFileVersions:                     map[string]string{},
+		modelVisibleReadFileVersions:         map[string]projectAssistantModelVisibleReadFileVersion{},
+		readFileCoverage:                     map[string][]projectEinoAssistantLineRange{},
+		successfulMutationPaths:              map[string]struct{}{},
+		mutationRecoveryAttempts:             map[string]projectAssistantMutationRecoveryAttempt{},
+		mutationRecoveryRefs:                 map[string]struct{}{},
+		mutationRecoveryIdentities:           map[string]projectAssistantMutationRecoveryIdentity{},
+		transientToolResults:                 map[string]string{},
+		transientPreviewImages:               map[string]projectEinoAssistantTransientPreviewImage{},
+		developmentSyncChanged:               make(chan struct{}),
+		turnPolicy:                           projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
 	}
 }
 
@@ -950,6 +965,7 @@ func (s *projectEinoAssistantRunState) SetToolDiscovery(discovery projectEinoAss
 	digest := projectEinoAssistantDynamicToolCatalogDigest(discovery)
 	if s.dynamicToolCatalogDigest != digest {
 		s.selectedDynamicToolNames = map[string]struct{}{}
+		s.selectedDynamicToolModelCallOrdinals = map[string]int{}
 	}
 	if discovery.BrowserCatalogCached {
 		if catalog := projectAssistantNativeBrowserCatalogFromTools(discovery.BrowserTools); projectAssistantNativeBrowserCatalogComplete(catalog) {
@@ -990,6 +1006,24 @@ func (s *projectEinoAssistantRunState) DynamicToolSelected(name string) bool {
 	return ok
 }
 
+// DynamicToolSelectedForCurrentModelCall prevents a tool_search call from
+// authorizing another tool call returned in the same model response. The
+// selection becomes eligible only after a later model sample has had a chance
+// to see the selected schema and make a new decision.
+func (s *projectEinoAssistantRunState) DynamicToolSelectedForCurrentModelCall(name string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = projectAssistantToolKey(name)
+	if _, selected := s.selectedDynamicToolNames[name]; !selected {
+		return false
+	}
+	selectedAt, ok := s.selectedDynamicToolModelCallOrdinals[name]
+	return ok && selectedAt < s.modelCallOrdinal
+}
+
 func (s *projectEinoAssistantRunState) ApplyDynamicToolSearchResult(result string) error {
 	if s == nil {
 		return errors.New("assistant run state is unavailable")
@@ -1008,29 +1042,65 @@ func (s *projectEinoAssistantRunState) ApplyDynamicToolSearchResult(result strin
 	}
 	available := make(map[string]struct{}, len(decoded.Matches))
 	if s.toolDiscovery != nil {
-		if s.toolDiscovery.IncludeCommitBridge {
-			available[projectToolCommitProjectFiles] = struct{}{}
+		mode := s.toolDiscovery.CollaborationMode
+		for _, spec := range projectAssistantToolSpecsForTurnPolicy(s.toolDiscovery.DeferredWorkflowTools, s.turnPolicy) {
+			if projectEinoAssistantLocalToolDeferred(spec.Name) && projectEinoAssistantToolSpecAllowedForCollaborationMode(spec, mode) {
+				available[projectAssistantToolKey(spec.Name)] = struct{}{}
+			}
 		}
-		for _, tool := range s.toolDiscovery.MCPTools {
+		for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(s.toolDiscovery.DeferredLocalTools, s.turnPolicy), mode) {
 			if tool != nil {
 				available[projectAssistantToolKey(tool.Spec().Name)] = struct{}{}
 			}
 		}
-		for _, tool := range s.toolDiscovery.BrowserTools {
+		if s.toolDiscovery.IncludeCommitBridge {
+			for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(projectAssistantLocalToolRegistry(nil).Tools(true), s.turnPolicy), mode) {
+				if tool != nil && tool.Spec().Risk == projectAssistantToolRiskCommit {
+					available[projectAssistantToolKey(tool.Spec().Name)] = struct{}{}
+				}
+			}
+		}
+		for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(s.toolDiscovery.MCPTools, s.turnPolicy), mode) {
+			if tool != nil {
+				available[projectAssistantToolKey(tool.Spec().Name)] = struct{}{}
+			}
+		}
+		for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(s.toolDiscovery.BrowserTools, s.turnPolicy), mode) {
 			if tool != nil {
 				available[projectAssistantToolKey(tool.Spec().Name)] = struct{}{}
 			}
 		}
 	}
+	pendingSelection := make([]string, 0, len(decoded.Matches))
+	pendingSelectionSet := make(map[string]struct{}, len(decoded.Matches))
+	selectedCount := len(s.selectedDynamicToolNames)
 	for _, match := range decoded.Matches {
 		name := projectAssistantToolKey(match.Name)
-		if name == "" || len(s.selectedDynamicToolNames) >= projectEinoAssistantMaxSelectedDynamicTools {
+		if name == "" {
 			continue
+		}
+		if _, alreadySelected := s.selectedDynamicToolNames[name]; alreadySelected {
+			continue
+		}
+		if _, duplicate := pendingSelectionSet[name]; duplicate {
+			continue
+		}
+		if selectedCount >= projectEinoAssistantMaxSelectedDynamicTools {
+			break
 		}
 		if _, ok := available[name]; !ok {
 			return fmt.Errorf("tool search selected unavailable capability %q", name)
 		}
+		pendingSelection = append(pendingSelection, name)
+		pendingSelectionSet[name] = struct{}{}
+		selectedCount++
+	}
+	if s.selectedDynamicToolModelCallOrdinals == nil {
+		s.selectedDynamicToolModelCallOrdinals = make(map[string]int, len(pendingSelection))
+	}
+	for _, name := range pendingSelection {
 		s.selectedDynamicToolNames[name] = struct{}{}
+		s.selectedDynamicToolModelCallOrdinals[name] = s.modelCallOrdinal
 	}
 	return nil
 }
@@ -1198,6 +1268,11 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.agentOptimizationMode = projectEinoAssistantNormalizeOptimizationMode(state.AgentOptimizationMode)
 	s.dynamicToolCatalogDigest = strings.TrimSpace(state.DynamicToolCatalogDigest)
 	s.selectedDynamicToolNames = projectEinoAssistantDynamicToolNameSet(state.SelectedDynamicToolNames)
+	s.selectedDynamicToolModelCallOrdinals = projectEinoAssistantDynamicToolSelectionOrdinals(
+		s.selectedDynamicToolNames,
+		state.SelectedDynamicToolModelCallOrdinals,
+		max(state.ModelCallOrdinal, 0),
+	)
 	s.approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	s.executionPlan = cloneProjectAssistantApprovedPlan(state.ExecutionPlan)
 	s.planProgress = cloneProjectAssistantPlanSnapshot(state.PlanProgress)
@@ -1265,6 +1340,11 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.readFileCoverage = projectEinoAssistantRestoreReadCoverage(state.ReadFileCoverage)
 	s.observedReadFilePaths = projectEinoAssistantReadPathSet(state.ObservedReadFilePaths)
 	s.readFileVersions = projectEinoAssistantReadVersionMap(state.ReadFileVersions)
+	s.modelVisibleReadFileVersions = projectEinoAssistantModelVisibleReadFileVersions(
+		state.ModelVisibleReadFileVersions,
+		s.readFileVersions,
+		max(state.ModelCallOrdinal, 0),
+	)
 	s.successfulMutationPaths = projectEinoAssistantReadPathSet(state.SuccessfulMutationPaths)
 	s.mutationRecoveryAttempts = projectEinoAssistantRestoreMutationRecoveryAttempts(state.MutationRecoveryAttempts)
 	s.mutationRecoveryRefs = projectEinoAssistantRecoveryReferenceSet(state.MutationRecoveryRefs)
@@ -1329,6 +1409,7 @@ func (s *projectEinoAssistantRunState) ApprovePlan(plan projectAssistantApproved
 	s.completedReadCalls = map[string]uint64{}
 	s.readFileCoverage = map[string][]projectEinoAssistantLineRange{}
 	s.readFileVersions = map[string]string{}
+	s.modelVisibleReadFileVersions = map[string]projectAssistantModelVisibleReadFileVersion{}
 	s.successfulMutationPaths = map[string]struct{}{}
 	s.runtimeWarmupAttempts = 0
 }
@@ -1968,6 +2049,7 @@ func (s *projectEinoAssistantRunState) invalidateObservedReadFileLocked(path str
 	delete(s.readFileCoverage, path)
 	delete(s.observedReadFilePaths, path)
 	delete(s.readFileVersions, path)
+	delete(s.modelVisibleReadFileVersions, path)
 }
 
 func (s *projectEinoAssistantRunState) RecordObservedReadFile(path string) {
@@ -2007,18 +2089,210 @@ func (s *projectEinoAssistantRunState) RecordObservedReadFileVersion(path, versi
 			return
 		}
 	}
-	s.readFileVersions[path] = strings.TrimSpace(version)
-	if attempt, ok := s.mutationRecoveryAttempts[path]; ok &&
-		attempt.SourceRevision == s.sourceMutationRevision && attempt.Failures > 0 && !attempt.Blocked {
-		// A complete read is the only evidence that authorizes a retry after a
-		// mutation failure. Partial reads never record a version here.
-		attempt.Reread = true
-		s.mutationRecoveryAttempts[path] = attempt
+	version = strings.TrimSpace(version)
+	if previous := s.readFileVersions[path]; previous != "" && previous != version {
+		delete(s.modelVisibleReadFileVersions, path)
+		if attempt, ok := s.mutationRecoveryAttempts[path]; ok && attempt.SourceRevision == s.sourceMutationRevision {
+			attempt.Reread = false
+			s.mutationRecoveryAttempts[path] = attempt
+		}
 	}
+	s.readFileVersions[path] = version
 	if s.observedReadFilePaths == nil {
 		s.observedReadFilePaths = map[string]struct{}{}
 	}
 	s.observedReadFilePaths[path] = struct{}{}
+}
+
+// RecordModelVisibleReadFileVersion records a complete read receipt only after
+// the final model-facing projection still contains its version and completeness
+// fields. The ordinal binds the receipt to the model response that requested
+// it; mutations in that same response cannot use it before the model has seen
+// the result.
+func (s *projectEinoAssistantRunState) RecordModelVisibleReadFileVersion(path, version string, binary bool, modelCallOrdinal int) {
+	if s == nil || strings.TrimSpace(version) == "" || modelCallOrdinal <= 0 {
+		return
+	}
+	path, err := workspace.CleanProjectPath(path)
+	if err != nil {
+		return
+	}
+	version = strings.TrimSpace(version)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readFileVersions[path] != version {
+		return
+	}
+	if s.modelVisibleReadFileVersions == nil {
+		s.modelVisibleReadFileVersions = map[string]projectAssistantModelVisibleReadFileVersion{}
+	}
+	if len(s.modelVisibleReadFileVersions) >= projectEinoAssistantMaxTrackedReads {
+		if _, exists := s.modelVisibleReadFileVersions[path]; !exists {
+			return
+		}
+	}
+	s.modelVisibleReadFileVersions[path] = projectAssistantModelVisibleReadFileVersion{
+		Version:          version,
+		ModelCallOrdinal: modelCallOrdinal,
+		Binary:           binary,
+	}
+	if attempt, ok := s.mutationRecoveryAttempts[path]; ok && !binary &&
+		attempt.SourceRevision == s.sourceMutationRevision && attempt.Failures > 0 && !attempt.Blocked {
+		attempt.Reread = true
+		s.mutationRecoveryAttempts[path] = attempt
+	}
+}
+
+func (s *projectEinoAssistantRunState) ModelVisibleReadFileVersion(path string) (projectAssistantModelVisibleReadFileVersion, bool) {
+	if s == nil {
+		return projectAssistantModelVisibleReadFileVersion{}, false
+	}
+	path, err := workspace.CleanProjectPath(path)
+	if err != nil {
+		return projectAssistantModelVisibleReadFileVersion{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	proof, ok := s.modelVisibleReadFileVersions[path]
+	if !ok || strings.TrimSpace(proof.Version) == "" || proof.ModelCallOrdinal <= 0 ||
+		proof.Version != s.readFileVersions[path] {
+		return projectAssistantModelVisibleReadFileVersion{}, false
+	}
+	return proof, true
+}
+
+// ReconcileModelVisibleReadFileProofs keeps existing proofs only when the
+// next model input still contains the complete matching read_file receipt.
+// History compaction can replace an earlier tool result with a summary, so a
+// checkpointed proof alone is not evidence that the current model can see the
+// source. This method only removes proofs; it never derives them from history.
+func (s *projectEinoAssistantRunState) ReconcileModelVisibleReadFileProofs(messages []*schema.Message) {
+	if s == nil {
+		return
+	}
+
+	chatMessages := projectEinoMessagesToChat(messages)
+	toolCalls := make(map[string]string)
+	ambiguousToolCalls := make(map[string]struct{})
+	for _, message := range chatMessages {
+		if message.Role != "assistant" {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			callID := strings.TrimSpace(call.ID)
+			if callID == "" {
+				continue
+			}
+			name := call.Function.Name
+			if previous, exists := toolCalls[callID]; exists && previous != name {
+				ambiguousToolCalls[callID] = struct{}{}
+				continue
+			}
+			toolCalls[callID] = name
+		}
+	}
+
+	type receiptKey struct {
+		path    string
+		version string
+		binary  bool
+	}
+	visibleReceipts := make(map[receiptKey]struct{})
+	for _, message := range chatMessages {
+		if message.Role != "tool" || !projectEinoAssistantTrustedReadFileResult(message, toolCalls, ambiguousToolCalls) {
+			continue
+		}
+		if !utf8.ValidString(message.Content) {
+			continue
+		}
+		key, ok := projectEinoAssistantCompleteReadFileReceiptKey(message.Content)
+		if !ok {
+			key, ok = projectEinoAssistantCompleteBinaryReadFileReceiptKey(message.Content)
+		}
+		if !ok || key.version != strings.TrimSpace(key.version) {
+			continue
+		}
+		cleanPath, err := workspace.CleanProjectPath(key.path)
+		if err != nil || cleanPath != key.path {
+			continue
+		}
+		if key.binary {
+			visibleReceipts[receiptKey{path: key.path, version: key.version, binary: true}] = struct{}{}
+			continue
+		}
+		// `complete` describes the server's requested range. Also check the
+		// model-visible content byte count and line bound so malformed or partial
+		// envelopes cannot preserve a previously issued proof.
+		if int64(len([]byte(key.content))) != key.size || strings.Count(key.content, "\n")+1 > key.limit {
+			continue
+		}
+		visibleReceipts[receiptKey{path: key.path, version: key.version}] = struct{}{}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for path, proof := range s.modelVisibleReadFileVersions {
+		if proof.ModelCallOrdinal <= 0 || strings.TrimSpace(proof.Version) == "" || proof.Version != s.readFileVersions[path] {
+			delete(s.modelVisibleReadFileVersions, path)
+			continue
+		}
+		if _, ok := visibleReceipts[receiptKey{path: path, version: proof.Version, binary: proof.Binary}]; !ok {
+			delete(s.modelVisibleReadFileVersions, path)
+		}
+	}
+}
+
+// projectEinoAssistantCompleteBinaryReadFileReceiptKey validates the narrow
+// model-visible binary read envelope. Binary reads carry no source content;
+// they can preserve only the existing version proof used by move/delete.
+// The text receipt parser remains deliberately text-only.
+func projectEinoAssistantCompleteBinaryReadFileReceiptKey(value string) (projectEinoAssistantCompleteReadFileKey, bool) {
+	if literal, ok := projectEinoAssistantParseLiteralReadFileOutput(value); ok {
+		if !literal.binary || !literal.complete || literal.truncated || strings.TrimSpace(literal.version) == "" {
+			return projectEinoAssistantCompleteReadFileKey{}, false
+		}
+		return projectEinoAssistantCompleteReadFileKey{
+			path: literal.path, version: literal.version, size: literal.size,
+			offset: literal.offset, limit: literal.limit, binary: true,
+		}, true
+	}
+	fields, ok := projectEinoAssistantDecodeUniqueReadFileReceiptFields(value)
+	if !ok {
+		return projectEinoAssistantCompleteReadFileKey{}, false
+	}
+	allowed := map[string]struct{}{
+		"path": {}, "content": {}, "size": {}, "version": {}, "complete": {},
+		"truncated": {}, "binary": {}, "offset": {}, "limit": {},
+	}
+	for name := range fields {
+		if _, ok := allowed[name]; !ok {
+			return projectEinoAssistantCompleteReadFileKey{}, false
+		}
+	}
+	var pathValue, content, version string
+	var size int64
+	var complete, binary bool
+	var offset, limit int
+	if !projectEinoAssistantDecodeReadFileField(fields, "path", &pathValue) || pathValue == "" ||
+		!projectEinoAssistantDecodeReadFileField(fields, "content", &content) || content != "" ||
+		!projectEinoAssistantDecodeReadFileField(fields, "size", &size) || size < 0 ||
+		!projectEinoAssistantDecodeReadFileField(fields, "version", &version) || version == "" ||
+		!projectEinoAssistantDecodeReadFileField(fields, "complete", &complete) || !complete ||
+		!projectEinoAssistantDecodeReadFileField(fields, "binary", &binary) || !binary ||
+		!projectEinoAssistantDecodeReadFileField(fields, "offset", &offset) || offset != 1 ||
+		!projectEinoAssistantDecodeReadFileField(fields, "limit", &limit) || limit <= 0 {
+		return projectEinoAssistantCompleteReadFileKey{}, false
+	}
+	var truncated bool
+	if raw, exists := fields["truncated"]; exists {
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &truncated) != nil || truncated {
+			return projectEinoAssistantCompleteReadFileKey{}, false
+		}
+	}
+	return projectEinoAssistantCompleteReadFileKey{
+		path: pathValue, content: content, version: version, size: size,
+		offset: offset, limit: limit, truncated: truncated, binary: true,
+	}, true
 }
 
 func (s *projectEinoAssistantRunState) ReadFileVersion(path string) string {
@@ -2581,7 +2855,7 @@ func (s *projectEinoAssistantRunState) recordNativeBrowserEvidenceLocked(toolNam
 	failed := receipt.IsError || rawError != "" && rawError != "null"
 	if !failed {
 		switch status {
-		case "failed", "error", "canceled", "cancelled", "timed_out", "partial_failure":
+		case "failed", "error", "canceled", "cancelled", "timed_out", "partial_failure", "not_executed":
 			failed = true
 		}
 	}
@@ -2734,20 +3008,25 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		loadedSkillReceipts = append(loadedSkillReceipts, receipt)
 	}
 	return projectAssistantCheckpointState{
-		Messages:                         projectAssistantBoundCheckpointMessages(s.messages),
-		LastToolMessages:                 projectAssistantBoundCheckpointMessages(s.lastToolMessages),
-		CatalogDigest:                    s.catalogDigest,
-		SelectedSkillReceipts:            cloneProjectAssistantSkillReceipts(selectedSkillReceipts),
-		LoadedSkillReceipts:              cloneProjectAssistantSkillReceipts(loadedSkillReceipts),
-		SelectedContextResourceReceipts:  cloneProjectAssistantContextResourceReceipts(s.selectedContextResourceReceipts),
-		ContentParts:                     cloneProjectAssistantContentParts(s.contentParts),
-		ToolCalls:                        cloneProjectAssistantToolCalls(s.toolCalls),
-		SeenToolCalls:                    projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
-		Turn:                             s.turn,
-		ProjectRepositoryRef:             strings.TrimSpace(s.projectRepositoryRef),
-		AgentOptimizationMode:            s.agentOptimizationMode,
-		DynamicToolCatalogDigest:         s.dynamicToolCatalogDigest,
-		SelectedDynamicToolNames:         projectEinoAssistantSortedDynamicToolNames(s.selectedDynamicToolNames),
+		Messages:                        projectAssistantBoundCheckpointMessages(s.messages),
+		LastToolMessages:                projectAssistantBoundCheckpointMessages(s.lastToolMessages),
+		CatalogDigest:                   s.catalogDigest,
+		SelectedSkillReceipts:           cloneProjectAssistantSkillReceipts(selectedSkillReceipts),
+		LoadedSkillReceipts:             cloneProjectAssistantSkillReceipts(loadedSkillReceipts),
+		SelectedContextResourceReceipts: cloneProjectAssistantContextResourceReceipts(s.selectedContextResourceReceipts),
+		ContentParts:                    cloneProjectAssistantContentParts(s.contentParts),
+		ToolCalls:                       cloneProjectAssistantToolCalls(s.toolCalls),
+		SeenToolCalls:                   projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
+		Turn:                            s.turn,
+		ProjectRepositoryRef:            strings.TrimSpace(s.projectRepositoryRef),
+		AgentOptimizationMode:           s.agentOptimizationMode,
+		DynamicToolCatalogDigest:        s.dynamicToolCatalogDigest,
+		SelectedDynamicToolNames:        projectEinoAssistantSortedDynamicToolNames(s.selectedDynamicToolNames),
+		SelectedDynamicToolModelCallOrdinals: projectEinoAssistantDynamicToolSelectionOrdinals(
+			s.selectedDynamicToolNames,
+			s.selectedDynamicToolModelCallOrdinals,
+			s.modelCallOrdinal,
+		),
 		TurnPolicy:                       projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
 		ApprovedPlan:                     cloneProjectAssistantApprovedPlan(s.approvedPlan),
 		ExecutionPlan:                    cloneProjectAssistantApprovedPlan(s.executionPlan),
@@ -2786,6 +3065,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		ReadFileCoverage:                 projectEinoAssistantCheckpointReadCoverage(s.readFileCoverage),
 		ObservedReadFilePaths:            projectEinoAssistantObservedReadPaths(s.observedReadFilePaths),
 		ReadFileVersions:                 projectEinoAssistantCloneReadVersions(s.readFileVersions),
+		ModelVisibleReadFileVersions:     projectEinoAssistantCloneModelVisibleReadFileVersions(s.modelVisibleReadFileVersions),
 		SuccessfulMutationPaths:          projectEinoAssistantObservedReadPaths(s.successfulMutationPaths),
 		MutationRecoveryAttempts:         projectEinoAssistantMutationRecoveryAttemptsSnapshot(s.mutationRecoveryAttempts),
 		MutationRecoveryRefs:             projectEinoAssistantRecoveryReferences(s.mutationRecoveryRefs),
@@ -2878,6 +3158,52 @@ func projectEinoAssistantCloneReadVersions(versions map[string]string) map[strin
 	out := make(map[string]string, len(versions))
 	for path, version := range versions {
 		out[path] = version
+	}
+	return out
+}
+
+func projectEinoAssistantModelVisibleReadFileVersions(
+	proofs map[string]projectAssistantModelVisibleReadFileVersion,
+	serverVersions map[string]string,
+	modelCallOrdinal int,
+) map[string]projectAssistantModelVisibleReadFileVersion {
+	if len(proofs) == 0 || modelCallOrdinal <= 0 {
+		return map[string]projectAssistantModelVisibleReadFileVersion{}
+	}
+	keys := make([]string, 0, len(proofs))
+	for key := range proofs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make(map[string]projectAssistantModelVisibleReadFileVersion, min(len(keys), projectEinoAssistantMaxTrackedReads))
+	for _, rawPath := range keys {
+		if len(out) >= projectEinoAssistantMaxTrackedReads {
+			break
+		}
+		path, err := workspace.CleanProjectPath(rawPath)
+		if err != nil {
+			continue
+		}
+		proof := proofs[rawPath]
+		proof.Version = strings.TrimSpace(proof.Version)
+		if proof.Version == "" || len([]byte(proof.Version)) > workspace.MaxFileVersionBytes ||
+			proof.Version != serverVersions[path] || proof.ModelCallOrdinal <= 0 || proof.ModelCallOrdinal > modelCallOrdinal {
+			continue
+		}
+		out[path] = proof
+	}
+	return out
+}
+
+func projectEinoAssistantCloneModelVisibleReadFileVersions(
+	proofs map[string]projectAssistantModelVisibleReadFileVersion,
+) map[string]projectAssistantModelVisibleReadFileVersion {
+	if len(proofs) == 0 {
+		return nil
+	}
+	out := make(map[string]projectAssistantModelVisibleReadFileVersion, len(proofs))
+	for path, proof := range proofs {
+		out[path] = proof
 	}
 	return out
 }

@@ -25,6 +25,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -90,6 +91,30 @@ func projectEinoAssistantSortedDynamicToolNames(names map[string]struct{}) []str
 	return out
 }
 
+func projectEinoAssistantDynamicToolSelectionOrdinals(
+	selected map[string]struct{},
+	ordinals map[string]int,
+	fallback int,
+) map[string]int {
+	fallback = max(fallback, 0)
+	out := make(map[string]int, min(len(selected), projectEinoAssistantMaxSelectedDynamicTools))
+	for name := range selected {
+		name = projectAssistantToolKey(name)
+		if name == "" || len(out) >= projectEinoAssistantMaxSelectedDynamicTools {
+			continue
+		}
+		ordinal, ok := ordinals[name]
+		if !ok || ordinal < 0 {
+			// Older checkpoints persist selection names but not their sample
+			// boundary. Treat those selections as made at the checkpoint's latest
+			// model call so they cannot authorize an in-flight same-batch call.
+			ordinal = fallback
+		}
+		out[name] = ordinal
+	}
+	return out
+}
+
 func projectEinoAssistantDynamicToolCatalogDigest(discovery projectEinoAssistantToolDiscovery) string {
 	type contract struct {
 		Name        string `json:"name"`
@@ -97,7 +122,26 @@ func projectEinoAssistantDynamicToolCatalogDigest(discovery projectEinoAssistant
 		Parameters  string `json:"parameters,omitempty"`
 		Risk        string `json:"risk,omitempty"`
 	}
-	items := make([]contract, 0, len(discovery.MCPTools)+len(discovery.BrowserTools)+1)
+	items := make([]contract, 0, len(discovery.MCPTools)+len(discovery.BrowserTools)+len(discovery.DeferredWorkflowTools)+1)
+	for _, spec := range discovery.DeferredWorkflowTools {
+		if strings.TrimSpace(spec.Name) == "" {
+			continue
+		}
+		items = append(items, contract{
+			Name: projectAssistantToolKey(spec.Name), Description: strings.TrimSpace(spec.Description),
+			Parameters: string(spec.Parameters), Risk: string(spec.Risk),
+		})
+	}
+	for _, tool := range discovery.DeferredLocalTools {
+		if tool == nil {
+			continue
+		}
+		spec := tool.Spec()
+		items = append(items, contract{
+			Name: projectAssistantToolKey(spec.Name), Description: strings.TrimSpace(spec.Description),
+			Parameters: string(spec.Parameters), Risk: string(spec.Risk),
+		})
+	}
 	if discovery.IncludeCommitBridge {
 		commitSpec := projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit}
 		for _, tool := range projectAssistantLocalToolRegistry(nil).Tools(true) {
@@ -161,6 +205,7 @@ func projectEinoAssistantDynamicTools(
 ) []projectAssistantTool {
 	policy := projectAssistantToolCatalogPolicy(req)
 	out := make([]projectAssistantTool, 0, len(discovery.MCPTools)+len(discovery.BrowserTools)+1)
+	out = append(out, projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.DeferredLocalTools, policy), req.CollaborationMode)...)
 	if server != nil && discovery.IncludeCommitBridge {
 		for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(server.projectAssistantToolRegistry().Tools(true), policy), req.CollaborationMode) {
 			if tool != nil && tool.Spec().Risk == projectAssistantToolRiskCommit {
@@ -173,11 +218,35 @@ func projectEinoAssistantDynamicTools(
 	return out
 }
 
+// projectEinoAssistantDynamicToolSpecs combines deferred registry tools with
+// workflow metadata without constructing local stand-ins for graph tools.
+// Graph tools remain in the graph factory and retain their permission and
+// durable execution wrappers; this list is used only for search and selection.
+func projectEinoAssistantDynamicToolSpecs(
+	server *Server,
+	req projectAssistantRunRequest,
+	discovery projectEinoAssistantToolDiscovery,
+) []projectAssistantToolSpec {
+	policy := projectAssistantToolCatalogPolicy(req)
+	out := make([]projectAssistantToolSpec, 0, len(discovery.DeferredWorkflowTools)+len(discovery.DeferredLocalTools)+len(discovery.MCPTools)+len(discovery.BrowserTools)+1)
+	for _, spec := range projectAssistantToolSpecsForTurnPolicy(discovery.DeferredWorkflowTools, policy) {
+		if projectEinoAssistantLocalToolDeferred(spec.Name) && projectEinoAssistantToolSpecAllowedForCollaborationMode(spec, req.CollaborationMode) {
+			out = append(out, spec)
+		}
+	}
+	for _, tool := range projectEinoAssistantDynamicTools(server, req, discovery) {
+		if tool != nil {
+			out = append(out, tool.Spec())
+		}
+	}
+	return out
+}
+
 func projectEinoAssistantToolSearchBackend(server *Server, runReq projectAssistantRunRequest) projectAssistantTool {
 	return projectAssistantToolFunc{
 		spec: projectAssistantToolSpec{
 			Name:        projectEinoAssistantToolSearchTool,
-			Description: "Search less-common provider and repository tools by capability or exact name. Matching tools become available on the next model sample.",
+			Description: "Search less-common workspace, runtime, build, web, provider, and repository tools by capability or exact name. Matching tools become available on the next model sample.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":160},"maxResults":{"type":"integer","minimum":1,"maximum":5}},"required":["query"],"additionalProperties":false}`),
 			Risk:        projectAssistantToolRiskRead, ParallelSafe: true,
 		},
@@ -200,8 +269,8 @@ func projectEinoAssistantToolSearchBackend(server *Server, runReq projectAssista
 			searchReq.Project = req.Project
 			searchReq.TurnPolicy = req.RunState.TurnPolicy()
 			searchReq.TurnProfile = searchReq.TurnPolicy.profile
-			matches := projectEinoAssistantSearchDynamicTools(
-				projectEinoAssistantDynamicTools(server, searchReq, discovery), query, limit,
+			matches := projectEinoAssistantSearchDynamicToolSpecs(
+				projectEinoAssistantDynamicToolSpecs(server, searchReq, discovery), query, limit,
 			)
 			result := projectEinoAssistantToolSearchResult{CatalogDigest: projectEinoAssistantDynamicToolCatalogDigest(discovery), Matches: matches}
 			raw, err := json.Marshal(result)
@@ -210,19 +279,45 @@ func projectEinoAssistantToolSearchBackend(server *Server, runReq projectAssista
 	}
 }
 
+// Keep the frequent source-editing loop immediately callable. Uncommon local
+// helpers use the same validated, digest-bound selection as provider tools,
+// avoiding their full schemas on every model call without removing capability.
+func projectEinoAssistantLocalToolDeferred(name string) bool {
+	switch projectToolBaseName(name) {
+	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
+		projectToolGetRuntimeStatus, projectToolGetRuntimeLogs, projectToolRestartRuntime,
+		projectToolSetRuntimeEnv, projectToolDownloadFile, projectToolSelectTemplate,
+		projectToolHydrateWorkspace, projectToolWebSearch, projectToolWebFetch,
+		"check_project_build", "get_build_logs", "get_project_checkpoints",
+		"inspect_development_templates", "rebuild_project", "promote_project":
+		return true
+	default:
+		return false
+	}
+}
+
 func projectEinoAssistantSearchDynamicTools(tools []projectAssistantTool, query string, limit int) []projectEinoAssistantToolSearchMatch {
+	specs := make([]projectAssistantToolSpec, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil {
+			specs = append(specs, tool.Spec())
+		}
+	}
+	return projectEinoAssistantSearchDynamicToolSpecs(specs, query, limit)
+}
+
+func projectEinoAssistantSearchDynamicToolSpecs(specs []projectAssistantToolSpec, query string, limit int) []projectEinoAssistantToolSearchMatch {
 	type ranked struct {
 		match projectEinoAssistantToolSearchMatch
 		score int
 	}
-	query = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(query), "select:"))
+	query = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.ToLower(query)), "select:"))
+	if query == "" {
+		return nil
+	}
 	rankedMatches := make([]ranked, 0)
 	seen := map[string]struct{}{}
-	for _, tool := range tools {
-		if tool == nil {
-			continue
-		}
-		spec := tool.Spec()
+	for _, spec := range specs {
 		name := projectAssistantToolKey(spec.Name)
 		if name == "" {
 			continue
@@ -237,13 +332,15 @@ func projectEinoAssistantSearchDynamicTools(tools []projectAssistantTool, query 
 		score := 0
 		switch {
 		case name == query || strings.Contains(query, name):
-			score = 3
+			score = 1000
 		case strings.Contains(name, query):
-			score = 2
+			score = 500
 		case strings.Contains(strings.ToLower(description), query), strings.Contains(aliases, query):
-			score = 1
+			score = 100
 		case projectEinoAssistantAllSearchTermsMatch(query, haystack):
-			score = 1
+			score = 100
+		default:
+			score = projectEinoAssistantToolSearchTermScore(query, name, description, aliases)
 		}
 		if score == 0 {
 			continue
@@ -271,6 +368,60 @@ func projectEinoAssistantSearchDynamicTools(tools []projectAssistantTool, query 
 	out := make([]projectEinoAssistantToolSearchMatch, len(rankedMatches))
 	for i := range rankedMatches {
 		out[i] = rankedMatches[i].match
+	}
+	return out
+}
+
+// A capability query can request several tools, such as snapshot, console and
+// network observation. Rank those words independently instead of requiring
+// each tool to contain the entire query. The caller has already filtered the
+// catalog by collaboration mode and turn policy; ranking never grants access.
+func projectEinoAssistantToolSearchTermScore(query, name, description, aliases string) int {
+	nameWords := projectEinoAssistantToolSearchWords(name)
+	descriptionWords := projectEinoAssistantToolSearchWords(description)
+	aliasWords := projectEinoAssistantToolSearchWords(aliases)
+	score := 0
+	meaningfulTerms := 0
+	categoryScore := 0
+	for term := range projectEinoAssistantToolSearchWords(query) {
+		_, inName := nameWords[term]
+		_, inDescription := descriptionWords[term]
+		_, inAlias := aliasWords[term]
+		switch term {
+		case "a", "an", "and", "at", "capability", "capabilities", "current", "find", "for", "from", "get", "in", "inspect", "is", "of", "on", "or", "project", "the", "this", "to", "tool", "tools", "use", "with":
+			continue
+		case "browser", "native", "playwright", "preview", "provider", "runtime", "workspace":
+			if inName || inDescription || inAlias {
+				categoryScore++
+			}
+			continue
+		}
+		meaningfulTerms++
+		switch {
+		case inName:
+			score += 4
+		case inAlias:
+			score += 2
+		case inDescription:
+			score++
+		}
+	}
+	if meaningfulTerms == 0 {
+		return categoryScore
+	}
+	// Keep exact names and phrases ahead of individual-word matches even when
+	// the query is unusually long. Generic category words alone cannot turn an
+	// unknown specific capability into a match.
+	return min(score, 99)
+}
+
+func projectEinoAssistantToolSearchWords(value string) map[string]struct{} {
+	words := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	out := make(map[string]struct{}, len(words))
+	for _, word := range words {
+		out[word] = struct{}{}
 	}
 	return out
 }
