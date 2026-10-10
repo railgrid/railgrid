@@ -187,16 +187,24 @@ func projectAssistantPreviewInspectionActionFromToolResult(name, raw string) *pr
 // shared browser (the Studio's Playwright MCP instance); tests inject a
 // previewInspector fake and gate on its Health probe instead.
 func (s *Server) projectAssistantPreviewInspectionAvailable(ctx context.Context, id identity) bool {
+	_, available := s.projectAssistantPreviewInspectionRef(ctx, id)
+	return available
+}
+
+// projectAssistantPreviewInspectionRef returns the freshly resolved Ready
+// browser target alongside the availability decision so catalog discovery can
+// reuse the exact tenant-scoped target without issuing a second Studio GET.
+// previewInspector remains a test seam and therefore has no data-plane ref.
+func (s *Server) projectAssistantPreviewInspectionRef(ctx context.Context, id identity) (dataPlaneRef, bool) {
 	if s == nil {
-		return false
+		return dataPlaneRef{}, false
 	}
 	if s.previewInspector != nil {
 		healthCtx, cancel := context.WithTimeout(ctx, projectAssistantPreviewInspectionHealthTimeout)
 		defer cancel()
-		return s.previewInspector.Health(healthCtx) == nil
+		return dataPlaneRef{}, s.previewInspector.Health(healthCtx) == nil
 	}
-	_, ok := s.resolveBrowserDataPlaneRef(ctx, id)
-	return ok
+	return s.resolveBrowserDataPlaneRef(ctx, id)
 }
 
 func (s *Server) inspectProjectDevelopmentPreview(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {

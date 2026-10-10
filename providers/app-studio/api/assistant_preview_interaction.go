@@ -210,14 +210,36 @@ func projectAssistantPreviewInteractionTextResult(result projectAssistantPreview
 
 // browserInstanceLocks serializes access to each shared browser instance,
 // keyed by cluster + resource + name.
-var browserInstanceLocks sync.Map // string -> *sync.Mutex
+var browserInstanceLocks sync.Map // string -> *projectAssistantBrowserInstanceLock
 
-func lockBrowserInstance(clusterID string, ref dataPlaneRef) func() {
+type projectAssistantBrowserInstanceLock struct {
+	gate chan struct{}
+}
+
+func lockBrowserInstanceContext(ctx context.Context, clusterID string, ref dataPlaneRef) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	key := clusterID + "|" + ref.Resource + "|" + ref.Name
-	actual, _ := browserInstanceLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := actual.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	actual, _ := browserInstanceLocks.LoadOrStore(key, &projectAssistantBrowserInstanceLock{gate: make(chan struct{}, 1)})
+	lock := actual.(*projectAssistantBrowserInstanceLock)
+	if cause := context.Cause(ctx); cause != nil {
+		return nil, cause
+	}
+	select {
+	case lock.gate <- struct{}{}:
+		if cause := context.Cause(ctx); cause != nil {
+			<-lock.gate
+			return nil, cause
+		}
+		var once sync.Once
+		return func() { once.Do(func() { <-lock.gate }) }, nil
+	case <-ctx.Done():
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
+		}
+		return nil, ctx.Err()
+	}
 }
 
 type projectAssistantPreviewInteractionStep struct {
@@ -265,7 +287,10 @@ type projectAssistantPreviewInteractionResult struct {
 // steps in order (stopping at the first that cannot be applied), and observes
 // the resulting page. It holds the per-instance lock for the whole sequence.
 func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, ref dataPlaneRef, req projectAssistantPreviewInteractionRequest) (projectAssistantPreviewInteractionResult, error) {
-	unlock := lockBrowserInstance(id.clusterID, ref)
+	unlock, err := lockBrowserInstanceContext(ctx, id.clusterID, ref)
+	if err != nil {
+		return projectAssistantPreviewInteractionResult{}, err
+	}
 	defer unlock()
 	if err := s.rejectUnmanagedBrowserSession(id, ref); err != nil {
 		return projectAssistantPreviewInteractionResult{}, err

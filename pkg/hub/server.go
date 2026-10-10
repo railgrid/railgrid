@@ -381,9 +381,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// the records go into a shared kcp-backed store. Only a hub with no kcp at
 	// all — which cannot be scaled anyway — falls back to process-local memory.
 	var (
-		browserSessionStore *browsersession.Store
-		appCodeStore        *sharedstore.AppCodeStore
-		sharedStores        []*sharedstore.Store
+		browserSessionStore        *browsersession.Store
+		previewBrowserSessionStore *browsersession.Store
+		appCodeStore               *sharedstore.AppCodeStore
+		previewAppCodeStore        *sharedstore.AppCodeStore
+		sharedStores               []*sharedstore.Store
 	)
 	if kcpConfig != nil {
 		sessionBackend, err := sharedstore.NewSessionBackend(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
@@ -394,8 +396,20 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating shared app-code store: %w", err)
 		}
+		previewSessionBackend, err := sharedstore.NewPreviewSessionBackend(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+		if err != nil {
+			return fmt.Errorf("creating isolated preview-session store: %w", err)
+		}
+		previewAppCodeStore, err = sharedstore.NewPreviewAppCodeStore(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+		if err != nil {
+			return fmt.Errorf("creating isolated preview app-code store: %w", err)
+		}
 		browserSessionStore = browsersession.New(browsersession.Config{Backend: sessionBackend})
-		sharedStores = append(sharedStores, sessionBackend.Store(), appCodeStore.Store())
+		previewBrowserSessionStore = browsersession.New(browsersession.Config{Backend: previewSessionBackend})
+		sharedStores = append(sharedStores,
+			sessionBackend.Store(), appCodeStore.Store(),
+			previewSessionBackend.Store(), previewAppCodeStore.Store(),
+		)
 		logger.Info("Browser sessions and app-access codes are shared across replicas",
 			"workspace", kcppaths.SystemControllers, "namespace", kcp.HubSystemNamespace)
 	} else {
@@ -675,6 +689,8 @@ func (s *Server) Run(ctx context.Context) error {
 			appAuthCfg := appauth.Config{
 				PreviewIdentity: appauth.NewKCPPreviewIdentityResolver(kcpConfig),
 				Sessions:        browserSessionStore,
+				PreviewSessions: previewBrowserSessionStore,
+				PreviewCodes:    previewAppCodeStore,
 				SARClient:       sarFactory,
 				InstanceHost:    instanceHost,
 				// POST /auth/apps/token authenticates hub bearers with the same

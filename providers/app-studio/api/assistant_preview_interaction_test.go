@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -255,6 +256,43 @@ func TestInteractProjectDevelopmentPreviewFailsClosedOnCheckpointConflict(t *tes
 	if browserCalls != 0 || fakeSandbox.workspaceCalls != 0 {
 		t.Fatalf("checkpoint conflict reached browser: browser calls=%d worker calls=%d", browserCalls, fakeSandbox.workspaceCalls)
 	}
+}
+
+func TestBrowserInstanceLockWaitHonorsContextCancellation(t *testing.T) {
+	ref := dataPlaneRef{Resource: "instances", Name: "browser-lock-cancel"}
+	unlock, err := lockBrowserInstanceContext(context.Background(), "cluster-lock-cancel", ref)
+	if err != nil {
+		t.Fatalf("hold browser lock: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		unlockWaiter, waitErr := lockBrowserInstanceContext(ctx, "cluster-lock-cancel", ref)
+		if unlockWaiter != nil {
+			unlockWaiter()
+		}
+		result <- waitErr
+	}()
+	cancel()
+
+	select {
+	case waitErr := <-result:
+		if waitErr == nil || !errors.Is(waitErr, context.Canceled) {
+			t.Fatalf("canceled browser lock wait = %v, want context.Canceled", waitErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("browser lock wait did not return after cancellation")
+	}
+	unlock()
+
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer probeCancel()
+	probeUnlock, err := lockBrowserInstanceContext(probeCtx, "cluster-lock-cancel", ref)
+	if err != nil {
+		t.Fatalf("browser lock remained held after canceled waiter: %v", err)
+	}
+	probeUnlock()
 }
 
 func configurePreviewInteractionBrowserTestServer(t *testing.T, server *Server, observe func(method, tool string)) {

@@ -34,6 +34,12 @@ import (
 // authorization codes.
 const AppCodeKind = "railgrid-appcode"
 
+// PreviewAppCodeKind is a versioned, isolated collection for scoped preview
+// handoff and app-authorization codes. Older replicas must not be able to
+// consume scoped codes as ordinary app codes while ignoring their scope and
+// purpose fields.
+const PreviewAppCodeKind = "railgrid-preview-appcode-v2"
+
 // AppCodeStore adapts Store to appauth.CodeStore, so a code minted on the
 // replica that served the browser's authorize hop can be redeemed on whichever
 // replica the access proxy reaches for the exchange.
@@ -49,6 +55,17 @@ type AppCodeStore struct {
 // target the workspace holding the entries.
 func NewAppCodeStore(config *rest.Config, namespace string) (*AppCodeStore, error) {
 	store, err := New(config, namespace, AppCodeKind)
+	if err != nil {
+		return nil, err
+	}
+	return &AppCodeStore{store: store}, nil
+}
+
+// NewPreviewAppCodeStore builds the isolated shared collection for scoped
+// preview codes. Ordinary app authorization codes remain in AppCodeKind for
+// mixed-version compatibility.
+func NewPreviewAppCodeStore(config *rest.Config, namespace string) (*AppCodeStore, error) {
+	store, err := New(config, namespace, PreviewAppCodeKind)
 	if err != nil {
 		return nil, err
 	}
