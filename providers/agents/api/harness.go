@@ -571,9 +571,15 @@ func (s *Server) harnessEnvironment(ctx context.Context, run taskRun, cfg *agent
 	if conn.Spec.Type != agentsv1alpha1.ConnectionTypeGitHub {
 		return nil, fmt.Errorf("spec.backend.harness.githubConnectionRef names connection %q of type %q; it must be a github connection", connName, conn.Spec.Type)
 	}
-	secretName := strings.TrimSpace(conn.Spec.SecretRef)
-	if secretName == "" {
-		secretName = connsecret.Name(connName)
+	// Only the Secret this provider's own writers create for the connection.
+	// spec.secretRef is free text anyone with Connection write controls, so
+	// honouring it here would let a harness turn export ANY token-bearing
+	// Secret in the namespace — another connection's, a bot's — as GH_TOKEN,
+	// where a prompt can read it back. Connection write must not become
+	// Secret read.
+	secretName := connsecret.Name(connName)
+	if ref := strings.TrimSpace(conn.Spec.SecretRef); ref != "" && ref != secretName {
+		return nil, fmt.Errorf("GitHub connection %q names a custom secretRef %q; the harness reads only the connection's own Secret %s", connName, ref, secretName)
 	}
 	secret, err := run.Creds.GetSecret(ctx, llm.SecretNamespace, secretName)
 	if err != nil {

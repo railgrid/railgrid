@@ -372,8 +372,26 @@ func TestChildEnvExportsTheBroughtEnvironmentAndNothingInherited(t *testing.T) {
 	}
 }
 
-func TestCredentialForRefusesABroughtVariableTheAdapterSets(t *testing.T) {
-	for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"} {
+// With no brought variable at all, the deny list alone must strip what the
+// runner's own environment carries: an inherited GITHUB_TOKEN is the machine
+// owner's and never reaches a tenant's turn.
+func TestChildEnvStripsAnInheritedGitHubTokenWhenNothingIsBrought(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "the-machine-owners")
+	t.Setenv("GH_TOKEN", "also-the-machine-owners")
+	adapter := &Adapter{cfg: Config{Home: t.TempDir()}}
+	cred, err := credentialFor(harness.Launch{Credential: harness.Credential{Kind: harness.CredentialClaudeOAuth, Value: "sk-ant-oat"}})
+	if err != nil {
+		t.Fatalf("credentialFor: %v", err)
+	}
+	for _, item := range adapter.childEnv(cred) {
+		if strings.HasPrefix(item, "GITHUB_TOKEN=") || strings.HasPrefix(item, "GH_TOKEN=") {
+			t.Errorf("inherited %s reached the child", item)
+		}
+	}
+}
+
+func TestCredentialForRefusesABroughtVariableOutsideTheAllowList(t *testing.T) {
+	for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "GH_HOST", "GH_CONFIG_DIR", "NODE_OPTIONS", "HTTPS_PROXY"} {
 		_, err := credentialFor(harness.Launch{Credential: harness.Credential{
 			Kind: harness.CredentialClaudeOAuth, Value: "v",
 			Environment: []harness.EnvironmentVariable{{Name: name, Value: "x"}},

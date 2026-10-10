@@ -297,11 +297,20 @@ connection token as `GH_TOKEN`/`GITHUB_TOKEN` so a reviewer can `gh pr
 review`. They are dispatch data exactly like the model credential: stripped
 before fingerprinting and persisting, held in the runner's memory for the
 attempt, redacted from every event, and sent again on every resume. The runner
-refuses a name it or an adapter sets itself (`HOME`, `PATH`, `CLAUDE_*`,
-`ANTHROPIC_*`, `CODEX_*`, `XDG_*`, `GIT_CONFIG_*`, git's transport variables,
-`LD_*`/`DYLD_*`), so nothing brought can relocate the child or redirect the
-model call. The same `GH_TOKEN` inherited from the agent's own environment is
-still stripped: that one is the machine owner's, not the tenant's.
+accepts only the names on its allow-list — `GH_TOKEN` and `GITHUB_TOKEN` today
+— and the Claude Code adapter checks the same list again, so a caller can
+bring a credential but never configure the child: no `HOME`, no `NODE_OPTIONS`,
+no `HTTPS_PROXY`, no `GH_HOST` to send the token somewhere else. The same
+`GH_TOKEN` inherited from the agent's own environment is still stripped: that
+one is the machine owner's, not the tenant's.
+
+Two limits to design around. Redaction is exact-match on the value, so a token
+the model re-encodes (base64 in an `Authorization` header it prints, say) is
+not caught; and a reviewer reads untrusted pull-request text while holding a
+token that works for everything its scopes allow. Bring the narrowest token
+that does the job: a fine-grained token limited to the repositories to review
+with `pull_requests: write` and `contents: read`, on a bot account that cannot
+approve or merge, and nothing on the tenant's own account.
 
 **The model credential.** It is the caller's, it arrives per attempt, and it
 lives in the caller's workspace rather than on the machine. On the host it

@@ -84,14 +84,23 @@ func credentialFor(launch harness.Launch) (credential, error) {
 	if strings.ContainsAny(value, "\r\n\x00") {
 		return credential{}, errors.New("the Claude Code credential contains invalid whitespace")
 	}
-	// The runner validated the names and bounded the values; the adapter only
-	// refuses what it would itself have to override to isolate the child.
+	// The runner already allow-listed the names; this is the same list again,
+	// so an adapter reached by a runner that forgot still exports nothing but a
+	// credential. Exact names, no prefixes: GH_HOST would send the token to
+	// another host, and it must never pass because it starts with GH_.
 	for _, variable := range cred.Environment {
-		if blockedEnvKey(strings.ToUpper(variable.Name)) && !strings.HasPrefix(variable.Name, "GH_") && !strings.HasPrefix(variable.Name, "GITHUB_") {
-			return credential{}, fmt.Errorf("the identity brings %s, which this adapter sets itself", variable.Name)
+		if _, ok := allowedBroughtEnvironment[variable.Name]; !ok {
+			return credential{}, fmt.Errorf("the identity brings %s, which is not a credential this adapter exports", variable.Name)
 		}
 	}
 	return credential{env: env, value: value, extra: append([]harness.EnvironmentVariable(nil), cred.Environment...)}, nil
+}
+
+// allowedBroughtEnvironment mirrors the runner's allow-list for the variables
+// an identity may bring (see runner.allowedCredentialEnvironment).
+var allowedBroughtEnvironment = map[string]struct{}{
+	"GH_TOKEN":     {},
+	"GITHUB_TOKEN": {},
 }
 
 // redact removes the credential value from any text that is about to leave the
