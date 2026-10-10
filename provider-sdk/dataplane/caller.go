@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
 // CallerFactory builds the per-request client a data-plane handler acts
@@ -83,15 +84,30 @@ type Callers struct {
 	// endpointRefresh how stale it may get. The set is not fixed: kcp publishes
 	// a shard's URL only once the export has a consumer there, so it grows as
 	// workspaces on new shards enable the provider.
-	providerEndpointsRead time.Time
-	endpointRefresh       time.Duration
-	providerMu            sync.Mutex
+	providerEndpointsRead       time.Time
+	endpointRefresh             time.Duration
+	providerMu                  sync.Mutex
+	providerEndpointsGeneration uint64
+	providerEndpointRefresh     *providerEndpointRefresh
 
 	maxEntries int
 	ttl        time.Duration
 
 	mu    sync.Mutex
 	cache map[string]*callerEntry
+}
+
+type providerEndpointRefresh struct {
+	done       chan struct{}
+	endpoints  []string
+	generation uint64
+	err        error
+	canceled   bool
+}
+
+type providerEndpointSnapshot struct {
+	endpoints  []string
+	generation uint64
 }
 
 type callerEntry struct {
@@ -342,19 +358,46 @@ func stripClusterSuffix(host string) (string, error) {
 // provider that never opted into the subresource path cannot reach it by
 // accident.
 func (c *Callers) AsProvider(clusterID string) (dynamic.Interface, error) {
+	return c.AsProviderWithRateLimiter(clusterID, nil)
+}
+
+// AsProviderContext is AsProvider with request cancellation propagated through
+// export endpoint discovery and shard probes. It is an optional extension to
+// ProviderCallerFactory so existing implementations remain source-compatible.
+func (c *Callers) AsProviderContext(ctx context.Context, clusterID string) (dynamic.Interface, error) {
+	return c.AsProviderWithRateLimiterContext(ctx, clusterID, nil)
+}
+
+// AsProviderWithRateLimiter preserves the provider's export and tenant scope
+// while allowing a caller to share an explicit request budget across clients.
+// Nil retains the configured/default limiter. This does not cache authorization.
+func (c *Callers) AsProviderWithRateLimiter(clusterID string, limiter flowcontrol.RateLimiter) (dynamic.Interface, error) {
+	return c.AsProviderWithRateLimiterContext(context.Background(), clusterID, limiter)
+}
+
+// AsProviderWithRateLimiterContext is AsProviderWithRateLimiter with request
+// cancellation propagated through export endpoint discovery and shard probes.
+// The older method remains available for callers without a request context.
+func (c *Callers) AsProviderWithRateLimiterContext(ctx context.Context, clusterID string, limiter flowcontrol.RateLimiter) (dynamic.Interface, error) {
 	if c == nil || c.provider == nil {
 		return nil, fmt.Errorf("dataplane: this provider has no provider-scoped config; the subresource path needs WithProviderConfig")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	clusterID = strings.TrimSpace(clusterID)
 	if !IsClusterID(clusterID) {
 		return nil, fmt.Errorf("dataplane: %q is not a kcp logical-cluster ID", clusterID)
 	}
-	endpoint, err := c.endpointForCluster(context.Background(), clusterID)
+	endpoint, err := c.endpointForCluster(ctx, clusterID)
 	if err != nil {
 		return nil, err
 	}
 	cfg := rest.CopyConfig(c.provider)
 	cfg.Host = endpoint + "/clusters/" + clusterID
+	if limiter != nil {
+		cfg.RateLimiter = limiter
+	}
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("dataplane: provider client for cluster %q: %w", clusterID, err)
@@ -442,41 +485,129 @@ func (c *Callers) ProviderHTTPClient() (*http.Client, error) {
 	return client, nil
 }
 
-// exportEndpoints returns every export virtual-workspace base URL, read once
-// from the APIExportEndpointSlice named after the export in the provider
-// workspace (which is what c.provider addresses). That slice is what the
-// provider's controllers watch tenant workspaces through already, so the
-// subresource path acts through exactly the same door. A sharded kcp publishes
-// one URL per shard; endpointForCluster decides between them.
-func (c *Callers) exportEndpoints(ctx context.Context, force bool) ([]string, error) {
-	c.providerMu.Lock()
-	defer c.providerMu.Unlock()
-	if c.providerEndpoint != "" {
-		return []string{c.providerEndpoint}, nil
+// providerEndpointSnapshotForContext reads the export's published endpoint set
+// once and shares an in-flight read with concurrent callers. The state mutex
+// protects only the cache and flight pointer; endpoint HTTP requests happen
+// after releasing it so each waiter can honor its own context cancellation.
+// A forced caller joins any active read; if that read uses the stale fallback,
+// the unchanged refresh timestamp makes the next caller retry the read.
+func (c *Callers) providerEndpointSnapshotForContext(ctx context.Context, force bool) (providerEndpointSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	fresh := time.Since(c.providerEndpointsRead) < c.endpointRefresh
-	if !force && fresh && len(c.providerEndpoints) > 0 {
-		return c.providerEndpoints, nil
-	}
-	if c.providerExport == "" {
-		return nil, fmt.Errorf("dataplane: the subresource path needs the provider's export name (WithProviderConfig) or its virtual-workspace URL (WithProviderEndpoint)")
-	}
-	client, err := dynamic.NewForConfig(c.provider)
-	if err != nil {
-		return nil, fmt.Errorf("dataplane: provider client: %w", err)
-	}
-	slice, err := client.Resource(APIExportEndpointSlices()).Get(ctx, c.providerExport, metav1.GetOptions{})
-	if err != nil {
-		// A refresh that fails leaves the previous set in place: it is the best
-		// thing known, and a transient read must not take the data plane down.
-		if len(c.providerEndpoints) > 0 {
-			return c.providerEndpoints, nil
+	for {
+		if err := ctx.Err(); err != nil {
+			return providerEndpointSnapshot{}, err
 		}
-		return nil, fmt.Errorf("dataplane: reading APIExportEndpointSlice %s: %w", c.providerExport, err)
+		c.providerMu.Lock()
+		if err := ctx.Err(); err != nil {
+			c.providerMu.Unlock()
+			return providerEndpointSnapshot{}, err
+		}
+		if c.providerEndpoint != "" {
+			snapshot := providerEndpointSnapshot{endpoints: []string{c.providerEndpoint}, generation: c.providerEndpointsGeneration}
+			c.providerMu.Unlock()
+			return snapshot, nil
+		}
+		if c.providerExport == "" {
+			c.providerMu.Unlock()
+			return providerEndpointSnapshot{}, fmt.Errorf("dataplane: the subresource path needs the provider's export name (WithProviderConfig) or its virtual-workspace URL (WithProviderEndpoint)")
+		}
+		if refresh := c.providerEndpointRefresh; refresh != nil {
+			c.providerMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return providerEndpointSnapshot{}, ctx.Err()
+			case <-refresh.done:
+			}
+			if err := ctx.Err(); err != nil {
+				return providerEndpointSnapshot{}, err
+			}
+			if refresh.canceled {
+				// The refresh owner's context is not the waiter's context. Let an
+				// active waiter take over instead of inheriting that cancellation.
+				continue
+			}
+			if refresh.err != nil {
+				return providerEndpointSnapshot{}, refresh.err
+			}
+			return providerEndpointSnapshot{
+				endpoints:  append([]string(nil), refresh.endpoints...),
+				generation: refresh.generation,
+			}, nil
+		}
+		fresh := time.Since(c.providerEndpointsRead) < c.endpointRefresh
+		if !force && fresh && len(c.providerEndpoints) > 0 {
+			snapshot := providerEndpointSnapshot{endpoints: append([]string(nil), c.providerEndpoints...), generation: c.providerEndpointsGeneration}
+			c.providerMu.Unlock()
+			return snapshot, nil
+		}
+
+		refresh := &providerEndpointRefresh{done: make(chan struct{})}
+		c.providerEndpointRefresh = refresh
+		staleEndpoints := append([]string(nil), c.providerEndpoints...)
+		providerConfig := rest.CopyConfig(c.provider)
+		providerExport := c.providerExport
+		c.providerMu.Unlock()
+
+		endpoints, getFailed, err := readProviderExportEndpoints(ctx, providerConfig, providerExport)
+		refreshCanceled := ctx.Err() != nil
+		staleFallback := false
+		if refreshCanceled {
+			err = ctx.Err()
+		} else if err != nil && getFailed && len(staleEndpoints) > 0 {
+			// Preserve the old endpoint set after a genuine dependency GET error.
+			// Cancellation is handled above and must never return stale data.
+			endpoints = staleEndpoints
+			err = nil
+			staleFallback = true
+		}
+
+		c.providerMu.Lock()
+		if err == nil {
+			if !staleFallback {
+				if !sameEndpoints(endpoints, c.providerEndpoints) {
+					// A choice made against the old set may name an endpoint that is
+					// gone, or miss one that now serves a consumer better.
+					c.clusterEndpoint = nil
+					c.providerEndpointsGeneration++
+				}
+				c.providerEndpoints = append([]string(nil), endpoints...)
+				c.providerEndpointsRead = time.Now()
+			}
+			refresh.endpoints = append([]string(nil), endpoints...)
+			refresh.generation = c.providerEndpointsGeneration
+		}
+		refresh.err = err
+		refresh.canceled = refreshCanceled
+		if c.providerEndpointRefresh == refresh {
+			c.providerEndpointRefresh = nil
+		}
+		close(refresh.done)
+		c.providerMu.Unlock()
+
+		if err != nil {
+			return providerEndpointSnapshot{}, err
+		}
+		return providerEndpointSnapshot{
+			endpoints:  append([]string(nil), refresh.endpoints...),
+			generation: refresh.generation,
+		}, nil
+	}
+}
+
+func readProviderExportEndpoints(ctx context.Context, providerConfig *rest.Config, providerExport string) ([]string, bool, error) {
+	client, err := dynamic.NewForConfig(providerConfig)
+	if err != nil {
+		return nil, false, fmt.Errorf("dataplane: provider client: %w", err)
+	}
+	slice, err := client.Resource(APIExportEndpointSlices()).Get(ctx, providerExport, metav1.GetOptions{})
+	if err != nil {
+		return nil, true, fmt.Errorf("dataplane: reading APIExportEndpointSlice %s: %w", providerExport, err)
 	}
 	endpoints, _, err := unstructured.NestedSlice(slice.Object, "status", "endpoints")
 	if err != nil {
-		return nil, fmt.Errorf("dataplane: APIExportEndpointSlice %s: %w", c.providerExport, err)
+		return nil, false, fmt.Errorf("dataplane: APIExportEndpointSlice %s: %w", providerExport, err)
 	}
 	var urls []string
 	for _, e := range endpoints {
@@ -489,16 +620,9 @@ func (c *Callers) exportEndpoints(ctx context.Context, force bool) ([]string, er
 		}
 	}
 	if len(urls) == 0 {
-		return nil, fmt.Errorf("dataplane: APIExportEndpointSlice %s publishes no endpoint yet", c.providerExport)
+		return nil, false, fmt.Errorf("dataplane: APIExportEndpointSlice %s publishes no endpoint yet", providerExport)
 	}
-	if !sameEndpoints(urls, c.providerEndpoints) {
-		// A choice made against the old set may name an endpoint that is gone,
-		// or miss one that now serves a consumer better: decide again.
-		c.clusterEndpoint = nil
-	}
-	c.providerEndpoints = urls
-	c.providerEndpointsRead = time.Now()
-	return urls, nil
+	return urls, false, nil
 }
 
 // sameEndpoints compares the published set regardless of the order kcp
@@ -530,64 +654,128 @@ func sameEndpoints(a, b []string) bool {
 // endpoint that serves this consumer. The review is not persisted and its
 // answer is irrelevant here -- only whether the request was allowed at all.
 func (c *Callers) endpointForCluster(ctx context.Context, clusterID string) (string, error) {
-	endpoints, err := c.exportEndpoints(ctx, false)
-	if err != nil {
-		return "", err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if endpoint, ok := c.chosenEndpoint(clusterID); ok {
-		return endpoint, nil
-	}
-	if len(endpoints) == 1 {
-		// Nothing to choose between. Probing would only turn a precise error
-		// from the real call ("the claim was not accepted") into a vague one.
-		return endpoints[0], nil
-	}
-
-	endpoint, errs := c.probeAll(ctx, endpoints, clusterID)
-	if endpoint != "" {
-		return endpoint, nil
-	}
-
-	// Nothing served it. The set may simply be out of date -- a shard's URL
-	// appears only once the export has a consumer there -- so look again before
-	// giving up, ignoring the refresh interval.
-	refreshed, rerr := c.exportEndpoints(ctx, true)
-	if rerr == nil && !sameEndpoints(refreshed, endpoints) {
-		if endpoint, moreErrs := c.probeAll(ctx, refreshed, clusterID); endpoint != "" {
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		snapshot, err := c.providerEndpointSnapshotForContext(ctx, false)
+		if err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if endpoint, ok, changed := c.chosenEndpointForGeneration(clusterID, snapshot.generation); changed {
+			continue
+		} else if ok {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			return endpoint, nil
-		} else {
+		}
+		if len(snapshot.endpoints) == 1 {
+			// Nothing to choose between. Probing would only turn a precise error
+			// from the real call ("the claim was not accepted") into a vague one.
+			if !c.endpointGenerationMatches(snapshot.generation) {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return snapshot.endpoints[0], nil
+		}
+
+		endpoint, errs, changed := c.probeAll(ctx, snapshot.endpoints, clusterID, snapshot.generation)
+		if changed {
+			continue
+		}
+		if endpoint != "" {
+			if !c.endpointGenerationMatches(snapshot.generation) {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return endpoint, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
+		// Nothing served it. The set may simply be out of date -- a shard's URL
+		// appears only once the export has a consumer there -- so look again before
+		// giving up, ignoring the refresh interval.
+		refreshed, refreshErr := c.providerEndpointSnapshotForContext(ctx, true)
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if refreshErr == nil && !sameEndpoints(refreshed.endpoints, snapshot.endpoints) {
+			endpoint, moreErrs, changed := c.probeAll(ctx, refreshed.endpoints, clusterID, refreshed.generation)
+			if changed {
+				continue
+			}
+			if endpoint != "" {
+				if err := ctx.Err(); err != nil {
+					return "", err
+				}
+				return endpoint, nil
+			}
 			errs = append(errs, moreErrs...)
 		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("dataplane: no export virtual workspace serves cluster %s: %w", clusterID, errors.Join(errs...))
 	}
-	return "", fmt.Errorf("dataplane: no export virtual workspace serves cluster %s: %w", clusterID, errors.Join(errs...))
 }
 
-// chosenEndpoint returns the endpoint already settled on for clusterID.
-func (c *Callers) chosenEndpoint(clusterID string) (string, bool) {
+func (c *Callers) chosenEndpointForGeneration(clusterID string, generation uint64) (string, bool, bool) {
 	c.providerMu.Lock()
 	defer c.providerMu.Unlock()
+	if c.providerEndpointsGeneration != generation {
+		return "", false, true
+	}
 	endpoint, ok := c.clusterEndpoint[clusterID]
-	return endpoint, ok
+	return endpoint, ok, false
+}
+
+func (c *Callers) endpointGenerationMatches(generation uint64) bool {
+	c.providerMu.Lock()
+	defer c.providerMu.Unlock()
+	return c.providerEndpointsGeneration == generation
 }
 
 // probeAll returns the first endpoint that serves clusterID, remembering it,
 // or every reason none did.
-func (c *Callers) probeAll(ctx context.Context, endpoints []string, clusterID string) (string, []error) {
+func (c *Callers) probeAll(ctx context.Context, endpoints []string, clusterID string, generation uint64) (string, []error, bool) {
 	var errs []error
 	for _, endpoint := range endpoints {
+		if err := ctx.Err(); err != nil {
+			return "", append(errs, err), false
+		}
 		if err := c.probeEndpoint(ctx, endpoint, clusterID); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", endpoint, err))
 			continue
 		}
 		c.providerMu.Lock()
+		if c.providerEndpointsGeneration != generation {
+			c.providerMu.Unlock()
+			return "", errs, true
+		}
 		if c.clusterEndpoint == nil {
 			c.clusterEndpoint = map[string]string{}
 		}
 		c.clusterEndpoint[clusterID] = endpoint
 		c.providerMu.Unlock()
-		return endpoint, nil
+		return endpoint, nil, false
 	}
-	return "", errs
+	c.providerMu.Lock()
+	changed := c.providerEndpointsGeneration != generation
+	c.providerMu.Unlock()
+	return "", errs, changed
 }
 
 // probeEndpoint reports whether endpoint serves clusterID, by creating the
