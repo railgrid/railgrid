@@ -11,13 +11,18 @@ const state = await import(`data:text/javascript;base64,${Buffer.from(outputText
 const message = (id, content) => ({ id, projectID: 'p', role: 'assistant', content, createdAt: '2026-01-01T00:00:00Z' })
 const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', mode: 'default', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
 
+// Parse App once; individual harnesses select only the boundaries they exercise.
+const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+const compileStatements = statements => ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText
+
 // Run the actual context watcher and fingerprint with Vue reactivity. The
 // service callbacks stand in for resets/reads so this checks the authority
 // boundary without starting unrelated preview or assistant services.
 async function contextStateHarness(t, initialContext) {
-  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
-  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const statements = ast.statements.filter(node => {
     if (ts.isFunctionDeclaration(node)) return node.name?.text === 'appContextFingerprint'
     if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false
@@ -27,7 +32,7 @@ async function contextStateHarness(t, initialContext) {
       source.body.getText(ast) === 'appContextFingerprint(props.ctx)'
   })
   assert.equal(statements.length, 2)
-  const { outputText } = ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const outputText = compileStatements(statements)
   const scope = effectScope()
   t.after(() => scope.stop())
   return scope.run(() => new Function('ref', 'watch', 'initialContext', `
@@ -93,9 +98,6 @@ test('legacy bearer-only credential changes remain an authority boundary', async
 // Execute the actual App stop-state boundaries with Vue reactivity, without
 // mounting unrelated project/preview services or duplicating their logic.
 async function stopStateHarness(t) {
-  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
-  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const functions = new Set(['setActiveAssistantRun', 'resetAssistantStopState', 'assistantStopContextFingerprint', 'cancelMessageStream'])
   const statements = ast.statements.filter(node =>
     ts.isFunctionDeclaration(node) && functions.has(node.name?.text) ||
@@ -103,33 +105,338 @@ async function stopStateHarness(t) {
     ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(') && node.getText(ast).includes('() => resetAssistantStopState()'),
   )
   assert.equal(statements.length, 6)
-  const { outputText } = ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const outputText = compileStatements(statements)
   const scope = effectScope()
   t.after(() => scope.stop())
   return scope.run(() => new Function('ref', 'computed', 'watch', 'assistantRunTerminal', `
     const context = ref({ tenant: 'tenant-a', token: 'token-a', subPath: '/project-a' });
     const props = { get ctx() { return context.value; } };
     const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const activeAssistantThreadID = ref('thread-a');
     const assistantStopRequestedRunID = ref('');
+    let assistantStopRequestGeneration = 0;
     const assistantPendingStartStopRequested = ref(false);
+    const assistantComposerSubmitting = ref(false);
+    let activeAssistantSubmissionOwner = null;
     const assistantStopError = ref(null);
     const conversationStatus = ref('');
     const messageStreaming = ref(true);
     const activeAssistantRunRevision = ref(0);
     let activeAssistantRun = null;
     let assistantThreadRequestSerial = 0;
-    let rejectStop;
+    const rejectStops = [];
     let recovered = 0;
-    const assistantRunController = { stop: () => new Promise((_, reject) => { rejectStop = reject; }) };
+    const assistantRunController = { stop: () => new Promise((_, reject) => { rejectStops.push(reject); }) };
     const recoverAssistantConversation = async () => { recovered++; };
     ${outputText}
     return { selected, context, assistantStopRequested, assistantStopRequestedRunID,
       assistantPendingStartStopRequested, assistantStopError, conversationStatus,
       setActiveAssistantRun, resetAssistantStopState, cancelMessageStream,
-      rejectStop: () => rejectStop(new Error('network failure')),
+      rejectStop: (index = 0) => rejectStops[index](new Error('network failure')),
       recovered: () => recovered };
   `)(ref, computed, watch, state.assistantRunTerminal))
 }
+
+async function assistantSubmissionHarness(t, initialParts = [], initialState = {}) {
+  const functions = new Set([
+    'beginBusyOperation',
+    'releaseBusyOperation',
+    'invalidateAssistantQueueOperations',
+    'invalidateAssistantMessageSubmission',
+    'beginAssistantThreadRequest',
+    'beginThreadMutationLatch',
+    'releaseThreadMutationLatch',
+    'createAssistantThread',
+    'beginAssistantThreadTitleRename',
+    'renameAssistantThread',
+    'archiveAssistantThread',
+    'sendMessage',
+    'cancelMessageStream',
+    'recoverAssistantConversation',
+    'rememberAcceptedAssistantOptimisticMessage',
+    'clearAcceptedAssistantOptimisticMessage',
+    'reconcileAcceptedAssistantOptimisticMessages',
+  ])
+  const statements = ast.statements.filter(node => {
+    if (ts.isFunctionDeclaration(node)) return functions.has(node.name?.text)
+    if (ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => ['threadNavigationDisabled', 'threadActionsDisabled'].includes(decl.name.getText(ast)))) return true
+    if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression) || node.expression.expression.getText(ast) !== 'watch') return false
+    const source = node.expression.arguments[0]?.getText(ast) ?? ''
+    return source === 'activeAssistantThreadID' || source.startsWith('() => `${selected.value?.name')
+  })
+  assert.equal(statements.filter(node => ts.isFunctionDeclaration(node)).length, functions.size)
+  assert.equal(statements.filter(node => ts.isVariableStatement(node)).length, 2)
+  assert.equal(statements.filter(node => ts.isExpressionStatement(node)).length, 2)
+  const outputText = compileStatements(statements)
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  const startCalls = []
+  const createCalls = []
+  const clearDraftCalls = []
+  const committedParts = []
+  const mutationCalls = []
+  const steerCalls = []
+  const recoveryCalls = []
+  const pageCalls = []
+  const activeTurnCalls = []
+  const api = {
+    startAssistantTurn: (...args) => new Promise((resolve, reject) => startCalls.push({ args, resolve, reject })),
+    startAssistantReview: async () => { throw new Error('unexpected review request') },
+    steerAssistantTurn: async (...args) => { steerCalls.push(args) },
+    createAssistantThread: (...args) => new Promise((resolve, reject) => createCalls.push({ args, resolve, reject })),
+    patchAssistantThread: (...args) => { mutationCalls.push(args); return Promise.resolve(args[2]) },
+    getActiveAssistantTurn: async (...args) => {
+      activeTurnCalls.push(args)
+      recoveryCalls.push(args)
+      const outcome = activeTurnOutcomes.shift()
+      if (outcome instanceof Error) throw outcome
+      return outcome ?? null
+    },
+    listAssistantThreadItemPage: async (...args) => {
+      pageCalls.push(args)
+      const outcome = pageOutcomes.shift()
+      if (outcome instanceof Error) throw outcome
+      if (outcome) return outcome
+      if (initialState.activeAssistantRun) return { items: [] }
+      throw new Error('unexpected thread projection')
+    },
+  }
+  const pageOutcomes = [...(initialState.pageOutcomes ?? [])]
+  const activeTurnOutcomes = [...(initialState.activeTurnOutcomes ?? [])]
+  const startControllerCalls = []
+  const stopCalls = []
+  return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', `
+    const props = { ctx: { tenant: 'tenant-a', workspaceUUID: 'workspace-a', subPath: '/project-a' } };
+    const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const activeAssistantThreadID = ref('thread-a');
+    let assistantThreadRequestSerial = 0;
+    let assistantSubmissionGeneration = 0;
+    let activeAssistantSubmissionOwner = null;
+    let busyOperationSequence = 0;
+    let busyOperationOwner = 0;
+    let threadMutationLatchSerial = 0;
+    let threadMutationLatchOwner = 0;
+    let assistantQueueOperationGeneration = 0;
+    let assistantStopRequestGeneration = 0;
+    let projectLoadSerial = 1;
+    let pendingMessageSubmission = null;
+    let pendingFirstProjectSubmission = null;
+    const pendingAcceptedAssistantOptimisticMessages = new Map();
+    let activeAssistantThreadSequence = 0;
+    let appComponentMounted = true;
+    let activeAssistantRun = initialState.activeAssistantRun ?? null;
+    let activeAssistantProject = activeAssistantRun ? 'project-a' : '';
+    const assistantRunRevisions = {};
+    let activeAssistantSubscription = null;
+    const pendingAssistantStopRequestIDs = {};
+    const assistantStopRequestedRunID = ref('');
+    const assistantStopError = ref(null);
+    const conversationStatus = ref('');
+    const reviewPanelHold = ref(null);
+    const threadMutationBusy = ref(false);
+    const threadActioningID = ref('');
+    const threadError = ref(null);
+    const assistantThreadOlderLoading = ref(false);
+    const assistantThreadHistoryOperation = ref(null);
+    const prompt = ref('first message');
+    const messages = ref([]);
+    const assistantThreads = ref([{ id: 'thread-a' }, { id: 'thread-b' }, { id: 'thread-a-recreated' }]);
+    const assistantComposerParts = ref(initialParts);
+    const selectedTurnSkills = ref(initialState.selectedTurnSkills ?? []);
+    const selectedTurnResources = ref(initialState.selectedTurnResources ?? []);
+    const assistantComposerAttachmentsPending = ref(false);
+    const assistantComposerSubmitting = ref(false);
+    const queuedAssistantSteeringID = ref('');
+    const queuedAssistantDeliveryBusy = ref(false);
+    const assistantPendingStartStopRequested = ref(false);
+    const messageStreaming = ref(initialState.messageStreaming ?? false);
+    const busy = ref(false);
+    const error = ref(null);
+    const conversationInteractionBusy = ref(false);
+    const activeAssistantThread = computed(() => assistantThreads.value.find(thread => thread.id === activeAssistantThreadID.value));
+    const editingAssistantThreadID = ref('');
+    const assistantThreadTitleDraft = ref('');
+    const editingAssistantThreadTitle = ref(false);
+    const llmSettingsLoading = ref(false);
+    const assistantResumeBusy = ref(false);
+    const approvalModeLoading = ref(false);
+    const approvalModeSaving = ref(false);
+    const assistantThreadViewingOlderHistory = ref(false);
+    const selectedLLMModelID = ref('model-a');
+    const assistantIntent = ref('default');
+    const llmConfigured = ref(true);
+    const contextFingerprint = (ctx) => JSON.stringify([ctx.tenant, ctx.workspaceUUID, ctx.subPath]);
+    const projectContextFingerprint = (ctx) => contextFingerprint(ctx);
+    const assistantRunStartFingerprint = fingerprint;
+    const assistantRunTerminal = isTerminal;
+    const firstProjectSubmissionMatches = () => false;
+    const firstProjectSubmissionAccepted = () => false;
+    let activeAssistantSubscription = null;
+    const assistantRunController = { disconnect() {}, stop: async () => { stopCalls.push(activeAssistantRun?.id ?? ''); } };
+    const resetAssistantStopState = () => {};
+    const resetAssistantThreadItemWindow = () => {};
+    const setActiveAssistantRun = (run) => { activeAssistantRun = run; };
+    const assistantThreadFocusScope = () => ({});
+    const persistAssistantThreadFocus = () => {};
+    const assistantAnnotationDraftScope = () => ({});
+    const writeAssistantAnnotationDraft = () => {};
+    const persistCurrentAssistantAnnotationDraft = () => {};
+    const clearStoredAssistantAnnotationDraft = (...args) => clearDraftCalls.push(args);
+    const commitAttachments = (parts) => committedParts.push(parts);
+    const clearSelectedTurnAttachments = () => {
+      assistantComposerParts.value = [];
+      selectedTurnSkills.value = [];
+      selectedTurnResources.value = [];
+      assistantComposerAttachmentsPending.value = false;
+    };
+    const replaceAssistantThread = (thread) => {
+      assistantThreads.value = assistantThreads.value.map(candidate => candidate.id === thread.id ? thread : candidate);
+    };
+    const assistantThreadSequence = 0;
+    const isAssistantAttachmentReceiptUnavailableError = () => false;
+    const recoverUnavailableAssistantAttachmentSend = async () => ({ stale: false, candidateCount: 0 });
+    const currentProjectRequestGuard = () => ({ serial: projectLoadSerial, contextFingerprint: projectContextFingerprint(props.ctx) });
+    const projectRequestIsCurrent = (guard, projectName = '') => appComponentMounted && guard.serial === projectLoadSerial &&
+      guard.contextFingerprint === projectContextFingerprint(props.ctx) && (!projectName || selected.value?.name === projectName);
+    const assistantStopContextFingerprint = (ctx) => JSON.stringify([ctx?.tenant, ctx?.workspaceUUID]);
+    const assistantRunRequiresLiveControls = runRequiresLiveControls;
+    const observeAssistantWorkedDuration = () => {};
+    const assistantThreadItemsToRuns = (items) => Object.fromEntries(items
+      .filter(item => item.type === 'agentMessage' && item.turnID)
+      .map(item => [item.turnID, assistantThreadItemToRun(item)]));
+    const assistantThreadItemToRun = (item) => ({
+      id: item.turnID,
+      mode: item.mode ?? 'default',
+      status: item.status ?? 'running',
+      revision: item.revision ?? item.sequence ?? 1,
+      activeMessageID: item.assistantMessageID ?? item.id,
+      userMessageID: item.userMessageID,
+    });
+    const assistantThreadItemsToMessages = (items, projectName) => items.map(item => ({
+      id: item.id,
+      projectID: projectName,
+      role: item.type === 'userMessage' ? 'user' : 'assistant',
+      content: item.content ?? '',
+      createdAt: item.createdAt ?? '2026-01-01T00:00:00Z',
+      metadata: item.type === 'agentMessage' ? { assistantMessageID: item.assistantMessageID ?? item.id } : {},
+    }));
+    const assistantRunExpectedServerContent = (payload) => payload.content;
+    const assistantRunMatchesStartRequest = () => false;
+    const ProjectAPIRequestError = class extends Error {};
+    const applyAssistantSnapshot = (snapshot, projectName, source = 'start', expectedRunID = '') => {
+      const accepted = state.acceptScopedConversationSnapshot(
+        selected.value?.name ?? '', activeAssistantProject,
+        activeAssistantRun ?? assistantRunRevisions[snapshot.run.id],
+        projectName, snapshot.run, source, expectedRunID,
+      );
+      if (!accepted.accepted) return accepted;
+      const current = state.mergeConversationSnapshot({ messages: messages.value, runs: assistantRunRevisions }, snapshot);
+      if (current.messages !== messages.value) messages.value = current.messages;
+      Object.assign(assistantRunRevisions, current.runs);
+      activeAssistantRun = snapshot.run;
+      activeAssistantProject = projectName;
+      messageStreaming.value = assistantRunRequiresLiveControls(snapshot.run);
+      return accepted;
+    };
+    const startAssistantRunController = (run) => {
+      startControllerCalls.push(run.id);
+      if (assistantPendingStartStopRequested.value) {
+        assistantPendingStartStopRequested.value = false;
+        cancelMessageStream();
+      }
+    };
+    const toProjectMessageView = (item) => item;
+    const commitAssistantThreadItemPage = () => {};
+    const maxAssistantThreadSequence = (items) => Math.max(0, ...items.map(item => item.sequence ?? 0));
+    const projectAssistantThreadItems = (items, projectName) => assistantThreadItemsToMessages(items, projectName);
+    const rebindAssistantRunFromThreadItems = () => true;
+    const replaceOptimisticUserMessage = (items) => items;
+    const crypto = { randomUUID: (() => { let id = 0; return () => 'request-' + (++id); })() };
+    ${outputText}
+    return {
+      prompt, selected, activeAssistantThreadID, assistantThreadRequestSerial: () => assistantThreadRequestSerial,
+      messages, assistantThreads, assistantComposerParts, assistantComposerSubmitting, assistantPendingStartStopRequested,
+      assistantStopRequestedRunID, assistantStopError, conversationStatus,
+      selectedTurnSkills, selectedTurnResources, messageStreaming, busy, error, props, startCalls, createCalls, steerCalls, clearDraftCalls, committedParts, threadMutationBusy, threadError, mutationCalls,
+      get pendingMessageSubmission() { return pendingMessageSubmission; },
+      pendingAcceptedAssistantOptimisticMessageCount: () => pendingAcceptedAssistantOptimisticMessages.size,
+      createAssistantThread,
+      beginThreadMutationLatch,
+      releaseThreadMutationLatch,
+      beginAssistantThreadTitleRename,
+      renameAssistantThread,
+      archiveAssistantThread,
+      sendMessage,
+      cancelMessageStream,
+      reconcileAcceptedAssistantOptimisticMessages,
+      beginAssistantThreadRequest,
+      beginBusyOperation,
+      releaseBusyOperation,
+      invalidateAssistantQueueOperations,
+      get queuedAssistantSteeringID() { return queuedAssistantSteeringID; },
+      get queuedAssistantDeliveryBusy() { return queuedAssistantDeliveryBusy; },
+      setContext(ctx) { props.ctx = ctx; },
+      setProject(project) { projectLoadSerial++; selected.value = project; },
+      setThread(threadID) { activeAssistantThreadID.value = threadID; },
+      startOtherBusyOperation() { return beginBusyOperation(); },
+      finishOtherBusyOperation(owner) { releaseBusyOperation(owner); },
+      currentRun() { return activeAssistantRun; },
+      currentProject() { return activeAssistantProject; },
+      setRecoveredRun(run) { activeAssistantRun = run; activeAssistantProject = run ? selected.value?.name ?? '' : ''; if (run) assistantRunRevisions[run.id] = run; messageStreaming.value = Boolean(run && !assistantRunTerminal(run.status)); },
+      applySnapshot(snapshot, source = 'stream') { return applyAssistantSnapshot(snapshot, selected.value?.name ?? '', source); },
+      recoveryCalls,
+      pageCalls,
+      activeTurnCalls,
+      activeTurnOutcomes,
+      pageOutcomes,
+      startControllerCalls,
+      stopCalls,
+      resetConversation() { busy.value = false; messageStreaming.value = false; error.value = null; messages.value = []; },
+    };
+  `)(ref, computed, watch, api, outputText, state.assistantRunStartFingerprint, initialParts, initialState, startCalls, createCalls, clearDraftCalls, committedParts, mutationCalls, steerCalls, recoveryCalls, pageCalls, pageOutcomes, activeTurnCalls, activeTurnOutcomes, state, (run) => Boolean(run && !state.assistantRunTerminal(run.status)), state.assistantRunTerminal, startControllerCalls, stopCalls))
+}
+
+test('delayed thread creation disables the composer and preserves a fast-submit draft for the new thread', async t => {
+  const h = await assistantSubmissionHarness(t)
+  const content = 'Keep this draft for the thread being created'
+  h.prompt.value = content
+  h.assistantComposerParts.value = [{ type: 'text', text: content }]
+
+  const creating = h.createAssistantThread()
+  assert.equal(h.threadMutationBusy.value, true)
+  assert.equal(h.activeAssistantThreadID.value, 'thread-a', 'the old selection remains while creation is pending')
+  h.beginAssistantThreadTitleRename()
+  await h.renameAssistantThread('thread-a', 'Changed while creating')
+  await h.archiveAssistantThread('thread-a')
+  assert.equal(h.mutationCalls.length, 0, 'rename and archive are blocked by the same thread mutation latch')
+
+  // Model an Enter event arriving before the deferred create response. Drive
+  // the production send function directly so a missed browser event cannot
+  // hide an invalid turn admission.
+  assert.equal(await h.sendMessage(), false)
+  assert.equal(h.startCalls.length, 0, 'no turn may target the old thread')
+  assert.equal(h.prompt.value, content)
+  assert.deepEqual(h.assistantComposerParts.value, [{ type: 'text', text: content }])
+  assert.deepEqual(h.messages.value, [], 'a rejected fast submit must not add an optimistic message')
+
+  h.createCalls[0].resolve({ id: 'thread-new', projectName: 'project-a', status: 'active' })
+  await creating
+  assert.equal(h.threadMutationBusy.value, false)
+  assert.equal(h.activeAssistantThreadID.value, 'thread-new')
+  assert.equal(h.prompt.value, content, 'thread selection must retain the draft')
+
+  const sendMessage = app.slice(app.indexOf('async function sendMessage'), app.indexOf('function cancelMessageStream'))
+  const canSend = app.slice(app.indexOf('const canSendPrompt'), app.indexOf('const threadActionsDisabled'))
+  assert.match(sendMessage, /^async function sendMessage[\s\S]*?\n  if \(threadMutationBusy\.value\) return false/)
+  assert.match(canSend, /!threadMutationBusy\.value/)
+  assert.match(app, /<AssistantRichComposer[\s\S]*?:disabled="[^\"]*threadMutationBusy/)
+
+  const newThreadSend = h.sendMessage()
+  assert.equal(h.startCalls.length, 1)
+  assert.equal(h.startCalls[0].args[2], 'thread-new', 'the retained draft can now be sent to its new thread')
+  h.startCalls[0].reject(new Error('controlled test rejection'))
+  assert.equal(await newThreadSend, false)
+})
 
 test('stopping survives recovery but cannot follow project, tenant or run replacement', async t => {
   for (const transition of ['project', 'recreated project', 'tenant', 'new run']) {
@@ -170,11 +477,33 @@ test('pending-start stop clears on navigation and same-conversation stop failure
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(h.assistantStopRequested.value, false)
   assert.match(h.assistantStopError.value, /Could not stop the response: network failure/)
-  assert.equal(h.recovered(), 1)
+  assert.equal(h.recovered(), 2, 'the pending-start lookup and failed stop each reconcile the same conversation')
+})
+
+test('late stop failure cannot attach to a same-name Project recreation or reused run ID', async t => {
+  const h = await stopStateHarness(t)
+  h.setActiveAssistantRun({ id: 'run-reused', status: 'running' })
+  h.cancelMessageStream()
+
+  h.selected.value = { name: 'project-a', uid: 'uid-a-recreated' }
+  assert.equal(h.assistantStopRequested.value, false)
+  h.setActiveAssistantRun({ id: 'run-reused', status: 'running' })
+  h.cancelMessageStream()
+  assert.equal(h.assistantStopRequested.value, true)
+
+  h.rejectStop(0)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.assistantStopRequested.value, true, 'old rejection cannot clear the replacement stop latch')
+  assert.equal(h.assistantStopError.value, null, 'old rejection cannot show an error for the recreated Project')
+  assert.equal(h.recovered(), 0, 'old rejection cannot recover the replacement conversation')
+
+  h.rejectStop(1)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.match(h.assistantStopError.value, /Could not stop the response: network failure/)
+  assert.equal(h.recovered(), 1, 'the replacement stop still reports its own failure')
 })
 
 test('committed thread switches and thread creation clear their local stop state', async () => {
-  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const select = app.slice(app.indexOf('async function selectAssistantThread('), app.indexOf('async function createAssistantThread('))
   const create = app.slice(app.indexOf('async function createAssistantThread('), app.indexOf('function beginAssistantThreadTitleRename('))
   assert.ok(select.indexOf('resetAssistantStopState()') > select.indexOf('await api.listAssistantThreadItemPage'))
@@ -279,18 +608,267 @@ test('matches Go json.Marshal escaping for markup in annotation recovery context
   assert.match(rendered, /<\/untrusted_preview_annotation>$/)
 })
 
-test('accepted start failures consume the rich draft and use server-derived conflict content', async () => {
-  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
-  assert.match(sendMessage, /let startPostAccepted = false/)
-  assert.match(sendMessage, /startPostAccepted = true[\s\S]*clearSelectedTurnAttachments\(\)/)
-  const acceptedFailure = sendMessage.slice(sendMessage.indexOf('if \(startPostAccepted\)'), sendMessage.indexOf("if (e instanceof ProjectAPIRequestError && e.status === 409)"))
-  assert.match(acceptedFailure, /pendingMessageSubmission = null/)
-  assert.match(acceptedFailure, /pendingFirstProjectSubmission = null/)
-  assert.match(acceptedFailure, /Turn accepted, but the conversation could not be refreshed/)
-  assert.doesNotMatch(acceptedFailure, /prompt\.value = content/)
+test('conflict recovery compares the server-derived structured prompt', () => {
+  const sendMessage = app.slice(app.indexOf('async function sendMessage'), app.indexOf('function cancelMessageStream'))
   assert.match(sendMessage, /assistantRunExpectedServerContent\(payload\)/)
   assert.match(sendMessage, /persistedPrompt\?\.content === expectedServerContent/)
+})
+
+function recoveredTurnItems(turnID, content, status = 'running') {
+  return [
+    { id: `user-${turnID}`, type: 'userMessage', turnID, content, sequence: 4 },
+    {
+      id: `agent-item-${turnID}`,
+      assistantMessageID: `assistant-${turnID}`,
+      type: 'agentMessage',
+      turnID,
+      content: '',
+      mode: 'default',
+      status,
+      revision: 5,
+      sequence: 5,
+    },
+  ]
+}
+
+function composerStopState(h) {
+  const run = h.currentRun()
+  return state.assistantComposerStopControlState({
+    stopRequested: Boolean(h.assistantStopRequestedRunID.value) || h.assistantPendingStartStopRequested.value,
+    messageStreaming: h.messageStreaming.value,
+    activeRunID: run?.id,
+    activeRunStatus: run?.status,
+    prompt: h.prompt.value,
+  })
+}
+
+test('accepted turn and steer projection failures recover the existing run without restoring consumed drafts', async t => {
+  const annotation = {
+    type: 'annotation',
+    annotation: { id: 'annotation-accepted', comment: 'Keep this detail', pagePath: '/', target: { text: 'Save' } },
+  }
+  for (const intent of ['turn', 'steer']) {
+    await t.test(intent, async t => {
+      const turnID = intent === 'turn' ? 'turn-accepted' : 'turn-steered'
+      const content = intent === 'turn' ? 'Apply the accepted note' : 'Continue with this response'
+      const initialRun = intent === 'steer' ? { id: turnID, status: 'running', revision: 4, activeMessageID: `assistant-${turnID}` } : null
+      const parts = intent === 'turn' ? [annotation] : [{ type: 'text', text: content }]
+      const recoveredItems = recoveredTurnItems(turnID, content)
+      if (intent === 'steer') recoveredItems[0].data = { clientUserMessageID: 'request-1' }
+      const h = await assistantSubmissionHarness(t, parts, {
+        activeAssistantRun: initialRun,
+        messageStreaming: intent === 'steer',
+        pageOutcomes: [new Error('initial conversation projection failed'), { items: recoveredItems }],
+        activeTurnOutcomes: [{
+          id: turnID,
+          mode: 'default',
+          approvalMode: 'auto',
+          clientUserMessageID: 'request-1',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:01Z',
+        }],
+      })
+      h.prompt.value = content
+
+      const send = h.sendMessage(intent === 'steer' ? 'steer' : 'queue')
+      if (intent === 'turn') {
+        assert.equal(h.startCalls.length, 1)
+        h.startCalls[0].resolve({
+          thread: { id: 'thread-a', projectName: 'project-a' },
+          turn: {
+            id: turnID,
+            mode: 'default',
+            approvalMode: 'auto',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:01Z',
+          },
+        })
+      }
+
+      assert.equal(await send, true)
+      assert.equal(h.startCalls.length, intent === 'turn' ? 1 : 0, 'recovery never resends the accepted request')
+      assert.equal(h.steerCalls.length, intent === 'steer' ? 1 : 0)
+      assert.equal(h.recoveryCalls.length, 1, 'the existing active-turn/item reconciliation runs once')
+      assert.equal(h.activeTurnCalls.length, 1)
+      assert.equal(h.pageCalls.length, 2, 'one failed projection is followed by one recovery projection')
+      assert.equal(h.currentRun()?.id, turnID)
+      assert.equal(h.messageStreaming.value, true)
+      assert.equal(h.prompt.value, '', 'accepted text stays consumed')
+      assert.deepEqual(h.assistantComposerParts.value, [], 'accepted context stays consumed')
+      assert.deepEqual(h.messages.value.map(item => item.id), [`user-${turnID}`, `agent-item-${turnID}`], 'the durable user item replaces the optimistic identity')
+      assert.equal(h.pendingAcceptedAssistantOptimisticMessageCount(), 0)
+      assert.deepEqual(h.committedParts, intent === 'turn' ? [[annotation]] : [])
+      assert.deepEqual(composerStopState(h), { visible: true, disabled: false }, 'the recovered run remains stoppable')
+      assert.equal(h.error.value, null)
+    })
+  }
+})
+
+test('an accepted turn keeps its Stop action enabled while busy recovery disables the editor', async t => {
+  let resolveActiveTurn
+  const activeTurn = new Promise(resolve => { resolveActiveTurn = resolve })
+  const h = await assistantSubmissionHarness(t, [], {
+    pageOutcomes: [new Error('initial conversation projection failed'), { items: recoveredTurnItems('turn-accepted', 'first message') }],
+    activeTurnOutcomes: [activeTurn],
+  })
+  const send = h.sendMessage()
+  h.startCalls[0].resolve({
+    thread: { id: 'thread-a', projectName: 'project-a' },
+    turn: { id: 'turn-accepted', mode: 'default', status: 'in_progress' },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.activeTurnCalls.length, 1, 'accepted response is waiting on scoped recovery')
+  assert.equal(h.busy.value, true, 'the send-owned busy latch remains active during recovery')
+  const stop = composerStopState(h)
+  assert.deepEqual(stop, { visible: true, disabled: false })
+  assert.equal(state.assistantComposerWrapperDisabled(h.busy.value, stop.visible), false, 'the wrapper stays operable for Stop')
+  assert.equal(h.busy.value, true, 'the rich editor still receives the disabled state')
+
+  const composer = app.slice(app.indexOf('<AIComposer'), app.indexOf('</AIComposer>'))
+  assert.match(app, /const assistantComposerSurfaceDisabled = computed\(\(\) =>\s*assistantComposerWrapperDisabled\(assistantComposerControlsDisabled\.value, assistantComposerShowsStop\.value\)/)
+  assert.match(composer, /<AIComposer[\s\S]*?:disabled="assistantComposerSurfaceDisabled"/)
+  assert.match(composer, /<AssistantRichComposer[\s\S]*?:disabled="assistantComposerControlsDisabled"/)
+
+  resolveActiveTurn({ id: 'turn-accepted', clientUserMessageID: 'request-1', mode: 'default', approvalMode: 'auto' })
+  assert.equal(await send, true)
+})
+
+test('Stop during a pending start waits for POST acceptance, then interrupts exactly once', async t => {
+  const h = await assistantSubmissionHarness(t, [], {
+    pageOutcomes: [{ items: recoveredTurnItems('turn-stop-after-accept', 'first message') }],
+  })
+  const send = h.sendMessage()
+  assert.equal(h.startCalls.length, 1)
+  assert.equal(h.assistantComposerSubmitting.value, true)
+  assert.equal(h.currentRun(), null)
+
+  h.cancelMessageStream()
+  assert.equal(h.assistantPendingStartStopRequested.value, true, 'Stop intent is held until the accepted run has an ID')
+  assert.equal(h.activeTurnCalls.length, 0, 'no active-turn recovery races the pending start POST')
+  assert.equal(h.recoveryCalls.length, 0)
+  assert.deepEqual(h.stopCalls, [])
+
+  h.startCalls[0].resolve({
+    thread: { id: 'thread-a', projectName: 'project-a' },
+    turn: { id: 'turn-stop-after-accept', mode: 'default', status: 'in_progress' },
+  })
+  assert.equal(await send, true)
+  assert.deepEqual(h.stopCalls, ['turn-stop-after-accept'], 'the accepted run receives one interrupt')
+  assert.equal(h.activeTurnCalls.length, 0, 'the accepted-run interrupt does not perform a preaccept recovery request')
+  assert.equal(h.assistantPendingStartStopRequested.value, false, 'the run-scoped interrupt consumes the pending latch')
+  assert.equal(h.assistantStopRequestedRunID.value, 'turn-stop-after-accept')
+})
+
+test('Stop intent is released when the pending start POST is rejected', async t => {
+  const h = await assistantSubmissionHarness(t)
+  const send = h.sendMessage()
+  h.cancelMessageStream()
+  assert.equal(h.assistantPendingStartStopRequested.value, true)
+  assert.equal(h.activeTurnCalls.length, 0)
+
+  h.startCalls[0].reject(new Error('start rejected'))
+  assert.equal(await send, false)
+  assert.equal(h.assistantPendingStartStopRequested.value, false)
+  assert.equal(h.activeTurnCalls.length, 0)
+  assert.equal(h.messageStreaming.value, false)
+  assert.equal(h.conversationStatus.value, '', 'a rejected start does not leave the Stop-in-progress label behind')
+  assert.equal(h.prompt.value, 'first message')
+})
+
+test('accepted recovery cannot adopt an old run or overwrite a new thread after navigation', async t => {
+  let resolveActiveTurn
+  const activeTurn = new Promise(resolve => { resolveActiveTurn = resolve })
+  const h = await assistantSubmissionHarness(t, [], {
+    pageOutcomes: [new Error('initial conversation projection failed')],
+    activeTurnOutcomes: [activeTurn],
+  })
+  const send = h.sendMessage()
+  h.startCalls[0].resolve({
+    thread: { id: 'thread-a', projectName: 'project-a' },
+    turn: { id: 'turn-old', mode: 'default', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:01Z' },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.activeTurnCalls.length, 1, 'the accepted path enters recovery before the thread changes')
+
+  h.setThread('thread-b')
+  h.resetConversation()
+  h.setRecoveredRun(null)
+  h.prompt.value = 'new thread draft'
+  h.error.value = 'new thread status'
+  resolveActiveTurn({ id: 'turn-old', mode: 'default' })
+  assert.equal(await send, true, 'the old POST remains accepted')
+  assert.equal(h.pageCalls.length, 1, 'the stale recovery stops before reading the new thread')
+  assert.equal(h.currentRun(), null)
+  assert.equal(h.activeAssistantThreadID.value, 'thread-b')
+  assert.equal(h.messageStreaming.value, false)
+  assert.equal(h.prompt.value, 'new thread draft')
+  assert.equal(h.error.value, 'new thread status')
+  assert.deepEqual(h.messages.value, [])
+})
+
+test('a terminal stream update wins while the first canonical item page is pending', async t => {
+  let resolvePage
+  const canonicalPage = new Promise(resolve => { resolvePage = resolve })
+  const h = await assistantSubmissionHarness(t, [], { pageOutcomes: [canonicalPage] })
+  const send = h.sendMessage()
+  h.startCalls[0].resolve({
+    thread: { id: 'thread-a', projectName: 'project-a' },
+    turn: { id: 'turn-race', mode: 'default', status: 'in_progress', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:01Z' },
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.pageCalls.length, 1, 'the accepted send is awaiting canonical items')
+  assert.deepEqual(h.startControllerCalls, ['turn-race'], 'the accepted run controller is active before the item request resolves')
+
+  const terminal = {
+    run: { id: 'turn-race', mode: 'default', status: 'completed', revision: 9, activeMessageID: 'assistant-turn-race' },
+    message: { id: 'assistant-turn-race', projectID: 'project-a', role: 'assistant', content: 'Completed response', createdAt: '2026-01-01T00:00:02Z' },
+  }
+  assert.equal(h.applySnapshot(terminal).accepted, true)
+  assert.equal(h.messageStreaming.value, false)
+  assert.equal(h.currentRun()?.revision, 9)
+
+  resolvePage({ items: recoveredTurnItems('turn-race', 'first message', 'running') })
+  assert.equal(await send, true, 'the already accepted turn stays accepted')
+  assert.equal(h.currentRun()?.status, 'completed')
+  assert.equal(h.currentRun()?.revision, 9, 'the lower-revision POST snapshot cannot replace the terminal stream update')
+  assert.equal(h.messageStreaming.value, false, 'the stale canonical read cannot restore a running composer')
+  assert.deepEqual(h.startControllerCalls, ['turn-race'], 'the stale projection does not restart the completed run')
+  assert.equal(h.messages.value.find(item => item.id === 'assistant-turn-race')?.content, 'Completed response')
+})
+
+test('a double projection failure preserves the accepted user row until exact later recovery', async t => {
+  const annotation = { type: 'annotation', annotation: { id: 'annotation-retained', comment: 'Keep this instruction' } }
+  const h = await assistantSubmissionHarness(t, [annotation], {
+    pageOutcomes: [new Error('initial conversation projection failed')],
+    activeTurnOutcomes: [new Error('active-turn recovery failed')],
+  })
+  const send = h.sendMessage()
+  h.startCalls[0].resolve({
+    thread: { id: 'thread-a', projectName: 'project-a' },
+    turn: { id: '', mode: 'default', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:01Z' },
+  })
+
+  assert.equal(await send, true)
+  assert.equal(h.prompt.value, '')
+  assert.deepEqual(h.assistantComposerParts.value, [])
+  assert.equal(h.messageStreaming.value, true, 'the accepted response is still represented as active')
+  assert.match(h.error.value, /accepted/i)
+  assert.deepEqual(h.messages.value.map(item => item.id), ['optimistic-request-1'], 'the accepted user message remains visible when both reads fail')
+  assert.deepEqual(h.messages.value[0].metadata.assistantContentParts, [annotation], 'the retained optimistic row keeps its annotation metadata')
+  assert.equal(h.pendingAcceptedAssistantOptimisticMessageCount(), 1, 'the explicit request identity survives for a later exact reconciliation')
+  assert.deepEqual(composerStopState(h), { visible: true, disabled: false }, 'Stop acts as a retryable recovery control when the run ID is unknown')
+
+  h.activeTurnOutcomes.push({ id: 'turn-recovered', clientUserMessageID: 'request-1', mode: 'default', approvalMode: 'auto' })
+  h.pageOutcomes.push({ items: recoveredTurnItems('turn-recovered', 'first message', 'running') })
+  h.cancelMessageStream()
+  assert.deepEqual(composerStopState(h), { visible: true, disabled: true }, 'the control is latched while status is being checked')
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.assistantPendingStartStopRequested.value, false, 'the recovered run consumes the pending Stop latch')
+  assert.equal(h.messageStreaming.value, true)
+  assert.deepEqual(h.messages.value.map(item => item.id), ['user-turn-recovered', 'agent-item-turn-recovered'], 'exact request identity replaces the preserved optimistic row')
+  assert.equal(h.pendingAcceptedAssistantOptimisticMessageCount(), 0)
+  assert.deepEqual(h.stopCalls, ['turn-recovered'], 'Stop is forwarded once the missing run ID is recovered')
 })
 
 test('annotation content remains in the accepted turn payload until the POST boundary', async () => {
@@ -305,14 +883,294 @@ test('annotation content remains in the accepted turn payload until the POST bou
   assert.ok(sendMessage.indexOf("prompt.value = ''") < accepted, 'plain text may clear optimistically without consuming annotation parts')
 })
 
+test('steering rejects nontext composer context without consuming the draft', async t => {
+  const content = 'Continue this response'
+  const textPart = { type: 'text', text: content }
+  const skill = { id: 'team:review' }
+  const resource = {
+    provider: 'demo',
+    resourceRef: { apiVersion: 'demo.example.io/v1', kind: 'Widget', resource: 'widgets', name: 'one' },
+  }
+  const annotation = { type: 'annotation', annotation: { id: 'annotation-1', comment: 'Use the selected button' } }
+  const attachment = { type: 'attachment', attachment: { id: 'attachment-1', filename: 'notes.txt' } }
+  const cases = [
+    { name: 'annotation', parts: [textPart, annotation] },
+    { name: 'attachment', parts: [textPart, attachment] },
+    { name: 'selected skill', parts: [textPart], skills: [skill] },
+    { name: 'selected resource', parts: [textPart], resources: [resource] },
+    { name: 'mixed context', parts: [textPart, annotation, attachment], skills: [skill], resources: [resource] },
+  ]
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async t => {
+      const initialState = {
+        activeAssistantRun: { id: 'run-1', status: 'running' },
+        messageStreaming: true,
+        selectedTurnSkills: scenario.skills ?? [],
+        selectedTurnResources: scenario.resources ?? [],
+      }
+      const h = await assistantSubmissionHarness(t, scenario.parts, initialState)
+      h.prompt.value = content
+
+      assert.equal(await h.sendMessage('steer'), false)
+      assert.equal(h.prompt.value, content, 'the text draft remains available')
+      assert.deepEqual(h.assistantComposerParts.value, scenario.parts, 'all composer parts remain available')
+      assert.deepEqual(h.selectedTurnSkills.value, scenario.skills ?? [], 'selected skills remain available')
+      assert.deepEqual(h.selectedTurnResources.value, scenario.resources ?? [], 'selected resources remain available')
+      assert.equal(h.steerCalls.length, 0, 'no steering request is sent')
+      assert.equal(h.startCalls.length, 0, 'no new turn is started')
+      assert.deepEqual(h.messages.value, [], 'no optimistic message is created')
+      assert.equal(h.busy.value, false)
+      assert.equal(h.assistantComposerSubmitting.value, false)
+      assert.equal(h.pendingMessageSubmission, null)
+      assert.equal(h.messageStreaming.value, true, 'the existing run remains active')
+      assert.match(h.error.value, /Steer messages are text only/)
+    })
+  }
+})
+
+test('text-only steering still reaches the active run', async t => {
+  const content = 'Continue with this text only'
+  const h = await assistantSubmissionHarness(t, [{ type: 'text', text: content }], {
+    activeAssistantRun: { id: 'run-1', status: 'running' },
+    messageStreaming: true,
+  })
+  h.prompt.value = content
+
+  assert.equal(await h.sendMessage('steer'), true)
+  assert.equal(h.steerCalls.length, 1)
+  assert.deepEqual(h.steerCalls[0][4], { content, clientUserMessageID: 'request-1' })
+  assert.equal(h.startCalls.length, 0)
+  assert.equal(h.prompt.value, '')
+  assert.deepEqual(h.assistantComposerParts.value, [])
+  assert.equal(h.busy.value, false)
+  assert.equal(h.assistantComposerSubmitting.value, false)
+  assert.equal(h.pendingMessageSubmission, null)
+  assert.equal(h.messageStreaming.value, true, 'the existing run remains active')
+})
+
+test('steer reconciliation matches the exact accepted request, not the original prompt in the same run', async t => {
+  const original = {
+    id: 'user-original',
+    type: 'userMessage',
+    turnID: 'run-1',
+    content: 'Original prompt',
+    data: { clientUserMessageID: 'original-request' },
+    sequence: 1,
+  }
+  const steered = {
+    id: 'user-steer-request-1',
+    type: 'userMessage',
+    turnID: 'run-1',
+    content: 'Continue with this text only',
+    data: { clientUserMessageID: 'request-1' },
+    sequence: 2,
+  }
+
+  const stale = await assistantSubmissionHarness(t, [], {
+    activeAssistantRun: { id: 'run-1', status: 'running' },
+    messageStreaming: true,
+    pageOutcomes: [{ items: [original] }],
+  })
+  stale.prompt.value = 'Continue with this text only'
+  assert.equal(await stale.sendMessage('steer'), true)
+  assert.deepEqual(
+    stale.messages.value.map(message => message.id),
+    ['user-original', 'optimistic-request-1'],
+    'an older user item in the same run cannot consume the accepted steer row',
+  )
+  assert.equal(stale.pendingAcceptedAssistantOptimisticMessageCount(), 1)
+  stale.reconcileAcceptedAssistantOptimisticMessages('project-a', 'thread-a', [steered], null)
+  assert.deepEqual(stale.messages.value.map(message => message.id), ['user-original'], 'the matching SSE item resolves the accepted steer receipt')
+  assert.equal(stale.pendingAcceptedAssistantOptimisticMessageCount(), 0)
+
+  const exact = await assistantSubmissionHarness(t, [], {
+    activeAssistantRun: { id: 'run-1', status: 'running' },
+    messageStreaming: true,
+    pageOutcomes: [{ items: [original, steered] }],
+  })
+  exact.prompt.value = 'Continue with this text only'
+  assert.equal(await exact.sendMessage('steer'), true)
+  assert.deepEqual(
+    exact.messages.value.map(message => message.id),
+    ['user-original', 'user-steer-request-1'],
+    'the matching durable request receipt replaces only its optimistic row',
+  )
+  assert.equal(exact.pendingAcceptedAssistantOptimisticMessageCount(), 0)
+})
+
 test('first-send thread creation cannot mutate state after an App unmount or request switch', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
   const firstThreadStart = sendMessage.indexOf('let thread = assistantThreads.value.find')
   const firstThreadEnd = sendMessage.indexOf('\n      const canonical', firstThreadStart)
   assert.ok(firstThreadStart >= 0 && firstThreadEnd > firstThreadStart)
-  assert.match(sendMessage, /const firstSendIsCurrent = \(\) =>[\s\S]*appComponentMounted &&[\s\S]*sendRequestSerial === assistantThreadRequestSerial[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*selected\.value\?\.name === projectName[\s\S]*pendingMessageSubmission\?\.clientRequestID === clientRequestID/)
-  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!firstSendIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantAnnotationDraft/)
+  assert.match(sendMessage, /const submissionIsCurrent = \(\) => appComponentMounted &&[\s\S]*submissionOwner\.generation === assistantSubmissionGeneration[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*selected\.value\?\.name === submissionOwner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === submissionOwner\.projectUID[\s\S]*activeAssistantThreadID\.value === submissionOwner\.threadID/)
+  assert.match(appSource, /watch\(\s*activeAssistantThreadID,[\s\S]*current !== owner\.threadID[\s\S]*invalidateAssistantMessageSubmission\(\)/)
+  assert.match(appSource, /\(\) => `\$\{selected\.value\?\.name \?\? ''\}\\u0000\$\{selected\.value\?\.uid \?\? ''\}`[\s\S]*invalidateAssistantMessageSubmission\(\)/)
+  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantAnnotationDraft/)
+})
+
+test('late pre-acceptance failure cannot restore an old draft or release a newer submission', async t => {
+  const h = await assistantSubmissionHarness(t)
+  const firstSend = h.sendMessage()
+  assert.equal(h.startCalls.length, 1)
+  assert.equal(h.assistantComposerSubmitting.value, true)
+
+  // Thread navigation resets the submitting latch synchronously.
+  h.setThread('thread-a-recreated')
+  assert.equal(h.assistantComposerSubmitting.value, false)
+  assert.equal(h.busy.value, false, 'navigation releases only the old send-owned busy latch')
+  assert.equal(h.messageStreaming.value, false, 'navigation releases the old pre-accept stream latch')
+  h.resetConversation()
+  h.prompt.value = 'second message'
+  h.assistantComposerParts.value = [{ type: 'text', text: 'second message' }]
+
+  const secondSend = h.sendMessage()
+  assert.equal(h.startCalls.length, 2)
+  assert.equal(h.busy.value, true)
+  assert.equal(h.messageStreaming.value, true)
+  const secondSubmission = h.pendingMessageSubmission
+  const secondMessages = h.messages.value
+  h.prompt.value = 'draft written during the second submission'
+  h.assistantComposerParts.value = [{ type: 'text', text: h.prompt.value }]
+  h.error.value = 'current conversation status'
+
+  h.startCalls[0].reject(new Error('old request failed'))
+  assert.equal(await firstSend, false)
+  assert.equal(h.pendingMessageSubmission, secondSubmission)
+  assert.equal(h.assistantComposerSubmitting.value, true)
+  assert.equal(h.busy.value, true)
+  assert.equal(h.messageStreaming.value, true)
+  assert.equal(h.prompt.value, 'draft written during the second submission')
+  assert.deepEqual(h.assistantComposerParts.value, [{ type: 'text', text: 'draft written during the second submission' }])
+  assert.equal(h.error.value, 'current conversation status')
+  assert.deepEqual(h.messages.value, secondMessages)
+
+  h.startCalls[1].reject(new Error('second request failed'))
+  assert.equal(await secondSend, false)
+})
+
+test('late send cleanup cannot clear a newer non-send busy operation', async t => {
+  const h = await assistantSubmissionHarness(t)
+  const oldSend = h.sendMessage()
+  assert.equal(h.busy.value, true)
+
+  h.setThread('thread-a-recreated')
+  assert.equal(h.busy.value, false)
+  const newerBusyOwner = h.startOtherBusyOperation()
+  assert.equal(h.busy.value, true)
+
+  h.startCalls[0].reject(new Error('old request failed'))
+  assert.equal(await oldSend, false)
+  assert.equal(h.busy.value, true, 'the old send cannot release a newer operation owner')
+
+  h.finishOtherBusyOperation(newerBusyOwner)
+  assert.equal(h.busy.value, false)
+})
+
+test('host project navigation releases pending send latches and fences its late rejection', async t => {
+  const h = await assistantSubmissionHarness(t)
+  const oldSend = h.sendMessage()
+  assert.equal(h.busy.value, true)
+  assert.equal(h.messageStreaming.value, true)
+
+  h.beginAssistantThreadRequest()
+  assert.equal(h.busy.value, false)
+  assert.equal(h.messageStreaming.value, false)
+  assert.equal(h.assistantComposerSubmitting.value, false)
+  h.setProject({ name: 'project-b', uid: 'uid-b' })
+  h.setThread('thread-b')
+  h.resetConversation()
+  h.prompt.value = 'new project message'
+  h.assistantComposerParts.value = [{ type: 'text', text: h.prompt.value }]
+  const newSend = h.sendMessage()
+  assert.equal(h.busy.value, true)
+  assert.equal(h.messageStreaming.value, true)
+
+  h.startCalls[0].reject(new Error('old project request failed'))
+  assert.equal(await oldSend, false)
+  assert.equal(h.busy.value, true)
+  assert.equal(h.messageStreaming.value, true)
+  assert.equal(h.prompt.value, '')
+
+  h.startCalls[1].reject(new Error('new project request failed'))
+  assert.equal(await newSend, false)
+})
+
+test('same-name Project recreation gets a distinct submission owner and retry identity', async t => {
+  const h = await assistantSubmissionHarness(t)
+  const firstSend = h.sendMessage()
+  const firstRequestID = h.startCalls[0].args[3].clientUserMessageID
+
+  h.setProject({ name: 'project-a', uid: 'uid-a-recreated' })
+  assert.equal(h.assistantComposerSubmitting.value, false)
+  h.resetConversation()
+  h.prompt.value = 'first message'
+  const secondSend = h.sendMessage()
+  assert.equal(h.startCalls.length, 2)
+  const secondRequestID = h.startCalls[1].args[3].clientUserMessageID
+  assert.notEqual(secondRequestID, firstRequestID)
+  const secondSubmission = h.pendingMessageSubmission
+  h.prompt.value = 'new Project draft'
+  h.error.value = 'new Project status'
+
+  h.startCalls[0].reject(new Error('old Project request failed'))
+  assert.equal(await firstSend, false)
+  assert.equal(h.pendingMessageSubmission, secondSubmission)
+  assert.equal(h.assistantComposerSubmitting.value, true)
+  assert.equal(h.busy.value, true)
+  assert.equal(h.prompt.value, 'new Project draft')
+  assert.equal(h.error.value, 'new Project status')
+
+  h.startCalls[1].reject(new Error('new Project request failed'))
+  assert.equal(await secondSend, false)
+})
+
+test('late accepted response preserves receipt ownership without changing the new conversation', async t => {
+  const attachment = {
+    type: 'attachment',
+    attachment: { id: 'receipt-old', filename: 'old.txt', contentType: 'text/plain', sizeBytes: 3, sha256: 'a'.repeat(64), createdAt: '2026-01-01T00:00:00Z' },
+  }
+  const h = await assistantSubmissionHarness(t, [attachment])
+  const firstSend = h.sendMessage()
+  assert.equal(h.startCalls.length, 1)
+
+  h.beginAssistantThreadRequest()
+  h.setContext({ tenant: 'tenant-b', workspaceUUID: 'workspace-b', subPath: '/project-b' })
+  h.setProject({ name: 'project-b', uid: 'uid-b' })
+  h.setThread('thread-b')
+  h.resetConversation()
+  h.prompt.value = 'second message'
+  h.assistantComposerParts.value = [{ type: 'text', text: 'second message' }]
+  const secondSend = h.sendMessage()
+  assert.equal(h.startCalls.length, 2)
+  const secondSubmission = h.pendingMessageSubmission
+  const secondMessages = h.messages.value
+  h.prompt.value = 'new draft while the second submission waits'
+  h.assistantComposerParts.value = [{ type: 'text', text: h.prompt.value }]
+  h.error.value = 'new conversation status'
+
+  h.startCalls[0].resolve({
+    thread: { id: 'thread-a', projectName: 'project-a' },
+    turn: { id: 'turn-a' },
+  })
+  assert.equal(await firstSend, true)
+  assert.deepEqual(h.clearDraftCalls[0].slice(0, 2), ['project-a', 'thread-a'])
+  assert.equal(h.clearDraftCalls[0][2].workspaceUUID, 'workspace-a', 'accepted cleanup uses the original Workspace scope')
+  assert.deepEqual(h.committedParts, [[attachment]], 'accepted attachment receipts remain owned by the accepted turn')
+  assert.equal(h.pendingMessageSubmission, secondSubmission)
+  assert.equal(h.activeAssistantThreadID.value, 'thread-b')
+  assert.equal(h.assistantComposerSubmitting.value, true)
+  assert.equal(h.busy.value, true)
+  assert.equal(h.messageStreaming.value, true)
+  assert.equal(h.prompt.value, 'new draft while the second submission waits')
+  assert.deepEqual(h.assistantComposerParts.value, [{ type: 'text', text: 'new draft while the second submission waits' }])
+  assert.equal(h.error.value, 'new conversation status')
+  assert.deepEqual(h.messages.value, secondMessages)
+
+  h.startCalls[1].reject(new Error('second request failed'))
+  assert.equal(await secondSend, false)
 })
 
 test('first-project retries reissue an unconfirmed retained thread ID and fence its response', async () => {
@@ -347,14 +1205,14 @@ test('regular send adopts the canonical thread returned by the start response', 
   assert.match(acceptedStart, /activeAssistantThreadID\.value = canonicalThreadID/)
   assert.match(acceptedStart, /persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), canonicalThreadID\)/)
   assert.match(acceptedStart, /listAssistantThreadItemPage\(props\.ctx, projectName, canonicalThreadID\)/)
-  assert.match(acceptedStart, /clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID\)/)
+  assert.match(acceptedStart, /clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID, sendContext\)/)
 })
 
 test('regular receipt failures recover through the composer without replaying a changed turn', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
   assert.match(appSource, /recoverUnavailableAttachments/)
-  assert.match(sendMessage, /recoverUnavailableAssistantAttachmentSend\(projectName, content, turnContentParts, firstSendIsCurrent\)/)
+  assert.match(sendMessage, /recoverUnavailableAssistantAttachmentSend\(projectName, content, turnContentParts, submissionIsCurrent\)/)
   assert.match(sendMessage, /if \(attachmentRecovery\.stale \|\| attachmentRecovery\.candidateCount > 0\) return false/)
   const recoveryStart = appSource.indexOf('async function recoverUnavailableAssistantAttachmentSend')
   const recoveryEnd = appSource.indexOf('\n\nwatch(', recoveryStart)
@@ -456,6 +1314,12 @@ test('composer stop control remains latched through transient reconciliation sta
     activeRunStatus: 'interrupted',
     prompt: '',
   }), { visible: false, disabled: false })
+})
+
+test('composer wrapper disables ordinary busy controls but leaves a visible Stop action usable', () => {
+  assert.equal(state.assistantComposerWrapperDisabled(true, false), true)
+  assert.equal(state.assistantComposerWrapperDisabled(true, true), false)
+  assert.equal(state.assistantComposerWrapperDisabled(false, true), false)
 })
 
 test('composer stop control reacts when the canonical run arrives after streaming begins', () => {
@@ -744,42 +1608,25 @@ test('plan implementation requires a successful completed plan run', () => {
   assert.equal(state.assistantRunCanImplementPlan({ ...completed, status: 'running' }), false)
 })
 
-test('a stale nonterminal snapshot is rejected and cannot be used to attach a subscription', () => {
-  const current = snapshot(4, 'newer')
-  const stale = snapshot(3, 'older')
-  const result = state.acceptConversationSnapshot(current.run, stale.run)
-  assert.equal(result.accepted, false)
-  assert.deepEqual(result.current, current.run)
-})
-
-test('a delayed different run cannot replace the accepted run for the same project', () => {
-  const current = snapshot(4, 'newer')
-  const delayed = { ...snapshot(1, 'older'), run: { ...snapshot(1, 'older').run, id: 'run-old' } }
-  const result = state.acceptScopedConversationSnapshot('project-a', 'project-a', current.run, 'project-a', delayed.run)
-  assert.equal(result.accepted, false)
-  assert.equal(result.current.id, 'run-1')
-})
-
-test('a start response may replace a terminal prior run even when its revision resets to one', () => {
-  const prior = snapshot(9, 'done', 'completed')
-  const next = { ...snapshot(1, 'new'), run: { ...snapshot(1, 'new').run, id: 'run-2' } }
-  const result = state.acceptScopedConversationSnapshot('project-a', 'project-a', prior.run, 'project-a', next.run, 'start')
-  assert.equal(result.accepted, true)
-  assert.equal(result.current.id, 'run-2')
-})
-
-test('a delayed latest response for an old run cannot replace a newer start', () => {
-  const current = { ...snapshot(1, 'new'), run: { ...snapshot(1, 'new').run, id: 'run-2' } }
-  const old = snapshot(9, 'old', 'completed')
-  const result = state.acceptScopedConversationSnapshot('project-a', 'project-a', current.run, 'project-a', old.run, 'latest', 'run-1')
-  assert.equal(result.accepted, false)
-  assert.equal(result.current.id, 'run-2')
-})
-
-test('a snapshot captured for a project is rejected after selection changes', () => {
-  const incoming = snapshot(1, 'old project')
-  const result = state.acceptScopedConversationSnapshot('project-b', 'project-a', undefined, 'project-a', incoming.run, 'latest')
-  assert.equal(result.accepted, false)
+test('snapshot acceptance respects revision, run ownership, and project navigation', async t => {
+  const running = snapshot(4, 'current').run
+  const older = snapshot(3, 'older').run
+  const terminal = snapshot(9, 'done', 'completed').run
+  const next = { ...snapshot(1, 'next').run, id: 'run-2' }
+  const cases = [
+    ['stale revision', () => state.acceptConversationSnapshot(running, older), false, running],
+    ['different live run', () => state.acceptScopedConversationSnapshot('project-a', 'project-a', running, 'project-a', next), false, running],
+    ['new start after terminal', () => state.acceptScopedConversationSnapshot('project-a', 'project-a', terminal, 'project-a', next, 'start'), true, next],
+    ['late old-run response', () => state.acceptScopedConversationSnapshot('project-a', 'project-a', next, 'project-a', terminal, 'latest', 'run-1'), false, next],
+    ['project navigation', () => state.acceptScopedConversationSnapshot('project-b', 'project-a', undefined, 'project-a', next, 'latest'), false, undefined],
+  ]
+  for (const [name, accept, expected, current] of cases) {
+    await t.test(name, () => {
+      const result = accept()
+      assert.equal(result.accepted, expected)
+      assert.deepEqual(result.current, current)
+    })
+  }
 })
 
 test('a successful stop snapshot immediately makes the run interrupted and non-provisional', () => {
