@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -25,6 +26,25 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/store"
 )
+
+type blockingAssistantThreadEventsStore struct {
+	store.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingAssistantThreadEventsStore) ListAssistantThreadEvents(ctx context.Context, scope store.Scope, threadID string, afterSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.Store.ListAssistantThreadEvents(ctx, scope, threadID, afterSequence, limit)
+}
 
 func TestSanitizeAssistantThreadTitleBoundsAndNormalizesModelOutput(t *testing.T) {
 	tests := []struct {
@@ -85,18 +105,21 @@ func TestAssistantThreadTitleEligibilityUsesCanonicalUserItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: memory}
-	if !server.assistantThreadTitleNeedsGeneration(context.Background(), scope, thread) {
+	if !server.assistantThreadTitleNeedsGeneration(context.Background(), scope, thread, "") {
 		t.Fatal("new untitled thread should be eligible")
 	}
-	payload, err := json.Marshal(map[string]any{"item": map[string]any{"type": assistantThreadEventUserMessage}})
+	payload, err := json.Marshal(map[string]any{"item": map[string]any{"id": "user-current", "type": assistantThreadEventUserMessage}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := memory.UpdateAssistantThreadWithEvent(context.Background(), scope, thread, store.AssistantThreadEvent{Type: assistantThreadEventItemCompleted, Payload: payload}, 1); err != nil {
 		t.Fatal(err)
 	}
-	if server.assistantThreadTitleNeedsGeneration(context.Background(), scope, thread) {
-		t.Fatal("thread with a canonical user item must not request another title")
+	if !server.assistantThreadTitleNeedsGeneration(context.Background(), scope, thread, "user-current") {
+		t.Fatal("the first user item for this turn should remain eligible after admission")
+	}
+	if server.assistantThreadTitleNeedsGeneration(context.Background(), scope, thread, "user-next") {
+		t.Fatal("a later user item must not request another title")
 	}
 }
 
@@ -107,10 +130,23 @@ func TestStartAssistantThreadTitleGenerationPersistsStreamedUpdate(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	userPayload, err := json.Marshal(map[string]any{"item": map[string]any{"id": "user-current", "type": assistantThreadEventUserMessage}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := memory.UpdateAssistantThreadWithEvent(context.Background(), scope, thread, store.AssistantThreadEvent{Type: assistantThreadEventItemCompleted, ItemID: "user-current", Payload: userPayload}, 1); err != nil {
+		t.Fatal(err)
+	}
+	blockingStore := &blockingAssistantThreadEventsStore{
+		Store: memory, entered: make(chan struct{}, 1), release: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseHistory := func() { releaseOnce.Do(func() { close(blockingStore.release) }) }
+	t.Cleanup(releaseHistory)
 	generated := make(chan struct{})
 	server := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		store: memory,
+		store: blockingStore,
 		assistantThreadTitleGenerator: func(_ context.Context, _ *asclient.Client, prompt string) (string, error) {
 			if prompt != "build a compact thread pane" {
 				t.Errorf("title prompt = %q", prompt)
@@ -119,7 +155,29 @@ func TestStartAssistantThreadTitleGenerationPersistsStreamedUpdate(t *testing.T)
 			return "Build Compact Thread Pane", nil
 		},
 	}
-	server.startAssistantThreadTitleGeneration(nil, scope, identity{user: "alice"}, thread, "build a compact thread pane")
+	startReturned := make(chan struct{})
+	go func() {
+		server.startAssistantThreadTitleGeneration(nil, scope, identity{user: "alice"}, thread, "user-current", "build a compact thread pane")
+		close(startReturned)
+	}()
+	select {
+	case <-startReturned:
+	case <-time.After(time.Second):
+		releaseHistory()
+		<-startReturned
+		t.Fatal("title history lookup blocked turn-start scheduling")
+	}
+	select {
+	case <-blockingStore.entered:
+	case <-time.After(time.Second):
+		t.Fatal("detached title task did not check thread history")
+	}
+	select {
+	case <-generated:
+		t.Fatal("title generation started before the history check completed")
+	default:
+	}
+	releaseHistory()
 	select {
 	case <-generated:
 	case <-time.After(time.Second):
@@ -133,7 +191,7 @@ func TestStartAssistantThreadTitleGenerationPersistsStreamedUpdate(t *testing.T)
 			if listErr != nil {
 				t.Fatal(listErr)
 			}
-			if len(events) != 2 || events[1].Type != assistantThreadEventThreadUpdated || !strings.Contains(string(events[1].Payload), "Build Compact Thread Pane") {
+			if len(events) != 3 || events[2].Type != assistantThreadEventThreadUpdated || !strings.Contains(string(events[2].Payload), "Build Compact Thread Pane") {
 				t.Fatalf("title update events = %#v", events)
 			}
 			return

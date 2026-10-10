@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -151,31 +152,28 @@ func TestProjectEinoAssistantReductionRetainsSequentialReadResultsAndCompactsMut
 func TestProjectEinoAssistantReductionProjectedReadRemainsBoundedAndNonAuthoritative(t *testing.T) {
 	const maxBytes = projectEinoAssistantModelToolOutputMaxBytes
 	content := "// projected App.jsx\n" + strings.Repeat("const projectedReadMarker = true;\n", 1200)
-	rawRead := `{"path":"src/App.jsx","content":` + quoteJSON(content) + `,"size":100000,"version":"sha256:projected-app","complete":true}`
+	rawRead := `{"path":"src/App.jsx","content":` + quoteJSON(content) + `,"size":` + strconv.Itoa(len(content)) + `,"version":"sha256:projected-app","complete":true}`
 
-	projectedRead := projectEinoAssistantTruncateModelToolOutput(rawRead, maxBytes)
+	projectedRead, ok := projectEinoAssistantProjectModelReadFileOutput(rawRead, maxBytes)
+	if !ok {
+		t.Fatal("complete read receipt was not projected")
+	}
 	if projectedRead == rawRead || len(projectedRead) > maxBytes {
 		t.Fatalf("projected read is %d bytes; want a changed result within %d", len(projectedRead), maxBytes)
 	}
 	if !utf8.ValidString(projectedRead) {
 		t.Fatal("projected read is not valid UTF-8")
 	}
-	var projected struct {
-		Path                     string `json:"path"`
-		Content                  string `json:"content"`
-		Version                  string `json:"version"`
-		Complete                 bool   `json:"complete"`
-		ModelProjectionTruncated bool   `json:"modelProjectionTruncated"`
+	projected, ok := projectEinoAssistantParseLiteralReadFileOutput(projectedRead)
+	if !ok {
+		t.Fatalf("projected read is not a literal-source result:\n%s", projectedRead)
 	}
-	if err := json.Unmarshal([]byte(projectedRead), &projected); err != nil {
-		t.Fatalf("projected read is not valid JSON: %v\n%s", err, projectedRead)
-	}
-	if projected.Path != "src/App.jsx" || projected.Version != "" || projected.Complete || !projected.ModelProjectionTruncated {
+	if projected.path != "src/App.jsx" || projected.version != "" || projected.complete || !projected.truncated {
 		t.Fatalf("projected read metadata = %#v; want bounded, non-authoritative evidence", projected)
 	}
-	if !strings.Contains(projected.Content, "projected App.jsx") ||
-		!strings.Contains(projected.Content, projectEinoAssistantToolOutputTruncationNotice) {
-		t.Fatalf("projected read content lost bounded evidence: %q", projected.Content)
+	if !strings.Contains(projected.shown, "projected App.jsx") ||
+		!strings.Contains(projectedRead, "Warning: source read or model output was truncated") {
+		t.Fatalf("projected read content lost bounded evidence: %q", projected.shown)
 	}
 
 	// Put the projected read before the two retained suffix groups. Reduction
@@ -266,6 +264,7 @@ func TestProjectEinoAssistantUnverifiableReceiptsAreNonSuccess(t *testing.T) {
 	}{
 		{name: "outcome unknown", result: `{"status":"outcome_unknown","outcome":"unknown","replayed":false}`},
 		{name: "unverifiable", result: `{"status":"unverifiable","outcome":"unknown","replayed":false,"requiresSnapshot":true}`},
+		{name: "not executed", result: `{"status":"not_executed","outcome":"not_executed","replayed":false,"reason":"preview_context_changed"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if projectEinoAssistantSuccessfulToolContent(tc.result) {

@@ -126,6 +126,37 @@ func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 	}
 }
 
+func TestAssistantThreadSteeringUserMessageCarriesExactRequestIdentity(t *testing.T) {
+	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	user := store.Message{
+		ID: "user-steer-2", Role: "user", Content: "continue with the correction", CreatedAt: createdAt,
+		Metadata: map[string]any{projectAssistantSteeringRequestMetadata: "steer-request-2"},
+	}
+	item := assistantThreadSteeringUserMessageItem(user, "turn-shared")
+	if item.ID != user.ID || item.TurnID != "turn-shared" || item.Type != assistantThreadEventUserMessage {
+		t.Fatalf("steering thread item = %#v, want user item for the accepted run", item)
+	}
+
+	payload, err := json.Marshal(map[string]any{"item": item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := materializeAssistantThreadItems([]store.AssistantThreadEvent{{
+		TurnID: "turn-shared", Sequence: 1, Type: assistantThreadEventItemCompleted,
+		ItemID: user.ID, Payload: payload, CreatedAt: createdAt,
+	}})
+	if len(items) != 1 {
+		t.Fatalf("materialized steering item count = %d, want 1", len(items))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(items[0].Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data["clientUserMessageID"] != "steer-request-2" || len(data) != 1 {
+		t.Fatalf("steering request identity projection = %#v, want only the exact request ID", data)
+	}
+}
+
 func TestAssistantThreadAgentMessageCarriesRunTerminalContract(t *testing.T) {
 	now := time.Now().UTC()
 	turn := store.AssistantTurn{ID: "turn-contract", Mode: store.AssistantRunModePlan}

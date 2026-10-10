@@ -72,7 +72,7 @@ func TestProjectEinoAssistantProgressReminderTracksAcceptedProgressSeparately(t 
 	}
 }
 
-func TestProjectEinoAssistantProgressReminderRepeatsForBoundedAttempts(t *testing.T) {
+func TestProjectEinoAssistantProgressReminderDeliversOnceForPhaseChange(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	previous := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{
 		Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress",
@@ -85,141 +85,129 @@ func TestProjectEinoAssistantProgressReminderRepeatsForBoundedAttempts(t *testin
 	if !runState.QueuePlanProgressReminder(previous, next) {
 		t.Fatal("plan phase transition did not queue a reminder")
 	}
-	for attempt := 1; attempt <= projectEinoAssistantProgressReminderMaxAttempts; attempt++ {
-		reminder, ok := runState.TakeProgressReminder(true)
-		if !ok || reminder.Kind != projectEinoAssistantProgressReminderPlan {
-			t.Fatalf("attempt %d reminder = %#v, ok = %v", attempt, reminder, ok)
-		}
-		if !strings.Contains(projectEinoAssistantProgressReminderInstruction(reminder), "Verifying preview") {
-			t.Fatalf("plan reminder omitted active phase on attempt %d: %#v", attempt, reminder)
-		}
-		checkpoint := runState.CheckpointState()
-		if attempt < projectEinoAssistantProgressReminderMaxAttempts {
-			if checkpoint.ProgressReminderKind != projectEinoAssistantProgressReminderPlan || checkpoint.ProgressReminderAttempts != attempt {
-				t.Fatalf("attempt %d checkpoint = %#v", attempt, checkpoint)
-			}
-			if !runState.progressReminderPending() {
-				t.Fatalf("attempt %d cleared the queued reminder", attempt)
-			}
-		} else if runState.progressReminderPending() || checkpoint.ProgressReminderKind != "" || checkpoint.ProgressReminderAttempts != 0 {
-			t.Fatalf("third attempt did not clear reminder: pending=%v checkpoint=%#v", runState.progressReminderPending(), checkpoint)
-		}
+	reminder, ok := runState.TakeProgressReminder(true)
+	if !ok || reminder.Kind != projectEinoAssistantProgressReminderPlan {
+		t.Fatalf("phase reminder = %#v, ok = %v", reminder, ok)
 	}
-	if _, ok := runState.TakeProgressReminder(true); ok {
-		t.Fatal("fourth reminder attempt was not suppressed")
-	}
-}
-
-func TestProjectEinoAssistantProgressReminderInjectsEphemeralSystemMessage(t *testing.T) {
-	runState := newProjectEinoAssistantRunState()
-	runState.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
-	if !runState.QueueProgressReminder(projectEinoAssistantProgressReminderVerification, "preview is not ready") {
-		t.Fatal("verification reminder did not queue")
-	}
-	base := &projectEinoAssistantProgressReminderCaptureModel{}
-	model := &projectEinoAssistantProgressReminderModel{
-		BaseChatModel: base,
-		req: projectAssistantRunRequest{
-			TurnPolicy:      projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
-			StreamCallbacks: projectAssistantStreamCallbacks{OnProgress: func(string) {}},
-		},
-		runState: runState,
-	}
-	canonicalSystem := "canonical system instruction"
-	original := []*schema.Message{schema.SystemMessage(canonicalSystem), schema.UserMessage("continue")}
-	if _, err := model.Generate(context.Background(), original); err != nil {
-		t.Fatal(err)
-	}
-	if len(original) != 2 || original[0].Role != schema.System || original[0].Content != canonicalSystem || len(base.input) != 3 {
-		t.Fatalf("input mutation: original=%#v captured=%#v", original, base.input)
-	}
-	if base.input[0] != original[0] || base.input[1] != original[1] {
-		t.Fatalf("canonical input was cloned or reordered: original=%#v captured=%#v", original, base.input)
-	}
-	reminder := base.input[2]
-	if reminder.Role != schema.System || !strings.Contains(reminder.Content, "User-visible progress is overdue") ||
-		!strings.Contains(reminder.Content, "report_progress is available") {
-		t.Fatalf("captured reminder = %#v", reminder)
-	}
-	if !strings.Contains(reminder.Content, "Call it now with one concise completed outcome and your next direction or blocker, then continue working.") {
-		t.Fatalf("reminder did not require an immediate update: %#v", reminder)
-	}
-	if !strings.Contains(reminder.Content, "advisory and non-blocking; do not force a tool choice") {
-		t.Fatalf("reminder is not advisory/non-blocking: %#v", reminder)
-	}
-	if !runState.progressReminderPending() {
-		t.Fatal("reminder was not retained after first ignored model invocation")
+	if !strings.Contains(projectEinoAssistantProgressReminderInstruction(reminder), "Verifying preview") {
+		t.Fatalf("plan reminder omitted active phase: %#v", reminder)
 	}
 	checkpoint := runState.CheckpointState()
-	if checkpoint.ProgressReminderKind != projectEinoAssistantProgressReminderVerification || checkpoint.ProgressReminderAttempts != 1 {
-		t.Fatalf("reminder attempt was not checkpointed: %#v", checkpoint)
+	if runState.progressReminderPending() || checkpoint.ProgressReminderKind != "" || checkpoint.ProgressReminderAttempts != 0 {
+		t.Fatalf("delivered reminder was not cleared: pending=%v checkpoint=%#v", runState.progressReminderPending(), checkpoint)
+	}
+	if _, ok := runState.TakeProgressReminder(true); ok {
+		t.Fatal("duplicate reminder was delivered")
 	}
 }
 
-func TestProjectEinoAssistantProgressReminderInjectsEphemeralSystemMessageForStream(t *testing.T) {
-	runState := newProjectEinoAssistantRunState()
-	runState.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
-	if !runState.QueueProgressReminder(projectEinoAssistantProgressReminderPlan, "implementing the next phase") {
-		t.Fatal("plan reminder did not queue")
+func TestProjectEinoAssistantPlanReminderIgnoresInitialPlanAndChecklistEdits(t *testing.T) {
+	initial := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{
+		Content: "Inspect project", ActiveForm: "Inspecting project", Status: "in_progress",
+	}}}
+	if projectEinoAssistantPlanPhaseTransition(projectAssistantPlanSnapshot{}, initial) {
+		t.Fatal("initial checklist creation counted as a completed phase")
 	}
-	base := &projectEinoAssistantProgressReminderCaptureModel{}
-	model := &projectEinoAssistantProgressReminderModel{
-		BaseChatModel: base,
-		req: projectAssistantRunRequest{
-			TurnPolicy:      projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
-			StreamCallbacks: projectAssistantStreamCallbacks{OnProgress: func(string) {}},
-		},
-		runState: runState,
+	statusEdit := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{
+		Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed",
+	}, {
+		Content: "Implement title edit", ActiveForm: "Implementing title edit", Status: "in_progress",
+	}}}
+	if !projectEinoAssistantPlanPhaseTransition(initial, statusEdit) {
+		t.Fatal("active work changing to the next phase was not detected")
 	}
-	canonicalSystem := "canonical stream instruction"
-	original := []*schema.Message{schema.SystemMessage(canonicalSystem), schema.UserMessage("continue")}
-	stream, err := model.Stream(context.Background(), original)
-	if err != nil {
-		t.Fatal(err)
+	textOnlyEdit := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{
+		Content: "Inspect project", ActiveForm: "Reviewing project", Status: "in_progress",
+	}}}
+	if projectEinoAssistantPlanPhaseTransition(initial, textOnlyEdit) {
+		t.Fatal("active-form wording edit counted as a phase change")
 	}
-	if stream == nil {
-		t.Fatal("stream model returned nil reader")
-	}
-	if _, err := stream.Recv(); err != nil {
-		t.Fatal(err)
-	}
-	stream.Close()
-	if len(original) != 2 || original[0].Role != schema.System || original[0].Content != canonicalSystem || len(base.input) != 3 {
-		t.Fatalf("stream input mutation: original=%#v captured=%#v", original, base.input)
-	}
-	if base.input[0] != original[0] || base.input[1] != original[1] || base.input[2].Role != schema.System ||
-		!strings.Contains(base.input[2].Content, "report_progress") {
-		t.Fatalf("captured stream reminder = %#v", base.input)
-	}
-	if !runState.progressReminderPending() {
-		t.Fatal("stream reminder was not retained after first ignored model invocation")
+	uncompletedPhaseChange := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{
+		Content: "Inspect project", ActiveForm: "Inspecting project", Status: "pending",
+	}, {
+		Content: "Implement title edit", ActiveForm: "Implementing title edit", Status: "in_progress",
+	}}}
+	if projectEinoAssistantPlanPhaseTransition(initial, uncompletedPhaseChange) {
+		t.Fatal("moving to a new active step without completing the prior phase counted as progress")
 	}
 }
 
-func TestProjectEinoAssistantProgressReminderAppendsWithoutLeadingSystem(t *testing.T) {
-	runState := newProjectEinoAssistantRunState()
-	runState.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
-	if !runState.QueueProgressReminder(projectEinoAssistantProgressReminderPlan, "implementing the next phase") {
-		t.Fatal("plan reminder did not queue")
-	}
-	base := &projectEinoAssistantProgressReminderCaptureModel{}
-	model := &projectEinoAssistantProgressReminderModel{
-		BaseChatModel: base,
-		req: projectAssistantRunRequest{
-			TurnPolicy:      projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
-			StreamCallbacks: projectAssistantStreamCallbacks{OnProgress: func(string) {}},
-		},
-		runState: runState,
-	}
-	original := []*schema.Message{schema.UserMessage("continue")}
-	if _, err := model.Generate(context.Background(), original); err != nil {
-		t.Fatal(err)
-	}
-	if len(original) != 1 || len(base.input) != 2 || base.input[0] != original[0] || base.input[1].Role != schema.System {
-		t.Fatalf("append mutated or reordered input: original=%#v captured=%#v", original, base.input)
-	}
-	if !strings.Contains(base.input[1].Content, "report_progress") {
-		t.Fatalf("appended reminder omitted report_progress: %#v", base.input[1])
+// Exercise both model APIs and inputs with/without a leading system message
+// through the same preservation, delivery, and checkpoint assertions.
+func TestProjectEinoAssistantProgressReminderInjectsEphemeralSystemMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stream bool
+		system bool
+		kind   string
+	}{
+		{"generate", false, true, projectEinoAssistantProgressReminderVerification},
+		{"stream", true, true, projectEinoAssistantProgressReminderPlan},
+		{"without system", false, false, projectEinoAssistantProgressReminderPlan},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runState := newProjectEinoAssistantRunState()
+			policy := projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+			runState.SetTurnPolicy(policy)
+			if !runState.QueueProgressReminder(tc.kind, "implementing the next phase") {
+				t.Fatal("reminder did not queue")
+			}
+			base := &projectEinoAssistantProgressReminderCaptureModel{}
+			model := &projectEinoAssistantProgressReminderModel{
+				BaseChatModel: base,
+				req:           projectAssistantRunRequest{TurnPolicy: policy, StreamCallbacks: projectAssistantStreamCallbacks{OnProgress: func(string) {}}},
+				runState:      runState,
+			}
+			original := []*schema.Message{schema.UserMessage("continue")}
+			if tc.system {
+				original = append([]*schema.Message{schema.SystemMessage("canonical system instruction")}, original...)
+			}
+			before := append([]*schema.Message(nil), original...)
+			if tc.stream {
+				stream, err := model.Stream(context.Background(), original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stream == nil {
+					t.Fatal("nil stream reader")
+				}
+				defer stream.Close()
+				if _, err := stream.Recv(); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := model.Generate(context.Background(), original); err != nil {
+				t.Fatal(err)
+			}
+			if len(original) != len(before) || len(base.input) != len(before)+1 {
+				t.Fatalf("input mutation: original=%#v captured=%#v", original, base.input)
+			}
+			for i, message := range before {
+				if original[i] != message || base.input[i] != message {
+					t.Fatal("canonical input was cloned or reordered")
+				}
+			}
+			if tc.system && (original[0].Role != schema.System || original[0].Content != "canonical system instruction") {
+				t.Fatal("canonical system instruction changed")
+			}
+			reminder := base.input[len(before)]
+			if reminder.Role != schema.System {
+				t.Fatalf("reminder role = %s", reminder.Role)
+			}
+			for _, text := range []string{
+				"A user update may be useful for this substantial work",
+				"use report_progress once with a concise outcome",
+				"otherwise continue without adding a tool call",
+				"advisory and non-blocking; do not force a tool choice",
+			} {
+				if !strings.Contains(reminder.Content, text) {
+					t.Fatalf("reminder missing %q: %s", text, reminder.Content)
+				}
+			}
+			checkpoint := runState.CheckpointState()
+			if runState.progressReminderPending() || checkpoint.ProgressReminderKind != "" || checkpoint.ProgressReminderAttempts != 0 {
+				t.Fatalf("one-shot reminder was not cleared: %#v", checkpoint)
+			}
+		})
 	}
 }
 
@@ -280,7 +268,7 @@ func TestProjectEinoAssistantProgressReminderSuppressesPermissionBarrier(t *test
 	}
 }
 
-func TestProjectEinoAssistantProgressReminderVerificationTriggerRepeatsForBoundedAttempts(t *testing.T) {
+func TestProjectEinoAssistantProgressReminderVerificationTriggerDeliversOnce(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	runState.RecordDevelopmentVerification(false)
 	for attempt := 1; attempt <= projectEinoAssistantProgressReminderMaxAttempts; attempt++ {
@@ -294,7 +282,7 @@ func TestProjectEinoAssistantProgressReminderVerificationTriggerRepeatsForBounde
 	}
 }
 
-func TestProjectEinoAssistantProgressReminderAcceptedProgressResetsAttempts(t *testing.T) {
+func TestProjectEinoAssistantProgressReminderAcceptedProgressClearsOneShotAndAllowsNext(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	if !runState.QueueProgressReminder(projectEinoAssistantProgressReminderPlan, "phase one") {
 		t.Fatal("plan reminder did not queue")
@@ -302,8 +290,11 @@ func TestProjectEinoAssistantProgressReminderAcceptedProgressResetsAttempts(t *t
 	if _, ok := runState.TakeProgressReminder(true); !ok {
 		t.Fatal("first plan reminder attempt was not delivered")
 	}
-	if checkpoint := runState.CheckpointState(); checkpoint.ProgressReminderAttempts != 1 {
-		t.Fatalf("first attempt checkpoint = %#v", checkpoint)
+	if runState.progressReminderPending() {
+		t.Fatal("one-shot plan reminder remained pending after delivery")
+	}
+	if checkpoint := runState.CheckpointState(); checkpoint.ProgressReminderKind != "" || checkpoint.ProgressReminderAttempts != 0 {
+		t.Fatalf("delivered one-shot reminder was not cleared: %#v", checkpoint)
 	}
 	if !runState.AcceptProgressMessage("I completed that phase and am moving to verification.") {
 		t.Fatal("progress message was not accepted")
@@ -320,8 +311,11 @@ func TestProjectEinoAssistantProgressReminderAcceptedProgressResetsAttempts(t *t
 	if _, ok := runState.TakeProgressReminder(true); !ok {
 		t.Fatal("new phase reminder was not delivered")
 	}
-	if checkpoint := runState.CheckpointState(); checkpoint.ProgressReminderAttempts != 1 {
-		t.Fatalf("new phase did not reset attempts: %#v", checkpoint)
+	if runState.progressReminderPending() {
+		t.Fatal("new phase one-shot reminder remained pending after delivery")
+	}
+	if checkpoint := runState.CheckpointState(); checkpoint.ProgressReminderKind != "" || checkpoint.ProgressReminderAttempts != 0 {
+		t.Fatalf("new phase one-shot reminder was not cleared: %#v", checkpoint)
 	}
 }
 
@@ -330,29 +324,23 @@ func TestProjectEinoAssistantProgressReminderCheckpointRestoresAttemptsAndSaniti
 	if !runState.QueueProgressReminder(projectEinoAssistantProgressReminderVerification, "resume verification") {
 		t.Fatal("verification reminder did not queue")
 	}
-	if _, ok := runState.TakeProgressReminder(true); !ok {
-		t.Fatal("first reminder attempt was not delivered")
-	}
 	checkpoint := runState.CheckpointState()
-	if checkpoint.ProgressReminderAttempts != 1 {
+	if checkpoint.ProgressReminderAttempts != 0 {
 		t.Fatalf("checkpoint attempts = %#v", checkpoint)
 	}
 	restored := newProjectEinoAssistantRunState()
 	restored.RestoreCheckpointState(checkpoint)
-	if restored.CheckpointState().ProgressReminderAttempts != 1 {
+	if restored.CheckpointState().ProgressReminderAttempts != 0 {
 		t.Fatalf("restored attempts = %#v", restored.CheckpointState())
 	}
 	if _, ok := restored.TakeProgressReminder(true); !ok {
-		t.Fatal("restored second reminder attempt was not delivered")
-	}
-	if _, ok := restored.TakeProgressReminder(true); !ok {
-		t.Fatal("restored third reminder attempt was not delivered")
+		t.Fatal("restored one-shot reminder was not delivered")
 	}
 	if restored.progressReminderPending() {
-		t.Fatal("restored third attempt did not clear reminder")
+		t.Fatal("restored one-shot reminder was not cleared")
 	}
 	if _, ok := restored.TakeProgressReminder(true); ok {
-		t.Fatal("restored fourth reminder attempt was delivered")
+		t.Fatal("restored duplicate reminder was delivered")
 	}
 	high := newProjectEinoAssistantRunState()
 	high.RestoreCheckpointState(projectAssistantCheckpointState{
@@ -395,6 +383,9 @@ func TestProjectEinoAssistantProgressReminderAcceptedUpdateSuppressesSameCallVer
 }
 
 func TestProjectEinoAssistantProgressReminderSilenceIsBoundedAndCheckpointed(t *testing.T) {
+	if projectEinoAssistantProgressReminderSilenceModelCalls < 18 {
+		t.Fatalf("silence threshold = %d model calls, want at least 18 to avoid reminders on short tasks", projectEinoAssistantProgressReminderSilenceModelCalls)
+	}
 	runState := newProjectEinoAssistantRunState()
 	for i := 0; i < projectEinoAssistantProgressReminderSilenceModelCalls-1; i++ {
 		runState.NextModelCallOrdinal()

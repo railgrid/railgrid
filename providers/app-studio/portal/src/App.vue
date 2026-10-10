@@ -76,6 +76,7 @@ import {
   type ProjectCreateReadiness,
 } from './createReadiness'
 import { parseAssistantActionFeed } from './assistantActionFeed'
+import { shouldShowAssistantSpendCapChangesNotice } from './assistantSpendCapNotice'
 import {
   assistantInterruptAllowsApproval,
   parseAssistantInterrupt,
@@ -215,6 +216,7 @@ import {
   assistantRunMatchesStartRequest,
   assistantRunCanImplementPlan,
   assistantComposerStopControlState,
+  assistantComposerWrapperDisabled,
   assistantRunRequiresLiveControls,
   assistantRunTerminal,
   firstProjectStartPlan,
@@ -341,6 +343,7 @@ import type {
   ProjectAssistantThread,
   ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
+  ProjectAssistantTurn,
   ProjectAssistantRunStart,
   ProjectAssistantUIComponent,
   ProjectAssistantFollowUpQuestion,
@@ -432,12 +435,13 @@ function assistantThreadFocusScope(projectName: string) {
 function assistantAnnotationDraftScope(
   projectName = selected.value?.name ?? '',
   threadID = activeAssistantThreadID.value,
+  ctx: RailgridContext | null = props.ctx,
 ): AssistantAnnotationDraftScope {
   return {
-    tenant: props.ctx?.tenant ?? '',
-    orgUUID: props.ctx?.orgUUID ?? '',
-    workspaceUUID: props.ctx?.workspaceUUID ?? '',
-    user: props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email || '',
+    tenant: ctx?.tenant ?? '',
+    orgUUID: ctx?.orgUUID ?? '',
+    workspaceUUID: ctx?.workspaceUUID ?? '',
+    user: ctx?.user?.userId || ctx?.user?.sub || ctx?.user?.email || '',
     project: projectName,
     thread: threadID,
   }
@@ -732,6 +736,7 @@ interface AssistantAttachmentRecoveryResult extends AssistantAttachmentRecoveryC
   stale: boolean
 }
 
+const assistantComposerSubmitting = ref(false)
 const assistantComposerRef = ref<{
   focus: () => void
   openPalette: () => void
@@ -940,7 +945,7 @@ const reviewedGitConnection = ref('')
 const createGitError = ref('')
 const setupCompletionVisible = ref(false)
 const messagesRef = ref<HTMLDivElement | null>(null)
-const expandedAssistantProgressIDs = ref<Set<string>>(new Set())
+const assistantProgressDisclosureChoices = ref<Map<string, { closed: boolean; expanded: boolean }>>(new Map())
 const assistantDurationNowMs = ref(Date.now())
 const assistantWorkedDurationClock = new AssistantWorkedDurationClock({ namespace: 'app-studio' })
 const assistantPlanAnnouncement = ref('')
@@ -994,6 +999,7 @@ let activeAssistantRun: AssistantRun | null = null
 const activeAssistantRunRevision = ref(0)
 function setActiveAssistantRun(run: AssistantRun | null) {
   if (run && assistantStopRequestedRunID.value && assistantStopRequestedRunID.value !== run.id) {
+    assistantStopRequestGeneration += 1
     assistantStopRequestedRunID.value = ''
     assistantStopError.value = null
   }
@@ -1002,7 +1008,48 @@ function setActiveAssistantRun(run: AssistantRun | null) {
 }
 let activeAssistantProject = ''
 let activeAssistantThreadSequence = 0
-let pendingMessageSubmission: { fingerprint: string; clientRequestID: string } | null = null
+let busyOperationSequence = 0
+let busyOperationOwner = 0
+let assistantQueueOperationGeneration = 0
+let assistantStopRequestGeneration = 0
+interface PendingAssistantMessageSubmission {
+  fingerprint: string
+  clientRequestID: string
+}
+
+interface AssistantMessageSubmissionOwner {
+  generation: number
+  busyOwner: number
+  projectName: string
+  projectUID: string
+  threadID: string
+  postAccepted: boolean
+}
+
+interface PendingAcceptedAssistantOptimisticMessage {
+  projectName: string
+  projectUID: string
+  threadID: string
+  clientRequestID: string
+  optimisticID: string
+  turnID: string
+  steering?: boolean
+}
+
+interface AssistantQueueOperationOwner {
+  generation: number
+  projectName: string
+  projectUID: string
+  contextFingerprint: string
+  threadRequestSerial: number
+  scopeKey: string
+  scope: AssistantMessageQueueScope
+}
+
+let pendingMessageSubmission: PendingAssistantMessageSubmission | null = null
+let assistantSubmissionGeneration = 0
+let activeAssistantSubmissionOwner: AssistantMessageSubmissionOwner | null = null
+const pendingAcceptedAssistantOptimisticMessages = new Map<string, PendingAcceptedAssistantOptimisticMessage>()
 const pendingAssistantStopRequestIDs: Record<string, string> = {}
 let pendingFirstProjectSubmission: ReturnType<typeof newFirstProjectSubmission> | null = null
 let projectCreateGeneration = 0
@@ -1424,6 +1471,7 @@ function invalidateProjectContextState() {
   queuedAssistantSteeringID.value = ''
   queuedAssistantDeliveryBusy.value = false
   assistantQueueingEnabled.value = true
+  assistantStopRequestGeneration += 1
   assistantStopRequestedRunID.value = ''
   assistantPendingStartStopRequested.value = false
   assistantStopError.value = null
@@ -1443,7 +1491,7 @@ function invalidateProjectContextState() {
   projectsLoaded.value = false
   initializing.value = false
   error.value = null
-  busy.value = false
+  invalidateBusyOperation()
   threadError.value = null
   editingAssistantThreadTitle.value = false
   editingAssistantThreadID.value = ''
@@ -1646,10 +1694,50 @@ function resetAssistantThreadItemWindow() {
   assistantThreadViewingOlderHistory.value = false
 }
 
+function beginBusyOperation(): number {
+  const owner = ++busyOperationSequence
+  busyOperationOwner = owner
+  busy.value = true
+  return owner
+}
+
+function releaseBusyOperation(owner: number) {
+  if (!owner || busyOperationOwner !== owner) return
+  busyOperationOwner = 0
+  busy.value = false
+}
+
+function invalidateBusyOperation() {
+  busyOperationSequence += 1
+  busyOperationOwner = 0
+  busy.value = false
+}
+
+function invalidateAssistantQueueOperations() {
+  assistantQueueOperationGeneration += 1
+  queuedAssistantSteeringID.value = ''
+  queuedAssistantDeliveryBusy.value = false
+}
+
+function invalidateAssistantMessageSubmission() {
+  const owner = activeAssistantSubmissionOwner
+  assistantSubmissionGeneration += 1
+  activeAssistantSubmissionOwner = null
+  pendingMessageSubmission = null
+  assistantComposerSubmitting.value = false
+  if (owner) {
+    releaseBusyOperation(owner.busyOwner)
+    messageStreaming.value = false
+    assistantPendingStartStopRequested.value = false
+  }
+}
+
 function beginAssistantThreadRequest(): number {
   // A thread/project operation supersedes any in-flight historical-page load.
   // Clear its UI latch immediately; the stale request is fenced by the serial
   // and must not be allowed to strand the next thread in a loading state.
+  invalidateAssistantMessageSubmission()
+  invalidateAssistantQueueOperations()
   assistantThreadOlderLoading.value = false
   assistantThreadHistoryOperation.value = null
   return ++assistantThreadRequestSerial
@@ -1812,13 +1900,15 @@ const assistantRunController = new ConversationRunController({
   connect: async (runID, _afterRevision, setDisconnect) => {
     const projectName = selected.value?.name
     if (!projectName) return
+    const threadID = activeAssistantThreadID.value
     const requestContextFingerprint = appContextFingerprint(props.ctx)
     const controller = new AbortController()
     activeAssistantSubscription = controller
     setDisconnect(() => controller.abort())
-    if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
-    await api.streamAssistantThread(props.ctx, projectName, activeAssistantThreadID.value, activeAssistantThreadSequence, (event) => {
+    if (!threadID) throw new Error('active assistant thread is missing')
+    await api.streamAssistantThread(props.ctx, projectName, threadID, activeAssistantThreadSequence, (event) => {
       if (
+        controller.signal.aborted || activeAssistantThreadID.value !== threadID ||
         appContextFingerprint(props.ctx) !== requestContextFingerprint ||
         activeProjectContextFingerprint !== requestContextFingerprint ||
         selected.value?.name !== projectName ||
@@ -1991,6 +2081,7 @@ const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).len
 const assistantStopRequested = computed(() => Boolean(assistantStopRequestedRunID.value) || assistantPendingStartStopRequested.value)
 
 function resetAssistantStopState() {
+  assistantStopRequestGeneration += 1
   assistantStopRequestedRunID.value = ''
   assistantPendingStartStopRequested.value = false
   assistantStopError.value = null
@@ -2025,6 +2116,12 @@ const assistantComposerStopControl = computed(() => assistantComposerStopControl
 }))
 const assistantComposerShowsStop = computed(() => assistantComposerStopControl.value.visible)
 const assistantComposerStopDisabled = computed(() => assistantComposerStopControl.value.disabled)
+const assistantComposerControlsDisabled = computed(() =>
+  busy.value || assistantResumeBusy.value || conversationInteractionBusy.value || threadMutationBusy.value || llmSettingsLoading.value,
+)
+const assistantComposerSurfaceDisabled = computed(() =>
+  assistantComposerWrapperDisabled(assistantComposerControlsDisabled.value, assistantComposerShowsStop.value),
+)
 const configuredLLMModels = computed(() => (llmSettings.value?.models ?? []).filter((model) => model.configured))
 const selectedLLMModel = computed(() => configuredLLMModels.value.find((model) => model.id === selectedLLMModelID.value) ?? configuredLLMModels.value[0])
 const llmConfigured = computed(() => configuredLLMModels.value.length > 0)
@@ -2039,11 +2136,13 @@ const canSendPrompt = computed(() =>
   (!messageStreaming.value || activeAssistantRun?.status === 'running') &&
   !assistantResumeBusy.value &&
   !conversationInteractionBusy.value &&
+  !threadMutationBusy.value &&
   !llmSettingsLoading.value &&
   !approvalModeLoading.value &&
   !approvalModeSaving.value,
 )
-const threadActionsDisabled = computed(() => conversationInteractionBusy.value || messageStreaming.value || busy.value || threadMutationBusy.value)
+const threadNavigationDisabled = computed(() => conversationInteractionBusy.value || busy.value || threadMutationBusy.value)
+const threadActionsDisabled = computed(() => threadNavigationDisabled.value || messageStreaming.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (
   isCreateModelRoute.value ? 'New model' : settingsProject.value ? 'Project settings' : 'Models'
@@ -2872,7 +2971,7 @@ watch(
     if (deletingProjectName.value) {
       deletingProjectName.value = ''
       deletingProjectUID.value = ''
-      busy.value = false
+      invalidateBusyOperation()
     }
     projectDeletionError.value = null
     projectDeletionRetry.value = null
@@ -2923,6 +3022,26 @@ watch(
     void loadLLMSettings()
     void loadImportRepositories()
     void loadDevelopmentTemplates()
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  () => `${selected.value?.name ?? ''}\u0000${selected.value?.uid ?? ''}`,
+  (current, previous) => {
+    if (current !== previous) {
+      invalidateAssistantMessageSubmission()
+      invalidateAssistantQueueOperations()
+    }
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  activeAssistantThreadID,
+  (current) => {
+    const owner = activeAssistantSubmissionOwner
+    if (owner && current !== owner.threadID) invalidateAssistantMessageSubmission()
   },
   { flush: 'sync' },
 )
@@ -4961,7 +5080,7 @@ async function createProjectAndStartConversation(
 	let startPostAttempted = false
 	let startPostAccepted = false
 	let projectName = submission.projectName
-  busy.value = true
+  const busyOwner = beginBusyOperation()
   messageStreaming.value = true
   conversationStatus.value = 'Starting'
   error.value = null
@@ -5176,7 +5295,7 @@ async function createProjectAndStartConversation(
       conversationStatus.value = ''
       messageStreaming.value = false
     }
-    if (generation === projectCreateGeneration) busy.value = false
+    if (generation === projectCreateGeneration) releaseBusyOperation(busyOwner)
   }
 }
 
@@ -5497,8 +5616,8 @@ function persistCurrentAssistantAnnotationDraft(parts: readonly ProjectAssistant
   writeAssistantAnnotationDraft(assistantAnnotationDraftScope(), parts)
 }
 
-function clearStoredAssistantAnnotationDraft(projectName: string, threadID: string) {
-  clearAssistantAnnotationDraft(assistantAnnotationDraftScope(projectName, threadID))
+function clearStoredAssistantAnnotationDraft(projectName: string, threadID: string, ctx: RailgridContext | null = props.ctx) {
+  clearAssistantAnnotationDraft(assistantAnnotationDraftScope(projectName, threadID, ctx))
 }
 
 function hydrateCurrentAssistantAnnotationDraft() {
@@ -5626,6 +5745,35 @@ watch(activeAssistantAnnotationDraftScopeKey, (current, previous) => {
 
 const activeAssistantMessageQueueScopeKey = computed(() => assistantMessageQueueStorageKey(assistantMessageQueueScope()))
 
+function beginAssistantQueueOperation(scope = assistantMessageQueueScope()): AssistantQueueOperationOwner | null {
+  const projectName = selected.value?.name ?? ''
+  if (!projectName || !activeAssistantThreadID.value) return null
+  return {
+    generation: ++assistantQueueOperationGeneration,
+    projectName,
+    projectUID: selected.value?.uid ?? '',
+    contextFingerprint: projectContextFingerprint(props.ctx),
+    threadRequestSerial: assistantThreadRequestSerial,
+    scopeKey: assistantMessageQueueStorageKey(scope),
+    scope,
+  }
+}
+
+function assistantQueueOperationIsCurrent(owner: AssistantQueueOperationOwner): boolean {
+  return owner.generation === assistantQueueOperationGeneration &&
+    owner.threadRequestSerial === assistantThreadRequestSerial &&
+    owner.contextFingerprint === projectContextFingerprint(props.ctx) &&
+    selected.value?.name === owner.projectName &&
+    (selected.value?.uid ?? '') === owner.projectUID
+}
+
+function canRemoveAcceptedQueuedMessage(owner: AssistantQueueOperationOwner): boolean {
+  return !(activeAssistantMessageQueueScopeKey.value === owner.scopeKey &&
+    owner.contextFingerprint === projectContextFingerprint(props.ctx) &&
+    selected.value?.name === owner.projectName &&
+    (selected.value?.uid ?? '') !== owner.projectUID)
+}
+
 function persistAssistantMessageQueue() {
   writeAssistantMessageQueue(assistantMessageQueueScope(), queuedAssistantMessages.value)
 }
@@ -5647,9 +5795,13 @@ function enqueueAssistantMessage(content: string): QueuedAssistantMessage | unde
   return message
 }
 
-function removeQueuedAssistantMessage(message: QueuedAssistantMessage) {
-  queuedAssistantMessages.value = queuedAssistantMessages.value.filter((candidate) => candidate.id !== message.id)
-  persistAssistantMessageQueue()
+function removeQueuedAssistantMessage(message: QueuedAssistantMessage, scope = assistantMessageQueueScope()) {
+  const key = assistantMessageQueueStorageKey(scope)
+  const activeScope = key === activeAssistantMessageQueueScopeKey.value
+  const current = activeScope ? queuedAssistantMessages.value : readAssistantMessageQueue(scope)
+  const next = current.filter((candidate) => candidate.id !== message.id)
+  if (activeScope) queuedAssistantMessages.value = next
+  writeAssistantMessageQueue(scope, next)
 }
 
 function editQueuedAssistantMessage(message: QueuedAssistantMessage, content: string) {
@@ -5668,7 +5820,9 @@ function toggleAssistantQueueing() {
 
 async function steerQueuedAssistantMessage(message: QueuedAssistantMessage) {
   if (queuedAssistantSteeringID.value || activeAssistantRun?.status !== 'running' || !messageStreaming.value) return
-  const queueScopeKey = activeAssistantMessageQueueScopeKey.value
+  const scope = assistantMessageQueueScope()
+  const owner = beginAssistantQueueOperation(scope)
+  if (!owner) return
   const draft = {
     prompt: prompt.value,
     parts: [...assistantComposerParts.value],
@@ -5680,15 +5834,18 @@ async function steerQueuedAssistantMessage(message: QueuedAssistantMessage) {
   clearSelectedTurnAttachments()
   try {
     const accepted = await sendMessage('steer')
-    if (accepted && activeAssistantMessageQueueScopeKey.value === queueScopeKey) removeQueuedAssistantMessage(message)
+    if (accepted && canRemoveAcceptedQueuedMessage(owner)) removeQueuedAssistantMessage(message, scope)
   } finally {
-    if (activeAssistantMessageQueueScopeKey.value === queueScopeKey) {
-      prompt.value = draft.prompt
-      assistantComposerParts.value = draft.parts
-      selectedTurnSkills.value = draft.skills
-      selectedTurnResources.value = draft.resources
+    if (assistantQueueOperationIsCurrent(owner)) {
+      if (!prompt.value.trim() && assistantComposerParts.value.length === 0 &&
+          selectedTurnSkills.value.length === 0 && selectedTurnResources.value.length === 0) {
+        prompt.value = draft.prompt
+        assistantComposerParts.value = draft.parts
+        selectedTurnSkills.value = draft.skills
+        selectedTurnResources.value = draft.resources
+      }
+      queuedAssistantSteeringID.value = ''
     }
-    queuedAssistantSteeringID.value = ''
   }
 }
 
@@ -5707,27 +5864,28 @@ async function deliverNextQueuedAssistantMessage() {
   ) return
   const message = queuedAssistantMessages.value[0]
   if (!message) return
-  const queueScopeKey = activeAssistantMessageQueueScopeKey.value
+  const scope = assistantMessageQueueScope()
+  const owner = beginAssistantQueueOperation(scope)
+  if (!owner) return
   queuedAssistantDeliveryBusy.value = true
   prompt.value = message.content
   try {
     const accepted = await sendMessage('queue')
-    if (accepted && activeAssistantMessageQueueScopeKey.value === queueScopeKey) removeQueuedAssistantMessage(message)
-    else if (activeAssistantMessageQueueScopeKey.value === queueScopeKey) {
+    if (accepted && canRemoveAcceptedQueuedMessage(owner)) removeQueuedAssistantMessage(message, scope)
+    else if (assistantQueueOperationIsCurrent(owner)) {
       // A failed automatic delivery is promoted back into the composer. It
       // must no longer remain in the queue or a later retry would send it
       // twice after the user submits the preserved draft.
       if (!prompt.value.trim()) prompt.value = message.content
-      removeQueuedAssistantMessage(message)
+      removeQueuedAssistantMessage(message, scope)
     }
   } finally {
-    queuedAssistantDeliveryBusy.value = false
+    if (assistantQueueOperationIsCurrent(owner)) queuedAssistantDeliveryBusy.value = false
   }
 }
 
 watch(activeAssistantMessageQueueScopeKey, (current, previous) => {
   if (current === previous) return
-  queuedAssistantSteeringID.value = ''
   queuedAssistantMessages.value = current ? readAssistantMessageQueue(assistantMessageQueueScope()) : []
   assistantQueueingEnabled.value = current ? readAssistantQueueingEnabled(assistantMessageQueueScope()) : true
 }, { immediate: true, flush: 'post' })
@@ -5760,7 +5918,7 @@ function updateAssistantThreadFromEvent(threadID: string, patch: Partial<Project
 
 async function selectAssistantThread(threadID: string): Promise<boolean> {
   const projectName = selected.value?.name
-  if (!projectName || !threadID || messageStreaming.value || busy.value || conversationInteractionBusy.value) return false
+  if (!projectName || !threadID || threadNavigationDisabled.value) return false
   if (threadID === activeAssistantThreadID.value) {
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
     setThreadUnread(threadID, false)
@@ -5795,6 +5953,8 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
     activeAssistantThreadSequence = maxAssistantThreadSequence(page.items)
     messages.value = projectAssistantThreadItems(page.items, projectName)
     messageStreaming.value = false
+    conversationStatus.value = ''
+    await recoverAssistantConversation(projectName, requestGuard)
     threadRailRef.value?.focusThread?.(threadID)
     return true
   } catch (e) {
@@ -5814,7 +5974,7 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
 
 async function createAssistantThread() {
   const projectName = selected.value?.name
-  if (!projectName || threadActionsDisabled.value) return
+  if (!projectName || threadNavigationDisabled.value) return
   const assistantThreadLoadSerial = beginAssistantThreadRequest()
   const createIsCurrent = () =>
     appComponentMounted &&
@@ -5826,6 +5986,11 @@ async function createAssistantThread() {
     const thread = await api.createAssistantThread(props.ctx, projectName)
     if (!createIsCurrent()) return
     resetAssistantStopState()
+    assistantRunController.disconnect()
+    activeAssistantSubscription?.abort()
+    activeAssistantSubscription = null
+    messageStreaming.value = false
+    conversationStatus.value = ''
     assistantThreads.value = [thread, ...assistantThreads.value]
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
@@ -6011,6 +6176,11 @@ function assistantRunErrorForMessage(messageID: string): string {
   return assistantRunForMessage(messageID)?.error?.message?.trim() || ''
 }
 
+function assistantSpendCapChangesNoticeForMessage(message: ProjectMessageView): boolean {
+  const run = assistantRunForMessage(message.id)
+  return shouldShowAssistantSpendCapChangesNotice(run?.error?.errorInfo, message.actionFeed)
+}
+
 function canImplementPlan(message: ProjectMessageView): boolean {
   const run = assistantRunForMessage(message.id)
   const lastConversationMessage = conversationMessages.value[conversationMessages.value.length - 1]
@@ -6072,6 +6242,57 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   return accepted
 }
 
+function rememberAcceptedAssistantOptimisticMessage(pending: PendingAcceptedAssistantOptimisticMessage) {
+  pendingAcceptedAssistantOptimisticMessages.delete(pending.optimisticID)
+  pendingAcceptedAssistantOptimisticMessages.set(pending.optimisticID, pending)
+  while (pendingAcceptedAssistantOptimisticMessages.size > 32) {
+    const oldestID = pendingAcceptedAssistantOptimisticMessages.keys().next().value
+    if (!oldestID) break
+    pendingAcceptedAssistantOptimisticMessages.delete(oldestID)
+  }
+}
+
+function clearAcceptedAssistantOptimisticMessage(optimisticID: string) {
+  pendingAcceptedAssistantOptimisticMessages.delete(optimisticID)
+}
+
+function reconcileAcceptedAssistantOptimisticMessages(
+  projectName: string,
+  threadID: string,
+  items: ProjectAssistantThreadItem[],
+  turn: Pick<ProjectAssistantTurn, 'id' | 'clientUserMessageID'> | null | undefined,
+) {
+  const projectUID = selected.value?.uid ?? ''
+  for (const [optimisticID, pending] of pendingAcceptedAssistantOptimisticMessages) {
+    if (
+      pending.projectName !== projectName ||
+      pending.projectUID !== projectUID ||
+      pending.threadID !== threadID
+    ) continue
+    // Steering keeps the original turn ID, so it needs the per-message
+    // request receipt. A turn ID alone would match the original user prompt.
+    if (pending.steering) {
+      if (!items.some((item) =>
+        item.type === 'userMessage' &&
+        item.turnID === pending.turnID &&
+        item.data?.clientUserMessageID === pending.clientRequestID,
+      )) continue
+      messages.value = messages.value.filter((message) => message.id !== optimisticID)
+      pendingAcceptedAssistantOptimisticMessages.delete(optimisticID)
+      continue
+    }
+    // For a normal turn, its server turn ID is exact. If the accepted response
+    // omitted it, the active-turn endpoint supplies the request ID that binds
+    // the durable user item to this one optimistic row. Never deduplicate by text.
+    const matchingTurnID = pending.turnID || (
+      turn?.clientUserMessageID === pending.clientRequestID ? turn.id : ''
+    )
+    if (!matchingTurnID || !items.some((item) => item.type === 'userMessage' && item.turnID === matchingTurnID)) continue
+    messages.value = messages.value.filter((message) => message.id !== optimisticID)
+    pendingAcceptedAssistantOptimisticMessages.delete(optimisticID)
+  }
+}
+
 async function recoverAssistantConversation(
   projectName: string,
   requestGuard: ProjectRequestGuard = currentProjectRequestGuard(),
@@ -6084,6 +6305,7 @@ async function recoverAssistantConversation(
   const page = await api.listAssistantThreadItemPage(props.ctx, projectName, threadID)
   const items = page.items
   if (!projectRequestIsCurrent(requestGuard, projectName) || activeAssistantThreadID.value !== threadID) return undefined
+  reconcileAcceptedAssistantOptimisticMessages(projectName, threadID, items, turn)
   activeAssistantThreadSequence = maxAssistantThreadSequence(items)
   const viewingOlderHistory = assistantThreadViewingOlderHistory.value
   const keepOlderWindow = viewingOlderHistory && !turn
@@ -7115,7 +7337,7 @@ async function requestDeleteProject(project: Project) {
     deletionContextKey === workbenchPersistenceContextKey(workbenchPersistenceContext())
   const responseIsCurrent = () => lifecycleIsCurrent() &&
     sameProjectIdentity(target, visibleProjectNamed(name))
-  busy.value = true
+  const busyOwner = beginBusyOperation()
   deletingProjectName.value = name
   deletingProjectUID.value = target.uid ?? ''
   error.value = null
@@ -7208,7 +7430,7 @@ async function requestDeleteProject(project: Project) {
     if (lifecycleIsCurrent()) {
       deletingProjectName.value = ''
       deletingProjectUID.value = ''
-      busy.value = false
+      releaseBusyOperation(busyOwner)
       scheduleProjectDeletionPoll()
       if (isProjectIndexRoute.value) void hydrateProjectThumbnails(projects.value)
     }
@@ -7216,6 +7438,7 @@ async function requestDeleteProject(project: Project) {
 }
 
 async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promise<boolean> {
+  if (threadMutationBusy.value) return false
   const content = prompt.value.trim()
   const activeLiveRun = Boolean(messageStreaming.value && activeAssistantRun?.id && !assistantRunTerminal(activeAssistantRun.status))
   if (assistantComposerAttachmentsPending.value) {
@@ -7238,20 +7461,32 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     return true
   }
   const steeringActiveRun = activeLiveRun && activeAssistantRun?.status === 'running' && activeRunIntent === 'steer'
-  if (steeringActiveRun && assistantComposerParts.value.some((part) => part.type === 'attachment')) {
-    error.value = 'Attachments can be sent after the current response finishes. Steer messages are text only.'
+  if (steeringActiveRun && (
+    assistantComposerParts.value.some((part) => part.type !== 'text') ||
+    selectedTurnSkills.value.length > 0 ||
+    selectedTurnResources.value.length > 0
+  )) {
+    error.value = 'Steer messages are text only. Send annotations, attachments, skills, and resources after the current response finishes.'
     return false
   }
   const hasStructuredContent = !steeringActiveRun && assistantComposerParts.value.some((part) => part.type !== 'text')
   if ((!content && !hasStructuredContent) || !selected.value || !llmConfigured.value || conversationInteractionBusy.value || llmSettingsLoading.value || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return false
   const projectName = selected.value.name
-  const sendRequestSerial = assistantThreadRequestSerial
-  const sendContextFingerprint = projectContextFingerprint(props.ctx)
+  const projectUID = selected.value.uid ?? ''
+  const sendContext = props.ctx
+  const sendContextFingerprint = projectContextFingerprint(sendContext)
+  const submissionThreadID = activeAssistantThreadID.value
   const turnSkills = steeringActiveRun ? [] : [...selectedTurnSkills.value]
   const turnResources = steeringActiveRun ? [] : [...selectedTurnResources.value]
   const turnContentParts = steeringActiveRun ? [] : [...assistantComposerParts.value]
+  const turnContext = {
+    ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
+    ...(turnResources.length ? { contextResources: turnResources } : {}),
+    ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
+  }
   prompt.value = ''
-  busy.value = true
+  const submissionBusyOwner = beginBusyOperation()
+  assistantComposerSubmitting.value = true
   messageStreaming.value = true
   error.value = null
   const firstProjectPending = firstProjectSubmissionMatches(pendingFirstProjectSubmission, projectName, content, selectedLLMModelID.value)
@@ -7261,26 +7496,42 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     content,
     collaborationMode: firstProjectPending ? 'default' as const : assistantIntent.value,
     ...(!steeringActiveRun ? { modelID: selectedLLMModelID.value } : {}),
-    ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
-    ...(turnResources.length ? { contextResources: turnResources } : {}),
-    ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
+    ...turnContext,
     ...(steeringActiveRun ? { expectedRunID: activeAssistantRun!.id } : {}),
   }
   const submissionFingerprint = assistantRunStartFingerprint(projectName, startOperation)
-  const clientRequestID = firstProjectPending
-    ? firstProjectPending.clientRequestID
-    : pendingMessageSubmission?.fingerprint === submissionFingerprint
-    ? pendingMessageSubmission.clientRequestID
-    : crypto.randomUUID()
+  const requestFingerprint = JSON.stringify([submissionFingerprint, sendContextFingerprint])
+  const clientRequestID = firstProjectPending?.clientRequestID ??
+    (pendingMessageSubmission?.fingerprint === requestFingerprint ? pendingMessageSubmission.clientRequestID : crypto.randomUUID())
   const payload = { ...startOperation, clientRequestID }
-  pendingMessageSubmission = { fingerprint: submissionFingerprint, clientRequestID }
-  const firstSendIsCurrent = () =>
-    appComponentMounted &&
-    sendRequestSerial === assistantThreadRequestSerial &&
+  const ownedPendingSubmission: PendingAssistantMessageSubmission = {
+    fingerprint: requestFingerprint,
+    clientRequestID,
+  }
+  pendingMessageSubmission = ownedPendingSubmission
+    const submissionOwner: AssistantMessageSubmissionOwner = {
+      generation: ++assistantSubmissionGeneration,
+      busyOwner: submissionBusyOwner,
+      projectName,
+      projectUID,
+      threadID: submissionThreadID,
+      postAccepted: false,
+    }
+  activeAssistantSubmissionOwner = submissionOwner
+  const submissionIsCurrent = () => appComponentMounted &&
+    submissionOwner.generation === assistantSubmissionGeneration &&
     sendContextFingerprint === projectContextFingerprint(props.ctx) &&
-    selected.value?.name === projectName &&
-    pendingMessageSubmission?.fingerprint === submissionFingerprint &&
-    pendingMessageSubmission?.clientRequestID === clientRequestID
+    selected.value?.name === submissionOwner.projectName &&
+    (selected.value?.uid ?? '') === submissionOwner.projectUID &&
+    activeAssistantThreadID.value === submissionOwner.threadID
+  const clearOwnedPendingSubmission = () => {
+    if (pendingMessageSubmission === ownedPendingSubmission) pendingMessageSubmission = null
+  }
+  const finishAcceptedSubmission = () => {
+    clearOwnedPendingSubmission()
+    if (pendingFirstProjectSubmission === firstProjectPending) pendingFirstProjectSubmission = null
+    return true
+  }
   const optimisticID = firstProjectPending
     ? messages.value.find((message) => message.projectID === projectName && message.role === 'user' && message.content === content)?.id ?? `optimistic-${clientRequestID}`
     : `optimistic-${clientRequestID}`
@@ -7298,6 +7549,9 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
   }
   if (!messages.value.some((message) => message.id === optimisticID)) messages.value = [...messages.value, optimisticUserMessage]
   let startPostAccepted = false
+  let acceptedTurnID = ''
+  let acceptedThreadID = submissionThreadID
+  let acceptedRunControllerStarted = false
   try {
     let started: ProjectAssistantRunStart
     if (steeringActiveRun) {
@@ -7307,63 +7561,86 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         clientUserMessageID: clientRequestID,
       })
       startPostAccepted = true
+      submissionOwner.postAccepted = true
+      acceptedTurnID = activeAssistantRun!.id
+      acceptedThreadID = activeAssistantThreadID.value
+      if (!submissionIsCurrent()) return finishAcceptedSubmission()
+      rememberAcceptedAssistantOptimisticMessage({
+        projectName,
+        projectUID: selected.value?.uid ?? '',
+        threadID: acceptedThreadID,
+        clientRequestID,
+        optimisticID,
+        turnID: acceptedTurnID,
+        steering: true,
+      })
+      assistantComposerParts.value = []
       const page = await api.listAssistantThreadItemPage(props.ctx, projectName, activeAssistantThreadID.value)
+      if (!submissionIsCurrent()) return finishAcceptedSubmission()
       const items = page.items
       commitAssistantThreadItemPage(page)
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
-      // The durable steering receipt now owns the user-message identity.
-      // Drop the temporary optimistic row before merging the list so the same
-      // follow-up cannot render twice under two unrelated IDs.
-      messages.value = messages.value.filter((message) => message.id !== optimisticID)
-      messages.value = projectAssistantThreadItems(items, projectName, true)
+      reconcileAcceptedAssistantOptimisticMessages(projectName, acceptedThreadID, items, {
+        id: acceptedTurnID,
+        clientUserMessageID: clientRequestID,
+      })
+      const projectedMessages = projectAssistantThreadItems(items, projectName, true)
+      const projectedIDs = new Set(projectedMessages.map((message) => message.id))
+      const unresolvedOptimisticMessages = [...pendingAcceptedAssistantOptimisticMessages.values()]
+        .filter((pending) => pending.projectName === projectName && pending.projectUID === projectUID && pending.threadID === acceptedThreadID)
+        .map((pending) => messages.value.find((message) => message.id === pending.optimisticID))
+        .filter((message): message is ProjectMessage => Boolean(message && !projectedIDs.has(message.id)))
+      messages.value = [...projectedMessages, ...unresolvedOptimisticMessages]
       // Steering rotates the durable assistant segment while retaining the
       // turn ID. Rebind the run to that replacement before reconnecting from
       // the list's sequence; otherwise the old segment remains active and the
       // first replacement delta can be applied to (or dropped from) it.
       if (!rebindAssistantRunFromThreadItems(items, projectName, activeAssistantRun!.id)) {
         await recoverAssistantConversation(projectName)
+        if (!submissionIsCurrent()) return finishAcceptedSubmission()
       }
-      pendingMessageSubmission = null
+      clearOwnedPendingSubmission()
       return true
     } else {
       let thread = assistantThreads.value.find((candidate) => candidate.id === activeAssistantThreadID.value)
       if (!thread) {
         thread = await api.createAssistantThread(props.ctx, projectName)
-        if (!firstSendIsCurrent()) return false
+        if (!submissionIsCurrent()) return false
         assistantThreads.value = [thread, ...assistantThreads.value]
+        submissionOwner.threadID = thread.id
         activeAssistantThreadID.value = thread.id
         persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
         // A first-send thread is created after the draft was captured. Bind
         // that draft to the new durable thread before the POST so a failed
         // submission still survives refresh.
-        writeAssistantAnnotationDraft(assistantAnnotationDraftScope(projectName, thread.id), turnContentParts)
+        writeAssistantAnnotationDraft(assistantAnnotationDraftScope(projectName, thread.id, sendContext), turnContentParts)
       }
       const canonical = startOperation.collaborationMode === 'review'
         ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
             clientUserMessageID: clientRequestID,
             modelID: payload.modelID,
             target: { type: 'current_workspace', instructions: content },
-            ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
-            ...(turnResources.length ? { contextResources: turnResources } : {}),
-            ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
+            ...turnContext,
           })
         : await api.startAssistantTurn(props.ctx, projectName, thread.id, {
             content,
             clientUserMessageID: clientRequestID,
             modelID: payload.modelID,
             collaborationMode: startOperation.collaborationMode,
-            ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
-            ...(turnResources.length ? { contextResources: turnResources } : {}),
-            ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
-          })
+            ...turnContext,
+      })
       startPostAccepted = true
+      submissionOwner.postAccepted = true
       const requestedThreadID = thread.id
       const canonicalThreadID = canonical.thread.id.trim() || requestedThreadID
+      acceptedTurnID = canonical.turn.id.trim()
+      acceptedThreadID = canonicalThreadID
       // The POST response is the acceptance boundary. Later projection or
       // stream setup failures must not make already-consumed attachments look
       // available for a second turn.
-      clearStoredAssistantAnnotationDraft(projectName, requestedThreadID)
+      clearStoredAssistantAnnotationDraft(projectName, requestedThreadID, sendContext)
       commitAttachments(turnContentParts)
+      if (!submissionIsCurrent()) return finishAcceptedSubmission()
       clearSelectedTurnAttachments()
       if (canonicalThreadID !== requestedThreadID) {
         assistantThreads.value = [
@@ -7373,10 +7650,49 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       } else {
         replaceAssistantThread(canonical.thread)
       }
+      submissionOwner.threadID = canonicalThreadID
       activeAssistantThreadID.value = canonicalThreadID
       persistAssistantThreadFocus(assistantThreadFocusScope(projectName), canonicalThreadID)
+      rememberAcceptedAssistantOptimisticMessage({
+        projectName,
+        projectUID: selected.value?.uid ?? '',
+        threadID: canonicalThreadID,
+        clientRequestID: canonical.turn.clientUserMessageID || clientRequestID,
+        optimisticID,
+        turnID: acceptedTurnID,
+      })
+      const acceptedStatus: AssistantRun['status'] = canonical.turn.status === 'in_progress' ? 'running' : canonical.turn.status
+      if (acceptedTurnID) {
+        const acceptedRun: AssistantRun = {
+          id: acceptedTurnID,
+          mode: canonical.turn.mode,
+          status: acceptedStatus,
+          revision: 1,
+          clientRequestID: canonical.turn.clientUserMessageID || clientRequestID,
+          userMessageID: optimisticID,
+          activeMessageID: '',
+        }
+        setActiveAssistantRun(acceptedRun)
+        activeAssistantProject = projectName
+        messageStreaming.value = assistantRunRequiresLiveControls(acceptedRun)
+        if (assistantRunRequiresLiveControls(acceptedRun)) {
+          conversationStatus.value = 'Working'
+          startAssistantRunController(acceptedRun)
+          acceptedRunControllerStarted = true
+        }
+      } else {
+        // The accepted response is authoritative even if a damaged response
+        // omitted the run ID. Keep the response recoverable until the thread
+        // reconciliation supplies a durable run identity.
+        setActiveAssistantRun(null)
+        activeAssistantProject = ''
+        messageStreaming.value = true
+        conversationStatus.value = 'Reconnecting'
+      }
       const page = await api.listAssistantThreadItemPage(props.ctx, projectName, canonicalThreadID)
-      if (!firstSendIsCurrent() || activeAssistantThreadID.value !== canonicalThreadID) return false
+      if (!submissionIsCurrent()) {
+        return finishAcceptedSubmission()
+      }
       const items = page.items
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
       const userItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')
@@ -7399,9 +7715,9 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
           id: canonical.turn.id,
           mode: canonical.turn.mode,
           approvalMode: canonical.turn.approvalMode,
-          status: 'running',
+          status: acceptedStatus,
           revision: 1,
-          clientRequestID,
+          clientRequestID: canonical.turn.clientUserMessageID || clientRequestID,
           userMessageID: user.id,
           activeMessageID: assistant.id,
           createdAt: canonical.turn.createdAt,
@@ -7411,38 +7727,61 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         assistant,
       }
     }
+    if (started.user) {
+      messages.value = replaceOptimisticUserMessage(messages.value, optimisticID, started.user).map(toProjectMessageView)
+      clearAcceptedAssistantOptimisticMessage(optimisticID)
+    }
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
     if (applied.accepted && applied.current) {
-      messages.value = replaceOptimisticUserMessage(messages.value, optimisticID, started.user ?? optimisticUserMessage).map(toProjectMessageView)
-      if (!assistantRunTerminal(applied.current.status)) startAssistantRunController(applied.current)
-      pendingMessageSubmission = null
+      if (!assistantRunTerminal(applied.current.status) && !acceptedRunControllerStarted) startAssistantRunController(applied.current)
+      clearOwnedPendingSubmission()
+      if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, started.user)) pendingFirstProjectSubmission = null
+      return true
+    }
+    if (startPostAccepted) {
+      clearOwnedPendingSubmission()
       if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, started.user)) pendingFirstProjectSubmission = null
       return true
     }
     return false
   } catch (e) {
-    messages.value = messages.value.filter((message) => message.id !== optimisticID)
     if (startPostAccepted) {
-      pendingMessageSubmission = null
-      if (firstProjectPending) pendingFirstProjectSubmission = null
-      assistantRunController.disconnect()
-      messageStreaming.value = false
-      const detail = e instanceof Error ? e.message : String(e)
-      error.value = detail
-        ? `Turn accepted, but the conversation could not be refreshed: ${detail}`
-        : 'Turn accepted, but the conversation could not be refreshed. Reopen this project to recover it.'
+      const stillCurrent = submissionIsCurrent() && (!acceptedThreadID || activeAssistantThreadID.value === acceptedThreadID)
+      finishAcceptedSubmission()
+      if (!stillCurrent) return true
+    } else if (!submissionIsCurrent()) {
+      return false
+    }
+    if (!startPostAccepted) messages.value = messages.value.filter((message) => message.id !== optimisticID)
+    if (startPostAccepted) {
+      try {
+        const recovered = await recoverAssistantConversation(projectName)
+        if (!submissionIsCurrent() || (acceptedThreadID && activeAssistantThreadID.value !== acceptedThreadID)) return true
+        if (recovered?.current || !messageStreaming.value) {
+          error.value = null
+        } else {
+          error.value = 'Turn accepted, but its response could not be reattached. Use Stop to retry recovery or return to this conversation.'
+        }
+      } catch {
+        if (!submissionIsCurrent() || (acceptedThreadID && activeAssistantThreadID.value !== acceptedThreadID)) return true
+        // Keep the accepted run/controller alive. The bound run remains
+        // stoppable, and a later focus/reconnect can retry the same durable
+        // conversation recovery without restoring or resending the draft.
+        error.value = 'Turn accepted, but its response could not be refreshed. Use Stop to interrupt it or return to this conversation to recover it.'
+      }
       return true
     }
     if (e instanceof ProjectAPIRequestError && e.status === 409) {
       if (isAssistantAttachmentReceiptUnavailableError(e) && turnContentParts.some((part) => part.type === 'attachment')) {
         // A receipt rejection is a pre-acceptance failure, not an active-run
         // conflict. Reconcile it before attempting normal conflict recovery.
-        const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, firstSendIsCurrent)
+        const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, submissionIsCurrent)
         if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) return false
       }
       let recoveredSameRequest = false
       try {
         const recovered = await recoverAssistantConversation(projectName)
+        if (!submissionIsCurrent()) return false
         const persistedUserID = recovered?.current?.userMessageID
         const persistedPrompt = persistedUserID
           ? messages.value.find((message) => message.id === persistedUserID && message.role === 'user')
@@ -7450,19 +7789,20 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         const expectedServerContent = assistantRunExpectedServerContent(payload)
         if (persistedPrompt?.content === expectedServerContent && assistantRunMatchesStartRequest(recovered?.current, payload)) {
           recoveredSameRequest = true
-          pendingMessageSubmission = null
-          clearStoredAssistantAnnotationDraft(projectName, activeAssistantThreadID.value)
+          clearOwnedPendingSubmission()
+          clearStoredAssistantAnnotationDraft(projectName, activeAssistantThreadID.value, sendContext)
           commitAttachments(turnContentParts)
           clearSelectedTurnAttachments()
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
-          pendingMessageSubmission = null
+          clearOwnedPendingSubmission()
           prompt.value = content
           assistantComposerParts.value = turnContentParts
           persistCurrentAssistantAnnotationDraft(turnContentParts)
         }
         if (!recovered?.current) messageStreaming.value = false
       } catch (recoveryError) {
+        if (!submissionIsCurrent()) return false
         messageStreaming.value = false
         prompt.value = content
         assistantComposerParts.value = turnContentParts
@@ -7476,7 +7816,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       // The start POST was rejected before acceptance. Reconcile stale
       // receipts into the composer while preserving the authored prompt; do
       // not replay this request with a changed payload or risk two turns.
-      const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, firstSendIsCurrent)
+      const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, submissionIsCurrent)
       if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) return false
     }
     error.value = e instanceof Error ? e.message : String(e)
@@ -7486,33 +7826,95 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     messageStreaming.value = false
     return false
   } finally {
-    busy.value = false
-    if (!messageStreaming.value) assistantPendingStartStopRequested.value = false
+    if (submissionIsCurrent()) {
+      assistantComposerSubmitting.value = false
+      releaseBusyOperation(submissionOwner.busyOwner)
+      if (!messageStreaming.value) {
+        assistantPendingStartStopRequested.value = false
+        if (!startPostAccepted) conversationStatus.value = ''
+      }
+      if (activeAssistantSubmissionOwner === submissionOwner) activeAssistantSubmissionOwner = null
+    }
   }
 }
 
 function cancelMessageStream() {
   const runID = activeAssistantRun?.id
   const projectName = selected.value?.name
+  const projectUID = selected.value?.uid ?? ''
   const stopRequestSerial = assistantThreadRequestSerial
   const stopContextFingerprint = assistantStopContextFingerprint(props.ctx)
   if (!projectName || assistantRunTerminal(activeAssistantRun?.status)) return
   if (!runID) {
     if (!messageStreaming.value || assistantPendingStartStopRequested.value) return
+    const pendingSubmission = activeAssistantSubmissionOwner
+    if (
+      assistantComposerSubmitting.value &&
+      pendingSubmission &&
+      !pendingSubmission.postAccepted &&
+      pendingSubmission.projectName === projectName &&
+      pendingSubmission.projectUID === projectUID &&
+      pendingSubmission.threadID === activeAssistantThreadID.value
+    ) {
+      // Before the start POST is accepted there is no durable run to recover.
+      // Keep the user's Stop intent latched for the acceptance boundary; an
+      // early 204 here would otherwise clear it before a run ID exists.
+      assistantPendingStartStopRequested.value = true
+      assistantStopError.value = null
+      conversationStatus.value = 'Stopping'
+      return
+    }
+    const recoveryGeneration = ++assistantStopRequestGeneration
+    const threadID = activeAssistantThreadID.value
+    const recoveryIsCurrent = () =>
+      assistantStopRequestGeneration === recoveryGeneration &&
+      assistantThreadRequestSerial === stopRequestSerial &&
+      assistantStopContextFingerprint(props.ctx) === stopContextFingerprint &&
+      selected.value?.name === projectName &&
+      (selected.value?.uid ?? '') === projectUID &&
+      activeAssistantThreadID.value === threadID
     assistantPendingStartStopRequested.value = true
     assistantStopError.value = null
     conversationStatus.value = 'Stopping'
+    void recoverAssistantConversation(projectName).then((recovered) => {
+      if (!recoveryIsCurrent() || !assistantPendingStartStopRequested.value) return
+      if (recovered?.current && assistantRunRequiresLiveControls(recovered.current)) {
+        // A successful reconciliation normally consumes this latch while
+        // attaching the controller. Release it if that attachment was refused.
+        assistantPendingStartStopRequested.value = false
+        messageStreaming.value = true
+        conversationStatus.value = 'Reconnecting'
+        assistantStopError.value = 'The active response could not be reattached. Try Stop again.'
+        return
+      }
+      assistantPendingStartStopRequested.value = false
+      if (recovered) {
+        if (assistantRunTerminal(recovered.current?.status)) error.value = null
+        conversationStatus.value = ''
+      } else {
+        assistantStopError.value = 'Could not verify the active response. Try Stop again.'
+        conversationStatus.value = ''
+      }
+    }).catch(() => {
+      if (!recoveryIsCurrent()) return
+      assistantPendingStartStopRequested.value = false
+      assistantStopError.value = 'Could not verify the active response. Try Stop again.'
+      conversationStatus.value = ''
+    })
     return
   }
   if (assistantStopRequestedRunID.value === runID) return
+  const stopRequestGeneration = ++assistantStopRequestGeneration
   assistantStopRequestedRunID.value = runID
   assistantStopError.value = null
   conversationStatus.value = 'Stopping'
   void assistantRunController.stop().catch(async (e) => {
     if (
+      assistantStopRequestGeneration !== stopRequestGeneration ||
       assistantThreadRequestSerial !== stopRequestSerial ||
       assistantStopContextFingerprint(props.ctx) !== stopContextFingerprint ||
       selected.value?.name !== projectName ||
+      (selected.value?.uid ?? '') !== projectUID ||
       assistantStopRequestedRunID.value !== runID ||
       (activeAssistantRun && activeAssistantRun.id !== runID)
     ) return
@@ -7836,6 +8238,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
     }
   } else if (rawItem?.id && (rawItem.type === 'userMessage' || rawItem.type === 'agentMessage')) {
     const role = rawItem.type === 'userMessage' ? 'user' : 'assistant'
+    if (role === 'user') reconcileAcceptedAssistantOptimisticMessages(projectName, eventThreadID, [rawItem], null)
     if (role === 'assistant' && rawItem.phase === 'commentary') {
       const assistantMessageID = assistantMessageIDForThreadItem(rawItem, event.turnID || runID)
       if (assistantMessageID) {
@@ -8069,18 +8472,24 @@ function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
 }
 
 function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
-  return Boolean(message.plan && activePlanMessage.value?.id !== message.id)
+  return Boolean(message.plan && !assistantProgressClosed(message) && activePlanMessage.value?.id !== message.id)
 }
 
 function assistantProgressExpanded(message: ProjectMessageView): boolean {
-  return !assistantProgressClosed(message) || expandedAssistantProgressIDs.value.has(message.id)
+  const closed = assistantProgressClosed(message)
+  const choice = assistantProgressDisclosureChoices.value.get(message.id)
+  // Manual choices apply within the current phase. Finishing a turn starts
+  // a collapsed phase, independently of its tool-call disclosures.
+  return choice?.closed === closed ? choice.expanded : !closed
 }
 
-function toggleAssistantProgress(messageID: string): void {
-  const expanded = new Set(expandedAssistantProgressIDs.value)
-  if (expanded.has(messageID)) expanded.delete(messageID)
-  else expanded.add(messageID)
-  expandedAssistantProgressIDs.value = expanded
+function toggleAssistantProgress(message: ProjectMessageView): void {
+  const choices = new Map(assistantProgressDisclosureChoices.value)
+  choices.set(message.id, {
+    closed: assistantProgressClosed(message),
+    expanded: !assistantProgressExpanded(message),
+  })
+  assistantProgressDisclosureChoices.value = choices
 }
 
 function assistantProgressRegionID(messageID: string): string {
@@ -9337,13 +9746,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :loading="threadHistoryLoading || projectOpenLoading"
             :selecting-thread-i-d="selectingThreadID"
             :actioning-thread-i-d="threadActioningID"
-            :disabled="threadActionsDisabled"
+            :disabled="threadNavigationDisabled"
             :busy="threadMutationBusy"
-            :capabilities="{ create: true, pin: true, unread: true, archive: true }"
+            :capabilities="{ create: true, pin: true, unread: true, archive: !messageStreaming }"
             :labels="{
               heading: 'Threads',
               create: 'New thread',
-              createDisabled: 'Finish or stop the current run before starting another thread',
+              createDisabled: 'Please wait while the conversation loads',
               search: 'Search threads',
               loading: 'Loading threads',
               list: 'Assistant threads',
@@ -9544,13 +9953,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <template v-if="message.role === 'assistant' && assistantProgressHeaderVisible(message)" #progress>
                 <AITurnProgress
                   v-if="message.progress"
+                  class="k-ai-turn-progress--divided"
                   :turn-id="message.id"
                   :region-id="assistantProgressRegionID(message.id)"
                   :status="assistantTurnProgressStatus(message)"
                   :duration="assistantWorkedLabel(message)"
                   :interrupted="message.viewStatus === 'interrupted'"
                   :expanded="assistantProgressExpanded(message)"
-                  @toggle="toggleAssistantProgress(message.id)"
+                  @toggle="toggleAssistantProgress(message)"
                 >
                   <template v-if="assistantTraceBlocks(message).length" #details>
                     <template
@@ -9573,6 +9983,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </AITurnProgress>
                 <AITurnProgress
                   v-else
+                  class="k-ai-turn-progress--divided"
                   :turn-id="message.id"
                   :status="assistantTurnProgressStatus(message)"
                   :duration="assistantWorkedLabel(message)"
@@ -9616,6 +10027,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   >
                     {{ assistantRunErrorForMessage(message.id) }}
                   </div>
+                  <p
+                    v-if="assistantSpendCapChangesNoticeForMessage(message)"
+                    class="mt-2 text-[12px] leading-5 text-muted"
+                  >
+                    Completed file changes have already been applied. Review the activity before trying again.
+                  </p>
                   <button
                     v-if="canImplementPlan(message)"
                     type="button"
@@ -9838,11 +10255,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
           <AIComposer
             :has-queued-messages="queuedAssistantMessages.length > 0"
-            :disabled="busy || assistantResumeBusy || conversationInteractionBusy || llmSettingsLoading"
+            :disabled="assistantComposerSurfaceDisabled"
           >
             <template #editor>
               <AssistantRichComposer
               ref="assistantComposerRef"
+              :submitting="assistantComposerSubmitting"
               v-model="prompt"
               :content-parts="assistantComposerParts"
               :project-name="selected?.name || ''"
@@ -9855,7 +10273,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :annotation-page-path="developmentPreviewAnnotationPagePath"
               :unresolved-annotation-ids="developmentPreviewUnresolvedAnnotationIDs"
               :placeholder="messageStreaming ? 'Add a follow-up…' : 'Message this project'"
-              :disabled="busy || assistantResumeBusy || conversationInteractionBusy || llmSettingsLoading"
+              :disabled="assistantComposerControlsDisabled"
               :active-run="messageStreaming"
               :queueing-enabled="assistantQueueingEnabled"
               @update:content-parts="updateAssistantComposerParts"
@@ -9892,7 +10310,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <AIPrimaryAction
                 :state="assistantComposerShowsStop ? assistantComposerStopDisabled ? 'stopping' : 'stop' : 'send'"
                 :type="assistantComposerShowsStop ? 'button' : 'submit'"
-                :disabled="assistantComposerShowsStop ? assistantComposerStopDisabled : busy || conversationInteractionBusy || !canSendPrompt"
+                :disabled="assistantComposerShowsStop ? assistantComposerStopDisabled : busy || conversationInteractionBusy || threadMutationBusy || !canSendPrompt"
                 :title="assistantComposerShowsStop
                   ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
                   : !llmConfigured ? 'Configure a model before sending'

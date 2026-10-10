@@ -67,8 +67,10 @@ const (
 // and run carry the durable source revision/digest applied by /sync; the
 // persistent executor runs against that live component workspace. When both
 // are omitted the handler resolves the component's currently applied
-// revision/digest from the dev agent's /status. Poll and cancel carry only a
-// session ID.
+// revision/digest from the dev agent's /status. Poll carries a session ID.
+// Cancel carries a session ID for compatibility, or a request ID to target
+// the same deterministic session as its START even when the START response
+// was lost.
 type ExecRequest struct {
 	Action         ExecAction `json:"action"`
 	SessionID      string     `json:"sessionID,omitempty"`
@@ -267,11 +269,17 @@ func decodeExecRequest(w http.ResponseWriter, r *http.Request, capability *infra
 			return ExecRequest{}, "", fmt.Errorf("timeoutSeconds must be between 0 and %d", limits.timeoutSeconds)
 		}
 	} else {
-		if req.SessionID == "" {
+		if action == ExecActionPoll && req.SessionID == "" {
 			return ExecRequest{}, "", fmt.Errorf("sessionID is required for %s", action)
+		}
+		if action == ExecActionCancel && req.SessionID == "" && req.RequestID == "" {
+			return ExecRequest{}, "", fmt.Errorf("sessionID or requestID is required for %s", action)
 		}
 		if len(req.Argv) != 0 || req.Workdir != "" || req.TimeoutSeconds != 0 || req.SourceRevision != 0 || req.SourceDigest != "" {
 			return ExecRequest{}, "", fmt.Errorf("%s accepts only sessionID and optional requestID", action)
+		}
+		if action == ExecActionCancel && req.RequestID != "" && key != "" && key != req.RequestID {
+			return ExecRequest{}, "", fmt.Errorf("requestID must match Idempotency-Key for cancel")
 		}
 		if key == "" {
 			key = req.RequestID

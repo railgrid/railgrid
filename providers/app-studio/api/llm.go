@@ -440,21 +440,26 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	if !hasDurableRun {
 		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
 	}
-	registry, err := readProjectLLMRegistry(ctx, c)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
+	modelStarted := time.Now()
 	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(durable)
-	settings, err := registry.selectedSettings(modelID, modelRevisionID)
+	modelCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	selectedModel, err := readProjectLLMModelForTurn(modelCtx, c, modelID, modelRevisionID)
+	projectAssistantLogWorkerPreparationWithRateLimiterWaits(modelCtx, durable.ID, "model", modelStarted)
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
+	settings := selectedModel.Settings
 	if err := normalizeProjectLLMSettings(&settings); err != nil {
 		return projectAssistantRunResult{}, err
 	}
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return projectAssistantRunResult{}, errProjectLLMNotConfigured
 	}
+	workerClient, err := s.projectAssistantWorkerReadClient(ctx, id, c)
+	if err != nil {
+		return projectAssistantRunResult{}, fmt.Errorf("prepare assistant worker read client: %w", err)
+	}
+	c = workerClient
 	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
 	turn.ProjectUID = string(p.UID)
 	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
@@ -480,12 +485,17 @@ func (s *Server) generateProjectAssistantResultWithStart(
 			return projectAssistantRunResult{}, err
 		}
 	}
+	historyStarted := time.Now()
 	conversationProjection, err := loadProjectAssistantConversationProjection(ctx, s.store, messageScope, threadID)
+	klog.FromContext(ctx).Info("App Studio worker preparation", "run", durable.ID, "stage", "conversation", "duration", time.Since(historyStarted))
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
 	conversation, conversationCheckpointed := projectAssistantConversationForRun(conversationProjection, recent)
-	p = projectWithLiveBindingStatus(ctx, c, p, id)
+	bindingStarted := time.Now()
+	bindingCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	p = projectWithLiveRuntimeBindingStatus(bindingCtx, c, p, id)
+	projectAssistantLogWorkerPreparationWithRateLimiterWaits(bindingCtx, durable.ID, "binding", bindingStarted)
 	mode, ok := projectAssistantCollaborationModeForRun(durable)
 	if !ok {
 		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
@@ -503,12 +513,16 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		// progress remain scoped to the current user turn.
 		modelContentParts = cloneProjectAssistantContentParts(start.ContentParts)
 	}
+	repositoryStarted := time.Now()
+	repositoryCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	repository := projectRepositoryView(repositoryCtx, c, p)
+	projectAssistantLogWorkerPreparationWithRateLimiterWaits(repositoryCtx, durable.ID, "repository", repositoryStarted)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		ToolPort:                 newProjectAssistantHTTPToolPort(s, r),
 		Client:                   c,
 		Project:                  p,
-		Repository:               projectRepositoryView(ctx, c, p),
+		Repository:               repository,
 		WorkspaceScope:           projectWorkspaceScope(id, p),
 		Workspace:                s.workspaces,
 		MessageScope:             messageScope,
@@ -1921,18 +1935,42 @@ func projectMCPRequestWithTimeout(ctx context.Context, endpoint, method string, 
 	return envelope.Result, nil
 }
 
+var projectMCPDevelopmentTransport struct {
+	mu        sync.Mutex
+	base      *http.Transport
+	transport *http.Transport
+}
+
 func projectMCPTransport(insecureSkipVerify bool) http.RoundTripper {
 	if !insecureSkipVerify {
 		return http.DefaultTransport
 	}
 
-	if baseTransport, ok := http.DefaultTransport.(*http.Transport); ok {
-		clone := baseTransport.Clone()
-		clone.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // dev-only
-		return clone
+	// A Transport owns the connection pool, not caller credentials. Reuse the
+	// explicit development TLS transport across short-lived clients while each
+	// request keeps its own authorization headers and each client its timeout.
+	base, _ := http.DefaultTransport.(*http.Transport)
+	projectMCPDevelopmentTransport.mu.Lock()
+	defer projectMCPDevelopmentTransport.mu.Unlock()
+	if projectMCPDevelopmentTransport.transport != nil && projectMCPDevelopmentTransport.base == base {
+		return projectMCPDevelopmentTransport.transport
 	}
-
-	return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // dev-only
+	transport := &http.Transport{}
+	if base != nil {
+		transport = base.Clone()
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // explicit dev-only setting
+	if previous := projectMCPDevelopmentTransport.transport; previous != nil {
+		previous.CloseIdleConnections()
+	}
+	projectMCPDevelopmentTransport.base = base
+	projectMCPDevelopmentTransport.transport = transport
+	return transport
 }
 
 func projectMCPShouldRetryInsecure(endpoint string, err error, skipTLSVerify bool) bool {
@@ -2298,14 +2336,11 @@ func projectSystemPromptForMode(p *aiv1alpha1.Project, repository *ProjectReposi
 	b.WriteString("You are the assistant for a persistent Railgrid Project workspace. ")
 	b.WriteString("Help the user reason about and build the application represented by this Project.\n\n")
 	b.WriteString("## User-visible progress\n\n")
-	b.WriteString("For every non-trivial tool-driven task, keep the user oriented while you work. A concise one- or two-sentence assistant preamble immediately before a substantial action group is user-visible inline commentary; the normal assistant response remains the terminal final answer and should summarize the result, evidence, and limitations.\n")
-	b.WriteString("- Before the first substantial action group, give one concise preamble that states the immediate objective. Do not narrate trivial reads, routine calls, or every individual tool invocation.\n")
-	b.WriteString("- Use report_progress after completing a meaningful plan phase, when new evidence changes the approach, when you encounter a blocker, or before and after lengthy verification when there is no natural tool-adjacent preamble. Do not duplicate the same update in report_progress and inline commentary.\n")
+	b.WriteString("Keep progress proportional. An obvious, narrowly scoped edit or answer with no design choices, external operation, or multi-phase verification is lightweight, even if it needs a read and mutation; skip preambles, write_todos, and report_progress for lightweight work, then give a concise evidence-based final answer. For larger tool-driven work, keep the user oriented; a concise preamble before the first substantial action group is user-visible inline commentary, and the normal assistant response remains the terminal final answer.\n")
+	b.WriteString("- For larger work, use report_progress after a meaningful phase, when new evidence changes the approach, when blocked, or around lengthy verification when there is no natural tool-adjacent update. A checklist edit alone is not a progress event. Do not duplicate the same update in report_progress and inline commentary.\n")
 	b.WriteString("- During active work, do not leave the user without an update for more than approximately 60 seconds.\n")
-	b.WriteString("- Each update must state one concrete completed outcome and the next direction or blocker in one or two concise sentences. Ground it only in evidence already available.\n")
-	b.WriteString("- Calling report_progress does not end or interrupt the turn. Continue working afterward.\n")
-	b.WriteString("- Skip progress for trivial reads and routine calls. If report_progress is unavailable, continue without it.\n\n")
-	b.WriteString("When write_todos is available, use it as the sole authority for checklist state in non-trivial Default mode work. For every non-trivial Default-mode task, call write_todos with a complete full-list plan before the first substantive or mutating tool call; skip write_todos for trivial reads, routine calls, and simple answers. Plan and Review remain read-only and keep their mode-specific contracts. report_progress is only user-facing commentary; it never updates or replaces the checklist. Every model-authored checklist change must be a full-list write_todos update:\n")
+	b.WriteString("- Each update states one concrete outcome and the next direction or blocker in one or two concise sentences, grounded in available evidence. report_progress does not end the turn; continue afterward. Skip it for trivial reads and routine calls. If unavailable, continue without it.\n\n")
+	b.WriteString("Use write_todos as the sole checklist authority for non-lightweight Default-mode work. Before the first substantial or mutating tool call on such work, write a complete plan; lightweight work, trivial reads, routine calls, and simple answers need no checklist. Plan and Review remain read-only and keep their mode-specific contracts. report_progress is only user-facing commentary; it never updates or replaces the checklist. Every model-authored checklist change must be a full-list write_todos update:\n")
 	b.WriteString("- Immediately after defining or receiving a plan, write the full list with evidence-grounded statuses and exactly one current step in_progress. Keep exactly one step in_progress at a time; all other unfinished or blocked work stays pending. Do not jump a pending step directly to completed; move it to in_progress first.\n")
 	b.WriteString("- Before moving to another phase, write the full list again; mark a step completed only when current direct evidence supports it. For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status.\n")
 	b.WriteString("- After verification changes completion evidence, immediately write the full list again.\n")
@@ -2333,7 +2368,7 @@ func projectSystemPromptForMode(p *aiv1alpha1.Project, repository *ProjectReposi
 			"This template is the app's ENVIRONMENT CONTRACT: before reasoning about what infrastructure, backing services, or environment variables the app has, call infrastructure__describe_template on THIS template and treat its agent.usage / agent.outputs as authoritative. " +
 			"Backing services the template declares (for example a managed database) exist for the development instance too, with the same injected environment (for example DATABASE_URL) — do not conclude a declared service is missing just because the app code does not use it yet, and do not provision a separate instance of a service the bound template already provides.\n")
 		if initialBuild {
-			b.WriteString("STARTER CODE IS ALREADY PRESENT: this project was created from the " + strings.TrimSpace(p.Spec.Template.Name) + " template and its runnable starter code is already in the workspace under the component directories — the workspace is NOT empty. Build ON it: customize the existing files rather than recreating the app from scratch. Prefer editing existing files over creating new ones, and never create_file a path that already exists. Because these files exist, editing them requires a version: before you replace, edit, move, or delete ANY existing file, first do ONE COMPLETE read of it (read_file at offset 1 covering the whole file, not a partial range) — a partial, ranged, or truncated read does NOT record a usable version and the mutation will fail with an update error. Start by reading the component manifests and entry files (for example each component's package.json and its server/entry and main UI file) completely, then edit them.\n")
+			b.WriteString("STARTER CODE IS ALREADY PRESENT: this project was created from the " + strings.TrimSpace(p.Spec.Template.Name) + " template and its runnable starter code is already in the workspace under the component directories — the workspace is NOT empty. Build ON it: customize the existing files rather than recreating the app from scratch. Prefer editing existing files over creating new ones, and never create_file a path that already exists. Start with bounded reads of the relevant component manifests and entry files, then use edit_file with exact oldString/newString source text for targeted changes; a separate complete read and expectedVersion are optional for edit_file. Before replacing, deleting, or moving an existing text file, its complete read_file content and version must have been fully shown in an earlier model response. A partial, ranged, or model-truncated read cannot authorize those whole-file operations; use targeted edit_file for large text files.\n")
 		}
 	} else {
 		b.WriteString("- Hosted development/preview template: NONE — the project has no hosted development process or browser preview. When the authoritative turn snapshot contains a ready codingEnvironment, continue authorized source work there and persist changes to the Project workspace; lack of a hosted template is not an authoring, compiler, or test blocker. Inspect and bind a public development template only when a compatible hosted preview/runtime is required. Template selection is independent of repository provisioning, and repository state gates Git commits only. Inspection-only requests and Plan mode do not authorize binding a template.\n")

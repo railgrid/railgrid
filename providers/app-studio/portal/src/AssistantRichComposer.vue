@@ -52,6 +52,7 @@ const props = withDefaults(defineProps<{
   ctx: RailgridContext | null
   providers: ProviderItem[]
   disabled?: boolean
+  submitting?: boolean
   activeRun?: boolean
   queueingEnabled?: boolean
   placeholder?: string
@@ -63,6 +64,7 @@ const props = withDefaults(defineProps<{
   selectedSkills: () => [],
   selectedResources: () => [],
   disabled: false,
+  submitting: false,
   activeRun: false,
   queueingEnabled: true,
   placeholder: 'Message this project',
@@ -1140,6 +1142,7 @@ defineExpose({
 <template>
   <div
     ref="rootRef" class="relative min-h-[72px]"
+    :aria-busy="submitting"
     @dragenter="handleDragEnter"
     @dragover="handleDragOver"
     @dragleave="handleDragLeave"
@@ -1165,7 +1168,9 @@ defineExpose({
       @select-resource="chooseResource"
       @select-mode="selectMode"
     />
-    <div v-if="attachmentChips.length" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5">
+    <!-- Retain draft receipts until acceptance: clearing them while sending
+         would trigger cleanup of files the pending turn still needs. -->
+    <div v-if="attachmentChips.length" v-show="!submitting" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5">
       <template v-for="chip in attachmentChips" :key="chip.clientID">
         <AssistantAttachmentPreview
           v-if="chip.file && assistantAttachmentIsImage(chip.file)"
@@ -1227,7 +1232,7 @@ defineExpose({
         </div>
       </template>
     </div>
-    <div v-if="localAnnotations.length" class="relative z-10 px-3 pt-2.5">
+    <div v-if="localAnnotations.length" v-show="!submitting" class="relative z-10 px-3 pt-2.5">
       <AssistantMessageAnnotations
         :annotations="localAnnotations"
         :current-document-id="annotationDocumentId"
@@ -1239,7 +1244,11 @@ defineExpose({
         @remove-all="removeAllAnnotations"
       />
     </div>
+    <div v-if="submitting" role="status" class="min-h-10 px-3 py-2.5 text-[13px] leading-5 text-text-muted">
+      Sending…
+    </div>
     <div
+      v-show="!submitting"
       ref="editorRef"
       role="textbox"
       aria-multiline="true"

@@ -41,20 +41,23 @@ func (s *stubAttestor) Attest(_ context.Context, _ *http.Request, provider strin
 }
 
 type stubIdentityService struct {
-	ensured   int
-	released  []string
-	mode      tenancyv1alpha1.ScopedIdentityAttestationMode
-	subject   string
-	ensureErr error
+	ensured          int
+	released         []string
+	mode             tenancyv1alpha1.ScopedIdentityAttestationMode
+	subject          string
+	request          identity.Request
+	ensureErr        error
+	revisionVerified bool
 }
 
 func (s *stubIdentityService) Ensure(_ context.Context, req identity.Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*identity.Token, error) {
 	s.ensured++
 	s.mode, s.subject = mode, subject
+	s.request = req
 	if s.ensureErr != nil {
 		return nil, s.ensureErr
 	}
-	return &identity.Token{Token: "minted", TokenType: "Bearer", ServiceAccount: "railgrid-si-x", Name: "si-x"}, nil
+	return &identity.Token{Token: "minted", TokenType: "Bearer", ServiceAccount: "railgrid-si-x", Name: "si-x", OwnerRevisionVerified: s.revisionVerified}, nil
 }
 
 func (s *stubIdentityService) ReleaseByName(_ context.Context, provider, name string) error {
@@ -105,6 +108,68 @@ func TestCreateAttestsBeforeMinting(t *testing.T) {
 	}
 	if response.Token != "minted" || response.TokenType != "Bearer" || response.Name != "si-x" {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestCreatePassesOwnerRevisionAndAcknowledgesEnforcement(t *testing.T) {
+	service := &stubIdentityService{revisionVerified: true}
+	body := strings.TrimSuffix(identityBody, "}") + `,"expectedOwnerGeneration":7,"expectedOwnerResourceVersion":"opaque-rv"}`
+	recorder := postIdentity(identityRouter(service, &stubAttestor{}), body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if service.request.ExpectedOwnerGeneration != 7 || service.request.ExpectedOwnerResourceVersion != "opaque-rv" {
+		t.Fatalf("service request owner revision = (%d, %q), want (7, opaque-rv)", service.request.ExpectedOwnerGeneration, service.request.ExpectedOwnerResourceVersion)
+	}
+	var response identityResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !response.OwnerRevisionVerified {
+		t.Fatalf("response did not acknowledge owner revision enforcement: %s", recorder.Body.String())
+	}
+}
+
+func TestCreateReturnsPermanentOwnerRevisionConflicts(t *testing.T) {
+	for _, code := range []string{identity.CodeStaleOwner, identity.CodeVersionConflict} {
+		t.Run(code, func(t *testing.T) {
+			service := &stubIdentityService{ensureErr: identity.RevisionConflict{Code: code, Reason: "private detail"}}
+			recorder := postIdentity(identityRouter(service, &stubAttestor{}), identityBody)
+			if recorder.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body=%s", recorder.Code, recorder.Body.String())
+			}
+			var body struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body.Code != code {
+				t.Fatalf("code = %q, want %q", body.Code, code)
+			}
+			if strings.Contains(body.Message, "private detail") {
+				t.Fatalf("response exposed internal revision detail: %q", body.Message)
+			}
+		})
+	}
+}
+
+func TestCreateRejectsIncompleteOwnerRevisionAsBadRequest(t *testing.T) {
+	service := &stubIdentityService{ensureErr: identity.Refusal{Code: identity.CodeInvalidRequest, Reason: "expected owner revision fields must be paired"}}
+	body := strings.TrimSuffix(identityBody, "}") + `,"expectedOwnerGeneration":7}`
+	recorder := postIdentity(identityRouter(service, &stubAttestor{}), body)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
+	}
+	var bodyValue struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &bodyValue); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if bodyValue.Code != identity.CodeInvalidRequest {
+		t.Fatalf("code = %q, want %q", bodyValue.Code, identity.CodeInvalidRequest)
 	}
 }
 

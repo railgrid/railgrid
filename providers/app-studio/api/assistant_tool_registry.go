@@ -195,7 +195,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:         projectToolReadFile,
-				Description:  "Read one bounded project-relative UTF-8 file. A complete read returns an opaque version; pass that exact version to replace_file, delete_file, or move_file. edit_file can apply an exact oldString directly against the current file without a separate read. Partial reads are inspection-only for version-gated mutations.",
+				Description:  "Read one bounded project-relative file. UTF-8 source is shown literally in a collision-safe fence, not as a JSON content string; preserve every backslash, quote, newline, and character exactly when copying into edit_file. Tool arguments are decoded from JSON once. The 10,000-byte model-output limit may clip a read; clipped/ranged results do not authorize whole-file mutations. Whole-file replacement, deletion, or move requires complete text source to remain visible in an earlier model response; a complete binary read also allows delete/move by exact version, but not replacement. For a large-file change, use edit_file with an exact literal oldString/newString match instead of rereading the whole file.",
 				Parameters:   json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"file_path":{"type":"string","minLength":1,"maxLength":%d},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":2000}},"required":["file_path"],"additionalProperties":false}`, workspace.MaxProjectPathBytes)),
 				Risk:         projectAssistantToolRiskRead,
 				ParallelSafe: true,
@@ -271,7 +271,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolReplaceFile,
-				Description: "Replace one complete bounded UTF-8 project-relative file atomically. The current file must have been completely read during this turn; expectedVersion must exactly match that read, otherwise the replacement is rejected as stale.",
+				Description: "Replace one complete bounded UTF-8 project-relative file atomically. The current file's full contents must have been shown by read_file in an earlier model response; expectedVersion must exactly match that read. If the complete read result is too large for the model output limit, use edit_file with an exact oldString/newString match for a targeted change instead of rereading the whole file.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"content":{"type":"string","maxLength":%d},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","content","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
@@ -302,10 +302,12 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
-				Name:        projectToolEditFile,
-				Description: "Edit one existing UTF-8 project file using an exact oldString replacement. The tool reads the current file under the workspace mutation lock, so a separate read is optional. If expectedVersion is supplied after a complete read, the server uses that authoritative read version; otherwise the edit is checked against current content. oldString must match exactly once unless replaceAll is true; stale or ambiguous matches fail without changing the file.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"oldString":{"type":"string","minLength":1,"maxLength":%d},"newString":{"type":"string","maxLength":%d},"replaceAll":{"type":"boolean"},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d,"description":"Optional compatibility version from a complete read; edit_file can also operate without a prior read."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","oldString","newString"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
-				Risk:        projectAssistantToolRiskWrite,
+				Name: projectToolEditFile,
+				Description: "Edit one existing UTF-8 project file using an exact oldString replacement. The tool reads the current file under the workspace mutation lock, so a separate read is optional. JSON arguments are decoded once: oldString and newString must contain the exact source characters, with no added escaping. " +
+					`Example: source text '\path' (one backslash) is sent as JSON value '"\\path"' and decodes to '\path'; source text '\\path' (two backslashes) is sent as JSON value '"\\\\path"' and decodes to '\\path'. Do not add source backslashes for JSON encoding. ` +
+					"If expectedVersion is supplied after a complete read, the server uses that authoritative read version; otherwise the edit is checked against current content. oldString must match exactly once unless replaceAll is true; stale or ambiguous matches fail without changing the file.",
+				Parameters: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"oldString":{"type":"string","minLength":1,"maxLength":%d,"description":"Exact source characters to find after JSON decoding; no extra escaping characters are part of the match."},"newString":{"type":"string","maxLength":%d,"description":"Exact source characters to insert after JSON decoding; one intended source backslash is one U+005C character."},"replaceAll":{"type":"boolean"},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d,"description":"Optional compatibility version from a complete read; edit_file can also operate without a prior read."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","oldString","newString"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
+				Risk:       projectAssistantToolRiskWrite,
 			},
 			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
 				s, err := projectAssistantToolServer(server)
@@ -343,7 +345,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolDeleteFile,
-				Description: "Delete one existing project-relative file. The current file must have been completely read during this turn and expectedVersion must match that read; stale, missing, or unsafe targets fail closed.",
+				Description: "Delete one existing project-relative file. A UTF-8 text file's full contents must have been shown by read_file in an earlier model response; a complete binary read may identify the file by version without exposing its contents. expectedVersion must match that read; stale, missing, or unsafe targets fail closed.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxFileVersionBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
@@ -354,7 +356,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				path, _ := projectToolRawString(req.Arguments["path"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion)
+				effVersion, err := projectAssistantRequireMutationReadAllowBinary(ctx, req, s.workspaces, path, expectedVersion)
 				if err != nil {
 					return "", err
 				}
@@ -374,7 +376,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolMoveFile,
-				Description: "Move one existing project-relative file to a new project-relative path. The source must have been completely read during this turn and expectedVersion must match that read; the destination must not exist.",
+				Description: "Move one existing project-relative file to a new project-relative path. A UTF-8 text source's full contents must have been shown by read_file in an earlier model response; a complete binary read may identify the source by version without exposing its contents. expectedVersion must match that read, and the destination must not exist.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"sourcePath":{"type":"string","minLength":1,"maxLength":%d},"destinationPath":{"type":"string","minLength":1,"maxLength":%d},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["sourcePath","destinationPath","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxProjectPathBytes, workspace.MaxFileVersionBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
@@ -385,7 +387,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				sourcePath, _ := projectToolRawString(req.Arguments["sourcePath"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, sourcePath, expectedVersion)
+				effVersion, err := projectAssistantRequireMutationReadAllowBinary(ctx, req, s.workspaces, sourcePath, expectedVersion)
 				if err != nil {
 					return "", err
 				}
@@ -745,7 +747,7 @@ func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projec
 		Binary    bool   `json:"binary,omitempty"`
 		Offset    int    `json:"offset"`
 		Limit     int    `json:"limit"`
-	}{Path: file.Path, Size: file.Size, Version: file.Version, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
+	}{Path: file.Path, Size: file.Size, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
 	if !file.Binary {
 		lines := strings.Split(file.Content, "\n")
 		start := offset - 1
@@ -757,6 +759,13 @@ func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projec
 			result.Content = strings.Join(lines[start:end], "\n")
 		}
 		result.Complete = !file.Truncated && offset == 1 && limit >= len(lines)
+	} else {
+		// A binary read intentionally omits content, but a complete versioned
+		// receipt still identifies the object for move_file and delete_file.
+		result.Complete = file.Version != ""
+	}
+	if result.Complete {
+		result.Version = file.Version
 	}
 	if result.Complete && result.Version != "" && req.RunState != nil {
 		req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)

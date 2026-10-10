@@ -19,15 +19,24 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/hubmcp"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -71,6 +80,11 @@ func TestProjectAssistantExecCommandContractAndPolicy(t *testing.T) {
 	spec, ok := projectAssistantWorkflowToolSpec(projectToolExecCommand)
 	if !ok {
 		t.Fatal("exec_command workflow spec is missing")
+	}
+	for _, want := range []string{"user-authorized", "compiler, test, lint, or read-only diagnostic", "argv tokens", "cannot write back to App Studio source"} {
+		if !strings.Contains(spec.Description, want) {
+			t.Errorf("live exec_command description missing %q: %s", want, spec.Description)
+		}
 	}
 	if spec.Risk != projectAssistantToolRiskRuntime || spec.ParallelSafe {
 		t.Fatalf("exec spec = %#v, want effectful exclusive runtime tool", spec)
@@ -128,7 +142,7 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 	if !strings.Contains(info.Desc, `ALWAYS pass component="workspace"`) || strings.Contains(info.Desc, "for example, backend or frontend") {
 		t.Fatalf("sandbox exec description = %q, want an explicit workspace-only contract", info.Desc)
 	}
-	for _, want := range []string{"Go, Node.js, and Python", "has no public preview", "MUST NOT mutate source files", "gofmt -d", "never gofmt -w"} {
+	for _, want := range []string{"user-authorized", "read-only diagnostic", "Go, Node.js, and Python", "has no public preview", "MUST NOT mutate source files", "gofmt -d", "never gofmt -w"} {
 		if !strings.Contains(info.Desc, want) {
 			t.Fatalf("sandbox exec description = %q, want %q", info.Desc, want)
 		}
@@ -296,6 +310,57 @@ func TestProjectAssistantRunSandboxExecAcceptsOnlyWorkspaceComponent(t *testing.
 	}
 }
 
+func TestProjectAssistantRunSandboxExecCleansUpAmbiguousStart(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		execError    error
+		execResponse projectSandboxExecResponse
+		wantCancel   bool
+	}{
+		{name: "ambiguous transport failure", execError: errors.New("connection reset after worker accepted START"), wantCancel: true},
+		{name: "successful response without session ID", execResponse: projectSandboxExecResponse{State: "running"}, wantCancel: true},
+		{name: "definitive client rejection", execError: &projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "invalid argv"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &sandboxClientFake{execErr: tc.execError, execResponse: tc.execResponse}
+			sandbox := &projectAssistantRunSandbox{
+				client: client,
+				target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{
+					projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."},
+				}},
+				metadata: projectAssistantRunSandboxMetadata{Status: "active", RemoteRevision: 1, RemoteDigest: "sha256:source"},
+			}
+			result, err := execProjectAssistantRunSandboxCommand(context.Background(), projectAssistantWorkflowRunContext{AssistantRunID: "run-cleanup"}, sandbox, &projectAssistantExecCommandInput{
+				Component: projectAssistantRunSandboxWorkspaceVerb,
+				Argv:      []string{"go", "test", "./..."},
+			})
+			if err != nil || result == nil || result.Status != "error" {
+				t.Fatalf("exec result = %#v, err=%v; want an error result", result, err)
+			}
+			client.mu.Lock()
+			requests := append([]projectSandboxExecRequest(nil), client.execRequests...)
+			contextErrors := append([]error(nil), client.execContextErrors...)
+			hasDeadline := append([]bool(nil), client.execHasDeadline...)
+			client.mu.Unlock()
+			wantCalls := 1
+			if tc.wantCancel {
+				wantCalls++
+			}
+			if len(requests) != wantCalls || requests[0].Action != "start" || requests[0].RequestID == "" {
+				t.Fatalf("exec requests = %#v, want one START and cleanup=%t", requests, tc.wantCancel)
+			}
+			if tc.wantCancel {
+				if requests[1].Action != "cancel" || requests[1].RequestID != requests[0].RequestID || requests[1].SessionID != "" {
+					t.Fatalf("cleanup request = %#v, want request-ID-only cancel for START %q", requests[1], requests[0].RequestID)
+				}
+				if contextErrors[1] != nil || !hasDeadline[1] {
+					t.Fatalf("cleanup context error/deadline = %v/%t, want detached bounded context", contextErrors[1], hasDeadline[1])
+				}
+			}
+		})
+	}
+}
+
 type assistantRunSandboxExecGateFake struct {
 	execs []projectSandboxExecRequest
 }
@@ -319,19 +384,50 @@ func TestProjectAssistantExecSnapshotRoutesSelectedComponent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, digest, revision, err := projectAssistantExecSnapshot(context.Background(), projectAssistantWorkflowRunContext{
+	digest, revision, err := projectAssistantExecSnapshot(context.Background(), projectAssistantWorkflowRunContext{
 		Workspace:      files,
 		WorkspaceScope: scope,
 	}, projectTemplateComponent{WorkspacePath: "backend"}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest == "" || revision == 0 || len(got) != 1 || got[0].Path != "main.go" || got[0].Content != "package main\n" {
-		t.Fatalf("snapshot = %#v, digest = %q, revision=%d", got, digest, revision)
+	if digest == "" || revision == 0 {
+		t.Fatalf("snapshot digest = %q, revision=%d", digest, revision)
 	}
 	wantDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "package main\n"}})
 	if digest != wantDigest {
 		t.Fatalf("snapshot digest = %q, component source digest = %q", digest, wantDigest)
+	}
+}
+
+func TestProjectAssistantExecSnapshotSelectsComponentInLargeWorkspace(t *testing.T) {
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "project", ProjectUID: "uid"}
+	input := make([]workspace.File, 0, 440)
+	for i := range 420 {
+		input = append(input, workspace.File{Path: fmt.Sprintf("docs/page-%03d.txt", i), Content: "unrelated\n"})
+	}
+	want := make([]projectSandboxSyncFile, 0, 20)
+	for i := range 20 {
+		name := fmt.Sprintf("main-%02d.go", i)
+		content := fmt.Sprintf("package main // %d\n", i)
+		input = append(input, workspace.File{Path: "backend/" + name, Content: content})
+		want = append(want, projectSandboxSyncFile{Path: name, Content: content})
+	}
+	if err := files.ApplyFiles(ctx, scope, input); err != nil {
+		t.Fatal(err)
+	}
+
+	digest, revision, err := projectAssistantExecSnapshot(ctx, projectAssistantWorkflowRunContext{
+		Workspace:      files,
+		WorkspaceScope: scope,
+	}, projectTemplateComponent{WorkspacePath: "backend"}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision == 0 || digest != projectSandboxSyncDigest(want) {
+		t.Fatalf("snapshot revision = %d, digest = %q, want nonzero revision and component digest %q", revision, digest, projectSandboxSyncDigest(want))
 	}
 }
 
@@ -348,16 +444,57 @@ func TestProjectAssistantExecSnapshotMirrorsBinarySync(t *testing.T) {
 	text := []projectSandboxSyncFile{{Path: "index.html", Content: "<!doctype html>\n"}}
 	// An agent without base64 sync never received the binary: the exec
 	// digest covers text only (and no longer fails on the binary).
-	_, digest, _, err := projectAssistantExecSnapshot(context.Background(), runCtx, projectTemplateComponent{WorkspacePath: "web"}, 0, func() bool { return false })
+	digest, _, err := projectAssistantExecSnapshot(context.Background(), runCtx, projectTemplateComponent{WorkspacePath: "web"}, 0, func() bool { return false })
 	if err != nil || digest != projectSandboxSyncDigest(text) {
 		t.Fatalf("text-only exec digest = %q, %v", digest, err)
 	}
 	// An agent with base64 sync holds the binary: the digest covers its bytes,
 	// matching the development sync digest.
 	withBinary := append(text, projectSandboxSyncFile{Path: "public/jeep.glb", Content: base64.StdEncoding.EncodeToString(model), Encoding: "base64"})
-	_, digest, _, err = projectAssistantExecSnapshot(context.Background(), runCtx, projectTemplateComponent{WorkspacePath: "web"}, 0, func() bool { return true })
+	digest, _, err = projectAssistantExecSnapshot(context.Background(), runCtx, projectTemplateComponent{WorkspacePath: "web"}, 0, func() bool { return true })
 	if err != nil || digest != projectSandboxSyncDigest(withBinary) {
 		t.Fatalf("binary exec digest = %q, %v", digest, err)
+	}
+}
+
+func TestProjectAssistantExecSnapshotOmitsBinariesDroppedBySyncBundleLimit(t *testing.T) {
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "project", ProjectUID: "uid"}
+	image := make([]byte, hubmcp.BinaryFileMaxBytes)
+	image[0] = 0
+	for _, file := range []workspace.PutOptions{
+		{Path: "backend/public/a.bin", Data: image},
+		{Path: "backend/public/b.bin", Data: image},
+		{Path: "backend/main.go", Data: []byte("package main\n")},
+	} {
+		if _, err := files.PutFile(ctx, scope, file); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	digest, _, err := projectAssistantExecSnapshot(ctx, projectAssistantWorkflowRunContext{
+		Workspace: files, WorkspaceScope: scope,
+	}, projectTemplateComponent{WorkspacePath: "backend"}, 0, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Development sync preserves the sorted first binary and skips the second
+	// because two 25 MiB binaries exceed its 48 MiB decoded bundle limit.
+	// The live agent's digest therefore covers a.bin and main.go only.
+	hash := sha256.New()
+	for _, entry := range []struct {
+		path string
+		data []byte
+	}{{"main.go", []byte("package main\n")}, {"public/a.bin", image}} {
+		_, _ = hash.Write([]byte(entry.path))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(entry.data)
+		_, _ = hash.Write([]byte{0})
+	}
+	wantDigest := hex.EncodeToString(hash.Sum(nil))
+	if digest != wantDigest {
+		t.Fatalf("exec digest = %q, want exact bundle-bounded sync digest %q", digest, wantDigest)
 	}
 }
 
@@ -427,7 +564,7 @@ func TestProjectAssistantExecSnapshotRejectsChangedMutationRevision(t *testing.T
 	}
 	runState := newProjectEinoAssistantRunState()
 	runState.RecordSourceMutation()
-	_, _, _, err := projectAssistantExecSnapshot(context.Background(), projectAssistantWorkflowRunContext{
+	_, _, err := projectAssistantExecSnapshot(context.Background(), projectAssistantWorkflowRunContext{
 		Workspace:      files,
 		WorkspaceScope: scope,
 		RunState:       runState,
@@ -491,6 +628,47 @@ func TestProjectAssistantExecStartPermanentErrorFailsFast(t *testing.T) {
 	}
 	if projectAssistantExecStartRetryable(&projectAssistantExecHTTPError{status: http.StatusUnauthorized, detail: "unauthorized"}) {
 		t.Fatal("auth error was incorrectly marked retryable")
+	}
+}
+
+func TestProjectAssistantExecStartFailureCleanupDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "transport error", err: errors.New("connection reset"), want: true},
+		{name: "canceled request", err: context.Canceled, want: true},
+		{name: "request timeout", err: &projectAssistantExecHTTPError{status: http.StatusRequestTimeout}, want: true},
+		{name: "server error", err: &projectAssistantExecHTTPError{status: http.StatusBadGateway}, want: true},
+		{name: "bad request", err: &projectAssistantExecHTTPError{status: http.StatusBadRequest}, want: false},
+		{name: "idempotency conflict", err: &projectAssistantExecHTTPError{status: http.StatusConflict}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := projectAssistantExecStartMayHaveBeenAccepted(tc.err); got != tc.want {
+				t.Fatalf("projectAssistantExecStartMayHaveBeenAccepted(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantCancelExecByRequestIDUsesDetachedBoundedCancel(t *testing.T) {
+	var got projectSandboxExecRequest
+	called := false
+	projectAssistantCancelExecByRequestID("request-1", func(ctx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+		called = true
+		got = request
+		if ctx.Err() != nil {
+			t.Fatalf("cleanup context already canceled: %v", ctx.Err())
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > projectAssistantExecCancelTimeout {
+			t.Fatalf("cleanup deadline = %v (present=%t), want a live bounded timeout", deadline, ok)
+		}
+		return projectSandboxExecResponse{}, nil
+	})
+	if !called || got.Action != "cancel" || got.RequestID != "request-1" || got.SessionID != "" {
+		t.Fatalf("cleanup request = %#v (called=%t), want request-ID-only cancel", got, called)
 	}
 }
 
@@ -731,5 +909,74 @@ func TestProjectAssistantExecActionFeedMergesTerminalResultsAcrossCheckpoints(t 
 	final = finalizeProjectAssistantActionFeed([]projectAssistantActionFeedItem{preserved}, store.AssistantRunStatusCompleted)
 	if len(final) != 1 || final[0].Exec == nil || final[0].Exec.Status != "timed_out" {
 		t.Fatalf("finalized terminal exec action = %#v, want explicit timed_out status preserved", final)
+	}
+}
+
+// A coordinator can durably accept START even when its response never reaches
+// App Studio. Retrying must recover that session, not launch another command.
+func TestProjectAssistantExecStartRecoversLostAcceptedResponse(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	var launches atomic.Int32
+	var firstRequest projectSandboxExecRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got projectSandboxExecRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if calls.Add(1) == 1 {
+			firstRequest = got
+			launches.Add(1)
+			<-r.Context().Done() // accepted, but response lost until attempt deadline
+			return
+		}
+		if !reflect.DeepEqual(got, firstRequest) {
+			t.Errorf("retry changed command identity or source evidence: %#v != %#v", got, firstRequest)
+		}
+		_ = json.NewEncoder(w).Encode(projectSandboxExecResponse{SessionID: "accepted-session", State: "succeeded"})
+	}))
+	defer server.Close()
+	request := projectSandboxExecRequest{Action: "start", RequestID: "lost-response", Argv: []string{"npm", "run", "build"}, SourceRevision: 9, SourceDigest: "source-digest"}
+	response, err := retryProjectAssistantExecStart(context.Background(), request, func(ctx context.Context, got projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+		body, _ := json.Marshal(got)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
+		if err != nil {
+			return projectSandboxExecResponse{}, err
+		}
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			return projectSandboxExecResponse{}, err
+		}
+		defer resp.Body.Close()
+		var result projectSandboxExecResponse
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		return result, err
+	})
+	if err != nil || response.SessionID != "accepted-session" || calls.Load() != 2 || launches.Load() != 1 {
+		t.Fatalf("result=%#v error=%v requests=%d launches=%d", response, err, calls.Load(), launches.Load())
+	}
+}
+
+func TestProjectAssistantExecStartCallerCancellationStopsRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	_, err := retryProjectAssistantExecStart(ctx, projectSandboxExecRequest{Action: "start", RequestID: "cancel"}, func(ctx context.Context, _ projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+		calls++
+		cancel()
+		<-ctx.Done()
+		return projectSandboxExecResponse{}, ctx.Err()
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("error=%v attempts=%d", err, calls)
+	}
+}
+
+func TestProjectAssistantExecStartTimeoutDiagnosticSurvivesProjection(t *testing.T) {
+	err := &url.Error{Op: "Post", URL: "https://internal.invalid/" + strings.Repeat("long-route/", 40), Err: context.DeadlineExceeded}
+	summary := projectAssistantExecStartFailureSummary(err)
+	if len(summary) > 240 || !strings.Contains(summary, "startup deadline") || strings.Contains(summary, "internal.invalid") {
+		t.Fatalf("timeout diagnostic lost its cause: %q", summary)
 	}
 }

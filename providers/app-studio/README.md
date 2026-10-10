@@ -249,11 +249,15 @@ interaction wrappers are not model-facing capabilities.
 
 The shared browser uses MCP initialize/initialized, a persistent GET event
 stream, POST tool calls, and DELETE session close. App Studio owns the session
-owner tuple, preview-origin and private-preview handoff checks, the
-source-synchronization fence, and post-call snapshot/tab safety. Native tool
-receipts are the browser evidence; a lost mutating call is returned as unknown
-and is never replayed, while a safe read can be reconstructed once only when no
-interaction is pending.
+owner tuple, preview-origin and private-preview handoff checks, and the
+source-synchronization fence. Interactions and history navigation get a trusted
+preflight plus post-call snapshot/tab safety checks. A failed preflight returns
+a typed `not_executed` receipt. If a page-changing action may have run but its
+post-call safety check cannot verify the page, App Studio returns
+`outcome_unknown`; it never replays interactions or history navigation. Safe
+reads and validated explicit navigation within the preview may be retried once
+after session loss, when no interaction is pending. Native receipts report tool
+outcomes; they do not make browser actions atomic.
 
 The database container is named `railgrid-app-studio-postgres`, listens on
 `127.0.0.1:55432`, and stores data under `.kcp/app-studio-postgres/`. Both
@@ -333,15 +337,24 @@ with `POST .../assistant/threads/{thread}/reviews` and may provide bounded revie
 instructions. It reports evidence-backed findings and is never an automatic
 completion gate. `Default` follows the user's request directly and exposes the
 current evidence tools plus these source-mutation tools: `create_file`,
-`replace_file`, `edit_file`, `delete_file`, and `move_file`. `read_file` returns
-bounded structured data; only a complete read carries the opaque `version`
-needed for a mutation, while partial reads are inspection-only. `create_file`
-is always create-only: it never replaces an existing file and has no
-phase-dependent or initial-build variant. `replace_file` atomically replaces a
-whole file and requires the exact `expectedVersion` from a complete same-turn
-read. `edit_file` performs exact `oldString`/`newString` replacement (with an
-explicit `replaceAll` option) and, like `delete_file` and `move_file`, requires
-that complete same-turn read plus its `expectedVersion`; move destinations must
+`replace_file`, `edit_file`, `delete_file`, and `move_file`. The read endpoint
+and durable tool ledger retain structured JSON receipts. The model receives a
+bounded projection that renders text source as literal UTF-8, so newlines,
+quotes, backslashes, Unicode, and HTML-like characters are source characters.
+Copy those characters unchanged into `oldString`/`newString`, using normal JSON
+serialization for the tool-call arguments; do not escape the source a second
+time. Only a complete read whose text and version remain visible in an earlier
+model response proves the source for `replace_file`, `delete_file`, or
+`move_file`. Partial or
+model-clipped reads do not prove the whole file, and clipping clears the
+version. A complete binary read can prove a version for delete or move only.
+`create_file` is always create-only: it never replaces an existing file and has
+no phase-dependent or initial-build variant. `replace_file` atomically replaces
+a whole UTF-8 text file using the exact `expectedVersion` from that visible
+complete read. `edit_file` performs exact `oldString`/`newString` replacement
+(with an explicit `replaceAll` option) under the workspace mutation lock; a
+separate read and version are optional, so use an exact targeted edit for a
+large file that cannot be shown in one complete read. Move destinations must
 be unused. Paths are normalized and authorized by the server, and stale,
 ambiguous, partial, or otherwise invalid mutations fail without changing the
 file. There is no patch grammar and no backwards-compatibility alias. Mutation
@@ -361,15 +374,18 @@ cutover and are not exposed to clients.
 
 Every model response batch is admitted before dispatch. Tool-call IDs are
 deterministic, malformed calls and conflicting IDs fail closed, and the model's
-call order and cardinality are preserved. Eino retains native concurrent
-execution and ordered rejoin, while a run-scoped reader/writer gate permits
-only explicitly parallel-safe reads to overlap; effects, unknown tools, and
-MCP tools are exclusive. An append-only
-`AssistantRunEvent` ledger records each admitted call and exact model-visible
-result together with its typed semantic disposition. Model-call audit entries
-also bind the visible tool contracts to a stable schema digest. The ledger
-provides idempotency within the active run and between concurrent workers; it
-is not a provider-restart continuation mechanism.
+call order and cardinality are preserved. A path-conflict dependency graph
+orders calls that touch the same workspace paths in model order; independent
+safe reads may overlap. A later conflicting call is deferred if an earlier
+operation is awaiting approval or did not finish safely. Eino retains native
+concurrent execution and ordered rejoin, while a run-scoped reader/writer gate
+keeps effects, unknown tools, and MCP tools exclusive. The append-only
+`AssistantRunEvent` ledger retains each admitted call's durable structured
+receipt and typed semantic disposition; the bounded model-facing projection
+may differ from that receipt. Model-call audit entries also bind visible tool
+contracts to a stable schema digest. The ledger provides idempotency within the
+active run and between concurrent workers; it is not a provider-restart
+continuation mechanism.
 
 Transient setup failures and incomplete model streams retry from the current
 accepted turn history. Partial responses are discarded before tools can be
@@ -613,6 +629,34 @@ exactly like the platform copy. See
 [docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
 [deploy/chart/README.md](deploy/chart/README.md) for every chart value.
 
+### Project identity revisions
+
+The API and Project reconciler read the current Project before deriving its
+scoped identity rules. Mint requests include that Project's generation and
+opaque resourceVersion. The hub verifies the exact observation before writing
+the identity record; a record update conflict repeats the record read and owner
+check. The SDK requires an affirmative `ownerRevisionVerified` response.
+
+The hub also writes the ScopedIdentity record's UID and generation atomically
+with the tenant ClusterRole's rules. An older materialization cannot overwrite
+a newer permission set, including changes derived from Project status within
+one Project generation. A delayed request or sweep re-reads the current record
+before applying it. ResourceVersions are compared only for equality.
+
+Unchanged rules reuse a verified live token. A resourceVersion-only change
+updates the next refresh's observation without minting another token; a rule or
+generation change rebuilds the source. Adopting revision checks on an older
+unverified cached token forces a new mint. A freshness refusal cannot fall back
+to that cached token. API and controller retries are bounded and derive rules
+again from a fresh Project read.
+
+For rollout, finish upgrading and draining old hub reconcilers before relying
+on the fences: older binaries do not honor the ClusterRole annotations. Then
+upgrade or drain older App Studio identity writers; once a record is fenced,
+unversioned requests are rejected. No new permission claims or API schemas are
+required. The fences cover concurrent rule refresh and materialization; they
+do not make Release's deletion of several Kubernetes objects atomic.
+
 ### Private preview browser authentication
 
 App Studio exchanges the Project identity at `POST /auth/apps/preview-handoff`
@@ -629,3 +673,16 @@ state checks. Preview access lasts at most 15 minutes and never beyond the
 Project credential's expiration. Shared storage preserves the instance scope,
 expiration, and handoff purpose across hub replicas. Hub and App Studio must
 both include this protocol; there is no fallback to the provider or user token.
+
+The hub uses separate versioned preview-session and preview-code stores apart
+from ordinary portal SSO. The one-use `p2h.` code creates the scoped preview
+cookie; the `p2a.` app code grants only the named instance through the existing
+`create proxy` permission. The hub returns the Project identity's authoritative
+expiry, and App Studio renews the handoff when the app scope or preview base
+changes or the expiry is within 30 seconds. Native browser receipts redact
+query strings from hub authorization, callback, and handoff URLs before model
+history; ordinary application query strings remain available for inspection.
+For compatibility with older hubs, a response without valid expiry metadata can
+still serve read-only observation and explicit same-origin navigation, but the
+authorization is never cached for interactions or history actions. Those
+actions return `not_executed` until the hub supplies a usable expiry.

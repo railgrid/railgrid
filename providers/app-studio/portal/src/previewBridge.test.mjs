@@ -214,7 +214,7 @@ test('annotation commit synchronizes durable pins immediately', async () => {
 test('hydrates annotation drafts per active thread and clears only after accepted sends', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   assert.match(appSource, /watch\(activeAssistantAnnotationDraftScopeKey,[\s\S]*hydrateCurrentAssistantAnnotationDraft\(\)[\s\S]*\{ flush: 'post' \}/)
-  assert.match(appSource, /startPostAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID\)\s+commitAttachments\(turnContentParts\)\s+clearSelectedTurnAttachments\(\)/)
+  assert.match(appSource, /startPostAccepted = true\s+submissionOwner\.postAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID, sendContext\)\s+commitAttachments\(turnContentParts\)[\s\S]*?clearSelectedTurnAttachments\(\)/)
   assert.match(appSource, /assistantComposerParts\.value = turnContentParts[\s\S]*persistCurrentAssistantAnnotationDraft\(turnContentParts\)/)
 })
 

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
@@ -89,6 +91,7 @@ func (m *memoryRecords) Create(_ context.Context, obj *tenancyv1alpha1.ScopedIde
 	}
 	m.creates++
 	copied := obj.DeepCopy()
+	copied.UID = types.UID("record-" + obj.Name)
 	copied.Generation = 1
 	m.items[obj.Name] = copied
 	return copied.DeepCopy(), nil
@@ -123,6 +126,30 @@ func (m *memoryRecords) Delete(_ context.Context, name string, _ metav1.DeleteOp
 type fakeOwners struct {
 	present map[string]string // "<kind>/<name>" -> uid
 	err     error
+}
+
+type fakeRevisionOwners struct {
+	uid             string
+	generation      int64
+	resourceVersion string
+	deleting        bool
+	err             error
+}
+
+func (f *fakeRevisionOwners) Exists(ctx context.Context, clusterID string, owner Owner) (bool, string, error) {
+	found, observation, err := f.Observe(ctx, clusterID, owner)
+	return found, observation.UID, err
+}
+
+func (f *fakeRevisionOwners) Observe(_ context.Context, _ string, owner Owner) (bool, OwnerObservation, error) {
+	if f.err != nil {
+		return false, OwnerObservation{}, f.err
+	}
+	observation := OwnerObservation{UID: f.uid, Generation: f.generation, ResourceVersion: f.resourceVersion}
+	if f.deleting || owner.UID != "" && owner.UID != f.uid {
+		return false, observation, nil
+	}
+	return true, observation, nil
 }
 
 func (f *fakeOwners) Exists(_ context.Context, _ string, owner Owner) (bool, string, error) {
@@ -265,6 +292,153 @@ func TestEnsureRefusesARecreatedOwnerUnderTheOldUID(t *testing.T) {
 	var refusal Refusal
 	if !errors.As(err, &refusal) || refusal.Code != CodeUnknownOwner {
 		t.Fatalf("want %q for a recreated owner, got %v", CodeUnknownOwner, err)
+	}
+}
+
+func TestEnsureRequiresAndAcknowledgesExactOwnerRevision(t *testing.T) {
+	service, records, _, _ := testService(t)
+	service.owners = &fakeRevisionOwners{uid: "agent-uid-1", generation: 7, resourceVersion: "opaque-rv"}
+	req := agentRequest()
+	req.ExpectedOwnerGeneration = 7
+	req.ExpectedOwnerResourceVersion = "opaque-rv"
+	token, err := service.Ensure(context.Background(), req, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("Ensure versioned request: %v", err)
+	}
+	if !token.OwnerRevisionVerified {
+		t.Fatal("versioned token did not acknowledge owner revision enforcement")
+	}
+	if len(records.items) != 1 {
+		t.Fatalf("record count = %d, want 1", len(records.items))
+	}
+	for _, record := range records.items {
+		revision, versioned, err := recordOwnerRevision(record)
+		if err != nil || !versioned || revision.Generation != 7 || revision.ResourceVersion != "opaque-rv" {
+			t.Fatalf("persisted owner revision = (%#v, %v, %v)", revision, versioned, err)
+		}
+		if record.UID == "" || record.Generation < 1 {
+			t.Fatalf("test record lacks materialization fence metadata: UID=%q generation=%d", record.UID, record.Generation)
+		}
+	}
+}
+
+func TestEnsureRejectsStaleAndDeletingVersionedOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		owners  *fakeRevisionOwners
+		wantErr string
+	}{
+		{name: "resourceVersion changed", owners: &fakeRevisionOwners{uid: "agent-uid-1", generation: 7, resourceVersion: "new-rv"}, wantErr: CodeStaleOwner},
+		{name: "generation changed", owners: &fakeRevisionOwners{uid: "agent-uid-1", generation: 8, resourceVersion: "opaque-rv"}, wantErr: CodeStaleOwner},
+		{name: "owner is deleting", owners: &fakeRevisionOwners{uid: "agent-uid-1", generation: 7, resourceVersion: "opaque-rv", deleting: true}, wantErr: CodeStaleOwner},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, records, _, _ := testService(t)
+			service.owners = tc.owners
+			req := agentRequest()
+			req.ExpectedOwnerGeneration = 7
+			req.ExpectedOwnerResourceVersion = "opaque-rv"
+			_, err := service.Ensure(context.Background(), req, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+			var conflict RevisionConflict
+			if !errors.As(err, &conflict) || conflict.Code != tc.wantErr {
+				t.Fatalf("Ensure error = %v, want revision conflict %q", err, tc.wantErr)
+			}
+			if len(records.items) != 0 {
+				t.Fatalf("stale owner wrote %d identity records", len(records.items))
+			}
+		})
+	}
+}
+
+func TestStaleMaterializationCannotRestoreRevokedRules(t *testing.T) {
+	service, records, cs, _ := testService(t)
+	owners := &fakeRevisionOwners{uid: "agent-uid-1", generation: 7, resourceVersion: "owner-rv-7"}
+	service.owners = owners
+
+	oldRequest := agentRequest()
+	oldRequest.ExpectedOwnerGeneration = 7
+	oldRequest.ExpectedOwnerResourceVersion = "owner-rv-7"
+	oldToken, err := service.Ensure(context.Background(), oldRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("initial Ensure: %v", err)
+	}
+	oldRecord, err := records.Get(context.Background(), oldToken.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get old record snapshot: %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	staleService := New(Options{
+		Records: records,
+		Clients: func(string) (kubernetes.Interface, error) {
+			enteredOnce.Do(func() { close(entered) })
+			<-release
+			return cs, nil
+		},
+		Policy: testPolicy(), Owners: owners,
+	})
+	staleResult := make(chan error, 1)
+	go func() {
+		_, err := staleService.materialize(context.Background(), oldRecord)
+		staleResult <- err
+	}()
+	<-entered // the old record passed its owner check and is paused before RBAC writes
+
+	owners.generation = 8
+	owners.resourceVersion = "owner-rv-8"
+	newRequest := agentRequest()
+	newRequest.Rules = nil
+	newRequest.ExpectedOwnerGeneration = 8
+	newRequest.ExpectedOwnerResourceVersion = "owner-rv-8"
+	if _, err := service.Ensure(context.Background(), newRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject"); err != nil {
+		t.Fatalf("narrowed Ensure: %v", err)
+	}
+	roleName := serviceaccounts.WorkloadIdentityRoleName(oldToken.ServiceAccount)
+	role, err := cs.RbacV1().ClusterRoles().Get(context.Background(), roleName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get narrowed ClusterRole: %v", err)
+	}
+	if len(role.Rules) != 0 {
+		t.Fatalf("new owner revision did not narrow the ClusterRole: %#v", role.Rules)
+	}
+	if _, err := service.materializeForRevision(context.Background(), oldRecord, &OwnerRevision{Generation: 7, ResourceVersion: "owner-rv-7"}); err == nil {
+		t.Fatal("old request was given a token from the superseding identity record")
+	} else {
+		var conflict RevisionConflict
+		if !errors.As(err, &conflict) || conflict.Code != CodeStaleOwner {
+			t.Fatalf("superseded request error = %v, want stale_owner", err)
+		}
+	}
+
+	close(release)
+	if err := <-staleResult; err == nil {
+		t.Fatal("stale materialization unexpectedly succeeded")
+	} else {
+		var conflict RevisionConflict
+		if !errors.As(err, &conflict) || conflict.Code != CodeVersionConflict {
+			t.Fatalf("stale materialization error = %v, want version_conflict", err)
+		}
+	}
+	role, err = cs.RbacV1().ClusterRoles().Get(context.Background(), roleName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get final ClusterRole: %v", err)
+	}
+	if len(role.Rules) != 0 {
+		t.Fatalf("stale materialization restored revoked rules: %#v", role.Rules)
+	}
+}
+
+func TestRequestOwnerRevisionRequiresBothFields(t *testing.T) {
+	for _, req := range []Request{
+		{ExpectedOwnerGeneration: 7},
+		{ExpectedOwnerResourceVersion: "opaque-rv"},
+		{ExpectedOwnerGeneration: -1, ExpectedOwnerResourceVersion: "opaque-rv"},
+	} {
+		if _, err := requestOwnerRevision(req); err == nil {
+			t.Fatalf("request revision %#v was accepted without a valid pair", req)
+		}
 	}
 }
 

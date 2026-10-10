@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -51,6 +52,54 @@ func TestProjectLLMRegistryRoundTripsMultipleModelsAndDefault(t *testing.T) {
 	view := got.view()
 	if view.DefaultModelID != "gemini-fast" || len(view.Models) != 2 || !view.Models[0].Default {
 		t.Fatalf("registry view = %#v, want default model first", view)
+	}
+}
+
+func TestReadProjectLLMModelForTurnFetchesOnlySelectedRevisionCredential(t *testing.T) {
+	registry := projectLLMRegistry{
+		DefaultModelID: "fast",
+		Runtime:        defaultProjectLLMSettings(),
+		Models: []projectLLMModelSettings{
+			{ID: "other", RevisionID: "revision-other", Name: "Other", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "other-model", APIKey: "other-key"}},
+			{ID: "fast", RevisionID: "revision-fast", Name: "Fast", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "fast-model", APIKey: "fast-key"}},
+		},
+	}
+	secretGets := []string{}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry, secretGets: &secretGets})
+
+	selected, err := readProjectLLMModelForTurn(context.Background(), client, "fast", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != "fast" || selected.RevisionID != "revision-fast" || selected.Settings.Model != "fast-model" || selected.Settings.APIKey != "fast-key" {
+		t.Fatalf("selected model = %#v, want the active fast revision with its key", selected)
+	}
+	if !reflect.DeepEqual(secretGets, []string{testLLMCredentialSecretName("fast")}) {
+		t.Fatalf("credential Secret reads = %#v, want only fast's Secret", secretGets)
+	}
+}
+
+func TestReadProjectLLMModelForTurnKeepsPinnedArchivedRevision(t *testing.T) {
+	registry := projectLLMRegistry{
+		DefaultModelID: "shared",
+		Runtime:        defaultProjectLLMSettings(),
+		Models: []projectLLMModelSettings{
+			{ID: "shared", RevisionID: "revision-old", Archived: true, Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "old-model", APIKey: "shared-key"}},
+			{ID: "shared", RevisionID: "revision-new", Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "new-model", APIKey: "shared-key"}},
+		},
+	}
+	secretGets := []string{}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry, secretGets: &secretGets})
+
+	selected, err := readProjectLLMModelForTurn(context.Background(), client, "shared", "revision-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != "shared" || selected.RevisionID != "revision-old" || selected.Settings.Model != "old-model" || selected.Settings.APIKey != "shared-key" {
+		t.Fatalf("pinned model = %#v, want archived immutable revision with the shared key", selected)
+	}
+	if !reflect.DeepEqual(secretGets, []string{testLLMCredentialSecretName("shared")}) {
+		t.Fatalf("credential Secret reads = %#v, want only the pinned model Secret", secretGets)
 	}
 }
 

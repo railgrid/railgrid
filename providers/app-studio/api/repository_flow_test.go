@@ -382,8 +382,11 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
 		t.Fatal("commit tool should be deferred until searched")
 	}
-	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolDefineInitialProjectPlan) {
-		t.Fatalf("model tools = %#v, want plan approval in the initial phase", model.Inputs[0].Tools)
+	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolDefineInitialProjectPlan) {
+		t.Fatalf("model tools = %#v, ordinary project turn must not expose initial-build planning without run-local authority", model.Inputs[0].Tools)
+	}
+	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolPlanProjectChanges) {
+		t.Fatalf("model tools = %#v, ordinary project turn should retain read-only change planning", model.Inputs[0].Tools)
 	}
 	if !projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
 		t.Fatal("tool_search must be available to discover deferred provider tools")
@@ -518,21 +521,23 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 	}
 	for _, want := range []string{
 		"## User-visible progress",
-		"assistant preamble immediately before a substantial action group is user-visible inline commentary",
-		"normal assistant response remains the terminal final answer",
-		"Before the first substantial action group, give one concise preamble",
+		"An obvious, narrowly scoped edit or answer with no design choices, external operation, or multi-phase verification is lightweight",
+		"skip preambles, write_todos, and report_progress for lightweight work",
+		"For larger tool-driven work, keep the user oriented",
 		"approximately 60 seconds",
-		"completing a meaningful plan phase",
+		"use report_progress after a meaningful phase",
+		"A checklist edit alone is not a progress event",
 		"new evidence changes the approach",
-		"you encounter a blocker",
-		"before and after lengthy verification",
-		"when there is no natural tool-adjacent preamble",
+		"when blocked",
+		"around lengthy verification",
+		"when there is no natural tool-adjacent update",
 		"Do not duplicate the same update in report_progress and inline commentary",
-		"Skip progress for trivial reads",
-		"does not end or interrupt the turn",
-		"If report_progress is unavailable, continue without it",
+		"Skip it for trivial reads and routine calls",
+		"report_progress does not end the turn",
+		"If unavailable, continue without it",
 		"one or two concise sentences",
-		"use it as the sole authority for checklist state in non-trivial Default mode work",
+		"sole checklist authority for non-lightweight Default-mode work",
+		"lightweight work, trivial reads, routine calls, and simple answers need no checklist",
 		"report_progress is only user-facing commentary; it never updates or replaces the checklist",
 		"Every model-authored checklist change must be a full-list write_todos update",
 		"Immediately after defining or receiving a plan, write the full list with evidence-grounded statuses",
@@ -1941,7 +1946,8 @@ type projectSettingsDynamicClient struct {
 	settings projectLLMSettings
 	// registry, when set, replaces settings: it seeds a multi-model registry
 	// rather than the single-model one settings implies.
-	registry *projectLLMRegistry
+	registry   *projectLLMRegistry
+	secretGets *[]string
 }
 
 func (c projectSettingsDynamicClient) resolved() projectLLMRegistry {
@@ -1958,14 +1964,15 @@ func (c projectSettingsDynamicClient) resolved() projectLLMRegistry {
 }
 
 func (c projectSettingsDynamicClient) Resource(gvr k8sschema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
-	return projectSettingsDynamicResource{gvr: gvr, registry: c.resolved()}
+	return projectSettingsDynamicResource{gvr: gvr, registry: c.resolved(), secretGets: c.secretGets}
 }
 
 type projectSettingsDynamicResource struct {
 	dynamic.ResourceInterface
-	gvr       k8sschema.GroupVersionResource
-	namespace string
-	registry  projectLLMRegistry
+	gvr        k8sschema.GroupVersionResource
+	namespace  string
+	registry   projectLLMRegistry
+	secretGets *[]string
 }
 
 func (r projectSettingsDynamicResource) Namespace(namespace string) dynamic.ResourceInterface {
@@ -1980,6 +1987,9 @@ func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ me
 		return projectLLMRegistryStudio(r.registry), nil
 	}
 	if r.gvr == secretGVR && r.namespace == projectLLMSecretNamespace {
+		if r.secretGets != nil {
+			*r.secretGets = append(*r.secretGets, name)
+		}
 		if credential, ok := projectLLMRegistryCredentials(r.registry)[name]; ok {
 			return credential, nil
 		}

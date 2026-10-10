@@ -363,12 +363,33 @@ local_resource(
 )
 
 local_resource(
+    'app-studio-portal',
+    cmd='make build-app-studio-provider-portal',
+    deps=[
+        'Makefile',
+        'providers/app-studio/portal/src',
+        'providers/app-studio/portal/index.html',
+        'providers/app-studio/portal/icon.svg',
+        'providers/app-studio/portal/env.d.ts',
+        'providers/app-studio/portal/package.json',
+        'providers/app-studio/portal/package-lock.json',
+        'providers/app-studio/portal/vite.config.ts',
+        'providers/app-studio/portal/tsconfig.json',
+        'providers/app-studio/portal/scripts',
+    ],
+    # Node tests do not enter the Vite bundle. Editing them should leave the
+    # running provider and its in-flight turns available.
+    ignore=['providers/app-studio/portal/**/*.test.mjs'],
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio',
-    cmd='make build-app-studio-provider',
+    cmd='make build-app-studio-provider-go',
     serve_cmd=('APP_STUDIO_HUB_PUBLIC_URL=%s ' +
                'APP_STUDIO_RUN_SANDBOX_MODE=%s ' +
                'APP_STUDIO_DEVELOPMENT_MODE=true APP_STUDIO_REPLICA_COUNT=1 ' +
-               'make run-provider-app-studio') % (preview_hub_public_url, app_studio_sandbox_mode),
+               'make run-provider-app-studio-prebuilt') % (preview_hub_public_url, app_studio_sandbox_mode),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/assets.go',
@@ -381,15 +402,16 @@ local_resource(
         'providers/app-studio/workspace',
         'providers/app-studio/go.mod',
         'providers/app-studio/go.sum',
-        'providers/app-studio/portal/src',
-        'providers/app-studio/portal/package.json',
-        'providers/app-studio/portal/vite.config.ts',
+        'providers/app-studio/portal/dist',
         'providers/app-studio/deploy/chart/templates/catalogentry.yaml',
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
+        'Makefile',
     ],
+    # Go excludes these files from the provider binary.
+    ignore=['providers/app-studio/**/*_test.go'],
     resource_deps=(
-        ['hub', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-bridge-key']
+        ['hub', 'app-studio-portal', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-bridge-key']
         + (['universal-dev-image'] if app_studio_sandbox_force else [])
     ),
     readiness_probe=probe(
@@ -847,10 +869,23 @@ make run-provider-infrastructure
     deps=[
         'providers/infrastructure/main.go',
         'providers/infrastructure/assets.go',
+        # These files are compiled into the provider's root main package too;
+        # watching only main.go/assets.go left edits here running as stale code.
+        'providers/infrastructure/catalogentry.go',
+        'providers/infrastructure/coding_sandbox.go',
+        'providers/infrastructure/controller_manager.go',
+        'providers/infrastructure/init_cmd.go',
+        'providers/infrastructure/instance_controller.go',
+        'providers/infrastructure/operator.go',
+        'providers/infrastructure/serve_dataplane.go',
+        'providers/infrastructure/serve_identity.go',
         'providers/infrastructure/server',
         'providers/infrastructure/kro',
         'providers/infrastructure/tenant',
         'providers/infrastructure/mcpserver',
+        'providers/infrastructure/dataplane',
+        'providers/infrastructure/instancespec',
+        'providers/infrastructure/networkpolicy',
         # The operator path: the controller/manager, the bootstrap install
         # helpers, the embedded CRDs + seed Templates (install/), the API types,
         # and the kro backend. Without these, edits to the CRD schema, the seed
@@ -1012,8 +1047,20 @@ while true; do
     -n %s port-forward "svc/$svc" %s:%s &
   pf=$!
   fails=0
+  probe_ticks=0
   while kill -0 "$pf" 2>/dev/null; do
-    sleep 15
+    # A failed forwarded stream can terminate kubectl without killing Envoy.
+    # Detect exit promptly instead of leaving the public listener down until
+    # the next health probe.
+    sleep 1
+    if ! kill -0 "$pf" 2>/dev/null; then
+      break
+    fi
+    probe_ticks=$((probe_ticks + 1))
+    if [ "$probe_ticks" -lt 15 ]; then
+      continue
+    fi
+    probe_ticks=0
     # Any HTTP response (including 404) means the listener is programmed.
     if curl -sk --max-time 5 -o /dev/null \
          --resolve "$PROBE_HOST:%s:127.0.0.1" \
@@ -1023,11 +1070,9 @@ while true; do
       fails=$((fails + 1))
       echo "preview tunnel unhealthy ($fails/3)"
       if [ "$fails" -ge 3 ]; then
-        echo "restarting forward and bouncing the Envoy proxy pod"
-        kubectl --kubeconfig "$KRO_KUBECONFIG" --context "$CTX" \
-          delete pod -n %s \
-          -l gateway.envoyproxy.io/owning-gateway-name=$GW \
-          --wait=false 2>/dev/null || true
+        # A host-side tunnel failure is not evidence of an unhealthy gateway.
+        # Restart only this connection; deleting Envoy disrupts every preview.
+        echo "restarting preview port-forward"
         kill "$pf" 2>/dev/null || true
         break
       fi
@@ -1035,7 +1080,7 @@ while true; do
   done
   wait "$pf" 2>/dev/null || true
   pf=''
-  sleep 3
+  sleep 1
 done
 '''.strip() % (
         preview_kro_kubeconfig,
@@ -1048,7 +1093,6 @@ done
         preview_gateway_port,
         preview_gateway_port,
         preview_gateway_port,
-        preview_gateway_namespace,
     ),
     resource_deps=['preview-gateway-up'],
     readiness_probe=probe(

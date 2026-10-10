@@ -24,12 +24,101 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-app-studio/store"
 )
+
+func projectEinoAssistantChatModelRunInfoForTest() *callbacks.RunInfo {
+	return &callbacks.RunInfo{Component: components.ComponentOfChatModel}
+}
+
+func TestProjectEinoAssistantModelCallbackIgnoresGraphEventsAndErrors(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.NextModelCallOrdinal()
+	run := &store.AssistantRun{ID: "run-graph-callback"}
+	auditRecorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	if err := auditRecorder.recordModelCall(context.Background(), 1, 0, 0, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var inputs []projectAssistantModelInputEvent
+	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
+		OnModelInput: func(event projectAssistantModelInputEvent) { inputs = append(inputs, event) },
+	}, runState, auditRecorder)
+	agentInfo := &callbacks.RunInfo{Component: adk.ComponentOfAgent}
+	graphMessages := []*schema.Message{schema.SystemMessage("graph-only prompt"), assistantModelInputMessageForTest()}
+	ctx := handler.OnStart(context.Background(), agentInfo, graphMessages)
+	ctx = handler.OnEnd(ctx, agentInfo, graphMessages)
+	stream := schema.StreamReaderFromArray([]callbacks.CallbackOutput{
+		&einomodel.CallbackOutput{Message: schema.AssistantMessage("graph output", nil)},
+	})
+	streamCopies := stream.Copy(2)
+	ctx = handler.OnEndWithStreamOutput(ctx, agentInfo, streamCopies[0])
+	defer streamCopies[1].Close()
+	_, err := streamCopies[1].Recv()
+	if err != nil {
+		t.Fatalf("graph callback close consumed the independent model stream: %v", err)
+	}
+	handler.OnError(ctx, agentInfo, errors.New("tool execution failed"))
+
+	if len(inputs) != 0 {
+		t.Fatalf("graph callback emitted provider input events: %#v", inputs)
+	}
+	if state := runState.CheckpointState(); len(state.Messages) != 0 {
+		t.Fatalf("graph callback changed model checkpoint messages: %#v", state.Messages)
+	}
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if audit.ModelCallStats == nil || audit.ModelCallStats.RetryAttempts != 0 ||
+		len(audit.ModelCalls) != 1 || audit.ModelCalls[0].TransportErrorObserved || audit.ModelCalls[0].Outcome != "" {
+		t.Fatalf("graph/tool error altered model audit: %#v", audit)
+	}
+
+	// A later actual provider callback for the same ordinal owns the audit row.
+	ctx = handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
+		Messages: []*schema.Message{schema.SystemMessage("provider prompt"), schema.UserMessage("inspect")},
+	})
+	handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{
+		Message: schema.AssistantMessage("Done.", nil),
+	})
+	if state := runState.CheckpointState(); len(state.Messages) != 3 || state.Messages[2].Content != "Done." {
+		t.Fatalf("provider callback was not recorded after ignored graph events: %#v", state.Messages)
+	}
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.ModelCalls) != 1 || audit.ModelCalls[0].Outcome != "text" || audit.ModelCalls[0].TransportErrorObserved {
+		t.Fatalf("successful provider result did not replace the empty attempt audit: %#v", audit.ModelCalls)
+	}
+}
+
+func TestProjectEinoAssistantModelCallbackRecordsProviderErrors(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.NextModelCallOrdinal()
+	run := &store.AssistantRun{ID: "run-provider-callback-error"}
+	auditRecorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	if err := auditRecorder.recordModelCall(context.Background(), 1, 0, 0, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{}, runState, auditRecorder)
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
+		Messages: []*schema.Message{schema.UserMessage("retry this request")},
+	})
+	handler.OnError(ctx, projectEinoAssistantChatModelRunInfoForTest(), errors.New("provider unavailable"))
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.ModelCalls) != 1 || audit.ModelCalls[0].Outcome != "error" || !audit.ModelCalls[0].TransportErrorObserved {
+		t.Fatalf("provider error callback was not recorded for retry handling: %#v", audit.ModelCalls)
+	}
+}
 
 func assistantModelInputMessageForTest() *schema.Message {
 	data := "UE5HIGJ5dGVz"
@@ -53,10 +142,10 @@ func TestProjectEinoAssistantModelCallbackEmitsHonestImageLifecycle(t *testing.T
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, runState, nil)
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 		Messages: []*schema.Message{assistantModelInputMessageForTest()},
 	})
-	handler.OnEnd(ctx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("I can see it.", nil)})
+	handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("I can see it.", nil)})
 	if len(events) != 2 || events[0].Status != "started" || events[1].Status != "completed" {
 		t.Fatalf("image lifecycle events = %#v, want started then completed", events)
 	}
@@ -84,10 +173,10 @@ func TestProjectEinoAssistantModelCallbackEmitsHonestImageLifecycle(t *testing.T
 	handler = newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, runState, nil)
-	ctx = handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+	ctx = handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 		Messages: []*schema.Message{assistantModelInputMessageForTest()},
 	})
-	handler.OnError(ctx, nil, errors.New("provider unavailable"))
+	handler.OnError(ctx, projectEinoAssistantChatModelRunInfoForTest(), errors.New("provider unavailable"))
 	if len(events) != 2 || events[1].Status != "failed" {
 		t.Fatalf("failed image lifecycle events = %#v, want terminal failure", events)
 	}
@@ -105,10 +194,10 @@ func TestProjectEinoAssistantModelCallbackDoesNotRepeatCompletedImageLifecycle(t
 	}, runState, nil)
 	for call := 0; call < 2; call++ {
 		runState.NextModelCallOrdinal()
-		ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+		ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 			Messages: []*schema.Message{assistantModelInputMessageForTest()},
 		})
-		handler.OnEnd(ctx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("ok", nil)})
+		handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("ok", nil)})
 	}
 	if len(events) != 2 || events[0].Status != "started" || events[1].Status != "completed" {
 		t.Fatalf("repeated model calls emitted image lifecycle events = %#v, want one started/completed pair", events)
@@ -125,10 +214,10 @@ func TestProjectEinoAssistantModelCallbackDoesNotRepeatImageLifecycleAfterCheckp
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, restored, nil)
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 		Messages: []*schema.Message{assistantModelInputMessageForTest()},
 	})
-	handler.OnEnd(ctx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("ok", nil)})
+	handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("ok", nil)})
 	if len(events) != 0 {
 		t.Fatalf("restored completed image emitted lifecycle events = %#v", events)
 	}
@@ -141,11 +230,11 @@ func TestProjectEinoAssistantModelCallbackRetriesFailedImageLifecycle(t *testing
 		OnModelInput: func(event projectAssistantModelInputEvent) { events = append(events, event) },
 	}, runState, nil)
 	runState.NextModelCallOrdinal()
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{Messages: []*schema.Message{assistantModelInputMessageForTest()}})
-	handler.OnError(ctx, nil, errors.New("temporary provider failure"))
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{Messages: []*schema.Message{assistantModelInputMessageForTest()}})
+	handler.OnError(ctx, projectEinoAssistantChatModelRunInfoForTest(), errors.New("temporary provider failure"))
 	runState.NextModelCallOrdinal()
-	ctx = handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{Messages: []*schema.Message{assistantModelInputMessageForTest()}})
-	handler.OnEnd(ctx, nil, &einomodel.CallbackOutput{Message: schema.AssistantMessage("ok", nil)})
+	ctx = handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{Messages: []*schema.Message{assistantModelInputMessageForTest()}})
+	handler.OnEnd(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackOutput{Message: schema.AssistantMessage("ok", nil)})
 	if len(events) != 4 || events[1].Status != "failed" || events[2].Status != "started" || events[3].Status != "completed" {
 		t.Fatalf("failed image retry lifecycle events = %#v", events)
 	}
@@ -186,7 +275,7 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 		OnStatus: func(status string) { statuses = append(statuses, status) },
 	}, runState, auditRecorder)
 
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 		Messages: []*schema.Message{schema.UserMessage("write src/App.tsx")},
 	})
 	index := 2
@@ -208,7 +297,7 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 			},
 		}})},
 	})
-	handler.OnEndWithStreamOutput(ctx, nil, stream)
+	handler.OnEndWithStreamOutput(ctx, projectEinoAssistantChatModelRunInfoForTest(), stream)
 
 	state := runState.CheckpointState()
 	if len(chunks) != 0 {
@@ -249,13 +338,13 @@ func TestProjectEinoAssistantModelCallbackDoesNotPublishPublicContentChunks(t *t
 		OnChunk: func(chunk string) { chunks = append(chunks, chunk) },
 	}, runState, nil)
 
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 		Messages: []*schema.Message{schema.UserMessage("say thanks")},
 	})
 	stream := schema.StreamReaderFromArray([]callbacks.CallbackOutput{
 		&einomodel.CallbackOutput{Message: schema.AssistantMessage("You are welcome.", nil)},
 	})
-	handler.OnEndWithStreamOutput(ctx, nil, stream)
+	handler.OnEndWithStreamOutput(ctx, projectEinoAssistantChatModelRunInfoForTest(), stream)
 
 	if len(chunks) != 0 {
 		t.Fatalf("chunks = %#v, want model callback to avoid publishing public content chunks", chunks)
@@ -275,7 +364,7 @@ func TestProjectEinoAssistantModelCallbackCarriesLatestStreamUsageIntoAudit(t *t
 	}
 	runState.NextModelCallOrdinal()
 	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{}, runState, auditRecorder)
-	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+	ctx := handler.OnStart(context.Background(), projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{
 		Messages: []*schema.Message{schema.UserMessage("inspect the project")},
 	})
 	usage := &schema.TokenUsage{
@@ -299,7 +388,7 @@ func TestProjectEinoAssistantModelCallbackCarriesLatestStreamUsageIntoAudit(t *t
 		&einomodel.CallbackOutput{Message: schema.AssistantMessage("I found ", nil)},
 		&einomodel.CallbackOutput{Message: final},
 	})
-	handler.OnEndWithStreamOutput(ctx, nil, stream)
+	handler.OnEndWithStreamOutput(ctx, projectEinoAssistantChatModelRunInfoForTest(), stream)
 
 	var audit projectAssistantRunAudit
 	if err := json.Unmarshal(run.Audit, &audit); err != nil {

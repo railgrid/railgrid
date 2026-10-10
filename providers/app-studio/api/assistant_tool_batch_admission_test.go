@@ -133,6 +133,34 @@ func TestProjectEinoAssistantToolBatchAdmissionAssignsDeterministicIDs(t *testin
 	}
 }
 
+func TestProjectEinoAssistantToolBatchAdmissionUsesCurrentStateToolInfos(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.NextModelCallOrdinal()
+	unknown := projectEinoAssistantToolCallForAdmissionTest("stale-call", "stale_unknown_tool", `{"path":"src/App.tsx"}`)
+	read := projectEinoAssistantToolCallForAdmissionTest("read-call", projectToolReadFile, `{"file_path":"src/App.tsx"}`)
+	state := &adk.ChatModelAgentState{
+		Messages:  []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{unknown, read})},
+		ToolInfos: []*schema.ToolInfo{{Name: projectToolReadFile}},
+	}
+	// Eino's compatibility ModelContext may contain stale pre-rewrite tools.
+	// Admission must use the rewritten state's actual model-visible tool list.
+	compatibilityContext := &adk.ModelContext{Tools: []*schema.ToolInfo{{Name: "stale_unknown_tool"}}}
+	middleware := projectEinoAssistantToolBatchAdmissionMiddleware(runState).(*projectEinoAssistantToolBatchMiddleware)
+	if _, _, err := middleware.AfterModelRewriteState(context.Background(), state, compatibilityContext); err != nil {
+		t.Fatalf("admit batch: %v", err)
+	}
+	if got := middleware.batchCall("stale-call"); got != nil {
+		t.Fatal("stale compatibility tool was treated as available and received a wait node")
+	}
+	readCall := middleware.batchCall("read-call")
+	if readCall == nil {
+		t.Fatal("current model-visible read_file tool did not receive its batch node")
+	}
+	if got := len(readCall.predecessors); got != 0 {
+		t.Fatalf("current read tool has %d predecessor(s) from an unavailable stale tool, want none", got)
+	}
+}
+
 func TestProjectEinoAssistantToolBatchAdmissionDoesNotReuseIDsAfterSummarization(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	middleware := projectEinoAssistantToolBatchAdmissionMiddleware(runState)
