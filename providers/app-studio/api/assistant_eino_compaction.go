@@ -715,7 +715,7 @@ func projectEinoAssistantCanonicalCompactionContext(
 	}
 
 	contextMessages := []chatMessage{
-		{Role: "system", Content: projectEinoAssistantV2DeepInstruction},
+		{Role: "system", Content: projectEinoAssistantDeepInstructionForRun(runState)},
 		{Role: "system", Content: projectSystemPromptForMode(
 			currentReq.Project,
 			currentReq.Repository,

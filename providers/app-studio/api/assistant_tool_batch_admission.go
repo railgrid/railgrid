@@ -25,13 +25,265 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino/adk"
 	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 var errProjectAssistantInvalidToolBatch = errors.New("invalid assistant tool batch")
+
+const projectEinoAssistantDeferredWorkspaceCall = `{"status":"deferred","executed":false,"reason":"A prior same-path operation is awaiting approval or did not finish safely. Retry after it is resolved."}`
+
+type projectEinoAssistantToolBatchCallState uint32
+
+const (
+	projectEinoAssistantToolBatchCallComplete projectEinoAssistantToolBatchCallState = iota
+	projectEinoAssistantToolBatchCallApprovalPending
+	projectEinoAssistantToolBatchCallDeferred
+	projectEinoAssistantToolBatchCallUnresolved
+)
+
+type projectEinoAssistantToolBatchOrder struct {
+	calls map[string]*projectEinoAssistantToolBatchOrderCall
+}
+
+type projectEinoAssistantToolBatchOrderCall struct {
+	callID       string
+	predecessors []*projectEinoAssistantToolBatchOrderCall
+	done         chan struct{}
+	finishOnce   sync.Once
+	state        projectEinoAssistantToolBatchCallState
+}
+
+func projectEinoAssistantNewToolBatchOrder(calls []schema.ToolCall, availableToolNames map[string]struct{}) *projectEinoAssistantToolBatchOrder {
+	order := &projectEinoAssistantToolBatchOrder{calls: make(map[string]*projectEinoAssistantToolBatchOrderCall)}
+	accesses := make([]projectEinoAssistantWorkspacePathAccess, len(calls))
+	for index := range calls {
+		call := calls[index]
+		if _, available := availableToolNames[call.Function.Name]; !available {
+			// Eino dispatches hallucinated names through UnknownToolsHandler,
+			// which bypasses middleware wrapping and cannot complete a wait node.
+			continue
+		}
+		access, ok := projectEinoAssistantWorkspacePathAccessForCall(call)
+		if !ok || call.ID == "" {
+			continue
+		}
+		accesses[index] = access
+		node := &projectEinoAssistantToolBatchOrderCall{callID: call.ID, done: make(chan struct{})}
+		for previous := 0; previous < index; previous++ {
+			previousNode := order.calls[calls[previous].ID]
+			if previousNode != nil && accesses[index].conflicts(accesses[previous]) {
+				node.predecessors = append(node.predecessors, previousNode)
+			}
+		}
+		order.calls[call.ID] = node
+	}
+	return order
+}
+
+type projectEinoAssistantWorkspacePathAccess struct {
+	reads         map[string]struct{}
+	writes        map[string]struct{}
+	wildcardRead  bool
+	wildcardWrite bool
+}
+
+func (a projectEinoAssistantWorkspacePathAccess) conflicts(other projectEinoAssistantWorkspacePathAccess) bool {
+	if a.wildcardWrite && other.hasAccess() || other.wildcardWrite && a.hasAccess() {
+		return true
+	}
+	if a.wildcardRead && other.hasWrite() || other.wildcardRead && a.hasWrite() {
+		return true
+	}
+	for path := range a.writes {
+		if _, exists := other.reads[path]; exists {
+			return true
+		}
+		if _, exists := other.writes[path]; exists {
+			return true
+		}
+	}
+	for path := range a.reads {
+		if _, exists := other.writes[path]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func (a projectEinoAssistantWorkspacePathAccess) hasAccess() bool {
+	return a.hasRead() || a.hasWrite()
+}
+
+func (a projectEinoAssistantWorkspacePathAccess) hasRead() bool {
+	return a.wildcardRead || len(a.reads) > 0
+}
+
+func (a projectEinoAssistantWorkspacePathAccess) hasWrite() bool {
+	return a.wildcardWrite || len(a.writes) > 0
+}
+
+func projectEinoAssistantWorkspacePathAccessForCall(call schema.ToolCall) (projectEinoAssistantWorkspacePathAccess, bool) {
+	var access projectEinoAssistantWorkspacePathAccess
+	name := strings.TrimSpace(call.Function.Name)
+	field := ""
+	write := false
+	switch name {
+	case projectToolReadFile:
+		field = "file_path"
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile:
+		field = "path"
+		write = true
+	case projectToolMoveFile:
+		access.writes = make(map[string]struct{}, 2)
+		var arguments map[string]any
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
+			access.wildcardWrite = true
+			return access, true
+		}
+		for _, key := range []string{"sourcePath", "destinationPath"} {
+			path, ok := projectEinoAssistantCanonicalWorkspaceToolPath(arguments[key])
+			if !ok {
+				access.wildcardWrite = true
+				return access, true
+			}
+			access.writes[path] = struct{}{}
+		}
+		return access, true
+	case projectToolLS, projectToolGlob, projectToolGrep:
+		// These tools can observe any project-relative path based on their
+		// arguments or repository state, so keep them ordered around writes.
+		access.wildcardRead = true
+		return access, true
+	case projectEinoAssistantToolSearchTool, projectToolLoadSkill, projectToolReadSkillResource:
+		// These read server-owned catalogs and do not observe or mutate the
+		// workspace, so they need no workspace-order node.
+		return projectEinoAssistantWorkspacePathAccess{}, false
+	default:
+		// A shell, MCP, or otherwise unclassified available tool may inspect or
+		// change the workspace. Serialize it with workspace operations.
+		access.wildcardWrite = true
+		return access, true
+	}
+	var arguments map[string]any
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil || arguments == nil {
+		if write {
+			access.wildcardWrite = true
+		} else {
+			access.wildcardRead = true
+		}
+		return access, true
+	}
+	path, ok := projectEinoAssistantCanonicalWorkspaceToolPath(arguments[field])
+	if !ok {
+		if write {
+			access.wildcardWrite = true
+		} else {
+			access.wildcardRead = true
+		}
+		return access, true
+	}
+	if write {
+		access.writes = map[string]struct{}{path: {}}
+	} else {
+		access.reads = map[string]struct{}{path: {}}
+	}
+	return access, true
+}
+
+func projectEinoAssistantCanonicalWorkspaceToolPath(value any) (string, bool) {
+	raw, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	clean, err := workspace.CleanProjectPath(raw)
+	if err != nil {
+		return "", false
+	}
+	return clean, true
+}
+
+func (order *projectEinoAssistantToolBatchOrder) call(callID string) *projectEinoAssistantToolBatchOrderCall {
+	if order == nil || callID == "" {
+		return nil
+	}
+	return order.calls[callID]
+}
+
+func (call *projectEinoAssistantToolBatchOrderCall) wait(ctx context.Context) (bool, error) {
+	if call == nil {
+		return false, nil
+	}
+	deferred := false
+	for _, previous := range call.predecessors {
+		select {
+		case <-previous.done:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		if previous.state != projectEinoAssistantToolBatchCallComplete {
+			deferred = true
+		}
+	}
+	return deferred, nil
+}
+
+func (call *projectEinoAssistantToolBatchOrderCall) finish(state projectEinoAssistantToolBatchCallState) {
+	if call == nil {
+		return
+	}
+	call.finishOnce.Do(func() {
+		call.state = state
+		close(call.done)
+	})
+}
+
+func (call *projectEinoAssistantToolBatchOrderCall) invoke(ctx context.Context, invoke func() error) (bool, error) {
+	if call == nil {
+		return false, invoke()
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			call.finish(projectEinoAssistantToolBatchCallUnresolved)
+		}
+	}()
+	deferred, err := call.wait(ctx)
+	if err != nil {
+		call.finish(projectEinoAssistantToolBatchCallUnresolved)
+		finished = true
+		return false, err
+	}
+	if deferred {
+		call.finish(projectEinoAssistantToolBatchCallDeferred)
+		finished = true
+		return true, nil
+	}
+	if err := ctx.Err(); err != nil {
+		call.finish(projectEinoAssistantToolBatchCallUnresolved)
+		finished = true
+		return false, err
+	}
+	err = invoke()
+	state := projectEinoAssistantToolBatchCallComplete
+	if _, interrupted := compose.IsInterruptRerunError(err); interrupted {
+		state = projectEinoAssistantToolBatchCallApprovalPending
+	} else if projectEinoAssistantToolBatchCanceled(err) {
+		state = projectEinoAssistantToolBatchCallUnresolved
+	}
+	call.finish(state)
+	finished = true
+	return false, err
+}
+
+func projectEinoAssistantToolBatchCanceled(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, adk.ErrStreamCanceled)
+}
 
 type projectEinoAssistantInvalidToolBatchError struct {
 	Code   string
@@ -54,12 +306,47 @@ type projectEinoAssistantToolBatchMiddleware struct {
 
 	runState         *projectEinoAssistantRunState
 	executionContext *projectAssistantExecutionContext
+	batchMu          sync.RWMutex
+	batchOrder       *projectEinoAssistantToolBatchOrder
+}
+
+func (m *projectEinoAssistantToolBatchMiddleware) setBatchOrder(order *projectEinoAssistantToolBatchOrder) {
+	if m == nil {
+		return
+	}
+	m.batchMu.Lock()
+	m.batchOrder = order
+	m.batchMu.Unlock()
+}
+
+func (m *projectEinoAssistantToolBatchMiddleware) batchCall(callID string) *projectEinoAssistantToolBatchOrderCall {
+	if m == nil {
+		return nil
+	}
+	m.batchMu.RLock()
+	order := m.batchOrder
+	m.batchMu.RUnlock()
+	return order.call(callID)
+}
+
+func (m *projectEinoAssistantToolBatchMiddleware) invokeBatchCall(ctx context.Context, callID string, invoke func() error) (bool, error) {
+	if m == nil {
+		return false, invoke()
+	}
+	return m.batchCall(callID).invoke(ctx, invoke)
 }
 
 func projectEinoAssistantToolBatchAdmissionMiddleware(
 	runState *projectEinoAssistantRunState,
 	executionContexts ...*projectAssistantExecutionContext,
 ) adk.ChatModelAgentMiddleware {
+	return newProjectEinoAssistantToolBatchAdmissionMiddleware(runState, executionContexts...)
+}
+
+func newProjectEinoAssistantToolBatchAdmissionMiddleware(
+	runState *projectEinoAssistantRunState,
+	executionContexts ...*projectAssistantExecutionContext,
+) *projectEinoAssistantToolBatchMiddleware {
 	middleware := &projectEinoAssistantToolBatchMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 		runState:                     runState,
@@ -81,6 +368,7 @@ func (m *projectEinoAssistantToolBatchMiddleware) AfterModelRewriteState(
 	state *adk.ChatModelAgentState,
 	_ *adk.ModelContext,
 ) (context.Context, *adk.ChatModelAgentState, error) {
+	m.setBatchOrder(nil)
 	if state == nil || len(state.Messages) == 0 {
 		return ctx, state, nil
 	}
@@ -106,6 +394,13 @@ func (m *projectEinoAssistantToolBatchMiddleware) AfterModelRewriteState(
 	}
 	response.ToolCalls = normalized
 	m.runState.reconcileLatestModelToolBatch(rawCalls, normalized, false)
+	availableToolNames := make(map[string]struct{})
+	for _, info := range state.ToolInfos {
+		if info != nil && strings.TrimSpace(info.Name) != "" {
+			availableToolNames[info.Name] = struct{}{}
+		}
+	}
+	m.setBatchOrder(projectEinoAssistantNewToolBatchOrder(normalized, availableToolNames))
 	return ctx, state, nil
 }
 
@@ -123,14 +418,38 @@ func (m *projectEinoAssistantToolBatchMiddleware) WrapInvokableToolCall(
 	}
 	parallelSafe := projectEinoAssistantToolParallelSafe(toolCtx.Name)
 	return func(ctx context.Context, argumentsInJSON string, opts ...einotool.Option) (string, error) {
+		callOrder := m.batchCall(toolCtx.CallID)
+		var result string
 		if parallelSafe {
-			m.executionContext.toolMu.RLock()
-			defer m.executionContext.toolMu.RUnlock()
+			deferred, err := callOrder.invoke(ctx, func() error {
+				m.executionContext.toolMu.RLock()
+				defer m.executionContext.toolMu.RUnlock()
+				var invokeErr error
+				result, invokeErr = endpoint(ctx, argumentsInJSON, opts...)
+				return invokeErr
+			})
+			if err != nil {
+				return "", err
+			}
+			if deferred {
+				return projectEinoAssistantDeferredWorkspaceCall, nil
+			}
 		} else {
-			m.executionContext.toolMu.Lock()
-			defer m.executionContext.toolMu.Unlock()
+			deferred, err := callOrder.invoke(ctx, func() error {
+				m.executionContext.toolMu.Lock()
+				defer m.executionContext.toolMu.Unlock()
+				var invokeErr error
+				result, invokeErr = endpoint(ctx, argumentsInJSON, opts...)
+				return invokeErr
+			})
+			if err != nil {
+				return "", err
+			}
+			if deferred {
+				return projectEinoAssistantDeferredWorkspaceCall, nil
+			}
 		}
-		return endpoint(ctx, argumentsInJSON, opts...)
+		return result, nil
 	}, nil
 }
 
@@ -144,14 +463,38 @@ func (m *projectEinoAssistantToolBatchMiddleware) WrapEnhancedInvokableToolCall(
 	}
 	parallelSafe := projectEinoAssistantToolParallelSafe(toolCtx.Name)
 	return func(ctx context.Context, argument *schema.ToolArgument, opts ...einotool.Option) (*schema.ToolResult, error) {
+		callOrder := m.batchCall(toolCtx.CallID)
+		var result *schema.ToolResult
 		if parallelSafe {
-			m.executionContext.toolMu.RLock()
-			defer m.executionContext.toolMu.RUnlock()
+			deferred, err := callOrder.invoke(ctx, func() error {
+				m.executionContext.toolMu.RLock()
+				defer m.executionContext.toolMu.RUnlock()
+				var invokeErr error
+				result, invokeErr = endpoint(ctx, argument, opts...)
+				return invokeErr
+			})
+			if err != nil {
+				return nil, err
+			}
+			if deferred {
+				return &schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: projectEinoAssistantDeferredWorkspaceCall}}}, nil
+			}
 		} else {
-			m.executionContext.toolMu.Lock()
-			defer m.executionContext.toolMu.Unlock()
+			deferred, err := callOrder.invoke(ctx, func() error {
+				m.executionContext.toolMu.Lock()
+				defer m.executionContext.toolMu.Unlock()
+				var invokeErr error
+				result, invokeErr = endpoint(ctx, argument, opts...)
+				return invokeErr
+			})
+			if err != nil {
+				return nil, err
+			}
+			if deferred {
+				return &schema.ToolResult{Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: projectEinoAssistantDeferredWorkspaceCall}}}, nil
+			}
 		}
-		return endpoint(ctx, argument, opts...)
+		return result, nil
 	}, nil
 }
 

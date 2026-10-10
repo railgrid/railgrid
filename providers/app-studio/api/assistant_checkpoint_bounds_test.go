@@ -58,8 +58,47 @@ func TestProjectAssistantCheckpointBoundsModelToolPayloadsAndDedupeState(t *test
 		if len(message.Content) > projectEinoAssistantModelToolOutputMaxBytes {
 			t.Fatalf("checkpoint tool result = %d bytes, want <= %d", len(message.Content), projectEinoAssistantModelToolOutputMaxBytes)
 		}
-		if strings.Contains(message.Content, `"complete":true`) || strings.Contains(message.Content, `"version":`) {
-			t.Fatalf("bounded checkpoint retained full-read evidence: %s", message.Content)
+		if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(message.Content); ok {
+			t.Fatalf("bounded malformed checkpoint result parsed as complete-read evidence: %s", message.Content)
 		}
+		if _, ok := projectEinoAssistantParseLiteralReadFileOutput(message.Content); ok {
+			t.Fatalf("bounded malformed checkpoint result parsed as a literal receipt: %s", message.Content)
+		}
+	}
+}
+
+func TestProjectAssistantCheckpointProjectsTrustedLargeReadFileLiterally(t *testing.T) {
+	content := "const route = `\\path <&> 雪`;\n" + strings.Repeat("const marker = `\\path <&> 雪`;\n", 1200)
+	receipt, err := projectAssistantSourceReadResult(map[string]any{
+		"path": "src/large.ts", "content": content, "size": len(content),
+		"complete": true, "version": "sha256:large-checkpoint", "offset": 1, "limit": 2000,
+	})
+	if err != nil {
+		t.Fatalf("encode complete read receipt: %v", err)
+	}
+	messages := []chatMessage{
+		{Role: "assistant", ToolCalls: []chatToolCall{{
+			ID: "read-large", Type: "function",
+			Function: chatToolCallFunction{Name: projectToolReadFile, Arguments: `{"file_path":"src/large.ts"}`},
+		}}},
+		// Eino tool-result messages can rely on their exact linked local call.
+		{Role: "tool", ToolCallID: "read-large", Content: receipt},
+	}
+	checkpoint := projectAssistantBoundCheckpointMessages(messages)
+	if len(checkpoint) != 2 {
+		t.Fatalf("checkpoint messages = %d, want two messages", len(checkpoint))
+	}
+	if checkpoint[1].Content == receipt || len(checkpoint[1].Content) > projectEinoAssistantModelToolOutputMaxBytes {
+		t.Fatalf("checkpoint did not project/bound linked read result: len=%d receiptBytes=%d", len(checkpoint[1].Content), len(receipt))
+	}
+	projected, ok := projectEinoAssistantParseLiteralReadFileOutput(checkpoint[1].Content)
+	if !ok || !projected.modelClipped || projected.complete || projected.version != "" || projected.selectedBytes != len(content) {
+		t.Fatalf("checkpoint read projection = %#v, parsed=%v", projected, ok)
+	}
+	if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(checkpoint[1].Content); ok {
+		t.Fatal("checkpoint clipped read result retained complete-read authority")
+	}
+	if messages[1].Content != receipt {
+		t.Fatal("checkpoint projection mutated the durable source receipt")
 	}
 }

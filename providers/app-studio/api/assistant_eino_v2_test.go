@@ -150,6 +150,53 @@ func TestEinoV2MutationReplayDispatchesExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestEinoV2NotExecutedBrowserReceiptSettlesFailed(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "v2-not-executed-browser")
+	var events []projectToolCallStreamEvent
+	req := h.req
+	req.StreamCallbacks.OnToolCall = func(event projectToolCallStreamEvent) {
+		events = append(events, event)
+	}
+	const receipt = `{"status":"not_executed","outcome":"not_executed","replayed":false,"reason":"preview_context_changed"}`
+	backend := projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{Name: browserMCPToolSnapshot, Risk: projectAssistantToolRiskRead},
+		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+			return receipt, nil
+		},
+	}
+	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: req, runState: newProjectEinoAssistantRunState()}
+	result, err := tool.invokeAllowedTool(context.Background(), "call-browser-not-executed", backend.Spec(), map[string]any{})
+	if err != nil {
+		t.Fatalf("typed not_executed receipt returned error: %v", err)
+	}
+	var modelReceipt map[string]any
+	if err := json.Unmarshal([]byte(result), &modelReceipt); err != nil {
+		t.Fatalf("model result is not a typed receipt %q: %v", result, err)
+	}
+	if modelReceipt["status"] != "not_executed" || modelReceipt["reason"] != "preview_context_changed" || modelReceipt["replayed"] != false {
+		t.Fatalf("model result = %#v, want typed not_executed receipt", modelReceipt)
+	}
+	outcome, ok, err := req.eventLedger.ToolCallOutcome(context.Background(), "call-browser-not-executed")
+	if err != nil || !ok {
+		t.Fatalf("durable outcome = %#v, ok=%t, err=%v", outcome, ok, err)
+	}
+	if outcome.Succeeded() || outcome.Disposition != projectAssistantToolDispositionFailed {
+		t.Fatalf("durable disposition = %#v, want failed for nil-error not_executed receipt", outcome)
+	}
+	var terminal *projectToolCallStreamEvent
+	for i := range events {
+		if events[i].Status == "failed" {
+			terminal = &events[i]
+		}
+	}
+	if terminal == nil {
+		t.Fatalf("tool stream events = %#v, want a failed terminal action", events)
+	}
+	if item := projectAssistantActionFeedItemFromToolCall(*terminal); item.Status != projectAssistantActionFeedStatusFailed {
+		t.Fatalf("action feed item = %#v, want failed status", item)
+	}
+}
+
 func TestEinoV2IdempotentReplaceDoesNotAdvanceMutationState(t *testing.T) {
 	h := newProjectAssistantV2ToolHarness(t, "v2-idempotent-replace")
 	backend := projectAssistantToolFunc{
@@ -187,7 +234,7 @@ func TestEinoV2MoveTracksSourceAndDestinationAsDirty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runState.RecordObservedReadFileVersion(read.Path, read.Version)
+	recordProjectAssistantModelVisibleReadForTest(runState, read.Path, read.Version, false)
 	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: h.req, runState: runState}
 	args := map[string]any{"sourcePath": "src/old.ts", "destinationPath": "src/new.ts", "expectedVersion": read.Version}
 	if _, err := tool.invokeAllowedTool(ctx, "call-move", backend.Spec(), args); err != nil {
@@ -280,6 +327,81 @@ func TestEinoV2PublishesReconnectForPreStreamFailure(t *testing.T) {
 	}
 	if len(statuses) != 1 || statuses[0] != "Model connection was interrupted; reconnecting 1/5" {
 		t.Fatalf("statuses = %#v, want one reconnect warning", statuses)
+	}
+}
+
+func TestEinoV2FailingToolDoesNotMarkSuccessfulModelCallAsProviderError(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "tool-error-is-not-provider-error")
+	h.req.executionAuthority = projectAssistantAuditInputEngineAuthority{}
+
+	toolCalls := 0
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-failing-graph-tool",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "failing_graph_tool",
+				Arguments: `{}`,
+			},
+		}})},
+		{
+			Message: schema.AssistantMessage("I recovered from the tool failure.", nil),
+			Inspect: func(input []*schema.Message) {
+				var observed []string
+				for _, message := range input {
+					if message == nil {
+						continue
+					}
+					if message.Role == schema.Tool || message.Name == "failing_graph_tool" {
+						observed = append(observed, fmt.Sprintf("role=%s name=%s content=%q", message.Role, message.Name, message.Content))
+						if strings.Contains(message.Content, "Tool call failed: workflow dependency unavailable") {
+							return
+						}
+					}
+				}
+				t.Fatalf("successful follow-up model call did not receive the failed tool result; observed tool messages: %#v", observed)
+			},
+		},
+	}}
+	failingTool := projectAssistantFailingGraphTool{
+		calls: &toolCalls,
+		err:   errors.New("workflow dependency unavailable"),
+	}
+	engine := projectEinoAssistantEngine{
+		server: h.server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return model, nil
+		},
+		newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{failingTool}, nil
+		},
+	}
+
+	result, err := engine.StreamProjectAssistant(context.Background(), h.req)
+	if err != nil {
+		t.Fatalf("engine run after model-visible tool failure: %v", err)
+	}
+	if result.Content != "I recovered from the tool failure." || toolCalls != 1 || len(model.Inputs) != 2 {
+		t.Fatalf("result=%q toolCalls=%d modelCalls=%d, want final response after one failed tool and two model calls", result.Content, toolCalls, len(model.Inputs))
+	}
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(h.req.AssistantRun.Audit, &audit); err != nil {
+		t.Fatalf("decode run audit: %v", err)
+	}
+	if len(audit.ModelCalls) != 2 {
+		t.Fatalf("model call audit rows = %#v, want tool-call plus successful follow-up", audit.ModelCalls)
+	}
+	if audit.ModelCalls[0].Outcome != "tool_calls" || audit.ModelCalls[1].Outcome != "text" {
+		t.Fatalf("model call outcomes = %#v, want tool_calls then text", audit.ModelCalls)
+	}
+	for _, call := range audit.ModelCalls {
+		if call.TransportErrorObserved {
+			t.Fatalf("tool failure was attributed to provider transport: %#v", call)
+		}
+	}
+	if audit.Failure != nil {
+		t.Fatalf("successful run retained a failure from the tool callback: %#v", audit.Failure)
 	}
 }
 
@@ -1177,6 +1299,7 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 
 func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv(projectEinoAssistantOptimizationEnv, projectEinoAssistantOptimizationCodexPOC)
 	h := newProjectAssistantV2ToolHarnessWithApprovalMode(t, "v2-resume-run-local-grant", store.AssistantApprovalModeAlwaysAsk)
 	h.req.ThreadID = "thread-resume"
 	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeBYOOnly, ReplicaCount: 1})
@@ -1244,6 +1367,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 		}})
 	}
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: toolCall("call-search-runtime", projectEinoAssistantToolSearchTool, `{"query":"restart_runtime","maxResults":1}`)},
 		{Message: toolCall("call-runtime-before-resume", projectToolRestartRuntime, `{}`)},
 		{Message: toolCall("call-read-after-resume", projectToolReadFile, `{"file_path":"src/App.tsx","offset":1,"limit":200}`)},
 		{Message: toolCall("call-edit-after-resume", projectToolEditFile, fmt.Sprintf(`{"path":"src/App.tsx","oldString":"  const greeting = \"hello\";","newString":"  const greeting = \"hello again\";","expectedVersion":%q}`, current.Version))},
@@ -1275,7 +1399,23 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 			return model, nil
 		},
 		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			discovery, ok := state.ToolDiscovery()
+			if !ok {
+				return nil, errors.New("resume test tool discovery is missing")
+			}
+			workflowFound := false
+			for _, spec := range discovery.DeferredWorkflowTools {
+				if projectAssistantToolKey(spec.Name) == projectAssistantToolKey(projectToolRestartRuntime) {
+					workflowFound = true
+					break
+				}
+			}
+			if !workflowFound {
+				return nil, errors.New("restart_runtime is absent from deferred workflow discovery")
+			}
+			searchTool := newProjectEinoAssistantServerTool(h.server, projectEinoAssistantToolSearchBackend(h.server, req), req, state)
 			return []einotool.BaseTool{
+				searchTool,
 				newProjectEinoAssistantServerTool(h.server, runtimeTool, req, state),
 				newProjectEinoAssistantServerTool(h.server, readTool, req, state),
 				newProjectEinoAssistantServerTool(h.server, patchTool, req, state),
@@ -1306,6 +1446,16 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	if checkpoint.ApprovedPlan == nil || !checkpoint.ApprovedPlan.RunLocal ||
 		strings.Join(checkpoint.ApprovedPlan.TargetPaths, ",") != "src/App.tsx" {
 		t.Fatalf("saved run-local grant = %#v", checkpoint.ApprovedPlan)
+	}
+	selectedRuntime := false
+	for _, name := range checkpoint.SelectedDynamicToolNames {
+		if projectAssistantToolKey(name) == projectAssistantToolKey(projectToolRestartRuntime) {
+			selectedRuntime = true
+			break
+		}
+	}
+	if !selectedRuntime {
+		t.Fatalf("checkpoint selected tools = %#v, want searched runtime capability", checkpoint.SelectedDynamicToolNames)
 	}
 
 	accumulator := h.server.projectAssistantSupervisor().accumulatorFor(h.scope, pending.ID)

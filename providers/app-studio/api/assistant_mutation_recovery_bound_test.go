@@ -51,7 +51,7 @@ func TestProjectAssistantMutationRecoveryBoundsSameTargetAfterReread(t *testing.
 	if blocked || first.Failures != 1 || first.SourceRevision != 4 || first.Reread {
 		t.Fatalf("first mutation failure = %#v, blocked=%v", first, blocked)
 	}
-	state.RecordObservedReadFileVersion("src/index.tsx", "sha256:reread")
+	recordProjectAssistantModelVisibleReadForTest(state, "src/index.tsx", "sha256:reread", false)
 	checkpoint := state.CheckpointState()
 	if got := checkpoint.MutationRecoveryAttempts["src/index.tsx"]; !got.Reread {
 		t.Fatalf("checkpoint reread evidence = %#v, want true", got)
@@ -78,7 +78,7 @@ func TestProjectAssistantMutationRecoveryBoundSurvivesCheckpointAndProgress(t *t
 
 	restarted := newProjectEinoAssistantRunState()
 	restarted.RestoreCheckpointState(state.CheckpointState())
-	restarted.RecordObservedReadFileVersion("src/index.tsx", "sha256:reread")
+	recordProjectAssistantModelVisibleReadForTest(restarted, "src/index.tsx", "sha256:reread", false)
 	if _, blocked := restarted.RecordMutationFailure(projectToolEditFile, args); !blocked {
 		t.Fatal("restored second failure was not blocked")
 	}
@@ -99,10 +99,35 @@ func TestProjectAssistantMutationRecoveryBoundSurvivesCheckpointAndProgress(t *t
 
 	continues := projectAssistantMutationRecoveryTestStateAtRevision(4)
 	continues.RecordMutationFailure(projectToolEditFile, args)
-	continues.RecordObservedReadFileVersion("src/index.tsx", "sha256:reread")
+	recordProjectAssistantModelVisibleReadForTest(continues, "src/index.tsx", "sha256:reread", false)
 	continues.RecordSuccessfulMutationPath("src/index.tsx")
 	if attempt := continues.CheckpointState().MutationRecoveryAttempts["src/index.tsx"]; attempt.Failures != 0 {
 		t.Fatalf("successful reread/repair retained recovery attempt = %#v", attempt)
+	}
+}
+
+func TestProjectAssistantMutationRecoveryRequiresVisibleRereadOfCurrentVersion(t *testing.T) {
+	state := projectAssistantMutationRecoveryTestStateAtRevision(4)
+	args := projectAssistantMutationRecoveryTestArgs("src/index.tsx")
+	state.RecordMutationFailure(projectToolEditFile, args)
+	recordProjectAssistantModelVisibleReadForTest(state, "src/index.tsx", "sha256:old", false)
+	if attempt := state.CheckpointState().MutationRecoveryAttempts["src/index.tsx"]; !attempt.Reread {
+		t.Fatalf("visible reread did not settle recovery: %#v", attempt)
+	}
+
+	// A changed server version invalidates the prior visible proof and its
+	// recovery reread evidence. The new source must reach the model before a
+	// retry can count as a fresh reread.
+	state.RecordObservedReadFileVersion("src/index.tsx", "sha256:new")
+	if _, ok := state.ModelVisibleReadFileVersion("src/index.tsx"); ok {
+		t.Fatal("changed server version retained the old model-visible proof")
+	}
+	if attempt := state.CheckpointState().MutationRecoveryAttempts["src/index.tsx"]; attempt.Reread {
+		t.Fatalf("changed server version retained stale recovery reread evidence: %#v", attempt)
+	}
+	recordProjectAssistantModelVisibleReadForTest(state, "src/index.tsx", "sha256:new", false)
+	if attempt := state.CheckpointState().MutationRecoveryAttempts["src/index.tsx"]; !attempt.Reread {
+		t.Fatalf("new visible reread did not restore recovery evidence: %#v", attempt)
 	}
 }
 

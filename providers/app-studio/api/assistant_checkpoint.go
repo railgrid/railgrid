@@ -35,71 +35,73 @@ import (
 )
 
 type projectAssistantCheckpointState struct {
-	ThreadID                         string                                              `json:"threadID,omitempty"`
-	AssistantMessageID               string                                              `json:"assistantMessageID,omitempty"`
-	ToolCalls                        []chatToolCall                                      `json:"toolCalls"`
-	CurrentIndex                     int                                                 `json:"currentIndex"`
-	ProjectRepositoryRef             string                                              `json:"projectRepositoryRef,omitempty"`
-	AgentOptimizationMode            string                                              `json:"agentOptimizationMode,omitempty"`
-	DynamicToolCatalogDigest         string                                              `json:"dynamicToolCatalogDigest,omitempty"`
-	SelectedDynamicToolNames         []string                                            `json:"selectedDynamicToolNames,omitempty"`
-	TurnPolicy                       projectAssistantCheckpointTurnPolicy                `json:"turnPolicy"`
-	Messages                         []chatMessage                                       `json:"messages,omitempty"`
-	Turn                             int                                                 `json:"turn,omitempty"`
-	SeenToolCalls                    map[string]int                                      `json:"seenToolCalls,omitempty"`
-	ForceTextAnswer                  bool                                                `json:"forceTextAnswer,omitempty"`
-	RepeatedToolLoop                 bool                                                `json:"repeatedToolLoop,omitempty"`
-	LastToolMessages                 []chatMessage                                       `json:"lastToolMessages,omitempty"`
-	CatalogDigest                    string                                              `json:"catalogDigest,omitempty"`
-	NativeBrowserToolCatalog         []projectMCPTool                                    `json:"nativeBrowserToolCatalog,omitempty"`
-	SelectedSkillReceipts            []projectAssistantSkillReceipt                      `json:"selectedSkillReceipts,omitempty"`
-	LoadedSkillReceipts              []projectAssistantSkillReceipt                      `json:"loadedSkillReceipts,omitempty"`
-	SelectedContextResourceReceipts  []projectAssistantContextResourceReceipt            `json:"selectedContextResourceReceipts,omitempty"`
-	ContentParts                     []projectAssistantContentPart                       `json:"contentParts,omitempty"`
-	ApprovedPlan                     *projectAssistantApprovedPlan                       `json:"approvedPlan,omitempty"`
-	ExecutionPlan                    *projectAssistantApprovedPlan                       `json:"executionPlan,omitempty"`
-	PlanProgress                     projectAssistantPlanSnapshot                        `json:"planProgress,omitempty"`
-	SourceMutationRevision           uint64                                              `json:"sourceMutationRevision,omitempty"`
-	VerifiedMutationRevision         uint64                                              `json:"verifiedMutationRevision,omitempty"`
-	DevelopmentSyncRevision          uint64                                              `json:"developmentSyncRevision,omitempty"`
-	DevelopmentSyncStatus            string                                              `json:"developmentSyncStatus,omitempty"`
-	DevelopmentSyncFailure           string                                              `json:"developmentSyncFailure,omitempty"`
-	DevelopmentSyncRetry             uint64                                              `json:"developmentSyncRetry,omitempty"`
-	CommitRequired                   bool                                                `json:"commitRequired,omitempty"`
-	CommittedMutationRevision        uint64                                              `json:"committedMutationRevision,omitempty"`
-	CommitAttemptedRevision          uint64                                              `json:"commitAttemptedRevision,omitempty"`
-	VerifiedWorkspaceDigest          string                                              `json:"verifiedWorkspaceDigest,omitempty"`
-	CommittedWorkspaceDigest         string                                              `json:"committedWorkspaceDigest,omitempty"`
-	CheckedMutationRevision          uint64                                              `json:"checkedMutationRevision,omitempty"`
-	VerificationAttempted            bool                                                `json:"verificationAttempted,omitempty"`
-	VerificationOutcome              string                                              `json:"verificationOutcome,omitempty"`
-	VerificationSummary              string                                              `json:"verificationSummary,omitempty"`
-	VerificationBlockers             []string                                            `json:"verificationBlockers,omitempty"`
-	PreviewEvidence                  projectAssistantPreviewEvidence                     `json:"previewEvidence,omitempty"`
-	NativeBrowserInteractionPending  bool                                                `json:"nativeBrowserInteractionPending,omitempty"`
-	RepeatedActionSignature          string                                              `json:"repeatedActionSignature,omitempty"`
-	RepeatedActionToolName           string                                              `json:"repeatedActionToolName,omitempty"`
-	RepeatedActionCount              int                                                 `json:"repeatedActionCount,omitempty"`
-	RuntimeWarmupAttempts            int                                                 `json:"runtimeWarmupAttempts,omitempty"`
-	ModelCallOrdinal                 int                                                 `json:"modelCallOrdinal,omitempty"`
-	CompletedModelInputIDs           []string                                            `json:"completedModelInputIDs,omitempty"`
-	AcceptedProgressCount            int                                                 `json:"acceptedProgressCount,omitempty"`
-	LastAcceptedProgressModelCall    int                                                 `json:"lastAcceptedProgressModelCall,omitempty"`
-	ProgressReminderKind             string                                              `json:"progressReminderKind,omitempty"`
-	ProgressReminderAttempts         int                                                 `json:"progressReminderAttempts,omitempty"`
-	ProgressReminderSilenceTriggered bool                                                `json:"progressReminderSilenceTriggered,omitempty"`
-	CompletedReadCalls               map[string]uint64                                   `json:"completedReadCalls,omitempty"`
-	ReadFileCoverage                 map[string][]projectAssistantCheckpointLineRange    `json:"readFileCoverage,omitempty"`
-	ObservedReadFilePaths            []string                                            `json:"observedReadFilePaths,omitempty"`
-	ReadFileVersions                 map[string]string                                   `json:"readFileVersions,omitempty"`
-	SuccessfulMutationPaths          []string                                            `json:"successfulMutationPaths,omitempty"`
-	MutationRecoveryAttempts         map[string]projectAssistantMutationRecoveryAttempt  `json:"mutationRecoveryAttempts,omitempty"`
-	MutationRecoveryRefs             []string                                            `json:"mutationRecoveryRefs,omitempty"`
-	MutationRecoveryIdentities       map[string]projectAssistantMutationRecoveryIdentity `json:"mutationRecoveryIdentities,omitempty"`
-	SessionSnapshot                  *projectEinoAssistantSessionSnapshot                `json:"sessionSnapshot,omitempty"`
-	RolloutBudget                    *projectAssistantRolloutBudgetState                 `json:"rolloutBudget,omitempty"`
-	Sandbox                          *projectAssistantSandboxCheckpoint                  `json:"sandbox,omitempty"`
-	Eino                             *projectAssistantEinoCheckpointState                `json:"eino,omitempty"`
+	ThreadID                             string                                                 `json:"threadID,omitempty"`
+	AssistantMessageID                   string                                                 `json:"assistantMessageID,omitempty"`
+	ToolCalls                            []chatToolCall                                         `json:"toolCalls"`
+	CurrentIndex                         int                                                    `json:"currentIndex"`
+	ProjectRepositoryRef                 string                                                 `json:"projectRepositoryRef,omitempty"`
+	AgentOptimizationMode                string                                                 `json:"agentOptimizationMode,omitempty"`
+	DynamicToolCatalogDigest             string                                                 `json:"dynamicToolCatalogDigest,omitempty"`
+	SelectedDynamicToolNames             []string                                               `json:"selectedDynamicToolNames,omitempty"`
+	SelectedDynamicToolModelCallOrdinals map[string]int                                         `json:"selectedDynamicToolModelCallOrdinals,omitempty"`
+	TurnPolicy                           projectAssistantCheckpointTurnPolicy                   `json:"turnPolicy"`
+	Messages                             []chatMessage                                          `json:"messages,omitempty"`
+	Turn                                 int                                                    `json:"turn,omitempty"`
+	SeenToolCalls                        map[string]int                                         `json:"seenToolCalls,omitempty"`
+	ForceTextAnswer                      bool                                                   `json:"forceTextAnswer,omitempty"`
+	RepeatedToolLoop                     bool                                                   `json:"repeatedToolLoop,omitempty"`
+	LastToolMessages                     []chatMessage                                          `json:"lastToolMessages,omitempty"`
+	CatalogDigest                        string                                                 `json:"catalogDigest,omitempty"`
+	NativeBrowserToolCatalog             []projectMCPTool                                       `json:"nativeBrowserToolCatalog,omitempty"`
+	SelectedSkillReceipts                []projectAssistantSkillReceipt                         `json:"selectedSkillReceipts,omitempty"`
+	LoadedSkillReceipts                  []projectAssistantSkillReceipt                         `json:"loadedSkillReceipts,omitempty"`
+	SelectedContextResourceReceipts      []projectAssistantContextResourceReceipt               `json:"selectedContextResourceReceipts,omitempty"`
+	ContentParts                         []projectAssistantContentPart                          `json:"contentParts,omitempty"`
+	ApprovedPlan                         *projectAssistantApprovedPlan                          `json:"approvedPlan,omitempty"`
+	ExecutionPlan                        *projectAssistantApprovedPlan                          `json:"executionPlan,omitempty"`
+	PlanProgress                         projectAssistantPlanSnapshot                           `json:"planProgress,omitempty"`
+	SourceMutationRevision               uint64                                                 `json:"sourceMutationRevision,omitempty"`
+	VerifiedMutationRevision             uint64                                                 `json:"verifiedMutationRevision,omitempty"`
+	DevelopmentSyncRevision              uint64                                                 `json:"developmentSyncRevision,omitempty"`
+	DevelopmentSyncStatus                string                                                 `json:"developmentSyncStatus,omitempty"`
+	DevelopmentSyncFailure               string                                                 `json:"developmentSyncFailure,omitempty"`
+	DevelopmentSyncRetry                 uint64                                                 `json:"developmentSyncRetry,omitempty"`
+	CommitRequired                       bool                                                   `json:"commitRequired,omitempty"`
+	CommittedMutationRevision            uint64                                                 `json:"committedMutationRevision,omitempty"`
+	CommitAttemptedRevision              uint64                                                 `json:"commitAttemptedRevision,omitempty"`
+	VerifiedWorkspaceDigest              string                                                 `json:"verifiedWorkspaceDigest,omitempty"`
+	CommittedWorkspaceDigest             string                                                 `json:"committedWorkspaceDigest,omitempty"`
+	CheckedMutationRevision              uint64                                                 `json:"checkedMutationRevision,omitempty"`
+	VerificationAttempted                bool                                                   `json:"verificationAttempted,omitempty"`
+	VerificationOutcome                  string                                                 `json:"verificationOutcome,omitempty"`
+	VerificationSummary                  string                                                 `json:"verificationSummary,omitempty"`
+	VerificationBlockers                 []string                                               `json:"verificationBlockers,omitempty"`
+	PreviewEvidence                      projectAssistantPreviewEvidence                        `json:"previewEvidence,omitempty"`
+	NativeBrowserInteractionPending      bool                                                   `json:"nativeBrowserInteractionPending,omitempty"`
+	RepeatedActionSignature              string                                                 `json:"repeatedActionSignature,omitempty"`
+	RepeatedActionToolName               string                                                 `json:"repeatedActionToolName,omitempty"`
+	RepeatedActionCount                  int                                                    `json:"repeatedActionCount,omitempty"`
+	RuntimeWarmupAttempts                int                                                    `json:"runtimeWarmupAttempts,omitempty"`
+	ModelCallOrdinal                     int                                                    `json:"modelCallOrdinal,omitempty"`
+	CompletedModelInputIDs               []string                                               `json:"completedModelInputIDs,omitempty"`
+	AcceptedProgressCount                int                                                    `json:"acceptedProgressCount,omitempty"`
+	LastAcceptedProgressModelCall        int                                                    `json:"lastAcceptedProgressModelCall,omitempty"`
+	ProgressReminderKind                 string                                                 `json:"progressReminderKind,omitempty"`
+	ProgressReminderAttempts             int                                                    `json:"progressReminderAttempts,omitempty"`
+	ProgressReminderSilenceTriggered     bool                                                   `json:"progressReminderSilenceTriggered,omitempty"`
+	CompletedReadCalls                   map[string]uint64                                      `json:"completedReadCalls,omitempty"`
+	ReadFileCoverage                     map[string][]projectAssistantCheckpointLineRange       `json:"readFileCoverage,omitempty"`
+	ObservedReadFilePaths                []string                                               `json:"observedReadFilePaths,omitempty"`
+	ReadFileVersions                     map[string]string                                      `json:"readFileVersions,omitempty"`
+	ModelVisibleReadFileVersions         map[string]projectAssistantModelVisibleReadFileVersion `json:"modelVisibleReadFileVersions,omitempty"`
+	SuccessfulMutationPaths              []string                                               `json:"successfulMutationPaths,omitempty"`
+	MutationRecoveryAttempts             map[string]projectAssistantMutationRecoveryAttempt     `json:"mutationRecoveryAttempts,omitempty"`
+	MutationRecoveryRefs                 []string                                               `json:"mutationRecoveryRefs,omitempty"`
+	MutationRecoveryIdentities           map[string]projectAssistantMutationRecoveryIdentity    `json:"mutationRecoveryIdentities,omitempty"`
+	SessionSnapshot                      *projectEinoAssistantSessionSnapshot                   `json:"sessionSnapshot,omitempty"`
+	RolloutBudget                        *projectAssistantRolloutBudgetState                    `json:"rolloutBudget,omitempty"`
+	Sandbox                              *projectAssistantSandboxCheckpoint                     `json:"sandbox,omitempty"`
+	Eino                                 *projectAssistantEinoCheckpointState                   `json:"eino,omitempty"`
 }
 
 const (
@@ -198,16 +200,21 @@ type projectAssistantAuditEffectiveSettings struct {
 // remain truthful across the full run (including calls evicted from that
 // window). Token fields are populated only when a provider returns usage.
 type projectAssistantAuditModelCallStats struct {
-	TotalCalls         int   `json:"totalCalls"`
-	RetainedCalls      int   `json:"retainedCalls"`
-	DroppedCalls       int   `json:"droppedCalls,omitempty"`
-	RetryAttempts      int   `json:"retryAttempts,omitempty"`
-	InputBytes         int64 `json:"inputBytes,omitempty"`
-	PromptTokens       int64 `json:"promptTokens,omitempty"`
-	CachedPromptTokens int64 `json:"cachedPromptTokens,omitempty"`
-	CompletionTokens   int64 `json:"completionTokens,omitempty"`
-	TotalTokens        int64 `json:"totalTokens,omitempty"`
-	MissingUsageCalls  int   `json:"missingUsageCalls,omitempty"`
+	TotalCalls          int   `json:"totalCalls"`
+	RetainedCalls       int   `json:"retainedCalls"`
+	DroppedCalls        int   `json:"droppedCalls,omitempty"`
+	RetryAttempts       int   `json:"retryAttempts,omitempty"`
+	InputBytes          int64 `json:"inputBytes,omitempty"`
+	MessageBytes        int64 `json:"messageBytes,omitempty"`
+	SystemMessageBytes  int64 `json:"systemMessageBytes,omitempty"`
+	HistoryMessageBytes int64 `json:"historyMessageBytes,omitempty"`
+	MessageFramingBytes int64 `json:"messageFramingBytes,omitempty"`
+	ToolContractBytes   int64 `json:"toolContractBytes,omitempty"`
+	PromptTokens        int64 `json:"promptTokens,omitempty"`
+	CachedPromptTokens  int64 `json:"cachedPromptTokens,omitempty"`
+	CompletionTokens    int64 `json:"completionTokens,omitempty"`
+	TotalTokens         int64 `json:"totalTokens,omitempty"`
+	MissingUsageCalls   int   `json:"missingUsageCalls,omitempty"`
 }
 
 type projectAssistantAuditCompaction struct {
@@ -1696,9 +1703,19 @@ func projectAssistantBoundCheckpointMessages(src []chatMessage) []chatMessage {
 		start = len(src) - 1
 	}
 	bounded := cloneChatMessages(src[start:])
+	toolCalls, ambiguousToolCalls := projectEinoAssistantReadFileToolCallNames(src)
 	for index := range bounded {
 		if bounded[index].Role == "tool" {
-			bounded[index].Content = projectEinoAssistantTruncateModelToolOutput(
+			if projectEinoAssistantTrustedReadFileResult(src[start+index], toolCalls, ambiguousToolCalls) {
+				if literal, ok := projectEinoAssistantProjectModelReadFileOutput(
+					bounded[index].Content,
+					projectEinoAssistantModelToolOutputMaxBytes,
+				); ok {
+					bounded[index].Content = literal
+					continue
+				}
+			}
+			bounded[index].Content = projectEinoAssistantTruncateGenericToolOutput(
 				bounded[index].Content,
 				projectEinoAssistantModelToolOutputMaxBytes,
 			)

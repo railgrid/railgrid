@@ -18,7 +18,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -44,12 +43,18 @@ const projectEinoAssistantToolOutputTruncationNotice = "Warning: truncated tool 
 type projectEinoAssistantModelToolOutputMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 	maxBytes int
+	runState *projectEinoAssistantRunState
 }
 
-func projectEinoAssistantModelToolOutputMiddlewareForModel() adk.ChatModelAgentMiddleware {
+func projectEinoAssistantModelToolOutputMiddlewareForModel(runStates ...*projectEinoAssistantRunState) adk.ChatModelAgentMiddleware {
+	var runState *projectEinoAssistantRunState
+	if len(runStates) > 0 {
+		runState = runStates[0]
+	}
 	return &projectEinoAssistantModelToolOutputMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 		maxBytes:                     projectEinoAssistantModelToolOutputMaxBytes,
+		runState:                     runState,
 	}
 }
 
@@ -63,15 +68,46 @@ func (m *projectEinoAssistantModelToolOutputMiddleware) limit() int {
 func (m *projectEinoAssistantModelToolOutputMiddleware) WrapInvokableToolCall(
 	_ context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
-	_ *adk.ToolContext,
+	toolCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
 	return func(ctx context.Context, argumentsInJSON string, opts ...einotool.Option) (string, error) {
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
 			return result, err
 		}
-		return projectEinoAssistantTruncateModelToolOutput(result, m.limit()), nil
+		projected := ""
+		if toolCtx != nil && toolCtx.Name == projectToolReadFile {
+			if literal, ok := projectEinoAssistantProjectModelReadFileOutput(result, m.limit()); ok {
+				projected = literal
+			}
+			if projected == "" {
+				projected = projectEinoAssistantTruncateGenericToolOutput(result, m.limit())
+			}
+			m.recordModelVisibleReadFileVersion(projected)
+		} else {
+			projected = projectEinoAssistantTruncateGenericToolOutput(result, m.limit())
+		}
+		return projected, nil
 	}, nil
+}
+
+func (m *projectEinoAssistantModelToolOutputMiddleware) recordModelVisibleReadFileVersion(projected string) {
+	if m == nil || m.runState == nil {
+		return
+	}
+	key, ok := projectEinoAssistantCompleteReadFileReceiptKey(projected)
+	if !ok {
+		key, ok = projectEinoAssistantCompleteBinaryReadFileReceiptKey(projected)
+	}
+	if !ok {
+		return
+	}
+	m.runState.RecordModelVisibleReadFileVersion(
+		key.path,
+		key.version,
+		key.binary,
+		m.runState.CurrentModelCallOrdinal(),
+	)
 }
 
 func (m *projectEinoAssistantModelToolOutputMiddleware) WrapEnhancedInvokableToolCall(
@@ -88,120 +124,11 @@ func (m *projectEinoAssistantModelToolOutputMiddleware) WrapEnhancedInvokableToo
 	}, nil
 }
 
-// projectEinoAssistantTruncateModelToolOutput bounds the model-visible result
-// while keeping a structured read_file envelope machine-readable. A projected
-// read is necessarily incomplete from the model's perspective, so projection
-// explicitly clears complete/version evidence instead of letting a bounded
-// excerpt authorize reduction or freshness decisions as if the full file were
-// still visible. Other tool output keeps the generic head/tail projection.
+// projectEinoAssistantTruncateModelToolOutput bounds generic model-facing tool
+// output. Local read_file results use the literal-source projector only after
+// their exact trusted tool identity is established.
 func projectEinoAssistantTruncateModelToolOutput(value string, maxBytes int) string {
-	if projected, ok := projectEinoAssistantTruncateStructuredReadFileOutput(value, maxBytes); ok {
-		return projected
-	}
 	return projectEinoAssistantTruncateGenericToolOutput(value, maxBytes)
-}
-
-// projectEinoAssistantTruncateStructuredReadFileOutput preserves the JSON
-// envelope emitted by read_file and truncates only its content string. The
-// helper deliberately recognizes the complete read shape rather than relying
-// on the wrapping tool name: model-facing projections and replayed messages
-// can pass through this boundary without carrying ToolContext metadata.
-//
-// The returned boolean reports whether value was a recognized read_file
-// envelope. If the envelope is malformed or the metadata fields have the
-// wrong types, callers must fall back to the generic projection; failed tool
-// results therefore never acquire synthetic complete-read evidence.
-func projectEinoAssistantTruncateStructuredReadFileOutput(value string, maxBytes int) (string, bool) {
-	if maxBytes <= 0 || len(value) <= maxBytes {
-		return value, false
-	}
-
-	fields := make(map[string]json.RawMessage)
-	if err := json.Unmarshal([]byte(value), &fields); err != nil || fields == nil {
-		return "", false
-	}
-	pathRaw, pathOK := fields["path"]
-	contentRaw, contentOK := fields["content"]
-	completeRaw, completeOK := fields["complete"]
-	if !pathOK || !contentOK || !completeOK {
-		return "", false
-	}
-	var path string
-	var content string
-	var complete bool
-	if err := json.Unmarshal(pathRaw, &path); err != nil || strings.TrimSpace(path) == "" {
-		return "", false
-	}
-	if err := json.Unmarshal(contentRaw, &content); err != nil {
-		return "", false
-	}
-	if err := json.Unmarshal(completeRaw, &complete); err != nil {
-		return "", false
-	}
-	// A complete read normally carries an opaque version. Validate it when it
-	// is present so malformed output cannot be rewritten as trusted evidence;
-	// partial reads may omit the field and remain structurally representable.
-	if versionRaw, ok := fields["version"]; ok {
-		var version string
-		if err := json.Unmarshal(versionRaw, &version); err != nil {
-			return "", false
-		}
-	}
-
-	marshal := func(nextContent string, truncated bool) ([]byte, error) {
-		projectedFields := make(map[string]json.RawMessage, len(fields))
-		for key, raw := range fields {
-			projectedFields[key] = append(json.RawMessage(nil), raw...)
-		}
-		encodedContent, err := json.Marshal(nextContent)
-		if err != nil {
-			return nil, err
-		}
-		projectedFields["content"] = encodedContent
-		if truncated {
-			projectedFields["complete"] = json.RawMessage("false")
-			delete(projectedFields, "version")
-			projectedFields["modelProjectionTruncated"] = json.RawMessage("true")
-		}
-		return json.Marshal(projectedFields)
-	}
-
-	full, err := marshal(content, false)
-	if err != nil {
-		return "", false
-	}
-	if len(full) <= maxBytes {
-		return string(full), true
-	}
-
-	// Find the largest bounded content projection that still fits after JSON
-	// escaping. The generic truncator's byte budget is only an intermediate
-	// bound; escaped newlines and quotes can make the serialized envelope
-	// larger, so the final candidate is checked on every iteration.
-	empty, err := marshal("", true)
-	if err != nil || len(empty) > maxBytes {
-		return "", false
-	}
-	best := empty
-	low, high := 1, maxBytes
-	for low <= high {
-		budget := low + (high-low)/2
-		boundedContent := content
-		if len(boundedContent) > budget {
-			boundedContent = projectEinoAssistantTruncateGenericToolOutput(content, budget)
-		}
-		candidate, marshalErr := marshal(boundedContent, true)
-		if marshalErr != nil {
-			return "", false
-		}
-		if len(candidate) <= maxBytes {
-			best = candidate
-			low = budget + 1
-		} else {
-			high = budget - 1
-		}
-	}
-	return string(best), true
 }
 
 // projectEinoAssistantTruncateGenericToolOutput keeps both ends of a result so

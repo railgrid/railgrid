@@ -495,6 +495,8 @@ func TestProjectEinoAssistantToolSearchUsesDurableLedgerAndReplay(t *testing.T) 
 	state.SetAgentOptimizationMode(projectEinoAssistantOptimizationCodexPOC)
 	state.SetToolDiscovery(discovery)
 	node := projectEinoAssistantPOCTestToolsNode(t, h, state, discovery)
+	// The initial model sample is the one that will request tool_search.
+	state.NextModelCallOrdinal()
 
 	blocked := projectEinoAssistantPOCInvokeTool(t, node, "call-hidden", "mcp_database_query", `{"sql":"select 1"}`)
 	if backendCalls != 0 || !strings.Contains(blocked, "call tool_search first") {
@@ -512,6 +514,13 @@ func TestProjectEinoAssistantToolSearchUsesDurableLedgerAndReplay(t *testing.T) 
 	if !strings.Contains(searchResult, "mcp_database_query") || !state.DynamicToolSelected("mcp_database_query") {
 		t.Fatalf("search result = %q, selected = %v", searchResult, state.DynamicToolSelected("mcp_database_query"))
 	}
+	sameBatch := projectEinoAssistantPOCInvokeTool(t, node, "call-database-same-batch", "mcp_database_query", `{"sql":"select 1"}`)
+	if backendCalls != 0 || !strings.Contains(sameBatch, "call tool_search first") {
+		t.Fatalf("same-batch call result = %q, backend calls = %d", sameBatch, backendCalls)
+	}
+	// This is the lifecycle's boundary before the next model sample sees the
+	// newly selected schema and can issue a fresh call.
+	state.NextModelCallOrdinal()
 	projectEinoAssistantPOCInvokeTool(t, node, "call-database", "mcp_database_query", `{"sql":"select 1"}`)
 	projectEinoAssistantPOCInvokeTool(t, node, "call-database", "mcp_database_query", `{"sql":"select 1"}`)
 	if backendCalls != 1 {
@@ -531,6 +540,15 @@ func TestProjectEinoAssistantToolSearchUsesDurableLedgerAndReplay(t *testing.T) 
 	replayedSearch := projectEinoAssistantPOCInvokeTool(t, restartedNode, "call-search", projectEinoAssistantToolSearchTool, `{"query":"database query"}`)
 	if replayedSearch != searchResult || !restarted.DynamicToolSelected("mcp_database_query") {
 		t.Fatalf("replayed search = %q, selected = %v", replayedSearch, restarted.DynamicToolSelected("mcp_database_query"))
+	}
+	resumedSameBatch := projectEinoAssistantPOCInvokeTool(t, restartedNode, "call-database-resumed-same-batch", "mcp_database_query", `{"sql":"select 1"}`)
+	if backendCalls != 1 || !strings.Contains(resumedSameBatch, "call tool_search first") {
+		t.Fatalf("resumed same-batch call result = %q, backend calls = %d", resumedSameBatch, backendCalls)
+	}
+	restarted.NextModelCallOrdinal()
+	projectEinoAssistantPOCInvokeTool(t, restartedNode, "call-database-resumed", "mcp_database_query", `{"sql":"select 1"}`)
+	if backendCalls != 2 {
+		t.Fatalf("resumed dynamic backend calls = %d, want one fresh call after the next model sample", backendCalls)
 	}
 }
 

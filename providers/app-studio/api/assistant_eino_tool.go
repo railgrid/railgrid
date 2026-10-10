@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -49,6 +50,12 @@ type projectEinoAssistantToolDiscovery struct {
 	IncludePreviewInspection bool
 	MCPTools                 []projectAssistantTool
 	BrowserTools             []projectAssistantTool
+	DeferredLocalTools       []projectAssistantTool
+	// DeferredWorkflowTools contains the server-owned schemas for less common
+	// graph workflows. These tools are constructed through the graph factory,
+	// so their metadata must be kept separately from registry-backed tools.
+	DeferredWorkflowTools []projectAssistantToolSpec
+	CollaborationMode     projectAssistantCollaborationMode
 	// BrowserCatalogCached means BrowserTools came from a successful native
 	// browser discovery (or an earlier cached catalog), rather than from a
 	// partial/failure-only discovery result. The catalog is retained across
@@ -66,6 +73,118 @@ type projectEinoAssistantTool struct {
 	discoveredMCPBound      bool
 	searchSelectionRequired bool
 	discoveredBrowserBound  bool
+}
+
+type projectEinoAssistantDynamicSelectionRequired interface {
+	RequiresDynamicToolSelection() bool
+}
+
+func (t projectEinoAssistantTool) RequiresDynamicToolSelection() bool {
+	return t.searchSelectionRequired
+}
+
+// projectEinoAssistantDeferredGraphTool keeps the graph's normal permission
+// and durable wrappers intact, while independently requiring explicit
+// selection before any graph workflow can execute.
+type projectEinoAssistantDeferredGraphTool struct {
+	base      einotool.BaseTool
+	invokable einotool.InvokableTool
+	spec      projectAssistantToolSpec
+	req       projectAssistantRunRequest
+	runState  *projectEinoAssistantRunState
+}
+
+func newProjectEinoAssistantDeferredGraphTool(
+	base einotool.BaseTool,
+	spec projectAssistantToolSpec,
+	runState *projectEinoAssistantRunState,
+	req projectAssistantRunRequest,
+) (einotool.BaseTool, error) {
+	invokable, ok := base.(einotool.InvokableTool)
+	if !ok {
+		return nil, fmt.Errorf("deferred project assistant graph tool %q is not invokable", spec.Name)
+	}
+	return projectEinoAssistantDeferredGraphTool{
+		base:      base,
+		invokable: invokable,
+		spec:      spec,
+		req:       req,
+		runState:  runState,
+	}, nil
+}
+
+func (t projectEinoAssistantDeferredGraphTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+	return t.base.Info(ctx)
+}
+
+func (projectEinoAssistantDeferredGraphTool) RequiresDynamicToolSelection() bool { return true }
+
+func (t projectEinoAssistantDeferredGraphTool) InvokableRun(
+	ctx context.Context,
+	argumentsInJSON string,
+	opts ...einotool.Option,
+) (string, error) {
+	if t.runState != nil && t.runState.DynamicToolSelectedForCurrentModelCall(t.spec.Name) {
+		return t.invokable.InvokableRun(ctx, argumentsInJSON, opts...)
+	}
+	return t.rejectUnselectedCall(ctx, argumentsInJSON)
+}
+
+func (t projectEinoAssistantDeferredGraphTool) rejectUnselectedCall(ctx context.Context, argumentsInJSON string) (string, error) {
+	args, argumentErr := projectEinoToolArguments(argumentsInJSON)
+	if args == nil {
+		args = map[string]any{}
+	}
+	durableArgs := any(args)
+	if argumentErr != nil {
+		durableArgs = map[string]any{"invalidArguments": argumentsInJSON}
+	}
+	reason := "tool is deferred; call tool_search first and select this capability"
+	result := "Tool call failed: " + reason
+	callID := strings.TrimSpace(compose.GetToolCallID(ctx))
+	if t.req.eventLedger != nil && callID != "" {
+		decision, err := t.req.eventLedger.RecordToolRequest(ctx, callID, t.spec, durableArgs)
+		if err != nil {
+			return "", err
+		}
+		if decision.Replay != nil {
+			return decision.Replay.Result, nil
+		}
+		outcome, err := t.req.eventLedger.FinishToolCall(ctx, decision.Token, result, errors.New(reason))
+		if err != nil {
+			return "", err
+		}
+		result = outcome.Result
+	}
+	if t.runState != nil {
+		request := t.req.currentExecutionRequest()
+		t.runState.EmitToolCall(request.StreamCallbacks.OnToolCall, projectToolCallStreamEvent{
+			ID:        callID,
+			Name:      t.spec.Name,
+			Status:    "rejected",
+			Arguments: summarizeProjectToolArgumentsMap(t.spec.Name, args),
+			Error:     reason,
+		})
+		messageCallID := callID
+		if messageCallID == "" {
+			messageCallID = "tool-1"
+		}
+		t.runState.RecordToolMessage(chatMessage{
+			Role:       "tool",
+			Name:       t.spec.Name,
+			ToolCallID: messageCallID,
+			Content:    result,
+		})
+		t.runState.RecordCompletedAction(t.spec.Name, projectEinoToolArgumentsString(args))
+	}
+	return result, nil
+}
+
+func projectEinoAssistantToolSpecAllowedForCollaborationMode(spec projectAssistantToolSpec, mode projectAssistantCollaborationMode) bool {
+	if mode == projectAssistantCollaborationModeDefault && spec.Risk == projectAssistantToolRiskInput {
+		return false
+	}
+	return !projectAssistantCollaborationModeReadOnly(mode) || !projectAssistantToolHasEffect(spec)
 }
 
 func newProjectEinoAssistantToolsFactory(server *Server) projectEinoAssistantToolsFactory {
@@ -93,9 +212,10 @@ func projectEinoAssistantToolsForDiscovery(
 	localTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), catalogPolicy), req.CollaborationMode)
 	localTools = projectEinoAssistantFilterPreviewInspection(localTools, discovery.IncludePreviewInspection)
 	localTools = projectAssistantFilterAttachmentTools(localTools, projectAssistantAttachmentSelectionAvailable(req, runState))
+	localTools = projectEinoAssistantFilterInitialPlanTool(localTools, projectAssistantInitialBuildActive(req, runState))
 	mcpTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.MCPTools, catalogPolicy), req.CollaborationMode)
 	browserTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.BrowserTools, catalogPolicy), req.CollaborationMode)
-	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+len(browserTools)+2)
+	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+len(browserTools)+len(discovery.DeferredWorkflowTools)+2)
 	if runState != nil && runState.CodexPOCEnabled() && projectEinoAssistantDynamicToolCatalogDigest(discovery) != "" {
 		out = append(out, newProjectEinoAssistantServerTool(server, projectEinoAssistantToolSearchBackend(server, req), req, runState))
 	}
@@ -112,7 +232,32 @@ func projectEinoAssistantToolsForDiscovery(
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, graphTools...)
+	for _, graphTool := range graphTools {
+		if graphTool == nil {
+			continue
+		}
+		info, infoErr := graphTool.Info(ctx)
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		if info == nil {
+			continue
+		}
+		spec, ok := projectAssistantWorkflowToolSpec(info.Name)
+		if !ok {
+			return nil, fmt.Errorf("project assistant graph tool %q has no workflow policy", info.Name)
+		}
+		if !projectEinoAssistantToolSpecAllowedForCollaborationMode(spec, req.CollaborationMode) {
+			continue
+		}
+		if runState != nil && runState.CodexPOCEnabled() && projectEinoAssistantDeferredWorkflowToolAvailable(runState, spec.Name) {
+			graphTool, err = newProjectEinoAssistantDeferredGraphTool(graphTool, spec, runState, req)
+			if err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, graphTool)
+	}
 	for _, tool := range localTools {
 		switch projectToolBaseName(tool.Spec().Name) {
 		case projectToolInspectDevelopmentPreview:
@@ -149,7 +294,11 @@ func projectEinoAssistantRefreshToolDiscovery(
 ) projectEinoAssistantToolDiscovery {
 	var cachedBrowserTools []projectAssistantTool
 	var browserCatalogCached bool
-	if runState != nil {
+	// A checkpointed schema catalog has no browser-instance reference attached
+	// to it. Use it only with the in-process inspection test seam; production
+	// resolves the Ready Studio ref on every model boundary and lets the manager
+	// reuse a catalog only under its identity+ref key.
+	if runState != nil && server != nil && server.previewInspector != nil {
 		catalog, ok := runState.NativeBrowserToolCatalog()
 		if ok {
 			cachedBrowserTools = projectAssistantNativeBrowserToolsForSpecs(server, catalog)
@@ -182,23 +331,89 @@ func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
 	if server == nil {
 		return projectEinoAssistantToolDiscovery{}
 	}
+	type mcpDiscoveryResult struct {
+		tools               []projectAssistantTool
+		includeCommitBridge bool
+		err                 error
+	}
+	type browserDiscoveryResult struct {
+		ref       dataPlaneRef
+		available bool
+		tools     []projectAssistantTool
+		cached    bool
+		err       error
+	}
+
+	var mcpDone chan mcpDiscoveryResult
+	if req.ToolPort != nil {
+		mcpDone = make(chan mcpDiscoveryResult, 1)
+		go func() {
+			started := time.Now()
+			tools, includeCommitBridge, err := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.Project, req.LLM)
+			projectEinoAssistantLogPreparation(ctx, req, "mcp_discovery", started)
+			mcpDone <- mcpDiscoveryResult{tools: tools, includeCommitBridge: includeCommitBridge, err: err}
+		}()
+	}
+	browserDone := make(chan browserDiscoveryResult, 1)
+	go func() {
+		started := time.Now()
+		ref, available := server.projectAssistantPreviewInspectionRef(ctx, req.Identity)
+		result := browserDiscoveryResult{ref: ref, available: available}
+		if !available {
+			result.err = errors.New("no shared browser is ready in this workspace")
+		} else if browserCatalogCached && len(cachedBrowserTools) > 0 && server.previewInspector != nil {
+			// The inspector is a test-only readiness seam with no data-plane ref.
+			result.tools = append([]projectAssistantTool(nil), cachedBrowserTools...)
+			result.cached = true
+		} else if req.ToolPort != nil {
+			if discoverer, ok := req.ToolPort.(projectAssistantBrowserToolDiscovererWithRef); ok && server.previewInspector == nil {
+				result.tools, result.err = discoverer.DiscoverBrowserWithRef(ctx, req.Identity, req.LLM, ref)
+			} else if discoverer, ok := req.ToolPort.(projectAssistantBrowserToolDiscoverer); ok {
+				result.tools, result.err = discoverer.DiscoverBrowser(ctx, req.Identity, req.LLM)
+			} else if server.previewInspector == nil {
+				result.err = errors.New("native browser discovery is not configured on the tool port")
+			}
+		} else if server.previewInspector == nil {
+			result.err = errors.New("native browser discovery transport is not configured")
+		}
+		result.cached = result.cached || (result.err == nil && len(result.tools) > 0)
+		projectEinoAssistantLogPreparation(ctx, req, "browser_discovery", started)
+		browserDone <- result
+	}()
+
 	registry := server.projectAssistantToolRegistry()
 	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
-	includePreviewInspection := server.projectAssistantPreviewInspectionAvailable(ctx, req.Identity)
-	localTools := projectEinoAssistantFilterPreviewInspection(registry.Tools(false), includePreviewInspection)
+	// Build the local catalog while the independent MCP and browser discovery
+	// requests are in flight. Browser-dependent filtering uses the fresh result
+	// after both requests complete.
+	localTools := registry.Tools(false)
 	localTools = projectAssistantFilterAttachmentTools(localTools, projectAssistantAttachmentSelectionAvailable(req, nil))
-	chatTools := projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(localTools), policy))
-	if len(chatTools) == 0 {
-		return projectEinoAssistantToolDiscovery{}
+	var mcpResult mcpDiscoveryResult
+	if mcpDone != nil {
+		mcpResult = <-mcpDone
 	}
+	browserResult := <-browserDone
+	includePreviewInspection := browserResult.available
+	localTools = projectEinoAssistantFilterPreviewInspection(localTools, includePreviewInspection)
+	chatTools := projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(localTools), policy))
 	discovery := projectEinoAssistantToolDiscovery{
 		IncludePreviewInspection: includePreviewInspection,
+		CollaborationMode:        req.CollaborationMode,
 		Prompt:                   projectMCPToolsPrompt(chatTools),
 	}
-	var browserErr error
+	for _, tool := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(localTools, policy), req.CollaborationMode) {
+		if tool != nil && projectEinoAssistantLocalToolDeferred(tool.Spec().Name) {
+			discovery.DeferredLocalTools = append(discovery.DeferredLocalTools, tool)
+		}
+	}
+	for _, spec := range projectAssistantToolSpecsForTurnPolicy(projectAssistantWorkflowToolSpecs(), policy) {
+		if projectEinoAssistantLocalToolDeferred(spec.Name) && projectEinoAssistantToolSpecAllowedForCollaborationMode(spec, req.CollaborationMode) {
+			discovery.DeferredWorkflowTools = append(discovery.DeferredWorkflowTools, spec)
+		}
+	}
 	if req.ToolPort == nil {
-		if browserCatalogCached && len(cachedBrowserTools) > 0 {
-			discovery.BrowserTools = append([]projectAssistantTool(nil), cachedBrowserTools...)
+		if browserResult.cached && len(browserResult.tools) > 0 {
+			discovery.BrowserTools = append([]projectAssistantTool(nil), browserResult.tools...)
 			discovery.BrowserCatalogCached = true
 			allTools := append(projectEinoAssistantFilterPreviewInspection(registry.Tools(false), includePreviewInspection), discovery.BrowserTools...)
 			discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(allTools), policy)))
@@ -206,32 +421,19 @@ func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
 			if server.previewInspector != nil {
 				discovery.Prompt = "Preview inspection capability: inspect_development_preview is available through the compatibility inspector.\n" + discovery.Prompt
 			} else {
-				browserErr = errors.New("native browser discovery transport is not configured")
-				discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserErr)
+				discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserResult.err)
 			}
 		}
 		return discovery
 	}
-	mcpTools, includeCommitBridge, mcpErr := req.ToolPort.DiscoverMCP(ctx, req.Identity, req.Project, req.LLM)
+	mcpErr := mcpResult.err
 	if mcpErr == nil {
-		discovery.IncludeCommitBridge = includeCommitBridge
-		discovery.MCPTools = mcpTools
-	} else if projectAssistantTurnPolicyCanUseMCP(policy, req) {
-		discovery.Prompt = projectMCPToolsFailurePrompt(mcpErr)
+		discovery.IncludeCommitBridge = mcpResult.includeCommitBridge
+		discovery.MCPTools = mcpResult.tools
 	}
-	if browserCatalogCached && len(cachedBrowserTools) > 0 {
-		discovery.BrowserTools = append([]projectAssistantTool(nil), cachedBrowserTools...)
-		discovery.BrowserCatalogCached = true
-	} else if browserDiscoverer, ok := req.ToolPort.(projectAssistantBrowserToolDiscoverer); ok {
-		var discoveredBrowserTools []projectAssistantTool
-		discoveredBrowserTools, browserErr = browserDiscoverer.DiscoverBrowser(ctx, req.Identity, req.LLM)
-		if browserErr == nil {
-			browserTools := discoveredBrowserTools
-			discovery.BrowserTools = browserTools
-			discovery.BrowserCatalogCached = len(browserTools) > 0
-		}
-	} else if includePreviewInspection && server.previewInspector == nil {
-		browserErr = errors.New("native browser discovery is not configured on the tool port")
+	if browserResult.err == nil {
+		discovery.BrowserTools = browserResult.tools
+		discovery.BrowserCatalogCached = browserResult.cached
 	}
 	allTools := append(projectEinoAssistantFilterPreviewInspection(registry.Tools(discovery.IncludeCommitBridge), includePreviewInspection), discovery.MCPTools...)
 	allTools = append(allTools, discovery.BrowserTools...)
@@ -251,8 +453,8 @@ func projectEinoAssistantDiscoverToolsWithBrowserCatalog(
 			discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + failurePrompt
 		}
 	}
-	if browserErr != nil && includePreviewInspection {
-		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserErr)
+	if browserResult.err != nil && includePreviewInspection {
+		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + projectAssistantBrowserDiscoveryFailurePrompt(browserResult.err)
 	}
 	if researchPrompt := projectAssistantResearchCapabilityPromptForConversation(ctx, req, projectAssistantResearchConversation(req, runState), discovery.MCPTools); researchPrompt != "" {
 		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + researchPrompt
@@ -319,8 +521,38 @@ func newProjectEinoAssistantServerTool(server *Server, tool projectAssistantTool
 		req:                     req,
 		runState:                runState,
 		commitBridgeBound:       commitBridgeBound,
-		searchSelectionRequired: commitBridgeBound && runState != nil && runState.CodexPOCEnabled(),
+		searchSelectionRequired: tool != nil && runState != nil && runState.CodexPOCEnabled() && (commitBridgeBound || projectEinoAssistantDeferredLocalToolAvailable(runState, tool.Spec().Name) || projectEinoAssistantDeferredWorkflowToolAvailable(runState, tool.Spec().Name)),
 	}
+}
+
+func projectEinoAssistantDeferredLocalToolAvailable(runState *projectEinoAssistantRunState, name string) bool {
+	discovery, ok := runState.ToolDiscovery()
+	if !ok {
+		return false
+	}
+	for _, tool := range discovery.DeferredLocalTools {
+		if tool != nil && projectAssistantToolKey(tool.Spec().Name) == projectAssistantToolKey(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectEinoAssistantDeferredWorkflowToolAvailable(runState *projectEinoAssistantRunState, name string) bool {
+	if runState == nil {
+		return false
+	}
+	discovery, ok := runState.ToolDiscovery()
+	if !ok {
+		return false
+	}
+	for _, spec := range projectAssistantToolSpecsForTurnPolicy(discovery.DeferredWorkflowTools, runState.TurnPolicy()) {
+		if projectAssistantToolKey(spec.Name) == projectAssistantToolKey(name) &&
+			projectEinoAssistantToolSpecAllowedForCollaborationMode(spec, discovery.CollaborationMode) {
+			return true
+		}
+	}
+	return false
 }
 
 func newProjectEinoAssistantSearchableMCPTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
@@ -430,7 +662,7 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	if requestDecision.Replay != nil {
 		return t.replayDurableToolCall(ctx, callID, spec, args, *requestDecision.Replay)
 	}
-	if t.searchSelectionRequired && (t.runState == nil || !t.runState.DynamicToolSelected(spec.Name)) {
+	if t.searchSelectionRequired && (t.runState == nil || !t.runState.DynamicToolSelectedForCurrentModelCall(spec.Name)) {
 		reason := "tool is deferred; call tool_search first and select this capability"
 		failed := t.finishFailedToolCall(callID, spec.Name, argumentsInJSON, reason)
 		return t.finishDurableToolFailureForModel(ctx, requestDecision, failed, errors.New(reason))
@@ -1281,7 +1513,22 @@ func projectAssistantInitialBuildActive(req projectAssistantRunRequest, runState
 	if req.InitialApprovedPlan != nil {
 		return true
 	}
-	return runState != nil && runState.ApprovedPlan() != nil && runState.ApprovedPlan().RunLocal
+	approved := runState.ApprovedPlan()
+	return approved != nil && approved.RunLocal
+}
+
+func projectEinoAssistantFilterInitialPlanTool(tools []projectAssistantTool, initialBuildActive bool) []projectAssistantTool {
+	if initialBuildActive {
+		return tools
+	}
+	filtered := make([]projectAssistantTool, 0, len(tools))
+	for _, tool := range tools {
+		if tool != nil && projectToolBaseName(tool.Spec().Name) == projectToolDefineInitialProjectPlan {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
 }
 
 // projectAssistantRunSandboxReadyForInitialPlan reports whether the current
@@ -1777,39 +2024,57 @@ func projectChatToolsInclude(tools []chatTool, name string) bool {
 	return false
 }
 
-func projectEinoUnknownToolHandler(server *Server, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) func(context.Context, string, string) (string, error) {
+func projectEinoUnknownToolHandler(server *Server, req projectAssistantRunRequest, runState *projectEinoAssistantRunState, batchMiddlewares ...*projectEinoAssistantToolBatchMiddleware) func(context.Context, string, string) (string, error) {
+	var batchMiddleware *projectEinoAssistantToolBatchMiddleware
+	if len(batchMiddlewares) > 0 {
+		batchMiddleware = batchMiddlewares[0]
+	}
 	return func(ctx context.Context, name, input string) (string, error) {
-		if runState.PermissionBarrierActive() {
-			return projectEinoPermissionBarrierToolResult(), nil
-		}
-		currentReq := req.currentExecutionRequest()
-		if currentReq.executionContext != nil {
-			// Dynamically discovered MCP/commit tools have no trusted parallel
-			// safety contract, so they default to exclusive execution.
-			currentReq.executionContext.toolMu.Lock()
-			defer currentReq.executionContext.toolMu.Unlock()
-		}
-		if tool, ok := projectEinoAssistantCurrentDynamicTool(server, currentReq, runState, name); ok {
-			return tool.InvokableRun(ctx, input)
-		}
 		callID := compose.GetToolCallID(ctx)
-		args := map[string]any{}
-		_ = json.Unmarshal([]byte(input), &args)
-		runState.EmitToolCall(currentReq.StreamCallbacks.OnToolCall, projectToolCallStreamEvent{
-			ID:        callID,
-			Name:      name,
-			Status:    "rejected",
-			Arguments: summarizeProjectToolArgumentsMap(name, args),
-			Error:     "disallowed tool name",
-		})
-		result := "Tool call failed: disallowed tool name"
-		runState.RecordToolMessage(chatMessage{
-			Role:       "tool",
-			Name:       strings.TrimSpace(name),
-			ToolCallID: callID,
-			Content:    result,
-		})
-		runState.RecordCompletedAction(name, projectEinoToolArgumentsString(args))
+		var result string
+		dispatch := func() error {
+			if runState.PermissionBarrierActive() {
+				result = projectEinoPermissionBarrierToolResult()
+				return nil
+			}
+			currentReq := req.currentExecutionRequest()
+			if currentReq.executionContext != nil {
+				// Dynamically discovered MCP/commit tools have no trusted parallel
+				// safety contract, so they default to exclusive execution.
+				currentReq.executionContext.toolMu.Lock()
+				defer currentReq.executionContext.toolMu.Unlock()
+			}
+			if tool, ok := projectEinoAssistantCurrentDynamicTool(server, currentReq, runState, name); ok {
+				var err error
+				result, err = tool.InvokableRun(ctx, input)
+				return err
+			}
+			args := map[string]any{}
+			_ = json.Unmarshal([]byte(input), &args)
+			runState.EmitToolCall(currentReq.StreamCallbacks.OnToolCall, projectToolCallStreamEvent{
+				ID:        callID,
+				Name:      name,
+				Status:    "rejected",
+				Arguments: summarizeProjectToolArgumentsMap(name, args),
+				Error:     "disallowed tool name",
+			})
+			result = "Tool call failed: disallowed tool name"
+			runState.RecordToolMessage(chatMessage{
+				Role:       "tool",
+				Name:       strings.TrimSpace(name),
+				ToolCallID: callID,
+				Content:    result,
+			})
+			runState.RecordCompletedAction(name, projectEinoToolArgumentsString(args))
+			return nil
+		}
+		deferred, err := batchMiddleware.invokeBatchCall(ctx, callID, dispatch)
+		if err != nil {
+			return "", err
+		}
+		if deferred {
+			return projectEinoAssistantDeferredWorkspaceCall, nil
+		}
 		return result, nil
 	}
 }
@@ -1829,6 +2094,11 @@ func projectEinoAssistantCurrentDynamicTool(
 	}
 	wanted := projectAssistantToolKey(name)
 	policy := projectAssistantToolCatalogPolicy(req)
+	for _, current := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.DeferredLocalTools, policy), req.CollaborationMode) {
+		if current != nil && projectAssistantToolKey(current.Spec().Name) == wanted {
+			return projectEinoAssistantTool{server: server, tool: current, req: req, runState: runState, searchSelectionRequired: runState.CodexPOCEnabled()}, true
+		}
+	}
 	if discovery.IncludeCommitBridge {
 		for _, current := range projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(server.projectAssistantToolRegistry().Tools(true), policy), req.CollaborationMode) {
 			if current != nil && current.Spec().Risk == projectAssistantToolRiskCommit && projectAssistantToolKey(current.Spec().Name) == wanted {
