@@ -8,7 +8,11 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -16,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -36,6 +41,19 @@ func (p *providerOnly) AsProvider(clusterID string) (dynamic.Interface, error) {
 		return nil, errors.New("wrong cluster")
 	}
 	return p.client, nil
+}
+
+type contextProviderOnly struct {
+	*providerOnly
+	contextCalls int
+}
+
+func (p *contextProviderOnly) AsProviderContext(ctx context.Context, clusterID string) (dynamic.Interface, error) {
+	p.contextCalls++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return p.AsProvider(clusterID)
 }
 
 func proxiedGateFixture(t *testing.T, allow bool) (*providerOnly, schema.GroupVersionResource) {
@@ -78,6 +96,81 @@ func TestProxiedGateDecidesVisibilityByAccessReviewAndReadsAsTheProvider(t *test
 	}
 	if factory.asked != 1 {
 		t.Fatalf("AsProvider called %d times", factory.asked)
+	}
+}
+
+func TestProxiedGateUsesOptionalContextFactoryAndKeepsAuthorization(t *testing.T) {
+	legacy, gvr := proxiedGateFixture(t, true)
+	factory := &contextProviderOnly{providerOnly: legacy}
+	ctx := WithProxiedIdentity(context.Background(), ProxiedIdentity{User: "alice", Groups: []string{"system:authenticated"}})
+	req := Request{ClusterID: "1v98kgkp03uox9qw", Resource: "linuxservers", Name: "edge-1", Verb: "addon-credentials"}
+
+	object, provider, err := Gate(ctx, factory, gvr, req)
+	if err != nil {
+		t.Fatalf("Gate with context-capable factory: %v", err)
+	}
+	if factory.contextCalls != 1 || factory.asked != 1 {
+		t.Fatalf("context factory calls = %d, legacy AsProvider calls = %d; want one context path", factory.contextCalls, factory.asked)
+	}
+	if object.GetUID() != "edge-uid" || provider == nil {
+		t.Fatalf("Gate returned object/client = %v/%v, want authorized parent and provider client", object, provider)
+	}
+}
+
+func TestProxiedGateCancelsEndpointDiscoveryBeforeAuthorizationRequests(t *testing.T) {
+	const (
+		export    = "edges.providers.railgrid.ai"
+		clusterID = "1v98kgkp03uox9qw"
+	)
+	lookupStarted := make(chan struct{})
+	var endpointReads, laterReads atomic.Int32
+	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/clusters/root:railgrid:providers:edges/apis/apis.kcp.io/v1alpha1/apiexportendpointslices/" + export
+		if r.URL.Path != wantPath {
+			laterReads.Add(1)
+			http.Error(w, "unexpected authorization or parent read", http.StatusInternalServerError)
+			return
+		}
+		endpointReads.Add(1)
+		close(lookupStarted)
+		<-r.Context().Done()
+	}))
+	defer kcp.Close()
+	base := &rest.Config{Host: kcp.URL + "/clusters/root:railgrid:providers:edges", BearerToken: "provider-token"}
+	callers, err := NewCallerFactory(base, WithProviderConfig(base, export))
+	if err != nil {
+		t.Fatalf("NewCallerFactory: %v", err)
+	}
+	gvr := schema.GroupVersionResource{Group: "edges.railgrid.ai", Version: "v1alpha1", Resource: "linuxservers"}
+	identity := ProxiedIdentity{User: "alice", Groups: []string{"system:authenticated"}}
+	ctx, cancel := context.WithCancel(WithProxiedIdentity(context.Background(), identity))
+	done := make(chan error, 1)
+	go func() {
+		_, _, gateErr := Gate(ctx, callers, gvr, Request{
+			ClusterID: clusterID, Resource: "linuxservers", Name: "edge-1", Verb: "addon-credentials",
+		})
+		done <- gateErr
+	}()
+	select {
+	case <-lookupStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("endpoint-slice lookup did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Gate error = %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Gate remained blocked after request cancellation")
+	}
+	if got := endpointReads.Load(); got != 1 {
+		t.Fatalf("endpoint-slice reads = %d, want one", got)
+	}
+	if got := laterReads.Load(); got != 0 {
+		t.Fatalf("authorization/parent requests after canceled endpoint lookup = %d, want none", got)
 	}
 }
 

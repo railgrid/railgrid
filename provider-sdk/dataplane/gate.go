@@ -16,6 +16,14 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+// contextProviderCallerFactory is an optional extension to
+// ProviderCallerFactory. Keeping it separate preserves compatibility with
+// existing implementations while allowing callers to propagate request
+// cancellation through endpoint discovery.
+type contextProviderCallerFactory interface {
+	AsProviderContext(context.Context, string) (dynamic.Interface, error)
+}
+
 // SelfSubjectAccessReviews is the review a caller-credentialed client (an MCP
 // tool acting with the bearer the hub aggregate forwarded) asks about itself.
 // It is exported because a test double for a CallerFactory has to answer
@@ -91,7 +99,13 @@ func Gate(
 	if !ok || identity.User == "" {
 		return nil, nil, ErrNoCaller
 	}
-	provider, err := callers.AsProvider(req.ClusterID)
+	var provider dynamic.Interface
+	var err error
+	if contextual, ok := callers.(contextProviderCallerFactory); ok {
+		provider, err = contextual.AsProviderContext(ctx, req.ClusterID)
+	} else {
+		provider, err = callers.AsProvider(req.ClusterID)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
