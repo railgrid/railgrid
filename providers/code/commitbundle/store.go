@@ -99,6 +99,22 @@ func NormalizeEncoding(encoding string) (string, error) {
 	return "", fmt.Errorf("unsupported encoding %q: use %q or %q", encoding, EncodingUTF8, EncodingBase64)
 }
 
+// stripBase64Whitespace removes the line breaks, tabs and spaces that
+// wrapping encoders insert. Callers normalize with it before storing content;
+// DecodeBase64 itself stays strict so a stored bundle has one meaning.
+func stripBase64Whitespace(s string) string {
+	if !strings.ContainsAny(s, "\r\n\t ") {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t', ' ':
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // DecodeBase64 strictly decodes standard padded base64. Line breaks and
 // non-canonical padding bits are rejected so every accepted string maps to
 // exactly one byte sequence, whichever decoder later reads it.
@@ -514,7 +530,14 @@ func buildBundle(files []File) (Bundle, BundleRef, error) {
 			encoding = ""
 			hasDelete = true
 		}
-		bundleFiles = append(bundleFiles, BundleFile{Path: path, Content: f.Content, Encoding: encoding, Delete: f.Delete})
+		content := f.Content
+		if encoding == EncodingBase64 {
+			// Line-wrapped base64 (what `base64` prints on some systems) is
+			// normalized at the door so the stored bundle, its digest and the
+			// git host all see the one canonical form DecodeBase64 insists on.
+			content = stripBase64Whitespace(content)
+		}
+		bundleFiles = append(bundleFiles, BundleFile{Path: path, Content: content, Encoding: encoding, Delete: f.Delete})
 	}
 	sort.Slice(bundleFiles, func(i, j int) bool {
 		return bundleFiles[i].Path < bundleFiles[j].Path
