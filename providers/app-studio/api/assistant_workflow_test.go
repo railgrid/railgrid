@@ -423,7 +423,7 @@ func TestProjectAssistantExecCommandRejectsOversizedArgvBeforeApproval(t *testin
 			}
 			arguments, err := json.Marshal(map[string]any{
 				"component": "backend",
-				"argv":      []string{"node", "-e", strings.Repeat("x", 313)},
+				"argv":      []string{"node", "-e", strings.Repeat("x", projectAssistantExecMaxArgBytes+1)},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -439,8 +439,10 @@ func TestProjectAssistantExecCommandRejectsOversizedArgvBeforeApproval(t *testin
 			if err != nil {
 				t.Fatalf("invalid exec invocation interrupted: %v", err)
 			}
-			if len(output) != 1 || !strings.Contains(output[0].Content, "invalid arguments") || !strings.Contains(output[0].Content, "argv token 3") {
-				t.Fatalf("invalid exec output = %#v, want model-visible validation failure", output)
+			if len(output) != 1 || !strings.Contains(output[0].Content, "invalid arguments") ||
+				!strings.Contains(output[0].Content, "argv token 3 is 4097 UTF-8 bytes; maximum is 4096") ||
+				!strings.Contains(output[0].Content, "Use an existing workspace script") {
+				t.Fatalf("invalid exec output = %#v, want precise model-visible argv validation guidance", output)
 			}
 			events := listAssistantRunEventLedgerEvents(t, messages, scope, runID)
 			if len(events) != 2 || events[0].Type != projectAssistantRunToolRequestEventType || events[1].Type != projectAssistantRunToolResultEventType {
@@ -475,7 +477,14 @@ func TestProjectAssistantExecCommandPreflightPreservesApprovalWithCanonicalArgum
 			if err != nil {
 				t.Fatalf("create tool node: %v", err)
 			}
-			arguments := `{"component":"backend","argv":["go","test"]}`
+			maxArg := strings.Repeat("x", projectAssistantExecMaxArgBytes)
+			arguments, err := json.Marshal(map[string]any{
+				"component": "backend",
+				"argv":      []string{"go", maxArg},
+			})
+			if err != nil {
+				t.Fatalf("marshal maximum-size valid exec arguments: %v", err)
+			}
 			graph := compose.NewGraph[*einoschema.Message, []*einoschema.Message]()
 			if err := graph.AddToolsNode("exec", node); err != nil {
 				t.Fatalf("add exec node: %v", err)
@@ -495,7 +504,7 @@ func TestProjectAssistantExecCommandPreflightPreservesApprovalWithCanonicalArgum
 				Type: "function",
 				Function: einoschema.FunctionCall{
 					Name:      projectToolExecCommand,
-					Arguments: arguments,
+					Arguments: string(arguments),
 				},
 			}}))
 			if err == nil {
@@ -531,8 +540,8 @@ func TestProjectAssistantExecCommandPreflightPreservesApprovalWithCanonicalArgum
 				t.Fatalf("approval canonical arguments = %#v, want default timeout %d", canonical, projectAssistantExecDefaultTimeout)
 			}
 			argv, ok := canonical["argv"].([]any)
-			if !ok || len(argv) != 2 || argv[0] != "go" || argv[1] != "test" {
-				t.Fatalf("approval canonical argv = %#v, want [go test]", canonical["argv"])
+			if !ok || len(argv) != 2 || argv[0] != "go" || argv[1] != maxArg {
+				t.Fatalf("approval canonical argv = %#v, want [go <4096-byte token>]", canonical["argv"])
 			}
 			events := listAssistantRunEventLedgerEvents(t, messages, scope, runID)
 			if len(events) != 0 {
@@ -572,7 +581,7 @@ func TestProjectAssistantExecCommandPreflightResumesLegacyInvalidApproval(t *tes
 			if err != nil {
 				t.Fatalf("compile legacy graph: %v", err)
 			}
-			invalidArguments := `{"component":"backend","argv":["node","-e","` + strings.Repeat("x", 313) + `"]}`
+			invalidArguments := `{"component":"backend","argv":["node","-e","` + strings.Repeat("x", projectAssistantExecMaxArgBytes+1) + `"]}`
 			_, err = legacyRunner.Invoke(context.Background(), einoschema.AssistantMessage("", []einoschema.ToolCall{{
 				ID:   "legacy-exec-invalid",
 				Type: "function",

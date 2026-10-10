@@ -116,6 +116,109 @@ func TestProjectEinoAssistantLiteralReadFileHandlesEmptyAndRangedSource(t *testi
 	}
 }
 
+func TestProjectEinoAssistantLiteralReadFilePreservesSourceEndingNewlines(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "LF", content: "line\n"},
+		{name: "CRLF", content: "line\r\n"},
+		{name: "no final newline", content: "line"},
+		{name: "empty", content: ""},
+		{name: "two final newlines", content: "line\n\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			version := "sha256:source-boundary"
+			raw := projectEinoAssistantReadFileJSONForTest(t, "src/boundary.txt", test.content, version, int64(len(test.content)), true, false, false, 1, 2000)
+			projected, ok := projectEinoAssistantProjectModelReadFileOutput(raw, projectEinoAssistantModelToolOutputMaxBytes)
+			if !ok {
+				t.Fatal("source receipt was not projected")
+			}
+
+			fence := projectEinoAssistantLiteralReadFileFence(test.content, "")
+			wantSegment := fence + "text\n" + test.content
+			if !strings.HasSuffix(test.content, "\n") {
+				wantSegment += "\n"
+			}
+			wantSegment += fence
+			if !strings.HasSuffix(projected, wantSegment) {
+				t.Fatalf("source segment suffix = %q; want exact delimiter form %q", projected[strings.LastIndex(projected, "source:\n"):], wantSegment)
+			}
+
+			parsed, ok := projectEinoAssistantParseLiteralReadFileOutput(projected)
+			if !ok || parsed.content != test.content || parsed.shown != test.content || parsed.selectedBytes != len(test.content) ||
+				parsed.shownBytes != len(test.content) || !parsed.complete || parsed.version != version {
+				t.Fatalf("source bytes or proof changed: parsed=%#v, ok=%v", parsed, ok)
+			}
+			key, ok := projectEinoAssistantCompleteReadFileReceiptKey(projected)
+			if !ok || key.path != "src/boundary.txt" || key.content != test.content || key.version != version || key.size != int64(len(test.content)) {
+				t.Fatalf("complete source proof = %#v, ok=%v", key, ok)
+			}
+		})
+	}
+}
+
+func TestProjectEinoAssistantLiteralReadFileClippedHeadAndTailDelimiters(t *testing.T) {
+	head, tail := "first line\n", "last line\r\n"
+	content := head + "middle\n" + tail
+	result := projectEinoAssistantReadFileOutput{
+		path: "src/clipped.txt", content: content, version: "sha256:clipped", size: int64(len(content)),
+		offset: 1, limit: 2000, complete: true,
+	}
+	projected := projectEinoAssistantRenderClippedLiteralReadFileOutput(result, head, tail)
+	parsed, ok := projectEinoAssistantParseLiteralReadFileOutput(projected)
+	if !ok || !parsed.truncated || !parsed.modelClipped || parsed.complete || parsed.version != "" ||
+		parsed.shown != head+tail || parsed.headBytes != len(head) || parsed.tailBytes != len(tail) ||
+		parsed.selectedBytes != len(content) || parsed.shownBytes != len(head)+len(tail) {
+		t.Fatalf("clipped source segments or proof = %#v, ok=%v", parsed, ok)
+	}
+	fence := projectEinoAssistantLiteralReadFileFence(head, tail)
+	wantTail := "source_tail:\n" + fence + "text\n" + tail + fence
+	if !strings.HasSuffix(projected, wantTail) {
+		t.Fatalf("clipped tail delimiter = %q; want %q", projected[strings.LastIndex(projected, "source_tail:\n"):], wantTail)
+	}
+	if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(projected); ok {
+		t.Fatal("clipped receipt retained complete source authority")
+	}
+
+	legacy := strings.Replace(projected, fence+"text\n"+head+fence, fence+"text\n"+head+"\n"+fence, 1)
+	legacy = strings.Replace(legacy, fence+"text\n"+tail+fence, fence+"text\n"+tail+"\n"+fence, 1)
+	legacyParsed, ok := projectEinoAssistantParseLiteralReadFileOutput(legacy)
+	if legacy == projected || !ok || !legacyParsed.truncated || !legacyParsed.modelClipped || legacyParsed.complete ||
+		legacyParsed.version != "" || legacyParsed.shown != parsed.shown || legacyParsed.shownBytes != parsed.shownBytes ||
+		legacyParsed.selectedBytes != parsed.selectedBytes {
+		t.Fatalf("legacy clipped head/tail segments or proof = %#v, ok=%v", legacyParsed, ok)
+	}
+	if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(legacy); ok {
+		t.Fatal("legacy clipped receipt retained complete source authority")
+	}
+}
+
+func TestProjectEinoAssistantLiteralReadFileParserAcceptsLegacyFinalNewlineDelimiter(t *testing.T) {
+	content := "legacy checkpoint source\n"
+	result := projectEinoAssistantReadFileOutput{
+		path: "src/legacy.txt", content: content, version: "sha256:legacy", size: int64(len(content)),
+		offset: 1, limit: 2000, complete: true,
+	}
+	current := projectEinoAssistantRenderLiteralReadFileOutput(result)
+	fence := projectEinoAssistantLiteralReadFileFence(content, "")
+	currentSegment := fence + "text\n" + content + fence
+	legacySegment := fence + "text\n" + content + "\n" + fence
+	legacy := strings.Replace(current, currentSegment, legacySegment, 1)
+	if legacy == current {
+		t.Fatal("test did not construct the old formatter representation")
+	}
+	parsed, ok := projectEinoAssistantParseLiteralReadFileOutput(legacy)
+	if !ok || parsed.content != content || parsed.shown != content || !parsed.complete || parsed.version != result.version {
+		t.Fatalf("legacy source receipt = %#v, ok=%v", parsed, ok)
+	}
+	key, ok := projectEinoAssistantCompleteReadFileReceiptKey(legacy)
+	if !ok || key.content != content || key.version != result.version {
+		t.Fatalf("legacy complete source proof = %#v, ok=%v", key, ok)
+	}
+}
+
 func TestProjectEinoAssistantLiteralReadFileClipsOutsideSourceFence(t *testing.T) {
 	content := "head marker <&> \\\\雪\r\n" + strings.Repeat("body \"quoted\" \\path <&> café\r\n", 1800) + "tail marker // end"
 	raw := projectEinoAssistantReadFileJSONForTest(t, "src/large.ts", content, "sha256:large", int64(len(content)), true, false, false, 1, 2000)
