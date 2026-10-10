@@ -27,6 +27,7 @@ import (
 	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -64,6 +65,13 @@ func NewKCPPreviewIdentityResolver(config *rest.Config) func(*http.Request, Inst
 		}
 		review, err := client.AuthenticationV1().TokenReviews().Create(r.Context(), &authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{Token: token}}, metav1.CreateOptions{})
 		if err != nil {
+			// A caller-selected workspace can make kcp reject TokenReview with a
+			// client error. Treat those as invalid identity so they are rate-limited
+			// and do not expose whether the workspace exists. Server errors and
+			// transport failures remain retryable dependency failures.
+			if apierrors.IsBadRequest(err) || apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+				return browsersession.Identity{}, ErrInvalidPreviewIdentity
+			}
 			return browsersession.Identity{}, err
 		}
 		clusters := review.Status.User.Extra["authentication.kcp.io/cluster-name"]
@@ -123,8 +131,8 @@ func (h *Handler) HandlePreviewHandoff(w http.ResponseWriter, r *http.Request) {
 			h.rejectBearer(w, source)
 			return
 		}
-		// TokenReview API, configuration, and request-context failures are not
-		// evidence that the caller supplied a bad credential. Preserve the
+		// Transient TokenReview, configuration, and request-context failures are
+		// not evidence that the caller supplied a bad credential. Preserve the
 		// retryable dependency-failure response without spending their budget.
 		http.Error(w, "preview identity service unavailable", http.StatusServiceUnavailable)
 		return

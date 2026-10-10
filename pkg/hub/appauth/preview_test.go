@@ -657,6 +657,44 @@ func TestKCPPreviewIdentityResolverPropagatesTokenReviewTransportFailure(t *test
 	}
 }
 
+func TestKCPPreviewIdentityResolverClassifiesTokenReviewClientErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		wantInvalid bool
+	}{
+		{name: "bad request", status: http.StatusBadRequest, wantInvalid: true},
+		{name: "unauthorized", status: http.StatusUnauthorized, wantInvalid: true},
+		{name: "forbidden", status: http.StatusForbidden, wantInvalid: true},
+		{name: "workspace not found", status: http.StatusNotFound, wantInvalid: true},
+		{name: "server unavailable", status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "TokenReview response", tc.status)
+			})
+			if tc.status == http.StatusNotFound {
+				handler = http.NotFoundHandler()
+			}
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			resolver := NewKCPPreviewIdentityResolver(&rest.Config{Host: server.URL})
+			req := httptest.NewRequest(http.MethodPost, PreviewHandoffPath, nil)
+			req.Header.Set("Authorization", "Bearer token")
+			_, err := resolver(req, previewTestRef())
+			if tc.wantInvalid {
+				if !errors.Is(err, ErrInvalidPreviewIdentity) {
+					t.Fatalf("TokenReview error = %v, want ErrInvalidPreviewIdentity", err)
+				}
+				return
+			}
+			if err == nil || errors.Is(err, ErrInvalidPreviewIdentity) {
+				t.Fatalf("TokenReview error = %v, want transient dependency failure", err)
+			}
+		})
+	}
+}
+
 func TestKCPPreviewIdentityResolverRequiresSingleBearer(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
