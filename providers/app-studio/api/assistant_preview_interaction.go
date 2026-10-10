@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 const projectAssistantPreviewInteractionMaxSteps = 20
@@ -106,6 +108,7 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 		return projectAssistantPreviewInteractionResult{}, err
 	}
 	result, err := s.interactPreviewViaBrowserMCP(ctx, req.Identity, ref, projectAssistantPreviewInteractionRequest{
+		Project:            req.Project,
 		URL:                targetURL,
 		Steps:              steps,
 		Assertions:         assertions,
@@ -236,6 +239,7 @@ type projectAssistantPreviewInteractionStep struct {
 }
 
 type projectAssistantPreviewInteractionRequest struct {
+	Project            *aiv1alpha1.Project
 	URL                string
 	Steps              []projectAssistantPreviewInteractionStep
 	Assertions         []projectAssistantPreviewInspectionAssertion
@@ -273,7 +277,7 @@ func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, 
 	}
 	defer session.closeWithReason("interaction_complete", "interactPreviewViaBrowserMCP")
 	if req.RequiresHubSession {
-		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.URL); err != nil {
+		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.Project, req.URL); err != nil {
 			return projectAssistantPreviewInteractionResult{}, err
 		}
 	}

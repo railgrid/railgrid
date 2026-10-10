@@ -166,6 +166,8 @@ var ErrInstanceNotPublished = errors.New("instance has no published host")
 
 // Config assembles a Handler.
 type Config struct {
+	// PreviewIdentity verifies a workspace service account for a scoped preview.
+	PreviewIdentity func(*http.Request, InstanceRef) (browsersession.Identity, error)
 	// Sessions is the shared hub browser-session store (portal SSO).
 	Sessions *browsersession.Store
 	// SARClient resolves per-workspace SubjectAccessReview clients.
@@ -210,13 +212,14 @@ type Config struct {
 
 // Handler serves the authorize, exchange and verify endpoints.
 type Handler struct {
-	sessions     *browsersession.Store
-	sarClient    SARFactory
-	instanceHost InstanceHostResolver
-	loginPath    string
-	now          func() time.Time
-	random       io.Reader
-	codes        CodeStore
+	previewIdentity func(*http.Request, InstanceRef) (browsersession.Identity, error)
+	sessions        *browsersession.Store
+	sarClient       SARFactory
+	instanceHost    InstanceHostResolver
+	loginPath       string
+	now             func() time.Time
+	random          io.Reader
+	codes           CodeStore
 
 	bearerIdentity      func(*http.Request) (browsersession.Identity, error)
 	tokenKey            func(context.Context) ([]byte, error)
@@ -228,6 +231,7 @@ type Handler struct {
 // CodeRecord is what authorize binds a code to and exchange verifies against.
 // It carries identity metadata only — never a credential.
 type CodeRecord struct {
+	Purpose      string
 	Ref          InstanceRef
 	RedirectHost string
 	Identity     browsersession.Identity
@@ -256,13 +260,14 @@ func New(cfg Config) (*Handler, error) {
 		return nil, fmt.Errorf("appauth: instance host resolver is required")
 	}
 	h := &Handler{
-		sessions:     cfg.Sessions,
-		sarClient:    cfg.SARClient,
-		instanceHost: cfg.InstanceHost,
-		loginPath:    cfg.LoginPath,
-		now:          cfg.Now,
-		random:       cfg.Random,
-		codes:        cfg.Codes,
+		previewIdentity: cfg.PreviewIdentity,
+		sessions:        cfg.Sessions,
+		sarClient:       cfg.SARClient,
+		instanceHost:    cfg.InstanceHost,
+		loginPath:       cfg.LoginPath,
+		now:             cfg.Now,
+		random:          cfg.Random,
+		codes:           cfg.Codes,
 
 		bearerIdentity:      cfg.BearerIdentity,
 		tokenKey:            cfg.TokenKey,
@@ -299,6 +304,9 @@ func (h *Handler) RegisterRoutes(router *mux.Router, limit func(http.HandlerFunc
 			return fn
 		}
 		return limit(fn)
+	}
+	if h.previewIdentity != nil {
+		router.HandleFunc(PreviewHandoffPath, wrap(h.HandlePreviewHandoff)).Methods("GET", "POST")
 	}
 	router.HandleFunc(AuthorizePath, wrap(h.HandleAuthorize)).Methods("GET")
 	router.HandleFunc(ExchangePath, wrap(h.HandleExchange)).Methods("POST")
@@ -374,7 +382,16 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.sessions.ResolveRequest(r)
+	var session browsersession.Session
+	if cookie, cookieErr := r.Cookie(previewCookieName); cookieErr == nil {
+		session, err = h.sessions.Resolve(r.Context(), cookie.Value)
+		if err != nil || session.Identity.AppScope != ref.key() {
+			http.Error(w, "preview session expired or scope mismatch", http.StatusForbidden)
+			return
+		}
+	} else {
+		session, err = h.sessions.ResolveRequest(r)
+	}
 	if err != nil {
 		logger := klog.FromContext(r.Context())
 		// One bounce through login is the normal path for an anonymous browser
@@ -498,11 +515,19 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record, ok := h.codes.Take(r.Context(), req.Code)
-	if !ok || record.Ref.key() != ref.key() || !strings.EqualFold(record.RedirectHost, req.Host) {
+	if !ok || record.Purpose != "" || record.Ref.key() != ref.key() || !strings.EqualFold(record.RedirectHost, req.Host) {
 		// Expired, replayed, or bound to different coordinates. 410 tells the
 		// proxy to restart the authorize flow rather than retry.
 		http.Error(w, "sign-in expired", http.StatusGone)
 		return
+	}
+	ttl := sessionTTL
+	if record.Identity.AppScope != "" {
+		ttl = min(ttl, record.Identity.AppExpiresAt.Sub(h.now()))
+		if ttl < time.Second {
+			http.Error(w, "preview session expired", http.StatusGone)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ExchangeResponse{
@@ -510,7 +535,7 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		UserID:            record.Identity.UserID,
 		Email:             record.Identity.Email,
 		Name:              record.Identity.Name,
-		SessionTTLSeconds: int64(sessionTTL / time.Second),
+		SessionTTLSeconds: int64(ttl / time.Second),
 	})
 }
 
@@ -527,6 +552,14 @@ func (h *Handler) authorize(ctx context.Context, identity browsersession.Identit
 	if user == "" {
 		return false, nil
 	}
+	verb, subresource := AccessVerb, AccessSubresource
+	if identity.AppScope != "" {
+		if identity.AppScope != ref.key() || !h.now().Before(identity.AppExpiresAt) {
+			return false, nil
+		}
+		// Proxy permission already permits this identity to reach the app directly.
+		verb, subresource = "create", "proxy"
+	}
 	client, err := h.sarClient(ref.Cluster)
 	if err != nil {
 		return false, err
@@ -538,9 +571,9 @@ func (h *Handler) authorize(ctx context.Context, identity browsersession.Identit
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Group:       ref.Group,
 				Resource:    ref.Resource,
-				Subresource: AccessSubresource,
+				Subresource: subresource,
 				Name:        ref.Name,
-				Verb:        AccessVerb,
+				Verb:        verb,
 			},
 		},
 	}, metav1.CreateOptions{})
@@ -586,6 +619,9 @@ func (h *Handler) mintCode(ctx context.Context, ref InstanceRef, redirectHost st
 		RedirectHost: strings.ToLower(redirectHost),
 		Identity:     identity,
 		ExpiresAt:    h.now().Add(codeTTL),
+	}
+	if identity.AppScope != "" && identity.AppExpiresAt.Before(record.ExpiresAt) {
+		record.ExpiresAt = identity.AppExpiresAt
 	}
 	if err := h.codes.Put(ctx, code, record); err != nil {
 		return "", err

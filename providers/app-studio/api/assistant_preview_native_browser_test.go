@@ -435,7 +435,8 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 	defer hub.Close()
 	preview = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query := url.Values{
-			"cluster":      {"cluster-a"},
+			"cluster": {"cluster-a"},
+			"group":   {"infrastructure.railgrid.ai"}, "resource": {"instances"}, "name": {"demo-dev"},
 			"redirect_uri": {preview.URL + privateAppCallbackPath},
 		}
 		http.Redirect(w, r, hub.URL+privateAppAuthorizePath+"?"+query.Encode(), http.StatusFound)
@@ -444,7 +445,8 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 
 	server := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		hubBase: hub.URL, callers: newTestCallers(nil, hub.URL),
+		projectIdentityTokenFor: func(context.Context, identity, *aiv1alpha1.Project) (string, error) { return "project-token", nil },
+		hubBase:                 hub.URL, callers: newTestCallers(nil, hub.URL),
 		hubPublicURL:                 hub.URL,
 		previewInsecureSkipTLSVerify: true,
 	}
@@ -467,7 +469,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 			if request.Method == http.MethodPost && request.URL.Path == browserSessionHandoffPath {
 				recorder := httptest.NewRecorder()
 				recorder.Header().Set("Content-Type", "application/json")
-				_, _ = recorder.WriteString(`{"path":"/auth/session/handoff?code=one-use"}`)
+				_, _ = recorder.WriteString(`{"path":"/auth/apps/preview-handoff?code=one-use"}`)
 				return recorder.Result(), nil
 			}
 			var envelope struct {
