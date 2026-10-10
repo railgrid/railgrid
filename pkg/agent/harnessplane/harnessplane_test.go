@@ -177,7 +177,7 @@ func TestDetectFindsAHarnessInTheRunnerAccountsHome(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	detection := Detect(home)
+	detection, _ := Detect(RunAsAccount{Home: home, UID: os.Getuid(), GID: os.Getgid()})
 	if detection[HarnessClaude] == "" {
 		t.Errorf("Detect did not find the per-user claude install under %s", bin)
 	}

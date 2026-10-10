@@ -41,6 +41,14 @@ spec:
   every harness whose executable it finds on the runner account, re-checked on
   every start and every reconcile, so installing Claude Code on the host later
   is enough to make it available.
+  The executable has to be one the **runner account** can run — every directory
+  on the way searchable by it, the file executable by it. An install made as
+  root lands in `/root/.local/bin`, behind a `/root` nobody else can enter; the
+  agent skips it and the edge's `status.harnesses[]` entry says so in `reasons`
+  (`claude is installed at /root/.local/bin/claude, but the runner account (uid
+  997, gid 983) cannot execute it …`). Install the harness system-wide
+  (`/usr/local/bin`) or as the runner account (`<its home>/.local/bin`, which is
+  searched first).
 - **`none`** runs nothing. This is the opt-out.
 - **`explicit`** offers exactly `spec.harness.enabled`, whether or not anything
   else is installed. A harness named here but not installed is reported
