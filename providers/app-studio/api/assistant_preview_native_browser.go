@@ -1135,7 +1135,7 @@ func (s *Server) callProjectAssistantNativeBrowserSession(
 		entry.previewReady = false
 	}
 	if private && entry.privateBase == "" {
-		if err := s.preparePrivatePreviewBrowserSession(ctx, entry.session, req.Identity, previewURL); err != nil {
+		if err := s.preparePrivatePreviewBrowserSession(ctx, entry.session, req.Identity, req.Project, previewURL); err != nil {
 			return "", err
 		}
 		entry.privateBase = previewURL

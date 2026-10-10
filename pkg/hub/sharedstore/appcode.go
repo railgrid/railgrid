@@ -60,6 +60,7 @@ func (s *AppCodeStore) Store() *Store { return s.store }
 
 // storedCode is the wire form of an authorization code record.
 type storedCode struct {
+	Purpose      string    `json:"purpose,omitempty"`
 	Cluster      string    `json:"cluster"`
 	Group        string    `json:"group"`
 	Resource     string    `json:"resource"`
@@ -68,6 +69,8 @@ type storedCode struct {
 	UserID       string    `json:"userID"`
 	Email        string    `json:"email,omitempty"`
 	DisplayName  string    `json:"displayName,omitempty"`
+	AppExpiresAt time.Time `json:"appExpiresAt,omitempty"`
+	AppScope     string    `json:"appScope,omitempty"`
 	RBACIdentity string    `json:"rbacIdentity,omitempty"`
 	Issuer       string    `json:"issuer,omitempty"`
 	Subject      string    `json:"subject,omitempty"`
@@ -77,6 +80,7 @@ type storedCode struct {
 
 func (s *AppCodeStore) Put(ctx context.Context, code string, record appauth.CodeRecord) error {
 	value, err := json.Marshal(storedCode{
+		Purpose:      record.Purpose,
 		Cluster:      record.Ref.Cluster,
 		Group:        record.Ref.Group,
 		Resource:     record.Ref.Resource,
@@ -85,6 +89,8 @@ func (s *AppCodeStore) Put(ctx context.Context, code string, record appauth.Code
 		UserID:       record.Identity.UserID,
 		Email:        record.Identity.Email,
 		DisplayName:  record.Identity.Name,
+		AppScope:     record.Identity.AppScope,
+		AppExpiresAt: record.Identity.AppExpiresAt,
 		RBACIdentity: record.Identity.RBACIdentity,
 		Issuer:       record.Identity.Issuer,
 		Subject:      record.Identity.Subject,
@@ -112,6 +118,7 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 		return appauth.CodeRecord{}, false
 	}
 	return appauth.CodeRecord{
+		Purpose: stored.Purpose,
 		Ref: appauth.InstanceRef{
 			Cluster:  stored.Cluster,
 			Group:    stored.Group,
@@ -123,6 +130,8 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 			UserID:       stored.UserID,
 			Email:        stored.Email,
 			Name:         stored.DisplayName,
+			AppScope:     stored.AppScope,
+			AppExpiresAt: stored.AppExpiresAt,
 			RBACIdentity: stored.RBACIdentity,
 			Issuer:       stored.Issuer,
 			Subject:      stored.Subject,

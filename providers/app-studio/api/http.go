@@ -201,7 +201,7 @@ func (s *Server) resolveWorkspace(ctx context.Context, id *identity) {
 var errNoWorkspaceLookup = errors.New("workspace lookup unavailable (no provider credential configured or no cluster on the request)")
 
 // setHubCallerHeaders stamps a request to the hub's OWN REST API — the
-// provider catalog, the membership rosters, the browser handoff. Those are
+// provider catalog and the membership rosters. Those are
 // not data-plane verbs and a verb carries no caller credential to forward to
 // them, so they are made as this provider (Server.hubToken) with the
 // kcp-authenticated caller's name and the request's workspace selection as

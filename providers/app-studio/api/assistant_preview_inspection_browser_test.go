@@ -29,6 +29,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 func browserMCPTestEventStreamResponse(request *http.Request) *http.Response {
@@ -608,22 +610,22 @@ func TestPrivatePreviewUnconfiguredHubOriginIsActionableForModelAndFeed(t *testi
 	}
 }
 
-func TestBrowserSessionHandoffURLMintsAsTheProvider(t *testing.T) {
+func TestBrowserSessionHandoffURLMintsAsTheProject(t *testing.T) {
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != browserSessionHandoffPath || r.Header.Get("Authorization") != "Bearer provider-hub-token" || r.Header.Get("X-Railgrid-User") != "alice" {
+		if r.Method != http.MethodPost || r.URL.Path != browserSessionHandoffPath || r.Header.Get("Authorization") != "Bearer project-token" || r.Header.Get("X-Railgrid-User") != "" {
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
 		}
-		_, _ = w.Write([]byte(`{"path":"/auth/session/handoff?code=one-use"}`))
+		_, _ = w.Write([]byte(`{"path":"/auth/apps/preview-handoff?code=one-use"}`))
 	}))
 	defer hub.Close()
-	origin, _ := url.Parse("https://console.example.test")
-	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, hubToken: "provider-hub-token", hubPublicURL: origin.String()}
-	handoff, err := server.browserSessionHandoffURL(context.Background(), identity{user: "alice"}, origin)
+	origin, _ := url.Parse("https://console.example.test/auth/apps/authorize?cluster=workspace-1&group=infrastructure.railgrid.ai&resource=instances&name=demo-dev")
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: hub.URL, hubToken: "provider-hub-token", hubPublicURL: "https://console.example.test", projectIdentityTokenFor: func(context.Context, identity, *aiv1alpha1.Project) (string, error) { return "project-token", nil }}
+	handoff, err := server.browserSessionHandoffURL(context.Background(), identity{user: "alice", clusterID: "workspace-1"}, &aiv1alpha1.Project{}, origin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := handoff, "https://console.example.test/auth/session/handoff?code=one-use"; got != want {
+	if got, want := handoff, "https://console.example.test/auth/apps/preview-handoff?code=one-use"; got != want {
 		t.Fatalf("handoff URL = %q, want %q", got, want)
 	}
 	if strings.Contains(handoff, "provider-hub-token") {

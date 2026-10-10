@@ -673,9 +673,10 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("creating app-access token key source: %w", err)
 			}
 			appAuthCfg := appauth.Config{
-				Sessions:     browserSessionStore,
-				SARClient:    sarFactory,
-				InstanceHost: instanceHost,
+				PreviewIdentity: appauth.NewKCPPreviewIdentityResolver(kcpConfig),
+				Sessions:        browserSessionStore,
+				SARClient:       sarFactory,
+				InstanceHost:    instanceHost,
 				// POST /auth/apps/token authenticates hub bearers with the same
 				// validator that mints browser sessions from a bearer.
 				BearerIdentity:      kcpProxy.BrowserIdentity,

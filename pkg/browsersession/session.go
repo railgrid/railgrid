@@ -73,9 +73,12 @@ var (
 // authorization.  Credentials, ID tokens, refresh tokens, and kubeconfigs
 // are intentionally not representable here.
 type Identity struct {
-	UserID string
-	Email  string
-	Name   string
+	// AppScope confines a workload preview session to one app; never a portal login.
+	AppScope     string
+	AppExpiresAt time.Time
+	UserID       string
+	Email        string
+	Name         string
 	// RBACIdentity is the kcp username this account authenticates as inside
 	// tenant workspaces (User.Spec.RBACIdentity, e.g. "railgrid:<email>"). All
 	// workspace RBAC — admin ClusterRoleBindings and app-access grants — is
@@ -238,6 +241,9 @@ func setCookie(w http.ResponseWriter, value string, maxAge int) {
 
 // IssueHTTP creates a session and writes its secure cookie.
 func (s *Store) IssueHTTP(ctx context.Context, w http.ResponseWriter, identity Identity) (Session, error) {
+	if identity.AppScope != "" {
+		return Session{}, ErrInvalid
+	}
 	value, session, err := s.Issue(ctx, identity)
 	if err != nil {
 		return Session{}, err
@@ -274,7 +280,11 @@ func (s *Store) ResolveRequest(r *http.Request) (Session, error) {
 	if err != nil {
 		return Session{}, ErrNotFound
 	}
-	return s.Resolve(r.Context(), cookie.Value)
+	session, err := s.Resolve(r.Context(), cookie.Value)
+	if session.Identity.AppScope != "" {
+		return Session{}, ErrInvalid
+	}
+	return session, err
 }
 
 // Revoke invalidates a session immediately.  Repeated revocation is
