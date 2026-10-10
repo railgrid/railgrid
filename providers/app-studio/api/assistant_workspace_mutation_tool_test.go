@@ -95,6 +95,36 @@ func TestAssistantRegistryExposesStrictOrdinaryWorkspaceMutationTools(t *testing
 	}
 }
 
+func TestAssistantMutationPathFeedbackPreservesReasonWithoutPath(t *testing.T) {
+	spec, _ := projectAssistantLocalToolRegistry(nil).Spec(projectToolEditFile)
+	for _, tt := range []struct {
+		name, path, want string
+	}{
+		{"empty", "", "requires path"},
+		{"current directory", ".", "cannot be empty"},
+		{"absolute", "/TOP_SECRET_file", "must be relative"},
+		{"traversal", "TOP_SECRET_dir/../file", `cannot contain a ".." segment`},
+		{"reserved", "TOP_SECRET_dir/.git/config", "contains a reserved segment"},
+		{"reserved internal", ".workspace-write-TOP_SECRET_file", "contains a reserved segment"},
+		{"long", strings.Repeat("TOP_SECRET_", workspace.MaxProjectPathBytes), "1024-byte limit"},
+		{"nul", "TOP_SECRET_\x00file", "cannot contain NUL"},
+		{"quoted", "/TOP_SECRET_\" cannot contain NUL", "must be relative"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := projectAssistantValidateGrantBearingToolArguments(spec, map[string]any{
+				"path": tt.path, "oldString": "old", "newString": "new",
+			})
+			if err == nil {
+				t.Fatal("invalid path passed validation")
+			}
+			feedback, ok := projectAssistantLocalMutationArgumentFeedback(spec, err, true)
+			if !ok || !strings.Contains(feedback, tt.want) || strings.Contains(feedback, "TOP_SECRET_") {
+				t.Fatalf("feedback = %q (ok=%t); want reason %q without path contents", feedback, ok, tt.want)
+			}
+		})
+	}
+}
+
 func TestAssistantMutationArgumentFeedbackAndCorrectedRetry(t *testing.T) {
 	spec, ok := projectAssistantLocalToolRegistry(nil).Spec(projectToolEditFile)
 	if !ok {

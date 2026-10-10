@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -2060,10 +2061,24 @@ func projectAssistantLocalMutationArgumentFeedback(spec projectAssistantToolSpec
 
 func projectAssistantLocalMutationArgumentReason(validationErr error) string {
 	message := strings.TrimSpace(validationErr.Error())
-	// CleanProjectPath errors quote the caller's path. Keep those out of model
-	// feedback; the schema-derived fields below still explain the valid shape.
-	if strings.HasPrefix(message, "file path ") {
-		return "workspace path arguments failed server validation"
+	if detail, ok := strings.CutPrefix(message, "file path "); ok {
+		// CleanProjectPath quotes the caller's path. Skip the whole Go-quoted
+		// value (including escaped quotes) and retain only known validation
+		// reasons, never caller-controlled path or reserved-segment text.
+		if quoted, err := strconv.QuotedPrefix(detail); err == nil {
+			detail = strings.TrimSpace(detail[len(quoted):])
+		}
+		switch detail {
+		case "cannot be empty", "must be relative", `cannot contain a ".." segment`, "cannot contain NUL":
+			return "file path " + detail
+		case "is too long":
+			return fmt.Sprintf("file path exceeds the %d-byte limit", workspace.MaxProjectPathBytes)
+		default:
+			if strings.HasPrefix(detail, "contains reserved segment ") {
+				return "file path contains a reserved segment; use a project source path outside dependency, Git, and internal workspace directories"
+			}
+			return "workspace path arguments failed server validation"
+		}
 	}
 	return projectEinoAssistantSafeErrorText(validationErr)
 }

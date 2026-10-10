@@ -311,6 +311,35 @@ func TestProjectIdentityRulesCarryTheDeclaredComposition(t *testing.T) {
 	}
 }
 
+func TestProjectIdentityRulesScopeSelectedTemplateRead(t *testing.T) {
+	p := boundProject()
+	assertTemplateRead := func(project *aiv1alpha1.Project, want string) {
+		t.Helper()
+		rules := projectIdentityRules(project)
+		template, ok := ruleFor(rules, infraAPIGroup, "templates", true)
+		if want == "" {
+			if ok {
+				t.Fatalf("empty or missing template retained a template read: %#v", template)
+			}
+		} else if !ok || verbs(template) != "get" || namesOf(template) != want {
+			t.Fatalf("selected template read = %#v (ok=%v), want get on %s", template, ok, want)
+		}
+		if rule, ok := ruleFor(rules, infraAPIGroup, "templates", false); ok {
+			t.Fatalf("template read is not name-scoped: %#v", rule)
+		}
+	}
+
+	p.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: " \tsimple-webapp\n"}
+	assertTemplateRead(p, "simple-webapp")
+	p.Spec.Template.Name = "other-template"
+	assertTemplateRead(p, "other-template")
+	p.Spec.Template.Name = " \t\n"
+	assertTemplateRead(p, "")
+	p.Spec.Template = nil
+	assertTemplateRead(p, "")
+	assertTemplateRead(nil, "")
+}
+
 // A project with no bindings still reaches the aggregate and can still resolve
 // where its dependencies answer — and nothing else: no rule on a dependency's
 // group at all, named or unnamed. Watching for the objects it is about to
@@ -389,7 +418,7 @@ func TestProjectIdentityRulesScopeProviderReferencesToAuditedActiveActions(t *te
 	}
 }
 
-func TestProjectIdentityTokenIsMintedOnceAndRebuiltWhenBindingsChange(t *testing.T) {
+func TestProjectIdentityTokenIsMintedOnceAndRebuiltWhenRulesChange(t *testing.T) {
 	hub := &fakeIdentityHub{}
 	r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
 	ctx := context.Background()
@@ -411,10 +440,16 @@ func TestProjectIdentityTokenIsMintedOnceAndRebuiltWhenBindingsChange(t *testing
 	if token, err = r.identityToken(ctx, "cluster-a", p); err != nil || token != "token-2" {
 		t.Fatalf("identityToken after rebinding = %q, %v", token, err)
 	}
+	// Adding the selected Template adds its name-scoped read and rebuilds the
+	// cached token source with that new rule set.
+	p.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "simple-webapp"}
+	if token, err = r.identityToken(ctx, "cluster-a", p); err != nil || token != "token-3" {
+		t.Fatalf("identityToken after selecting a template = %q, %v", token, err)
+	}
 
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	if len(hub.posts) != 2 {
+	if len(hub.posts) != 3 {
 		t.Fatalf("mints = %d, want one per distinct rule set", len(hub.posts))
 	}
 	owner, _ := hub.posts[0]["owner"].(map[string]any)
