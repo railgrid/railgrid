@@ -385,6 +385,48 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 }
 
+// providerClaimHint explains the one Forbidden that is never the caller's:
+// App Studio acting as its own service account on another provider's kinds
+// (packages, repository checkouts, …) through a permission claim the
+// workspace's binding has not accepted yet — the symptom after a provider
+// upgrade that added a claim. Telling the user "forbidden" alone sends them
+// to their own RBAC; the fix is on the binding.
+func providerClaimHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "system:serviceaccount:") || !(strings.Contains(msg, "forbidden") || strings.Contains(msg, "cannot ")) {
+		return ""
+	}
+	return " (App Studio's permission claim on that resource is not accepted on this workspace's binding; a workspace admin re-enables App Studio from the Providers page and accepts its access, or an operator re-accepts provider claims)"
+}
+
+// writeUpstreamError maps a failure from a call App Studio made on the
+// caller's behalf to another provider or kcp. Permission, not-found and
+// conflict answers keep their own codes and messages so the caller can act on
+// them; anything else is a 500 with the message. Nothing here is a 502: a
+// gateway status from an application handler is indistinguishable from a
+// dead backend, and front-door proxies replace 502 bodies with their own
+// page, which hides the reason entirely.
+func writeUpstreamError(w http.ResponseWriter, err error) {
+	var validationErr *ValidationError
+	switch {
+	case errors.As(err, &validationErr):
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+	case apierrors.IsForbidden(err):
+		writeStatus(w, http.StatusForbidden, "Forbidden", err.Error()+providerClaimHint(err))
+	case apierrors.IsNotFound(err):
+		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+	case apierrors.IsConflict(err), apierrors.IsAlreadyExists(err):
+		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+	default:
+		writeStatus(w, http.StatusInternalServerError, "UpstreamError", err.Error()+providerClaimHint(err))
+	}
+}
+
 // ValidationError is the sentinel for handler-side input validation failures.
 // writeError translates it into 400. Use newValidationError to construct.
 type ValidationError struct{ Msg string }
