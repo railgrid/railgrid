@@ -100,6 +100,70 @@ func TestMemoryStoreCreateAssistantRunIsAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestAssistantRunsAreUniqueAndIdempotentPerThread(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		new  func(*testing.T) Store
+	}{
+		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "encrypted", new: func(t *testing.T) Store {
+			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return wrapped
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			durable := tt.new(t)
+			scope := testAssistantRunScope()
+			now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+			create := func(id, threadID, requestID string, at time.Time) (AssistantRun, error) {
+				run := testAssistantRun(t, id, requestID, "assistant-"+id, at)
+				run.ThreadID = threadID
+				return durable.CreateAssistantRun(context.Background(), scope,
+					Message{ID: "user-" + id, Role: "user", ActorID: "actor-1", Content: "build", CreatedAt: at, UpdatedAt: at},
+					Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: at, UpdatedAt: at}, run)
+			}
+
+			first, err := create("run-a1", "thread-a", "client-1", now)
+			if err != nil {
+				t.Fatalf("create first thread-a run: %v", err)
+			}
+			second, err := create("run-b1", "thread-b", "client-1", now.Add(time.Second))
+			if err != nil {
+				t.Fatalf("same idempotency key in independent thread: %v", err)
+			}
+			if first.ThreadID != "thread-a" || second.ThreadID != "thread-b" {
+				t.Fatalf("persisted thread IDs = %q, %q", first.ThreadID, second.ThreadID)
+			}
+
+			for threadID, wantID := range map[string]string{"thread-a": first.ID, "thread-b": second.ID} {
+				found, findErr := durable.FindAssistantRunByThreadClientRequestID(context.Background(), scope, threadID, "client-1")
+				if findErr != nil || found.ID != wantID {
+					t.Fatalf("find client-1 in %s = %#v, %v; want %s", threadID, found, findErr, wantID)
+				}
+			}
+			active, err := durable.ListActiveAssistantRuns(context.Background(), scope)
+			if err != nil || len(active) != 2 {
+				t.Fatalf("active runs = %#v, %v; want both threads", active, err)
+			}
+
+			if _, err := create("run-a2", "thread-a", "client-2", now.Add(2*time.Second)); !errors.Is(err, ErrAssistantRunConflict) {
+				t.Fatalf("second active run on thread-a error = %v, want conflict", err)
+			}
+			replayed, err := create("run-a-replay", "thread-a", "client-1", now.Add(3*time.Second))
+			if err != nil || replayed.ID != first.ID {
+				t.Fatalf("thread-a idempotent replay = %#v, %v; want %s", replayed, err, first.ID)
+			}
+			active, err = durable.ListActiveAssistantRuns(context.Background(), scope)
+			if err != nil || len(active) != 2 {
+				t.Fatalf("replay changed active run set = %#v, %v", active, err)
+			}
+		})
+	}
+}
+
 func TestMemoryStoreCreateAssistantRunRejectsRunIDReuseWithDifferentClientRequest(t *testing.T) {
 	store := mustDurableAssistantRunStore(t, NewMemoryStore())
 	scope := testAssistantRunScope()

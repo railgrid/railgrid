@@ -20,6 +20,17 @@ spec:
         description: IntegrationActionsRequest is the payload of the "integration-actions"
           custom subresource on projects.
         properties:
+          action:
+            description: |-
+              Action is the action name from the provider catalog. Its version is
+              carried separately in ActionVersion; neither value is a URL path segment.
+            minLength: 1
+            type: string
+          actionVersion:
+            description: |-
+              ActionVersion pins the catalog version of Action. The handler also accepts
+              Version as a compatibility alias when ActionVersion is omitted.
+            type: string
           apiVersion:
             description: |-
               APIVersion defines the versioned schema of this representation of an object.
@@ -45,6 +56,11 @@ spec:
             description: Result is the response's "result" member.
             type: object
             x-kubernetes-preserve-unknown-fields: true
+          version:
+            description: Version is a compatibility alias for ActionVersion.
+            type: string
+        required:
+        - action
         type: object
     served: true
     storage: true

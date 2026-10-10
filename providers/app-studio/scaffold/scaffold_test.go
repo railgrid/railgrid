@@ -11,6 +11,14 @@ You may obtain a copy of the License at
 package scaffold
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -33,6 +41,61 @@ func TestArchiveURLsGitHub(t *testing.T) {
 		if urls[i] != want[i] {
 			t.Fatalf("urls[%d] = %q, want %q", i, urls[i], want[i])
 		}
+	}
+}
+
+func TestFetchKeepsTotalContentWithinTransactionBound(t *testing.T) {
+	type archiveFile struct {
+		name string
+		data []byte
+	}
+	files := make([]archiveFile, 0, 10)
+	for index := range 7 {
+		files = append(files, archiveFile{name: fmt.Sprintf("starter-main/web/file-%d.txt", index), data: []byte(strings.Repeat("x", maxFileBytes))})
+	}
+	files = append(files,
+		archiveFile{name: "starter-main/web/partial.txt", data: []byte(strings.Repeat("p", maxFileBytes/2))},
+		archiveFile{name: "starter-main/web/overflow.txt", data: []byte(strings.Repeat("o", maxFileBytes))},
+		archiveFile{name: "starter-main/web/fits.txt", data: []byte("fits in remaining budget")},
+	)
+	var archive bytes.Buffer
+	compressed := gzip.NewWriter(&archive)
+	writer := tar.NewWriter(compressed)
+	for _, file := range files {
+		if err := writer.WriteHeader(&tar.Header{Name: file.name, Mode: 0o644, Size: int64(len(file.data)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(file.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archiveBytes := append([]byte(nil), archive.Bytes()...)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(archiveBytes)
+	}))
+	defer server.Close()
+
+	got, err := Fetch(context.Background(), server.URL+"/team/starter", "main")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	paths := make(map[string]bool, len(got))
+	total := 0
+	for _, file := range got {
+		paths[file.Path] = true
+		total += len(file.Content)
+	}
+	if total > maxTotalBytes {
+		t.Fatalf("fetched content totals %d bytes, exceeds transaction bound %d", total, maxTotalBytes)
+	}
+	if paths["web/overflow.txt"] || !paths["web/fits.txt"] {
+		t.Fatalf("archive budget paths = %v; oversized file must be skipped and a later fitting file retained", paths)
 	}
 }
 

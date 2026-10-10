@@ -57,9 +57,9 @@ func projectAssistantRequireMutationRead(ctx context.Context, req projectAssista
 	return projectAssistantResolveMutationVersionWithOptions(ctx, req, workspaces, rawPath, true, false, expectedVersions...)
 }
 
-// projectAssistantRequireMutationReadAllowBinary is used only by move_file and
-// delete_file. A binary read has no source text to show, but its exact version
-// and path metadata can still identify the object for those operations.
+// projectAssistantRequireMutationReadAllowBinary is used by binary placement,
+// move_file, and delete_file. A binary read has no source text to show, but
+// its exact version and path metadata can still identify the object safely.
 func projectAssistantRequireMutationReadAllowBinary(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) (string, error) {
 	return projectAssistantResolveMutationVersionWithOptions(ctx, req, workspaces, rawPath, true, true, expectedVersions...)
 }
@@ -426,9 +426,9 @@ func projectAssistantValidateWorkspaceMutationArguments(toolName string, args ma
 	case projectToolMoveFile:
 		allowed = map[string]struct{}{"sourcePath": {}, "destinationPath": {}, "expectedVersion": {}, "recoveryOf": {}}
 	case projectToolImportAttachment:
-		allowed = map[string]struct{}{"attachmentID": {}, "path": {}, "overwrite": {}, "recoveryOf": {}}
+		allowed = map[string]struct{}{"attachmentID": {}, "path": {}, "overwrite": {}, "expectedVersion": {}, "recoveryOf": {}}
 	case projectToolDownloadFile:
-		allowed = map[string]struct{}{"url": {}, "path": {}, "overwrite": {}, "recoveryOf": {}}
+		allowed = map[string]struct{}{"url": {}, "path": {}, "overwrite": {}, "expectedVersion": {}, "recoveryOf": {}}
 	default:
 		return fmt.Errorf("tool %q cannot use workspace mutation arguments", toolName)
 	}
@@ -508,9 +508,23 @@ func projectAssistantValidateBinaryPlacementArguments(toolName string, args map[
 		return fmt.Errorf("%s %s is too long", toolName, source)
 	}
 	if raw, ok := args["overwrite"]; ok {
-		if _, isBool := raw.(bool); !isBool {
+		overwrite, isBool := raw.(bool)
+		if !isBool {
 			return fmt.Errorf("%s overwrite must be boolean", toolName)
 		}
+		if overwrite {
+			expectedVersion, ok := projectToolRawString(args["expectedVersion"])
+			if !ok || strings.TrimSpace(expectedVersion) == "" {
+				return fmt.Errorf("%s overwrite=true requires expectedVersion from a complete read_file result", toolName)
+			}
+			if len([]byte(expectedVersion)) > workspace.MaxFileVersionBytes {
+				return fmt.Errorf("%s expectedVersion is too large", toolName)
+			}
+		} else if _, supplied := args["expectedVersion"]; supplied {
+			return fmt.Errorf("%s expectedVersion is only valid when overwrite=true", toolName)
+		}
+	} else if _, supplied := args["expectedVersion"]; supplied {
+		return fmt.Errorf("%s expectedVersion requires overwrite=true", toolName)
 	}
 	return nil
 }

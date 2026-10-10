@@ -450,7 +450,7 @@ func (c projectAssistantDataPlaneSandboxClient) workspaceRead(ctx context.Contex
 		return projectAssistantSandboxWorkspaceResponse{}, err
 	}
 	if status == http.StatusNotFound || len(files) == 0 {
-		return projectAssistantSandboxWorkspaceResponse{}, fmt.Errorf("sandbox workspace file %q was not found", clean)
+		return projectAssistantSandboxWorkspaceResponse{}, &workspace.MutationError{Code: workspace.MutationErrorTargetNotFound, Path: clean, ChangedFiles: []string{clean}, Message: "sandbox workspace file was not found"}
 	}
 	file, ok := files[clean]
 	if !ok {

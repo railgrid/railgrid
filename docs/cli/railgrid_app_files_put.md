@@ -17,9 +17,10 @@ railgrid app files put <name> <path> [local-file] [flags]
 ### Options
 
 ```
-      --create-only     Fail (412) when the file already exists
-  -h, --help            help for put
-  -o, --output string   Output format: json
+      --create-only               Create only (the default); fail when the file already exists
+      --expected-version string   Replace only the exact file version returned by files get
+  -h, --help                      help for put
+  -o, --output string             Output format: json
 ```
 
 ### Options inherited from parent commands

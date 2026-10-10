@@ -25,6 +25,12 @@ func (s *Server) restartProjectDevelopment(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	release, err := s.acquireProjectRuntimeOperation(r.Context(), projectWorkspaceScope(id, p))
+	if err != nil {
+		writeRuntimeTargetError(w, err)
+		return
+	}
+	defer release()
 	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())

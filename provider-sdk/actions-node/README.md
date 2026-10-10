@@ -1,28 +1,33 @@
 # `@crwilhit/railgrid-actions-node`
 
-`@crwilhit/railgrid-actions-node` is the published server-only SDK artifact for
-generated App Studio applications. Consumers intentionally install it under
-the stable `@railgrid/actions-node` import name with this exact npm alias:
+This server-only SDK invokes an App Studio Project's saved integration through
+the project's cluster-qualified kcp subresource. Generated applications import
+the stable consumer name, `@railgrid/actions-node`. Version 0.2.0 is currently
+available as a locally packed tarball; public npm publication is pending. Atlas
+uses the reviewed tarball at `api/vendor/railgrid-actions-node-0.2.0.tgz` with
+`"@railgrid/actions-node": "file:vendor/railgrid-actions-node-0.2.0.tgz"`.
+After registry publication, consumers can use this npm alias:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.1.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"
   }
 }
 ```
 
-The package invokes a project integration through App Studio's authenticated
-gateway; the gateway selects the provider and bound resource:
+App Studio injects `RAILGRID_ACTIONS_BASE_URL` from trusted Project context. It
+has the form
+`https://<hub>/clusters/<cluster>/apis/ai.railgrid.ai/v1alpha1/projects/<project>/integration-actions`.
+The SDK appends only the saved integration alias; it does not accept a provider
+URL, resource reference, tenant scope, or backend topology.
 
 ```js
 import { createActionsClient } from '@railgrid/actions-node';
 
 const railgrid = createActionsClient({
   baseURL: process.env.RAILGRID_ACTIONS_BASE_URL,
-  project: process.env.RAILGRID_PROJECT,
-  // The coordinator atomically refreshes this file; the SDK reads it for
-  // every request so an in-flight workload never needs the bootstrap token.
+  // App Studio atomically refreshes this short-lived workload credential.
   tokenFile: process.env.RAILGRID_ACTIONS_TOKEN_FILE,
 });
 
@@ -32,56 +37,46 @@ const rows = await railgrid.integration('sales').invoke('query_table/v1', {
 });
 ```
 
-The credential is sent only by the server-side process. Do not import this
-module into browser code, expose its token through client-side configuration,
-or pass provider URLs, credentials, resource references, or other topology in
-action input. The SDK throws when `window` or `document` is present as a
-defense against accidental browser bundling.
+The SDK sends `POST .../integration-actions/<alias>` with
+`{ action, actionVersion, input }`. The integration alias selects the saved
+Project binding. The App Studio handler checks the non-revoked action grant,
+rechecks its schema digest against the live catalog, authorizes the caller, and
+then forwards the action through the provider's kcp custom subresource. The
+provider URL and resource reference never come from application input.
 
-## Installation and development sandboxes
+The credential coordinator reports whether the short-lived workload credential
+was issued and remains unexpired. That alone does not prove the saved
+integration is reachable or authorized. A successful `invoke` verifies the
+whole route; an `ActionsClientError.failureKind` distinguishes `route`,
+`authentication`, `authorization`, `contract`, `upstream`, `network`,
+`credentials`, and local `configuration` failures.
 
-The published artifact is installed through the exact alias shown above. Keep
-the alias in the server component's `package.json` and keep application code on
-the stable consumer import:
+Never import the module into browser code, expose its token through
+client-side configuration, or pass provider URLs, credentials, resource
+references, or other topology in action input. The SDK throws when `window` or
+`document` is present as a defense against accidental browser bundling.
 
-```js
-import { createActionsClient } from '@railgrid/actions-node';
-```
+## Credentials and retries
 
-App Studio development sandboxes use the component toolchain's normal package
-installation and reload flow. The platform-owned `railgrid-dev-agent` supplies
-the coordinator, runtime supervisor, and executor only; it does not copy,
-validate, or mount this SDK. This keeps dependency resolution explicit in the
-application's manifest and makes development and production use the same
-published artifact. The SDK remains server-only and the app still receives
-only the short-lived workload credential and non-secret action context.
-
-Use an atomically refreshed token file (the default when
-`RAILGRID_ACTIONS_TOKEN_FILE` is set), a static workload token, or a refreshable credential provider. A provider is
-called with `{ forceRefresh, signal }` and is called again with
-`forceRefresh: true` after a single HTTP 401:
+Use an atomically refreshed token file, a static workload token, or a
+refreshable credential provider. A provider is called with
+`{ forceRefresh, signal }` and is called again with `forceRefresh: true` after
+one HTTP 401:
 
 ```js
 const railgrid = createActionsClient({
-  baseURL: process.env.RAILGRID_APP_STUDIO_URL,
-  project: process.env.RAILGRID_PROJECT,
+  baseURL: process.env.RAILGRID_ACTIONS_BASE_URL,
   getToken: ({ forceRefresh }) => tokenStore.get({ forceRefresh }),
 });
 ```
 
-When `tokenFile` is omitted, the SDK reads `RAILGRID_ACTIONS_TOKEN_FILE` on every
-request. This is the shared, read-only application token published by the
-development coordinator. Never point it at the coordinator-only projected
-bootstrap token path.
+When `tokenFile` is omitted, the SDK reads `RAILGRID_ACTIONS_TOKEN_FILE` on
+every request. Do not point it at the coordinator-only bootstrap token.
+`baseURL` also defaults to `RAILGRID_ACTIONS_BASE_URL`. Org, workspace, and
+project options are intentionally absent: the trusted URL is already scoped to
+the current Project and the bearer is the authority.
 
-`baseURL`, `project`, `org`, and `workspace` default to
-`RAILGRID_ACTIONS_BASE_URL`, `RAILGRID_PROJECT`, `RAILGRID_ACTIONS_ORG`, and
-`RAILGRID_ACTIONS_WORKSPACE`. The latter two are sent as `X-Railgrid-Org` and
-`X-Railgrid-Workspace` headers. The base URL must be absolute HTTPS; tests may
-explicitly set `allowInsecureLoopback: true` for an HTTP loopback URL.
-
-Every request can carry retry and tracing metadata. `timeoutMs` aborts the
-request locally; `signal` can be used by the enclosing server request:
+Requests can carry cancellation, timeout, idempotency, and tracing metadata:
 
 ```js
 const value = await railgrid.integration('sales').invoke('lookup/v1', { key: 'order-1' }, {
@@ -93,27 +88,37 @@ const value = await railgrid.integration('sales').invoke('lookup/v1', { key: 'or
 });
 ```
 
-The successful return value is `result`. `invokeEnvelope` returns the complete
+`invoke` returns the action result. `invokeEnvelope` returns the validated
 stable envelope (`requestID`, provider, action/version, bound `resourceRef`,
-and `result`). A provider failure throws `ProviderActionError` with stable
-`code`, `message`, `retryable`, request and binding metadata. Transport and
-configuration failures throw `ActionsClientError` with a machine-readable
-`code` such as `timeout`, `aborted`, `network_error`, or `invalid_response`.
+and result). A provider failure throws `ProviderActionError` with its stable
+code, message, retryability, and binding metadata. Transport and configuration
+failures throw `ActionsClientError` with a machine-readable `code`, HTTP status,
+and `failureKind`.
+
+## Development sandboxes
+
+The server component's manifest owns this dependency, so development and
+production use the same declared package source. Atlas currently uses the
+reviewed local tarball while registry publication is pending. Infrastructure
+installs the declared dependency through the normal package install and reload
+flow; the platform-owned `railgrid-dev-agent` supplies the coordinator and
+runtime supervisor only. It does not copy, validate, or mount this SDK.
+
+When adding the SDK to an existing customized application, App Studio must
+show the exact package manifest change for review before applying it. It must
+not silently edit or replace an existing `package.json`.
 
 ## Release
 
-The GitHub Actions workflow `actions-node-release.yaml` publishes this package
-from tags named `actions-node/v<version>`. The tag version must exactly match
-`package.json`. The npm package must configure that workflow as a trusted
-publisher; no long-lived npm token is stored in the repository.
+The GitHub Actions workflow publishes from tags named
+`actions-node/v<version>`. The tag must exactly match `package.json`. The npm
+package configures that workflow as a trusted publisher; no long-lived npm
+token is stored in the repository. The workflow runs the unit suite, installs
+the packed artifact in a clean consumer under the public alias, publishes with
+provenance, and verifies the registry alias install.
 
 The first public version is the bootstrap exception: npm cannot attach a
 trusted publisher until the package exists. A maintainer must authenticate with
-npm and publish that first version from the reviewed package directory. Then
-configure `railgrid/railgrid` and `actions-node-release.yaml` as the package's npm
+npm and publish that first version from the reviewed package directory, then
+configure `railgrid/railgrid` and `actions-node-release.yaml` as the package's
 trusted publisher before creating subsequent release tags.
-
-Before publishing, the workflow runs the unit suite and installs the packed
-artifact into a clean consumer under the public `@railgrid/actions-node` alias.
-After publishing, it repeats that alias install from the npm registry so a
-successful release proves the exact generated-app dependency contract.

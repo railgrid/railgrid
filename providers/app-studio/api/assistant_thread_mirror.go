@@ -212,7 +212,7 @@ func (s *Server) mirrorAssistantRunIntoThread(scope store.Scope, threadID string
 	if state.terminalEvent {
 		return
 	}
-	updates, unsubscribe, err := s.projectAssistantSupervisor().Subscribe(scope, run.ID, 0)
+	updates, unsubscribe, err := s.projectAssistantSupervisor().Subscribe(scope, run.ID, 0, threadID)
 	if err != nil {
 		if errors.Is(err, store.ErrAssistantRunNotFound) {
 			// A very fast worker can terminalize and be removed from the

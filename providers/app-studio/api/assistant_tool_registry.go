@@ -195,7 +195,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:         projectToolReadFile,
-				Description:  "Read one bounded project-relative file. UTF-8 source is shown literally in a collision-safe fence, not as a JSON content string; preserve every backslash, quote, newline, and character exactly when copying into edit_file. Tool arguments are decoded from JSON once. The 10,000-byte model-output limit may clip a read; clipped/ranged results do not authorize whole-file mutations. Whole-file replacement, deletion, or move requires complete text source to remain visible in an earlier model response; a complete binary read also allows delete/move by exact version, but not replacement. For a large-file change, use edit_file with an exact literal oldString/newString match instead of rereading the whole file.",
+				Description:  "Read one bounded project-relative file. UTF-8 source is shown literally in a collision-safe fence, not as a JSON content string; preserve every backslash, quote, newline, and character exactly when copying into edit_file. Tool arguments are decoded from JSON once. The 10,000-byte model-output limit may clip a read; clipped/ranged results do not authorize whole-file mutations. Whole-file replacement, deletion, or move requires complete text source to remain visible in an earlier model response; a complete binary read also allows delete/move by exact version, but not replacement. After a shared-file conflict, an authoritative reread may include conflictProposal; it is an unapplied suggestion. Review it and explicitly reapply any desired changes. For a large-file change, use edit_file with an exact literal oldString/newString match instead of rereading the whole file.",
 				Parameters:   json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"file_path":{"type":"string","minLength":1,"maxLength":%d},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":2000}},"required":["file_path"],"additionalProperties":false}`, workspace.MaxProjectPathBytes)),
 				Risk:         projectAssistantToolRiskRead,
 				ParallelSafe: true,
@@ -680,17 +680,7 @@ func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStor
 	if err != nil {
 		return "", err
 	}
-	result := struct {
-		Path      string `json:"path"`
-		Content   string `json:"content"`
-		Size      int64  `json:"size"`
-		Version   string `json:"version,omitempty"`
-		Complete  bool   `json:"complete"`
-		Truncated bool   `json:"truncated,omitempty"`
-		Binary    bool   `json:"binary,omitempty"`
-		Offset    int    `json:"offset"`
-		Limit     int    `json:"limit"`
-	}{Path: file.Path, Size: file.Size, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
+	result := projectAssistantReadFileSourceResult{Path: file.Path, Size: file.Size, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
 	if !file.Binary {
 		lines := strings.Split(file.Content, "\n")
 		start := offset - 1
@@ -733,21 +723,17 @@ func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projec
 	if limit > 2000 {
 		limit = 2000
 	}
-	file, err := sandbox.read(ctx, rawPath)
+	file, conflictProposal, err := sandbox.readWithConflictProposal(ctx, rawPath)
 	if err != nil {
 		return "", err
 	}
-	result := struct {
-		Path      string `json:"path"`
-		Content   string `json:"content"`
-		Size      int64  `json:"size"`
-		Version   string `json:"version,omitempty"`
-		Complete  bool   `json:"complete"`
-		Truncated bool   `json:"truncated,omitempty"`
-		Binary    bool   `json:"binary,omitempty"`
-		Offset    int    `json:"offset"`
-		Limit     int    `json:"limit"`
-	}{Path: file.Path, Size: file.Size, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
+	result := projectAssistantReadFileSourceResult{
+		Path: file.Path, Size: file.Size, Truncated: file.Truncated, Binary: file.Binary,
+		Offset: offset, Limit: limit, ConflictProposal: conflictProposal,
+	}
+	if conflictProposal != nil && file.Version == "" && file.Size == 0 && file.Content == "" {
+		result.Missing = true
+	}
 	if !file.Binary {
 		lines := strings.Split(file.Content, "\n")
 		start := offset - 1
@@ -758,7 +744,7 @@ func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projec
 			}
 			result.Content = strings.Join(lines[start:end], "\n")
 		}
-		result.Complete = !file.Truncated && offset == 1 && limit >= len(lines)
+		result.Complete = !file.Truncated && file.Version != "" && offset == 1 && limit >= len(lines)
 	} else {
 		// A binary read intentionally omits content, but a complete versioned
 		// receipt still identifies the object for move_file and delete_file.
@@ -771,6 +757,20 @@ func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projec
 		req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)
 	}
 	return projectAssistantSourceReadResult(result)
+}
+
+type projectAssistantReadFileSourceResult struct {
+	Path             string                                   `json:"path"`
+	Content          string                                   `json:"content"`
+	Size             int64                                    `json:"size"`
+	Version          string                                   `json:"version,omitempty"`
+	Complete         bool                                     `json:"complete"`
+	Truncated        bool                                     `json:"truncated,omitempty"`
+	Binary           bool                                     `json:"binary,omitempty"`
+	Offset           int                                      `json:"offset"`
+	Limit            int                                      `json:"limit"`
+	Missing          bool                                     `json:"missing,omitempty"`
+	ConflictProposal *projectAssistantSandboxConflictProposal `json:"conflictProposal,omitempty"`
 }
 
 // Source reads are JSON text for the model, not JSON embedded in HTML. Keep

@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises';
 /**
  * Server-side App Studio Provider Actions client.
  *
- * The SDK only talks to the App Studio gateway. It never accepts a provider
- * URL, provider credential, or backend topology and must remain in a server
- * process because the caller credential is sent in the Authorization header.
+ * The SDK calls App Studio's project-scoped kcp custom subresource. The base
+ * URL is injected by App Studio and contains the tenant cluster and Project;
+ * the SDK only appends an integration alias. It never accepts a provider URL
+ * or backend topology and must remain server-side because it sends a bearer.
  */
 
 export class ActionsClientError extends Error {
@@ -18,6 +19,7 @@ export class ActionsClientError extends Error {
     this.provider = String(options.provider ?? '');
     this.action = String(options.action ?? '');
     this.actionVersion = String(options.actionVersion ?? '');
+    this.failureKind = String(options.failureKind ?? failureKindForCode(this.code));
     this.resourceRef = options.resourceRef;
     this.retryable = options.retryable === true;
     this.body = options.body;
@@ -58,6 +60,13 @@ function isLoopbackHost(hostname) {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
 }
 
+function isDNS1123Subdomain(name) {
+  const value = String(name ?? '');
+  if (value.length === 0 || value.length > 253) return false;
+  return value.split('.').every((label) =>
+    label.length <= 63 && /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(label));
+}
+
 function validateBaseURL(raw, allowInsecureLoopback) {
   const value = String(raw ?? '').trim();
   if (!value) throw new ActionsClientError('baseURL is required', { code: 'invalid_config' });
@@ -70,13 +79,52 @@ function validateBaseURL(raw, allowInsecureLoopback) {
   if (!parsed.host || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new ActionsClientError('baseURL must be an absolute HTTPS URL', { code: 'invalid_config' });
   }
-  if (parsed.protocol === 'https:') return value;
-  if (parsed.protocol === 'http:' && allowInsecureLoopback === true && isLoopbackHost(parsed.hostname)) return value;
-  throw new ActionsClientError('baseURL must use HTTPS (or explicitly allow HTTP loopback for local tests)', { code: 'invalid_config' });
+  const basePath = parsed.pathname.replace(/\/$/, '');
+  const segments = basePath.split('/').filter(Boolean);
+  const expectedPath = segments.length === 8
+    ? `/clusters/${segments[1]}/apis/ai.railgrid.ai/v1alpha1/projects/${segments[6]}/integration-actions`
+    : '';
+  if (
+    segments.length !== 8 ||
+    segments[0] !== 'clusters' ||
+    !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(segments[1]) ||
+    segments[2] !== 'apis' ||
+    segments[3] !== 'ai.railgrid.ai' ||
+    segments[4] !== 'v1alpha1' ||
+    segments[5] !== 'projects' ||
+    !isDNS1123Subdomain(segments[6]) ||
+    segments[7] !== 'integration-actions' ||
+    basePath !== expectedPath
+  ) {
+    throw new ActionsClientError(
+      'baseURL must be the App Studio project integration-actions endpoint under a cluster-qualified kcp path',
+      { code: 'invalid_config', failureKind: 'configuration' },
+    );
+  }
+  if (parsed.protocol === 'https:') return `${parsed.origin}${basePath}`;
+  if (parsed.protocol === 'http:' && allowInsecureLoopback === true && isLoopbackHost(parsed.hostname)) return `${parsed.origin}${basePath}`;
+  throw new ActionsClientError('baseURL must use HTTPS (or explicitly allow HTTP loopback for local tests)', { code: 'invalid_config', failureKind: 'configuration' });
 }
 
-function actionPath(project, alias) {
-  return `/api/projects/${encodeURIComponent(project)}/integrations/${encodeURIComponent(alias)}/invoke`;
+function actionPath(alias) {
+  return `/${encodeURIComponent(alias)}`;
+}
+
+function parseActionID(action) {
+  const slash = action.indexOf('/');
+  if (slash <= 0 || slash !== action.lastIndexOf('/') || slash === action.length - 1) {
+    throw new ActionsClientError('action must use the name/version form', {
+      code: 'invalid_request', failureKind: 'configuration', action,
+    });
+  }
+  const name = action.slice(0, slash).trim();
+  const version = action.slice(slash + 1).trim();
+  if (!/^[A-Za-z0-9_-]{1,63}$/.test(name) || !/^[A-Za-z0-9_-]{1,63}$/.test(version)) {
+    throw new ActionsClientError('action name and version must be identifiers', {
+      code: 'invalid_request', failureKind: 'configuration', action,
+    });
+  }
+  return { name, version };
 }
 
 function isFunction(value) {
@@ -165,10 +213,6 @@ function requestHeaderOptions(clientOptions, requestOptions) {
   if (requestID !== undefined) headers['X-Request-ID'] = String(requestID);
   const deadline = options.actionDeadlineMs ?? options.deadlineMs;
   if (deadline !== undefined) headers['X-Railgrid-Action-Deadline-Ms'] = String(deadline);
-  const org = options.org ?? options.organization ?? process.env.RAILGRID_ACTIONS_ORG;
-  if (org !== undefined && String(org).trim() !== '') headers['X-Railgrid-Org'] = String(org).trim();
-  const workspace = options.workspace ?? process.env.RAILGRID_ACTIONS_WORKSPACE;
-  if (workspace !== undefined && String(workspace).trim() !== '') headers['X-Railgrid-Workspace'] = String(workspace).trim();
   return { options, headers };
 }
 
@@ -265,14 +309,49 @@ function errorFromEnvelope(envelope, status, body) {
     actionVersion: envelope.actionVersion,
     resourceRef: envelope.resourceRef,
     retryable: envelope.error.retryable,
+    failureKind: failureKindForStatus(status) ?? 'upstream',
     body,
   });
 }
 
+function failureKindForCode(code) {
+  if (['invalid_config', 'invalid_request', 'server_only'].includes(code)) return 'configuration';
+  if (String(code).startsWith('credential_')) return 'credentials';
+  if (code === 'route_not_found') return 'route';
+  if (code === 'authentication_failed') return 'authentication';
+  if (code === 'authorization_failed') return 'authorization';
+  if (code === 'action_contract_changed') return 'contract';
+  if (code === 'upstream_failed') return 'upstream';
+  if (['network_error', 'timeout', 'aborted'].includes(code)) return 'network';
+  return 'request';
+}
+
+function failureKindForStatus(status) {
+  if (status === 401) return 'authentication';
+  if (status === 403) return 'authorization';
+  if (status === 404) return 'route';
+  if (status === 409) return 'contract';
+  if (status >= 500) return 'upstream';
+  return undefined;
+}
+
 function httpError(status, body) {
-  const message = body && typeof body === 'object' ? String(body.message ?? body.error ?? '') : '';
+  const message = body && typeof body === 'object' ? String(body.message ?? body.error ?? body.reason ?? '') : '';
+  let failureKind = failureKindForStatus(status) ?? 'request';
+  let code = 'provider_action_http_error';
+  if (failureKind === 'authentication') {
+    code = 'authentication_failed';
+  } else if (failureKind === 'authorization') {
+    code = 'authorization_failed';
+  } else if (failureKind === 'route') {
+    code = 'route_not_found';
+  } else if (failureKind === 'upstream') {
+    code = 'upstream_failed';
+  } else if (failureKind === 'contract') {
+    code = 'action_contract_changed';
+  }
   return new ActionsClientError(message || `provider action failed with HTTP ${status}`, {
-    code: 'provider_action_http_error', status, body, retryable: status >= 500,
+    code, status, body, retryable: status >= 500, failureKind,
   });
 }
 
@@ -283,24 +362,21 @@ export class ActionsClient {
       options.baseURL ?? options.baseUrl ?? process.env.RAILGRID_ACTIONS_BASE_URL,
       options.allowInsecureLoopback === true,
     );
-    this.project = String(options.project ?? process.env.RAILGRID_PROJECT ?? '').trim();
-    if (!this.project) throw new ActionsClientError('project is required', { code: 'invalid_config' });
     this.fetch = options.fetch ?? globalThis.fetch;
     if (typeof this.fetch !== 'function') throw new ActionsClientError('fetch is required', { code: 'invalid_config' });
-    this.org = String(options.org ?? options.organization ?? process.env.RAILGRID_ACTIONS_ORG ?? '').trim();
-    this.workspace = String(options.workspace ?? process.env.RAILGRID_ACTIONS_WORKSPACE ?? '').trim();
     this.options = {
       ...options,
       baseURL: this.baseURL,
-      project: this.project,
-      org: this.org,
-      workspace: this.workspace,
     };
   }
 
   integration(alias) {
     const name = String(alias ?? '').trim();
-    if (!name) throw new ActionsClientError('integration alias is required', { code: 'invalid_request' });
+    if (!/^[A-Za-z0-9_-]{1,63}$/.test(name)) {
+      throw new ActionsClientError('integration alias must be a 1-63 character identifier', {
+        code: 'invalid_request', failureKind: 'configuration',
+      });
+    }
     return {
       invoke: (action, input = {}, requestOptions = {}) => this.invoke(name, action, input, requestOptions),
       invokeEnvelope: (action, input = {}, requestOptions = {}) => this.invokeEnvelope(name, action, input, requestOptions),
@@ -315,9 +391,14 @@ export class ActionsClient {
   async invokeEnvelope(alias, action, input = {}, requestOptions = {}) {
     assertServerOnly();
     const integration = String(alias ?? '').trim();
-    if (!integration) throw new ActionsClientError('integration alias is required', { code: 'invalid_request' });
+    if (!/^[A-Za-z0-9_-]{1,63}$/.test(integration)) {
+      throw new ActionsClientError('integration alias must be a 1-63 character identifier', {
+        code: 'invalid_request', failureKind: 'configuration',
+      });
+    }
     const actionName = String(action ?? '').trim();
-    if (!actionName) throw new ActionsClientError('action is required', { code: 'invalid_request' });
+    if (!actionName) throw new ActionsClientError('action is required', { code: 'invalid_request', failureKind: 'configuration' });
+    const parsedAction = parseActionID(actionName);
     if (input === undefined || input === null) input = {};
     if (typeof input !== 'object') {
       throw new ActionsClientError('action input must be an object, array, or null', { code: 'invalid_request' });
@@ -326,7 +407,7 @@ export class ActionsClient {
     const { options, headers: customHeaders } = requestHeaderOptions(this.options, requestOptions);
     const timeoutMs = numberOption(options.timeoutMs, undefined);
     const { signal, cleanup, timedOut } = composeSignal(options.signal, timeoutMs);
-    const path = actionPath(this.project, integration);
+    const path = actionPath(integration);
     let token;
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -343,7 +424,7 @@ export class ActionsClient {
           response = await this.fetch(joinURL(this.baseURL, path), {
             method: 'POST',
             headers,
-            body: JSON.stringify({ action: actionName, input }),
+            body: JSON.stringify({ action: parsedAction.name, actionVersion: parsedAction.version, input }),
             signal,
             redirect: 'error',
           });

@@ -70,10 +70,11 @@ const (
 // MutationError is a bounded, safe error returned by ordinary file
 // operations. Details never include file contents.
 type MutationError struct {
-	Code        MutationErrorCode `json:"code"`
-	Path        string            `json:"path,omitempty"`
-	Occurrences int               `json:"occurrences,omitempty"`
-	Message     string            `json:"message"`
+	Code         MutationErrorCode `json:"code"`
+	Path         string            `json:"path,omitempty"`
+	Occurrences  int               `json:"occurrences,omitempty"`
+	Message      string            `json:"message"`
+	ChangedFiles []string          `json:"changedFiles,omitempty"`
 }
 
 func (e *MutationError) Error() string {
@@ -87,7 +88,14 @@ func (e *MutationError) Error() string {
 }
 
 func newMutationError(code MutationErrorCode, path, message string) *MutationError {
-	return &MutationError{Code: code, Path: path, Message: message}
+	e := &MutationError{Code: code, Path: path, Message: message}
+	switch code {
+	case MutationErrorStale, MutationErrorConflict, MutationErrorTargetExists, MutationErrorTargetNotFound:
+		if path != "" {
+			e.ChangedFiles = []string{path}
+		}
+	}
+	return e
 }
 
 // EditTextNotFoundError classifies an exact-match failure against the source

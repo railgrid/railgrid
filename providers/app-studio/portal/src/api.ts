@@ -141,8 +141,8 @@ function projectURL(ctx: RailgridContext | null, name: string, verb: string, ...
 }
 
 // sessionURL addresses a verb on one assistant conversation. The Session is
-// named after the thread, and the provider reads the project off it — which is
-// why no project travels here any more.
+// named after the thread. X-Railgrid-Project carries a routing hint for
+// session-backed storage; kcp still authenticates and authorizes the request.
 function sessionURL(ctx: RailgridContext | null, threadID: string, verb: string, ...tail: string[]): string {
   return kubeVerbPath(verbCluster(ctx), sessionResource, threadID, verb, { tail: tail.join('/') })
 }
@@ -249,6 +249,7 @@ function projectKubeClient(ctx: RailgridContext | null) {
 interface ProjectAPIRequestOptions {
   timeoutMS?: number
   timeoutMessage?: string
+  headers?: Record<string, string>
 }
 
 const ASSISTANT_THREAD_PAGE_SIZE = 500
@@ -263,6 +264,7 @@ export interface ProjectAssistantThreadItemPage {
 
 async function request<T>(ctx: RailgridContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ json: body !== undefined })
+  Object.assign(headers, options.headers)
   const controller = options.timeoutMS ? new AbortController() : null
   let timedOut = false
   const timeout = controller ? window.setTimeout(() => {
@@ -303,6 +305,21 @@ async function request<T>(ctx: RailgridContext | null, method: string, path: str
     throw new ProjectAPIRequestError(detail, res.status)
   }
   return (text ? JSON.parse(text) : null) as T
+}
+
+function sessionRequest<T>(
+  ctx: RailgridContext | null,
+  projectName: string,
+  threadID: string,
+  verb: string,
+  method: string,
+  body?: unknown,
+  tail: string[] = [],
+  query = '',
+): Promise<T> {
+  return request<T>(ctx, method, `${sessionURL(ctx, threadID, verb, ...tail)}${query}`, body, {
+    headers: { 'X-Railgrid-Project': projectName },
+  })
 }
 
 function isProjectIntegrationsDiscovery(value: unknown): value is ProjectIntegrationsDiscovery {
@@ -380,7 +397,7 @@ async function requestAssistantAttachmentUpload(
 
 /** A workspace file request failed; reason drives recovery (overwrite, refresh). */
 export class ProjectFileRequestError extends ProjectAPIRequestError {
-  constructor(message: string, status: number, readonly reason: ProjectFileErrorReason, readonly detail: string) {
+  constructor(message: string, status: number, readonly reason: ProjectFileErrorReason, readonly detail: string, readonly changedFiles: string[] = []) {
     super(message, status)
     this.name = 'ProjectFileRequestError'
   }
@@ -403,8 +420,10 @@ async function projectFileResponseError(res: Response, intent: ProjectFileWriteI
   }
   let detail = text || res.statusText
   let reason = ''
+  let changedFiles: string[] = []
   try {
-    const parsed = JSON.parse(text) as { message?: string; reason?: string }
+    const parsed = JSON.parse(text) as { message?: string; reason?: string; conflict?: { changedFiles?: unknown } }
+    if (Array.isArray(parsed.conflict?.changedFiles)) changedFiles = parsed.conflict.changedFiles.filter((path): path is string => typeof path === 'string')
     if (parsed.message) detail = parsed.message
     if (parsed.reason) reason = parsed.reason
   } catch {
@@ -412,7 +431,7 @@ async function projectFileResponseError(res: Response, intent: ProjectFileWriteI
   }
   if (isProjectAPIInitializingResponse(res.status, reason, detail)) return new ProjectAPIInitializingError(detail)
   const fileReason = classifyProjectFileError(res.status, detail, intent)
-  return new ProjectFileRequestError(projectFileErrorMessage(fileReason, detail), res.status, fileReason, detail)
+  return new ProjectFileRequestError(projectFileErrorMessage(fileReason, detail), res.status, fileReason, detail, changedFiles)
 }
 
 function projectFileWriteResult(text: string, path: string): ProjectFileWriteResult {
@@ -449,7 +468,7 @@ function isProjectAPIInitializingResponse(status: number, reason: string, messag
 
 async function requestAssistantThreadEventStream(
   ctx: RailgridContext | null,
-  _name: string,
+  projectName: string,
   threadID: string,
   afterSequence: number,
   onEvent: (event: ProjectAssistantThreadEvent) => void,
@@ -458,6 +477,7 @@ async function requestAssistantThreadEventStream(
   const headers = tenantHeaders({})
   headers.Accept = 'text/event-stream'
   headers['Last-Event-ID'] = String(afterSequence)
+  headers['X-Railgrid-Project'] = projectName
   const res = await providerFetch(ctx)(`${sessionURL(ctx, threadID, 'events')}?afterSequence=${encodeURIComponent(String(afterSequence))}`, {
     credentials: 'same-origin', headers, signal,
   })
@@ -853,12 +873,13 @@ export const api = {
     ctx: RailgridContext | null,
     name: string,
     files: File[],
-    options: { dir?: string; overwrite?: boolean; signal?: AbortSignal } = {},
+    options: { dir?: string; overwrite?: boolean; expectedVersions?: Record<string, string>; signal?: AbortSignal } = {},
   ): Promise<ProjectFileWriteResult[]> {
     const form = new FormData()
     for (const file of files) form.append('file', file, file.name || 'upload')
     form.append('dir', options.dir ?? '')
     if (options.overwrite) form.append('overwrite', 'true')
+    if (options.expectedVersions) form.append('expectedVersions', JSON.stringify(options.expectedVersions))
     const res = await providerFetch(ctx)(`${projectURL(ctx, name, 'files-upload')}`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -1482,38 +1503,34 @@ export const api = {
 
   async patchAssistantThread(
     ctx: RailgridContext | null,
-    _name: string,
+    name: string,
     threadID: string,
     body: { title?: string; archived?: boolean },
   ): Promise<ProjectAssistantThread> {
-    return request<ProjectAssistantThread>(
-      ctx,
-      'POST',
-      `${sessionURL(ctx, threadID, 'edit')}`,
-      body,
-    )
+    return sessionRequest<ProjectAssistantThread>(ctx, name, threadID, 'edit', 'POST', body)
   },
 
-  async deleteAssistantThread(ctx: RailgridContext | null, _name: string, threadID: string): Promise<void> {
-    await request<null>(
-      ctx,
-      'POST',
-      `${sessionURL(ctx, threadID, 'discard')}`,
-    )
+  async deleteAssistantThread(ctx: RailgridContext | null, name: string, threadID: string): Promise<void> {
+    await sessionRequest<null>(ctx, name, threadID, 'discard', 'POST')
   },
 
   async listAssistantThreadItemPage(
     ctx: RailgridContext | null,
-    _name: string,
+    name: string,
     threadID: string,
     beforeSequence = '',
   ): Promise<ProjectAssistantThreadItemPage> {
     const query = new URLSearchParams({ limit: String(ASSISTANT_THREAD_ITEM_PAGE_TURNS) })
     if (beforeSequence.trim()) query.set('beforeSequence', beforeSequence.trim())
-    const body = await request<{ items?: ProjectAssistantThreadItem[]; nextCursor?: string }>(
+    const body = await sessionRequest<{ items?: ProjectAssistantThreadItem[]; nextCursor?: string }>(
       ctx,
+      name,
+      threadID,
+      'items',
       'GET',
-      `${sessionURL(ctx, threadID, 'items')}?${query.toString()}`,
+      undefined,
+      [],
+      `?${query.toString()}`,
     )
     return {
       items: Array.isArray(body.items) ? body.items : [],
@@ -1558,36 +1575,37 @@ export const api = {
     await request<null>(ctx, 'DELETE', `${projectURL(ctx, name, 'attachments', attachmentID)}`)
   },
 
-  async startAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
-    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'turn')}`, body)
+  async startAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+    return sessionRequest<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, name, threadID, 'turn', 'POST', body)
   },
 
-  async startAssistantReview(ctx: RailgridContext | null, _name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
-    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'review')}`, body)
+  async startAssistantReview(ctx: RailgridContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+    return sessionRequest<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, name, threadID, 'review', 'POST', body)
   },
 
-  async getActiveAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
+  async getActiveAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
     const headers = tenantHeaders({})
+    headers['X-Railgrid-Project'] = name
     const res = await providerFetch(ctx)(`${sessionURL(ctx, threadID, 'active-turn')}`, { credentials: 'same-origin', headers })
     if (res.status === 204) return undefined
     if (!res.ok) throw new Error(`active assistant turn failed: ${res.status} ${res.statusText}`)
     return res.json() as Promise<ProjectAssistantTurn>
   },
 
-  async steerAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
-    return request<ProjectAssistantTurn>(ctx, 'POST', `${sessionURL(ctx, threadID, 'steer', turnID)}`, body)
+  async steerAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
+    return sessionRequest<ProjectAssistantTurn>(ctx, name, threadID, 'steer', 'POST', body, [turnID])
   },
 
-  async interruptAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
-    return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'interrupt', turnID)}`, { clientRequestID })
+  async interruptAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
+    return sessionRequest<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, name, threadID, 'interrupt', 'POST', { clientRequestID }, [turnID])
   },
 
-  async continueAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
-    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, 'POST', `${sessionURL(ctx, threadID, 'continue', turnID)}`, body)
+  async continueAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
+    return sessionRequest<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, name, threadID, 'continue', 'POST', body, [turnID])
   },
 
-  async respondAssistantTurn(ctx: RailgridContext | null, _name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
-    return request<ProjectAssistantTurn>(ctx, 'POST', `${sessionURL(ctx, threadID, kind, turnID)}`, body)
+  async respondAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
+    return sessionRequest<ProjectAssistantTurn>(ctx, name, threadID, kind, 'POST', body, [turnID])
   },
 
   async streamAssistantThread(ctx: RailgridContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {

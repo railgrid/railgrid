@@ -261,7 +261,9 @@ const (
 	RailgridModeDevelopment = "development"
 
 	// Provider Actions fields are reserved instance spec properties used by the
-	// App Studio development runtime. The Template controller injects them into
+	// App Studio development runtime. The BaseURL is the trusted
+	// cluster-qualified projects/{project}/integration-actions endpoint; the SDK
+	// appends only the saved integration alias. The Template controller injects them into
 	// tenant-facing per-template CRDs/APIResourceSchemas, while App Studio owns
 	// their values and the dev overlay supplies empty defaults when no action
 	// grant is present. Templates MUST NOT declare these fields in spec.schema.

@@ -277,10 +277,10 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const setActiveAssistantRun = (run) => { activeAssistantRun = run; };
     const assistantThreadFocusScope = () => ({});
     const persistAssistantThreadFocus = () => {};
-    const assistantAnnotationDraftScope = () => ({});
-    const writeAssistantAnnotationDraft = () => {};
-    const persistCurrentAssistantAnnotationDraft = () => {};
-    const clearStoredAssistantAnnotationDraft = (...args) => clearDraftCalls.push(args);
+    const assistantComposerDraftScope = () => ({});
+    const writeAssistantComposerDraft = () => {};
+    const persistCurrentAssistantComposerDraft = () => {};
+    const clearStoredAssistantComposerDraft = (...args) => clearDraftCalls.push(args);
     const commitAttachments = (parts) => committedParts.push(parts);
     const clearSelectedTurnAttachments = () => {
       assistantComposerParts.value = [];
@@ -1103,7 +1103,31 @@ test('first-send thread creation cannot mutate state after an App unmount or req
   assert.match(sendMessage, /const submissionIsCurrent = \(\) => appComponentMounted &&[\s\S]*submissionOwner\.generation === assistantSubmissionGeneration[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*selected\.value\?\.name === submissionOwner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === submissionOwner\.projectUID[\s\S]*activeAssistantThreadID\.value === submissionOwner\.threadID/)
   assert.match(appSource, /watch\(\s*activeAssistantThreadID,[\s\S]*current !== owner\.threadID[\s\S]*invalidateAssistantMessageSubmission\(\)/)
   assert.match(appSource, /\(\) => `\$\{selected\.value\?\.name \?\? ''\}\\u0000\$\{selected\.value\?\.uid \?\? ''\}`[\s\S]*invalidateAssistantMessageSubmission\(\)/)
-  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantAnnotationDraft/)
+  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantComposerDraft/)
+})
+
+test('resume and stop controls keep their captured project, thread, and run scope', async () => {
+  const controllerStart = app.indexOf('const assistantRunController = new ConversationRunController({')
+  const controllerEnd = app.indexOf('\nfunction startAssistantRunController', controllerStart)
+  assert.ok(controllerStart >= 0 && controllerEnd > controllerStart)
+  const controller = app.slice(controllerStart, controllerEnd)
+  assert.match(controller, /const owner = assistantRunOwners\.get\(runID\)/)
+  assert.match(controller, /api\.interruptAssistantTurn\(owner\.context, owner\.projectName, owner\.threadID, runID/)
+  assert.match(controller, /await recoverAssistantConversation\(owner\.projectName\)/)
+  assert.match(controller, /assistantRunOwnerIsCurrent\(owner\)/)
+  assert.match(app, /function assistantRunOwnerIsCurrent\(owner: AssistantRunOwner\): boolean[\s\S]*selected\.value\?\.name === owner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === owner\.projectUID[\s\S]*activeAssistantThreadID\.value === owner\.threadID/)
+
+  const permissionStart = app.indexOf('async function resolveToolPermission(')
+  const followUpStart = app.indexOf('async function submitFollowUpAnswer(', permissionStart)
+  const resumeFailureStart = app.indexOf('async function handleResumeFailure(', followUpStart)
+  const permission = app.slice(permissionStart, followUpStart)
+  const followUp = app.slice(followUpStart, resumeFailureStart)
+  assert.match(permission, /const threadID = activeAssistantThreadID\.value[\s\S]*const context = props\.ctx[\s\S]*const contextFingerprint = appContextFingerprint\(context\)/)
+  assert.match(permission, /api\.respondAssistantTurn\(context, projectName, threadID, runID, 'approval'/)
+  assert.match(followUp, /api\.respondAssistantTurn\(context, projectName, threadID, runID, 'input'/)
+  assert.match(permission, /activeAssistantThreadID\.value === threadID/)
+  assert.match(followUp, /activeAssistantThreadID\.value === threadID/)
+  assert.match(app, /const assistantResumeBusy = computed\(\(\) => \{[\s\S]*assistantActionScopePrefix\(\)[\s\S]*key\.startsWith\(prefix\)/)
 })
 
 test('late pre-acceptance failure cannot restore an old draft or release a newer submission', async t => {
@@ -1300,7 +1324,7 @@ test('regular send adopts the canonical thread returned by the start response', 
   assert.match(acceptedStart, /activeAssistantThreadID\.value = canonicalThreadID/)
   assert.match(acceptedStart, /persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), canonicalThreadID\)/)
   assert.match(acceptedStart, /listAssistantThreadItemPage\(props\.ctx, projectName, canonicalThreadID\)/)
-  assert.match(acceptedStart, /clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID, sendContext\)/)
+  assert.match(acceptedStart, /clearStoredAssistantComposerDraft\(projectName, requestedThreadID, sendContext, projectUID\)/)
 })
 
 test('regular receipt failures recover through the composer without replaying a changed turn', async () => {

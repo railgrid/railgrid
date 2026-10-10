@@ -223,6 +223,9 @@ func (s *FileStore) bumpSourceRevision(ctx context.Context, scope Scope) error {
 			record.SourceRevision = 1
 		}
 		record.SourceRevision++
+		origin, _ := ctx.Value(mutationOriginContextKey{}).(SourceChange)
+		origin.SourceRevision = record.SourceRevision
+		record.LastSourceChange = &origin
 		return true, nil
 	})
 	if err != nil {
@@ -272,6 +275,9 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 			return false, fmt.Errorf("%w: expected %d, current %d", ErrSourceRevisionConflict, *expected, current)
 		}
 		record.SourceRevision = current + 1
+		origin, _ := ctx.Value(mutationOriginContextKey{}).(SourceChange)
+		origin.SourceRevision = record.SourceRevision
+		record.LastSourceChange = &origin
 		if committed {
 			// The incoming bytes ARE the repository's, so these paths are
 			// clean — including any that were dirty before, whose local edits

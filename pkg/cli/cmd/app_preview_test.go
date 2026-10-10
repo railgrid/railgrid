@@ -141,6 +141,7 @@ func TestAppFilesCommands(t *testing.T) {
 			writeTestStatus(w, http.StatusNotFound, "NotFound", "file not found")
 			return
 		}
+		w.Header().Set("ETag", `"sha256:abcdef0123456789"`)
 		_, _ = w.Write([]byte{0x89, 'P', 'N'})
 	})
 	var putPath, putBody, putMatch string
@@ -153,9 +154,10 @@ func TestAppFilesCommands(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, map[string]any{"path": putPath, "size": len(putBody), "version": "sha256:abcdef0123456789", "binary": true})
 	})
-	var deleted string
+	var deleted, deleteVersion string
 	hub.handle("DELETE "+appStudioProjects+"/shop/files-content", func(w http.ResponseWriter, r *http.Request) {
 		deleted = r.URL.Query().Get("path")
+		deleteVersion = r.Header.Get("If-Match")
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -173,6 +175,9 @@ func TestAppFilesCommands(t *testing.T) {
 	if out != "\x89PN" {
 		t.Fatalf("get output = %q", out)
 	}
+	if version, err := runRoot(t, path, "app", "files", "get", "shop", "web/public/logo.png", "--version-only"); err != nil || version != "sha256:abcdef0123456789\n" {
+		t.Fatalf("file version = %q, %v", version, err)
+	}
 	local := filepath.Join(t.TempDir(), "logo.png")
 	if err := os.WriteFile(local, []byte{1, 2, 3}, 0o644); err != nil {
 		t.Fatal(err)
@@ -184,7 +189,10 @@ func TestAppFilesCommands(t *testing.T) {
 	if putPath != "web/public/logo.png" || putBody != "\x01\x02\x03" || putMatch != "*" || !strings.Contains(out, "wrote web/public/logo.png (3 bytes, binary") {
 		t.Fatalf("put: path=%s body=%q match=%q out=%q", putPath, putBody, putMatch, out)
 	}
-	if _, err := runRoot(t, path, "app", "files", "rm", "shop", "web/public/old.png"); err != nil || deleted != "web/public/old.png" {
+	if _, err := runRoot(t, path, "app", "files", "rm", "shop", "web/public/old.png"); err == nil || deleted != "" {
+		t.Fatalf("versionless delete: err=%v deleted=%s", err, deleted)
+	}
+	if _, err := runRoot(t, path, "app", "files", "rm", "shop", "web/public/old.png", "--expected-version", "sha256:abcdef0123456789"); err != nil || deleted != "web/public/old.png" || deleteVersion != "sha256:abcdef0123456789" {
 		t.Fatalf("rm: err=%v deleted=%s", err, deleted)
 	}
 }

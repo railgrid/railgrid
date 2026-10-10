@@ -55,6 +55,22 @@ type projectEinoAssistantLifecycle struct {
 	liveContextSections   map[string]string
 }
 
+const projectEinoAssistantWorkspaceContentionBlockerPrefix = "Workspace contention blocker: "
+
+func projectEinoAssistantReplaceWorkspaceContentionBlocker(messages []*schema.Message, err error) []*schema.Message {
+	out := make([]*schema.Message, 0, len(messages)+1)
+	for _, message := range messages {
+		if message != nil && message.Role == schema.System && strings.HasPrefix(message.Content, projectEinoAssistantWorkspaceContentionBlockerPrefix) {
+			continue
+		}
+		out = append(out, message)
+	}
+	if err != nil {
+		out = append(out, schema.SystemMessage(projectEinoAssistantWorkspaceContentionBlockerPrefix+err.Error()+". Do not retry this file or silently overwrite it. Continue unrelated work and report this blocker to the user."))
+	}
+	return out
+}
+
 func projectEinoAssistantLifecycleMiddleware(
 	req projectAssistantRunRequest,
 	runState *projectEinoAssistantRunState,
@@ -92,17 +108,12 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	if err := projectEinoAssistantValidateHistoricalAttachmentMessages(state.Messages); err != nil {
 		return ctx, state, err
 	}
-	// A failed mutation gets one deterministic reread/repair attempt. Once the
-	// same canonical target fails again at the same source revision, terminate
-	// at this model boundary instead of sampling the model into an unbounded
-	// recovery loop. Read-only/Q&A turns and permission waits remain outside
-	// this implementation-only guard. Tool/action counts never terminate a
-	// turn: valid tool calls may continue until Eino reaches its configured
-	// iteration or rollout-budget boundary, or the model authors a final answer.
+	// Two reread/reconcile retries are allowed per contended file after the
+	// initial failure. Exhaustion blocks that file while unrelated work continues.
 	if projectEinoAssistantProgressApplies(m.req, m.runState) && !m.runState.PermissionBarrierActive() {
-		if err := m.runState.MutationRecoveryBlockedError(); err != nil {
-			return ctx, state, err
-		}
+		state.Messages = projectEinoAssistantReplaceWorkspaceContentionBlocker(state.Messages, m.runState.MutationRecoveryBlockedError())
+	} else {
+		state.Messages = projectEinoAssistantReplaceWorkspaceContentionBlocker(state.Messages, nil)
 	}
 	liveContextStarted := time.Now()
 	liveContextCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)

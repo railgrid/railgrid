@@ -199,6 +199,34 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 	}
 }
 
+func TestProjectAssistantExecCommandBlocksWithoutEligiblePrivateSandbox(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
+	state.ConfigureSandboxCapability(CodingSandboxEligibility{Reason: "coding sandbox mode is off"}, nil)
+	tool, err := newProjectAssistantExecCommandGraphTool(projectAssistantWorkflowRunContext{RunState: state})
+	if err != nil {
+		t.Fatalf("create exec tool: %v", err)
+	}
+	info, err := tool.Info(context.Background())
+	if err != nil {
+		t.Fatalf("read exec tool info: %v", err)
+	}
+	if !strings.Contains(info.Desc, "visible blocker") || !strings.Contains(info.Desc, "never falls back to the shared development runtime") {
+		t.Fatalf("ineligible exec description = %q, want fail-closed guidance", info.Desc)
+	}
+
+	result, err := execProjectAssistantCommand(projectAssistantWorkflowRunContext{
+		AssistantRunID: "run-without-sandbox",
+		RunState:       state,
+	})(context.Background(), &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go", "test", "./..."}})
+	if err != nil || result == nil || result.Status != "blocked" {
+		t.Fatalf("ineligible exec result = %#v, err=%v; want blocked", result, err)
+	}
+	if !strings.Contains(strings.Join(result.Blockers, " "), "not run in the shared development runtime") || result.SourceRevision != 0 || result.SourceDigest != "" {
+		t.Fatalf("ineligible exec result = %#v, want explicit no-fallback blocker without a source receipt", result)
+	}
+}
+
 func TestProjectAssistantFirstExecLazilyInitializesSandboxExactlyOnce(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
@@ -211,7 +239,7 @@ func TestProjectAssistantFirstExecLazilyInitializesSandboxExactlyOnce(t *testing
 		return &projectAssistantRunSandbox{
 			client: client, runState: state,
 			target:   projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."}}},
-			metadata: projectAssistantRunSandboxMetadata{Status: "active", RemoteRevision: 7, RemoteDigest: "sha256:remote"},
+			metadata: projectAssistantRunSandboxMetadata{Status: "active", RunID: "run-lazy-exec", RemoteRevision: 7, RemoteDigest: "sha256:remote"},
 		}, func() {}, nil
 	})
 	run := execProjectAssistantCommand(projectAssistantWorkflowRunContext{AssistantRunID: "run-lazy-exec", RunState: state})
@@ -224,9 +252,15 @@ func TestProjectAssistantFirstExecLazilyInitializesSandboxExactlyOnce(t *testing
 	}
 	client.mu.Lock()
 	execCalls := client.execCalls
+	requests := append([]projectSandboxExecRequest(nil), client.execRequests...)
 	client.mu.Unlock()
 	if setupCalls != 1 || execCalls != 2 {
 		t.Fatalf("lazy exec setup calls=%d exec calls=%d, want one setup and two commands", setupCalls, execCalls)
+	}
+	for index, request := range requests {
+		if request.Action != "start" || request.SourceRevision != 7 || request.SourceDigest != "sha256:remote" {
+			t.Fatalf("lazy exec request %d = %#v, want command pinned to run snapshot 7/sha256:remote", index, request)
+		}
 	}
 }
 
@@ -254,7 +288,7 @@ func TestProjectAssistantExecCanceledDuringSandboxSetupIsNotReportedFailed(t *te
 	}
 }
 
-func TestProjectAssistantExecCommandMultiComponentPresentationRemainsGeneric(t *testing.T) {
+func TestProjectAssistantExecCommandPresentationWithoutRunSandboxIsUnavailable(t *testing.T) {
 	tool, err := newProjectAssistantExecCommandGraphTool(projectAssistantWorkflowRunContext{})
 	if err != nil {
 		t.Fatalf("create project exec tool: %v", err)
@@ -263,8 +297,8 @@ func TestProjectAssistantExecCommandMultiComponentPresentationRemainsGeneric(t *
 	if err != nil {
 		t.Fatalf("read project exec tool info: %v", err)
 	}
-	if strings.Contains(info.Desc, "active per-run universal sandbox") || strings.Contains(info.Desc, `ALWAYS pass component="workspace"`) {
-		t.Fatalf("ordinary exec description was narrowed to run sandbox: %q", info.Desc)
+	if !strings.Contains(info.Desc, "visible blocker") || !strings.Contains(info.Desc, "never falls back to the shared development runtime") {
+		t.Fatalf("exec description without run state = %q, want fail-closed guidance", info.Desc)
 	}
 	generated, err := info.ToJSONSchema()
 	if err != nil {
@@ -293,6 +327,7 @@ func TestProjectAssistantRunSandboxExecAcceptsOnlyWorkspaceComponent(t *testing.
 		},
 		metadata: projectAssistantRunSandboxMetadata{
 			Status:         "active",
+			RunID:          "run",
 			SourceRevision: 1,
 			SourceDigest:   "sha256:source",
 			RemoteRevision: 1,
@@ -325,6 +360,37 @@ func TestProjectAssistantRunSandboxExecAcceptsOnlyWorkspaceComponent(t *testing.
 	if accepted.Status != "succeeded" || accepted.Component != projectAssistantRunSandboxWorkspaceVerb || len(fake.execs) != 1 {
 		t.Fatalf("workspace result = %#v, exec calls = %d; want one accepted workspace call", accepted, len(fake.execs))
 	}
+	if fake.execs[0].SourceRevision != 1 || fake.execs[0].SourceDigest != "sha256:source" {
+		t.Fatalf("workspace command fence = %#v, want the private run snapshot", fake.execs[0])
+	}
+}
+
+func TestProjectAssistantRunSandboxExecRejectsWrongRunOrMissingFence(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata projectAssistantRunSandboxMetadata
+	}{
+		{name: "wrong run", metadata: projectAssistantRunSandboxMetadata{Status: "active", RunID: "sibling-run", RemoteRevision: 4, RemoteDigest: "sha256:sibling"}},
+		{name: "missing source fence", metadata: projectAssistantRunSandboxMetadata{Status: "active", RunID: "run"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &assistantRunSandboxExecGateFake{}
+			sandbox := &projectAssistantRunSandbox{
+				client: fake,
+				target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{
+					projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."},
+				}},
+				metadata: tc.metadata,
+			}
+			result, err := execProjectAssistantRunSandboxCommand(context.Background(), projectAssistantWorkflowRunContext{AssistantRunID: "run"}, sandbox, &projectAssistantExecCommandInput{
+				Component: projectAssistantRunSandboxWorkspaceVerb,
+				Argv:      []string{"go", "test", "./..."},
+			})
+			if err != nil || result == nil || result.Status != "blocked" || len(fake.execs) != 0 {
+				t.Fatalf("exec result = %#v, err=%v, exec calls=%d; want blocked before dispatch", result, err, len(fake.execs))
+			}
+		})
+	}
 }
 
 func TestProjectAssistantRunSandboxExecCleansUpAmbiguousStart(t *testing.T) {
@@ -345,7 +411,7 @@ func TestProjectAssistantRunSandboxExecCleansUpAmbiguousStart(t *testing.T) {
 				target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{
 					projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."},
 				}},
-				metadata: projectAssistantRunSandboxMetadata{Status: "active", RemoteRevision: 1, RemoteDigest: "sha256:source"},
+				metadata: projectAssistantRunSandboxMetadata{Status: "active", RunID: "run-cleanup", SourceRevision: 1, SourceDigest: "sha256:source", RemoteRevision: 1, RemoteDigest: "sha256:source"},
 			}
 			result, err := execProjectAssistantRunSandboxCommand(context.Background(), projectAssistantWorkflowRunContext{AssistantRunID: "run-cleanup"}, sandbox, &projectAssistantExecCommandInput{
 				Component: projectAssistantRunSandboxWorkspaceVerb,
@@ -711,9 +777,10 @@ func TestProjectAssistantExecMetadataIsStructuredAndDoesNotExposeSecrets(t *test
 		"argv":           []any{"go", "test", "--token", "super-secret"},
 		"workdir":        "internal",
 		"timeoutSeconds": float64(42),
-	}, `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":2,"durationMs":123}`, "failed")
+	}, `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":2,"durationMs":123,"sourceRevision":7,"sourceDigest":"sha256:run-snapshot","syncStatus":"succeeded"}`, "failed")
 	if metadata == nil || metadata.Component != "backend" || metadata.Workdir != "internal" || metadata.TimeoutSeconds != 42 ||
-		metadata.NetworkProfile != "application-runtime" || metadata.AuthorityProfile != "application-container" || metadata.WritebackPolicy != "runtime-workspace-only" || metadata.ExitCode == nil || *metadata.ExitCode != 2 {
+		metadata.NetworkProfile != "application-runtime" || metadata.AuthorityProfile != "application-container" || metadata.WritebackPolicy != "runtime-workspace-only" || metadata.ExitCode == nil || *metadata.ExitCode != 2 ||
+		metadata.SourceRevision != 7 || metadata.SourceDigest != "sha256:run-snapshot" || metadata.SyncStatus != "succeeded" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 	if len(metadata.Argv) != 4 || metadata.Argv[3] != "[redacted]" {
@@ -732,7 +799,7 @@ func TestProjectAssistantExecPublicProjectionRedactsOutputAndMapsTimeout(t *test
 	metadata := projectAssistantExecMetadataForToolArguments(projectToolExecCommand, map[string]any{
 		"component": "workspace",
 		"argv":      []any{"sh", "-c", "echo TOKEN=argv-secret"},
-	}, `{"status":"timed_out","summary":"timeout token=summary-secret","exitCode":124,"durationMs":99,"stdout":["TOKEN=stdout-secret","Bearer bearer-secret-value","https://example.test/?api_key=query-secret","{\"token\":\"json-secret\"}","ghp_1234567890abcdefghijkl","AKIA1234567890ABCDEF"],"stderr":["OPENAI_API_KEY=env-secret"]}`, "failed")
+	}, `{"status":"timed_out","summary":"timeout token=summary-secret","exitCode":124,"durationMs":99,"sourceRevision":14,"sourceDigest":"sha256:private-snapshot","syncStatus":"succeeded","stdout":["TOKEN=stdout-secret","Bearer bearer-secret-value","https://example.test/?api_key=query-secret","{\"token\":\"json-secret\"}","ghp_1234567890abcdefghijkl","AKIA1234567890ABCDEF"],"stderr":["OPENAI_API_KEY=env-secret"]}`, "failed")
 	if metadata == nil {
 		t.Fatal("exec metadata is nil")
 	}
@@ -755,6 +822,9 @@ func TestProjectAssistantExecPublicProjectionRedactsOutputAndMapsTimeout(t *test
 	if metadata.Status != "timed_out" {
 		t.Fatalf("nested exec status = %q, want timed_out", metadata.Status)
 	}
+	if metadata.SourceRevision != 14 || metadata.SourceDigest != "sha256:private-snapshot" || metadata.SyncStatus != "succeeded" {
+		t.Fatalf("nested exec source receipt = %#v, want the dispatch snapshot fence", metadata)
+	}
 	if metadata.OutputTruncated {
 		t.Fatalf("secret redaction alone marked output truncated: %#v", metadata)
 	}
@@ -766,6 +836,24 @@ func TestProjectAssistantExecPublicProjectionRedactsOutputAndMapsTimeout(t *test
 	})
 	if action.Status != projectAssistantActionFeedStatusFailed || action.Severity != projectAssistantActionFeedSeverityError {
 		t.Fatalf("timed-out public action = %#v, want failed/error", action)
+	}
+}
+
+func TestProjectAssistantExecMetadataMergeKeepsDispatchSourceFence(t *testing.T) {
+	merged := mergeProjectAssistantExecMetadata(
+		&projectAssistantExecMetadata{Status: "running", SourceRevision: 8, SourceDigest: "sha256:dispatch", SyncStatus: "succeeded"},
+		&projectAssistantExecMetadata{Status: "succeeded", SourceRevision: 9, SourceDigest: "sha256:later", SyncStatus: "changed"},
+	)
+	if merged.SourceRevision != 8 || merged.SourceDigest != "sha256:dispatch" || merged.SyncStatus != "succeeded" {
+		t.Fatalf("merged exec receipt = %#v, want the immutable dispatch snapshot", merged)
+	}
+
+	filled := mergeProjectAssistantExecMetadata(
+		&projectAssistantExecMetadata{Status: "running"},
+		&projectAssistantExecMetadata{Status: "succeeded", SourceRevision: 9, SourceDigest: "sha256:dispatch", SyncStatus: "succeeded"},
+	)
+	if filled.SourceRevision != 9 || filled.SourceDigest != "sha256:dispatch" || filled.SyncStatus != "succeeded" {
+		t.Fatalf("filled exec receipt = %#v, want terminal dispatch snapshot", filled)
 	}
 }
 
@@ -837,7 +925,7 @@ func TestProjectAssistantExecActionFeedMergesTerminalResultsAcrossCheckpoints(t 
 			id:        "exec-install",
 			component: "frontend",
 			argv:      []string{"npm", "install"},
-			result:    `{"status":"succeeded","summary":"Command succeeded in component \"frontend\".","exitCode":0,"durationMs":742,"outputTruncated":true}`,
+			result:    `{"status":"succeeded","summary":"Command succeeded in component \"frontend\".","exitCode":0,"durationMs":742,"outputTruncated":true,"sourceRevision":11,"sourceDigest":"sha256:thread-a"}`,
 			exitCode:  0,
 			duration:  742,
 		},
@@ -845,7 +933,7 @@ func TestProjectAssistantExecActionFeedMergesTerminalResultsAcrossCheckpoints(t 
 			id:        "exec-test",
 			component: "backend",
 			argv:      []string{"go", "test", "./..."},
-			result:    `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":1,"durationMs":1834}`,
+			result:    `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":1,"durationMs":1834,"sourceRevision":12,"sourceDigest":"sha256:thread-b"}`,
 			exitCode:  1,
 			duration:  1834,
 		},
@@ -900,6 +988,9 @@ func TestProjectAssistantExecActionFeedMergesTerminalResultsAcrossCheckpoints(t 
 		if action.Exec.Status != map[bool]string{true: "succeeded", false: "failed"}[call.exitCode == 0] ||
 			action.Exec.ExitCode == nil || *action.Exec.ExitCode != call.exitCode || action.Exec.DurationMS != call.duration {
 			t.Fatalf("action %d terminal disclosure = %#v", index, action.Exec)
+		}
+		if action.Exec.SourceRevision != uint64(11+index) || action.Exec.SourceDigest != []string{"sha256:thread-a", "sha256:thread-b"}[index] {
+			t.Fatalf("action %d source receipt = %#v, want its immutable dispatch snapshot", index, action.Exec)
 		}
 		if call.exitCode == 0 && !action.Exec.OutputTruncated {
 			t.Fatalf("action %d lost output truncation flag", index)
@@ -966,7 +1057,7 @@ func TestProjectAssistantExecStartRecoversLostAcceptedResponse(t *testing.T) {
 		if err != nil {
 			return projectSandboxExecResponse{}, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var result projectSandboxExecResponse
 		err = json.NewDecoder(resp.Body).Decode(&result)
 		return result, err

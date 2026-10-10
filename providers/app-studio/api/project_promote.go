@@ -725,6 +725,11 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 // and bypasses the development dirty-workspace guard: its package digests are
 // immutable evidence independent of the current sandbox contents.
 func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, httpReq *http.Request, values map[string]any, selectedCommitSHA string, commitSelected bool, selectedReleaseIDs ...string) (*aiv1alpha1.Project, projectPromoteResponse, error) {
+	release, lockErr := s.acquireProjectRuntimeOperation(ctx, projectWorkspaceScope(id, p))
+	if lockErr != nil {
+		return nil, projectPromoteResponse{}, lockErr
+	}
+	defer release()
 	releaseIDEvidenceProvided := len(selectedReleaseIDs) > 0
 	selectedReleaseID := ""
 	if releaseIDEvidenceProvided {

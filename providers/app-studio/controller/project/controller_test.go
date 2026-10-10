@@ -471,7 +471,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 	binding := actionsDevelopmentBinding(`{
 		"name":"demo-dev",
 		"railgridActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-		"railgridActionsBaseURL":"https://stale.example/services/providers/app-studio",
+		"railgridActionsBaseURL":"https://stale.example/clusters/old/apis/ai.railgrid.ai/v1alpha1/projects/demo/integration-actions",
 		"railgridActionsCABundle":"stale-ca",
 		"railgridActionsTenantPath":"stale-tenant",
 		"railgridActionsProject":"stale-project"
@@ -481,7 +481,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 		CABundle:    "authoritative-ca",
 	}}
 
-	updated, err := r.overlayDevelopmentBinding(p, binding, "root:railgrid:tenants:authoritative-org:authoritative-workspace")
+	updated, err := r.overlayDevelopmentBinding(p, binding, "root:railgrid:tenants:authoritative-org:authoritative-workspace", "cluster-a")
 	if err != nil {
 		t.Fatalf("active overlay: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 	}
 	for key, want := range map[string]string{
 		bindings.ActionsExchangeURLField: "https://actions.example/api/provider-actions/workload/exchange",
-		bindings.ActionsBaseURLField:     "https://actions.example/services/providers/app-studio",
+		bindings.ActionsBaseURLField:     "https://actions.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/demo/integration-actions",
 		bindings.ActionsCABundleField:    "authoritative-ca",
 		bindings.ActionsTenantPathField:  "root:railgrid:tenants:authoritative-org:authoritative-workspace",
 		bindings.ActionsOrgField:         "authoritative-org",
@@ -510,7 +510,7 @@ func TestOverlayDevelopmentBindingUsesAuthoritativeConfigAndClearsRevokedTranspo
 	if bindings.HasActiveProviderActionGrant(p) {
 		t.Fatal("revoked test grant is still active")
 	}
-	updated, err = r.overlayDevelopmentBinding(p, binding, "root:railgrid:tenants:authoritative-org:authoritative-workspace")
+	updated, err = r.overlayDevelopmentBinding(p, binding, "root:railgrid:tenants:authoritative-org:authoritative-workspace", "cluster-a")
 	if err != nil {
 		t.Fatalf("revoked overlay: %v", err)
 	}

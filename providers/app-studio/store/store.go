@@ -121,6 +121,7 @@ const (
 // know private chat/tool types.
 type AssistantRun struct {
 	ID              string                  `json:"id"`
+	ThreadID        string                  `json:"threadID,omitempty"`
 	ProjectName     string                  `json:"projectName,omitempty"`
 	ProjectUID      string                  `json:"projectUID,omitempty"`
 	Mode            AssistantRunMode        `json:"mode,omitempty"`
@@ -231,7 +232,13 @@ type Store interface {
 	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
 	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)
 	FindAssistantRunByClientRequestID(ctx context.Context, scope Scope, clientRequestID string) (AssistantRun, error)
+	// FindAssistantRunByThreadClientRequestID resolves submission idempotency
+	// within one canonical assistant thread. Client request IDs may be reused
+	// independently in different threads.
+	FindAssistantRunByThreadClientRequestID(ctx context.Context, scope Scope, threadID, clientRequestID string) (AssistantRun, error)
 	LatestAssistantRun(ctx context.Context, scope Scope) (AssistantRun, error)
+	LatestAssistantRunForThread(ctx context.Context, scope Scope, threadID string) (AssistantRun, error)
+	ListActiveAssistantRuns(ctx context.Context, scope Scope) ([]AssistantRun, error)
 	AppendAssistantRunEvent(ctx context.Context, scope Scope, event AssistantRunEvent, expectedSequence int64) (AssistantRunEvent, error)
 	ListAssistantRunEvents(ctx context.Context, scope Scope, runID string, afterSequence int64, limit int) ([]AssistantRunEvent, error)
 	// ListAssistantRunEventsByRuns returns at most perRunLimit newest matching

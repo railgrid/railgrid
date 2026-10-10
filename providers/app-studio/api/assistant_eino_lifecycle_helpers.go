@@ -37,10 +37,9 @@ const (
 	// it is informational and never terminates a model turn.
 	projectEinoAssistantRepeatedActionLimit = 100
 
-	// A failed mutation gets one complete-reread repair attempt. If that
-	// repair also fails at the same source revision and canonical target, stop
-	// before asking the model for another sample.
-	projectEinoAssistantMutationRecoveryFailureLimit       = 2
+	// The initial conflict permits two complete-reread reconciliation attempts.
+	// A third failure blocks only that file until the user resolves contention.
+	projectEinoAssistantMutationRecoveryFailureLimit       = 3
 	projectEinoAssistantMaxTrackedMutationRecoveryAttempts = 128
 )
 

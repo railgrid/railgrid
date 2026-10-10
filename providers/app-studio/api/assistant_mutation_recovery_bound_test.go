@@ -58,8 +58,13 @@ func TestProjectAssistantMutationRecoveryBoundsSameTargetAfterReread(t *testing.
 	}
 
 	second, blocked := state.RecordMutationFailure(projectToolEditFile, args)
-	if !blocked || !second.Blocked || second.Failures != projectEinoAssistantMutationRecoveryFailureLimit {
-		t.Fatalf("second mutation failure = %#v, blocked=%v", second, blocked)
+	if blocked || second.Failures != 2 {
+		t.Fatalf("first retry = %#v, blocked=%v", second, blocked)
+	}
+	recordProjectAssistantModelVisibleReadForTest(state, "src/index.tsx", "sha256:reread-again", false)
+	third, blocked := state.RecordMutationFailure(projectToolEditFile, args)
+	if !blocked || !third.Blocked || third.Failures != projectEinoAssistantMutationRecoveryFailureLimit {
+		t.Fatalf("third mutation failure = %#v, blocked=%v", third, blocked)
 	}
 	err := state.MutationRecoveryBlockedError()
 	var recoveryBlocked *projectEinoAssistantRecoveryBlockedError
@@ -79,17 +84,17 @@ func TestProjectAssistantMutationRecoveryBoundSurvivesCheckpointAndProgress(t *t
 	restarted := newProjectEinoAssistantRunState()
 	restarted.RestoreCheckpointState(state.CheckpointState())
 	recordProjectAssistantModelVisibleReadForTest(restarted, "src/index.tsx", "sha256:reread", false)
+	restarted.RecordMutationFailure(projectToolEditFile, args)
 	if _, blocked := restarted.RecordMutationFailure(projectToolEditFile, args); !blocked {
-		t.Fatal("restored second failure was not blocked")
+		t.Fatal("restored third failure was not blocked")
 	}
 
-	// A source revision or successful mutation is progress and must clear the
-	// old target's budget before a later failure can start a fresh repair pair.
+	// Progress on an unrelated file must preserve this target's contention budget.
 	restarted.RecordSourceMutation()
-	if err := restarted.MutationRecoveryBlockedError(); err != nil {
-		t.Fatalf("source revision retained old recovery block: %v", err)
+	if err := restarted.MutationRecoveryBlockedError(); err == nil {
+		t.Fatal("unrelated source progress cleared the contention block")
 	}
-	if attempt, blocked := restarted.RecordMutationFailure(projectToolEditFile, args); blocked || attempt.Failures != 1 || attempt.SourceRevision != 5 {
+	if attempt, blocked := restarted.RecordMutationFailure(projectToolEditFile, args); !blocked || attempt.Failures != projectEinoAssistantMutationRecoveryFailureLimit || attempt.SourceRevision != 5 {
 		t.Fatalf("new revision failure = %#v, blocked=%v", attempt, blocked)
 	}
 	restarted.RecordSuccessfulMutationPath("src/index.tsx")
@@ -103,6 +108,29 @@ func TestProjectAssistantMutationRecoveryBoundSurvivesCheckpointAndProgress(t *t
 	continues.RecordSuccessfulMutationPath("src/index.tsx")
 	if attempt := continues.CheckpointState().MutationRecoveryAttempts["src/index.tsx"]; attempt.Failures != 0 {
 		t.Fatalf("successful reread/repair retained recovery attempt = %#v", attempt)
+	}
+}
+
+func TestWorkspaceContentionBlockerDoesNotGrowAcrossModelBoundaries(t *testing.T) {
+	err := errors.New("recovery_blocked for src/index.tsx")
+	messages := []*schema.Message{schema.UserMessage("continue unrelated work"), schema.SystemMessage(projectEinoAssistantWorkspaceContentionBlockerPrefix + "stale blocker")}
+	for range 3 {
+		messages = projectEinoAssistantReplaceWorkspaceContentionBlocker(messages, err)
+		count := 0
+		for _, message := range messages {
+			if message.Role == schema.System && strings.HasPrefix(message.Content, projectEinoAssistantWorkspaceContentionBlockerPrefix) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("contention blocker count after boundary = %d, want 1", count)
+		}
+	}
+	messages = projectEinoAssistantReplaceWorkspaceContentionBlocker(messages, nil)
+	for _, message := range messages {
+		if message.Role == schema.System && strings.HasPrefix(message.Content, projectEinoAssistantWorkspaceContentionBlockerPrefix) {
+			t.Fatal("stale contention blocker remained after recovery cleared")
+		}
 	}
 }
 
@@ -134,6 +162,7 @@ func TestProjectAssistantMutationRecoveryRequiresVisibleRereadOfCurrentVersion(t
 func TestProjectAssistantMutationRecoveryBoundRetainsBlockedTargetAtCap(t *testing.T) {
 	state := projectAssistantMutationRecoveryTestStateAtRevision(4)
 	blockedArgs := projectAssistantMutationRecoveryTestArgs("src/blocked.tsx")
+	state.RecordMutationFailure(projectToolEditFile, blockedArgs)
 	state.RecordMutationFailure(projectToolEditFile, blockedArgs)
 	if _, blocked := state.RecordMutationFailure(projectToolEditFile, blockedArgs); !blocked {
 		t.Fatal("blocked target did not reach its recovery bound")
@@ -220,6 +249,7 @@ func TestProjectAssistantMutationRecoveryBoundScopesTargetsAndTurnModes(t *testi
 	secondArgs := projectAssistantMutationRecoveryTestArgs("src/second.tsx")
 	state.RecordMutationFailure(projectToolEditFile, firstArgs)
 	state.RecordMutationFailure(projectToolEditFile, secondArgs)
+	state.RecordMutationFailure(projectToolEditFile, firstArgs)
 	if _, blocked := state.RecordMutationFailure(projectToolEditFile, firstArgs); !blocked {
 		t.Fatal("same target did not reach its own recovery bound")
 	}

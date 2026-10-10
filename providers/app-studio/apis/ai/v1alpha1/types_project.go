@@ -466,6 +466,15 @@ type ProjectWorkspaceStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	SourceRevision int64 `json:"sourceRevision,omitempty"`
 
+	// LastSourceChange identifies the thread and run that wrote this revision.
+	// +optional
+	LastSourceChange *ProjectSourceChange `json:"lastSourceChange,omitempty"`
+
+	// LastPreviewCheckpoint attributes the source snapshot last synchronized
+	// successfully to all development components.
+	// +optional
+	LastPreviewCheckpoint *ProjectSourceChange `json:"lastPreviewCheckpoint,omitempty"`
+
 	// UncommittedPaths are the working-copy paths that differ from the last
 	// commit, sorted. A path that no longer exists in the tree is a deletion
 	// and is committed as one.
@@ -495,6 +504,18 @@ type ProjectWorkspaceStatus struct {
 	// that dies mid-settlement finish the job without repeating the commit.
 	// +optional
 	Settlement *ProjectCommitSettlement `json:"settlement,omitempty"`
+}
+
+// ProjectSourceChange attributes a durable source revision to its originating turn.
+type ProjectSourceChange struct {
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ThreadID string `json:"threadID,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runID,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	SourceRevision int64 `json:"sourceRevision"`
 }
 
 // ProjectPendingCommit names an in-flight RepositoryCommit and the working-copy

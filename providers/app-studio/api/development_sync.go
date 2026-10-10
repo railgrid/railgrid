@@ -250,6 +250,8 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer release()
+	r = r.WithContext(contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, p)))
+
 	lock := s.developmentSyncLock(id, p)
 	lock.Lock()
 	defer lock.Unlock()
@@ -352,7 +354,27 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
 	scope := projectWorkspaceScope(id, p)
+	release, lockErr := s.acquireProjectRuntimeOperation(ctx, scope)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer release()
+	if p != nil && p.Spec.Template != nil && c != nil {
+		current, err := c.Projects().Get(ctx, p.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		if current.UID != p.UID || current.DeletionTimestamp != nil {
+			return nil, fmt.Errorf("project changed or was deleted while waiting for preview activation")
+		}
+		target, err = s.projectDevelopmentTarget(ctx, c, current, id)
+		if err != nil {
+			return nil, err
+		}
+		p = current
+	}
 	var (
+		origin                workspace.SourceChange
 		err                   error
 		snapshot              projectWorkspaceSyncSnapshot
 		binaryComponents      map[string]bool
@@ -411,6 +433,10 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		}
 		if currentRevision != snapshot.SourceRevision {
 			continue
+		}
+		origin = workspace.SourceChange{SourceRevision: snapshot.SourceRevision}
+		if change, sourceErr := s.workspaces.LastSourceChange(ctx, scope); sourceErr == nil && change != nil && change.SourceRevision == snapshot.SourceRevision {
+			origin = *change
 		}
 		snapshotReady = true
 		break
@@ -482,6 +508,9 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	aggregated, err := json.Marshal(results)
 	if err != nil {
 		return nil, err
+	}
+	if err := s.workspaces.RecordPreviewCheckpoint(ctx, scope, origin); err != nil {
+		return nil, fmt.Errorf("record preview checkpoint: %w", err)
 	}
 	return aggregated, nil
 }

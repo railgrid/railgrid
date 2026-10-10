@@ -79,8 +79,11 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// Thread-rail motion and composer alignment measure 1,226,431 raw / 341,465
-// gzip on the page path. Allow under 1 KB raw headroom; gzip limits stay fixed.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_227_100, gzipBytes: 341_800 })
-// The shared motion styles also enter the total-assets path.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_302_200, gzipBytes: 367_100 })
+// Thread-scoped composer drafts (including ready attachment receipts and
+// selected skills/resources/mode), async run ownership, and source provenance
+// measure 1,232,119 raw / 343,181 gzip on the page path. Keep the allowance
+// under 0.5% over the previous cap and under 1 KB beyond the measured output.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_233_000, gzipBytes: 343_500 })
+// These features also enter the total-assets path; keep its allowance under
+// 0.5% over the previous cap and under 1 KB beyond the measured output.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_307_700, gzipBytes: 368_900 })

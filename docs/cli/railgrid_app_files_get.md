@@ -9,8 +9,9 @@ railgrid app files get <name> <path> [flags]
 ### Options
 
 ```
-  -h, --help         help for get
-      --out string   Write to this local file instead of stdout
+  -h, --help           help for get
+      --out string     Write to this local file instead of stdout
+      --version-only   Print the exact version required to replace or delete this file
 ```
 
 ### Options inherited from parent commands

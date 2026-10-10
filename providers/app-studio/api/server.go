@@ -61,6 +61,8 @@ type Server struct {
 	integrationDiscoveryOnce   sync.Once
 	integrationDiscoveryBudget *integrationDiscoveryBudget
 	assistantWorkerReadBudget  projectAssistantWorkerReadBudget
+	projectRuntimeOperationsMu sync.Mutex
+	projectRuntimeOperations   map[workspace.Scope]*projectRuntimeOperation
 
 	tenant *tenant.Client
 	store  store.Store

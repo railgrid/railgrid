@@ -41,6 +41,7 @@ import (
 // must remain server-side.
 type projectAssistantRunView struct {
 	ID              string                        `json:"id"`
+	ThreadID        string                        `json:"threadID,omitempty"`
 	Mode            store.AssistantRunMode        `json:"mode,omitempty"`
 	ApprovalMode    store.AssistantApprovalMode   `json:"approvalMode,omitempty"`
 	Status          store.AssistantRunStatus      `json:"status"`
@@ -75,6 +76,7 @@ func projectAssistantRunToAPI(run store.AssistantRun) projectAssistantRunView {
 	}
 	return projectAssistantRunView{
 		ID:              run.ID,
+		ThreadID:        run.ThreadID,
 		Mode:            run.Mode,
 		ApprovalMode:    run.ApprovalMode,
 		Status:          run.Status,
@@ -158,6 +160,10 @@ func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, sc
 }
 
 func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Context, scope store.Scope, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
+	return s.startProjectAssistantRunDurablyForThread(ctx, scope, "", actor, content, clientRequestID, mode, selection, start)
+}
+
+func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, scope store.Scope, threadID, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
 	skills := selection.IDs
 	resources := projectAssistantContextResourceIdentities(selection.ContextResources)
 	parts, partsErr := projectAssistantCanonicalContentPartsForIdentityChecked(selection.ContentParts, skills, selection.ContextResources)
@@ -173,14 +179,27 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	if mode != store.AssistantRunModeDefault && mode != store.AssistantRunModePlan && mode != store.AssistantRunModeReview {
 		return projectAssistantDurableStartResult{}, newValidationError("collaborationMode must be default, plan, or review")
 	}
-	if latest, err := s.store.LatestAssistantRun(ctx, scope); err == nil {
+	latestRun := s.store.LatestAssistantRun
+	latestForThread := func() (store.AssistantRun, error) {
+		if strings.TrimSpace(threadID) != "" {
+			return s.store.LatestAssistantRunForThread(ctx, scope, threadID)
+		}
+		return latestRun(ctx, scope)
+	}
+	if latest, err := latestForThread(); err == nil {
 		if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, latest.ID); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 	} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
 		return projectAssistantDurableStartResult{}, err
 	}
-	if prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID); err == nil {
+	findPrior := func() (store.AssistantRun, error) {
+		if strings.TrimSpace(threadID) != "" {
+			return s.store.FindAssistantRunByThreadClientRequestID(ctx, scope, threadID, clientRequestID)
+		}
+		return s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
+	}
+	if prior, err := findPrior(); err == nil {
 		if err := validateProjectAssistantStartReplayWithSelectionsAndParts(prior, actor, content, mode, skills, resources, parts); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
@@ -192,7 +211,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 		return projectAssistantDurableStartResult{}, err
 	}
 	supervisor := s.projectAssistantSupervisor()
-	releaseReservation, err := supervisor.Reserve(scope)
+	releaseReservation, err := supervisor.ReserveThread(scope, threadID)
 	if err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
@@ -206,7 +225,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	assistantAt := now.Add(time.Microsecond)
 	user := store.Message{ID: newMessageID(), Role: aiv1alpha1.ProjectMessageRoleUser, ActorID: actor, Content: content, CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: newMessageID(), Role: aiv1alpha1.ProjectMessageRoleAssistant, CreatedAt: assistantAt, UpdatedAt: assistantAt}
-	run := store.AssistantRun{ID: "run-" + uuid.NewString(), Mode: mode, Status: store.AssistantRunStatusRunning, ClientRequestID: clientRequestID, UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-" + uuid.NewString(), ThreadID: strings.TrimSpace(threadID), Mode: mode, Status: store.AssistantRunStatusRunning, ClientRequestID: clientRequestID, UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err := s.captureProjectAssistantApprovalMode(ctx, scope, actor, &run); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
@@ -228,7 +247,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	assistant.Metadata = projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil)
 	created, err := s.store.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
-		if prior, ok := s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, err, clientRequestID, actor, content, mode, skills, resources, parts); ok {
+		if prior, ok := s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, err, clientRequestID, actor, content, mode, skills, resources, parts, threadID); ok {
 			if modelErr := validateProjectAssistantStartModelSelection(prior, selection.ModelID); modelErr != nil {
 				return projectAssistantDurableStartResult{}, modelErr
 			}
@@ -1152,7 +1171,7 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			}
 			message.Metadata = projectAssistantMergeTerminalVerification(message.Metadata, state.verification)
 			return nil
-		})
+		}, run.ThreadID)
 		recordSnapshotErr(transitionErr)
 		if transitionErr == nil {
 			recordSnapshotErr(appendProjectAssistantInterruptedBoundary(context.Background(), s.store, projectMessageScope(id.orgUUID, id.workspaceUUID, project), run))
@@ -1374,9 +1393,9 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 		// Current v2 permission/input checkpoints remain intentionally resumable.
 		return nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := projectAssistantThreadKey(scope, run.ThreadID)
 	supervisor := s.projectAssistantSupervisor()
-	if supervisor.reserved(scope) {
+	if supervisor.reserved(scope, run.ThreadID) {
 		return nil
 	}
 	supervisor.mu.Lock()
@@ -1386,21 +1405,41 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 	if active != nil && active.run.ID == run.ID {
 		return nil
 	}
-	// The run is not on THIS replica — but that no longer means orphaned:
-	// with multiple replicas the worker is usually elsewhere. Only a run
-	// whose durable activity claim is missing, expired (its replica died
-	// without a clean shutdown), or owned by THIS replica (Attach registers
-	// locally before claiming, so a self-owned claim without a local run is
-	// a detach leftover whose async release hasn't landed) is truly
-	// orphaned; a fresh FOREIGN claim naming this run means a worker is
-	// heartbeating it on a peer.
-	claim, ok, err := s.store.GetReplicaClaim(ctx, store.ActivityClaimKey(scope))
+	// ActivityClaimKey now fences the shared project workspace, so it cannot
+	// identify which of several thread runs is alive. Use the per-run lease for
+	// recovery; an independently heartbeating sibling run must not keep this
+	// thread's orphaned turn active or block unrelated work.
+	claim, ok, err := s.store.GetReplicaClaim(ctx, store.AssistantRunClaimKey(scope, run.ThreadID, run.ID))
 	if err != nil {
 		return err
 	}
 	if ok && claim.Detail == run.ID && claim.OwnerReplica != selfReplica &&
 		claim.Live(time.Now().UTC(), assistantActivityClaimTTL) {
 		return nil
+	}
+	if strings.TrimSpace(run.ThreadID) != "" {
+		threadClaim, threadClaimOK, threadClaimErr := s.store.GetReplicaClaim(ctx, store.AssistantThreadClaimKey(scope, run.ThreadID))
+		if threadClaimErr != nil {
+			return threadClaimErr
+		}
+		if threadClaimOK && threadClaim.OwnerReplica != selfReplica &&
+			threadClaim.Live(time.Now().UTC(), assistantActivityClaimTTL) {
+			return nil
+		}
+	}
+	// Preserve recovery compatibility for pre-thread runs written before the
+	// per-run lease existed. New runs always create AssistantRunClaimKey above;
+	// only the old project claim's run-ID detail can prove an older worker is
+	// still alive.
+	if !ok {
+		legacyClaim, legacyOK, legacyErr := s.store.GetReplicaClaim(ctx, store.ActivityClaimKey(scope))
+		if legacyErr != nil {
+			return legacyErr
+		}
+		if legacyOK && legacyClaim.Detail == run.ID && legacyClaim.OwnerReplica != selfReplica &&
+			legacyClaim.Live(time.Now().UTC(), assistantActivityClaimTTL) {
+			return nil
+		}
 	}
 	run.Status = store.AssistantRunStatusInterrupted
 	run.AbortReason = store.AssistantRunAbortReasonInterrupted

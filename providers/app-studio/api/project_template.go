@@ -346,6 +346,7 @@ func projectTemplateScopedInstanceName(p *aiv1alpha1.Project, scope string) stri
 }
 
 type projectTemplateBindingContext struct {
+	ClusterID          string
 	ActionsExchangeURL string
 	ActionsBaseURL     string
 	ActionsCABundle    string
@@ -387,6 +388,7 @@ func projectTemplateDevBindingWithContext(p *aiv1alpha1.Project, info projectTem
 		BaseURL:     context.ActionsBaseURL,
 		CABundle:    context.ActionsCABundle,
 		ActionsIdentity: bindings.ActionsIdentity{
+			ClusterID:   context.ClusterID,
 			TenantPath:  context.TenantPath,
 			Org:         context.Org,
 			Workspace:   context.Workspace,
@@ -477,6 +479,7 @@ func projectHasProviderActionGrant(p *aiv1alpha1.Project) bool {
 
 func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identity) (projectTemplateBindingContext, error) {
 	context := projectTemplateBindingContext{
+		ClusterID:   id.clusterID,
 		TenantPath:  id.workspacePath,
 		Org:         id.orgUUID,
 		Workspace:   id.workspaceUUID,
@@ -497,7 +500,7 @@ func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identit
 	if externalRaw == "" {
 		return projectTemplateBindingContext{}, fmt.Errorf("RAILGRID_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
 	}
-	transport, err := bindings.ActionsTransportForOrigin(externalRaw)
+	transport, err := bindings.ActionsTransportForProject(externalRaw, id.clusterID, strings.TrimSpace(p.Name))
 	if err != nil {
 		return projectTemplateBindingContext{}, err
 	}
@@ -543,6 +546,21 @@ func (s *Server) ActionsRuntimeConfig() bindings.ActionsRuntimeConfig {
 //  3. Rewrite spec.template + the development binding; update the Project.
 //  4. Reconcile the new binding (creates the instance in development mode).
 func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string) (*aiv1alpha1.Project, projectTemplateInfo, error) {
+	release, err := s.acquireProjectRuntimeOperation(ctx, projectWorkspaceScope(id, p))
+	if err != nil {
+		return nil, projectTemplateInfo{}, err
+	}
+	defer release()
+	// Another thread may have changed the binding while we waited. Operate on
+	// the current incarnation rather than deleting resources from an old view.
+	current, err := c.Projects().Get(ctx, p.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, projectTemplateInfo{}, err
+	}
+	if current.UID != p.UID {
+		return nil, projectTemplateInfo{}, fmt.Errorf("project incarnation changed")
+	}
+	p = current
 	info, err := fetchProjectTemplate(ctx, c, templateName)
 	if err != nil {
 		return nil, projectTemplateInfo{}, err
@@ -792,7 +810,8 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
-	updated, info, err := s.selectProjectTemplate(r.Context(), c, id, p, req.Template)
+	ownedCtx := contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, p))
+	updated, info, err := s.selectProjectTemplate(ownedCtx, c, id, p, req.Template)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())

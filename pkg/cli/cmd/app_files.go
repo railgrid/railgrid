@@ -66,7 +66,8 @@ the repository root (web/public/logo.png on the application template).
   railgrid app files ls shop
   railgrid app files get shop api/server.mjs > server.mjs
   railgrid app files put shop web/public/logo.png ./logo.png
-  railgrid app files rm shop web/public/old.png`,
+  railgrid app files get shop web/public/old.png --version-only
+  railgrid app files rm shop web/public/old.png --expected-version <version>`,
 	}
 	cmd.AddCommand(
 		newAppFilesLsCommand(target),
@@ -124,11 +125,15 @@ func newAppFilesLsCommand(target *hubTarget) *cobra.Command {
 
 func newAppFilesGetCommand(target *hubTarget) *cobra.Command {
 	var outPath string
+	var versionOnly bool
 	cmd := &cobra.Command{
 		Use:   "get <name> <path>",
 		Short: "Print a workspace file (text or binary) to stdout or --out",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if versionOnly && outPath != "" {
+				return fmt.Errorf("--version-only and --out cannot be combined")
+			}
 			ctx := cmdContext(cmd)
 			s, err := newHubSession(ctx, *target)
 			if err != nil {
@@ -139,6 +144,14 @@ func newAppFilesGetCommand(target *hubTarget) *cobra.Command {
 				return err
 			}
 			defer resp.Body.Close() //nolint:errcheck
+			if versionOnly {
+				version := strings.Trim(strings.TrimSpace(resp.Header.Get("ETag")), "\"")
+				if version == "" || strings.HasPrefix(version, "W/") {
+					return fmt.Errorf("the server did not return an exact file version")
+				}
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), version)
+				return err
+			}
 			w := cmd.OutOrStdout()
 			if outPath != "" {
 				f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -155,11 +168,13 @@ func newAppFilesGetCommand(target *hubTarget) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&outPath, "out", "", "Write to this local file instead of stdout")
+	cmd.Flags().BoolVar(&versionOnly, "version-only", false, "Print the exact version required to replace or delete this file")
 	return cmd
 }
 
 func newAppFilesPutCommand(target *hubTarget) *cobra.Command {
 	var createOnly bool
+	var expectedVersion string
 	var output string
 	cmd := &cobra.Command{
 		Use:   "put <name> <path> [local-file]",
@@ -191,7 +206,12 @@ are served.`,
 			}
 			header := http.Header{}
 			header.Set("Content-Type", "application/octet-stream")
-			if createOnly {
+			if createOnly && expectedVersion != "" {
+				return fmt.Errorf("--create-only and --expected-version cannot be combined")
+			}
+			if expectedVersion != "" {
+				header.Set("If-Match", expectedVersion)
+			} else {
 				header.Set("If-None-Match", "*")
 			}
 			var raw json.RawMessage
@@ -212,12 +232,14 @@ are served.`,
 			return err
 		},
 	}
-	cmd.Flags().BoolVar(&createOnly, "create-only", false, "Fail (412) when the file already exists")
+	cmd.Flags().BoolVar(&createOnly, "create-only", false, "Create only (the default); fail when the file already exists")
+	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Replace only the exact file version returned by files get")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
 	return cmd
 }
 
 func newAppFilesRmCommand(target *hubTarget) *cobra.Command {
+	var expectedVersion string
 	cmd := &cobra.Command{
 		Use:     "rm <name> <path>",
 		Aliases: []string{"delete"},
@@ -229,12 +251,18 @@ func newAppFilesRmCommand(target *hubTarget) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := s.do(ctx, http.MethodDelete, projectFileVerbURL(s, args[0], "files-content", args[1]), nil, nil); err != nil {
+			if strings.TrimSpace(expectedVersion) == "" || expectedVersion == "*" {
+				return fmt.Errorf("--expected-version with the version returned by files get is required")
+			}
+			header := http.Header{}
+			header.Set("If-Match", expectedVersion)
+			if err := s.doWithHeaders(ctx, http.MethodDelete, projectFileVerbURL(s, args[0], "files-content", args[1]), nil, header, nil); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", strings.TrimSpace(args[1]))
 			return err
 		},
 	}
+	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Delete only the exact file version returned by files get")
 	return cmd
 }

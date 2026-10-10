@@ -242,8 +242,9 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 		t.Fatalf("template info: %v", err)
 	}
 	binding, err := projectTemplateDevBindingWithContext(p, info, projectTemplateBindingContext{
+		ClusterID:          "cluster-a",
 		ActionsExchangeURL: "https://hub.example/api/provider-actions/workload/exchange",
-		ActionsBaseURL:     "https://hub.example/services/providers/app-studio",
+		ActionsBaseURL:     "https://hub.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/shop/integration-actions",
 		ActionsCABundle:    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
 		TenantPath:         "root:railgrid:tenants:org:ws",
 		Org:                "org",
@@ -262,7 +263,7 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 	}
 	for key, want := range map[string]string{
 		"railgridActionsExchangeURL": "https://hub.example/api/provider-actions/workload/exchange",
-		"railgridActionsBaseURL":     "https://hub.example/services/providers/app-studio",
+		"railgridActionsBaseURL":     "https://hub.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/shop/integration-actions",
 		"railgridActionsCABundle":    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
 		"railgridActionsTenantPath":  "root:railgrid:tenants:org:ws",
 		"railgridActionsProjectUID":  "test-project-uid-shop",
@@ -311,7 +312,7 @@ func TestProjectTemplateBindingContextIncludesCABundleOnlyWithActiveGrant(t *tes
 		},
 	}
 	bundle := "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----"
-	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{})
+	context, err := (&Server{tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{clusterID: "cluster-a"})
 	if err != nil {
 		t.Fatalf("projectTemplateBindingContext: %v", err)
 	}
@@ -468,7 +469,7 @@ func TestApplyProjectDevelopmentTemplateBuildsInitialBindingIdempotently(t *test
 
 	context := projectTemplateBindingContext{
 		ActionsExchangeURL: "https://hub.example/api/provider-actions/workload/exchange",
-		ActionsBaseURL:     "https://hub.example/services/providers/app-studio",
+		ActionsBaseURL:     "https://hub.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/shop/integration-actions",
 	}
 	if err := applyProjectDevelopmentTemplateWithContext(p, info, context); err != nil {
 		t.Fatalf("applyProjectDevelopmentTemplateWithContext: %v", err)

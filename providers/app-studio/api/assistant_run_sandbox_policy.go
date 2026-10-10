@@ -284,30 +284,60 @@ func projectAssistantDevelopmentTemplateBound(project *aiv1alpha1.Project) bool 
 // assistant checkpoint.  It is the recovery contract after a permission
 // interrupt or replica restart, not merely an in-memory handle.
 type projectAssistantRunSandboxMetadata struct {
-	Version             int                             `json:"version"`
-	Status              string                          `json:"status"`
-	RunID               string                          `json:"runID"`
-	OrgUUID             string                          `json:"orgUUID"`
-	WorkspaceUUID       string                          `json:"workspaceUUID"`
-	ProjectName         string                          `json:"projectName"`
-	ProjectUID          string                          `json:"projectUID"`
-	Template            string                          `json:"template"`
-	ProviderExportPath  string                          `json:"providerExportPath"`
-	TransportGeneration string                          `json:"transportGeneration"`
-	Instance            projectAssistantSandboxInstance `json:"instance"`
-	SourceRevision      uint64                          `json:"sourceRevision"`
-	SourceDigest        string                          `json:"sourceDigest"`
-	RemoteRevision      uint64                          `json:"remoteRevision,omitempty"`
-	RemoteDigest        string                          `json:"remoteDigest,omitempty"`
-	RemoteCheckpointID  string                          `json:"remoteCheckpointID,omitempty"`
-	CheckpointRevision  uint64                          `json:"checkpointRevision,omitempty"`
-	CheckpointDigest    string                          `json:"checkpointDigest,omitempty"`
-	CacheGeneration     string                          `json:"cacheGeneration,omitempty"`
-	CreatedAt           time.Time                       `json:"createdAt"`
-	LastActivityAt      time.Time                       `json:"lastActivityAt"`
-	IdleExpiresAt       time.Time                       `json:"idleExpiresAt"`
-	HardExpiresAt       time.Time                       `json:"hardExpiresAt"`
-	Conflict            string                          `json:"conflict,omitempty"`
+	ApprovedMutations   map[string]projectAssistantSandboxMutationReceipt `json:"approvedMutations,omitempty"`
+	Reconciliations     map[string]projectAssistantSandboxReconciliation  `json:"reconciliations,omitempty"`
+	Version             int                                               `json:"version"`
+	Status              string                                            `json:"status"`
+	ThreadID            string                                            `json:"threadID,omitempty"`
+	RunID               string                                            `json:"runID"`
+	OrgUUID             string                                            `json:"orgUUID"`
+	WorkspaceUUID       string                                            `json:"workspaceUUID"`
+	ProjectName         string                                            `json:"projectName"`
+	ProjectUID          string                                            `json:"projectUID"`
+	Template            string                                            `json:"template"`
+	ProviderExportPath  string                                            `json:"providerExportPath"`
+	TransportGeneration string                                            `json:"transportGeneration"`
+	Instance            projectAssistantSandboxInstance                   `json:"instance"`
+	SourceRevision      uint64                                            `json:"sourceRevision"`
+	SourceDigest        string                                            `json:"sourceDigest"`
+	RemoteRevision      uint64                                            `json:"remoteRevision,omitempty"`
+	RemoteDigest        string                                            `json:"remoteDigest,omitempty"`
+	RemoteCheckpointID  string                                            `json:"remoteCheckpointID,omitempty"`
+	CheckpointRevision  uint64                                            `json:"checkpointRevision,omitempty"`
+	CheckpointDigest    string                                            `json:"checkpointDigest,omitempty"`
+	CacheGeneration     string                                            `json:"cacheGeneration,omitempty"`
+	CreatedAt           time.Time                                         `json:"createdAt"`
+	LastActivityAt      time.Time                                         `json:"lastActivityAt"`
+	IdleExpiresAt       time.Time                                         `json:"idleExpiresAt"`
+	HardExpiresAt       time.Time                                         `json:"hardExpiresAt"`
+	Conflict            string                                            `json:"conflict,omitempty"`
+}
+
+// projectAssistantSandboxMutationReceipt records the exact private file state
+// that App Studio authorized through a workspace mutation tool. Commands run
+// in the private sandbox do not receive receipts and therefore cannot write
+// their filesystem changes back into the shared project.
+type projectAssistantSandboxMutationReceipt struct {
+	Version string `json:"version,omitempty"`
+	Deleted bool   `json:"deleted,omitempty"`
+}
+
+// A shared-file conflict can be repaired only after an explicit authoritative
+// reread. Persist that boundary across suspension and coordinator recovery.
+type projectAssistantSandboxReconciliation struct {
+	NeedsReread      bool                                     `json:"needsReread,omitempty"`
+	Version          string                                   `json:"version,omitempty"`
+	ConflictProposal *projectAssistantSandboxConflictProposal `json:"conflictProposal,omitempty"`
+}
+
+// projectAssistantSandboxConflictProposal is the private change that failed
+// the shared-file version fence. It remains encrypted with the run checkpoint
+// until the user or assistant explicitly reconciles it against a fresh read.
+// The proposal is data only and is never applied by reconciliation itself.
+type projectAssistantSandboxConflictProposal struct {
+	Operation       workspace.ManagedFileOperation `json:"operation"`
+	Content         string                         `json:"content,omitempty"`
+	ExpectedVersion string                         `json:"expectedVersion,omitempty"`
 }
 
 type projectAssistantSandboxInstance struct {

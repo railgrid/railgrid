@@ -330,6 +330,34 @@ Admission and the terminal boundary share one lock, so late input is either
 queued or rejected for the next run, never acknowledged and lost. The active
 collaboration mode remains sticky.
 
+Shared projects support concurrent turns on different Sessions. Durable runs
+carry their thread ID; active-turn uniqueness, submission idempotency, steering,
+approval, cancellation, event delivery, and orphan recovery are scoped to that
+thread and run. The project retains one durable workspace owner across replicas,
+shared by its active threads. Source writes take a short atomic transaction lock;
+restore and template changes reserve the workspace exclusively, and runtime
+activation is serialized under the same owner.
+
+When an eligible private coding sandbox is available, each run receives its own
+command workspace, seeded from the source snapshot captured at sandbox setup
+before it waits for Infrastructure. Command receipts retain that snapshot's
+revision and digest even when a sibling thread changes shared source. If no
+eligible private sandbox is available, command execution returns a visible
+blocker and does not fall back to the shared development runtime. Source-file
+tools remain available and use versioned writes. Shared file
+replacements and deletions require exact versions; new files are create-only. A
+conflict lists every changed file and applies none of the transaction. The
+assistant may reread and reconcile twice; unresolved targets become visible
+blockers while unrelated work proceeds. Rereads preserve the private proposal as
+feedback, without applying it. Preview verification fails closed when its command
+snapshot differs from the source to activate. The Project's durable workspace
+status records the thread, run, and revision of its latest source change and
+acknowledged preview checkpoint.
+
+The portal keeps drafts, attachment receipts, and controls independent per user,
+tenant, Project UID, and thread. Session calls carry `X-Railgrid-Project` as an
+affinity hint; it does not grant authorization.
+
 New assistant runs use one sticky collaboration mode: `Default`, `Plan`, or
 `Review`. `Plan` is read-only. `Review` is an explicitly started, independently
 durable read-only turn over the `current_workspace` target; clients start one
@@ -564,39 +592,36 @@ allowedActions:
 ```
 
 App Studio only GETs the referenced object while reconciling and never creates,
-updates, owns, or deletes it. Integrations are managed through
-`/api/projects/{project}/integrations` (GET/POST), removed with DELETE on the
-alias, and invoked with POST on `{alias}/invoke`. On create or reactivation,
-App Studio resolves the hub's `/api/providers` catalog (as the provider) and records a
-server-owned `schemaDigest`, `grantedBy`, and `grantedAt` for every exact
-action/resource grant. Revocation preserves that grant audit and records
-`revokedBy`/`revokedAt`; reactivation requires fresh catalog verification and
-consent when declared.
+updates, owns, or deletes it. Integration CRUD is served as the
+`projects/{project}/integrations` custom subresource on the cluster-qualified
+Project API path. On create or reactivation, App Studio resolves the hub's
+`/api/providers` catalog and records a server-owned `schemaDigest`, `grantedBy`,
+and `grantedAt` for every exact action/resource grant. Revocation preserves
+that grant audit and records `revokedBy`/`revokedAt`; reactivation requires
+fresh catalog verification and consent when declared.
 
-Invocation re-verifies the persisted grant digest against the live catalog
-(`409` on drift), then forwards `{"input": ...}` to the bound provider's action
-as **App Studio**, through App Studio's own APIExport virtual workspace, at the
-kube path of the custom subresource
-`/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{action}` (the
-contract version is the serving provider's declaration, not a path segment).
-kcp authorizes the call against the claim App Studio's export carries on that
-coordinate, so an integration's action must be one App Studio has claimed
-(`manifest.yaml` `spec.requires[].resources[]`); the caller's identity
-travels as a label only. The route is composed from the coordinate the catalog
-publishes the action on — its parent `spec.export.resources[]` entry's
-`apiVersion`, `kind` and plural name;
-App Studio never learns a provider URL or embeds provider transport logic.
-Caller credentials, provider backend URLs, resource overrides, and raw SQL
-are rejected.
+The SDK invokes the Project-scoped custom subresource
+`POST /clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/projects/{project}/integration-actions/{alias}`
+with `{ action, actionVersion, input }` in the body. kcp authenticates the
+workload identity, checks RBAC on `projects/integration-actions` for the named
+Project, and forwards the request to App Studio. App Studio validates the
+current Project incarnation and runtime binding, checks the saved non-revoked
+action grant, re-verifies the digest against the live catalog (`409` on
+drift), and authorizes the action before forwarding it through the provider's
+cluster-qualified custom subresource. The Project identity is scoped to the
+current environment and its saved resource references. Caller credentials,
+provider backend URLs, resource overrides, and raw SQL are rejected.
 
-Generated server applications install the public
-`@crwilhit/railgrid-actions-node@0.1.0` artifact under the stable consumer name
-with this exact dependency alias in the server component's `package.json`:
+Generated server applications install
+`@crwilhit/railgrid-actions-node@0.2.0` under the stable consumer name after
+its public npm release. Publication is pending; Atlas currently uses the
+reviewed local tarball with a `file:` dependency. After release, use this
+dependency alias in the server component's `package.json`:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.1.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"
   }
 }
 ```
@@ -604,14 +629,22 @@ with this exact dependency alias in the server component's `package.json`:
 Application code keeps the canonical import
 `import { createActionsClient } from '@railgrid/actions-node';` and can call
 `client.integration(alias).invoke(...)` or `invokeEnvelope(...)`. The SDK is
-server-only, requires an absolute HTTPS base URL (except an explicit loopback
-test override), reads the short-lived workload token from
-`RAILGRID_ACTIONS_TOKEN_FILE` on every request or from a refreshable credential
-provider, and retries once with `forceRefresh` after a `401`. The bootstrap
-token used by the workload exchange is never the app token; no development
-token fallback exists. Development sandboxes install this declared dependency
-through the component toolchain; `railgrid-dev-agent` does not project an SDK or
-mount `/node_modules`.
+server-only. App Studio injects its trusted cluster-qualified base URL and the
+runtime reads the short-lived workload token from `RAILGRID_ACTIONS_TOKEN_FILE`
+on every request or from a refreshable credential provider; one `401` triggers
+one `forceRefresh` retry. Credential refresh readiness does not prove that the
+saved integration is reachable or authorized. A successful invocation verifies
+access; typed failures distinguish route, authentication, authorization,
+contract, network, and upstream errors. The bootstrap token used by the
+workload exchange is never the app token, and no development-token fallback
+exists. Development sandboxes install the declared dependency through the
+component toolchain; `railgrid-dev-agent` does not project an SDK or mount
+`/node_modules`.
+
+For an existing application with a customized manifest, the assistant must
+write a unified dependency-change proposal to
+`.railgrid/proposals/provider-actions-sdk.patch` and show the diff before
+changing `package.json`. It applies that patch only after the user approves it.
 
 ## Running it yourself
 

@@ -96,13 +96,3 @@ func stampTestCaller(r *http.Request, user string) *http.Request {
 	identity := dataplane.ProxiedIdentity{User: user, Groups: []string{"system:authenticated"}}
 	return r.WithContext(dataplane.WithProxiedIdentity(r.Context(), identity))
 }
-
-// stampTestRoute records the parsed kube route on r the way serve's adapter
-// does, so a handler driven without the server sees the route it would have.
-func stampTestRoute(r *http.Request) *http.Request {
-	route, err := dataplane.ParseSubresourceRequest(r)
-	if err != nil {
-		return r
-	}
-	return r.WithContext(dataplane.WithRoute(r.Context(), route))
-}

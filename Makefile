@@ -519,12 +519,11 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
 	./hack/apigen.sh --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
-	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.railgrid.ai.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/projects.ai.railgrid.ai.yaml
-	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.railgrid.ai.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.railgrid.ai.yaml
-	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.railgrid.ai.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/studios.ai.railgrid.ai.yaml
+	@find providers/app-studio/deploy/chart/files/schemas -maxdepth 1 -type f -name '*.ai.railgrid.ai.yaml' -delete
+	@for schema in providers/app-studio/config/kcp/apiresourceschema-*.ai.railgrid.ai.yaml; do \
+		name=$${schema##*/}; \
+		cp "$$schema" "providers/app-studio/deploy/chart/files/schemas/$${name#apiresourceschema-}"; \
+	done
 	@# One APIExport, generated: apigen supplies spec.resources, manifest.yaml
 	@# supplies metadata.name (spec.export.name) and spec.permissionClaims (from
 	@# spec.requires). The group-named file

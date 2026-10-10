@@ -74,7 +74,9 @@ type LedgerRecord struct {
 	// SourceRevision is the monotonic working-copy revision. Zero means the
 	// working copy has never been written; readers report it as 1 so an
 	// omitted or zero authority is always rejected downstream.
-	SourceRevision uint64
+	SourceRevision        uint64
+	LastSourceChange      *SourceChange
+	LastPreviewCheckpoint *SourceChange
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
@@ -87,6 +89,14 @@ type LedgerRecord struct {
 // Ledger implementation can hand callers a record it also caches.
 func (r LedgerRecord) DeepCopy() LedgerRecord {
 	out := LedgerRecord{SourceRevision: r.SourceRevision}
+	if r.LastSourceChange != nil {
+		change := *r.LastSourceChange
+		out.LastSourceChange = &change
+	}
+	if r.LastPreviewCheckpoint != nil {
+		change := *r.LastPreviewCheckpoint
+		out.LastPreviewCheckpoint = &change
+	}
 	if r.UncommittedPaths != nil {
 		out.UncommittedPaths = append([]string(nil), r.UncommittedPaths...)
 	}
@@ -285,4 +295,58 @@ func normalizeLedgerPaths(paths []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// SourceChange records the immutable turn attribution of a source revision.
+type SourceChange struct {
+	ThreadID       string `json:"threadID,omitempty"`
+	RunID          string `json:"runID,omitempty"`
+	SourceRevision uint64 `json:"sourceRevision"`
+}
+
+type mutationOriginContextKey struct{}
+
+// ContextWithMutationOrigin attaches server-owned turn provenance to a short
+// workspace transaction. It is never parsed from client-provided headers.
+func ContextWithMutationOrigin(ctx context.Context, threadID, runID string) context.Context {
+	return context.WithValue(ctx, mutationOriginContextKey{}, SourceChange{ThreadID: threadID, RunID: runID})
+}
+
+// LastSourceChange reads provenance from the same durable ledger as its revision.
+func (s *FileStore) LastSourceChange(ctx context.Context, scope Scope) (*SourceChange, error) {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return record.DeepCopy().LastSourceChange, nil
+}
+
+func (s *FileStore) LastPreviewCheckpoint(ctx context.Context, scope Scope) (*SourceChange, error) {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return record.DeepCopy().LastPreviewCheckpoint, nil
+}
+
+// RecordPreviewCheckpoint records only the snapshot acknowledged by the runtime.
+func (s *FileStore) RecordPreviewCheckpoint(ctx context.Context, scope Scope, source SourceChange) error {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		copy := source
+		record.LastPreviewCheckpoint = &copy
+		return true, nil
+	})
+	return err
 }

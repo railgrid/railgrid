@@ -1135,6 +1135,9 @@ func TestVerifyDevelopmentRuntimeCheckpointsDirtySandboxBeforeVerification(t *te
 		metadata: projectAssistantRunSandboxMetadata{
 			Status: "active", SourceRevision: revision, SourceDigest: oldDigest,
 			RemoteRevision: revision + 1, RemoteDigest: newDigest, RemoteCheckpointID: "baseline",
+			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
+				"main.go": {Version: projectAssistantSandboxContentVersion("new\n")},
+			},
 		},
 	}
 	state.SetSandbox(sandbox)

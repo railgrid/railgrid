@@ -87,9 +87,9 @@ type projectAssistantExecSnapshotEntry struct {
 }
 
 // projectSandboxExecRequest is the typed infrastructure data-plane protocol.
-// Normal execution targets the already-synchronized live development
-// workspace. App Studio sends the expected durable source revision/digest,
-// never a second source snapshot or any credentials/environment.
+// Assistant execution targets the active run's isolated coding workspace.
+// App Studio sends the expected durable source revision/digest, never a
+// second source snapshot or any credentials/environment.
 type projectSandboxExecRequest struct {
 	Action         string   `json:"action"`
 	SessionID      string   `json:"sessionID,omitempty"`
@@ -137,6 +137,9 @@ type projectAssistantExecMetadata struct {
 	Argv             []string `json:"argv,omitempty"`
 	Workdir          string   `json:"workdir,omitempty"`
 	TimeoutSeconds   int      `json:"timeoutSeconds,omitempty"`
+	SourceRevision   uint64   `json:"sourceRevision,omitempty"`
+	SourceDigest     string   `json:"sourceDigest,omitempty"`
+	SyncStatus       string   `json:"syncStatus,omitempty"`
 	NetworkProfile   string   `json:"networkProfile,omitempty"`
 	AuthorityProfile string   `json:"authorityProfile,omitempty"`
 	WritebackPolicy  string   `json:"writebackPolicy,omitempty"`
@@ -149,16 +152,15 @@ type projectAssistantExecMetadata struct {
 	OutputTruncated  bool     `json:"outputTruncated,omitempty"`
 }
 
-// projectAssistantExecCommandToolSpecForRun keeps the ordinary multi-component
-// workflow contract intact while making an active run sandbox's single
-// component explicit to the model. The run sandbox is deliberately backed by
-// the universal template's canonical "workspace" component; this is a
-// presentation constraint, not a new execution authority or component alias.
+// projectAssistantExecCommandToolSpecForRun tells the model when commands
+// require a private per-run sandbox and, when eligible, narrows the command to
+// that sandbox's canonical single "workspace" component.
 func projectAssistantExecCommandToolSpecForRun(spec projectAssistantToolSpec, runCtx projectAssistantWorkflowRunContext) projectAssistantToolSpec {
 	if projectToolBaseName(spec.Name) != projectToolExecCommand {
 		return spec
 	}
 	if runCtx.RunState == nil || (!runCtx.RunState.SandboxRemoteEnabled() && runCtx.RunState.Sandbox() == nil) {
+		spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic command only in an isolated per-run coding sandbox pinned to this run's source snapshot. Command execution is unavailable when this run has no eligible private sandbox; it returns a visible blocker and never falls back to the shared development runtime. Use App Studio source-file tools to make changes; their versioned file writes remain available. Pass argv tokens directly, use an existing workspace script for longer commands, and run formatters in check/diff mode only. App Studio forwards no credentials or environment overrides."
 		return spec
 	}
 	spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens directly rather than a shell string: provide 1-32 non-empty items, each at most 4096 UTF-8 bytes. Use an existing workspace script instead of embedding longer code in argv. workdir is an optional relative directory of at most 256 UTF-8 bytes; omit it to use the workspace root. App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
@@ -234,6 +236,18 @@ func mergeProjectAssistantExecMetadata(existing, next *projectAssistantExecMetad
 	}
 	if out.TimeoutSeconds == 0 {
 		out.TimeoutSeconds = existing.TimeoutSeconds
+	}
+	// The dispatch fence belongs to the command start. Later lifecycle events
+	// may fill a missing fence, but cannot relabel a command with another
+	// snapshot after polling begins.
+	if existing.SourceRevision != 0 {
+		out.SourceRevision = existing.SourceRevision
+	}
+	if existing.SourceDigest != "" {
+		out.SourceDigest = existing.SourceDigest
+	}
+	if existing.SyncStatus != "" {
+		out.SyncStatus = existing.SyncStatus
 	}
 	if out.NetworkProfile == "" {
 		out.NetworkProfile = existing.NetworkProfile
@@ -319,6 +333,9 @@ func projectAssistantExecMetadataForToolArguments(name string, args map[string]a
 	if commandResult.Status != "" {
 		metadata.Status = commandResult.Status
 	}
+	metadata.SourceRevision = commandResult.SourceRevision
+	metadata.SourceDigest = strings.TrimSpace(commandResult.SourceDigest)
+	metadata.SyncStatus = strings.TrimSpace(commandResult.SyncStatus)
 	metadata.Summary = trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(commandResult.Summary), 240)
 	metadata.ExitCode = commandResult.ExitCode
 	metadata.DurationMS = commandResult.DurationMS
@@ -582,123 +599,43 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 			}
 			return &projectAssistantExecCommandResult{Status: "failed", Summary: "Coding sandbox setup failed: " + sandboxErr.Error()}, nil
 		}
-		if sandbox != nil {
-			return execProjectAssistantRunSandboxCommand(ctx, current, sandbox, args)
+		if sandbox == nil {
+			return projectAssistantExecSandboxUnavailableResult(), nil
 		}
-		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, current)
-		if blocked != nil {
-			return &projectAssistantExecCommandResult{Status: blocked.Status, Summary: blocked.Summary, Blockers: blocked.Blockers}, nil
-		}
-		component, componentInfo, err := projectAssistantExecComponent(target, args.Component)
-		if err != nil {
-			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: []string{err.Error()}}, nil
-		}
-		var (
-			revision                uint64
-			syncStatus, syncFailure string
-			sourceRevision          uint64
-			digest                  string
-		)
-		for attempt := 0; attempt < projectAssistantExecSnapshotAttempts; attempt++ {
-			revision, syncStatus, syncFailure = projectAssistantExecSyncEvidence(ctx, current)
-			if syncStatus != "succeeded" {
-				break
-			}
-			includeBinary := projectAssistantExecBinaryInclusion(ctx, server, id, target.dataPlaneRefFor(component))
-			digest, sourceRevision, err = projectAssistantExecSnapshot(ctx, current, componentInfo, revision, includeBinary)
-			if !errors.Is(err, errProjectAssistantExecRevisionChanged) {
-				break
-			}
-		}
-		if syncStatus != "succeeded" {
-			if syncFailure == "" {
-				syncFailure = "the latest workspace mutation has not completed development synchronization"
-			}
-			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked until the exact workspace revision is synchronized.", Component: component, SourceRevision: revision, SyncStatus: syncStatus, Blockers: []string{syncFailure}}, nil
-		}
-		if err != nil {
-			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked because an exact workspace snapshot could not be prepared.", Component: component, SourceRevision: revision, SyncStatus: syncStatus, Blockers: []string{err.Error()}}, nil
-		}
-		if sourceRevision == 0 {
-			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked because the durable workspace revision could not be read.", Component: component, SourceRevision: revision, SourceDigest: digest, SyncStatus: syncStatus, Blockers: []string{"project workspace source revision is unavailable"}}, nil
-		}
-		requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
-		// The agent fences exec on its own applied revision, which plain
-		// syncs may have renumbered ahead of the FileStore's.
-		agentRevision := server.developmentSyncRevision(id, target.dataPlaneRefFor(component), sourceRevision)
-		start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: agentRevision, SourceDigest: digest}
-		started, err := retryProjectAssistantExecStart(ctx, start, func(startCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
-			return projectAssistantExecCall(startCtx, server, id, target.dataPlaneRefFor(component), request)
-		})
-		if err != nil {
-			if projectAssistantExecStartMayHaveBeenAccepted(err) {
-				projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
-					return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
-				})
-			}
-			return &projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
-		}
-		if started.SessionID == "" {
-			projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
-				return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
-			})
-			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
-		}
-		startedAt := time.Now()
-		result := started
-		var cancelOnce sync.Once
-		cancelSession := func() {
-			cancelOnce.Do(func() {
-				cancelCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecCancelTimeout)
-				defer cancel()
-				_, _ = projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "cancel", SessionID: started.SessionID, RequestID: requestID})
-			})
-		}
-		stopRemoteCancel := context.AfterFunc(ctx, cancelSession)
-		defer stopRemoteCancel()
-		defer func() {
-			// A request can be canceled while the HTTP poll is in flight. Keep
-			// the remote process bounded even when that poll returns ctx.Err
-			// before the select below gets a chance to send the cancel action.
-			if !projectAssistantExecTerminal(result.State) {
-				cancelSession()
-			}
-		}()
-		deadline := time.NewTimer(projectAssistantExecPollTimeout)
-		defer deadline.Stop()
-		pollImmediately := true
-		for !projectAssistantExecTerminal(result.State) {
-			if pollImmediately {
-				pollImmediately = false
-				if ctx.Err() != nil {
-					cancelSession()
-					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"), nil
-				}
-			} else {
-				select {
-				case <-ctx.Done():
-					cancelSession()
-					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"), nil
-				case <-deadline.C:
-					cancelSession()
-					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "timed_out"), nil
-				case <-time.After(projectAssistantExecPollInterval):
-				}
-			}
-			result, err = projectAssistantExecCall(ctx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "poll", SessionID: started.SessionID, RequestID: requestID})
-			if err != nil {
-				if ctx.Err() != nil {
-					cancelSession()
-					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"), nil
-				}
-				return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
-			}
-		}
-		return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), ""), nil
+		return execProjectAssistantRunSandboxCommand(ctx, current, sandbox, args)
+	}
+}
+
+func projectAssistantExecSandboxUnavailableResult() *projectAssistantExecCommandResult {
+	return &projectAssistantExecCommandResult{
+		Status:  "blocked",
+		Summary: "Command execution requires an isolated per-run coding sandbox, which is unavailable for this run.",
+		Blockers: []string{
+			"This deployment does not provide an eligible private coding sandbox for the current run. Commands are not run in the shared development runtime. Use App Studio source-file tools; versioned file changes remain available.",
+		},
 	}
 }
 
 func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectAssistantWorkflowRunContext, sandbox *projectAssistantRunSandbox, args *projectAssistantExecCommandInput) (*projectAssistantExecCommandResult, error) {
+	if sandbox == nil {
+		return projectAssistantExecSandboxUnavailableResult(), nil
+	}
+	metadata := sandbox.metadataSnapshot()
+	if strings.TrimSpace(current.AssistantRunID) == "" || strings.TrimSpace(metadata.RunID) == "" || metadata.RunID != strings.TrimSpace(current.AssistantRunID) {
+		return &projectAssistantExecCommandResult{
+			Status:   "blocked",
+			Summary:  "Command execution was rejected because the coding sandbox does not belong to this run.",
+			Blockers: []string{"The private coding sandbox run identity does not match the current assistant run."},
+		}, nil
+	}
+	revision, digest := projectAssistantSandboxRemoteFence(metadata)
+	if revision == 0 || strings.TrimSpace(digest) == "" {
+		return &projectAssistantExecCommandResult{
+			Status:   "blocked",
+			Summary:  "Command execution was blocked because the private coding sandbox has no durable source snapshot fence.",
+			Blockers: []string{"The private coding sandbox source revision and digest are unavailable."},
+		}, nil
+	}
 	// The universal run sandbox is intentionally a single-component execution
 	// target. Keep this server-side fence independent from the target metadata:
 	// a malformed or future template must not turn an assistant-run sandbox
@@ -714,8 +651,10 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 	if err != nil {
 		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: []string{err.Error()}}, nil
 	}
+	// Certification belongs to the source fence at dispatch, even if this
+	// run advances its sandbox metadata before polling finishes.
 	requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
-	start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds}
+	start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: revision, SourceDigest: digest}
 	started, err := sandbox.exec(ctx, sandbox.target.dataPlaneRefFor(component), start)
 	if err != nil {
 		if projectAssistantExecStartMayHaveBeenAccepted(err) {
@@ -726,7 +665,7 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 				return sandbox.client.Exec(cancelCtx, sandbox.id, sandbox.target.dataPlaneRefFor(component), request)
 			})
 		}
-		return &projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component}, nil
+		return &projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component, SourceRevision: revision, SourceDigest: digest, SyncStatus: "succeeded"}, nil
 	}
 	if started.SessionID == "" {
 		projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
@@ -735,7 +674,7 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 			}
 			return sandbox.client.Exec(cancelCtx, sandbox.id, sandbox.target.dataPlaneRefFor(component), request)
 		})
-		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component}, nil
+		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component, SourceRevision: revision, SourceDigest: digest, SyncStatus: "succeeded"}, nil
 	}
 	startedAt := time.Now()
 	result := started
@@ -762,21 +701,15 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 			pollImmediately = false
 			if ctx.Err() != nil {
 				cancelSession()
-				meta := sandbox.metadataSnapshot()
-				revision, digest := projectAssistantSandboxRemoteFence(meta)
 				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
 			}
 		} else {
 			select {
 			case <-ctx.Done():
 				cancelSession()
-				meta := sandbox.metadataSnapshot()
-				revision, digest := projectAssistantSandboxRemoteFence(meta)
 				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
 			case <-deadline.C:
 				cancelSession()
-				meta := sandbox.metadataSnapshot()
-				revision, digest := projectAssistantSandboxRemoteFence(meta)
 				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "timed_out"), nil
 			case <-time.After(projectAssistantExecPollInterval):
 			}
@@ -785,15 +718,11 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 		if err != nil {
 			if ctx.Err() != nil {
 				cancelSession()
-				meta := sandbox.metadataSnapshot()
-				revision, digest := projectAssistantSandboxRemoteFence(meta)
 				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
 			}
-			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID}, nil
+			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID, SourceRevision: revision, SourceDigest: digest, SyncStatus: "succeeded"}, nil
 		}
 	}
-	meta := sandbox.metadataSnapshot()
-	revision, digest := projectAssistantSandboxRemoteFence(meta)
 	return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), ""), nil
 }
 
@@ -1157,20 +1086,6 @@ func projectAssistantExecSyncEvidence(ctx context.Context, runCtx projectAssista
 	}
 	status, failure := runCtx.RunState.WaitForDevelopmentSync(ctx, revision, dataPlaneCallTimeout)
 	return revision, status, failure
-}
-
-// projectAssistantExecBinaryInclusion reports, on first need, whether the
-// component's agent received binaries through development sync (its /status
-// advertises base64). The exec digest must cover exactly what sync sent.
-func projectAssistantExecBinaryInclusion(ctx context.Context, server *Server, id identity, ref dataPlaneRef) func() bool {
-	var decided, include bool
-	return func() bool {
-		if !decided {
-			decided = true
-			include = server != nil && server.developmentAgentSupportsBase64(ctx, id, ref)
-		}
-		return include
-	}
 }
 
 // projectAssistantExecSnapshotEntryFor reads one component file the way

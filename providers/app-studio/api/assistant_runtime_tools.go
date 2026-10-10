@@ -940,6 +940,11 @@ func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) f
 		if blocked != nil {
 			return blocked, nil
 		}
+		release, err := server.acquireProjectRuntimeOperation(ctx, currentRunCtx.WorkspaceScope)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		refs := runtimeComponentRefs(target)
 		if input != nil && strings.TrimSpace(input.Component) != "" {
 			component := strings.TrimSpace(input.Component)
@@ -1045,6 +1050,11 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 		if blocked != nil {
 			return blocked, nil
 		}
+		release, err := server.acquireProjectRuntimeOperation(ctx, currentRunCtx.WorkspaceScope)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		restart := true
 		if args != nil && args.Restart != nil {
 			restart = *args.Restart
