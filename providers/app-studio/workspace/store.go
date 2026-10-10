@@ -452,6 +452,13 @@ func (s *FileStore) ListFiles(ctx context.Context, scope Scope, opts ListOptions
 // its bytes, never returns content, and always carries a version computed by
 // streaming the whole file, so it can be deleted, moved, or replaced safely.
 func (s *FileStore) ReadFile(ctx context.Context, scope Scope, opts ReadOptions) (FileContent, error) {
+	return s.readFile(ctx, scope, opts, true)
+}
+
+// readFile optionally computes a content version. Snapshot readers that hold
+// mutationMu can rely on their source-revision fence instead of hashing every
+// binary file merely to decide whether it is eligible for a later bounded read.
+func (s *FileStore) readFile(ctx context.Context, scope Scope, opts ReadOptions, withVersion bool) (FileContent, error) {
 	clean, f, info, err := s.openRegularFile(ctx, scope, opts.Path)
 	if err != nil {
 		return FileContent{}, err
@@ -469,9 +476,12 @@ func (s *FileStore) ReadFile(ctx context.Context, scope Scope, opts ReadOptions)
 	// Classify on the raw bytes: trimming first would turn a binary prefix
 	// into an empty "text" read.
 	if (truncated && !textPrefix(buf)) || (!truncated && isBinary(buf)) {
-		version, err := streamFileVersion(ctx, f)
-		if err != nil {
-			return FileContent{}, fmt.Errorf("read %q: %w", clean, err)
+		version := ""
+		if withVersion {
+			version, err = streamFileVersion(ctx, f)
+			if err != nil {
+				return FileContent{}, fmt.Errorf("read %q: %w", clean, err)
+			}
 		}
 		return FileContent{Path: clean, Size: info.Size(), Binary: true, Version: version}, nil
 	}
@@ -479,7 +489,7 @@ func (s *FileStore) ReadFile(ctx context.Context, scope Scope, opts ReadOptions)
 		buf = trimValidUTF8(buf)
 	}
 	result := FileContent{Path: clean, Content: string(buf), Size: info.Size(), Truncated: truncated}
-	if !truncated {
+	if !truncated && withVersion {
 		result.Version = fileVersion(buf)
 	}
 	return result, nil

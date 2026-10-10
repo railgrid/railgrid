@@ -136,10 +136,12 @@ type projectSandboxSyncRequest struct {
 type projectWorkspaceSyncSnapshot struct {
 	// Files are the UTF-8 text files every agent accepts.
 	Files []projectSandboxSyncFile
-	// BinaryFiles are base64 entries, read only when the caller asked for
+	// BinaryFiles are base64 entries read only for components that accept
 	// them; BinaryPaths always lists every binary in the workspace.
 	BinaryFiles []projectSandboxSyncFile
 	BinaryPaths []string
+	// BinarySizes lets a later read fetch only in-bound, eligible binary bytes.
+	BinarySizes map[string]int64
 	// OversizedPaths are files left out for size: text past the workspace
 	// read bound and binaries past the per-file binary bound.
 	OversizedPaths []string
@@ -350,17 +352,71 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
 	scope := projectWorkspaceScope(id, p)
-	snapshot, err := s.projectWorkspaceSyncFiles(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	// Binaries go only to components whose agent accepts base64; read their
-	// bytes (inside the same revision fence) only when one does.
-	binaryComponents := s.projectSyncBinaryComponents(ctx, id, target, snapshot.BinaryPaths)
-	if len(binaryComponents) > 0 {
-		if snapshot, err = s.projectWorkspaceSyncFilesWithBinaries(ctx, scope, true); err != nil {
+	var (
+		err                   error
+		snapshot              projectWorkspaceSyncSnapshot
+		binaryComponents      map[string]bool
+		overBoundsByComponent map[string][]string
+		snapshotReady         bool
+	)
+	for attempt := 0; attempt < 3; attempt++ {
+		snapshot, err = s.projectWorkspaceSyncFiles(ctx, scope)
+		if err != nil {
 			return nil, err
 		}
+		binaryComponents = s.projectSyncBinaryComponents(ctx, id, target, snapshot.BinaryPaths)
+		routedText := routeProjectSyncFiles(snapshot.Files, target.Components)
+		routedBinaryPaths := routeProjectSyncFiles(projectSyncPathEntries(snapshot.BinaryPaths), target.Components)
+		overBoundsByComponent = make(map[string][]string)
+		eligibleSet := map[string]struct{}{}
+		for _, component := range target.sortedComponents() {
+			if !binaryComponents[component] {
+				continue
+			}
+			componentInfo := target.Components[component]
+			candidates := make([]projectSyncBinaryCandidate, 0, len(routedBinaryPaths[component]))
+			fullPaths := make(map[string]string, len(routedBinaryPaths[component]))
+			for _, binary := range routedBinaryPaths[component] {
+				fullPath := path.Join(componentInfo.WorkspacePath, binary.Path)
+				size, ok := snapshot.BinarySizes[fullPath]
+				if !ok {
+					continue
+				}
+				candidates = append(candidates, projectSyncBinaryCandidate{Path: binary.Path, DecodedSize: projectSyncBinaryDecodedSize(size)})
+				fullPaths[binary.Path] = fullPath
+			}
+			selected, dropped := selectProjectSyncBinaryPaths(routedText[component], candidates)
+			overBoundsByComponent[component] = dropped
+			for _, relativePath := range selected {
+				eligibleSet[fullPaths[relativePath]] = struct{}{}
+			}
+		}
+		eligiblePaths := make([]string, 0, len(eligibleSet))
+		for filePath := range eligibleSet {
+			eligiblePaths = append(eligiblePaths, filePath)
+		}
+		sort.Strings(eligiblePaths)
+		if len(eligiblePaths) > 0 {
+			snapshot.BinaryFiles, err = s.projectWorkspaceSyncBinaryFiles(ctx, scope, snapshot.SourceRevision, eligiblePaths)
+			if errors.Is(err, errProjectWorkspaceSyncRevisionChanged) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+		currentRevision, revisionErr := s.workspaces.SourceRevision(ctx, scope)
+		if revisionErr != nil {
+			return nil, revisionErr
+		}
+		if currentRevision != snapshot.SourceRevision {
+			continue
+		}
+		snapshotReady = true
+		break
+	}
+	if !snapshotReady {
+		return nil, errProjectWorkspaceSyncRevisionChanged
 	}
 	// Mirror the monotonic source-revision fence onto the durable project
 	// claim so it survives the project moving between replicas — the sandbox
@@ -399,9 +455,12 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	results := map[string]json.RawMessage{}
 	for _, component := range target.sortedComponents() {
 		componentFiles := routed[component]
-		var overBounds []string
+		overBounds := overBoundsByComponent[component]
 		if binaryComponents[component] {
-			componentFiles, overBounds = appendProjectSyncBinaries(p.Name, component, componentFiles, routedBinaries[component])
+			if len(overBounds) > 0 {
+				klog.Warningf("development sync for project %s component %s: %d binary file(s) exceed one sync's bounds and were not sent: %s", p.Name, component, len(overBounds), strings.Join(overBounds, ", "))
+			}
+			componentFiles = append(append([]projectSandboxSyncFile(nil), componentFiles...), routedBinaries[component]...)
 		}
 		skipped := projectComponentSyncSkipped(
 			projectSyncEntryPaths(routedBinaryPaths[component]),
@@ -818,9 +877,26 @@ func (s *Server) projectWorkspaceSyncFilesWithBinaries(ctx context.Context, scop
 		if err != nil {
 			return projectWorkspaceSyncSnapshot{}, err
 		}
-		snapshot, err := s.projectWorkspaceSyncFilesOnce(ctx, scope, revisionBefore, includeBinary)
+		snapshot, err := s.projectWorkspaceSyncFilesOnce(ctx, scope, revisionBefore)
+		if errors.Is(err, errProjectWorkspaceSyncRevisionChanged) {
+			continue
+		}
 		if err != nil {
 			return projectWorkspaceSyncSnapshot{}, err
+		}
+		if includeBinary && len(snapshot.BinarySizes) > 0 {
+			paths := make([]string, 0, len(snapshot.BinarySizes))
+			for filePath := range snapshot.BinarySizes {
+				paths = append(paths, filePath)
+			}
+			sort.Strings(paths)
+			snapshot.BinaryFiles, err = s.projectWorkspaceSyncBinaryFiles(ctx, scope, revisionBefore, paths)
+			if errors.Is(err, errProjectWorkspaceSyncRevisionChanged) {
+				continue
+			}
+			if err != nil {
+				return projectWorkspaceSyncSnapshot{}, err
+			}
 		}
 		revisionAfter, err := s.workspaces.SourceRevision(ctx, scope)
 		if err != nil {
@@ -833,40 +909,51 @@ func (s *Server) projectWorkspaceSyncFilesWithBinaries(ctx context.Context, scop
 	return projectWorkspaceSyncSnapshot{}, errors.New("workspace changed while preparing development synchronization")
 }
 
-func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope workspace.Scope, revision uint64, includeBinary bool) (projectWorkspaceSyncSnapshot, error) {
-	list, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit})
-	if err != nil {
-		return projectWorkspaceSyncSnapshot{}, err
-	}
-	files := make([]projectSandboxSyncFile, 0, len(list.Files))
-	var binaryFiles []projectSandboxSyncFile
-	var binaryPaths, oversizedPaths []string
-	for _, f := range list.Files {
-		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: f.Path, MaxBytes: workspace.MaxWriteBytes})
-		if err != nil {
-			return projectWorkspaceSyncSnapshot{}, err
+var errProjectWorkspaceSyncRevisionChanged = errors.New("workspace changed while preparing development synchronization")
+
+func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope workspace.Scope, revision uint64) (projectWorkspaceSyncSnapshot, error) {
+	var snapshot projectWorkspaceSyncSnapshot
+	presentPaths := map[string]struct{}{}
+	err := s.workspaces.WithReadSnapshot(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit}, func(readSnapshot workspace.ReadSnapshot) error {
+		if readSnapshot.Files.Truncated {
+			return fmt.Errorf("workspace snapshot exceeds the %d-file limit", workspace.MaxListLimit)
 		}
-		if read.Binary {
-			binaryPaths = append(binaryPaths, read.Path)
-			if read.Size > hubmcp.BinaryFileMaxBytes {
+		if readSnapshot.SourceRevision != revision {
+			return errProjectWorkspaceSyncRevisionChanged
+		}
+		files := make([]projectSandboxSyncFile, 0, len(readSnapshot.Files.Files))
+		var binaryPaths, oversizedPaths []string
+		binarySizes := map[string]int64{}
+		presentPaths = make(map[string]struct{}, len(readSnapshot.Files.Files))
+		for _, fileInfo := range readSnapshot.Files.Files {
+			read, err := readSnapshot.ReadFileWithoutVersion(fileInfo.Path, workspace.MaxWriteBytes)
+			if err != nil {
+				return err
+			}
+			presentPaths[read.Path] = struct{}{}
+			if read.Binary {
+				binaryPaths = append(binaryPaths, read.Path)
+				if read.Size > hubmcp.BinaryFileMaxBytes {
+					oversizedPaths = append(oversizedPaths, read.Path)
+					continue
+				}
+				binarySizes[read.Path] = read.Size
+				continue
+			}
+			if read.Truncated {
 				oversizedPaths = append(oversizedPaths, read.Path)
 				continue
 			}
-			if !includeBinary {
-				continue
-			}
-			data, err := s.workspaces.ReadFileBytes(ctx, scope, read.Path, hubmcp.BinaryFileMaxBytes)
-			if err != nil {
-				return projectWorkspaceSyncSnapshot{}, err
-			}
-			binaryFiles = append(binaryFiles, projectSandboxSyncFile{Path: read.Path, Content: base64.StdEncoding.EncodeToString(data), Encoding: hubmcp.EncodingBase64})
-			continue
+			files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
 		}
-		if read.Truncated {
-			oversizedPaths = append(oversizedPaths, read.Path)
-			continue
+		snapshot = projectWorkspaceSyncSnapshot{
+			Files: files, BinaryPaths: binaryPaths, BinarySizes: binarySizes,
+			OversizedPaths: oversizedPaths, SourceRevision: readSnapshot.SourceRevision,
 		}
-		files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
+		return nil
+	})
+	if err != nil {
+		return projectWorkspaceSyncSnapshot{}, err
 	}
 	changed, err := s.workspaces.UncommittedPaths(ctx, scope)
 	if err != nil {
@@ -874,14 +961,52 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 	}
 	deleted := make([]string, 0)
 	for _, changedPath := range changed {
-		if _, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: changedPath, MaxBytes: workspace.MaxWriteBytes}); errors.Is(err, fs.ErrNotExist) {
+		if _, present := presentPaths[changedPath]; !present {
 			deleted = append(deleted, changedPath)
-		} else if err != nil {
-			return projectWorkspaceSyncSnapshot{}, err
 		}
 	}
 	sort.Strings(deleted)
-	return projectWorkspaceSyncSnapshot{Files: files, BinaryFiles: binaryFiles, BinaryPaths: binaryPaths, OversizedPaths: oversizedPaths, DeletedPaths: deleted, SourceRevision: revision}, nil
+	snapshot.DeletedPaths = deleted
+	return snapshot, nil
+}
+
+// projectWorkspaceSyncBinaryFiles reads only selected binary paths from a
+// revision-pinned snapshot. The snapshot revision keeps these bytes consistent
+// with the text files collected during the first pass.
+func (s *Server) projectWorkspaceSyncBinaryFiles(
+	ctx context.Context,
+	scope workspace.Scope,
+	expectedRevision uint64,
+	paths []string,
+) ([]projectSandboxSyncFile, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	selected := append([]string(nil), paths...)
+	sort.Strings(selected)
+	files := make([]projectSandboxSyncFile, 0, len(selected))
+	err := s.workspaces.WithReadSnapshot(ctx, scope, workspace.ListOptions{Limit: workspace.MaxListLimit}, func(snapshot workspace.ReadSnapshot) error {
+		if snapshot.SourceRevision != expectedRevision {
+			return errProjectWorkspaceSyncRevisionChanged
+		}
+		for _, filePath := range selected {
+			data, err := snapshot.ReadFileBytes(filePath, hubmcp.BinaryFileMaxBytes)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return errProjectWorkspaceSyncRevisionChanged
+				}
+				return err
+			}
+			files = append(files, projectSandboxSyncFile{
+				Path: filePath, Content: base64.StdEncoding.EncodeToString(data), Encoding: hubmcp.EncodingBase64,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 // projectSandboxSyncDigest is the component-local source identity shared with
@@ -1044,24 +1169,65 @@ func withProjectSyncSkipped(body []byte, skipped []projectSyncSkippedFile) json.
 // A binary past the bounds is left out (logged, and returned in dropped)
 // rather than failing the whole sync, so text edits always reach the sandbox.
 func appendProjectSyncBinaries(project, component string, files, binaries []projectSandboxSyncFile) (out []projectSandboxSyncFile, dropped []string) {
-	var total int64
-	for _, file := range files {
-		total += int64(len(file.Content))
+	candidates := make([]projectSyncBinaryCandidate, 0, len(binaries))
+	for _, binary := range binaries {
+		candidates = append(candidates, projectSyncBinaryCandidate{
+			Path: binary.Path, DecodedSize: int64(base64.StdEncoding.DecodedLen(len(binary.Content))),
+		})
+	}
+	selected, dropped := selectProjectSyncBinaryPaths(files, candidates)
+	selectedSet := make(map[string]struct{}, len(selected))
+	for _, filePath := range selected {
+		selectedSet[filePath] = struct{}{}
 	}
 	out = append([]projectSandboxSyncFile(nil), files...)
 	for _, binary := range binaries {
-		size := int64(base64.StdEncoding.DecodedLen(len(binary.Content)))
-		if len(out) >= hubmcp.BundleMaxFiles || total+size > hubmcp.BundleMaxBytes {
-			dropped = append(dropped, binary.Path)
-			continue
+		if _, ok := selectedSet[binary.Path]; ok {
+			out = append(out, binary)
 		}
-		total += size
-		out = append(out, binary)
 	}
 	if len(dropped) > 0 {
 		klog.Warningf("development sync for project %s component %s: %d binary file(s) exceed one sync's bounds and were not sent: %s", project, component, len(dropped), strings.Join(dropped, ", "))
 	}
 	return out, dropped
+}
+
+type projectSyncBinaryCandidate struct {
+	Path        string
+	DecodedSize int64
+}
+
+// projectSyncBinaryDecodedSize mirrors the agent's decoded-size bound for the
+// padded base64 representation App Studio sends. DecodedLen intentionally
+// rounds one or two trailing bytes up, matching appendProjectSyncBinaries.
+func projectSyncBinaryDecodedSize(size int64) int64 {
+	if size <= 0 || size > int64(^uint(0)>>1) {
+		return size
+	}
+	encodedSize := base64.StdEncoding.EncodedLen(int(size))
+	return int64(base64.StdEncoding.DecodedLen(encodedSize))
+}
+
+// selectProjectSyncBinaryPaths applies the same ordered total-byte and file
+// count limits as appendProjectSyncBinaries, using metadata before loading
+// binary contents. Rejected files can therefore be reported without reading
+// their bytes.
+func selectProjectSyncBinaryPaths(textFiles []projectSandboxSyncFile, binaries []projectSyncBinaryCandidate) (selected, dropped []string) {
+	var total int64
+	for _, file := range textFiles {
+		total += int64(len(file.Content))
+	}
+	fileCount := len(textFiles)
+	for _, binary := range binaries {
+		if fileCount >= hubmcp.BundleMaxFiles || total+binary.DecodedSize > hubmcp.BundleMaxBytes {
+			dropped = append(dropped, binary.Path)
+			continue
+		}
+		total += binary.DecodedSize
+		fileCount++
+		selected = append(selected, binary.Path)
+	}
+	return selected, dropped
 }
 
 func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ workspace.Scope, _ string, _ bool, toolCalls []projectToolCallStreamEvent) bool {

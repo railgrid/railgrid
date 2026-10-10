@@ -382,8 +382,11 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
 		t.Fatal("commit tool should be deferred until searched")
 	}
-	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolDefineInitialProjectPlan) {
-		t.Fatalf("model tools = %#v, want plan approval in the initial phase", model.Inputs[0].Tools)
+	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolDefineInitialProjectPlan) {
+		t.Fatalf("model tools = %#v, ordinary project turn must not expose initial-build planning without run-local authority", model.Inputs[0].Tools)
+	}
+	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolPlanProjectChanges) {
+		t.Fatalf("model tools = %#v, ordinary project turn should retain read-only change planning", model.Inputs[0].Tools)
 	}
 	if !projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
 		t.Fatal("tool_search must be available to discover deferred provider tools")
