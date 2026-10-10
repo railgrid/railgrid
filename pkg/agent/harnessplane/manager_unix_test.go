@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,6 +59,12 @@ func stubHarness(t *testing.T, home, name string) string {
 // test's control, so the result does not depend on what is installed on the
 // machine running the tests or on which ports it happens to have free.
 func testManager(t *testing.T, home string, detect func() Detection) *Manager {
+	return testManagerBlocked(t, home, func() (Detection, Blocked) { return detect(), nil })
+}
+
+// testManagerBlocked is testManager for a detection that also reports installs
+// the runner account cannot execute.
+func testManagerBlocked(t *testing.T, home string, detect func() (Detection, Blocked)) *Manager {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		// The supervisor refuses to launch a child as the agent's own account
@@ -324,5 +331,50 @@ func TestStatusesReportsEveryKnownHarness(t *testing.T) {
 	}
 	if !slices.Equal(names, Names) {
 		t.Fatalf("statuses = %v, want one entry per known harness %v", names, Names)
+	}
+}
+
+// TestABlockedInstallIsReportedEvenUnderModeAuto: Claude Code installed as root
+// lives under /root, which the runner account cannot enter. Detection skips it,
+// so under mode auto nothing is wanted and nothing would be said — leaving an
+// operator looking at "detected: false" on a machine that plainly has it. The
+// status must carry the reason, and name the path and the account.
+func TestABlockedInstallIsReportedEvenUnderModeAuto(t *testing.T) {
+	home := tempHome(t)
+	m := testManagerBlocked(t, home, func() (Detection, Blocked) {
+		return Detection{}, Blocked{HarnessClaude: "/root/.local/bin/claude"}
+	})
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var claude HarnessStatus
+	for _, status := range m.Statuses() {
+		if status.Name == HarnessClaude {
+			claude = status
+		}
+	}
+	if claude.Detected || claude.Enabled || claude.Ready {
+		t.Errorf("a blocked install reported detected=%v enabled=%v ready=%v; want none", claude.Detected, claude.Enabled, claude.Ready)
+	}
+	if len(claude.Reasons) != 1 || !strings.Contains(claude.Reasons[0], "/root/.local/bin/claude") || !strings.Contains(claude.Reasons[0], "cannot execute") {
+		t.Errorf("reasons = %q; want the blocked path and why", claude.Reasons)
+	}
+}
+
+// TestAnExplicitHarnessThatIsBlockedSaysSoInsteadOfNotInstalled: "not installed"
+// would send the operator to install what is already there.
+func TestAnExplicitHarnessThatIsBlockedSaysSoInsteadOfNotInstalled(t *testing.T) {
+	home := tempHome(t)
+	m := testManagerBlocked(t, home, func() (Detection, Blocked) {
+		return Detection{}, Blocked{HarnessClaude: "/root/.local/bin/claude"}
+	})
+	m.Observe(context.Background(), Setting{Mode: ModeExplicit, Enabled: []string{HarnessClaude}})
+	for _, status := range m.Statuses() {
+		if status.Name != HarnessClaude {
+			continue
+		}
+		if len(status.Reasons) != 1 || strings.Contains(status.Reasons[0], "not installed") || !strings.Contains(status.Reasons[0], "cannot execute") {
+			t.Errorf("reasons = %q; want the blocked explanation, not \"not installed\"", status.Reasons)
+		}
 	}
 }
