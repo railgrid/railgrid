@@ -249,11 +249,15 @@ interaction wrappers are not model-facing capabilities.
 
 The shared browser uses MCP initialize/initialized, a persistent GET event
 stream, POST tool calls, and DELETE session close. App Studio owns the session
-owner tuple, preview-origin and private-preview handoff checks, the
-source-synchronization fence, and post-call snapshot/tab safety. Native tool
-receipts are the browser evidence; a lost mutating call is returned as unknown
-and is never replayed, while a safe read can be reconstructed once only when no
-interaction is pending.
+owner tuple, preview-origin and private-preview handoff checks, and the
+source-synchronization fence. Interactions and history navigation get a trusted
+preflight plus post-call snapshot/tab safety checks. A failed preflight returns
+a typed `not_executed` receipt. If a page-changing action may have run but its
+post-call safety check cannot verify the page, App Studio returns
+`outcome_unknown`; it never replays interactions or history navigation. Safe
+reads and validated explicit navigation within the preview may be retried once
+after session loss, when no interaction is pending. Native receipts report tool
+outcomes; they do not make browser actions atomic.
 
 The database container is named `railgrid-app-studio-postgres`, listens on
 `127.0.0.1:55432`, and stores data under `.kcp/app-studio-postgres/`. Both
@@ -629,3 +633,16 @@ state checks. Preview access lasts at most 15 minutes and never beyond the
 Project credential's expiration. Shared storage preserves the instance scope,
 expiration, and handoff purpose across hub replicas. Hub and App Studio must
 both include this protocol; there is no fallback to the provider or user token.
+
+The hub uses separate versioned preview-session and preview-code stores apart
+from ordinary portal SSO. The one-use `p2h.` code creates the scoped preview
+cookie; the `p2a.` app code grants only the named instance through the existing
+`create proxy` permission. The hub returns the Project identity's authoritative
+expiry, and App Studio renews the handoff when the app scope or preview base
+changes or the expiry is within 30 seconds. Native browser receipts redact
+query strings from hub authorization, callback, and handoff URLs before model
+history; ordinary application query strings remain available for inspection.
+For compatibility with older hubs, a response without valid expiry metadata can
+still serve read-only observation and explicit same-origin navigation, but the
+authorization is never cached for interactions or history actions. Those
+actions return `not_executed` until the hub supplies a usable expiry.

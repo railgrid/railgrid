@@ -107,6 +107,13 @@ const (
 	// browsers that already hold an authenticated hub session and passed the
 	// SAR, so this cap is generous.
 	maxCodes = 10000
+
+	// Scoped preview codes use a format ordinary authorization codes cannot
+	// produce (raw base64url has no period). The marker selects the isolated
+	// preview store before any record is consumed; it is not the storage
+	// isolation boundary by itself.
+	previewHandoffCodePrefix = "p2h."
+	previewAppCodePrefix     = "p2a."
 )
 
 // segmentRE validates instance coordinates (API group labels, resource
@@ -167,9 +174,15 @@ var ErrInstanceNotPublished = errors.New("instance has no published host")
 // Config assembles a Handler.
 type Config struct {
 	// PreviewIdentity verifies a workspace service account for a scoped preview.
+	// It should return ErrInvalidPreviewIdentity only for caller credential or
+	// identity rejection; other errors are treated as transient dependencies.
 	PreviewIdentity func(*http.Request, InstanceRef) (browsersession.Identity, error)
 	// Sessions is the shared hub browser-session store (portal SSO).
 	Sessions *browsersession.Store
+	// PreviewSessions stores short-lived one-app browser sessions separately
+	// from portal sessions. A separate backend is required for mixed-version
+	// hubs because older replicas ignore unknown scoped identity fields.
+	PreviewSessions *browsersession.Store
 	// SARClient resolves per-workspace SubjectAccessReview clients.
 	SARClient SARFactory
 	// InstanceHost resolves the published host of the instance a sign-in is
@@ -181,6 +194,9 @@ type Config struct {
 	// serves them from different pods. Supply a shared store (see
 	// pkg/hub/sharedstore) whenever the hub runs more than one replica.
 	Codes CodeStore
+	// PreviewCodes stores scoped handoff and final app-authorization codes in
+	// an isolated collection. Ordinary Codes must never be used as a fallback.
+	PreviewCodes CodeStore
 	// LoginPath is the hub-relative path of the interactive login page an
 	// unauthenticated browser is sent to. Defaults to "/ui/login" (the
 	// portal SPA is mounted under /ui/).
@@ -214,12 +230,14 @@ type Config struct {
 type Handler struct {
 	previewIdentity func(*http.Request, InstanceRef) (browsersession.Identity, error)
 	sessions        *browsersession.Store
+	previewSessions *browsersession.Store
 	sarClient       SARFactory
 	instanceHost    InstanceHostResolver
 	loginPath       string
 	now             func() time.Time
 	random          io.Reader
 	codes           CodeStore
+	previewCodes    CodeStore
 
 	bearerIdentity      func(*http.Request) (browsersession.Identity, error)
 	tokenKey            func(context.Context) ([]byte, error)
@@ -262,12 +280,14 @@ func New(cfg Config) (*Handler, error) {
 	h := &Handler{
 		previewIdentity: cfg.PreviewIdentity,
 		sessions:        cfg.Sessions,
+		previewSessions: cfg.PreviewSessions,
 		sarClient:       cfg.SARClient,
 		instanceHost:    cfg.InstanceHost,
 		loginPath:       cfg.LoginPath,
 		now:             cfg.Now,
 		random:          cfg.Random,
 		codes:           cfg.Codes,
+		previewCodes:    cfg.PreviewCodes,
 
 		bearerIdentity:      cfg.BearerIdentity,
 		tokenKey:            cfg.TokenKey,
@@ -290,6 +310,17 @@ func New(cfg Config) (*Handler, error) {
 		// Read the clock through the handler rather than capturing it, so a
 		// test that swaps h.now after construction also moves the store's clock.
 		h.codes = newMemoryCodeStore(func() time.Time { return h.now() })
+	}
+	if h.previewSessions == nil {
+		// Keep local/test configurations safe by default too: preview handles
+		// must never share the portal-session backend, even before the hub wires
+		// their cross-replica store.
+		h.previewSessions = browsersession.New(browsersession.Config{Now: func() time.Time { return h.now() }})
+	}
+	if h.previewCodes == nil {
+		// A separate in-memory store preserves isolation in single-replica and
+		// test configurations. Multi-replica hubs supply the shared v2 store.
+		h.previewCodes = newMemoryCodeStore(func() time.Time { return h.now() })
 	}
 	h.verifyFailures = newFailureLimiter(verifyFailureBurst, verifyFailureRefill, maxVerifyFailureSources,
 		func() time.Time { return h.now() })
@@ -384,7 +415,7 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	var session browsersession.Session
 	if cookie, cookieErr := r.Cookie(previewCookieName); cookieErr == nil {
-		session, err = h.sessions.Resolve(r.Context(), cookie.Value)
+		session, err = h.previewSessions.Resolve(r.Context(), cookie.Value)
 		if err != nil || session.Identity.AppScope != ref.key() {
 			http.Error(w, "preview session expired or scope mismatch", http.StatusForbidden)
 			return
@@ -514,15 +545,30 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed exchange request", http.StatusBadRequest)
 		return
 	}
-	record, ok := h.codes.Take(r.Context(), req.Code)
-	if !ok || record.Purpose != "" || record.Ref.key() != ref.key() || !strings.EqualFold(record.RedirectHost, req.Host) {
+	codeStore := h.codes
+	previewCode := strings.HasPrefix(req.Code, previewAppCodePrefix)
+	switch {
+	case previewCode:
+		codeStore = h.previewCodes
+	case strings.HasPrefix(req.Code, previewHandoffCodePrefix):
+		// Handoff codes are not app-exchange credentials. Reject them without
+		// consuming the one-time entry at the handoff endpoint.
+		http.Error(w, "sign-in expired", http.StatusGone)
+		return
+	}
+	record, ok := codeStore.Take(r.Context(), req.Code)
+	if !ok || record.Purpose != "" || (previewCode && record.Identity.AppScope == "") || (!previewCode && record.Identity.AppScope != "") || record.Ref.key() != ref.key() || !strings.EqualFold(record.RedirectHost, req.Host) {
 		// Expired, replayed, or bound to different coordinates. 410 tells the
 		// proxy to restart the authorize flow rather than retry.
 		http.Error(w, "sign-in expired", http.StatusGone)
 		return
 	}
 	ttl := sessionTTL
-	if record.Identity.AppScope != "" {
+	if previewCode {
+		if record.Identity.AppScope != ref.key() {
+			http.Error(w, "preview session expired", http.StatusGone)
+			return
+		}
 		ttl = min(ttl, record.Identity.AppExpiresAt.Sub(h.now()))
 		if ttl < time.Second {
 			http.Error(w, "preview session expired", http.StatusGone)
@@ -614,6 +660,14 @@ func (h *Handler) mintCode(ctx context.Context, ref InstanceRef, redirectHost st
 		return "", err
 	}
 	code := base64.RawURLEncoding.EncodeToString(buf)
+	codeStore := h.codes
+	if identity.AppScope != "" {
+		if identity.AppScope != ref.key() || !h.now().Before(identity.AppExpiresAt) {
+			return "", browsersession.ErrInvalid
+		}
+		code = previewAppCodePrefix + code
+		codeStore = h.previewCodes
+	}
 	record := CodeRecord{
 		Ref:          ref,
 		RedirectHost: strings.ToLower(redirectHost),
@@ -623,7 +677,7 @@ func (h *Handler) mintCode(ctx context.Context, ref InstanceRef, redirectHost st
 	if identity.AppScope != "" && identity.AppExpiresAt.Before(record.ExpiresAt) {
 		record.ExpiresAt = identity.AppExpiresAt
 	}
-	if err := h.codes.Put(ctx, code, record); err != nil {
+	if err := codeStore.Put(ctx, code, record); err != nil {
 		return "", err
 	}
 	return code, nil

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -40,6 +41,13 @@ const PreviewHandoffPath = "/auth/apps/preview-handoff"
 const previewCookieName = "__Host-railgrid-preview"
 const previewHandoffPurpose = "preview-handoff"
 
+// ErrInvalidPreviewIdentity marks a caller credential that was absent,
+// malformed, unauthenticated, or resolved to an identity outside the requested
+// workspace service-account contract. Other resolver errors represent an
+// identity-verification dependency failure and must not be charged as a bad
+// credential.
+var ErrInvalidPreviewIdentity = errors.New("invalid preview identity")
+
 // NewKCPPreviewIdentityResolver authenticates in the requested workspace. A
 // provider account from another cluster must never become a tenant-local SA
 // merely because both accounts have the same username.
@@ -47,7 +55,7 @@ func NewKCPPreviewIdentityResolver(config *rest.Config) func(*http.Request, Inst
 	return func(r *http.Request, ref InstanceRef) (browsersession.Identity, error) {
 		token, ok := bearerFromRequest(r)
 		if !ok {
-			return browsersession.Identity{}, errors.New("missing preview identity")
+			return browsersession.Identity{}, ErrInvalidPreviewIdentity
 		}
 		cfg := rest.CopyConfig(config)
 		cfg.Host = apiurl.KCPClusterURL(cfg.Host, ref.Cluster)
@@ -57,11 +65,18 @@ func NewKCPPreviewIdentityResolver(config *rest.Config) func(*http.Request, Inst
 		}
 		review, err := client.AuthenticationV1().TokenReviews().Create(r.Context(), &authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{Token: token}}, metav1.CreateOptions{})
 		if err != nil {
+			// A caller-selected workspace can make kcp reject TokenReview with a
+			// client error. Treat those as invalid identity so they are rate-limited
+			// and do not expose whether the workspace exists. Server errors and
+			// transport failures remain retryable dependency failures.
+			if apierrors.IsBadRequest(err) || apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+				return browsersession.Identity{}, ErrInvalidPreviewIdentity
+			}
 			return browsersession.Identity{}, err
 		}
 		clusters := review.Status.User.Extra["authentication.kcp.io/cluster-name"]
 		if !review.Status.Authenticated || len(clusters) != 1 || clusters[0] != ref.Cluster || !strings.HasPrefix(review.Status.User.Username, "system:serviceaccount:") {
-			return browsersession.Identity{}, errors.New("invalid preview service account")
+			return browsersession.Identity{}, ErrInvalidPreviewIdentity
 		}
 		return browsersession.Identity{UserID: review.Status.User.Username, RBACIdentity: review.Status.User.Username, AuthType: "workload-preview", AppScope: ref.key()}, nil
 	}
@@ -74,13 +89,18 @@ func (h *Handler) HandlePreviewHandoff(w http.ResponseWriter, r *http.Request) {
 	noStore(w)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if r.Method == http.MethodGet {
-		record, ok := h.codes.Take(r.Context(), r.URL.Query().Get("code"))
+		code := strings.TrimSpace(r.URL.Query().Get("code"))
+		if !strings.HasPrefix(code, previewHandoffCodePrefix) {
+			http.Error(w, "preview handoff expired", http.StatusGone)
+			return
+		}
+		record, ok := h.previewCodes.Take(r.Context(), code)
 		if !ok || record.Purpose != previewHandoffPurpose || record.Identity.AppScope != record.Ref.key() || !h.now().Before(record.ExpiresAt) {
 			http.Error(w, "preview handoff expired", http.StatusGone)
 			return
 		}
 		ttl := record.Identity.AppExpiresAt.Sub(h.now())
-		value, _, err := h.sessions.IssueTransient(r.Context(), record.Identity, ttl)
+		value, _, err := h.previewSessions.IssueTransient(r.Context(), record.Identity, ttl)
 		if err != nil {
 			http.Error(w, "preview session unavailable", http.StatusServiceUnavailable)
 			return
@@ -107,7 +127,14 @@ func (h *Handler) HandlePreviewHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 	identity, err := h.previewIdentity(r, ref)
 	if err != nil {
-		h.rejectBearer(w, source)
+		if errors.Is(err, ErrInvalidPreviewIdentity) {
+			h.rejectBearer(w, source)
+			return
+		}
+		// Transient TokenReview, configuration, and request-context failures are
+		// not evidence that the caller supplied a bad credential. Preserve the
+		// retryable dependency-failure response without spending their budget.
+		http.Error(w, "preview identity service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	identity.AppScope = ref.key()
@@ -142,10 +169,13 @@ func (h *Handler) HandlePreviewHandoff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "preview handoff unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	code := base64.RawURLEncoding.EncodeToString(buf)
-	if err := h.codes.Put(r.Context(), code, CodeRecord{Purpose: previewHandoffPurpose, Ref: ref, Identity: identity, ExpiresAt: expires}); err != nil {
+	code := previewHandoffCodePrefix + base64.RawURLEncoding.EncodeToString(buf)
+	if err := h.previewCodes.Put(r.Context(), code, CodeRecord{Purpose: previewHandoffPurpose, Ref: ref, Identity: identity, ExpiresAt: expires}); err != nil {
 		http.Error(w, "preview handoff unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	writeVerifyJSON(w, http.StatusOK, map[string]string{"path": PreviewHandoffPath + "?code=" + url.QueryEscape(code)})
+	writeVerifyJSON(w, http.StatusOK, map[string]any{
+		"path":      PreviewHandoffPath + "?code=" + url.QueryEscape(code),
+		"expiresAt": identity.AppExpiresAt.Unix(),
+	})
 }
