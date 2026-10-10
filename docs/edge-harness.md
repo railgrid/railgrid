@@ -289,6 +289,20 @@ it. Choose the runner account accordingly.
 from scratch: `HOME` and `PATH`, nothing else), the agent's credential files,
 the reverse tunnel, and the hub. It has no kcp client and no token for one.
 
+**What the identity brings.** A caller may send further credentials WITH the
+harness credential (`harnessCredential.environment`, a short list of
+name/value pairs), and the Claude Code adapter exports them into the child
+beside the model credential — the agents provider sends the agent's GitHub
+connection token as `GH_TOKEN`/`GITHUB_TOKEN` so a reviewer can `gh pr
+review`. They are dispatch data exactly like the model credential: stripped
+before fingerprinting and persisting, held in the runner's memory for the
+attempt, redacted from every event, and sent again on every resume. The runner
+refuses a name it or an adapter sets itself (`HOME`, `PATH`, `CLAUDE_*`,
+`ANTHROPIC_*`, `CODEX_*`, `XDG_*`, `GIT_CONFIG_*`, git's transport variables,
+`LD_*`/`DYLD_*`), so nothing brought can relocate the child or redirect the
+model call. The same `GH_TOKEN` inherited from the agent's own environment is
+still stripped: that one is the machine owner's, not the tenant's.
+
 **The model credential.** It is the caller's, it arrives per attempt, and it
 lives in the caller's workspace rather than on the machine. On the host it
 exists only in the runner process's memory, and for Codex in one `0600` file

@@ -185,7 +185,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 			// Same two reasons as the live event: a gated call, or a question
 			// the turn asked. A checkpoint with no tool is the second.
 			if strings.TrimSpace(ck.Tool) == "" {
-				detail.Pending = &pendingInfo{InboxID: ck.InboxID, Kind: string(store.InboxKindQuestion)}
+				detail.Pending = &pendingInfo{InboxID: ck.InboxID, Kind: string(store.InboxKindQuestion), Question: ck.Question}
 			} else {
 				detail.Pending = &pendingInfo{
 					InboxID: ck.InboxID, Kind: string(store.InboxKindApproval),

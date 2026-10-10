@@ -270,6 +270,7 @@ spec:
       credentialRef: claude-main   # ModelCredential with provider claude-code | codex
       model: sonnet                # optional, passed to the harness
       workspace: persistent        # persistent (one directory across turns) | ephemeral
+      githubConnectionRef: gh-main # optional: a github Connection whose token the harness runs with
 ```
 
 - Which harness answers is derived from the credential's provider
@@ -286,6 +287,16 @@ spec:
   (`UnknownEdgeRef`, `HarnessServiceMissing`, `HarnessNotReady`,
   `UnsupportedHarnessCredential`, `BackendUnknown`) say whether a run will
   dispatch; `ModelCredentialsReady` is `NotApplicable`.
+- `githubConnectionRef` names a `github` Connection (PAT or OAuth) in the
+  workspace. Its token is read per turn and exported into the harness child as
+  `GH_TOKEN` and `GITHUB_TOKEN`, so `gh pr review` and git over HTTPS
+  authenticate as that connection — the way a reviewer agent posts to a pull
+  request. It travels like the harness credential (dispatch data, in the
+  runner's memory, never on the machine's disk, sent again on every resume).
+  Claude Code only: Codex runs with its network disabled. A fine-grained PAT
+  scoped to the repositories to review with pull-request write is the right
+  token. `BackendReady` reports `UnknownConnectionRef` when the connection is
+  missing and `InvalidSpec` when it is not a github one.
 - The harness brings its own tools: `spec.tools`, `delegates`,
   `limits.maxToolTurns`/`maxSpawns*`, `backend.model`, and `autonomy`
   `suggest`/`auto` are rejected as `Validated=False` `MeaninglessForHarness`.

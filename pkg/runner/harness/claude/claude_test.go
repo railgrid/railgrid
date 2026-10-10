@@ -17,6 +17,7 @@ limitations under the License.
 package claude
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,6 +330,56 @@ func TestIsUUID(t *testing.T) {
 	for _, bad := range []string{"", "attempt-1", "1111111122223333444455555555555", "gggggggg-2222-3333-4444-555555555555"} {
 		if isUUID(bad) {
 			t.Errorf("%q was accepted as a uuid", bad)
+		}
+	}
+}
+
+// The environment an identity brings is exported beside the model credential
+// and redacted like it; the same name inherited from the runner's own
+// environment is still stripped, because that one is the machine owner's.
+func TestChildEnvExportsTheBroughtEnvironmentAndNothingInherited(t *testing.T) {
+	t.Setenv("GH_TOKEN", "the-machine-owners-token")
+	t.Setenv("GITHUB_TOKEN", "also-the-machine-owners")
+	adapter := &Adapter{cfg: Config{Home: t.TempDir()}}
+	cred, err := credentialFor(harness.Launch{Credential: harness.Credential{
+		Kind: harness.CredentialClaudeOAuth, Value: "sk-ant-oat",
+		Environment: []harness.EnvironmentVariable{{Name: "GH_TOKEN", Value: "ghp_tenants"}},
+	}})
+	if err != nil {
+		t.Fatalf("credentialFor: %v", err)
+	}
+	env := adapter.childEnv(cred)
+	var ghTokens, githubTokens []string
+	for _, item := range env {
+		switch {
+		case strings.HasPrefix(item, "GH_TOKEN="):
+			ghTokens = append(ghTokens, item)
+		case strings.HasPrefix(item, "GITHUB_TOKEN="):
+			githubTokens = append(githubTokens, item)
+		}
+	}
+	if len(ghTokens) != 1 || ghTokens[0] != "GH_TOKEN=ghp_tenants" {
+		t.Errorf("GH_TOKEN entries = %v, want exactly the brought one", ghTokens)
+	}
+	if len(githubTokens) != 0 {
+		t.Errorf("GITHUB_TOKEN inherited from the runner's environment survived: %v", githubTokens)
+	}
+	if got := redact("pushed with ghp_tenants and sk-ant-oat", cred); strings.Contains(got, "ghp_tenants") || strings.Contains(got, "sk-ant-oat") {
+		t.Errorf("redact left a brought value in %q", got)
+	}
+	if err := cred.redactError(errors.New("auth ghp_tenants rejected")); !strings.Contains(err.Error(), "[redacted]") {
+		t.Errorf("redactError left a brought value in %q", err)
+	}
+}
+
+func TestCredentialForRefusesABroughtVariableTheAdapterSets(t *testing.T) {
+	for _, name := range []string{"HOME", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"} {
+		_, err := credentialFor(harness.Launch{Credential: harness.Credential{
+			Kind: harness.CredentialClaudeOAuth, Value: "v",
+			Environment: []harness.EnvironmentVariable{{Name: name, Value: "x"}},
+		}})
+		if err == nil {
+			t.Errorf("a brought %s was accepted", name)
 		}
 	}
 }

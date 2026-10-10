@@ -15,6 +15,7 @@ export interface AgentCreateDraft {
   harnessCredential: string
   harnessModel: string
   harnessWorkspace: HarnessWorkspace
+  harnessGitHubConnection: string
   systemPrompt: string
   channel: string
   web: boolean
@@ -34,6 +35,7 @@ export function emptyAgentCreateDraft(backendType: AgentBackendType = AGENT_BACK
     harnessCredential: '',
     harnessModel: '',
     harnessWorkspace: 'persistent',
+    harnessGitHubConnection: '',
     systemPrompt: '',
     channel: '',
     web: false,

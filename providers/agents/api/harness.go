@@ -52,6 +52,7 @@ import (
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/internal/connsecret"
 	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
@@ -455,6 +456,10 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	if err != nil {
 		return harnessTurn{}, err
 	}
+	environment, err := s.harnessEnvironment(ctx, run, cfg)
+	if err != nil {
+		return harnessTurn{}, err
+	}
 
 	// The identity this dispatch is made as. NOT the caller's: a data-plane verb
 	// carries no caller bearer (see identity.token), so the portal's chat — the
@@ -484,7 +489,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	if run.Repository != nil {
 		return s.repositoryHarnessTurn(run, runID, sessionID, cont, repositoryTurnDeps{
 			dispatcher: dispatcher, backendKey: backendKey, service: service, advertised: advertised,
-			model: strings.TrimSpace(cfg.Model), identity: identity,
+			model: strings.TrimSpace(cfg.Model), identity: identity, environment: environment,
 		})
 	}
 
@@ -518,6 +523,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		RequiredHarness: advertised,
 		Model:           strings.TrimSpace(cfg.Model),
 		Credential:      identity,
+		Environment:     environment,
 		Provenance: map[string]any{
 			"workspace": run.Scope.WorkspaceUUID,
 			"org":       run.Scope.OrgUUID,
@@ -531,12 +537,58 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 // repositoryTurnDeps is what harnessBackendFor resolved before the two
 // attempt shapes part ways: the runner, its identity, and the harness.
 type repositoryTurnDeps struct {
-	dispatcher dispatch.Runner
-	backendKey string
-	service    string
-	advertised string
-	model      string
-	identity   llm.HarnessIdentity
+	dispatcher  dispatch.Runner
+	backendKey  string
+	service     string
+	advertised  string
+	model       string
+	identity    llm.HarnessIdentity
+	environment []runner.EnvironmentVariable
+}
+
+// harnessEnvironment is what the harness child runs with beyond its model
+// credential: today the token of the GitHub Connection the agent names, as
+// GH_TOKEN and GITHUB_TOKEN, so `gh pr review` and git over HTTPS authenticate
+// as that connection for the length of the turn.
+//
+// It is read per turn with the run's own access, exactly as the harness
+// credential is, and handed to the runner as dispatch data: it is never
+// written to the machine, and a turn whose connection is gone fails here with
+// the reason rather than running as nobody and reporting "not logged in" from
+// inside the harness.
+func (s *Server) harnessEnvironment(ctx context.Context, run taskRun, cfg *agentsv1alpha1.AgentHarnessBackend) ([]runner.EnvironmentVariable, error) {
+	connName := strings.TrimSpace(cfg.GitHubConnectionRef)
+	if connName == "" {
+		return nil, nil
+	}
+	if run.CR == nil {
+		return nil, fmt.Errorf("spec.backend.harness.githubConnectionRef names %q, but this run cannot read connections", connName)
+	}
+	conn, err := run.CR.GetConnection(ctx, connName)
+	if err != nil {
+		return nil, fmt.Errorf("reading the GitHub connection %q named by spec.backend.harness.githubConnectionRef: %w", connName, err)
+	}
+	if conn.Spec.Type != agentsv1alpha1.ConnectionTypeGitHub {
+		return nil, fmt.Errorf("spec.backend.harness.githubConnectionRef names connection %q of type %q; it must be a github connection", connName, conn.Spec.Type)
+	}
+	secretName := strings.TrimSpace(conn.Spec.SecretRef)
+	if secretName == "" {
+		secretName = connsecret.Name(connName)
+	}
+	secret, err := run.Creds.GetSecret(ctx, llm.SecretNamespace, secretName)
+	if err != nil {
+		return nil, fmt.Errorf("reading the token of GitHub connection %q (Secret %s): %w", connName, secretName, err)
+	}
+	token := strings.TrimSpace(string(secret.Data["token"]))
+	if token == "" {
+		return nil, fmt.Errorf("GitHub connection %q holds no token (Secret %s has no \"token\" key); add one or connect it with OAuth", connName, secretName)
+	}
+	// Both names: gh reads GH_TOKEN first and falls back to GITHUB_TOKEN, and
+	// git credential helpers and most CI-shaped scripts read the second.
+	return []runner.EnvironmentVariable{
+		{Name: "GH_TOKEN", Value: token},
+		{Name: "GITHUB_TOKEN", Value: token},
+	}, nil
 }
 
 // repositoryHarnessTurn resolves a REPOSITORY attempt: the run is its own task
@@ -583,6 +635,7 @@ func (s *Server) repositoryHarnessTurn(run taskRun, runID, sessionID string, con
 		RequiredHarness: deps.advertised,
 		Model:           deps.model,
 		Credential:      deps.identity,
+		Environment:     deps.environment,
 		Provenance: map[string]any{
 			"workspace": run.Scope.WorkspaceUUID,
 			"org":       run.Scope.OrgUUID,
