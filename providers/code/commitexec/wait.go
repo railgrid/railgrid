@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-package mcpserver
+package commitexec
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-// waitForPhase waits for the named object of gvr to satisfy isTerminal, or
+// WaitForPhase waits for the named object of gvr to satisfy isTerminal, or
 // for timeout to elapse, whichever is first. It reads the object once — an
 // already-terminal object returns at once — and then follows a single watch
 // scoped to that object by field selector from the resource version it read,
@@ -37,7 +37,7 @@ import (
 // callers can tell "timed out" from a failed request. An error is only ever
 // a failure of the read or watch itself, or the object vanishing before it
 // finished.
-func waitForPhase(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, kind, name string, timeout time.Duration, isTerminal func(*unstructured.Unstructured) bool) (*unstructured.Unstructured, bool, error) {
+func WaitForPhase(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, kind, name string, timeout time.Duration, isTerminal func(*unstructured.Unstructured) bool) (*unstructured.Unstructured, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -124,8 +124,8 @@ func followWatch(ctx context.Context, w watch.Interface, kind, name string, isTe
 	}
 }
 
-// phaseIn reports whether status.phase is one of phases.
-func phaseIn(phases ...string) func(*unstructured.Unstructured) bool {
+// PhaseIn reports whether status.phase is one of phases.
+func PhaseIn(phases ...string) func(*unstructured.Unstructured) bool {
 	return func(obj *unstructured.Unstructured) bool {
 		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
 		for _, p := range phases {

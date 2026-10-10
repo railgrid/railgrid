@@ -1,7 +1,7 @@
 {
   "name": "railgrid",
   "displayName": "railgrid",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Drive a railgrid hub as a user: railgrid CLI, orgs and workspaces, MCP, App Studio, infrastructure, hosted agents, edges.",
   "author": {
     "name": "railgrid",
@@ -13,7 +13,10 @@
   "mcpServers": {
     "railgrid": {
       "command": "railgrid",
-      "args": ["mcp", "proxy"]
+      "args": [
+        "mcp",
+        "proxy"
+      ]
     }
   },
   "keywords": [

@@ -303,6 +303,13 @@ spec:
           verbs: ["get", "list", "watch", "create", "update", "delete"]
         - name: repositorycommits
           verbs: ["get", "list", "watch"]
+        # Published container images, mirrored by the Code provider from the
+        # registry as Package CRs: a promotion resolves each launchable component
+        # to the image the reviewed commit built (api/project_build_status.go),
+        # and the releases view lists what a commit produced
+        # (api/project_releases.go). Read-only, as the provider.
+        - name: packages
+          verbs: ["get", "list", "watch"]
         # Git connections: listed when a project picks one to create its
         # repository from, read back when a view resolves its connectionRef
         # (api/code_repository.go). Read-only — a connection is the tenant's to
@@ -318,6 +325,13 @@ spec:
         # an export that also claims the parent.
         - name: repositories/commit
         - name: repositories/stage-commit-bundle
+        # The read in the other direction: hydrate and restore load a project's
+        # repository tree into the workspace through the Code provider's checkout
+        # verb (internal/codecommit), as itself. The verb creates the transient
+        # RepositoryCheckout as the Code provider, so this is the only grant the
+        # read needs — App Studio holds no write on repositorycheckouts, and the
+        # Project's hub-minted identity could never be given one.
+        - name: repositories/checkout
         - name: connections/mint-registry-token
     # Every provider that serves a custom subresource needs this one entry: on
     # the shard-forwarded path there is no caller bearer, so the provider runs a

@@ -15,8 +15,8 @@ skills/railgrid/
   SKILL.md                     orientation, rules, playbooks (start here)
   .claude-plugin/plugin.json   Claude Code plugin: this skill plus the `railgrid mcp proxy` MCP server
   references/cli.md            env, app, commit, sandbox, mcp (proxy, url, claude, codex)
-  references/access.md         CLI, auth, org/workspace IDs, hub REST, URL grammar, kube REST by cluster
-  references/app-studio.md     App Studio CRDs and every REST route
+  references/access.md         CLI, auth, org/workspace IDs, hub REST, the verb URL grammar, kube REST by cluster
+  references/app-studio.md     App Studio CRDs and every verb on them
   references/code.md           GitHub connections, repositories, commits, CI status
   references/infrastructure.md templates, instances, URLs, access gate, dev sandboxes
   references/agents.md         agents, runs, channels, schedules, deep research
@@ -103,7 +103,17 @@ directory travels as package resources.
 Everything in the skill was read from the railgrid source and docs on
 2026-09-09, then corrected against a live hub the same day. The MCP-first
 guidance (`railgrid mcp proxy`, `fmcp`) was checked against a local hub on
-2026-09-13. Route tables,
+2026-09-13. On 2026-10-10 five test projects were driven end to end on a
+hosted hub (CLI, raw verbs, MCP, assistant, adopted repo, bare Instance);
+what that surfaced — `--wait` semantics, the `preview` verb, the
+`.gitignore`/restart trap, adopted-repo prerequisites, instant 502s from
+App Studio's git calls — is in SKILL.md 4.3–4.6 and section 8, cli.md
+section 9 and troubleshooting.md. On 2026-10-09 every reference was re-verified against the source
+after the provider REST surfaces (`/services/providers/<p>/api/*`) were
+retired: every provider call is now a kube path on the workspace cluster, a
+CR or a custom-subresource verb
+`/clusters/<cluster>/apis/<group>/<version>/<resource>/<name>/<verb>`, and
+`railgrid env` exports `AS` as App Studio's kube API base. Route tables,
 CRD fields, and MCP tool names are the parts most likely to drift. When you
 change one of those in the repo, update the matching reference file in the
 same PR. `references/troubleshooting.md` is the list of error strings and
@@ -120,7 +130,7 @@ another list it will trust for too long.
 
 Section 8 of `SKILL.md` and `references/troubleshooting.md` collect what only
 shows up when you actually drive a hub:
-Cloudflare blocking non-browser HTTP clients, calling MCP tools from a shell
+the hub's front-door proxy blocking non-browser HTTP clients, calling MCP tools from a shell
 (`fmcp`), org-scoped providers missing for token-based MCP clients, and the
 states that look like failures but are only latency. Add to it whenever a session
 loses time to something that was not in the code.

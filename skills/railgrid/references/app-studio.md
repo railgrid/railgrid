@@ -1,110 +1,156 @@
 # App Studio reference
 
-> **Superseded routes (2026-09-25).** App Studio no longer serves a REST facade under
-> `/services/providers/app-studio/api/...`. Every operation below is a kcp custom
-> subresource (a *verb*) on a Project, Session or Studio, reached on the hub as
-> `https://<hub>/clusters/<cluster>/apis/ai.railgrid.ai/v1alpha1/{projects|sessions|studios}/<name>/<verb>`
-> with the caller's bearer; the verb names are `spec.export.resources[].verbs` in
-> `providers/app-studio/manifest.yaml`, and `railgrid app`/`railgrid sandbox` call them.
-> The `/api/...` paths in this file are kept only as a map of the request/response
-> bodies until it is rewritten.
+App Studio has no REST facade. Every operation is either a plain kube
+read/write of a `Project`, `Session` or `Studio` CR through the hub's kcp
+proxy, or a **verb** — a kcp custom subresource on one of those CRs:
 
-Base URL for every route: `https://<hub>/services/providers/app-studio` (written `$AS` below). Every
-call needs `Authorization: Bearer`, `X-Railgrid-Org`, `X-Railgrid-Workspace`.
-Errors are Kubernetes `Status` JSON; lists are `{"items":[…]}`.
+```
+$AS/projects/<p>/<verb>[/<tail>]        $AS = $HUB/clusters/$CLUSTER/apis/ai.railgrid.ai/v1alpha1  (railgrid env)
+$AS/sessions/<s>/<verb>[/<turn>]
+$AS/studios/studio/<verb>
+```
+
+Every call needs `Authorization: Bearer` (`X-Railgrid-Org` /
+`X-Railgrid-Workspace` are addressing only; `fc` from SKILL.md section 0
+sends all three). kcp authorizes the **HTTP method** as the RBAC verb on
+`<resource>/<verb>`, forwards the call to the provider with your identity
+stamped, and the provider checks you can `get` the addressed object before
+the handler runs. Consequences: a project or session you cannot see, one
+that is being deleted, and an undeclared verb all answer **404 `Not Found`
+as plain text**; a wrong method is 405 with `Allow`; a tail on a verb that
+takes none is 400. Handler errors are Kubernetes `Status` JSON; lists are
+`{"items":[…]}`. The verb names are `spec.export.resources[].verbs` in
+`providers/app-studio/manifest.yaml`; `railgrid app` and `railgrid sandbox`
+call the same ones.
 
 ## 1. What App Studio owns and what it does not
 
 - Owns: `Project`, `Session`, `Studio` CRs (`ai.railgrid.ai/v1alpha1`, all
-  cluster-scoped), the workspace file store, the assistant, and the REST API.
+  cluster-scoped), the workspace file store, the assistant, and the verbs.
 - Does not own git (the **code** provider does) or runtime (the
   **infrastructure** provider does). App Studio holds no runtime kubeconfig.
 - Has no MCP server. It is an MCP *client* that calls `code__*` tools on
-  the workspace aggregate endpoint as the project's ServiceAccount. CLI:
-  `railgrid app`, `railgrid sandbox`, `railgrid commit` drive these routes from a
-  terminal ([cli.md](cli.md)).
+  the workspace aggregate endpoint as the project's identity. CLI:
+  `railgrid app`, `railgrid sandbox`, `railgrid commit` ([cli.md](cli.md)).
 - Depends on `code` and `infrastructure` being enabled in the workspace.
 
 ## 2. CRDs
 
 ### Project
 
-`spec`: `displayName` (required), `description`, `repository`
-(`repositoryRef`, `name`, `connectionRef`, `adopted`), `template.name`
-(infrastructure Template; empty means no dev environment), `memory`
-(`goals[]`, `requirements[]`, `constraints[]`), `sharing.preview.mode`
+`spec`: `displayName` (required, 1–128 chars, CRD-enforced), `description`,
+`repository` (`repositoryRef`, `name`, `connectionRef`, `adopted`),
+`template.name` (infrastructure Template; empty means no dev environment),
+`memory` (`goals[]`, `requirements[]`, `constraints[]`), `sharing.preview.mode`
 (`private|public`), `sharing.publishing.mode` (`private|shared|public`),
 `environments[]` (`name`, `mode artifact|live`, `promotion manual|auto`,
-`bindings[]`).
+`autoDeploy`, `bindings[]`).
 
 `bindings[]`: `name`, `provider`, `kind providerResource|providerReference`,
 `resourceRef {apiVersion, kind, resource, name}`, `values` (opaque),
-`allowedActions[] {name, version, schemaDigest, grantedBy, grantedAt, revoked, revokedBy, revokedAt}`.
+`allowedActions[] {name, version, schemaDigest, grantedBy, grantedAt, revoked, revokedBy, revokedAt}`,
+`imagePullSecretRef.name`.
 
-`status`: `phase`, `updatedAt`, `environments[] {name, mode, phase, bindings[] {name, provider, phase, url, previewURL, outputs}}`.
+`status`: `phase`, `updatedAt`, `observedGeneration`,
+`environments[] {name, mode, phase, bindings[] {name, provider, phase, url, previewURL, outputs}}`,
+`workspace {sourceRevision, uncommittedPaths[], pendingCommit {name, repositoryRef, workspaceDigest, paths[], requestedAt}, settlement {workspaceDigest, paths[], recordedAt}}`.
 
-Derived names: dev instance `<project>-dev`, prod instance `<project>-prod`
-(truncated at 30 chars plus an 8-hex hash when needed). Environment names
-`development` and `production`; binding names `dev` and `prod`.
+Finalizer `ai.railgrid.ai/instances` carries the whole teardown. Annotation
+`ai.railgrid.ai/delete-repository: "true"` (set before deleting) also deletes a
+non-adopted Repository. Derived names: dev instance `<project>-dev`, prod
+instance `<project>-prod` (truncated at 30 chars plus an 8-hex hash when
+needed). Environment names `development` and `production`; binding names
+`dev` and `prod`.
+
+Plain CR operations (no verb): list `GET $AS/projects`; read the CR
+`GET $AS/projects/<p>` (use `view` for the joined state); edit
+`spec.displayName` / `spec.description` / `spec.memory` with a merge patch
+(`PATCH $AS/projects/<p>` with `Content-Type: application/merge-patch+json`,
+or `kubectl patch project <p> --type merge -p '…'`); delete with
+`DELETE $AS/projects/<p>` (section 3, "Delete") or `kubectl delete project`.
+Sharing is **not** CR metadata: use the `preview` and `publishing` verbs.
 
 ### Session
 
-Projection of one assistant thread: `spec.projectRef`, `spec.threadID`,
-`spec.actorID`; `status.title`, `phase active|archived`, `activeTurnID`,
-`activeTurnStatus`. Owned by the Project, purged on delete.
+One assistant conversation; `metadata.name` is the thread ID.
+`spec.projectRef`, `spec.threadID`, `spec.actorID`; `status.title`,
+`phase active|archived`, `activeTurnID`, `activeTurnStatus`, `turnCount`,
+`lastActivityAt`, `updatedAt`. Owned by the Project; finalizer
+`ai.railgrid.ai/purge` deletes the transcript, so `kubectl delete session <s>`
+is the `discard` verb. Threads are per user: another user's session is 404 on
+every verb.
 
 ### Studio
 
-Singleton `metadata.name: studio`. `spec.search {disabled, size small|medium|large}`
+Singleton `metadata.name: studio`. `spec.search {disabled, size small|medium|large, resourceRef}`
 and `spec.browser {…}` provision a shared SearXNG and Playwright browser as
-infrastructure instances for the workspace. Status reports each as
-`Ready|Pending|Disabled`.
+infrastructure instances; `status.search` / `status.browser` report
+`Ready|Pending|Disabled`. `spec.llm` is the model registry (section 3, "Models").
 
-## 3. Route table
+**The Studio must exist before any `studios/studio/<verb>`** (the gate reads
+it). `railgrid app create` creates it; by hand:
 
-### Health and settings
-
-```
-GET   /healthz  /readyz  /metrics
-GET   /api/projects/llm-settings                         → {provider,baseURL,model,configured,defaultModelID,models[{id,name,provider,baseURL,model,configured,default}]}
-PATCH /api/projects/llm-settings                         {provider?,baseURL?,model?,apiKey?}   single-model form
-POST  /api/projects/llm-settings/models                  {name,provider?,baseURL?,model,apiKey} → model entry
-PATCH /api/projects/llm-settings/models/{model}          {name?,provider?,baseURL?,model?,apiKey?}
-DELETE /api/projects/llm-settings/models/{model}
-PATCH /api/projects/llm-settings/default                 {modelID}
-POST  /api/projects/llm-settings/models/discover         list models the endpoint serves
-POST  /api/projects/llm-settings/test                    live probe
-GET   /api/projects/create-readiness                     → {gitConnection:{ready,status ready|provider-missing|connection-missing|validating|failed,connectionRef,message}}
-GET   /api/projects/development-templates                → {templates:[{name,displayName,description,category,components{comp:path},previewAccessModes[],hasScaffold}]}
-GET   /api/projects/import-repositories                  → {repositories:[{ref,name,connectionRef,htmlURL}]}
-POST  /api/projects/plan                                 {prompt,templateName?} → {displayName,repositoryName,template,components,scaffold{repository,ref},availableTemplates[]}
+```bash
+fc "$AS/studios/studio" >/dev/null 2>&1 || fc -X POST "$AS/studios" -H 'Content-Type: application/json' \
+  -d '{"apiVersion":"ai.railgrid.ai/v1alpha1","kind":"Studio","metadata":{"name":"studio"},"spec":{"search":{"size":"small"},"browser":{"size":"small"}}}'
 ```
 
-Model settings are workspace-wide and OpenAI-compatible (Anthropic via
-`https://api.anthropic.com/v1`, OpenAI, OpenRouter, custom). API keys are
-write-only.
+## 3. Verb table
+
+### Workspace-wide (Studio verbs)
+
+```
+GET  $AS/studios/studio/create-readiness        → {gitConnection:{ready,status ready|provider-missing|connection-missing|validating|failed,connectionRef,message}}
+GET  $AS/studios/studio/development-templates   → {templates:[{name,displayName,description,category,components{comp:path},previewAccessModes[],hasScaffold}]}
+GET  $AS/studios/studio/import-repositories     → {repositories:[{ref,name,connectionRef,htmlURL}]}   code Repositories no project claims
+POST $AS/studios/studio/plan                    {prompt,templateName?} → {displayName,repositoryName,template,components,scaffold{repository,ref},availableTemplates[]}
+POST $AS/studios/studio/create-project          CreateProjectRequest → 201 ProjectView
+POST $AS/studios/studio/create-project-stream   same, SSE events status{message} / created{ProjectView} / error{message}
+POST $AS/studios/studio/discover-models         {provider?,baseURL?,apiKey?,existingModelID?} → {models:[{id,name,compatibility,capabilities[]}],source}
+POST $AS/studios/studio/test-model              {existingModelID?,provider?,baseURL?,model,apiKey} → {ok:true}; 422 InvalidConnection, 504 timeout, 502 other
+```
+
+### Models
+
+The registry is `Studio.spec.llm`; API keys are Secrets you write yourself as
+the caller. There is no settings verb: edit the CR, then test.
+
+- `spec.llm.defaultModel` = a model `id`; `spec.llm.models[] {id, revisionID, archived?, name, provider?, baseURL?, model, secretRef{name}}`
+  (≤ 20 active, ≤ 200 revisions); `spec.llm.runtime {maxRetries, retryBackoffMS, streamIdleTimeoutMS}`.
+- Secret `railgrid-projects-llm-<id>` in namespace `default`, key `apiKey`,
+  **label `railgrid.ai/owner: app-studio`** (without it the provider cannot see
+  the Secret and the model never reports configured).
+- `status.models[] {id, configured}` and condition `LLMRegistryValid` are the
+  truth; read them, not the Secret.
+- `provider`: `openai-compatible` (default; `baseURL` default
+  `https://api.openai.com/v1`) or `google-ai-studio`
+  (`https://generativelanguage.googleapis.com`). `discover-models` and
+  `test-model` reuse a stored key via `existingModelID` only for the same
+  provider and endpoint (`enter a credential before …` otherwise).
 
 ### Projects
 
 ```
-GET    /api/projects                                     → {items:[ProjectView]}
-POST   /api/projects                                     CreateProjectRequest → 201 ProjectView
-POST   /api/projects/stream                              same, SSE events status{message} / created{Project} / error{message}
-GET    /api/projects/{p}                                 ProjectView
-PATCH  /api/projects/{p}                                 {displayName?,description?,sharing?}
-DELETE /api/projects/{p}?uid=<uid>[&deleteRepository=true]   uid is required; names can be reused after async delete
-GET    /api/projects/{p}/thumbnail[?revision=]           PNG
-GET|PATCH /api/projects/{p}/memory                       {goals?,requirements?,constraints?}
-PUT    /api/projects/{p}/template                        {template} → {template,components,project}; switching deletes the old dev instance and re-hydrates
-GET    /api/projects/{p}/checkpoints                     → {items:[{key Template|Git|CI|Production,label,state done|pending|blocked|error,reason,remediation{kind auto|manual,tool,actionUrl,message}}]}
+POST   …/create-project                        CreateProjectRequest → 201 ProjectView      (Studio verb, above)
+GET    $AS/projects                             kube list of Project CRs
+GET    $AS/projects/<p>/view                    ProjectView (CR + live instance status + commit ledger + sourceRevision + thumbnail)
+PATCH  $AS/projects/<p>                         merge patch of spec.displayName / description / memory (kube)
+DELETE $AS/projects/<p>                         kube delete; see "Delete"
+POST   $AS/projects/<p>/set-repository          {connectionRef,retryRepositoryRef?,projectUID?} → ProjectView; 409 when a repository is already bound to another connection or adopted
+POST   $AS/projects/<p>/set-template            {template} → {template,components,project}; 404 unknown template; switching deletes the old dev instance and re-syncs
+GET    $AS/projects/<p>/thumbnail               PNG; ETag / If-None-Match → 304; 404 when none captured
+GET    $AS/projects/<p>/checkpoints             → {items:[{key template|git|ci|production,label,state done|pending|blocked|error,reason,remediation{kind auto|manual,tool,actionUrl,message}}]}
 ```
 
 `CreateProjectRequest`: `name?`, `displayName?`, `description?`, `prompt?`,
 `templateName?`, `inferDevelopmentTemplate?`, `connectionRef?`,
-`existingRepositoryRef?`.
+`repositoryMode? auto|none|create`, `existingRepositoryRef?`. Unknown fields
+are 400. `none` cannot carry `connectionRef`/`existingRepositoryRef`; `auto`
+uses a validated connection when one exists, else the project starts with no
+repository.
 
-Naming: an explicit `name` must already be a DNS
-label (`name must be a valid DNS label`) and is used verbatim for the Project
+Naming: an explicit `name` must already be a DNS label
+(`name must be a valid DNS label`) and is used verbatim for the Project
 **and** the new code `Repository`. If a `Repository` of that name exists
 (often one a deleted project left behind) the create is a 409:
 `a code Repository named "<n>" already exists (possibly left by a deleted project); adopt it with existingRepositoryRef or choose another name`.
@@ -112,67 +158,73 @@ A taken Project name is not suffixed either (the Project create fails).
 Only when `name` is omitted are names derived from `displayName`/the prompt
 preflight and suffixed until free.
 
-Delete: repositories survive by default (the claim is released). With
-`deleteRepository=true` the code `Repository` App Studio created
-for this project is deleted first, as the caller; its finalizer deletes the
-GitHub repo. Refusals happen before any side effect: 400
-`deleteRepository must be true or false`; 409
-`repository "<r>" was adopted (imported) into this project and App Studio never deletes adopted repositories; …`;
-409 `repository "<r>" is not owned by project "<p>"; it was not deleted`.
-
 `ProjectView`: `name`, `uid`, `deleting`, `displayName`, `description`,
-`phase`, `template`, `repository {ref, name, connectionRef, htmlURL, status, ready, commits[{name, phase, branch, commitSHA, commitURL, message, fileCount, createdAt, completedAt}]}`
+`phase`, `template`,
+`repository {ref, name, connectionRef, htmlURL, status, message, ready, canRetryCreation, commits[{name, phase, branch, commitSHA, commitURL, message, fileCount, createdAt, completedAt}], commitsError}`
 (`ref` is the code `Repository` name every `code__*` call wants; it can differ
 from the project name),
 `memory`, `sharing`, `environments[]`, `createdAt`, `updatedAt`,
-`sourceRevision`, `thumbnail`.
+`sourceRevision`, `thumbnail {available, refreshing, commitSHA, revision}`.
 
 **`phase` is not the readiness gate for committing.** A newly created project
 returns `phase: Ready` while its `Repository` is still being reconciled. That
 window reports `repository.status: Provisioning` (sometimes with the message
-`Creating repository "<name>".`, sometimes with no message at all) while the
-reconciler finalizer `ai.railgrid.ai/instances` is absent, or for 10 minutes
-after creation. If it lasts more than ~2 min and the `Repository` CR has no
-`status` at all, the code provider is not reconciling — `railgrid app status`
-says so and `GET /api/providers` shows `code` not ready
-([troubleshooting.md](troubleshooting.md)).
-`RepositoryMissing` means the CR existed and is gone. A
-`code__commit_files` issued in that window fails with
-`repository "<name>" not found`, which reads like a wrong `repositoryRef` and
-sends you looking for a typo that is not there.
+`Creating repository "<name>".`, sometimes with no message at all). If it
+lasts more than ~2 min and the `Repository` CR has no `status` at all, the
+code provider is not reconciling — `railgrid app status` says so and
+`GET $HUB/api/providers` shows `code` not ready
+([troubleshooting.md](troubleshooting.md)). `RepositoryMissing` means the CR
+existed and is gone. A `code__commit_files` issued in that window fails with
+`repository "<name>" not found`, which reads like a wrong `repositoryRef`.
 
 Gate on `repository.ready == true` (and `repository.htmlURL` being populated)
 before the first commit:
 
 ```bash
-until fc "$AS/api/projects/$P" | jq -e '.repository.ready == true' >/dev/null; do sleep 5; done   # fc: SKILL.md section 0
+until fc "$AS/projects/$P/view" | jq -e '.repository.ready == true' >/dev/null; do sleep 5; done
 ```
 
-Observed on a fresh project, so treat it as a startup race rather than
-evidence that projects routinely outlive their repositories. The same two
-fields are still the honest check whenever you are unsure which objects
-actually exist; `kubectl get repositories.code.railgrid.ai` confirms from the
-other side.
+`kubectl get repositories.code.railgrid.ai` confirms from the other side.
+
+**Delete.** A kube delete of the Project CR; the finalizer tears down the
+dev/prod instances, the repository claim, sessions, attachments, identity and
+workspace tree. Pass the UID as a precondition so a same-name replacement
+cannot be deleted by a stale action; names can be reused after the async
+delete.
+
+```bash
+UID=$(fc "$AS/projects/$P" | jq -r .metadata.uid)
+# optional: also delete the Repository App Studio created (and its GitHub repo). Adopted repos are never deleted.
+fc -X PATCH "$AS/projects/$P" -H 'Content-Type: application/merge-patch+json' -d '{"metadata":{"annotations":{"ai.railgrid.ai/delete-repository":"true"}}}'
+fc -X DELETE "$AS/projects/$P" -H 'Content-Type: application/json' -d '{"apiVersion":"v1","kind":"DeleteOptions","preconditions":{"uid":"'$UID'"}}'
+```
+
+Repositories survive by default (the claim label is released). A UID
+mismatch is a kube 409. While a run is active the finalizer waits for it
+(`an assistant turn is still finishing`).
 
 ### Files and workspace
 
+The file path is the **`?path=` query parameter** on every file verb (a path
+in the tail is 400). Paths are relative to the repository root.
+
 ```
-GET    /api/projects/{p}/files                           → {files:[{path,size,…}]}   flat sorted tree
-GET    /api/projects/{p}/files/content?path=<p>          → {path,content,version,binary,truncated,size}   all fields always present; 404 "file not found"
-GET    /api/projects/{p}/files/raw?path=<p>[&download=1] raw bytes
-PUT    /api/projects/{p}/files/content?path=<p>          body = raw file bytes
-DELETE /api/projects/{p}/files/content?path=<p>          optional If-Match
-POST   /api/projects/{p}/files/upload                    multipart
-POST   /api/projects/{p}/hydrate-workspace               {ref?} → {repositoryRef,ref,commitSHA,written[],skipped[]}   git → workspace via code__checkout_repository
-POST   /api/projects/{p}/restore-workspace               {commitSHA:"<full sha>",expectedSourceRevision:<ProjectView.sourceRevision, number or numeric string>} → {…,written[],deleted[],sourceRevision,skipped[]?}   409 when the revision moved; restoring an older commit deletes files and the reconciler commits the deletions; a restored commit without a workflow builds nothing (`build.status: none`)
-POST   /api/projects/{p}/scaffold                        re-seed template starter files into an EMPTY workspace
+GET    $AS/projects/<p>/files                        → {files:[{path,size,…}],truncated?,limit?}   flat sorted tree
+GET    $AS/projects/<p>/files-content?path=<p>       → {path,content,version,binary,truncated,size}   all fields always present; 404 "file not found"
+PUT    $AS/projects/<p>/files-content?path=<p>       body = raw file bytes
+DELETE $AS/projects/<p>/files-content?path=<p>       optional If-Match
+GET    $AS/projects/<p>/files-raw?path=<p>[&download=1]   raw bytes
+POST   $AS/projects/<p>/files-upload                 multipart
+POST   $AS/projects/<p>/hydrate-workspace            {ref?} → {repositoryRef,ref,commitSHA,written[],sourceRevision,skipped[]}   git → workspace via the code `repositories/checkout` verb, as App Studio; 400 / 502 / 503 "project workspace store is not configured"; an instant 502 from the hub's front door while `code` is Ready = App Studio's own call failing (the automatic hydrate after a commit fails the same way; SKILL.md section 8)
+POST   $AS/projects/<p>/restore-workspace            {commitSHA:"<full sha>",expectedSourceRevision:<ProjectView.sourceRevision, number or numeric string>} → {commitSHA,written[],deleted[],sourceRevision,skipped[]?}   409 when the revision moved; restoring an older commit deletes files and the reconciler commits the deletions; a restored commit without a workflow builds nothing (`build.status: none`)
+POST   $AS/projects/<p>/scaffold                     → {template,scaffold{repository,ref},seeded}   re-seed template starter files into an EMPTY workspace; a non-empty one answers 200 with `seeded: 0` (nothing overwritten); 400 no template, 422 NoScaffold. `scaffold.repository` is the public scaffold repo (`https://github.com/railgrid/scaffold-simple-webapp`), handy for copying `.github/workflows/build.yaml` into an adopted repo
 ```
 
-`files/content` GET: text beyond 256 KiB is `truncated` with no `version`; a
+`files-content` GET: text beyond 256 KiB is `truncated` with no `version`; a
 binary file (NUL byte or invalid UTF-8) has `content: ""`, `binary: true` and
 a whole-file `version` (`sha256:<hex>`).
 
-`files/raw`: `ETag` is the quoted version,
+`files-raw`: `ETag` is the quoted version,
 `If-None-Match` (list, `*`, weak prefix tolerated) → 304; `Cache-Control:
 private, no-cache`, `X-Content-Type-Options: nosniff`,
 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox`.
@@ -186,9 +238,14 @@ Writes share one gate: 503 `project workspace store is not
 configured`, 409 `project is being deleted`, 409
 `wait for or stop the active assistant run before changing project files`.
 Every write marks the paths uncommitted (the reconciler commits them) and
-schedules a dev sync, like an assistant edit.
+schedules a dev sync, like an assistant edit. Measured on a hosted hub: the
+reconciler's commit landed ~30 s after a `PUT`, one commit per burst of
+writes (`Update api/server.mjs`, `Update 2 files`); content identical to the
+branch head resolves the `RepositoryCommit` to the **existing** head SHA
+(`Succeeded`, no new commit), which is how an adopted tree becomes
+promotable without changing it.
 
-- `PUT files/content`: body is the whole file (≤ 25 MiB binary, 256 KiB text;
+- `PUT files-content`: body is the whole file (≤ 25 MiB binary, 256 KiB text;
   413 `file exceeds the 26214400-byte binary limit` or
   `text|binary file "<p>" is too large: N > M bytes`). No precondition =
   upsert. `If-None-Match: *` = create only (any other value 400
@@ -197,9 +254,9 @@ schedules a dev sync, like an assistant edit.
   must exist (412 `file does not exist`). Both headers → 400. Stale or
   existing target → 412. Answers 201 created / 200 replaced with
   `{path,size,version,binary}`.
-- `DELETE files/content`: `If-Match` optional (absent or `*` = current
+- `DELETE files-content`: `If-Match` optional (absent or `*` = current
   version); 204; 404 `file not found`; stale → 412.
-- `POST files/upload`: multipart, one or more `file` parts (the part
+- `POST files-upload`: multipart, one or more `file` parts (the part
   filename is the path, `\` → `/`), optional `dir` (target directory, "" =
   root), optional `overwrite=true|false`. ≤ 100 files and 48 MiB of file
   bytes per request (413 `upload exceeds the 50331648-byte request limit`),
@@ -208,39 +265,47 @@ schedules a dev sync, like an assistant edit.
   `file "<p>" already exists; upload with overwrite=true to replace it`.
   → 200 `{files:[{path,size,version,binary}]}`.
 
+```bash
+fc -X PUT "$AS/projects/$P/files-content?path=web/public/assets/jeep.glb" -H 'If-None-Match: *' --data-binary @jeep.glb
+fc "$AS/projects/$P/files-content?path=web/public/assets/jeep.glb" | jq '{binary,size,version}'
+```
+
 Other paths that change files: assistant tools (`create_file`,
 `replace_file`, `edit_file`, `delete_file`, `move_file`, `import_attachment`,
 `download_file`), hydrate, restore, scaffold. Hydrate writes files but does
 **not** mark them for re-commit and does **not** delete workspace files the
 ref no longer has (a commit that removed `index.html` leaves it in the
-workspace and the sandbox; `DELETE files/content` it yourself); scaffold and
-restore do mark files. Restore does
-not fail when the checkout skipped paths; it returns them in `skipped` and
-is meant to keep their workspace copies. Ambiguous: the code
-passes the checkout's skip entries verbatim, and those carry reason suffixes
-(`<path> (binary)`, ` (file too large)`), so they may not match the
-workspace path and the file may be deleted anyway. Check `deleted[]` after a
-restore of a commit with large or binary files.
+workspace and the sandbox; `DELETE files-content` it yourself); scaffold and
+restore do mark files. Restore does not fail when the checkout skipped
+paths; it returns them in `skipped` and is meant to keep their workspace
+copies. Ambiguous: the code passes the checkout's skip entries verbatim, and
+those carry reason suffixes (`<path> (binary)`, ` (file too large)`), so they
+may not match the workspace path and the file may be deleted anyway. Check
+`deleted[]` after a restore of a commit with large or binary files.
 
 ### Dev sandbox
 
 ```
-POST /api/projects/{p}/sync-development                  workspace → dev instance, per component
-POST /api/projects/{p}/restart-development[?component=]
-GET  /api/projects/{p}/development-logs[?component=]     streamed
-GET  /api/projects/{p}/development-status                raw instance status
-POST /api/projects/{p}/authorize-development-preview     → {target,ready,previewURL,message,reason,desiredAccess,observedAccess,accessConverged}
-POST|DELETE /api/projects/{p}/preview-bridge/sessions[/{session}]   DOM-annotation iframe bridge
-GET|POST|DELETE /api/projects/{p}/preview                 POST {mode public|restricted}; DELETE = private again and drops every preview grant (200 even without a dev environment); converges in ~20–30 s, with a transient Cloudflare 502 possible while flipping
-GET|POST /api/projects/{p}/preview/grants ; POST …/preview/grants/{grant} (revoke)
+POST $AS/projects/<p>/sync-development                   workspace → dev instance, per component
+POST $AS/projects/<p>/restart-development[?component=]   → {<component>: agent reply}; 400 unknown component, 404 missing instance
+GET  $AS/projects/<p>/development-logs[?component=]      streamed (default: first declared component)
+GET  $AS/projects/<p>/development-status                 raw instance status
+POST $AS/projects/<p>/authorize-development-preview      → {target,ready,previewURL,message,reason,desiredAccess,observedAccess,accessConverged}
+POST $AS/projects/<p>/preview-bridge-sessions            {generation:<uuid>,protocolVersion:1,portalInstanceID:<uuid>} + Origin header → 201 {status available,sessionID,generation,capability,previewOrigin,portalOrigin,expiresAt} | 200 {status:"unsupported"}; 409 preview not ready
+DELETE $AS/projects/<p>/preview-bridge-sessions/<session>   204
+GET|POST|DELETE $AS/projects/<p>/preview                 → {mode,url,converged,supported,grants[]}; POST {mode public|restricted} (aliases members|private; empty keeps the mode); DELETE = private again and drops every preview grant (200 even without a dev environment); default mode is `restricted`; `public` converged in ~10 s on a hosted hub (anonymous curl 200), allow 20–30 s. No CLI command; `railgrid app status` does not show the mode
+GET|POST $AS/projects/<p>/preview-grants ; POST …/preview-grants/<grant> (revoke)    same bodies and rules as publishing-grants
 ```
 
-No start or stop route: the sandbox exists while `spec.template` is set. App
-Studio has no exec route of its own; the assistant uses `exec_command`, and
-you use the infrastructure data plane's `exec` on `<project>-dev` directly
-([infrastructure.md](infrastructure.md) section 8; `railgrid sandbox exec`,
-MCP `infrastructure__dev_exec`).
-`sync-development` returns `{result: {<component>: {phase, changed, restarted, sourceRevision, sourceDigest, skipped?: [{path, reason}]}}}` — `reason` is `binary-unsupported` (the agent lacks base64 sync), `too-large` (over the per-file limit) or `sync-limit` (over the sync's total size or file count); `skipped` is present only when something was skipped. Runtime
+No start or stop verb: the sandbox exists while `spec.template` is set. App
+Studio has no exec verb of its own; the assistant uses `exec_command`, and
+you use the infrastructure provider's `instances/<name>/exec` subresource on
+`<project>-dev` directly ([infrastructure.md](infrastructure.md) section 8;
+`railgrid sandbox exec`, MCP `infrastructure__dev_exec`).
+`sync-development` returns `{target: {…, ResourceName, Components}, result: {<component>: {phase, changed, deleted, restarted, sourceRevision, sourceDigest, skipped?: [{path, reason}]}}}`
+— `reason` is `binary-unsupported` (the agent lacks base64 sync), `too-large`
+(over the per-file limit) or `sync-limit` (over the sync's total size or file
+count); `skipped` is present only when something was skipped. Runtime
 mutations such as `npm install` inside the sandbox are not synced back.
 `sync-development` answers 422 `component "app" has no package.json in the
 workspace root; the Node.js (node) development sandbox needs one — commit a
@@ -251,56 +316,72 @@ adopted Go/Python tree); 409 when the sandbox refuses the revision, 404 for a
 missing instance, 502 only for transport failures. Hydrate, logs, restart and
 the `process` verb still work without a `package.json`.
 
-Mixing syncs: the dev agent stamps a revision on plain syncs too (`railgrid sandbox sync` uses Unix-seconds revisions), which can
-put the agent's applied revision ahead of App Studio's FileStore revision. On
-a 409 containing `older than the applied revision` or
-`already applied with a different digest`, App Studio reads the applied
-revision from the component's `process` status, renumbers to applied+1 and
-retries once; the offset is kept per component (in memory) and also applied
-to exec and thumbnail checks. So a CLI sync does not wedge App Studio's
-sync, but App Studio's next sync replaces whatever the CLI pushed.
+Mixing syncs: the dev agent stamps a revision on plain syncs too
+(`railgrid sandbox sync` uses Unix-seconds revisions), which can put the
+agent's applied revision ahead of App Studio's FileStore revision. On a 409
+containing `older than the applied revision` or `already applied with a
+different digest`, App Studio reads the applied revision from the component's
+`process` status, renumbers to applied+1 and retries once; the offset is kept
+per component (in memory) and also applied to exec and thumbnail checks. So a
+CLI sync does not wedge App Studio's sync, but App Studio's next sync
+replaces whatever the CLI pushed.
 
-Binaries reach a component only if its agent's status (data-plane verb `process`; `GET …/components/<c>/status` is 405) lists `base64` in
-`syncEncodings` (cached 10 min); otherwise they are skipped with a log line
-and text still syncs. Per sync: 500 files, 48 MiB decoded, 25 MiB per binary;
-binaries past the bounds are dropped (logged), never the whole sync.
+Binaries reach a component only if its agent's status (infrastructure
+`process` verb) lists `base64` in `syncEncodings` (cached 10 min); otherwise
+they are skipped with a log line and text still syncs. Per sync: 500 files,
+48 MiB decoded, 25 MiB per binary; binaries past the bounds are dropped
+(logged), never the whole sync.
 
 ### Assistant
 
-Thread → Turn → Item.
+Session (thread) → Turn → Item. Listing and starting conversations are
+Project verbs; everything acting on one is a Session verb.
 
 ```
-GET|POST   /api/projects/{p}/assistant/threads                    GET ?includeArchived&limit&cursor → {items,nextCursor}; POST {id?,title?}
-PATCH|DELETE /api/projects/{p}/assistant/threads/{t}              {title?,archived?}
-GET        /api/projects/{p}/assistant/threads/{t}/items          ?limit&beforeSequence
-GET        /api/projects/{p}/assistant/threads/{t}/events         SSE; replays from sequence 1 unless Last-Event-ID; ends after turn.completed; closing does not cancel
-POST       /api/projects/{p}/assistant/threads/{t}/turns          {content,clientUserMessageID,modelID?,collaborationMode default|plan (case-insensitive),skills?[],contextResources?[],contentParts?[]} → {thread,turn,continuationOfTurnID?}
-POST       /api/projects/{p}/assistant/threads/{t}/reviews        {"target":{"type":"current_workspace"},clientUserMessageID,modelID?,skills?}  read-only Review turn (`current_workspace` is the only target type; a string target is 400); the review arrives as one `agentMessage` after `inspect` tool calls, `turn.mode` is `review`
-GET        /api/projects/{p}/assistant/threads/{t}/turns/active   204 when idle (404 until the thread exists); check it before `PUT files/content`, which is 409 during a turn
-GET        /api/projects/{p}/assistant/threads/{t}/turns/{turn}   {turn,effectiveSettings?}
-POST       …/turns/{turn}/steer                                    {content,clientUserMessageID}
-POST       …/turns/{turn}/interrupt                                {clientRequestID} → {turnID,status}
-POST       …/turns/{turn}/continue
-POST       …/turns/{turn}/approval  and  …/turns/{turn}/input      {requestID,decision allow|deny} / {requestID,answer|answers}
-GET|PATCH  /api/projects/{p}/assistant/approval-mode              {mode on_request|always_ask|never}
-GET|POST   /api/projects/{p}/assistant/attachments                POST multipart field `file` (+clientAttachmentID, draft) → {id,filename,contentType,kind,sizeBytes,sha256,createdAt,draft?,expiresAt?}
-GET|DELETE /api/projects/{p}/assistant/attachments/{a}
+GET  $AS/projects/<p>/sessions                    ?includeArchived&limit&cursor → {items:[{id,title,status,actorID,createdAt,updatedAt}],nextCursor}
+POST $AS/projects/<p>/create-session              {id?,title?} → 201 thread (id defaults to thread-<uuid>)
+POST $AS/projects/<p>/adopt-session/<thread>      → {thread,session}   recreates a missing Session CR for an existing thread
+POST $AS/sessions/<s>/edit                        {title?,archived?} → thread
+POST $AS/sessions/<s>/discard                     → 204 (transcript purged); same as kubectl delete session
+GET  $AS/sessions/<s>/items                       ?limit (turns, default 20, max 50) &beforeSequence → {items,nextCursor?}
+GET  $AS/sessions/<s>/events                      SSE; replays from sequence 1 unless Last-Event-ID (or ?afterSequence=); ends after the active turn's terminal event; closing does not cancel
+POST $AS/sessions/<s>/turn                        {content,clientUserMessageID,modelID?,collaborationMode default|plan (case-insensitive),skills?[],contextResources?[],contentParts?[]} → 202 {thread,turn,continuationOfTurnID?}
+POST $AS/sessions/<s>/review                      {"target":{"type":"current_workspace","instructions"?},clientUserMessageID,modelID?,skills?,contextResources?,contentParts?} → 202   read-only Review turn (`current_workspace` is the only target type; instructions ≤ 8 KiB); the review arrives as one `agentMessage` after `inspect` tool calls, `turn.mode` is `review`
+GET  $AS/sessions/<s>/active-turn                 204 when idle, 200 turn otherwise; check it before `PUT files-content`, which is 409 during a turn
+GET  $AS/sessions/<s>/turn-status/<turn>          {turn,effectiveSettings?}
+POST $AS/sessions/<s>/steer/<turn>                {content,clientUserMessageID} → 202 turn; 404 unless the turn is yours and in progress
+POST $AS/sessions/<s>/interrupt/<turn>            {clientRequestID} → 202 {turnID,status}
+POST $AS/sessions/<s>/continue/<turn>             {content?,clientUserMessageID,skills?,contextResources?,contentParts?} → 202; only after an interrupted turn (409 otherwise)
+POST $AS/sessions/<s>/approval/<turn>             {requestID,decision allow|deny,editedArguments?} → {runID,requestID,status,…}
+POST $AS/sessions/<s>/input/<turn>                {requestID,answer|answers} → same
+GET|PATCH $AS/projects/<p>/approval-mode          {mode on_request|always_ask|never} → {mode,updatedAt}   per user and project
+GET|POST  $AS/projects/<p>/attachments            POST multipart field `file` (+clientAttachmentID, draft) → 201 {id,filename,contentType,kind,sizeBytes,sha256,createdAt,draft?,expiresAt?}
+GET|DELETE $AS/projects/<p>/attachments/<a>       GET = the bytes (Content-Disposition attachment); DELETE 204, 403 another caller's, 409 bound to a turn
 ```
 
-`collaborationMode`: trimmed and lowercased before use, so `Default`/`PLAN`
-work; empty = `default`. On the turns route `review` is 400
-`review runs must use the dedicated /assistant/threads/{thread}/reviews endpoint`,
-anything else 400 `collaborationMode must be default or plan`.
+```bash
+fc -X POST "$AS/projects/$P/create-session" -H 'Content-Type: application/json' -d '{"id":"t1","title":"cart"}'
+fc -X POST "$AS/sessions/t1/turn" -H 'Content-Type: application/json' \
+  -d '{"content":"Add a cart page backed by /api/cart.","clientUserMessageID":"m1","collaborationMode":"default"}'
+fc -N "$AS/sessions/t1/events" > events.log      # ends after turn.completed
+```
+
+A turn on an archived session is 409 `assistant thread is archived`; a
+second turn while one is active is 409. `collaborationMode` is trimmed and
+lowercased before use, so `Default`/`PLAN` work; empty = `default`. On the
+`turn` verb `review` is 400 (use the `review` verb), anything else 400
+`collaborationMode must be default or plan`. Unknown body fields are 400 on
+every assistant verb.
 
 Attachments: any file type is accepted. `kind` is `image`
 (PNG/JPEG/WebP ≤ 8 MiB, magic bytes checked), `text` (`.txt`/`.md` UTF-8
 ≤ 1 MiB), else `file` — including larger images and text, JSON, models,
 fonts (≤ 25 MiB; type from the declared type or extension, else
-`application/octet-stream`). Over-size → 413
-`attachment is N bytes; maximum is M`. Per turn: 8 attachments, 50 MiB total,
-current-turn images ≤ 20 MiB. Unbound drafts: 128 MiB and 64 per project.
-`file` attachments reach the model as metadata only (filename, ID, type,
-size, and a hint to call `import_attachment`); their bytes are never sent.
+`application/octet-stream`). Over-size → 413. Per turn: 8 attachments,
+50 MiB total, current-turn images ≤ 20 MiB. Unbound drafts: 128 MiB and 64
+per project. `file` attachments reach the model as metadata only (filename,
+ID, type, size, and a hint to call `import_attachment`); their bytes are
+never sent.
 
 Binding an attachment to a turn: send `contentParts` —
 `[{"type":"text","text":"Place it at web/public/logo.png"},{"type":"attachment","attachment":{id,filename,contentType,sizeBytes,sha256,createdAt}}]`
@@ -318,15 +399,18 @@ equals `clientAttachmentID` when you pass one.
 Thread event `project.committed`: appended to the turn of the
 project's latest assistant run when the reconciler settles a commit;
 payload `{commitSHA, commitURL?, branch?, repositoryRef, files[]}` (files
-include deletions). Projects without an assistant thread get none.
+include deletions). Projects without a session get none.
 
-Event stream shape: each `data:` line is
-`{threadID, turnID?, sequence, type, itemID?, payload:{thread|turn|item}, createdAt}`
-with `type` ∈ `thread.created`, `turn.started`, `item.started`, `item.delta`,
-`item.completed`, `plan`, `turn.completed`. An `item.completed` carries
-`.payload.item.type` ∈ `userMessage`, `agentMessage` (`.content`), `plan`,
-`dynamicToolCall` (`.data = {kind inspect|edit|…, title, target, status
-succeeded|failed, severity}`); `turn.completed` carries
+Event stream shape: each event is `id: <sequence>`, `event: <type>`,
+`data: {threadID, turnID?, sequence, type, itemID?, payload:{thread|turn|item}, createdAt}`,
+with `: keepalive` comments every 15 s. `type` ∈ `thread.created`,
+`thread.updated`, `turn.started`, `turn.continued`, `item.started`,
+`item.delta`, `item.completed`, `plan`, `approval.requested`,
+`approval.resolved`, `input.requested`, `input.resolved`, `turn.completed`,
+`turn.failed`, `turn.interrupted`, `project.committed`. An `item.completed`
+carries `.payload.item.type` ∈ `userMessage`, `agentMessage` (`.content`),
+`plan`, `dynamicToolCall` (`.data = {kind inspect|edit|…, title, target, status
+succeeded|failed, severity}`); a terminal turn event carries
 `.payload.turn.status`; a failed tool item carries only
 `diagnostic {message, category, referenceID}` (no tool name), and a `plan`
 mode reply is an ordinary `agentMessage`. To list what the assistant did:
@@ -338,8 +422,7 @@ sed -n 's/^data: //p' events.log | jq -r 'select(.type=="item.completed") | .pay
 `turn.completed` with `status: completed` is reported even when tool items
 inside the turn failed. The turn object (in `turn.completed` /
 `turn.failed` / `turn.interrupted` at `.payload.turn`, and in
-`GET …/threads/{t}/turns/{turn}`) carries the step outcome, each field
-omitted when zero:
+`turn-status/<turn>`) carries the step outcome, each field omitted when zero:
 
 | Field | Counts |
 |---|---|
@@ -348,11 +431,10 @@ omitted when zero:
 | `rejectedItems` | steps whose approval was denied (their items read `failed`; not in `failedItems`) |
 | `failures` | up to 5 × `{itemID, title, category, message, referenceID}` |
 
-The detail route computes it from stored items, so it works for older turns
-too.
+`turn-status` computes it from stored items, so it works for older turns too.
 
-Approval: the preference is per user and project (`GET|PATCH …/assistant/approval-mode`)
-and each turn reports it as `approvalMode`.
+Approval: the preference is per user and project (`approval-mode`) and each
+turn reports it as `approvalMode`.
 
 | Mode | Reads, plans, questions | File edits | Runtime effects (`exec_command`, restart, env, `rebuild_project`, `agents__run_agent`) | `promote_project`, `infrastructure__provision` | Commits |
 |---|---|---|---|---|---|
@@ -361,17 +443,18 @@ and each turn reports it as `approvalMode`.
 | `never` | allow | **deny** | **deny** | **deny** | **deny** |
 
 Under the default, a turn told to deploy pauses before `promote_project`
-until you answer. `never` is fail-closed, not "never prompt". An ask pauses the run and emits
-`approval.requested` (`.payload.requestID`, `.payload.interrupt`); answer with
-`POST …/turns/{turn}/approval {"requestID":…,"decision":"allow"|"deny"}`, and
-`approval.resolved` follows. `input.requested` / `…/input` works the same way
-for `ask_follow_up`.
+until you answer. `never` is fail-closed, not "never prompt". An ask pauses
+the run and emits `approval.requested` (`.payload.requestID`,
+`.payload.interrupt`); answer with
+`POST $AS/sessions/<s>/approval/<turn> {"requestID":…,"decision":"allow"|"deny"}`,
+and `approval.resolved` follows. `input.requested` / `input/<turn>` works the
+same way for `ask_follow_up`.
 
 Turn statuses: `in_progress`, `completed`, `failed`, `interrupted`. A provider
-restart interrupts the active turn; resume from items plus the event stream.
-Spend guards: 200 iterations per turn, 2,000,000 rollout tokens, an org
-monthly USD cap (default 100). Exhaustion fails the turn with
-`iteration_limited`, `budget_limited`, or `org_spend_cap_exceeded`.
+restart interrupts the active turn; resume with `continue/<turn>` or read
+`items` plus the event stream. Spend guards: 200 iterations per turn,
+2,000,000 rollout tokens, an org monthly USD cap. Exhaustion fails the turn
+with `iteration_limited`, `budget_limited`, or `org_spend_cap_exceeded`.
 
 Native assistant tools (not MCP): `plan_project_changes`,
 `check_project_readiness`, `prepare_project_deployment`, `get_runtime_status`,
@@ -421,15 +504,16 @@ MCP tools the assistant consumes on the aggregate: `code__commit_files`,
 ### Build, promote, release
 
 ```
-GET  /api/projects/{p}/promotion   → {template,instance,productionSchema,immutableProductionInputs[],productionValues,requestedRolloutRevision,observedRolloutRevision,promotable,
+GET  $AS/projects/<p>/promotion   → {template,instance,productionSchema,immutableProductionInputs[],productionValues,requestedRolloutRevision,observedRolloutRevision,promotable,
                                      build:{status built|incomplete|none|unsupported,commitSHA,components[{name,imageInput,built,image,digest,tag}],missing[],run{…}},
                                      production:{phase,url}}
-GET  /api/projects/{p}/releases    → {items:[{name,phase,branch,commitSHA,commitURL,message,createdAt,completedAt,releaseID,deployable,live,missing[],components[]}]}
-POST /api/projects/{p}/promote     {values?,commitSHA?,releaseID?} → {environment,instance,rolloutRevision,commitSHA,releaseID,components[]}
+GET  $AS/projects/<p>/releases    → {items:[{name,phase,branch,commitSHA,commitURL,message,createdAt,completedAt,releaseID,deployable,live,missing[],components[]}]}   ≤ 100, succeeded commits only
+POST $AS/projects/<p>/promote     {values?,commitSHA?,releaseID?} → {environment,instance,rolloutRevision,commitSHA,releaseID,components[]}; 400 validation, 502 otherwise
 ```
 
-The promote response does not embed the project; re-read
-`GET /api/projects/{p}` for project state.
+The promote response does not embed the project; re-read `view` for project
+state. `railgrid app promote <p> --hostname-prefix <x>` sends
+`{"values":{"expose":{"hostnamePrefix":"<x>"}}}`.
 
 Build resolution: the newest successful `RepositoryCommit` CR for the
 project's repository gives `commitSHA`; for every launchable component the
@@ -444,7 +528,7 @@ declares none, App Studio tries `railgrid-app-studio-build.yml`, then
 Promote writes the `production` environment binding: instance
 `<project>-prod`, `railgridMode: production`, user values merged, image inputs
 set to digests, fresh `railgridRedeployRevision`, a `dockerconfigjson` pull
-Secret `<instance>-registry` minted from the code Connection token. Platform
+Secret `<instance>-registry` minted from the code Connection. Platform
 owned and always overriding: `name`, `railgridMode`, image inputs,
 `railgridRedeployRevision`, `railgridCluster`, `credentialsSecretName`, `access`
 (managed by publishing). `expose.hostnamePrefix` is a first-deploy input.
@@ -452,46 +536,53 @@ owned and always overriding: `name`, `railgridMode`, image inputs,
 ### Publishing
 
 ```
-GET|POST|DELETE /api/projects/{p}/publishing            GET → {published, publication:{name,uid,mode,host,url,ready,phase,target}} — `published:true, mode:public|restricted` only while published (restricted = shared policy or an active grant), otherwise `published:false, mode:"private"` (a fresh promote and an unpublished app both read private); POST {mode public|restricted}; DELETE = private and drop grants
-GET   /api/projects/{p}/publishing/members               workspace members with rbacIdentity
-GET|POST /api/projects/{p}/publishing/grants             POST {user,invite?}   `user` is the stable platform User name (`user-xxxxx`, from members/memberships), not an email — 400 `user must be the stable platform User name; set invite to share with a new email`; `invite` = email pre-provisions a pending User
-POST  /api/projects/{p}/publishing/grants/{grant}        revoke
+GET|POST|DELETE $AS/projects/<p>/publishing     GET → {published, publication:{name,uid,mode,host,url,ready,phase,error,target{apiVersion,kind,resource,name,uid}}, grants[]} — `published:true, mode:public|restricted` only while published (restricted = shared policy or an active grant), otherwise `published:false, mode:"private"` (a fresh promote and an unpublished app both read private); POST {mode public|restricted} (aliases members|private; empty keeps the mode); DELETE = private and drop grants → 200 same shape
+GET   $AS/projects/<p>/publishing-members        → {items:[{user,rbacIdentity,…}]}   workspace/org members
+GET|POST $AS/projects/<p>/publishing-grants      → {items:[{name,uid,user,publication,revoked,phase}]}; POST {user,invite?}   `user` is the stable platform User name (`user-xxxxx`, from members), not an email — 400 `user must be the stable platform User name; set invite to share with a new email`; `invite: true` + an email pre-provisions a pending User; 400 `grants require private access; the app is currently public — switch it to invite-only first`
+POST  $AS/projects/<p>/publishing-grants/<grant> revoke (allowed in any mode) → the remaining list; 409 when the grant belongs to another app
 ```
 
-`restricted` (aliases `members`, `private` in a POST) writes `access: private`
-plus the Project policy `shared` (invite-only). The gate enforces `restricted`
-and an unpublished `private` app identically: workspace admins and grant
-holders get in, nobody else, and no machine caller
-([infrastructure.md](infrastructure.md) section 5, "Machine callers").
-After `public`, anonymous requests can still get the 302 for 10–20 s.
+```bash
+fc -X POST "$AS/projects/$P/publishing" -H 'Content-Type: application/json' -d '{"mode":"public"}'
+fc -X POST "$AS/projects/$P/publishing-grants" -H 'Content-Type: application/json' -d '{"user":"user-abc12"}'
+```
+
+`restricted` writes `access: private` plus the Project policy `shared`
+(invite-only). The gate enforces `restricted` and an unpublished `private`
+app identically: workspace admins and grant holders get in, nobody else, and
+no machine caller without an app token ([infrastructure.md](infrastructure.md)
+section 5, "Machine callers"). After `public`, anonymous requests can still
+get the 302 for 10–20 s; `railgrid app publish` re-reads `publishing` for up
+to 15 s until `publication.ready`.
 
 Mechanics: the prod instance's `spec.access` flips in place; the
 infrastructure access gate enforces it; invitations are a per-app
 ClusterRole `railgrid-app-access.<instance>` (rules: `get` on
 `instances/access` for that name, and kcp `access` on nonResourceURL `/`)
-plus one ClusterRoleBinding per member, subject `railgrid:<email>`.
+plus one ClusterRoleBinding per member, subject `railgrid:<email>`
+(`kubectl get clusterrolebindings -l railgrid.ai/app-access` lists them).
 
 ### Integrations (provider actions)
 
 ```
-GET    /api/projects/{p}/integrations                    → {items:[…]}
-POST   /api/projects/{p}/integrations                    {environment?,alias,provider,kind:"providerReference",resourceRef{apiVersion,kind,resource,name},allowedActions[{name,version,schemaDigest}],consentAccepted?}
-PATCH  /api/projects/{p}/integrations/{alias}            {allowedActions[],consentAccepted?}
-DELETE /api/projects/{p}/integrations/{alias}
-POST   /api/projects/{p}/integrations/{alias}/invoke     {action,actionVersion,input} → {requestID,provider,action,actionVersion,resourceRef,result|error{code,message,retryable}}
-       (also …/invoke/{action}, …/actions, …/actions/{action})
+GET    $AS/projects/<p>/integrations                     → {items:[{environment,alias,provider,kind,resourceRef,allowedActions[],phase}],available:[…],discovery:{state,issues[]}}
+POST   $AS/projects/<p>/integrations                     {environment?,alias,provider,kind:"providerReference",resourceRef{apiVersion,kind,resource,name},allowedActions[{name,version,schemaDigest}] (alias: actions[]),consentAccepted?} → 201
+PATCH  $AS/projects/<p>/integrations/<alias>             {allowedActions[],consentAccepted?} → 200; 403 when you may not call an action you grant
+DELETE $AS/projects/<p>/integrations/<alias>             204
+POST   $AS/projects/<p>/integration-actions/<alias>[/<action>]   {action,actionVersion|version,input} → {requestID,provider,action,actionVersion,resourceRef,result|error{code,message,retryable}}; 403 not granted / revoked, 409 schema drift
 ```
 
-Alias regex `^[A-Za-z_][A-Za-z0-9_-]{0,62}$`. Grant creation re-reads the
-caller-scoped `GET /api/providers` catalog and requires exact provider,
-action, version, bound resource, and `schemaDigest`; deprecated actions are
-refused; `consentAccepted` is required when the catalog says so. Invoke
-re-verifies the digest against the live catalog (409 on drift), then
-forwards to
-`POST $HUB/services/providers/{provider}/actions/clusters/{cluster}/{resource}/{name}/{action}/{version}`
-with a two-minute budget and optional `Idempotency-Key`, `X-Request-ID`,
-`X-Railgrid-Action-Deadline-Ms`. Only shipped action today: Databricks
-`query_table/v1` (sync, read-only, `columns` ≤ 64, `limit` 1..100).
+Alias regex `^[A-Za-z_][A-Za-z0-9_-]{0,62}$`; default environment
+`development`. Grant creation re-reads the caller-scoped `GET $HUB/api/providers`
+catalog and requires exact provider, action, version, bound resource, and
+`schemaDigest`; deprecated actions are refused; `consentAccepted` is required
+when the catalog says so. Invoke re-verifies the digest against the live
+catalog (409 on drift), then calls the serving provider's own
+`<resource>/<name>/<action>` subresource on the hub as the **Project's
+identity** (not yours) with a two-minute budget and a 4 MiB response cap;
+`Idempotency-Key`, `X-Request-ID`, `X-Railgrid-Action-Deadline-Ms` are
+forwarded. Only shipped action today: Databricks `query_table/v1` (sync,
+read-only, `columns` ≤ 64, `limit` 1..100).
 
 In-app SDK: `@railgrid/actions-node` (alias for `@crwilhit/railgrid-actions-node@0.1.0`).
 `createActionsClient({baseURL: RAILGRID_ACTIONS_BASE_URL, project: RAILGRID_PROJECT, tokenFile: RAILGRID_ACTIONS_TOKEN_FILE})`
@@ -502,13 +593,13 @@ Server-side only; the runtime exchanges a projected bootstrap token for a
 ### Skills
 
 ```
-GET  /api/projects/{p}/assistant/skills                  → {skills:[{id,name,description,scope,packageName,enabled,editable,version,digest,contentDigest,resources[]}],catalogDigest,warnings[]}
-GET  /api/projects/{p}/assistant/skills/detail?id=
-POST /api/projects/{p}/assistant/skills/project          create a project skill package
-POST /api/projects/{p}/assistant/skills/project/import
-GET|PUT|DELETE /api/projects/{p}/assistant/skills/project/{packageName}    PUT/DELETE need expectedDigest
-GET  /api/projects/{p}/assistant/skills/project/{packageName}/export
-POST /api/projects/{p}/assistant/skills/activation       {id,enabled}
+GET  $AS/projects/<p>/skills                     → {skills:[{id,name,description,scope,packageName,enabled,editable,version,digest,contentDigest,resources[]}],catalogDigest,warnings[]}
+GET  $AS/projects/<p>/skill-detail?id=<qualified id>
+POST $AS/projects/<p>/skills-create              {packageName,name,description,instructions,resources?[{path,content}]} → 201 detail
+POST $AS/projects/<p>/skills-import              same body, or {format,files[]} from an export
+POST $AS/projects/<p>/skills-activation          {id,enabled} → detail; 403 unless a system or editable project skill
+GET  $AS/projects/<p>/skill-export/<packageName>   → {format:"railgrid.skill.v1",packageName,digest,files[],filename,content,package}
+GET|PUT|DELETE $AS/projects/<p>/skill/<packageName>   PUT needs expectedDigest in the body, DELETE as ?expectedDigest=; stale → 409
 ```
 
 Scopes: bundled (embedded, read-only), provider
@@ -516,10 +607,10 @@ Scopes: bundled (embedded, read-only), provider
 project (`.agents/skills/<package>/SKILL.md` with activation state in
 `.agents/skills/.railgrid-catalog.json`). Frontmatter supports `name` (≤ 64 B)
 and `description` (≤ 1024 B) only; `context`, `agent`, `model` are rejected.
-Limits: 32 KiB per skill, 64 resources, 4 MiB per package, 64 packages
-default. Skills are guidance only; they cannot grant tools or permissions.
-The portal workbench only browses and toggles; create, edit, import, export,
-delete exist on the API alone.
+Limits: 32 KiB per skill, 64 resources of ≤ 64 KiB, 4 MiB per package,
+5 MiB per request. Skills are guidance only; they cannot grant tools or
+permissions. The portal workbench only browses and toggles; create, edit,
+import, export, delete exist on the verbs alone.
 
 ## 4. Templates, scaffolds, AGENTS.md
 
@@ -551,9 +642,10 @@ not stop it.
 
 Reconciler commit behavior:
 
-- Paths are settled (marked committed) only when `code__commit_files`
+- Paths are settled (marked committed) only when the commit
   returns phase `Succeeded` with a SHA; anything else leaves them dirty.
-- When the tool reports the commit `is queued behind a GitHub rate limit` or
+  `status.workspace.pendingCommit` / `settlement` on the Project show it.
+- When the commit `is queued behind a GitHub rate limit` or
   `did not finish within` the wait, the reconciler remembers that
   `RepositoryCommit` by name and re-reads it every 60 s instead of resending;
   newer edits wait. `Succeeded` → settle and announce; `Failed` or gone → a
@@ -566,7 +658,7 @@ Reconciler commit behavior:
   as do over-limit files, without blocking text.
 - Generated messages are capped at 480 characters (subject ≤ 200, ≤ 20
   listed paths, then `- … and N more`), under the 512-character CRD limit.
-- Each settled commit is posted to the thread as `project.committed`.
+- Each settled commit is posted to the session as `project.committed`.
 
 The assistant's `commit_project_files` follows the same limits (48 MiB total,
 2 MiB text); when `code__commit_files` does not advertise `encoding` it
@@ -586,19 +678,22 @@ containers per component: coordinator (control API, no secrets), runtime
 supervisor (app env and secrets), stateless executor (argv only, no token).
 Hardened isolation via RuntimeClass (`gvisor`, `kata`) is a platform setting.
 
-Data plane (infra-owned, caller-authenticated):
-`/services/providers/infrastructure/dataplane/clusters/{cluster}/instances/{name}[/components/{c}]/{log|sync|restart|env|process|exec|status}`.
-Production instances answer 409 on these verbs.
+Data plane (infra-owned, caller-authenticated): the infrastructure
+provider's `instances/<name>/{log|sync|restart|env|process|exec|workspace|proxy}`
+subresources on `$HUB/clusters/$CLUSTER/apis/infrastructure.railgrid.ai/v1alpha1`
+([infrastructure.md](infrastructure.md)). App Studio's dev verbs call them as
+the provider. Production instances answer 409 on these verbs.
 
 Preview URL is the template's ordinary public route; `authorize-development-preview`
 probes DNS, TLS, and the Gateway before reporting `ready`.
 
 ## 6. Concurrency and reservations
 
-While an assistant run owns a project, template switch, hydrate, manual sync,
-file writes (`PUT`/`DELETE files/content`, `files/upload`) and
-delete return 409. Single replica: assistant work does not survive a
-provider restart; orphaned turns become `interrupted`.
+While an assistant run owns a project, template switch, hydrate, restore,
+manual sync and file writes (`PUT`/`DELETE files-content`, `files-upload`)
+return 409; a Project delete waits in the finalizer. Single replica for
+assistant work: it does not survive a provider restart; orphaned turns
+become `interrupted` (`continue/<turn>` resumes).
 
 ## 6a. Binary files and transport limits
 
@@ -612,27 +707,27 @@ provider restart; orphaned turns become `interrupted`.
 | App Studio → data plane client | response ≤ 96 MiB (`development data plane <verb>: response exceeds … bytes`) |
 | Assistant MCP calls | response ≤ 96 MiB (`MCP <method> response exceeds … bytes`) |
 
-Capability gating: App Studio sends base64 to, or asks base64 from, only a
-component that advertises it — `code__commit_files` must declare
-`files[].encoding`, `code__checkout_repository` must declare
-`binaryEncoding` (both read from `tools/list`, cached 10 min per cluster), a
-dev agent must list `base64` in `syncEncodings` (data-plane `process` verb). Otherwise binaries
-are skipped and stay uncommitted/unsynced; text is never blocked. The
-workspace digest encodes a binary as `0xfe`, 8-byte length and its SHA-256.
+Capability gating: the code provider is never probed — commit
+(`repositories/commit`) and checkout (`repositories/checkout`) are verbs
+whose input declares the encoding, so binaries always travel as base64 in
+both directions. A dev agent must list `base64` in `syncEncodings`
+(infrastructure `process` verb); otherwise binaries are skipped and stay
+unsynced; text is never blocked. The workspace digest encodes a binary as `0xfe`, 8-byte length
+and its SHA-256.
 
-## 7. Portal features and the routes behind them
+## 7. Portal features and the verbs behind them
 
-| Portal tab | Routes |
+| Portal tab | Verbs |
 |---|---|
-| New project wizard | `create-readiness`, `plan`, `projects/stream`, first turn |
-| Preview | `authorize-development-preview`, `preview-bridge/sessions` |
-| Code (edit, upload, download) | `files`, `files/content` (GET/PUT/DELETE), `files/raw`, `files/upload` |
-| Review | `assistant/threads/{t}/reviews` |
+| New project wizard | `create-readiness`, `plan`, `create-project-stream`, first turn |
+| Preview | `authorize-development-preview`, `preview-bridge-sessions` |
+| Code (edit, upload, download) | `files`, `files-content` (GET/PUT/DELETE), `files-raw`, `files-upload` |
+| Review | `sessions/<s>/review` |
 | Providers | hub `GET /api/providers` |
-| Integrations | `integrations` CRUD |
-| Publishing | `promotion`, `releases`, `promote`, `publishing`, `publishing/members`, `publishing/grants` |
-| History | `checkpoints`, `repository.commits`, `restore-workspace` |
-| Project settings | `PATCH {p}`, `preview`, `preview/grants`, `DELETE {p}?uid=` |
-| Skills | `assistant/skills`, `skills/detail`, `skills/activation` |
-| Models | `llm-settings*` |
-| Chat | threads, turns, events, steer, interrupt, approval, input, attachments, approval-mode |
+| Integrations | `integrations`, `integration-actions` |
+| Publishing | `promotion`, `releases`, `promote`, `publishing`, `publishing-members`, `publishing-grants` |
+| History | `checkpoints`, `view` → `repository.commits`, `restore-workspace` |
+| Project settings | kube merge patch of the Project, `preview`, `preview-grants`, kube delete |
+| Skills | `skills`, `skill-detail`, `skills-activation` |
+| Models | kube patch of `Studio.spec.llm` + Secrets, `discover-models`, `test-model` |
+| Chat | `sessions`, `create-session`, `turn`, `events`, `steer`, `interrupt`, `continue`, `approval`, `input`, `attachments`, `approval-mode` |

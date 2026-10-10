@@ -545,14 +545,23 @@ func projectBuildPackageForTest(repositoryRef, component, imageRepository string
 	return &pkg
 }
 
+// testFixtureRepositoryUID is the UID newProjectBuildProvenanceClient gives
+// the project's Repository; a verb addressed at it is pinned to this value.
+const testFixtureRepositoryUID = "repo-uid"
+
 func newProjectBuildProvenanceClient(project *aiv1alpha1.Project, commits []*unstructured.Unstructured, packages []*unstructured.Unstructured) *asclient.Client {
 	projectRaw, _ := json.Marshal(project)
 	projectObject := &unstructured.Unstructured{Object: map[string]any{}}
 	_ = json.Unmarshal(projectRaw, &projectObject.Object)
 	projectObject.SetAPIVersion(aiv1alpha1.SchemeGroupVersion.String())
 	projectObject.SetKind("Project")
-	objects := make([]runtime.Object, 0, 2+len(commits)+len(packages))
+	objects := make([]runtime.Object, 0, 3+len(commits)+len(packages))
 	objects = append(objects, applicationTemplateObject(), projectObject)
+	if project.Spec.Repository != nil && project.Spec.Repository.RepositoryRef != "" {
+		// The project's Code Repository, with the UID the checkout and commit
+		// verbs are pinned to.
+		objects = append(objects, testCodeRepository(project.Spec.Repository.RepositoryRef, testFixtureRepositoryUID))
+	}
 	for _, commit := range commits {
 		objects = append(objects, commit)
 	}

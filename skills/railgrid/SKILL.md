@@ -32,12 +32,13 @@ material; read the one for an area before non-trivial work in it:
 ```bash
 railgrid login --hub-url https://<hub>          # no default hub exists; ask the user
 eval "$(railgrid env)"                          # HUB CLUSTER ORG WS TOKEN AS MCP_URL MCP_TOKEN
-railgrid app create shop --template application --wait
-railgrid app status shop
+railgrid app create shop --template application --wait   # returns on the scaffold commit (~20 s); the dev instance follows in 1–2 min
+railgrid app status shop                                  # repository ref, commits, Dev URL (`-` until the instance is up)
 # edit a clone locally, then:
 git add -A && git commit -m "Add cart"       # local only, never push
 railgrid commit "$(railgrid app status shop -o json | jq -r .project.repository.ref)"
 railgrid sandbox exec shop-dev api -- node -e 'fetch("http://127.0.0.1:8080/api/health").then(r=>r.text()).then(console.log)'
+railgrid app preview shop --mode public            # share the Dev URL now (older CLIs: POST $AS/projects/shop/preview {"mode":"public"})
 railgrid app promote shop --hostname-prefix shop   # once `railgrid app status` says promotable
 railgrid app publish shop --mode public
 railgrid app status shop                           # the Production: line is the real URL
@@ -53,7 +54,10 @@ tools directly instead of `fmcp`.
 
 ```bash
 fc() { curl -s -H "Authorization: Bearer $TOKEN" -H "X-Railgrid-Org: $ORG" -H "X-Railgrid-Workspace: $WS" "$@"; }
-# AS is exported by `railgrid env`: $HUB/services/providers/app-studio
+# AS is exported by `railgrid env`: $HUB/clusters/$CLUSTER/apis/ai.railgrid.ai/v1alpha1 — App Studio's
+# kube API in your workspace. Its verbs are $AS/projects/<p>/<verb>, $AS/sessions/<s>/<verb>,
+# $AS/studios/studio/<verb>; a bare $AS/projects[/<p>] is the plain CR.
+# Newer CLIs ship this as `railgrid mcp call <tool> ['<json args>']` (and `--list`); fmcp is the same thing for older ones.
 fmcp() {  # fmcp <provider__tool> ['<json args>'] → the tool's result; a tool error exits non-zero with its text
   jq -nc --arg n "$1" --argjson a "${2:-null}" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$n,arguments:($a // {})}}' |
     railgrid mcp proxy 2>/dev/null |
@@ -71,6 +75,12 @@ call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
 2. **Address workspaces by cluster ID** (`/clusters/<clusterName>`), never by
    `root:…` path (403). Tenant headers carry **UUIDs**, never display names;
    never send `X-Railgrid-Tenant`/`X-Railgrid-Cluster` (the hub owns those).
+   **Providers have no REST API of their own.** Every provider call is a
+   kube path on that cluster — a CR read or write, or a verb
+   `/clusters/<cluster>/apis/<group>/<version>/<resource>/<name>/<verb>[/<tail>]`
+   authorized by workspace RBAC and needing only the bearer. Anything under
+   `/services/providers/<p>/` other than `/mcp`, `/oauth`, `/webhooks` and
+   the health paths is gone (404).
 3. **No TTY means explicit flags**: `railgrid use --org --workspace`,
    `railgrid login --token`.
 4. **Use kubectl** to read and write workspace resources.
@@ -91,9 +101,10 @@ call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
    app secrets are in [references/infrastructure.md](references/infrastructure.md)
    section 4, "Your own secrets".
 8. **Destructive calls need the user's explicit ask**: deleting a project (and
-   `?deleteRepository=true`, which deletes the GitHub repo), deleting a code
-   `Repository` (deletes the GitHub repo), `delete_instance`, `delete_agent`,
-   `edge delete`, `pods_delete`, service calls that move physical things.
+   the `ai.railgrid.ai/delete-repository: "true"` annotation, which deletes
+   the GitHub repo with it), deleting a code `Repository` (deletes the GitHub
+   repo), `delete_instance`, `delete_agent`, `edge delete`, `pods_delete`,
+   service calls that move physical things.
 9. **An App Studio project is created by App Studio, in one call.** Never
    hand-assemble one from a `Repository` + `Instance`; adopt existing repos
    with `existingRepositoryRef`.
@@ -147,17 +158,29 @@ no org-owned provider tools. Org, workspace and cluster IDs then come from
 workspace. Details, raw-curl equivalents and the hub REST map:
 [references/access.md](references/access.md).
 
-**Providers.** App Studio needs `code` and `infrastructure` enabled; `edges`
-is an ordinary provider too. Catalog `scope` is `global` (platform) or `org`
-(self-hosted; carries `ownerOrg`, and `shadowsPlatform: true` when it
-replaces a platform provider of the same name).
+**Providers.** App Studio needs `code` and `infrastructure` enabled; `agents`
+needs `infrastructure` and `edges`; `kuery` needs `edges`. The hub refuses to
+enable a provider whose dependencies are not enabled. Catalog `scope` is
+`global` (platform) or `org` (self-hosted; carries `ownerOrg`, and
+`shadowsPlatform: true` when it replaces a platform provider of the same
+name). The catalog entry also lists every verb and action the provider
+serves (`export.resources[].verbs[]` / `.actions[]`), so it is the place to
+check a coordinate before calling it.
 
 ```bash
-fc "$HUB/api/providers" | jq -c '.items[] | {name, scope, ready, shadowsPlatform}'
+fc "$HUB/api/providers" | jq -c '.items[] | {name, scope, ready, readinessReason, shadowsPlatform}'
+fc "$HUB/api/providers" | jq -c '.items[] | select(.name=="code") | .export.resources[] | {name, verbs: [.verbs[]?.name], actions: [.actions[]?.name]}'
 fc "$HUB/api/orgs/$ORG/workspaces/$WS/providers/enabled"
 fc -X POST "$HUB/api/orgs/$ORG/workspaces/$WS/providers/<p>/enable" -H 'Content-Type: application/json' \
-  -d '{"acceptedClaims":[{"group":"","resource":"secrets"}]}'   # accept what the catalog lists
+  -d '{"acceptedClaims":[{"group":"","resource":"secrets"}],"acceptedHubAccess":[],"acceptedCompositions":[]}'
 ```
+
+`acceptedClaims` lists the catalog's permission claims you grant (an
+omitted claim is sent as rejected and the binding never goes Bound);
+`acceptedHubAccess` the `hub.access` capabilities (App Studio asks for
+`memberships.read`/`memberships.invite` to share apps); `acceptedCompositions`
+the kinds of another provider this one may create for you (an entry of
+`requires` that names a provider). Accept what the catalog entry declares.
 
 **MCP: the provider tools, as you.** `railgrid mcp proxy` is a local stdio MCP
 server. It forwards every call to the workspace's aggregate MCP endpoint with
@@ -173,14 +196,12 @@ own providers included.
   then restart or reconnect the client.
 - **A shell or script**: `fmcp` (section 0) starts one proxy per call.
 
-It serves the workspace the `railgrid` context pointed at when it started:
-after `railgrid use`, reconnect it (`/mcp` in Claude Code). It needs CLI v0.1.33
-or later: check that `railgrid mcp --help` lists `proxy`. An older CLI does not
-fail on `railgrid mcp proxy`, it prints the `railgrid mcp` help and exits 0, so
-`fmcp` reports a jq parse error and an MCP client reports the server failed
-to start; reinstall the CLI. Not logged in yet, every call answers
-`… run 'railgrid login' first`; log in and call again. `HTTP 403: Forbidden:
-invalid Host header "<hub>"` is the hub, not your login (section 8).
+It serves the workspace the `railgrid` context pointed at when it started
+(`--org`/`--workspace` override it): after `railgrid use`, reconnect it
+(`/mcp` in Claude Code). A CLI too old to have it answers `unknown command
+"proxy" for "railgrid mcp"`; reinstall the CLI. Not logged in yet, every call
+answers `… run 'railgrid login' first`; log in and call again. `HTTP 403:
+Forbidden: invalid Host header "<hub>"` is the hub, not your login (section 8).
 
 The token-based alternative (`railgrid mcp url|claude|codex`, and
 `MCP_URL`/`MCP_TOKEN` from `railgrid env`) uses the workspace's long-lived
@@ -198,17 +219,21 @@ stay on the CLI, kubectl and REST.
 
 | You want to | MCP tool (as you) | CLI / kubectl / REST |
 |---|---|---|
-| Create, inspect, promote, publish an App Studio project | none (App Studio has no MCP server) | `railgrid app …`, REST `$AS/api/projects/…` |
+| Create, inspect, promote, publish an App Studio project | none (App Studio has no MCP server) | `railgrid app …`; verbs `$AS/studios/studio/create-project`, `$AS/projects/<p>/{view,promote,publishing}` |
 | Record edits as a promotable commit | `code__commit_files` (files passed inline) | `railgrid commit <repositoryRef>` from a clone |
-| Put a file (incl. binary) into a project without git | none | `PUT $AS/api/projects/{p}/files/content?path=`, the Code tab |
+| Put a file (incl. binary) into a project without git | none | `PUT $AS/projects/<p>/files-content?path=`, the Code tab |
 | Why a build failed; re-run it | `code__build_status {repositoryRef}`, `code__rebuild` | `railgrid app status` shows only the promotion state |
-| Sync, run, read logs in a dev-mode instance | `infrastructure__dev_sync`, `dev_exec`, `dev_logs`, `dev_restart` | `railgrid sandbox …`; App Studio's `<p>-dev` gets files only from git (`railgrid app sync`) |
+| Sync, run, read logs in a dev-mode instance | `infrastructure__dev_sync`, `dev_exec`, `dev_logs`, `dev_restart` | `railgrid sandbox …`; App Studio's `<p>-dev` gets files from git (`railgrid app sync`), or from `infrastructure__dev_sync` when hydrate is down (4.4 C) |
+| Share the dev preview without promoting | none | `railgrid app preview <p> --mode public\|restricted\|private` (shown in `app status` as `Preview:`); older CLIs: `POST $AS/projects/<p>/preview {"mode":"public"}`, `DELETE` = private again |
+| Why a project cannot be promoted | none | `railgrid app checkpoints <p>` (`app status` prints the same under `Blocked:`); the verb is `GET $AS/projects/<p>/checkpoints` → `items[] {key, state, reason, remediation}` |
+| Read or write one workspace file without git | none | `railgrid app files ls\|get\|put\|rm <p> [path]` (binaries fine); the verbs are `files`, `files-raw?path=`, `files-content?path=` |
+| Try local files in the sandbox before committing | `infrastructure__dev_sync` on `<p>-dev` | `railgrid app sync <p> --from <dir>` (additive, no commit); `railgrid mcp call infrastructure__dev_sync --args-file f.json` |
 | Provision, change, delete a workload or database without App Studio | `infrastructure__provision`, `update_instance`, `delete_instance` | `Instance` CR with kubectl (section 5) |
 | Read workspace resources | `infrastructure__list_instances`/`get_instance`, `code__list_repositories`, `agents__list_agents` | `kubectl` on the `railgrid` context (every kind, secrets included) |
-| Hosted agents: create, run, schedule | `agents__*` (section 6) | REST `$HUB/services/providers/agents/api/…`, which adds chat streaming, the inbox and usage |
+| Hosted agents: create, run, schedule | `agents__*` (section 6) | `kubectl` on `agents`, `runs`, `schedules`, …; verbs on `/clusters/$CLUSTER/apis/agents.railgrid.ai/v1alpha1` add streaming chat, the inbox and usage |
 | Kubernetes edges | `edges__*` kube tools (with several edges connected, `cluster` names one) | `railgrid edge kubeconfig`, `railgrid connect`, kubectl |
 | Linux server edges | none | `railgrid ssh` |
-| Fleet-wide reads across edges | `kuery__kuery_query {spec}` (enable `kuery` first) | REST `POST $HUB/services/providers/kuery/api/query` |
+| Fleet-wide reads across edges | `kuery__kuery_query {spec}` (enable `edges`, then `kuery`) | `POST $HUB/clusters/$CLUSTER/apis/kuery.providers.railgrid.ai/v1alpha1/savedviews/<view>/run` |
 | Orgs, workspaces, members, enabling providers | none | `railgrid` CLI, hub REST (`fc`) |
 
 `exec` exists only where the template declares it (`application`,
@@ -220,8 +245,9 @@ Ready provider of your org's catalog; an org's own copy replaces the platform
 provider of the same name. The ServiceAccount token misses the org-owned
 ones, so in an org that self-hosts `infrastructure`, a token-based client has
 no `infrastructure__*`. A provider you have not enabled still lists its tools
-(calls fail with RBAC or NotFound errors), and kuery answers `{}` until it is
-enabled.
+(calls fail with RBAC or NotFound errors), and kuery answers `not_engaged`
+(`no edges are engaged for this workspace`) until it is enabled and has a
+connected Kubernetes edge.
 
 **Any provider can run an older release than this skill describes**, platform
 providers included; an org's own copy (`scope: org`) lags most often. Its
@@ -241,9 +267,16 @@ input (for example a credential in `env`).
 ### 4.1 Preconditions
 
 ```bash
-fc "$AS/api/projects/create-readiness"    # gitConnection.status must be "ready"
-fc "$AS/api/projects/llm-settings" | jq '{configured, defaultModelID}'   # needed only for the assistant
+fc "$AS/studios/studio/create-readiness"    # gitConnection.status must be "ready"
+fc "$AS/studios/studio" | jq '{default: .spec.llm.defaultModel, models: .status.models}'   # needed only for the assistant
 ```
+
+Both hang off the workspace's `Studio` singleton named `studio`, which
+`railgrid app create` creates on first use; by REST, a 404 here means it does
+not exist yet (`POST $AS/studios` with `{"apiVersion":"ai.railgrid.ai/v1alpha1","kind":"Studio","metadata":{"name":"studio"},"spec":{"search":{"size":"small"},"browser":{"size":"small"}}}`).
+Models for the assistant are `Studio.spec.llm.models[]` with the key in a
+Secret labelled `railgrid.ai/owner: app-studio`
+([references/app-studio.md](references/app-studio.md)).
 
 `connection-missing` → create a code `Connection` (PAT needs `repo, workflow,
 delete_repo, read:org, admin:public_key, read:packages`, or use the portal's
@@ -302,32 +335,55 @@ railgrid app create shop --template application --display-name Shop --wait
 ```
 
 - One call creates the Repository (private GitHub repo), the scaffold commit,
-  and the dev instance `<name>-dev`. `--wait` blocks until the repository is
-  ready and the scaffold commit landed; only then clone.
+  and the dev instance `<name>-dev`. `--wait` returns when the repository is
+  ready and the scaffold commit landed (17 s measured; up to ~40 s), **not**
+  when the dev instance is Ready: `railgrid app status` prints `Dev URL: -`
+  for another 1–2 min. Clone as soon as `--wait` returns.
 - An explicit name is also the repository name. If a Repository
   of that name exists (e.g. left by a deleted project) creation fails with 409
   — adopt it (`existingRepositoryRef`) or pick another name. Without a name
   (prompt-only creation) the repository name is generated: always read it
   (`railgrid app status <p> -o json | jq -r .project.repository.ref`, or
-  `.repository.ref` from `GET $AS/api/projects/<p>`), never assume it equals
+  `.repository.ref` from `GET $AS/projects/<p>/view`), never assume it equals
   the project name.
-- `--prompt` records what to build; it does not start an assistant turn.
-- **Prompt-only creation (REST, no `templateName`) creates only the Project
-  and the Repository** (`template: null`, no dev instance yet); a
+- `--prompt` without `--template` sends `inferDevelopmentTemplate: true`:
+  App Studio picks the template and a display name from the prompt at create
+  time (a "static status page" prompt → `simple-webapp`, display name
+  `Service Status Page`), seeds the scaffold and starts the dev instance. The
+  prompt is only recorded; build it with a session turn (4.4 B). The REST
+  equivalent is `{"prompt": "…", "inferDevelopmentTemplate": true}`.
+- **Prompt-only creation over REST without `inferDevelopmentTemplate` (no
+  `templateName`) creates only the Project and the Repository**
+  (`template: null`, no dev instance yet); a
   `displayName` you send is kept. The assistant's first `default` turn picks
-  the template (`select_project_template`, or `PUT …/template`), and only
+  the template (`select_project_template`, or
+  `POST $AS/projects/<p>/set-template {"template":"…"}`), and only
   then are the scaffold and the dev instance created — the git host's
   `README.md`/`LICENSE`/`.gitignore` boilerplate does not block the scaffold.
   Pass `templateName` (or `--template`) when you already know it.
 - **Adopting an existing GitHub repo**: create a code `Repository` CR naming
   the repo (it adopts instead of creating, ready in ~10 s), then
   `railgrid app create gosvc-app --template simple-webapp --existing-repository gosvc-repo`
-  (REST: `POST $AS/api/projects` with `existingRepositoryRef`).
+  (REST: `POST $AS/studios/studio/create-project` with `existingRepositoryRef`).
   The project hydrates from the default branch and `repository.ready` is
   true at once; `.repository.adopted` stays `null`, so don't read it as the
   signal. The repo's pre-existing history is **never promotable**
   (`build=none`, checkpoints say `No source commit has landed yet.` even with
-  green CI): make one `railgrid commit` first.
+  green CI): make one `railgrid commit` first. The adopted tree must also
+  bring what a scaffold would have brought: the template's CI workflow
+  (current App Studio seeds `.github/workflows/build.yaml` on adopt and
+  `POST $AS/projects/<p>/scaffold` adds exactly that file to a non-empty
+  workspace, answering `seededWorkflow`; on an older hub copy it:
+  `curl -sLO --output-dir .github/workflows --create-dirs https://raw.githubusercontent.com/railgrid/scaffold-simple-webapp/main/.github/workflows/build.yaml`,
+  or `scaffold-application`; without it there is no build, `missing=app`
+  forever and `railgrid app checkpoints` says so), a `build` script the smoke
+  test can run (`npm run build`; a no-op `"build": "echo no build step"` is
+  fine) and `start` on `0.0.0.0:$PORT`. If `railgrid app files ls <p>` is
+  empty right after adopting, the hydrate failed (section 8): `railgrid app
+  files put` each file, or `railgrid app sync <p> --from <clone>` for the
+  sandbox only — the files route is committed by the reconciler within
+  ~30 s (content identical to the head resolves to the existing SHA, no new
+  commit) and synced to the sandbox.
 - Typical timings: repository ready ~10 s, scaffold commit 15–40 s, dev
   instance Ready 1–2.5 min. If `repository.ready` is still false after 2 min
   and `kubectl get repositories.code.railgrid.ai <name> -o jsonpath='{.status}'`
@@ -365,12 +421,22 @@ sleep 5; curl -s localhost:18081/api/health; kill $API_PID; docker stop pg-smoke
 Stop local servers by PID, never `pkill -f 'node server.mjs'`: that pattern
 matches every Node server on the machine.
 
-App Studio hydrates and syncs a railgrid-recorded commit by itself within
-seconds, so `railgrid app sync` right after `railgrid commit` usually reports
-`0 changed` — that is not a failure. Hydrate only writes files: paths a commit
+**A commit does not update the sandbox.** `railgrid commit` records the
+commit in git and CI builds it; App Studio does not pull it back into the
+workspace or the dev instance by itself (the CLI says so after each commit).
+Run `railgrid app sync <p>` to load git into the workspace and sync it to
+`<p>-dev`, or `railgrid app sync <p> --from .` to push the clone straight into
+the sandbox (additive; nothing committed, nothing replaced). Prove the sandbox
+has the change before testing it
+(`railgrid sandbox exec <p>-dev <c> -- grep -c <new string> <file>`). When
+`railgrid app sync` fails on `hydrate-workspace`, read the message: a current
+hub answers 403/404/500 with the cause (a Forbidden names the permission claim
+to re-accept), an older one answers an instant 502 (section 8); `--from`
+works either way. Hydrate only writes files: paths a commit
 **deleted** stay in the workspace and the sandbox until you
-`DELETE $AS/api/projects/<p>/files/content?path=<path>` (check `GET …/files`
-after a commit that removes files that could affect the build).
+`DELETE $AS/projects/<p>/files-content?path=<path>` (check
+`GET $AS/projects/<p>/files` after a commit that removes files that could
+affect the build).
 
 `railgrid commit` refuses a dirty tree and a HEAD that doesn't contain
 `origin/<branch>`, keeps the message ≤ 512 characters, sends binaries only
@@ -379,20 +445,22 @@ when the code provider supports them, and never pushes. Without a clone,
 records the same kind of promotable commit from inline content (limits in
 [references/code.md](references/code.md)).
 
-**B. The App Studio assistant.**
+**B. The App Studio assistant.** A conversation is a `Session` CR
+(`kubectl get sessions`), created through the project and driven by verbs
+on the session:
 
 ```bash
-fc -X POST "$AS/api/projects/shop/assistant/threads" -H 'Content-Type: application/json' -d '{"id":"t1","title":"cart"}'
-fc -X POST "$AS/api/projects/shop/assistant/threads/t1/turns" -H 'Content-Type: application/json' \
-  -d '{"content":"Add a cart page backed by /api/cart.","clientUserMessageID":"m1","collaborationMode":"default"}'
-curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: Bearer $TOKEN" \
-  -H "X-Railgrid-Org: $ORG" -H "X-Railgrid-Workspace: $WS" > events.log   # ends after turn.completed
+fc -X POST "$AS/projects/shop/create-session" -H 'Content-Type: application/json' -d '{"id":"t1","title":"cart"}'
+fc -X POST "$AS/sessions/t1/turn" -H 'Content-Type: application/json' \
+  -d '{"content":"Add a cart page backed by /api/cart.","clientUserMessageID":"m1","collaborationMode":"default"}'   # 202
+fc -N "$AS/sessions/t1/events" > events.log   # SSE; ends after turn.completed / turn.failed / turn.interrupted
 ```
 
-- Modes: `default` or `plan` (no edits). Reviews have their own route
-  (`…/threads/{t}/reviews`).
-- The events stream replays from sequence 1 unless you send `Last-Event-ID`,
-  and closes after `turn.completed`, so `curl -N > file` doubles as "wait".
+- Modes: `default` or `plan` (no edits). Reviews have their own verb
+  (`POST $AS/sessions/<s>/review`).
+- The events stream replays from sequence 1 unless you send `Last-Event-ID`
+  (or `?afterSequence=`), and closes when the turn ends, so `curl -N > file`
+  doubles as "wait".
 - **Read the outcome, not the status.** `turn.completed` says `completed` even
   when steps inside the turn failed. The turn carries the step outcome
   (`failedItems`, `rejectedItems`, and up to five `failures`, all omitted when
@@ -407,7 +475,7 @@ curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: 
     else empty end'
   ```
 
-  `GET …/threads/{t}/turns/{turn}` returns the same summary later.
+  `GET $AS/sessions/<s>/turn-status/<turn>` returns the same summary later.
   `rejectedItems` are steps whose approval was denied, not failures.
 
   `stale_source` failures are retried by the assistant itself.
@@ -416,8 +484,9 @@ curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: 
 - Approval mode (`approvalMode` on each turn, default `on_request`): edits and
   sandbox commands run unasked; `promote_project`, `infrastructure__provision`
   and commits pause on an `approval.requested` event, so a turn told to deploy
-  waits for your answer. `never` denies every write rather than skipping
-  prompts. Table and the answer route:
+  waits for your answer (`POST $AS/sessions/<s>/approval/<turn>
+  {requestID, decision}`). `never` denies every write rather than skipping
+  prompts. Table and details:
   [references/app-studio.md](references/app-studio.md), "Assistant".
 - **The reconciler commits the assistant's edits by itself** 5–15 s after the
   turn, as `Update N files in <dirs>`. Don't ask the model to commit. The
@@ -432,20 +501,34 @@ curl -sN "$AS/api/projects/shop/assistant/threads/t1/events" -H "Authorization: 
   and upload it with the files route if needed.
 - A small app in one turn: ~3 min; a follow-up feature: ~1 min.
 
-**When git integration is down.** The code provider is unavailable when
-`railgrid app sync` fails with `checkout repository: provider MCP error -32602:
-unknown tool "code__checkout_repository"`, `railgrid commit` or `fmcp` answers
-`unknown tool "code__…"`, and `GET $HUB/api/providers` shows `code`
-`ready: false` (section 8). You can still run your code in the dev sandbox:
-upload each changed file with `PUT $AS/api/projects/<p>/files/content?path=<path>`
-(route C below). The upload schedules a dev sync; `POST $AS/api/projects/<p>/sync-development`
-forces one and reports each component. This reaches the workspace and the
-sandbox only: no commit is recorded and nothing becomes promotable. The
-uploaded paths stay marked uncommitted, and the reconciler commits them once
-the code provider is back. Wait for that commit in `railgrid app status`, then
-`git pull --rebase` your clone before the next `railgrid commit`. Until then,
-don't run `railgrid app sync`: its hydrate step writes the repository's older
-files over your uploads.
+**When git → workspace is down.** Two different outages look alike from
+`railgrid app sync`; tell them apart with `GET $HUB/api/providers`:
+
+- *The code provider is down*: `railgrid app sync` fails with
+  `checkout repository: checkout: …` (an HTTP 502/503 or `action_unavailable`
+  from the `repositories/checkout` verb), `railgrid commit` or `fmcp` answers
+  `unknown tool "code__…"`, and `code` shows `ready: false` (section 8).
+  Upload each changed file with `PUT $AS/projects/<p>/files-content?path=<path>`
+  (route C below); the upload schedules a dev sync, and
+  `POST $AS/projects/<p>/sync-development` forces one and reports each
+  component. This reaches the workspace and the sandbox only: no commit is
+  recorded and nothing becomes promotable. The uploaded paths stay marked
+  uncommitted, and the reconciler commits them once the code provider is
+  back. Wait for that commit in `railgrid app status`, then
+  `git pull --rebase` your clone before the next `railgrid commit`. Until
+  then, don't run `railgrid app sync`: its hydrate step writes the
+  repository's older files over your uploads.
+- *App Studio's own git calls fail while `code` is Ready*: `hydrate-workspace`,
+  `promotion` and `promote` answer an **instant** 502 from the hub's front
+  door (a generic bad-gateway page, 0.2 s), `railgrid commit`, `code__checkout_repository`
+  and CI all work, and `GET $AS/projects/<p>/checkpoints` names the cause
+  (seen 2026-10-10: `production: blocked — list published packages:
+  packages.code.railgrid.ai is forbidden: User "system:serviceaccount:default:provider" …`,
+  a hub RBAC gap). Keep committing with `railgrid commit` (recorded,
+  promotable once the hub is fixed), put the files into the sandbox with
+  `infrastructure__dev_sync` (route C; it touches neither the workspace
+  store nor git, so no duplicate commit), and share the Dev URL with the
+  `preview` verb (4.6). Promotion needs the operator.
 
 **C. Files and binary assets.** Upload in the Code tab (button
 or drag-and-drop), attach any file ≤ 25 MiB in chat (the assistant places it
@@ -453,11 +536,29 @@ with `import_attachment`), let the assistant fetch a **direct file URL** with
 `download_file` (a marketplace listing page is not a file), or use REST:
 
 ```bash
-curl -s -X PUT "$AS/api/projects/shop/files/content?path=web/public/assets/jeep.glb" \
-  -H "Authorization: Bearer $TOKEN" -H "X-Railgrid-Org: $ORG" -H "X-Railgrid-Workspace: $WS" \
+fc -X PUT "$AS/projects/shop/files-content?path=web/public/assets/jeep.glb" \
   -H 'If-None-Match: *' --data-binary @jeep.glb        # 201 {path,size,version,binary}
-fc "$AS/api/projects/shop/files/content?path=web/public/assets/jeep.glb" | jq '{binary,size,version}'
+fc "$AS/projects/shop/files-content?path=web/public/assets/jeep.glb" | jq '{binary,size,version}'
 ```
+
+Straight into the dev sandbox, bypassing the workspace store and git (no
+reconciler commit, nothing marked uncommitted) — the route to use when
+hydrate is broken or for a throwaway experiment:
+
+```bash
+jq -n --rawfile a src/main.js --rawfile b src/style.css \
+  '{instance:"shop-dev", files:[{path:"src/main.js",content:$a},{path:"src/style.css",content:$b}]}' > /tmp/sync.json
+fmcp infrastructure__dev_sync "$(cat /tmp/sync.json)"   # paths are workspace-relative (web/src/… on application); Vite hot-reloads
+```
+
+Binaries go in the same call as `{path, content: "<base64>", encoding: "base64"}`
+with the base64 on one line (`base64 < f | tr -d '\n'`; GNU `base64 -w0`).
+Current providers unwrap line-broken base64 themselves; an older one fails
+the whole call with `file "<p>": base64 content must not contain line
+breaks` and writes none of the text files either.
+A `package.json` change in the synced set triggers the component's install
+step and a restart (~8 s); plain source changes restart only what the
+template's reload rules say.
 
 `path` is relative to the repository root, so put the file where the
 component serves it: `web/public/<file>` on `application` (served at
@@ -472,7 +573,7 @@ edits — **but binaries reach the sandbox only if its dev agent lists
 the sync still says `Synced` (`railgrid app sync` lists such files as `binary-unsupported`), the file is missing in dev
 (a Vite app serves its HTML fallback for the path), and the file still ships
 to production. Verify binaries in production then (4.6). Files over 25 MiB
-are never committed or synced. Route semantics (412/409/413, `files/raw`, `files/upload`): [references/app-studio.md](references/app-studio.md).
+are never committed or synced. Verb semantics (412/409/413, `files-raw`, `files-upload`): [references/app-studio.md](references/app-studio.md).
 
 ### 4.5 Verify in the dev sandbox
 
@@ -500,10 +601,30 @@ argument ≤ 4096 bytes, and does not get the app's environment — name the por
 
 If exec says `… has no source revision; run 'railgrid sandbox sync …' first` on
 an App Studio dev instance, do **not** run `railgrid sandbox sync` there (it
-replaces App Studio's managed file set); run `railgrid app sync <p>` and retry
+replaces App Studio's managed file set); run `railgrid app sync <p>` (or
+`POST $AS/projects/<p>/sync-development` when hydrate is down) and retry
 (the CLI's hint says so for App Studio instances).
 
+The same error right after a successful sync, as soon as the process
+(re)starts, means a synced file was rewritten under the agent. Older
+`simple-webapp`/`application` templates did that themselves: the start
+command appended `.railgrid-vite.config.mjs` to `.gitignore`, so a synced
+`.gitignore` without that line lost the revision at every restart (current
+templates no longer touch `.gitignore`). Keep the line in `.gitignore` (the
+scaffold does) or leave `.gitignore` out of the sync; a no-op re-sync
+restores the revision.
+
 ### 4.6 Build, promote, publish
+
+**No production yet? Share the dev preview.** The Dev URL is `restricted`
+by default (workspace members and preview grants, after a browser sign-in).
+`railgrid app preview <p> --mode public` makes it answer anonymous requests
+(200 within ~10 s); `--mode private` reverts and drops the grants; without
+`--mode` it prints the current state, which `railgrid app status` also shows
+as `Preview:`. The verbs behind it: `POST $AS/projects/<p>/preview {"mode":"public"}`,
+`DELETE …/preview`, `GET …/preview` → `{mode, url, converged}`. The preview
+runs the sandbox (Vite dev server, hot reload), not a built image — fine for
+a demo, not a deployment.
 
 ```bash
 railgrid app status shop            # waits are yours: promotable ~3–5.5 min after the commit
@@ -514,14 +635,14 @@ railgrid app publish shop --mode public            # or restricted; private = ba
 ```
 
 The host is `<prefix>-<12 hex>.<apps domain>`, on the platform's apps domain
-rather than the hub's (e.g. `shop-993e49bbfff1.bob.railgrid.ai` for hub
-`console-dev.railgrid.ai`). Read it, never build it. For a few seconds after a
+rather than the hub's (e.g. `shop-993e49bbfff1.apps.example.com` for hub
+`console.example.com`). Read it, never build it. For a few seconds after a
 promote `railgrid app status` prints `Production:   - (promoted; the production
 instance has not reported yet, …)` while the Instance already has its URL;
 re-run it, or read the Instance as above.
 
 `--mode private` unpublishes: the Instance flips to `access: private`,
-anonymous requests get a 302 again and `GET …/publishing` reads
+anonymous requests get a 302 again and `GET $AS/projects/<p>/publishing` reads
 `published: false, mode: private`. The owner's own app token keeps working
 (the owner passes the access review), so prove "gated" with an anonymous
 request, not your token.
@@ -555,12 +676,13 @@ request, not your token.
   before concluding the publish failed.
 - **`restricted` and `private` are enforced the same way** (the Instance keeps
   `access: private`): you, other workspace admins, and anyone you add with
-  `POST …/publishing/grants {user}` get in; nobody else does. `restricted`
-  additionally records the app as published, invite-only.
+  `POST $AS/projects/<p>/publishing-grants {user, invite?}` get in; nobody
+  else does. `restricted` additionally records the app as published,
+  invite-only.
 - A re-promote rolls pods while the instance stays `Ready`, so probe something
   only the new version has to know it rolled out.
-- After the first promote, `GET …/publishing` reads `published: false,
-  mode: "private"` until you publish.
+- After the first promote, `GET $AS/projects/<p>/publishing` reads
+  `published: false, mode: "private"` until you publish.
 - **Testing a private app from a shell**: mint a short-lived
   token for that one app and send it as a bearer; the gate refuses raw hub
   tokens:
@@ -576,13 +698,24 @@ request, not your token.
 
 ### 4.7 Delete
 
-`DELETE $AS/api/projects/{p}?uid=<uid>` deletes the project and its dev
-instance but leaves the Repository and GitHub repo (they block reuse of the
-name). `&deleteRepository=true` also deletes a non-adopted repository **and its
-GitHub repo** — ask first (rule 8). Without `uid` the call is 400 `project UID is required;
-refresh the project list and try again`. Success is 204; measured teardown:
-the project 404s at once, the GitHub repo and `Repository` CR are gone within
-~10 s, the dev instance within ~1 min.
+A project is deleted like any CR: `kubectl delete project <p>` (or
+`DELETE $AS/projects/<p>`). The `ai.railgrid.ai/instances` finalizer tears
+down the dev instance and releases the Repository and GitHub repo, which stay
+behind (and block reuse of the name). To delete a non-adopted repository
+**and its GitHub repo** too, annotate first — ask before you do (rule 8):
+
+```bash
+UID=$(fc "$AS/projects/$P" | jq -r .metadata.uid)
+fc -X PATCH "$AS/projects/$P" -H 'Content-Type: application/merge-patch+json' \
+  -d '{"metadata":{"annotations":{"ai.railgrid.ai/delete-repository":"true"}}}'   # optional
+fc -X DELETE "$AS/projects/$P" -H 'Content-Type: application/json' \
+  -d '{"apiVersion":"v1","kind":"DeleteOptions","preconditions":{"uid":"'$UID'"}}'
+```
+
+Pin the UID so a project recreated under the same name is not the one you
+delete (a mismatch is a kube 409). Adopted repositories are never deleted.
+Measured teardown: the project is gone at once, the GitHub repo and
+`Repository` CR within ~10 s, the dev instance within ~1 min.
 
 ## 5. Playbook: deploy without App Studio
 
@@ -612,14 +745,20 @@ kubectl get instance hello -o jsonpath='{.status.phase} {.status.url}'
 The same through the MCP tools:
 
 ```bash
-fmcp infrastructure__describe_template '{"name":"simple-webapp"}'   # schema, agent usage, dev contract in one call
+fmcp infrastructure__describe_template '{"name":"simple-webapp"}' |
+  jq '{version, inputs: (.inputsSchema.properties | keys), dev: .development.components, usage: .agent.usage}'   # keys: inputsSchema, development, agent, exposure, sampleValues
 fmcp infrastructure__provision '{"template":"simple-webapp","name":"hello","values":{"name":"hello","image":"ghcr.io/you/hello:v1","port":8080,"access":"public"}}'
 fmcp infrastructure__get_instance '{"name":"hello"}'
 fmcp infrastructure__update_instance '{"name":"hello","values":{"image":"ghcr.io/you/hello:v2"}}'   # RFC 7386 merge patch, in place
 ```
 
 `provision` is not idempotent (check `list_instances` first). Prefer the
-kubectl YAML when the definition should live in a repo.
+kubectl YAML when the definition should live in a repo. The MCP tools read
+the provider's own template catalog, which can lag the workspace for
+minutes (`list_templates` answered `templates: []` and `describe_template`/
+`provision` `template "database" not found` while `kubectl get templates`
+listed it; all fine a few minutes later). When that happens, `kubectl apply`
+the Instance: it is the same object.
 
 - `connections.database` / `connections.cache` (simple-webapp, worker,
   cron-job; **not** `application`) take the `values.name` of a `database` /
@@ -628,7 +767,7 @@ kubectl YAML when the definition should live in a repo.
   instance's name (e.g. `shop-prod`), since it reads Secret
   `<name>-db-credentials`, so a job can share the app's database. Unset slots leave the variable unset. A slot naming a missing
   instance leaves the pod unable to start **while the Instance still reports
-  `Ready`** — the only symptom is a Cloudflare 502 from `railgrid sandbox
+  `Ready`** — the only symptom is a bare 502 from `railgrid sandbox
   status`/`exec`; double-check the name against `kubectl get instances`. Check the template declares
   `connections` first (section 3; `simple-webapp` 0.3.0 and
   `worker`/`cron-job` 0.2.0 added it, and hubs still ship older catalogs):
@@ -645,28 +784,73 @@ kubectl YAML when the definition should live in a repo.
   script receives those flags, so ignore them and read `process.env.PORT`, and
   `railgrid sandbox restart` after each source sync (only Vite hot-reloads).
   `access: public` is honored in development mode too.
+- **Wiring a live dev-mode instance to a database or cache:** provision the
+  `database`/`redis-cache` instances, then
+  `kubectl patch instance <i> --type merge -p '{"spec":{"values":{"connections":{"database":"<db>","cache":"<cache>"}}}}'`.
+  The pod is re-rendered with `DATABASE_URL`/`REDIS_URL` (Ready again in
+  ~15 s), the synced files survive the re-render (the sandbox workspace is
+  persistent; `railgrid sandbox status` shows the same `Source:` revision
+  and `attempt 1`), and the dev process starts with the new env. Sync a
+  `package.json` that lists `pg`/`redis` and the sandbox installs them.
 - **Changing `env` on a live dev-mode instance:** `kubectl apply` with new
   `values.env` updates the object but the running pod keeps its old env, and
   `railgrid sandbox restart` restarts the process, not the pod. For the live
   change run `railgrid sandbox env <i> <c> KEY=value --restart` (the data plane's
   `env` verb plus a restart); keep `values.env` in sync so it survives a
   re-render, and never pass secrets this way.
-- **`cron-job` has no `command`/`args` input**: the image entrypoint must do
-  the work. With a public image, drive it through `env`: `node:20-alpine` with
+- **`cron-job` takes `command` and `args`** (template 0.3.0+; check
+  `kubectl get template cron-job -o jsonpath='{.spec.version}'`): a stock
+  image runs a one-liner, e.g. `image: node:20-alpine`,
+  `command: ["node", "-e", "<script>"]`. On an older catalog without them,
+  drive the image through `env`: `node:20-alpine` with
   `NODE_OPTIONS=--import=data:text/javascript;base64,$(base64 < job.mjs | tr -d '\n')`
   (top-level `await`, end with `process.exit(code)`; the script is
-  world-readable like any `env` value). Its `connections` inject into every run.
+  world-readable like any `env` value either way). Its `connections` inject
+  into every run.
 - **A cron-job's runs can't be observed**: no last-run time, exit code or
-  logs anywhere (`railgrid sandbox logs` is dev-mode only). Test the same image
+  logs anywhere (`railgrid sandbox logs` is dev-mode only; the Instance
+  status only carries `schedule` and `state: ACTIVE`). Test the same image
   and env locally with `docker run` first, and make each run leave evidence
-  you can read, e.g. a row the app exposes.
+  you can read, e.g. a row the app exposes. A verified shape — Node 20's
+  built-in `fetch` posting to the app's in-namespace api Service, with the
+  app's own database injected so the script can prove it
+  (`connections.database: <app>-dev` works for a dev instance too):
+
+  ```bash
+  JOB='const r = await fetch(`${process.env.SHOP_API}/api/jobs`, {method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({job:"report", note:`DATABASE_URL ${process.env.DATABASE_URL ? "set, host " + new URL(process.env.DATABASE_URL).hostname : "unset"}`})})
+  console.log(r.status); process.exit(r.ok ? 0 : 1)'
+  kubectl apply -f - <<EOF
+  apiVersion: infrastructure.railgrid.ai/v1alpha1
+  kind: Instance
+  metadata: { name: shop-report, labels: { railgrid.ai/template: cron-job } }
+  spec:
+    template: cron-job
+    values:
+      name: shop-report
+      image: node:20-alpine
+      schedule: "*/5 * * * *"
+      connections: { database: shop-dev }           # or shop-prod
+      env:
+        SHOP_API: http://shop-dev-api:8080           # status.apiServiceRef.name + the api component's port
+        NODE_OPTIONS: "--import=data:text/javascript;base64,$(printf '%s' "$JOB" | base64 | tr -d '\n')"
+  EOF
+  ```
+
+  Runs fired at every minute boundary of a `*/1` schedule and each row read
+  `DATABASE_URL set, host shop-dev-db`; the api route it posts to should
+  check a shared secret in production (section 5, "Machine callers").
 - Values that violate a declared field are admitted and reported as
   `Valid=False/InvalidValues`, but **keys the template doesn't declare are
   accepted silently** with `Valid=True` — check the schema (section 3 table)
   before relying on an input.
 - `database`/`redis-cache` are `exposure: internal` (no URL, ever).
-- Private images: a `dockerconfigjson` Secret `<instance>-registry` in
-  namespace `default`. Never set `expose.fqdn`, `railgridCluster`,
+- Private images: a `kubernetes.io/dockerconfigjson` Secret in namespace
+  `default`, **labelled `railgrid.ai/owner: infrastructure`** (the provider
+  can only read Secrets carrying that label), named in
+  `spec.imagePullSecretRef: {name: <secret>}` on the Instance. A missing or
+  unlabelled Secret shows as condition `SecretsBridged=False`
+  (`SecretRefNotFound`). Never set `expose.fqdn`, `railgridCluster`,
   `credentialsSecretName`, `railgridRedeployRevision`, `railgridNetworkPhase`,
   `railgridActions*`.
 
@@ -676,7 +860,8 @@ min). A `cron-job`, `worker` or hosted agent can't pass it. What works:
 
 - **Same workspace:** all of a workspace's instances share one runtime
   namespace, and a workload can call an app's Service directly, without the
-  gate: `http://<status.apiServiceRef.name>:<apiPort>` (e.g.
+  gate: `http://<status.apiServiceRef.name>:<apiPort>` (`apiPort` is the
+  template input in `spec.values`, default 8080; there is no status field; e.g.
   `http://shop-prod-api:8080`) or `…webServiceRef…` on `application`,
   `http://<status.appServiceRef.name>:<port>` on `simple-webapp`. Protect such
   routes in the app itself, e.g. a shared-secret header.
@@ -690,8 +875,12 @@ Details: [references/infrastructure.md](references/infrastructure.md).
 
 ## 6. Playbook: hosted agents
 
-Agents are CRs; runs live in the provider's database, reachable only through
-MCP or REST. OpenAI-compatible models only; the tenant brings the key.
+Agents, model credentials, schedules, triggers, toolsets and **runs** are
+all CRs in your workspace (`kubectl get agents,runs,modelcredentials`).
+Enabling `agents` needs `infrastructure` and `edges` enabled first. A
+model-backed agent uses an OpenAI-compatible endpoint with a key you bring;
+a harness-backed one (`spec.backend.type: harness`) runs Claude Code or Codex
+on one of your Linux or macOS edges.
 
 ```bash
 fmcp agents__list_model_credentials                  # existing credentials, keys redacted
@@ -703,12 +892,21 @@ fmcp agents__run_agent '{"agent":"digest","task":"…","wait":120}'             
 `create_agent` takes no tool grants: set `interactiveFamilies`,
 `backgroundFamilies` and the matching `…Toolsets`/`…Connections` with
 `update_agent` (list fields replace the stored list). A run started this way
-is a background run (no edge tools). REST
-(`AG=$HUB/services/providers/agents`) is the same API plus streaming chat,
-the usage rollups and `idempotencyKey` on runs:
-`fc -X POST "$AG/api/agents/digest/runs" -H 'Content-Type: application/json' -d '{"task":"…","wait":120,"idempotencyKey":"d-1"}' | jq -r .run.output`.
-Deep research = `spawn` + `web`. Approvals are human-only (`/api/inbox`,
-the portal). More: [references/agents.md](references/agents.md).
+is a background run (no edge tools). The same operations as verbs on
+`V=$HUB/clusters/$CLUSTER/apis/agents.railgrid.ai/v1alpha1` (bearer only,
+no tenant headers) add streaming chat (`agents/<a>/chat`), usage, the inbox
+and `idempotencyKey` on runs:
+
+```bash
+curl -s -X POST "$V/agents/digest/run" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"task":"…","wait":120,"idempotencyKey":"d-1"}' | jq -r .run.output   # 202 {runId,phase} when wait expires
+curl -s "$V/runs/<runId>/wait?timeoutSeconds=120" -H "Authorization: Bearer $TOKEN"   # or kubectl get run <runId>
+```
+
+Deep research = `spawn` + `web`. Approvals are human-only: the portal, or
+`GET $V/agents/<a>/inbox?state=pending` and
+`POST $V/agents/<a>/inbox-resolve/<id> {decision}`. More:
+[references/agents.md](references/agents.md).
 
 **An agent's `web_fetch` is anonymous.** Pointed at a private or restricted
 railgrid app, it stops at the gate's redirect and returns `HTTP 302 …` with
@@ -719,7 +917,7 @@ or put the data in the run's `task`.
 ## 7. Playbook: edges
 
 ```bash
-railgrid edge create home-lab --labels env=home      # or --type server for a Linux host
+railgrid edge create home-lab --labels env=home      # or --type server (Linux host), --type macos (service-only)
 railgrid edge join-command home-lab
 railgrid edge kubeconfig home-lab -o home-lab.kubeconfig && kubectl --kubeconfig home-lab.kubeconfig get nodes
 railgrid connect home-lab && kubectl get nodes && railgrid disconnect   # or: switch kubectl itself
@@ -732,9 +930,10 @@ To run something on several edges at once, a `Workload` (spread by
 `spec.targetNamespace` on the edge (default `default`), and a private image
 needs `spec.simple.imagePullSecrets` naming a `docker-registry` Secret you
 created in that namespace on every selected edge first (through
-`railgrid edge kubeconfig`). Expose an in-cluster Service to the hub with an
-edges `Service` CR and its `…/proxy/` route (keep the trailing slash: older
-edges providers answer a bare 404 without it). YAML for both:
+`railgrid edge kubeconfig`). Expose an in-cluster or LAN service to the hub
+with an edges `Service` CR; its `status.url` is the path of its `proxy` verb
+(`/clusters/<cluster>/apis/edges.railgrid.ai/v1alpha1/services/<name>/proxy`),
+call it as `$HUB<status.url>/` with the trailing slash. YAML for both:
 [references/mcp-and-edges.md](references/mcp-and-edges.md).
 
 With the MCP tools: the kubernetes toolset (`edges__pods_list`,
@@ -742,8 +941,9 @@ With the MCP tools: the kubernetes toolset (`edges__pods_list`,
 text) and one bundle per discovered Service. With one connected Kubernetes
 edge every call goes to it; only with several do the tools take a `cluster`
 parameter and `edges__cluster_list` appear. Fleet reads across
-clusters: kuery, which must be enabled in the workspace first (it is in the
-catalog and on `tools/list` even when it is not); pass
+clusters: kuery, which must be enabled in the workspace first, after `edges`
+(it is in the catalog and on `tools/list` even when it is not; un-engaged it
+answers `not_engaged`); pass
 `objects.cluster: true` to see which edge each object is on. `railgrid connect <edge>` makes
 kubectl context `railgrid-<edge>` current (undo with `railgrid disconnect`); in
 scripts prefer `railgrid edge kubeconfig -o <file>`. More: [references/mcp-and-edges.md](references/mcp-and-edges.md).
@@ -758,7 +958,9 @@ Identify which one you're looking at before waiting or rebuilding:
 | New URL fails TLS (curl exit 35) | Certificate still issuing (observed 0–9 min) | An existing app on the same domain serves; `openssl s_client -connect <host>:443 -servername <host> </dev/null \| openssl x509 -noout -subject` prints `Could not find certificate from <stdin>` — that output *is* the "no cert yet" signal |
 | `build.status: none`, SHA is yours | CI or the package crawl hasn't caught up | `code__build_status`; the crawl runs every 30 s for 10 min after a commit, else every 2 min |
 | New project's repository `Provisioning` for under 2 min | Repository still being created | Poll `.repository.ready` |
-| Repository `Provisioning` > 2 min with an empty status and no finalizer (`railgrid app status` prints `not ready for <age> with no status: the code provider is not reconciling`), or `unknown tool "code__…"` | **Not latency**: the code provider is not watching tenant workspaces. `GET $HUB/api/providers` shows `code` `ready: false` with `readinessReason` `BackendUnhealthy` (its watch is down) or `HeartbeatStale` (process down). The hub answers `…/services/providers/code/readyz` with its own `provider not ready: code`, not the provider's detail | Give it up to 10 min: sometimes the watch recovers on its own, sometimes (after a kcp outage) only a restart helps. Still `ready: false` → hand the `readinessReason` to the operator; nothing client-side fixes it. Don't recreate the project (409 on the name). Keep working in the sandbox: 4.4, "When git integration is down" |
+| `railgrid app sync` → `hydrate-workspace: HTTP 403 … User "system:serviceaccount:default:provider" cannot …` (older App Studio: an **instant** `HTTP 502` bad-gateway page on `hydrate-workspace`, `promotion` and `promote`), while `code` is `ready: true` and `railgrid commit` works | **Not latency, not the code provider, not your RBAC**: App Studio acts as its own service account through a permission claim the workspace's binding has not accepted (a provider upgrade added it). `railgrid app checkpoints <p>` / `GET …/checkpoints` names the resource (`packages`, `repositorycheckouts`, …) | A workspace admin re-enables App Studio from the Providers page and accepts its access (or an operator re-accepts provider claims); nothing else helps. Meanwhile commits and CI work, `railgrid app sync <p> --from <dir>` (or `infrastructure__dev_sync`) feeds the sandbox, and `railgrid app preview <p> --mode public` shares it |
+| Adopted repo: `build=none missing=app`, `code__build_status` → `found: false`, `railgrid app checkpoints` → `Source blocked: The repository has no .github/workflows/build.yaml …` | **Not latency**: the repo has no build workflow, so no image is ever built (current App Studio adds it on adopt and `POST …/scaffold` adds just that file to a non-empty workspace; older ones leave it out); CI `npm error Missing script: "build"` is the same family | `POST $AS/projects/<p>/scaffold`, or copy the scaffold's workflow yourself, add a `build` script (4.3), commit through railgrid |
+| Repository `Provisioning` > 2 min with an empty status and no finalizer (`railgrid app status` prints `not ready for <age> with no status: the code provider is not reconciling`), or `unknown tool "code__…"` | **Not latency**: the code provider is not watching tenant workspaces. `GET $HUB/api/providers` shows `code` `ready: false` with `readinessReason` `BackendUnhealthy` (its watch is down) or `HeartbeatStale` (process down). The hub answers `…/services/providers/code/readyz` with its own `provider not ready: code`, not the provider's detail | Give it up to 10 min: sometimes the watch recovers on its own, sometimes (after a kcp outage) only a restart helps. Still `ready: false` → hand the `readinessReason` to the operator; nothing client-side fixes it. Don't recreate the project (409 on the name). Keep working in the sandbox: 4.4, "When git → workspace is down" |
 | A commit stays `Running`, condition reason `RateLimited` | The GitHub quota behind the code `Connection` is spent; it retries at the reset (up to 15 min) | The condition message names the retry time |
 | Private URL → 302 `/auth/apps/authorize` | The access gate wants a browser | Use an app token (4.6) or `railgrid sandbox exec` |
 | Agent run output says `This is a private railgrid app` | **Not latency**: the app is private/restricted and `web_fetch` is anonymous | Section 6: public data or data in `task` |
@@ -768,13 +970,15 @@ Identify which one you're looking at before waiting or rebuilding:
 - `HTTP 403: Forbidden: invalid Host header "<hub>"` from `railgrid mcp proxy`,
   `fmcp`, `railgrid commit` or any MCP client, while REST and kubectl work: the
   hub's MCP endpoint refused a request that reached it through a proxy on the
-  same host or pod. Hubs from v0.1.33 and earlier have this bug. Your token
-  is fine and nothing client-side fixes it (don't try other hostnames):
-  report it so the operator upgrades the hub. Until then use REST and
-  kubectl. Commits can still be recorded by uploading files through the
-  files route (4.4 C): the reconciler commits them from inside the cluster.
-- Body mentions Cloudflare / `error code: 1010`: the edge blocked your HTTP
-  client's user agent (Python's default). Use curl, or set a browser-like
+  same host or pod. Hubs from v0.1.33 and earlier have this bug (current
+  hubs rewrite the Host themselves). Your token is fine and nothing
+  client-side fixes it (don't try other hostnames): report it so the
+  operator upgrades the hub. Until then use kubectl and the verbs. Commits
+  can still be recorded by uploading files through `files-content` (4.4 C):
+  the reconciler commits them from inside the cluster.
+- Body is an HTML or JSON page from the hub's front-door proxy (CDN or
+  tunnel) rather than a Kubernetes `Status`, e.g. `error code: 1010`: the
+  proxy blocked your HTTP client's user agent (Python's default). Use curl, or set a browser-like
   `User-Agent`. Real railgrid denials are Kubernetes `Status` JSON.
 - `github: rate limited, resets in …`: the GitHub token behind the code
   `Connection` is out of quota. Commits wait and retry for up to 15 min

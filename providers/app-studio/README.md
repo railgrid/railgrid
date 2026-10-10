@@ -147,7 +147,7 @@ Environment variables consumed by the binary:
 | Var | Purpose |
 |---|---|
 | `PORT` | Listen port (default `8081`) |
-| `RAILGRID_HUB_URL` | Hub base URL for the hub's own REST API (provider catalog, membership rosters, browser-session handoff), called as the provider with its hub token, and for the workspace MCP aggregate, called as the Project's hub-minted scoped identity |
+| `RAILGRID_HUB_URL` | Hub base URL for the provider catalog and membership rosters, called as the provider; the workspace MCP aggregate and private-preview handoff use the Project's hub-minted scoped identity |
 | `RAILGRID_HUB_PUBLIC_URL` | Browser-reachable HTTPS hub origin for private preview authorization redirects and one-use browser-session handoffs; may differ from the internal `RAILGRID_HUB_URL`, and private browser inspection fails closed when unset or invalid |
 | `RAILGRID_HUB_TOKEN` | Bearer token for the heartbeat |
 | `RAILGRID_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
@@ -495,9 +495,12 @@ the other settled; moving the assistant's tool onto the same action is open
 work.
 
 The reverse direction is `hydrate_workspace`: it reads the repository tree
-through the Code provider's `code__checkout_repository` tool and writes it into
-the workspace (tracked files are overwritten, workspace-only files stay), then
-schedules a development sync. Because it discards uncommitted edits to tracked
+through the Code provider's `repositories/checkout` verb — as App Studio,
+under its own claim, the same way commits go out; the verb creates the
+transient `RepositoryCheckout` as the Code provider, so neither App Studio nor
+the Project's hub-minted identity needs a write on that kind — and writes it
+into the workspace (tracked files are overwritten, workspace-only files stay),
+then schedules a development sync. Because it discards uncommitted edits to tracked
 files, the tool always pauses for the user's approval, in every approval mode
 except Never, and is offered only in Default mode on implementation turns. The
 same operation is reachable without the assistant through
@@ -609,3 +612,20 @@ Once installed, the provider registers itself and your workspaces enable it
 exactly like the platform copy. See
 [docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
 [deploy/chart/README.md](deploy/chart/README.md) for every chart value.
+
+### Private preview browser authentication
+
+App Studio exchanges the Project identity at `POST /auth/apps/preview-handoff`
+for a one-use URL that expires after one minute. The hub authenticates the
+ServiceAccount with a workspace TokenReview and checks `create` on the named
+infrastructure `instances/proxy` capability the Project already holds. A
+provider token, a token from another workspace, or an identity without that
+instance permission cannot mint the handoff.
+
+Redeeming the URL sets a separate, HttpOnly preview cookie bound to that one
+instance. It cannot bootstrap a portal session. The normal app authorization
+flow rechecks the proxy permission and retains its host pinning and callback
+state checks. Preview access lasts at most 15 minutes and never beyond the
+Project credential's expiration. Shared storage preserves the instance scope,
+expiration, and handoff purpose across hub replicas. Hub and App Studio must
+both include this protocol; there is no fallback to the provider or user token.

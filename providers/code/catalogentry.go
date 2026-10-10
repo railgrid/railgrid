@@ -71,13 +71,13 @@ func catalogEntryPath() string {
 // The one correction: this provider registers no data-plane handler at all, so
 // its declared verbs are served by actions/server.go too, exactly like a
 // catalogued action at the one contract version. That is the whole reason
-// stage-snapshot and stage-commit-bundle are verbs rather than actions — their
-// bodies (a 25 MiB git bundle, a 48 MiB source tree) are past the 1 MiB
-// limits.maxInputBytes ceiling an action may declare, so no honest action
-// declaration exists, but the coordinate still has to be declared to be
-// grantable (docs/provider-actions.md §"Uncatalogued large-upload verbs").
-// actions/catalog_declaration_test.go is what pins those two by name; nothing
-// here needs to know which verbs they are.
+// stage-snapshot, stage-commit-bundle and checkout are verbs rather than
+// actions — the bodies they carry (a 25 MiB git bundle, a 48 MiB source tree
+// up, the same tree back down) are past the limits an action may declare, so
+// no honest action declaration exists, but the coordinate still has to be
+// declared to be grantable (docs/provider-actions.md §"Uncatalogued
+// large-transfer verbs"). actions/catalog_declaration_test.go is what pins
+// those three by name; nothing here needs to know which verbs they are.
 //
 // There is no fallback: a verb is reached only as a kcp custom subresource, so
 // a provider with no manifest has no data plane at all, and starting anyway

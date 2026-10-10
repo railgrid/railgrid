@@ -222,7 +222,6 @@ func TestFileStoreRejectsInvalidInputs(t *testing.T) {
 		{name: "unknown-encoding", files: []File{{Path: "a.bin", Content: "00ff", Encoding: "hex"}}},
 		{name: "invalid-base64", files: []File{{Path: "a.bin", Content: "not base64!", Encoding: EncodingBase64}}},
 		{name: "unpadded-base64", files: []File{{Path: "a.bin", Content: "aGk", Encoding: EncodingBase64}}},
-		{name: "base64-line-break", files: []File{{Path: "a.bin", Content: "aGVs\nbG8=", Encoding: EncodingBase64}}},
 		{name: "base64-noncanonical-padding", files: []File{{Path: "a.bin", Content: "aGl=", Encoding: EncodingBase64}}},
 	}
 	for _, tt := range tests {
@@ -397,5 +396,23 @@ func TestNotifyAnnouncesArrivalsUntilContextEnds(t *testing.T) {
 			t.Fatal("cancelled subscription was not dropped")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestFileStorePutNormalizesWrappedBase64(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore returned error: %v", err)
+	}
+	ref, err := store.Put(context.Background(), "root:acme", []File{{Path: "a.bin", Content: "aGVs\nbG8=\n", Encoding: EncodingBase64}})
+	if err != nil {
+		t.Fatalf("Put returned error for wrapped base64: %v", err)
+	}
+	bundle, err := store.Get(context.Background(), "root:acme", ref.Name, ref.Digest)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if len(bundle.Files) != 1 || bundle.Files[0].Content != "aGVsbG8=" {
+		t.Fatalf("stored files = %+v, want the base64 on one line", bundle.Files)
 	}
 }

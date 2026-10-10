@@ -27,6 +27,7 @@ import (
 	"time"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -89,14 +90,12 @@ visible:
 }
 
 func TestAssistantHydrateWorkspaceToolLoadsRepositoryAndInvalidatesReads(t *testing.T) {
-	checkout, _ := json.Marshal(checkoutToolResult{Ref: "feature/x", CommitSHA: "sha-1", Files: []checkoutToolFile{
+	upstream, checkouts := checkoutVerbServer(t, codecommit.Checkout{Ref: "feature/x", CommitSHA: "sha-1", Files: []codecommit.CheckoutFile{
 		{Path: "index.html", Content: "<html>from git</html>\n"},
 		{Path: "src/new.ts", Content: "export const fresh = true\n"},
-	}, Skipped: []string{"assets/big.bin"}})
-	hub := &codeBinaryHub{checkout: string(checkout)}
-	upstream := hub.serve(t)
+	}, Skipped: []string{"assets/big.bin"}}, nil)
 	f := newProjectFilesFixture(t)
-	f.server.hubBase = upstream.URL
+	f.server.callers = newTestCallers(nil, upstream.URL)
 	// The sync hook runs on the goroutine hydrate schedules after the
 	// mutation, so the record is guarded and the test waits for the first
 	// call before reading it.
@@ -155,9 +154,9 @@ func TestAssistantHydrateWorkspaceToolLoadsRepositoryAndInvalidatesReads(t *test
 	if resp.Ref != "feature/x" || resp.CommitSHA != "sha-1" || strings.Join(resp.Written, ",") != "index.html,src/new.ts" || strings.Join(resp.Skipped, ",") != "assets/big.bin" {
 		t.Fatalf("result = %#v", resp)
 	}
-	call := hub.calls[len(hub.calls)-1]
-	args := call["arguments"].(map[string]any)
-	if call["name"] != projectToolCodeCheckoutRepository || args["ref"] != "feature/x" || args["repositoryRef"] != f.project.Spec.Repository.RepositoryRef {
+	// The tree was read through the Code provider's checkout verb, as this
+	// provider, at the project's Repository and the requested ref.
+	if call := checkouts.last(t); call.Repository != f.project.Spec.Repository.RepositoryRef || call.Input["ref"] != "feature/x" || call.Input["repositoryUID"] != testFixtureRepositoryUID {
 		t.Fatalf("checkout call = %#v", call)
 	}
 	if got := read("index.html"); got != "<html>from git</html>\n" {
