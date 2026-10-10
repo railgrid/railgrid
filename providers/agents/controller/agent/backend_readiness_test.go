@@ -9,6 +9,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,6 +62,49 @@ func TestHarnessReadinessRequiresConnectedEdgeAndReachableService(t *testing.T) 
 			}
 			if status.Harness == nil || status.Harness.Name != "codex" {
 				t.Fatalf("lost discovered harness details: %+v", status)
+			}
+		})
+	}
+}
+
+// A harness agent that names a GitHub connection is told, in its BackendReady
+// condition, when that connection is missing or is not a github one — before
+// the first run fails inside the harness with "gh: not logged in".
+func TestHarnessGitHubConnectionIsCheckedBeforeTheEdge(t *testing.T) {
+	cred := &agentsv1alpha1.ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "claude"}}
+	cred.Spec.Provider = agentsv1alpha1.ModelProviderClaudeCode
+	cred.Status.Conditions = []metav1.Condition{{Type: agentsv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Ready"}}
+	slack := &agentsv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "team-slack"}}
+	slack.Spec.Type = agentsv1alpha1.ConnectionTypeSlack
+	github := &agentsv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: "gh"}}
+	github.Spec.Type = agentsv1alpha1.ConnectionTypeGitHub
+	for _, tc := range []struct {
+		name       string
+		ref        string
+		wantReason string
+	}{
+		{"missing connection", "nope", agentsv1alpha1.ReasonUnknownConnectionRef},
+		{"not a github connection", "team-slack", agentsv1alpha1.ReasonInvalidSpec},
+		// A valid connection moves on to the edge, which this fixture does not
+		// have, so the next complaint is about the edge rather than the token.
+		{"github connection", "gh", agentsv1alpha1.ReasonUnknownEdgeRef},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := &agentsv1alpha1.Agent{}
+			agent.Spec.Backend = agentsv1alpha1.AgentBackendSpec{Type: agentsv1alpha1.AgentBackendHarness, Harness: &agentsv1alpha1.AgentHarnessBackend{
+				CredentialRef: "claude", GitHubConnectionRef: tc.ref,
+				EdgeRef: agentsv1alpha1.AgentHarnessEdgeRef{Kind: edgeref.KindLinuxServer, Name: "devbox"},
+			}}
+			c := fake.NewClientBuilder().WithScheme(agentsscheme.NewScheme()).WithObjects(cred, slack, github).Build()
+			reason, message, _, err := (&Reconciler{}).validateBackend(t.Context(), c, agent, credentialVerdict{})
+			if err != nil {
+				t.Fatalf("validateBackend: %v", err)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q (%s), want %q", reason, message, tc.wantReason)
+			}
+			if tc.wantReason != agentsv1alpha1.ReasonUnknownEdgeRef && !strings.Contains(message, "spec.backend.harness.githubConnectionRef") {
+				t.Fatalf("message should name the field to fix: %q", message)
 			}
 		})
 	}

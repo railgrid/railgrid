@@ -131,6 +131,11 @@ export interface AgentHarnessBackend {
   credentialRef: string
   model?: string
   workspace?: HarnessWorkspace
+  /**
+   * A github Connection whose token the harness runs with (GH_TOKEN for one
+   * turn, never on the machine). What lets a reviewer post to a pull request.
+   */
+  githubConnectionRef?: string
 }
 
 export interface AgentBackend {
@@ -366,7 +371,9 @@ export interface Schedule {
 
 export interface Trigger {
   metadata: { name: string }
-  spec: { agentRef: string; source: string; connectionRef?: string; task?: string; suspend?: boolean; channelRef?: string }
+  spec: { agentRef: string; source: string; connectionRef?: string; filter?: Record<string, string>; task?: string; suspend?: boolean; channelRef?: string }
+  // webhookPath embeds the trigger's secret token; the portal shows it so the
+  // operator can paste the full URL into GitHub (or any webhook sender).
   status?: { lastFired?: string; lastRunID?: string; webhookPath?: string; disabledReason?: string }
 }
 
@@ -545,7 +552,12 @@ export interface RunDetail extends RunSummary {
   // the session transcript for it.
   output?: string
   sources?: string[]
-  pending?: { inboxID: string; tool: string; args: string }
+  /**
+   * pending mirrors PendingApproval: kind "approval" names a tool and args and
+   * takes a verdict; kind "question" carries the question and takes an answer.
+   * Rows written before the distinction have no kind and are approvals.
+   */
+  pending?: { inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string }
   steps: RunStep[]
   children?: RunSummary[]
   /** Present only for a harness-backed run that has reported coordinates. */
@@ -807,6 +819,9 @@ export interface ScheduleCreate extends SchedulePatch {
 export interface TriggerPatch {
   source?: string
   connectionRef?: string
+  // filter is sent as a JSON merge patch fragment: a null value removes that
+  // key from spec.filter, so an edit can drop a key without a full replace.
+  filter?: Record<string, string | null>
   task?: string
   suspend?: boolean
   channelRef?: string

@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -1537,7 +1538,67 @@ func harnessCredentialOf(value *HarnessCredential) (harness.Credential, error) {
 	if kind != harness.CredentialCodexAuth && strings.ContainsAny(raw, "\r\n") {
 		return harness.Credential{}, errors.New("harnessCredential value contains invalid whitespace")
 	}
-	return harness.Credential{Kind: kind, Value: raw}, nil
+	environment, err := credentialEnvironmentOf(value.Environment)
+	if err != nil {
+		return harness.Credential{}, err
+	}
+	return harness.Credential{Kind: kind, Value: raw, Environment: environment}, nil
+}
+
+// maxCredentialEnvironment bounds how many variables an identity may bring.
+const maxCredentialEnvironment = 8
+
+// credentialEnvironmentPattern is the shape of a variable name an identity may
+// bring: upper-case, the way every credential the harnesses read is spelled.
+var credentialEnvironmentPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// allowedCredentialEnvironment is every name an identity may bring. It is an
+// allow-list, not a deny-list, on purpose: the child's environment is what
+// decides where it runs (HOME, XDG_*), what it authenticates to a model with
+// (ANTHROPIC_*, CLAUDE_*), what code runs at start (NODE_OPTIONS, BASH_ENV,
+// LD_*), where its traffic goes (HTTPS_PROXY, NODE_EXTRA_CA_CERTS) and which
+// host a GitHub token is sent to (GH_HOST), and a list of names to refuse is
+// never finished. A caller gets to bring a credential under a name the
+// harnesses read, and nothing else; adding one is a deliberate change here.
+var allowedCredentialEnvironment = map[string]struct{}{
+	"GH_TOKEN":     {},
+	"GITHUB_TOKEN": {},
+}
+
+// credentialEnvironmentOf validates the variables an identity brings.
+func credentialEnvironmentOf(variables []EnvironmentVariable) ([]harness.EnvironmentVariable, error) {
+	if len(variables) == 0 {
+		return nil, nil
+	}
+	if len(variables) > maxCredentialEnvironment {
+		return nil, fmt.Errorf("harnessCredential environment has %d variables, more than %d", len(variables), maxCredentialEnvironment)
+	}
+	out := make([]harness.EnvironmentVariable, 0, len(variables))
+	seen := make(map[string]struct{}, len(variables))
+	for _, variable := range variables {
+		name := strings.TrimSpace(variable.Name)
+		if !credentialEnvironmentPattern.MatchString(name) {
+			return nil, fmt.Errorf("harnessCredential environment name %q is not an upper-case variable name", variable.Name)
+		}
+		if _, ok := allowedCredentialEnvironment[name]; !ok {
+			return nil, fmt.Errorf("harnessCredential environment name %q is not allowed; a credential may be brought only as one of the names the runner lists", name)
+		}
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("harnessCredential environment names %q twice", name)
+		}
+		seen[name] = struct{}{}
+		if variable.Value == "" {
+			return nil, fmt.Errorf("harnessCredential environment %s is empty", name)
+		}
+		if len(variable.Value) > maxHarnessCredentialBytes {
+			return nil, fmt.Errorf("harnessCredential environment %s is oversized", name)
+		}
+		if strings.ContainsAny(variable.Value, "\r\n\x00") {
+			return nil, fmt.Errorf("harnessCredential environment %s contains invalid whitespace", name)
+		}
+		out = append(out, harness.EnvironmentVariable{Name: name, Value: variable.Value})
+	}
+	return out, nil
 }
 
 func nonEmptyJSON(raw json.RawMessage) bool {

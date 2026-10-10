@@ -849,17 +849,21 @@ func runAppSyncFrom(ctx context.Context, out, errOut io.Writer, target hubTarget
 	if len(files) == 0 {
 		return fmt.Errorf("no files to sync under %s", dir)
 	}
-	s, err := newHubSession(ctx, target)
-	if err != nil {
-		return err
-	}
-	mcp, err := s.newMCPClient(ctx)
-	if err != nil {
-		return err
-	}
 	instance := name + "-dev"
 	_, _ = fmt.Fprintf(errOut, "railgrid app: pushing %d file(s) from %s into %s (additive; git and the workspace store untouched)\n", len(files), dir, instance)
-	raw, err := mcp.callTool(ctx, devSyncTool, map[string]any{"instance": instance, "files": files})
+	// The call goes through the same path as 'railgrid mcp proxy' and
+	// 'railgrid mcp call': the user's own login, so it carries the user's
+	// workspace RBAC. The MCPServer ServiceAccount token (newMCPClient) is
+	// not granted instances/sync on every hub, and a sync must run as the
+	// person asking for it anyway.
+	body, err := mcpOneShot(ctx, errOut, &mcpProxyOptions{target: target, mcpserverName: defaultMCPServerName}, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": devSyncTool, "arguments": map[string]any{"instance": instance, "files": files}},
+	})
+	if err != nil {
+		return fmt.Errorf("%s failed: %w", devSyncTool, err)
+	}
+	raw, err := parseMCPToolResult(body)
 	if err != nil {
 		return fmt.Errorf("%s failed: %w", devSyncTool, err)
 	}
@@ -891,7 +895,7 @@ func runAppSync(ctx context.Context, out, errOut io.Writer, target hubTarget, na
 	var res appSyncOutput
 	_, _ = fmt.Fprintf(errOut, "railgrid app: loading %s's workspace from its repository…\n", name)
 	if err := s.do(ctx, http.MethodPost, projectVerbURL(s, name, "hydrate-workspace"), map[string]any{}, &res.Hydrate); err != nil {
-		return fmt.Errorf("hydrating the workspace: %w", err)
+		return fmt.Errorf("hydrating the workspace: %w\n  (to see a local tree in %s-dev without git, run 'railgrid app sync %s --from <dir>')", err, name, name)
 	}
 	_, _ = fmt.Fprintf(errOut, "railgrid app: syncing %s's workspace to its development instance…\n", name)
 	if err := s.do(ctx, http.MethodPost, projectVerbURL(s, name, "sync-development"), map[string]any{}, &res.Sync); err != nil {

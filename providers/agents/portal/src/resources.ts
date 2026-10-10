@@ -178,6 +178,18 @@ const CONNECTION_TYPES = [
 const SCHEDULE_TYPES = ['cron', 'wakeup', 'heartbeat']
 const TRIGGER_SOURCES = ['webhook', 'github']
 
+// createFilter keeps only the non-empty string entries of a create body's
+// filter (a null there means "remove", which has nothing to remove yet) and
+// omits the field entirely when nothing is left.
+function createFilter(filter: Record<string, string | null> | undefined): Record<string, string> | undefined {
+  if (!filter) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(filter)) {
+    if (typeof value === 'string' && value.trim() !== '') out[key.trim()] = value.trim()
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 /**
  * ResourceError is what a view catches. It carries the same `status` an
  * ApiError did, so status-based recovery keeps working. Remote diagnostics
@@ -365,6 +377,7 @@ function normalizeHarness(harness: AgentHarnessBackend | undefined): AgentHarnes
     credentialRef,
     model: (harness?.model ?? '').trim() || undefined,
     workspace: harness?.workspace,
+    githubConnectionRef: (harness?.githubConnectionRef ?? '').trim() || undefined,
   })
 }
 
@@ -589,6 +602,15 @@ export class Resources {
 
       const backend = patchBackend(body)
       if (backend) spec.backend = backend
+      // Switching to the harness also drops the grants only the in-process
+      // loop can honor. The provider REJECTS a harness agent that still carries
+      // spec.tools or spec.delegates (Validated=False, MeaninglessForHarness)
+      // rather than ignoring them, so a backend switch that left a model-era
+      // tool grant behind would produce an agent no run can start.
+      if (body.backendType === AGENT_BACKEND_HARNESS) {
+        spec.tools = null
+        spec.delegates = null
+      }
       if (body.systemPrompt !== undefined) spec.systemPrompt = body.systemPrompt
       if (body.description !== undefined) spec.description = body.description.trim()
       if (body.autonomy !== undefined) spec.autonomy = body.autonomy
@@ -777,6 +799,7 @@ export class Resources {
           agentRef,
           source,
           connectionRef: body.connectionRef,
+          filter: createFilter(body.filter),
           task: body.task,
           suspend: body.suspend,
           channelRef: (body.channelRef ?? '').trim() || undefined,
@@ -795,6 +818,9 @@ export class Resources {
         spec.source = source
       }
       if (body.connectionRef !== undefined) spec.connectionRef = body.connectionRef
+      // Merge-patch semantics: keys the caller nulled are removed from
+      // spec.filter, the rest are set; an empty map is a no-op, not a clear.
+      if (body.filter !== undefined && Object.keys(body.filter).length > 0) spec.filter = body.filter
       if (body.task !== undefined) spec.task = body.task
       if (body.suspend !== undefined) spec.suspend = body.suspend
       if (body.channelRef !== undefined) spec.channelRef = body.channelRef.trim()

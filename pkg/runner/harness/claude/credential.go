@@ -32,6 +32,23 @@ import (
 type credential struct {
 	env   string
 	value string
+	// extra is what else the identity brought (harness.Credential.Environment):
+	// exported beside the model credential and redacted exactly like it.
+	extra []harness.EnvironmentVariable
+}
+
+// values lists every secret the credential carries, for redaction.
+func (c credential) values() []string {
+	out := make([]string, 0, 1+len(c.extra))
+	if c.value != "" {
+		out = append(out, c.value)
+	}
+	for _, variable := range c.extra {
+		if variable.Value != "" {
+			out = append(out, variable.Value)
+		}
+	}
+	return out
 }
 
 // credentialFor resolves the credential the caller sent with this launch.
@@ -67,25 +84,47 @@ func credentialFor(launch harness.Launch) (credential, error) {
 	if strings.ContainsAny(value, "\r\n\x00") {
 		return credential{}, errors.New("the Claude Code credential contains invalid whitespace")
 	}
-	return credential{env: env, value: value}, nil
+	// The runner already allow-listed the names; this is the same list again,
+	// so an adapter reached by a runner that forgot still exports nothing but a
+	// credential. Exact names, no prefixes: GH_HOST would send the token to
+	// another host, and it must never pass because it starts with GH_.
+	for _, variable := range cred.Environment {
+		if _, ok := allowedBroughtEnvironment[variable.Name]; !ok {
+			return credential{}, fmt.Errorf("the identity brings %s, which is not a credential this adapter exports", variable.Name)
+		}
+	}
+	return credential{env: env, value: value, extra: append([]harness.EnvironmentVariable(nil), cred.Environment...)}, nil
+}
+
+// allowedBroughtEnvironment mirrors the runner's allow-list for the variables
+// an identity may bring (see runner.allowedCredentialEnvironment).
+var allowedBroughtEnvironment = map[string]struct{}{
+	"GH_TOKEN":     {},
+	"GITHUB_TOKEN": {},
 }
 
 // redact removes the credential value from any text that is about to leave the
 // adapter. Every event message, blocker and error goes through it.
 func redact(text string, cred credential) string {
-	if text == "" || cred.value == "" {
+	if text == "" {
 		return text
 	}
-	return strings.ReplaceAll(text, cred.value, "[redacted]")
+	for _, value := range cred.values() {
+		text = strings.ReplaceAll(text, value, "[redacted]")
+	}
+	return text
 }
 
 // redactError wraps an error so its message cannot carry the credential.
 func (c credential) redactError(err error) error {
-	if err == nil || c.value == "" {
+	if err == nil {
 		return err
 	}
-	if msg := err.Error(); strings.Contains(msg, c.value) {
-		return errors.New(redact(msg, c))
+	msg := err.Error()
+	for _, value := range c.values() {
+		if strings.Contains(msg, value) {
+			return errors.New(redact(msg, c))
+		}
 	}
 	return err
 }
@@ -139,6 +178,13 @@ func (a *Adapter) childEnv(cred credential) []string {
 	)
 	if cred.env != "" && cred.value != "" {
 		env = append(env, cred.env+"="+cred.value)
+	}
+	// What else the identity brought, after the deny list has run: a GH_TOKEN
+	// the caller sent survives where one inherited from the runner's own
+	// environment did not, because the first is the tenant's and the second is
+	// the machine owner's.
+	for _, variable := range cred.extra {
+		env = append(env, variable.Name+"="+variable.Value)
 	}
 	return env
 }
