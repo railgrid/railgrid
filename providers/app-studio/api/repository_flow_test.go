@@ -1941,7 +1941,8 @@ type projectSettingsDynamicClient struct {
 	settings projectLLMSettings
 	// registry, when set, replaces settings: it seeds a multi-model registry
 	// rather than the single-model one settings implies.
-	registry *projectLLMRegistry
+	registry   *projectLLMRegistry
+	secretGets *[]string
 }
 
 func (c projectSettingsDynamicClient) resolved() projectLLMRegistry {
@@ -1958,14 +1959,15 @@ func (c projectSettingsDynamicClient) resolved() projectLLMRegistry {
 }
 
 func (c projectSettingsDynamicClient) Resource(gvr k8sschema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
-	return projectSettingsDynamicResource{gvr: gvr, registry: c.resolved()}
+	return projectSettingsDynamicResource{gvr: gvr, registry: c.resolved(), secretGets: c.secretGets}
 }
 
 type projectSettingsDynamicResource struct {
 	dynamic.ResourceInterface
-	gvr       k8sschema.GroupVersionResource
-	namespace string
-	registry  projectLLMRegistry
+	gvr        k8sschema.GroupVersionResource
+	namespace  string
+	registry   projectLLMRegistry
+	secretGets *[]string
 }
 
 func (r projectSettingsDynamicResource) Namespace(namespace string) dynamic.ResourceInterface {
@@ -1980,6 +1982,9 @@ func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ me
 		return projectLLMRegistryStudio(r.registry), nil
 	}
 	if r.gvr == secretGVR && r.namespace == projectLLMSecretNamespace {
+		if r.secretGets != nil {
+			*r.secretGets = append(*r.secretGets, name)
+		}
 		if credential, ok := projectLLMRegistryCredentials(r.registry)[name]; ok {
 			return credential, nil
 		}

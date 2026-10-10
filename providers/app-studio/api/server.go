@@ -56,6 +56,12 @@ import (
 // for explicitly enabled local hub calls, including Project requests; workspaces stores
 // project files owned by App Studio; and assistantEngine runs project turns.
 type Server struct {
+	// Shared across requests and tenants: discovery must not multiply its
+	// concurrency or request budget for every incoming turn.
+	integrationDiscoveryOnce   sync.Once
+	integrationDiscoveryBudget *integrationDiscoveryBudget
+	assistantWorkerReadBudget  projectAssistantWorkerReadBudget
+
 	tenant *tenant.Client
 	store  store.Store
 	// attachments is a separate capability so message-only test stores remain

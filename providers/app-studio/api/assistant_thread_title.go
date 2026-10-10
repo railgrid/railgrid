@@ -43,42 +43,71 @@ instructions, or a sentence. Summarize the user's request, not your response.`
 // assistantThreadTitleNeedsGeneration is deliberately based on the canonical
 // thread event stream rather than project-global messages. A thread gets one
 // title attempt, on its first user message, even when the project has older
-// conversations.
-func (s *Server) assistantThreadTitleNeedsGeneration(ctx context.Context, scope store.Scope, thread store.AssistantThread) bool {
+// conversations. Call it from the detached title task so history reads never
+// delay turn admission.
+func (s *Server) assistantThreadTitleNeedsGeneration(ctx context.Context, scope store.Scope, thread store.AssistantThread, currentUserMessageID string) bool {
 	if strings.TrimSpace(thread.Title) != "" || thread.Status == store.AssistantThreadStatusArchived {
 		return false
 	}
-	events, err := s.loadAllAssistantThreadEvents(ctx, scope, thread.ID)
-	if err != nil {
-		return false
-	}
-	for _, event := range events {
-		if event.Type == assistantThreadEventUserMessage {
+	currentUserMessageID = strings.TrimSpace(currentUserMessageID)
+	after := int64(0)
+	for {
+		page, err := s.store.ListAssistantThreadEvents(ctx, scope, thread.ID, after, 500)
+		if err != nil {
 			return false
 		}
-		var envelope struct {
-			Item struct {
-				Type string `json:"type"`
-			} `json:"item"`
+		for _, event := range page {
+			if itemID, ok := assistantThreadUserMessageID(event); ok {
+				return currentUserMessageID != "" && itemID == currentUserMessageID
+			}
 		}
-		if json.Unmarshal(event.Payload, &envelope) == nil && envelope.Item.Type == assistantThreadEventUserMessage {
-			return false
+		if len(page) < 500 {
+			return currentUserMessageID == ""
 		}
+		after = page[len(page)-1].Sequence
 	}
-	return true
+}
+
+func assistantThreadUserMessageID(event store.AssistantThreadEvent) (string, bool) {
+	if event.Type == assistantThreadEventUserMessage {
+		return strings.TrimSpace(event.ItemID), true
+	}
+	var envelope struct {
+		Item struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(event.Payload, &envelope) != nil || envelope.Item.Type != assistantThreadEventUserMessage {
+		return "", false
+	}
+	itemID := strings.TrimSpace(envelope.Item.ID)
+	if itemID == "" {
+		itemID = strings.TrimSpace(event.ItemID)
+	}
+	return itemID, true
 }
 
 // startAssistantThreadTitleGeneration detaches the one-off title request from
 // the durable turn request. The client may disconnect immediately after the
 // turn is accepted; this bounded background operation must still finish (or
 // fail harmlessly) without changing turn state.
-func (s *Server) startAssistantThreadTitleGeneration(c *asclient.Client, scope store.Scope, id identity, thread store.AssistantThread, prompt string) {
+func (s *Server) startAssistantThreadTitleGeneration(c *asclient.Client, scope store.Scope, id identity, thread store.AssistantThread, currentUserMessageID, prompt string) {
 	if s == nil || s.store == nil || (c == nil && s.assistantThreadTitleGenerator == nil) {
+		return
+	}
+	if strings.TrimSpace(thread.Title) != "" || thread.Status == store.AssistantThreadStatusArchived {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), projectAssistantThreadTitleTimeout)
 		defer cancel()
+		// History lookup is only a title convenience; keep it out of the turn
+		// admission path, where an old thread could otherwise require an
+		// unbounded transcript read before the caller gets an accepted response.
+		if !s.assistantThreadTitleNeedsGeneration(ctx, scope, thread, currentUserMessageID) {
+			return
+		}
 		title, err := s.generateAssistantThreadTitle(ctx, c, prompt)
 		if err != nil {
 			return
