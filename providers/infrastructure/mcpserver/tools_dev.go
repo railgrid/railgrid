@@ -439,9 +439,15 @@ func normalizeDevSyncFiles(files []devSyncFile) ([]devSyncFile, error) {
 		case "", devSyncEncodingUTF8:
 			f.Encoding = ""
 		case devSyncEncodingBase64:
-			if strings.ContainsAny(f.Content, "\r\n") {
-				return nil, fmt.Errorf("file %q: base64 content must not contain line breaks", f.Path)
-			}
+			// Wrapped base64 is normalized to one line here so an agent of
+			// any age receives canonical content.
+			f.Content = strings.Map(func(r rune) rune {
+				switch r {
+				case '\r', '\n', '\t', ' ':
+					return -1
+				}
+				return r
+			}, f.Content)
 			decoded, err := base64.StdEncoding.Strict().DecodeString(f.Content)
 			if err != nil {
 				return nil, fmt.Errorf("file %q: invalid base64 content (want RFC 4648 standard alphabet with padding): %v", f.Path, err)

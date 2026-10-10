@@ -6,7 +6,7 @@ spec:
   displayName: "Scheduled job"
   description: "A container that runs on a cron schedule and exits — CronJob only, no Service, no URL. Reports, cleanups, periodic syncs."
   category: Workloads
-  version: 0.2.0
+  version: 0.3.0
   # exposure: what the platform tells callers about reaching an instance.
   # A schedule, not a server. Nothing to reach.
   exposure: internal
@@ -29,8 +29,12 @@ spec:
 
       YOU SUPPLY exactly one container image whose ENTRYPOINT performs the
       task and exits: 0 on success, non-zero on failure (failed runs are
-      retried up to 3 times, then recorded as a failed Job). There is no
-      command/args input — bake the task into the image entrypoint.
+      retried up to 3 times, then recorded as a failed Job). The optional
+      command / args inputs override the image's entrypoint and arguments
+      (Kubernetes container command/args), so a stock image such as
+      node:20-alpine or postgres:16-alpine can run a one-liner without a
+      custom image: command ["node", "-e", "..."] or ["psql", "-c", "..."].
+      Leave both empty to run the image as built.
 
       SCHEDULE: standard 5-field cron (schedule input, default "0 * * * *" =
       hourly, evaluated in UTC). Concurrent runs are forbidden — if a run is
@@ -58,9 +62,9 @@ spec:
           schema creation/migrations idempotently inside that retry loop.
 
       INPUTS you set when provisioning: name, image (both required);
-      schedule, env (env-var map; not for secrets), connections.database /
-      connections.cache (see CONNECTIONS). All except name can be changed
-      later with update_instance.
+      schedule, command, args, env (env-var map; not for secrets),
+      connections.database / connections.cache (see CONNECTIONS). All except
+      name can be changed later with update_instance.
     outputs:
       - "status.schedule — the active cron schedule."
   # ── Portal presentation ───────────────────────────────────────────────
@@ -96,6 +100,18 @@ spec:
         type: string
         default: "0 * * * *"
         description: "Standard 5-field cron expression, evaluated in UTC. Default: hourly."
+      command:
+        type: array
+        items:
+          type: string
+        default: []
+        description: "Overrides the image entrypoint (Kubernetes container command). Empty = the image's own entrypoint."
+      args:
+        type: array
+        items:
+          type: string
+        default: []
+        description: "Arguments for the entrypoint or command (Kubernetes container args). Empty = the image's own CMD."
       env:
         type: object
         additionalProperties:
@@ -166,6 +182,8 @@ spec:
                     containers:
                       - name: job
                         image: ${schema.spec.image}
+                        command: ${schema.spec.command}
+                        args: ${schema.spec.args}
                         # connections.* → credentials from the sibling
                         # instance's Secret in this runtime namespace.
                         # Unconnected: a placeholder name + optional=true
