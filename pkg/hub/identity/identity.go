@@ -103,6 +103,12 @@ type Request struct {
 	Rules []rbacv1.PolicyRule `json:"rules,omitempty"`
 	// TTLSeconds is the requested token lifetime, clamped to at most 24h.
 	TTLSeconds int64 `json:"ttlSeconds,omitempty"`
+	// ExpectedOwnerGeneration and ExpectedOwnerResourceVersion bind a request
+	// to the exact owner snapshot from which Rules were derived. ResourceVersion
+	// is opaque and is compared only for equality. They are optional for legacy
+	// providers, but must be supplied together.
+	ExpectedOwnerGeneration      int64  `json:"expectedOwnerGeneration,omitempty"`
+	ExpectedOwnerResourceVersion string `json:"expectedOwnerResourceVersion,omitempty"`
 }
 
 // Token is what a caller gets back. The hub keeps no copy.
@@ -112,6 +118,10 @@ type Token struct {
 	ExpiresAt      time.Time `json:"expiresAt"`
 	ServiceAccount string    `json:"serviceAccount"`
 	Name           string    `json:"name"`
+	// OwnerRevisionVerified is true only when the hub checked the request's
+	// expected owner revision and applied the corresponding fenced identity.
+	// It is omitted for legacy unversioned requests.
+	OwnerRevisionVerified bool `json:"ownerRevisionVerified,omitempty"`
 }
 
 // OwnerProbe answers whether an owner object still exists in a tenant
@@ -123,6 +133,44 @@ type OwnerProbe interface {
 	// identity minted for the old one must not survive.
 	Exists(ctx context.Context, clusterID string, owner Owner) (bool, string, error)
 }
+
+// OwnerObservation is a fresh read of an owner object. ResourceVersion is
+// opaque: consumers compare it for equality and must not infer ordering from
+// its representation.
+type OwnerObservation struct {
+	UID             string
+	Generation      int64
+	ResourceVersion string
+}
+
+// OwnerRevisionProbe is an optional extension implemented by probes that can
+// return the complete owner revision. Versioned identity requests fail closed
+// when the configured probe does not implement it.
+type OwnerRevisionProbe interface {
+	Observe(ctx context.Context, clusterID string, owner Owner) (bool, OwnerObservation, error)
+}
+
+// RevisionConflict reports a stale owner snapshot or a bounded identity
+// record write race. These stable codes let clients retry from a fresh owner
+// read without reusing the old token source.
+type RevisionConflict struct {
+	Code   string
+	Reason string
+}
+
+func (e RevisionConflict) Error() string {
+	if e.Reason == "" {
+		return e.Code
+	}
+	return e.Code + ": " + e.Reason
+}
+
+const (
+	CodeStaleOwner      = "stale_owner"
+	CodeVersionConflict = "version_conflict"
+)
+
+const maxIdentityRecordWriteAttempts = 5
 
 // RecordStore reads and writes ScopedIdentity records in
 // root:railgrid:system:tenants.
@@ -214,6 +262,11 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 	if err := validateOwner(req.Owner, clusterID); err != nil {
 		return nil, err
 	}
+	revision, err := requestOwnerRevision(req)
+	if err != nil {
+		return nil, err
+	}
+	versioned := revision != nil
 
 	// The owner must exist, with the UID the caller named, BEFORE anything is
 	// written. This is the provider-asserted equivalent of the workload path's
@@ -222,17 +275,23 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 	if s.owners == nil {
 		return nil, fmt.Errorf("identity service cannot verify owner objects")
 	}
-	found, uid, err := s.owners.Exists(ctx, clusterID, req.Owner)
+	observation, found, err := s.observeOwner(ctx, clusterID, req.Owner, versioned)
 	if err != nil {
 		return nil, fmt.Errorf("verifying owner object: %w", err)
 	}
 	if !found {
+		if versioned {
+			return nil, RevisionConflict{Code: CodeStaleOwner, Reason: "the owner object is no longer at the requested revision"}
+		}
 		return nil, Refusal{Code: CodeUnknownOwner, Reason: fmt.Sprintf("%s %q does not exist in this workspace", req.Owner.Kind, req.Owner.Name)}
 	}
 	owner := req.Owner
 	owner.ClusterID = clusterID
 	if owner.UID == "" {
-		owner.UID = uid
+		owner.UID = observation.UID
+	}
+	if versioned && !ownerRevisionMatches(revision, observation) {
+		return nil, RevisionConflict{Code: CodeStaleOwner, Reason: "the owner changed after the request rules were derived"}
 	}
 
 	rules, err := s.policy.Authorize(req.Owner.Provider, clusterID, req.Rules)
@@ -258,12 +317,12 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 		Rules:                rules,
 		TokenTTL:             serviceaccounts.ClampScopedIdentityTTL(time.Duration(req.TTLSeconds)*time.Second, DefaultProviderTTL),
 	}
-	record, err := s.upsertRecord(ctx, clusterID, owner, mode, subject, shape)
+	record, err := s.upsertRecord(ctx, clusterID, owner, mode, subject, shape, revision)
 	if err != nil {
 		return nil, err
 	}
 
-	token, err := s.materialize(ctx, record)
+	token, err := s.materializeForRevision(ctx, record, revision)
 	if err != nil {
 		s.markFailed(ctx, record, err)
 		return nil, err
@@ -276,21 +335,67 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 // reconciler, so a rule change reaches the workspace whether it arrived with a
 // request or on a resync.
 func (s *Service) materialize(ctx context.Context, record *tenancyv1alpha1.ScopedIdentity) (*Token, error) {
+	return s.materializeForRevision(ctx, record, nil)
+}
+
+func (s *Service) materializeForRevision(ctx context.Context, record *tenancyv1alpha1.ScopedIdentity, expected *OwnerRevision) (*Token, error) {
+	if record == nil || s == nil || s.records == nil {
+		return nil, fmt.Errorf("scoped identity record is required")
+	}
+	current, err := s.records.Get(ctx, record.Name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the identity record was removed before materialization"}
+		}
+		return nil, fmt.Errorf("reading current scoped identity record before materialization: %w", err)
+	}
+	if record.UID != "" && current.UID != record.UID {
+		return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the identity record was replaced before materialization"}
+	}
+	if current.Generation < record.Generation {
+		return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the identity record generation moved backwards"}
+	}
+	// A newer record snapshot is authoritative. Re-materializing that snapshot
+	// is safe; using the caller's older snapshot could restore revoked rules.
+	record = current
+	ownerRevision, versioned, err := recordOwnerRevision(record)
+	if err != nil {
+		return nil, err
+	}
+	if expected != nil && (!versioned || *ownerRevision != *expected) {
+		return nil, RevisionConflict{Code: CodeStaleOwner, Reason: "the identity record no longer matches the request owner revision"}
+	}
+	if versioned {
+		owner := Owner{
+			Provider: record.Spec.Owner.Provider, Kind: record.Spec.Owner.Kind,
+			Group: record.Spec.Owner.Group, Version: record.Spec.Owner.Version,
+			Resource: record.Spec.Owner.Resource, Name: record.Spec.Owner.Name,
+			UID: record.Spec.Owner.UID, ClusterID: record.Spec.ClusterID,
+		}
+		if err := s.verifyExpectedOwnerRevision(ctx, record.Spec.ClusterID, owner, ownerRevision); err != nil {
+			return nil, err
+		}
+	}
 	cs, err := s.clients(record.Spec.ClusterID)
 	if err != nil {
 		return nil, fmt.Errorf("reaching tenant workspace: %w", err)
 	}
 	issued, err := serviceaccounts.EnsureScopedIdentity(ctx, cs, Shape(record))
 	if err != nil {
+		var fenceConflict serviceaccounts.MaterializationFenceConflict
+		if errors.As(err, &fenceConflict) {
+			return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the tenant ClusterRole is fenced by a newer identity record"}
+		}
 		return nil, err
 	}
 	s.markReady(ctx, record, issued)
 	return &Token{
-		Token:          issued.Token,
-		TokenType:      "Bearer",
-		ExpiresAt:      issued.ExpiresAt.UTC(),
-		ServiceAccount: issued.ServiceAccountName,
-		Name:           record.Name,
+		Token:                 issued.Token,
+		TokenType:             "Bearer",
+		ExpiresAt:             issued.ExpiresAt.UTC(),
+		ServiceAccount:        issued.ServiceAccountName,
+		Name:                  record.Name,
+		OwnerRevisionVerified: versioned,
 	}, nil
 }
 
@@ -300,7 +405,7 @@ func (s *Service) materialize(ctx context.Context, record *tenancyv1alpha1.Scope
 // workspace — which is what lets garbage collection delete exactly the right
 // objects without knowing which attestation mode created them.
 func Shape(record *tenancyv1alpha1.ScopedIdentity) serviceaccounts.ScopedIdentityShape {
-	return serviceaccounts.ScopedIdentityShape{
+	shape := serviceaccounts.ScopedIdentityShape{
 		ServiceAccount: record.Spec.ServiceAccountName,
 		Labels: map[string]string{
 			tenancyv1alpha1.LabelScopedIdentityProvider: record.Spec.Owner.Provider,
@@ -311,6 +416,13 @@ func Shape(record *tenancyv1alpha1.ScopedIdentity) serviceaccounts.ScopedIdentit
 		Rules:                record.Spec.Rules,
 		TokenTTL:             time.Duration(record.Spec.TTLSeconds) * time.Second,
 	}
+	if record.UID != "" && record.Generation > 0 {
+		shape.MaterializationFence = &serviceaccounts.ScopedIdentityMaterializationFence{
+			RecordUID:        string(record.UID),
+			RecordGeneration: record.Generation,
+		}
+	}
+	return shape
 }
 
 // Annotations stamped on a provider-asserted identity's ServiceAccount. They
@@ -325,7 +437,7 @@ const (
 	AnnotationOwnerUID  = "railgrid.ai/scoped-identity-owner-uid"
 )
 
-func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owner, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string, shape serviceaccounts.ScopedIdentityShape) (*tenancyv1alpha1.ScopedIdentity, error) {
+func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owner, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string, shape serviceaccounts.ScopedIdentityShape, revision *OwnerRevision) (*tenancyv1alpha1.ScopedIdentity, error) {
 	name := RecordName(clusterID, shape.ServiceAccount)
 	spec := tenancyv1alpha1.ScopedIdentitySpec{
 		Owner: tenancyv1alpha1.ScopedIdentityOwner{
@@ -347,49 +459,78 @@ func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owne
 		tenancyv1alpha1.LabelScopedIdentityMode:     string(mode),
 	}
 
-	existing, err := s.records.Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		created, err := s.records.Create(ctx, &tenancyv1alpha1.ScopedIdentity{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
-			Spec:       spec,
-		}, metav1.CreateOptions{})
-		if err == nil {
-			return created, nil
+	for attempt := 0; attempt < maxIdentityRecordWriteAttempts; attempt++ {
+		existing, err := s.records.Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			if err := s.verifyExpectedOwnerRevision(ctx, clusterID, owner, revision); err != nil {
+				return nil, err
+			}
+			created, createErr := s.records.Create(ctx, &tenancyv1alpha1.ScopedIdentity{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels, Annotations: ownerRevisionAnnotations(revision)},
+				Spec:       spec,
+			}, metav1.CreateOptions{})
+			if createErr == nil {
+				return created, nil
+			}
+			if apierrors.IsAlreadyExists(createErr) || apierrors.IsConflict(createErr) {
+				continue
+			}
+			return nil, fmt.Errorf("recording scoped identity: %w", createErr)
 		}
-		if !apierrors.IsAlreadyExists(err) {
-			return nil, fmt.Errorf("recording scoped identity: %w", err)
-		}
-		existing, err = s.records.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("reading scoped identity record: %w", err)
 		}
-	} else if err != nil {
-		return nil, fmt.Errorf("reading scoped identity record: %w", err)
-	}
 
-	// The name is a hash, so a record under it that describes another tuple is
-	// a collision or tampering, not a stale copy. Refuse rather than rewrite.
-	if existing.Spec.Owner.Provider != owner.Provider || existing.Spec.Owner.Name != owner.Name ||
-		existing.Spec.Owner.Kind != owner.Kind || existing.Spec.ClusterID != clusterID ||
-		existing.Spec.ServiceAccountName != shape.ServiceAccount {
-		return nil, fmt.Errorf("scoped identity record %q belongs to another owner", name)
+		// The name is a hash, so a record under it that describes another tuple is
+		// a collision or tampering, not a stale copy. Refuse rather than rewrite.
+		if existing.Spec.Owner.Provider != owner.Provider || existing.Spec.Owner.Name != owner.Name ||
+			existing.Spec.Owner.Kind != owner.Kind || existing.Spec.ClusterID != clusterID ||
+			existing.Spec.ServiceAccountName != shape.ServiceAccount {
+			return nil, fmt.Errorf("scoped identity record %q belongs to another owner", name)
+		}
+
+		storedRevision, storedVersioned, err := recordOwnerRevision(existing)
+		if err != nil {
+			return nil, err
+		}
+		if storedVersioned && revision == nil {
+			return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "an unversioned request cannot replace a revision-fenced identity"}
+		}
+		if storedVersioned && revision != nil && revision.Generation < storedRevision.Generation {
+			return nil, RevisionConflict{Code: CodeStaleOwner, Reason: "the request owner generation is older than the stored identity"}
+		}
+
+		// Read the record first, then re-probe the owner immediately before the
+		// write. Any conflict below restarts both checks; request rules are never
+		// relabeled with an authority revision observed after they were derived.
+		if err := s.verifyExpectedOwnerRevision(ctx, clusterID, owner, revision); err != nil {
+			return nil, err
+		}
+		updated := existing.DeepCopy()
+		updated.Spec = spec
+		updated.Annotations = mergeOwnerRevisionAnnotations(updated.Annotations, revision)
+		if updated.Labels == nil {
+			updated.Labels = map[string]string{}
+		}
+		for key, value := range labels {
+			updated.Labels[key] = value
+		}
+		if specEqual(existing.Spec, spec) && ownerRevisionAnnotationsEqual(existing.Annotations, revision) {
+			return existing, nil
+		}
+		written, updateErr := s.records.Update(ctx, updated, metav1.UpdateOptions{})
+		if updateErr == nil {
+			return written, nil
+		}
+		if apierrors.IsConflict(updateErr) {
+			continue
+		}
+		return nil, fmt.Errorf("updating scoped identity record: %w", updateErr)
 	}
-	if specEqual(existing.Spec, spec) {
-		return existing, nil
+	if revision != nil {
+		return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "scoped identity record changed during every update attempt"}
 	}
-	updated := existing.DeepCopy()
-	updated.Spec = spec
-	if updated.Labels == nil {
-		updated.Labels = map[string]string{}
-	}
-	for key, value := range labels {
-		updated.Labels[key] = value
-	}
-	written, err := s.records.Update(ctx, updated, metav1.UpdateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("updating scoped identity record: %w", err)
-	}
-	return written, nil
+	return nil, fmt.Errorf("scoped identity record changed during every update attempt")
 }
 
 // Release deletes the identity for an owner: the record, and with it the

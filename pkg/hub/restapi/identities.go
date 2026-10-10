@@ -89,18 +89,21 @@ func (h *IdentityHandler) Register(router *mux.Router) {
 // "requester" field, because an identity is always for an object in the
 // requester's own API group.
 type identityRequest struct {
-	Owner      identity.Owner      `json:"owner"`
-	ClusterID  string              `json:"clusterID"`
-	Rules      []rbacv1.PolicyRule `json:"rules"`
-	TTLSeconds int64               `json:"ttlSeconds,omitempty"`
+	Owner                        identity.Owner      `json:"owner"`
+	ClusterID                    string              `json:"clusterID"`
+	Rules                        []rbacv1.PolicyRule `json:"rules"`
+	TTLSeconds                   int64               `json:"ttlSeconds,omitempty"`
+	ExpectedOwnerGeneration      int64               `json:"expectedOwnerGeneration,omitempty"`
+	ExpectedOwnerResourceVersion string              `json:"expectedOwnerResourceVersion,omitempty"`
 }
 
 type identityResponse struct {
-	Token          string    `json:"token"`
-	TokenType      string    `json:"tokenType"`
-	ExpiresAt      time.Time `json:"expiresAt"`
-	ServiceAccount string    `json:"serviceAccount"`
-	Name           string    `json:"name"`
+	Token                 string    `json:"token"`
+	TokenType             string    `json:"tokenType"`
+	ExpiresAt             time.Time `json:"expiresAt"`
+	ServiceAccount        string    `json:"serviceAccount"`
+	Name                  string    `json:"name"`
+	OwnerRevisionVerified bool      `json:"ownerRevisionVerified,omitempty"`
 }
 
 type identityListItem struct {
@@ -139,13 +142,27 @@ func (h *IdentityHandler) create(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.service.Ensure(r.Context(), identity.Request{
 		Owner: req.Owner, ClusterID: req.ClusterID, Rules: req.Rules, TTLSeconds: req.TTLSeconds,
+		ExpectedOwnerGeneration: req.ExpectedOwnerGeneration, ExpectedOwnerResourceVersion: req.ExpectedOwnerResourceVersion,
 	}, tenancyv1alpha1.ScopedIdentityAttestationProvider, subject)
 	if err != nil {
 		// A policy refusal is the caller's problem and names the offending
 		// rule; anything else is the hub's and says nothing about tenant state.
 		var refusal identity.Refusal
 		if errors.As(err, &refusal) {
-			writeIdentityError(w, http.StatusForbidden, refusal.Code, refusal.Reason)
+			status := http.StatusForbidden
+			if refusal.Code == identity.CodeInvalidRequest {
+				status = http.StatusBadRequest
+			}
+			writeIdentityError(w, status, refusal.Code, refusal.Reason)
+			return
+		}
+		var revisionConflict identity.RevisionConflict
+		if errors.As(err, &revisionConflict) {
+			message := "the identity request used an outdated owner snapshot"
+			if revisionConflict.Code == identity.CodeVersionConflict {
+				message = "the identity changed during reconciliation; retry from a fresh owner snapshot"
+			}
+			writeIdentityError(w, http.StatusConflict, revisionConflict.Code, message)
 			return
 		}
 		h.log.Error(err, "minting scoped identity", "provider", provider, "kind", req.Owner.Kind, "owner", req.Owner.Name)
@@ -154,7 +171,7 @@ func (h *IdentityHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	writeIdentityJSON(w, http.StatusOK, identityResponse{
 		Token: token.Token, TokenType: token.TokenType, ExpiresAt: token.ExpiresAt.UTC(),
-		ServiceAccount: token.ServiceAccount, Name: token.Name,
+		ServiceAccount: token.ServiceAccount, Name: token.Name, OwnerRevisionVerified: token.OwnerRevisionVerified,
 	})
 }
 

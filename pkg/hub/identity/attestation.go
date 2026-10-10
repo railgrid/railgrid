@@ -93,31 +93,47 @@ func NewOwnerProbeForClient(client dynamic.Interface) *DynamicOwnerProbe {
 // consumer this service has (Agent, the edge kinds, Project, the factory
 // binding), which is also what makes a single dynamic Get enough.
 func (p *DynamicOwnerProbe) Exists(ctx context.Context, clusterID string, owner Owner) (bool, string, error) {
+	found, observation, err := p.Observe(ctx, clusterID, owner)
+	return found, observation.UID, err
+}
+
+// Observe implements OwnerRevisionProbe. In addition to the owner UID it
+// returns the generation and opaque resourceVersion from the same GET, so a
+// versioned identity request is bound to the exact object snapshot its rules
+// were derived from.
+func (p *DynamicOwnerProbe) Observe(ctx context.Context, clusterID string, owner Owner) (bool, OwnerObservation, error) {
 	if p == nil || p.clients == nil {
-		return false, "", fmt.Errorf("owner probe is unavailable")
+		return false, OwnerObservation{}, fmt.Errorf("owner probe is unavailable")
 	}
 	dyn, err := p.clients(clusterID)
 	if err != nil {
-		return false, "", err
+		return false, OwnerObservation{}, err
 	}
 	gvr := schema.GroupVersionResource{Group: owner.Group, Version: owner.Version, Resource: owner.Resource}
 	object, err := dyn.Resource(gvr).Get(ctx, owner.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return false, "", nil
+		return false, OwnerObservation{}, nil
 	}
 	if err != nil {
-		return false, "", err
+		return false, OwnerObservation{}, err
 	}
-	uid := string(object.GetUID())
+	observation := OwnerObservation{
+		UID:             string(object.GetUID()),
+		Generation:      object.GetGeneration(),
+		ResourceVersion: object.GetResourceVersion(),
+	}
+	if deleting := object.GetDeletionTimestamp(); deleting != nil && !deleting.IsZero() {
+		return false, observation, nil
+	}
 	// A caller that names a UID must name the live one. Without this an
 	// identity minted for a deleted Agent would be handed straight back when
 	// an Agent of the same name is recreated — which is exactly the
 	// "recreated owner inherits the old credential" hole the deterministic
 	// name closes on the minting side.
-	if owner.UID != "" && owner.UID != uid {
-		return false, uid, nil
+	if owner.UID != "" && owner.UID != observation.UID {
+		return false, observation, nil
 	}
-	return true, uid, nil
+	return true, observation, nil
 }
 
 // APIBindingChecker answers whether a provider's APIExport is bound in a

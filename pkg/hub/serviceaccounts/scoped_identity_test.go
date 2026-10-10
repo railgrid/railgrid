@@ -18,12 +18,16 @@ package serviceaccounts
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clienttesting "k8s.io/client-go/testing"
 )
 
@@ -55,6 +59,144 @@ func TestClampScopedIdentityTTLNeverAdmitsAnUnmintableLifetime(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClampScopedIdentityTTL(tc.requested, tc.defaultTTL); got != tc.want {
 				t.Fatalf("ClampScopedIdentityTTL(%s, %s) = %s, want %s", tc.requested, tc.defaultTTL, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScopedIdentityClusterRoleRejectsOlderRecordGeneration(t *testing.T) {
+	_, cs := managerFor(t)
+	defer resetTestClientset()
+	cs.PrependReactor("create", "serviceaccounts/token", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		request := action.(clienttesting.CreateAction).GetObject().(*authnv1.TokenRequest)
+		return true, &authnv1.TokenRequest{Status: authnv1.TokenRequestStatus{
+			Token: "scoped-token", ExpirationTimestamp: metav1.NewTime(time.Now().Add(time.Duration(*request.Spec.ExpirationSeconds) * time.Second)),
+		}}, nil
+	})
+
+	ctx := context.Background()
+	base := ScopedIdentityShape{
+		ServiceAccount:       "railgrid-si-fenced",
+		Rules:                []rbacv1.PolicyRule{{APIGroups: []string{"infrastructure.railgrid.ai"}, Resources: []string{"instances"}, Verbs: []string{"get"}, ResourceNames: []string{"instance-1"}}},
+		MaterializationFence: &ScopedIdentityMaterializationFence{RecordUID: "record-uid", RecordGeneration: 4},
+	}
+	if _, err := EnsureScopedIdentity(ctx, cs, base); err != nil {
+		t.Fatalf("materialize generation 4: %v", err)
+	}
+
+	stale := base
+	stale.Rules = nil
+	stale.MaterializationFence = &ScopedIdentityMaterializationFence{RecordUID: "record-uid", RecordGeneration: 3}
+	if _, err := EnsureScopedIdentity(ctx, cs, stale); err == nil {
+		t.Fatal("older record generation changed the ClusterRole")
+	} else {
+		var conflict MaterializationFenceConflict
+		if !errors.As(err, &conflict) {
+			t.Fatalf("error = %v, want MaterializationFenceConflict", err)
+		}
+	}
+
+	roleName := WorkloadIdentityRoleName(base.ServiceAccount)
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, roleName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ClusterRole: %v", err)
+	}
+	if len(role.Rules) != 1 || role.Rules[0].ResourceNames[0] != "instance-1" {
+		t.Fatalf("stale materialization changed rules: %#v", role.Rules)
+	}
+	if role.Annotations[annotationMaterializationRecordUID] != "record-uid" || role.Annotations[annotationMaterializationRecordGeneration] != "4" {
+		t.Fatalf("materialization fence = %#v, want record UID and generation 4", role.Annotations)
+	}
+
+	legacy := base
+	legacy.Rules = nil
+	legacy.MaterializationFence = nil
+	if _, err := EnsureScopedIdentity(ctx, cs, legacy); err == nil {
+		t.Fatal("unfenced materialization changed a fenced ClusterRole")
+	} else {
+		var conflict MaterializationFenceConflict
+		if !errors.As(err, &conflict) {
+			t.Fatalf("unfenced error = %v, want MaterializationFenceConflict", err)
+		}
+	}
+}
+
+func TestScopedIdentityClusterRoleFenceRechecksAfterResourceVersionConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		candidateGen  int64
+		concurrentGen int64
+		wantConflict  bool
+	}{
+		{name: "older writer is rejected after newer writer wins", candidateGen: 1, concurrentGen: 2, wantConflict: true},
+		{name: "newer writer retries after unrelated conflict", candidateGen: 2, concurrentGen: 1, wantConflict: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roleName := "railgrid-si-fence-cas"
+			uid := "record-uid"
+			oldRules := []rbacv1.PolicyRule{{APIGroups: []string{"infrastructure.railgrid.ai"}, Resources: []string{"instances"}, Verbs: []string{"get"}, ResourceNames: []string{"old-instance"}}}
+			candidateRules := []rbacv1.PolicyRule{{APIGroups: []string{"infrastructure.railgrid.ai"}, Resources: []string{"instances"}, Verbs: []string{"get"}, ResourceNames: []string{"new-instance"}}}
+			initial := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+				Name: roleName,
+				Annotations: map[string]string{
+					annotationMaterializationRecordUID:        uid,
+					annotationMaterializationRecordGeneration: "1",
+				},
+			}, Rules: oldRules}
+			_, cs := managerFor(t, initial)
+			defer resetTestClientset()
+
+			groupResource := schema.GroupResource{Group: rbacv1.GroupName, Resource: "clusterroles"}
+			gvr := schema.GroupVersionResource{Group: rbacv1.GroupName, Version: "v1", Resource: "clusterroles"}
+			concurrentUpdates := 0
+			cs.PrependReactor("update", "clusterroles", func(clientAction clienttesting.Action) (bool, runtime.Object, error) {
+				concurrentUpdates++
+				if concurrentUpdates > 1 {
+					return false, nil, nil
+				}
+				stored, err := cs.Tracker().Get(gvr, "", roleName)
+				if err != nil {
+					return true, nil, err
+				}
+				current := stored.(*rbacv1.ClusterRole).DeepCopy()
+				if tc.concurrentGen > tc.candidateGen {
+					current.Rules = []rbacv1.PolicyRule{{APIGroups: []string{"infrastructure.railgrid.ai"}, Resources: []string{"instances"}, Verbs: []string{"get"}, ResourceNames: []string{"newer-writer-instance"}}}
+					current.Annotations[annotationMaterializationRecordGeneration] = "2"
+				} else {
+					current.Annotations["example.test/concurrent-metadata"] = "updated"
+				}
+				if err := cs.Tracker().Update(gvr, current, ""); err != nil {
+					return true, nil, err
+				}
+				return true, nil, apierrors.NewConflict(groupResource, roleName, errors.New("simulated concurrent write"))
+			})
+
+			shape := ScopedIdentityShape{
+				Rules: candidateRules,
+				MaterializationFence: &ScopedIdentityMaterializationFence{
+					RecordUID: uid, RecordGeneration: tc.candidateGen,
+				},
+			}
+			err := ensureScopedClusterRole(context.Background(), cs, roleName, shape)
+			if tc.wantConflict {
+				var conflict MaterializationFenceConflict
+				if !errors.As(err, &conflict) {
+					t.Fatalf("ensure error = %v, want materialization fence conflict", err)
+				}
+			} else if err != nil {
+				t.Fatalf("newer writer did not recover from unrelated conflict: %v", err)
+			}
+
+			role, err := cs.RbacV1().ClusterRoles().Get(context.Background(), roleName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get final ClusterRole: %v", err)
+			}
+			if tc.wantConflict {
+				if role.Annotations[annotationMaterializationRecordGeneration] != "2" || len(role.Rules) != 1 || role.Rules[0].ResourceNames[0] != "newer-writer-instance" {
+					t.Fatalf("newer concurrent role was overwritten: annotations=%#v rules=%#v", role.Annotations, role.Rules)
+				}
+			} else if role.Annotations[annotationMaterializationRecordGeneration] != "2" || len(role.Rules) != 1 || role.Rules[0].ResourceNames[0] != "new-instance" {
+				t.Fatalf("newer retry did not apply candidate role: annotations=%#v rules=%#v", role.Annotations, role.Rules)
 			}
 		})
 	}

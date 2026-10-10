@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -83,6 +84,38 @@ type ScopedIdentityShape struct {
 	// TokenTTL is the requested token lifetime, clamped to
 	// [ScopedIdentityMinTokenTTL, ScopedIdentityMaxTokenTTL].
 	TokenTTL time.Duration
+	// MaterializationFence is set for identities backed by a central
+	// ScopedIdentity record. It makes the tenant ClusterRole's rule update
+	// monotonic across hub replicas and stale reconciler snapshots.
+	MaterializationFence *ScopedIdentityMaterializationFence
+}
+
+// ScopedIdentityMaterializationFence identifies the current central record
+// incarnation and spec generation. RecordGeneration is monotonic when the
+// permission set changes; RecordUID prevents an old incarnation from being
+// mistaken for a new record with a reset generation.
+type ScopedIdentityMaterializationFence struct {
+	RecordUID        string
+	RecordGeneration int64
+}
+
+const (
+	annotationMaterializationRecordUID        = "railgrid.ai/scoped-identity-record-uid"
+	annotationMaterializationRecordGeneration = "railgrid.ai/scoped-identity-record-generation"
+	maxRoleFenceWriteAttempts                 = 5
+)
+
+// MaterializationFenceConflict is returned when the existing ClusterRole is
+// already fenced by a newer record generation or another record incarnation.
+type MaterializationFenceConflict struct {
+	Reason string
+}
+
+func (e MaterializationFenceConflict) Error() string {
+	if e.Reason == "" {
+		return "scoped identity materialization fence rejected the write"
+	}
+	return "scoped identity materialization fence rejected the write: " + e.Reason
 }
 
 // ScopedIdentityToken is a freshly minted, audience-bound capability. The
@@ -307,46 +340,121 @@ func ensureScopedClusterRole(ctx context.Context, cs kubernetes.Interface, roleN
 		wantRules = []rbacv1.PolicyRule{}
 	}
 	roles := cs.RbacV1().ClusterRoles()
-	role, err := roles.Get(ctx, roleName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = roles.Create(ctx, &rbacv1.ClusterRole{
-			ObjectMeta: metav1.ObjectMeta{Name: roleName, Labels: labels},
-			Rules:      wantRules,
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
+	for attempt := 0; attempt < maxRoleFenceWriteAttempts; attempt++ {
+		role, err := roles.Get(ctx, roleName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			annotations, err := materializationFenceAnnotations(shape.MaterializationFence)
+			if err != nil {
+				return err
+			}
+			_, err = roles.Create(ctx, &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: roleName, Labels: labels, Annotations: annotations},
+				Rules:      wantRules,
+			}, metav1.CreateOptions{})
+			if err == nil {
+				return nil
+			}
+			if apierrors.IsAlreadyExists(err) || shape.MaterializationFence != nil && apierrors.IsConflict(err) {
+				continue
+			}
 			return fmt.Errorf("creating scoped identity ClusterRole: %w", err)
 		}
-		if err == nil {
-			return nil
+		if err != nil {
+			return fmt.Errorf("getting scoped identity ClusterRole: %w", err)
 		}
-		role, err = roles.Get(ctx, roleName, metav1.GetOptions{})
-	}
-	if err != nil {
-		return fmt.Errorf("getting scoped identity ClusterRole: %w", err)
-	}
-	// Rules ARE reconciled, unlike the provider-side EnsureIdentity this
-	// replaces: a revoked grant has to shrink the role, or revocation would
-	// only ever mean "delete the whole identity".
-	updated := role.DeepCopy()
-	changed := false
-	if !reflect.DeepEqual(updated.Rules, wantRules) {
-		updated.Rules = wantRules
-		changed = true
-	}
-	if updated.Labels == nil {
-		updated.Labels = map[string]string{}
-	}
-	for key, value := range labels {
-		if updated.Labels[key] != value {
-			updated.Labels[key] = value
+		if err := checkMaterializationFence(role.Annotations, shape.MaterializationFence); err != nil {
+			return err
+		}
+
+		// Rules ARE reconciled, unlike the provider-side EnsureIdentity this
+		// replaces: a revoked grant has to shrink the role. The fence annotations
+		// are updated in the same ResourceVersion-checked write as the rules.
+		updated := role.DeepCopy()
+		changed := false
+		if !reflect.DeepEqual(updated.Rules, wantRules) {
+			updated.Rules = wantRules
 			changed = true
 		}
+		if updated.Labels == nil {
+			updated.Labels = map[string]string{}
+		}
+		for key, value := range labels {
+			if updated.Labels[key] != value {
+				updated.Labels[key] = value
+				changed = true
+			}
+		}
+		annotations, err := materializationFenceAnnotations(shape.MaterializationFence)
+		if err != nil {
+			return err
+		}
+		if len(annotations) > 0 {
+			if updated.Annotations == nil {
+				updated.Annotations = map[string]string{}
+			}
+			for key, value := range annotations {
+				if updated.Annotations[key] != value {
+					updated.Annotations[key] = value
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return nil
+		}
+		if _, err := roles.Update(ctx, updated, metav1.UpdateOptions{}); err == nil {
+			return nil
+		} else if shape.MaterializationFence != nil && apierrors.IsConflict(err) {
+			// Re-read the annotation and rules after a lost CAS. A newer record
+			// either wins on the next comparison or this snapshot can be applied.
+			continue
+		} else {
+			return fmt.Errorf("reconciling scoped identity ClusterRole: %w", err)
+		}
 	}
-	if !changed {
-		return nil
+	if shape.MaterializationFence != nil {
+		return MaterializationFenceConflict{Reason: "the ClusterRole changed during every fenced update attempt"}
 	}
-	if _, err := roles.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("reconciling scoped identity ClusterRole: %w", err)
+	return fmt.Errorf("reconciling scoped identity ClusterRole: update conflict")
+}
+
+func materializationFenceAnnotations(fence *ScopedIdentityMaterializationFence) (map[string]string, error) {
+	if fence == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(fence.RecordUID) == "" || fence.RecordGeneration < 1 {
+		return nil, MaterializationFenceConflict{Reason: "record UID and positive generation are required"}
+	}
+	return map[string]string{
+		annotationMaterializationRecordUID:        fence.RecordUID,
+		annotationMaterializationRecordGeneration: strconv.FormatInt(fence.RecordGeneration, 10),
+	}, nil
+}
+
+func checkMaterializationFence(annotations map[string]string, fence *ScopedIdentityMaterializationFence) error {
+	storedUID, hasUID := annotations[annotationMaterializationRecordUID]
+	storedGeneration, hasGeneration := annotations[annotationMaterializationRecordGeneration]
+	if !hasUID && !hasGeneration {
+		if fence == nil {
+			return nil
+		}
+		return nil // upgrading a legacy unfenced role is safe
+	}
+	if !hasUID || !hasGeneration {
+		return MaterializationFenceConflict{Reason: "the existing ClusterRole fence is incomplete"}
+	}
+	parsedGeneration, err := strconv.ParseInt(storedGeneration, 10, 64)
+	if err != nil || parsedGeneration < 1 {
+		return MaterializationFenceConflict{Reason: "the existing ClusterRole fence is invalid"}
+	}
+	if fence == nil {
+		return MaterializationFenceConflict{Reason: "an unfenced writer cannot change a fenced ClusterRole"}
+	}
+	if fence.RecordUID != storedUID {
+		return MaterializationFenceConflict{Reason: "the ClusterRole belongs to another identity record incarnation"}
+	}
+	if fence.RecordGeneration < parsedGeneration {
+		return MaterializationFenceConflict{Reason: "the requested record generation is older than the ClusterRole"}
 	}
 	return nil
 }
