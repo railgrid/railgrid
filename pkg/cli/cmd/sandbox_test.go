@@ -370,7 +370,7 @@ func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 			instance: func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "labels": map[string]any{"app-studio.railgrid.ai/project": "shop"}}})
 			},
-			want:    "run 'railgrid app sync shop' first",
+			want:    "run 'railgrid app sync shop' (or 'railgrid app sync shop --from <dir>') first",
 			notWant: "run 'railgrid sandbox sync",
 		},
 		{
@@ -378,7 +378,7 @@ func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 			instance: func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(w, map[string]any{"metadata": map[string]any{"name": "shop-dev", "ownerReferences": []map[string]any{{"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project", "name": "shop"}}}})
 			},
-			want: "run 'railgrid app sync shop' first",
+			want: "run 'railgrid app sync shop' (or 'railgrid app sync shop --from <dir>') first",
 		},
 		{
 			name: "unreadable instance, App Studio project of the prefix exists",
@@ -388,7 +388,7 @@ func TestSandboxExecHintForAppStudioInstance(t *testing.T) {
 			project: func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(w, map[string]any{"name": "shop"})
 			},
-			want: "run 'railgrid app sync shop' first",
+			want: "run 'railgrid app sync shop' (or 'railgrid app sync shop --from <dir>') first",
 		},
 		{
 			name: "plain instance",

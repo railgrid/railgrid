@@ -359,7 +359,7 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 	// A non-2xx answer still carries an envelope; the typed code in it says
 	// more than the status, so it is preferred when present.
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return fmt.Errorf("%s: HTTP %d with a malformed response", action, resp.StatusCode)
+		return &StatusError{Action: action, Status: resp.StatusCode, Malformed: true}
 	}
 	if envelope.Error != nil && envelope.Error.Code != "" {
 		if message := strings.TrimSpace(envelope.Error.Message); message != "" && message != strings.ReplaceAll(envelope.Error.Code, "_", " ") {
@@ -370,7 +370,7 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 		return fmt.Errorf("%s: %s", action, envelope.Error.Code)
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%s: HTTP %d", action, resp.StatusCode)
+		return &StatusError{Action: action, Status: resp.StatusCode}
 	}
 	if len(envelope.Result) == 0 {
 		return fmt.Errorf("%s: response carried no result", action)
@@ -379,4 +379,22 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	return nil
+}
+
+// StatusError is a non-2xx answer from the code provider that carried no
+// typed error code: the HTTP status is all there is to go on. It is a type
+// so a handler can map the status instead of pattern-matching the text —
+// a 403 here is the provider refusing App Studio's own call (a permission
+// claim on the binding), which deserves a different answer than a crash.
+type StatusError struct {
+	Action    string
+	Status    int
+	Malformed bool
+}
+
+func (e *StatusError) Error() string {
+	if e.Malformed {
+		return fmt.Sprintf("%s: HTTP %d with a malformed response", e.Action, e.Status)
+	}
+	return fmt.Sprintf("%s: HTTP %d", e.Action, e.Status)
 }

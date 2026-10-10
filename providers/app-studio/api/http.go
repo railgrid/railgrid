@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
+	"github.com/railgrid/provider-app-studio/internal/codecommit"
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
@@ -391,12 +392,17 @@ func writeError(w http.ResponseWriter, err error) {
 // workspace's binding has not accepted yet — the symptom after a provider
 // upgrade that added a claim. Telling the user "forbidden" alone sends them
 // to their own RBAC; the fix is on the binding.
+// codeProviderClaimHint explains a 403 from the code provider on a call App
+// Studio makes as itself (checkout, commit, packages): the verb's permission
+// claim is missing from this workspace's App Studio binding.
+const codeProviderClaimHint = " (the code provider refused App Studio's call: the claim for that verb is not accepted on this workspace's App Studio binding; a workspace admin re-enables App Studio from the Providers page and accepts its access, or an operator re-accepts provider claims)"
+
 func providerClaimHint(err error) string {
 	if err == nil {
 		return ""
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "system:serviceaccount:") || !(strings.Contains(msg, "forbidden") || strings.Contains(msg, "cannot ")) {
+	if !strings.Contains(msg, "system:serviceaccount:") || (!strings.Contains(msg, "forbidden") && !strings.Contains(msg, "cannot ")) {
 		return ""
 	}
 	return " (App Studio's permission claim on that resource is not accepted on this workspace's binding; a workspace admin re-enables App Studio from the Providers page and accepts its access, or an operator re-accepts provider claims)"
@@ -411,9 +417,16 @@ func providerClaimHint(err error) string {
 // page, which hides the reason entirely.
 func writeUpstreamError(w http.ResponseWriter, err error) {
 	var validationErr *ValidationError
+	var codeErr *codecommit.StatusError
 	switch {
 	case errors.As(err, &validationErr):
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+	case errors.As(err, &codeErr) && codeErr.Status == http.StatusForbidden:
+		// The code provider refused App Studio's own call. There is no kube
+		// Status in that body, so the claim hint is keyed on the status.
+		writeStatus(w, http.StatusForbidden, "Forbidden", err.Error()+codeProviderClaimHint)
+	case errors.As(err, &codeErr) && codeErr.Status == http.StatusNotFound:
+		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 	case apierrors.IsForbidden(err):
 		writeStatus(w, http.StatusForbidden, "Forbidden", err.Error()+providerClaimHint(err))
 	case apierrors.IsNotFound(err):

@@ -104,7 +104,9 @@ call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
    the `ai.railgrid.ai/delete-repository: "true"` annotation, which deletes
    the GitHub repo with it), deleting a code `Repository` (deletes the GitHub
    repo), `delete_instance`, `delete_agent`, `edge delete`, `pods_delete`,
-   service calls that move physical things.
+   service calls that move physical things. Creating an agent, a schedule
+   or a trigger is not destructive but it starts unattended work on the
+   user's budget (and, harness-backed, on their machine): ask first.
 9. **An App Studio project is created by App Studio, in one call.** Never
    hand-assemble one from a `Repository` + `Instance`; adopt existing repos
    with `existingRepositoryRef`.
@@ -301,6 +303,15 @@ the **dev sandbox** is Node only. A tree without `package.json` makes the
 404 unless there is an `index.html`, `railgrid sandbox status` still says
 `Running: true, reachable=true`) and `railgrid app sync` answers 502.
 
+- A non-Node production tree (Go, Python, …) on `simple-webapp` needs the
+  scaffold's workflow edited too: its smoke job runs `npm install && npm run
+  build && npm start`, so without a `package.json` it fails and the image job
+  is skipped (`code__build_status`: smoke `failure`, build `skipped`). Replace
+  the smoke step with the language's own build and probe; Railpack then
+  detects the language (a Go module with an embedded UI built and pushed in
+  ~10 min, measured). The sandbox stays Node-only: with no `package.json` it
+  serves the tree with `npx vite`, so the Dev URL shows nothing useful and
+  `railgrid sandbox exec` has nothing to run. Test such a project locally.
 - A `worker` project has no scaffold and no build components: `railgrid app status`
   shows `build=unsupported`, it can never be promoted, and its dev instance
   gets no `connections` (App Studio exposes no route to set dev values). For
@@ -431,8 +442,17 @@ has the change before testing it
 (`railgrid sandbox exec <p>-dev <c> -- grep -c <new string> <file>`). When
 `railgrid app sync` fails on `hydrate-workspace`, read the message: a current
 hub answers 403/404/500 with the cause (a Forbidden names the permission claim
-to re-accept), an older one answers an instant 502 (section 8); `--from`
-works either way. Hydrate only writes files: paths a commit
+to re-accept; App Studio v0.2.16 still wrapped a refused checkout as
+`HTTP 500: UpstreamError: checkout repository: checkout: HTTP 403`, which
+means the same), an older one answers an instant 502 (section 8); `--from`
+works either way. `--from` calls `infrastructure__dev_sync` with your own
+login, like `railgrid mcp call`; a CLI before v0.2.15 sent it with the
+workspace MCP token, which a hub can refuse with `cannot create resource
+"instances/sync" … "system:serviceaccount:default:default-mcp"` — on such a
+CLI run `railgrid mcp call infrastructure__dev_sync --args-file f.json`
+instead (route C). With `application`, `dev_sync` routes each path to the
+component whose `workspacePath` prefixes it (`api/…`, `web/…`); root files
+are accepted and go nowhere. Hydrate only writes files: paths a commit
 **deleted** stay in the workspace and the sandbox until you
 `DELETE $AS/projects/<p>/files-content?path=<path>` (check
 `GET $AS/projects/<p>/files` after a commit that removes files that could
@@ -518,17 +538,30 @@ fc -N "$AS/sessions/t1/events" > events.log   # SSE; ends after turn.completed /
   `git pull --rebase` your clone before the next `railgrid commit`. Until
   then, don't run `railgrid app sync`: its hydrate step writes the
   repository's older files over your uploads.
-- *App Studio's own git calls fail while `code` is Ready*: `hydrate-workspace`,
-  `promotion` and `promote` answer an **instant** 502 from the hub's front
-  door (a generic bad-gateway page, 0.2 s), `railgrid commit`, `code__checkout_repository`
-  and CI all work, and `GET $AS/projects/<p>/checkpoints` names the cause
-  (seen 2026-10-10: `production: blocked — list published packages:
-  packages.code.railgrid.ai is forbidden: User "system:serviceaccount:default:provider" …`,
-  a hub RBAC gap). Keep committing with `railgrid commit` (recorded,
-  promotable once the hub is fixed), put the files into the sandbox with
-  `infrastructure__dev_sync` (route C; it touches neither the workspace
-  store nor git, so no duplicate commit), and share the Dev URL with the
-  `preview` verb (4.6). Promotion needs the operator.
+- *App Studio's own git calls fail while `code` is Ready*: `hydrate-workspace`
+  answers `HTTP 500: UpstreamError: checkout repository: checkout: HTTP 403`
+  (App Studio v0.2.16; newer: a 403 naming the claim; older: an **instant**
+  502 bad-gateway page, 0.2 s), `promotion` 403, `railgrid commit`,
+  `code__checkout_repository` and CI all work, and `railgrid app checkpoints <p>`
+  names the cause (`list published packages: packages.code.railgrid.ai is
+  forbidden: User "system:serviceaccount:default:provider" …`). It is the
+  workspace's App Studio binding missing permission claims the provider added
+  after it was enabled: compare
+  `kubectl get apibinding app-studio -o jsonpath='{.spec.permissionClaims[*].resource}'`
+  with the catalog's `requires` (`packages` and `repositories/checkout` were
+  the missing ones, seen 2026-10-10). The fix is the enable call of section 2
+  with **every** claim, hub-access entry and composition the catalog
+  declares (the hub rewrites the binding's claim set in place; an omitted
+  entry is recorded as rejected) — a workspace-admin action, so ask before
+  sending it. Until then keep committing with `railgrid commit` (recorded,
+  promotable once the claims are in), put files into the sandbox with
+  `railgrid app sync <p> --from <dir>` (route C; it touches neither the
+  workspace store nor git, so no duplicate commit), and share the Dev URL with
+  `railgrid app preview <p> --mode public`. `railgrid app files ls <p>` shows
+  the workspace store, which keeps the scaffold-era content while hydrate is
+  down: don't force `sync-development` from it over a sandbox you fed with
+  `--from`. `railgrid app files put` still works (the reconciler committed a
+  binary in ~45 s, measured).
 
 **C. Files and binary assets.** Upload in the Code tab (button
 or drag-and-drop), attach any file ≤ 25 MiB in chat (the assistant places it
@@ -694,7 +727,11 @@ request, not your token.
   ```
 
   The token needs your own login and lasts ≤ 15 min: jobs and agents can't
-  get one (section 5, "Machine callers").
+  get one (section 5, "Machine callers"). A raw hub bearer answers 401, an
+  anonymous request 302; bodies of a few MB pass the gate unchanged (a 3 MB
+  binary round-tripped, measured). **The gate forwards no identity** — the
+  app sees no `X-Forwarded-User`/`-Email` header — so a private app cannot
+  tell members apart; the gate decides *who*, the app only *what*.
 
 ### 4.7 Delete
 
@@ -775,15 +812,22 @@ the Instance: it is the same object.
   `DATABASE_URL`. A job that must share an `application`'s database then has
   no clean route: run it inside the app's api (for example an in-process
   scheduler) instead of a `cron-job`.
-- **Live sandbox, no git loop:** set `railgridMode: development` (no image), wait
-  ~1 min for Ready, then `railgrid sandbox sync <inst> app ./dir`,
-  `railgrid sandbox exec`, `railgrid sandbox logs` (or `infrastructure__dev_sync`,
-  `dev_exec`, `dev_logs`; `dev_sync` adds files, `railgrid sandbox sync`
-  replaces the whole file set). `simple-webapp`'s dev start runs
+- **Live sandbox, no git loop:** set `spec.values.railgridMode: development`
+  (a template value, not a spec field: `spec.railgridMode` is rejected as an
+  unknown field; no image needed), wait ~10 s–1 min for Ready, then
+  `railgrid sandbox sync <inst> <component> ./dir`, `railgrid sandbox exec`,
+  `railgrid sandbox logs` (or `infrastructure__dev_sync`, `dev_exec`,
+  `dev_logs`; `dev_sync` adds files, `railgrid sandbox sync` replaces the whole
+  file set and restarts the process). `simple-webapp`'s dev start runs
   `npm run dev -- --host 0.0.0.0 --port $PORT --config …`; a non-Vite `dev`
-  script receives those flags, so ignore them and read `process.env.PORT`, and
-  `railgrid sandbox restart` after each source sync (only Vite hot-reloads).
-  `access: public` is honored in development mode too.
+  script receives those flags, so ignore them and read `process.env.PORT`;
+  `node --watch server.mjs` reloads on its own, anything else needs
+  `railgrid sandbox restart` after a `dev_sync`. `access: public` and
+  `access: private` are honored in development mode too. The same works for
+  a `worker` (component `worker`, start `npm run dev || npm start`): a
+  `package.json` plus the script, synced from a directory holding only
+  those two files (never a `node_modules`), gave a Redis-stream consumer
+  wired through `connections` within a minute, measured.
 - **Wiring a live dev-mode instance to a database or cache:** provision the
   `database`/`redis-cache` instances, then
   `kubectl patch instance <i> --type merge -p '{"spec":{"values":{"connections":{"database":"<db>","cache":"<cache>"}}}}'`.
@@ -807,6 +851,14 @@ the Instance: it is the same object.
   (top-level `await`, end with `process.exit(code)`; the script is
   world-readable like any `env` value either way). Its `connections` inject
   into every run.
+- **A pure-SQL job**: a stock `postgres:16-alpine` image, `command: ["sh",
+  "-c", "printf '%s' \"$JOB_SQL\" | psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -q"]`
+  and the SQL in `env.JOB_SQL` (world-readable, so no secrets in it) with
+  `connections.database` set: an idempotent rollup (`insert … on conflict do
+  update`) that also inserts a row into a `runs` table ran on every
+  2-minute boundary of `*/2 * * * *` and the app's `/api/stats` showed each
+  run, measured. The tables must exist before the first run (the app
+  creates them on boot); a run before that fails and the next one succeeds.
 - **A cron-job's runs can't be observed**: no last-run time, exit code or
   logs anywhere (`railgrid sandbox logs` is dev-mode only; the Instance
   status only carries `schedule` and `state: ACTIVE`). Test the same image
@@ -863,8 +915,12 @@ min). A `cron-job`, `worker` or hosted agent can't pass it. What works:
   gate: `http://<status.apiServiceRef.name>:<apiPort>` (`apiPort` is the
   template input in `spec.values`, default 8080; there is no status field; e.g.
   `http://shop-prod-api:8080`) or `…webServiceRef…` on `application`,
-  `http://<status.appServiceRef.name>:<port>` on `simple-webapp`. Protect such
-  routes in the app itself, e.g. a shared-secret header.
+  `http://<status.appServiceRef.name>:<port>` on `simple-webapp` (the Service
+  is named like the instance, e.g. `tx-pulse-dev`, not `<name>-app`). Two dev
+  instances talk this way too: an `application` project's api posting a
+  webhook to a `simple-webapp` project's ingest route answered 202 in the
+  receiver's log, measured. Protect such routes in the app itself, e.g. a
+  shared-secret header, and shape the payload for the receiver.
 - **Hosted agents and anything outside the workspace:** no unattended path.
   Publish the data they need publicly, or pass it in (an agent run's `task`).
 
@@ -888,6 +944,15 @@ fmcp agents__create_agent '{"name":"digest","systemPrompt":"…","autonomy":"aut
 fmcp agents__update_agent '{"name":"digest","backgroundFamilies":["core","web"]}'   # tool grants: update_agent only
 fmcp agents__run_agent '{"agent":"digest","task":"…","wait":120}'                  # then agents__get_run {runId, wait}
 ```
+
+A harness-backed agent dispatches only to an edge whose
+`status.harnesses` lists the harness the credential's provider needs with
+`ready: true` (`kubectl get linuxserver <e> -o jsonpath='{.status.harnesses}'`);
+`detected: false` there means no run will ever start (`BackendReady=False`,
+`HarnessNotReady`), whatever the Agent says. A `claude-code` or `codex`
+credential is a harness identity only: `modelCredential` on `create_agent`
+wants a chat endpoint. Check both before building on an agent, and ask the
+user before creating one (rule 8).
 
 `create_agent` takes no tool grants: set `interactiveFamilies`,
 `backgroundFamilies` and the matching `…Toolsets`/`…Connections` with
@@ -958,6 +1023,8 @@ Identify which one you're looking at before waiting or rebuilding:
 | New URL fails TLS (curl exit 35) | Certificate still issuing (observed 0–9 min) | An existing app on the same domain serves; `openssl s_client -connect <host>:443 -servername <host> </dev/null \| openssl x509 -noout -subject` prints `Could not find certificate from <stdin>` — that output *is* the "no cert yet" signal |
 | `build.status: none`, SHA is yours | CI or the package crawl hasn't caught up | `code__build_status`; the crawl runs every 30 s for 10 min after a commit, else every 2 min |
 | New project's repository `Provisioning` for under 2 min | Repository still being created | Poll `.repository.ready` |
+| `create-project: HTTP 400: BadRequest: development template "<t>" was not found` while `kubectl get templates` lists it; `infrastructure__dev_sync` → `instance "<i>" references template "<t>" which is no longer in the catalog`; `infrastructure__list_templates` → `[]` | The infrastructure provider's catalog is cold (it was just restarted or redeployed) | Poll `railgrid mcp call infrastructure__list_templates` until it is non-empty (15–30 s, measured), then retry the same call |
+| `railgrid sandbox status|exec <project> …/process: HTTP 404` | The dev instance is `<project>-dev` (the CLI says so from v0.2.15) | `railgrid sandbox status <project>-dev <component>` |
 | `railgrid app sync` → `hydrate-workspace: HTTP 403 … User "system:serviceaccount:default:provider" cannot …` (older App Studio: an **instant** `HTTP 502` bad-gateway page on `hydrate-workspace`, `promotion` and `promote`), while `code` is `ready: true` and `railgrid commit` works | **Not latency, not the code provider, not your RBAC**: App Studio acts as its own service account through a permission claim the workspace's binding has not accepted (a provider upgrade added it). `railgrid app checkpoints <p>` / `GET …/checkpoints` names the resource (`packages`, `repositorycheckouts`, …) | A workspace admin re-enables App Studio from the Providers page and accepts its access (or an operator re-accepts provider claims); nothing else helps. Meanwhile commits and CI work, `railgrid app sync <p> --from <dir>` (or `infrastructure__dev_sync`) feeds the sandbox, and `railgrid app preview <p> --mode public` shares it |
 | Adopted repo: `build=none missing=app`, `code__build_status` → `found: false`, `railgrid app checkpoints` → `Source blocked: The repository has no .github/workflows/build.yaml …` | **Not latency**: the repo has no build workflow, so no image is ever built (current App Studio adds it on adopt and `POST …/scaffold` adds just that file to a non-empty workspace; older ones leave it out); CI `npm error Missing script: "build"` is the same family | `POST $AS/projects/<p>/scaffold`, or copy the scaffold's workflow yourself, add a `build` script (4.3), commit through railgrid |
 | Repository `Provisioning` > 2 min with an empty status and no finalizer (`railgrid app status` prints `not ready for <age> with no status: the code provider is not reconciling`), or `unknown tool "code__…"` | **Not latency**: the code provider is not watching tenant workspaces. `GET $HUB/api/providers` shows `code` `ready: false` with `readinessReason` `BackendUnhealthy` (its watch is down) or `HeartbeatStale` (process down). The hub answers `…/services/providers/code/readyz` with its own `provider not ready: code`, not the provider's detail | Give it up to 10 min: sometimes the watch recovers on its own, sometimes (after a kcp outage) only a restart helps. Still `ready: false` → hand the `readinessReason` to the operator; nothing client-side fixes it. Don't recreate the project (409 on the name). Keep working in the sandbox: 4.4, "When git → workspace is down" |
