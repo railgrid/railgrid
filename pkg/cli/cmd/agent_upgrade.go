@@ -202,7 +202,7 @@ func waitForAgentVersion(ctx context.Context, edgeName, expectedVersion string, 
 func agentUpgradeServer(edgeName string) error {
 	fmt.Printf("Server-type agents must be upgraded by replacing the binary on the host.\n\n")
 	fmt.Printf("  # Download the latest binary:\n")
-	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
 	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n\n")
 	fmt.Printf("  # Restart the systemd service:\n")
 	fmt.Printf("  sudo systemctl restart railgrid-agent-%s\n\n", edgeName)

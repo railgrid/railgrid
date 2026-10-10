@@ -71,15 +71,52 @@ func RejectSymlinkPath(path string) error {
 }
 
 // EnsureDir creates path with mode, then enforces mode and ownership on it.
+//
+// Ancestors that do not exist yet are created with the same mode and owner.
+// os.MkdirAll alone would leave them owned by the caller (root, for the edge
+// agent) with a mode that account cannot traverse, so a directory nominally the
+// account's own — <its home>/.railgrid/runner/<harness> — sat behind a root-only
+// ~/.railgrid, and the runner child failed to enter its working directory. Go
+// reports that from the child as "fork/exec <binary>: permission denied", which
+// names the wrong thing entirely. Ancestors that already exist are left exactly
+// as they are: the home directory itself, /var/lib and the like belong to
+// somebody else.
+//
 // uid/gid of 0 means "leave ownership alone" so a non-root caller preparing its
 // own directories does not have to special-case the chown.
 func EnsureDir(path string, mode os.FileMode, uid, gid int) error {
 	if err := RejectSymlinkPath(path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(path, mode); err != nil {
-		return err
+	path = filepath.Clean(path)
+	var missing []string
+	for current := path; ; current = filepath.Dir(current) {
+		_, err := os.Lstat(current)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("checking %s: %w", current, err)
+		}
+		missing = append(missing, current)
+		if parent := filepath.Dir(current); parent == current {
+			break
+		}
 	}
+	// Outermost first: each one is a parent of the next.
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], mode); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := stamp(missing[i], mode, uid, gid); err != nil {
+			return err
+		}
+	}
+	return stamp(path, mode, uid, gid)
+}
+
+// stamp enforces mode and, unless both ids are 0, ownership on an existing path.
+func stamp(path string, mode os.FileMode, uid, gid int) error {
 	if err := os.Chmod(path, mode); err != nil {
 		return err
 	}

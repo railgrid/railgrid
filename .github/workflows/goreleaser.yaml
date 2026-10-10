@@ -40,6 +40,24 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_ACCESS_KEY }}
           LDFLAGS: ${{ env.LDFLAGS }}
+    # The installer is served from the root of the same R2 bucket GoReleaser
+    # fills (downloads.railgrid.ai/install.sh). GoReleaser's blob upload covers
+    # the archives only, and a script uploaded by hand drifts from the repo: the
+    # HOME fix of 2026-10-08 was live only once somebody re-uploaded it two days
+    # later. Publish the tagged install.sh with every release.
+    - name: Publish install.sh to downloads.railgrid.ai
+      if: github.event_name != 'pull_request'
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: auto
+        # R2 does not accept the CRC-trailer checksums newer AWS CLIs send by default.
+        AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+        AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      run: |
+        aws s3 cp install.sh s3://railgrid-cli/install.sh \
+          --endpoint-url https://f8f725cf687b0377b17bdea3dbee524e.r2.cloudflarestorage.com \
+          --content-type text/x-sh --cache-control max-age=300
     - name: Run GoReleaser on pull request
       if: github.event_name == 'pull_request'
       uses: goreleaser/goreleaser-action@v6
