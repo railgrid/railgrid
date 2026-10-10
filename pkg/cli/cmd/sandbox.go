@@ -485,7 +485,7 @@ func runSandboxExec(ctx context.Context, out, errOut io.Writer, target hubTarget
 		if project := appStudioProjectForInstance(ctx, s, instance); project != "" {
 			return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid app sync %s' first (exec needs an authoritative sync, and %s is managed by App Studio project %s, so 'railgrid sandbox sync' would replace its file set)", instance, component, project, instance, project)
 		}
-		return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid sandbox sync %s %s <dir>' first (exec needs an authoritative sync)", instance, component, instance, component)
+		return 0, fmt.Errorf("%s/%s has no source revision; run 'railgrid sandbox sync %s %s <dir>' first (exec needs an authoritative sync; a restart that rewrote a synced file, such as an older simple-webapp start command appending to .gitignore, clears it too, and a no-op re-sync restores it)", instance, component, instance, component)
 	}
 	execURL := componentURL(s, instance, component, "exec")
 	start := execRequest{
