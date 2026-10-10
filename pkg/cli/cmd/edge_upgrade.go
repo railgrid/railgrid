@@ -111,7 +111,7 @@ func printKubernetesUpgradeInstructions(name string) {
 
 func printServerUpgradeInstructions(name, _ string) {
 	fmt.Printf("To upgrade the binary on the remote server:\n\n")
-	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
 	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
 	fmt.Println()
 	fmt.Printf("Then restart the agent:\n\n")

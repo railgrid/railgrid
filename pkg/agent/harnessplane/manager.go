@@ -89,9 +89,9 @@ type Options struct {
 	InitialBackoff time.Duration
 	// HTTPClient probes the loopback runners; nil builds one.
 	HTTPClient *http.Client
-	// Detect reports the installed harnesses; nil uses Detect(account home).
-	// Tests replace it.
-	Detect func() Detection
+	// Detect reports the installed harnesses the runner account can launch, and
+	// the installs it cannot; nil uses Detect(Account). Tests replace it.
+	Detect func() (Detection, Blocked)
 	// PortFree reports whether a loopback port can be bound; nil dials to find
 	// out. Tests replace it.
 	PortFree func(port int) bool
@@ -164,8 +164,8 @@ func NewManager(hub dynamic.Interface, opts Options) (*Manager, error) {
 		opts.HTTPClient = &http.Client{Timeout: opts.ProbeTimeout}
 	}
 	if opts.Detect == nil {
-		home := opts.Account.Home
-		opts.Detect = func() Detection { return Detect(home) }
+		account := opts.Account
+		opts.Detect = func() (Detection, Blocked) { return Detect(account) }
 	}
 	if opts.PortFree == nil {
 		opts.PortFree = portFree
@@ -371,7 +371,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	// after the machine joined has to become usable without touching the hub.
 	// Under mode explicit the resolution ignores it, so a named-but-missing
 	// harness survives as an entry to report rather than being dropped.
-	detection := m.opts.Detect()
+	detection, blocked := m.opts.Detect()
 	wanted := setting.Resolve(detection.Names())
 
 	reasons := map[string][]string{}
@@ -399,7 +399,11 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	for _, name := range wanted {
 		binary := detection[name]
 		if binary == "" {
-			reasons[name] = []string{fmt.Sprintf("%s is enabled but its executable is not installed on this machine", name)}
+			if path := blocked[name]; path != "" {
+				reasons[name] = []string{m.blockedReason(name, path)}
+			} else {
+				reasons[name] = []string{fmt.Sprintf("%s is enabled but its executable is not installed on this machine", name)}
+			}
 			continue
 		}
 		c, err := m.childFor(name)
@@ -426,6 +430,16 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 
+	// Under mode auto a blocked install is not wanted — it was never detected —
+	// and would vanish from the status without a word. "Claude Code is right
+	// there and the edge says it has nothing" is the one outcome this must not
+	// produce, so the reason is published whether or not the harness is wanted.
+	for name, path := range blocked {
+		if _, reported := reasons[name]; !reported {
+			reasons[name] = []string{m.blockedReason(name, path)}
+		}
+	}
+
 	m.mu.Lock()
 	m.detected = detection
 	m.enabled = wanted
@@ -436,6 +450,14 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return errs[0]
 	}
 	return nil
+}
+
+// blockedReason explains an install the runner account cannot execute and says
+// where one would work, in terms of this machine's actual account.
+func (m *Manager) blockedReason(name, path string) string {
+	account := m.opts.Account
+	return fmt.Sprintf("%s is installed at %s, but the runner account (uid %d, gid %d) cannot execute it; install it where that account can reach it, such as /usr/local/bin or %s",
+		name, path, account.UID, account.GID, filepath.Join(account.Home, ".local", "bin"))
 }
 
 // childFor returns the supervised runner for a harness, creating it (and
