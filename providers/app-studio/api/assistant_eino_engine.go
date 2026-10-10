@@ -169,7 +169,7 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 		return projectAssistantRunResult{}, err
 	}
 	checkpointStore := newProjectEinoAssistantCheckpointStore()
-	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, req.Identity, req.Project.Name)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, req.Identity, req.Project.Name, req.ThreadID)
 	turn.ProjectUID = req.MessageScope.ProjectUID
 	result, runErr := e.runProjectAssistantTurnLoop(ctx, req, runState, checkpointStore, checkpointID, []projectAssistantTurnItem{turn})
 	runSandbox := runState.Sandbox()
@@ -288,7 +288,7 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 		runState.ConfigureSandboxCapabilityWithContext(ctx, eligibility, initializer)
 	}
 	checkpointStore := newProjectEinoAssistantCheckpointStoreWithCheckpoint(state.Eino.CheckpointID, state.Eino.Checkpoint)
-	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name, req.ThreadID)
 	turn.ProjectUID = req.MessageScope.ProjectUID
 	turn.RequestID = strings.TrimSpace(resumeReq.RequestID)
 	turn.Decision = strings.TrimSpace(resumeReq.Decision)
@@ -941,7 +941,7 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 			}
 		}
 		if drained > 0 {
-			steer := newProjectAssistantTurnItem(projectAssistantTurnSteer, req.Identity, req.Project.Name)
+			steer := newProjectAssistantTurnItem(projectAssistantTurnSteer, req.Identity, req.Project.Name, req.ThreadID)
 			steer.ProjectUID = req.MessageScope.ProjectUID
 			tc.Loop.Push(steer)
 			outcome.result.Content = ""
@@ -1487,7 +1487,10 @@ func projectEinoAssistantCompleteReadFileReceiptKey(value string) (projectEinoAs
 	}
 	allowed := map[string]struct{}{
 		"path": {}, "content": {}, "size": {}, "version": {}, "complete": {},
-		"truncated": {}, "binary": {}, "offset": {}, "limit": {},
+		"truncated": {}, "binary": {}, "offset": {}, "limit": {}, "missing": {}, "conflictProposal": {},
+	}
+	if !projectEinoAssistantValidateStructuredReadFileExtras(fields) {
+		return projectEinoAssistantCompleteReadFileKey{}, false
 	}
 	for name := range fields {
 		if _, ok := allowed[name]; !ok {

@@ -142,7 +142,7 @@ func TestAssistantThreadTurnCompletedCarriesFailureSummary(t *testing.T) {
 	createAssistantThreadForHTTPTest(t, messages, scope, "thread-failures", "test-user")
 	now := time.Now().UTC()
 	run := store.AssistantRun{
-		ID: "turn-failures", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		ID: "turn-failures", ThreadID: "thread-failures", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
 		Status: store.AssistantRunStatusRunning, ClientRequestID: "client-failures", UserMessageID: "user-failures",
 		ActiveMessageID: "assistant-failures-1", Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}

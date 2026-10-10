@@ -28,12 +28,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/identity"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 var projectGVR = schema.GroupVersionResource{
 	Group: "ai.railgrid.ai", Version: "v1alpha1", Resource: "projects",
 }
+
+var _ identity.WorkloadScopeResolver = (*KCPProjectScopeResolver)(nil)
 
 // ProjectScopeResolver verifies the request's Project object and derives the
 // exact provider-resource references authorized by the selected environment.
@@ -64,6 +68,30 @@ func NewProjectScopeResolverForClient(client dynamic.Interface) *KCPProjectScope
 	return &KCPProjectScopeResolver{client: client}
 }
 
+// ResolveRecord implements identity.WorkloadScopeResolver. It rebuilds a
+// recorded workload identity's current permissions from the exact project
+// tuple captured when the identity was minted, allowing the ordinary hub
+// identity sweep to apply integration revocations without waiting for a pod
+// to exchange its token again.
+func (r *KCPProjectScopeResolver) ResolveRecord(ctx context.Context, record *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error) {
+	if record == nil || record.Spec.Attestation.Mode != tenancyv1alpha1.ScopedIdentityAttestationWorkload {
+		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("workload identity record is required")
+	}
+	annotations := record.Spec.Annotations
+	req := ExchangeRequest{
+		TenantPath:  annotations[serviceaccounts.AnnotationWorkloadIdentityTenantPath],
+		Project:     annotations[serviceaccounts.AnnotationWorkloadIdentityProject],
+		ProjectUID:  annotations[serviceaccounts.AnnotationWorkloadIdentityProjectUID],
+		Environment: annotations[serviceaccounts.AnnotationWorkloadIdentityEnvironment],
+		Instance:    annotations[serviceaccounts.AnnotationWorkloadIdentityInstance],
+	}
+	orgUUID, wsUUID, err := parseTenantPath(req.TenantPath)
+	if err != nil {
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope(fmt.Sprintf("reading workload identity tenant path: %v", err))
+	}
+	return r.Resolve(ctx, orgUUID, wsUUID, req)
+}
+
 // Resolve verifies Project UID, environment, and instance membership, then
 // returns providerReference (plus the matching owned instance binding) scopes.
 func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID string, req ExchangeRequest) (serviceaccounts.WorkloadIdentityScope, error) {
@@ -71,10 +99,10 @@ func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID s
 		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project scope resolver is unavailable")
 	}
 	if strings.TrimSpace(orgUUID) == "" || strings.TrimSpace(wsUUID) == "" {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("tenant workspace is required")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("tenant workspace is required")
 	}
 	if want := "root:railgrid:tenants:" + orgUUID + ":" + wsUUID; req.TenantPath != want {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("tenantPath does not match selected workspace")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("tenantPath does not match selected workspace")
 	}
 
 	dyn := r.client
@@ -92,23 +120,23 @@ func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID s
 	project, err := dyn.Resource(projectGVR).Get(ctx, req.Project, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project is not found")
+			return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project is not found")
 		}
 		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("getting project: %w", err)
 	}
 	if string(project.GetUID()) == "" || string(project.GetUID()) != req.ProjectUID {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project UID does not match attested identity")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project UID does not match attested identity")
 	}
 
 	environments, found, err := unstructured.NestedSlice(project.Object, "spec", "environments")
 	if err != nil || !found {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project environment is not declared")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project environment is not declared")
 	}
 	var selected map[string]any
 	for _, raw := range environments {
 		environment, ok := raw.(map[string]any)
 		if !ok {
-			return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project environments are malformed")
+			return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project environments are malformed")
 		}
 		name, _, _ := unstructured.NestedString(environment, "name")
 		if name == req.Environment {
@@ -117,46 +145,50 @@ func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID s
 		}
 	}
 	if selected == nil {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project environment does not match attested identity")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project environment does not match attested identity")
 	}
 
 	bindings, found, err := unstructured.NestedSlice(selected, "bindings")
 	if err != nil {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project environment bindings are malformed")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project environment bindings are malformed")
 	}
 	if !found {
 		bindings = nil
 	}
 	providerResources := make([]serviceaccounts.ProviderResourceScope, 0)
 	instanceMatched := false
+	integrationActions := false
 	for _, raw := range bindings {
 		binding, ok := raw.(map[string]any)
 		if !ok {
-			return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project environment binding is malformed")
+			return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project environment binding is malformed")
 		}
 		kind, _, _ := unstructured.NestedString(binding, "kind")
 		bindingName, _, _ := unstructured.NestedString(binding, "name")
 		providerName, _, _ := unstructured.NestedString(binding, "provider")
 		ref, found, err := unstructured.NestedMap(binding, "resourceRef")
 		if err != nil {
-			return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("project provider resource reference is malformed")
+			return serviceaccounts.WorkloadIdentityScope{}, revokedScope("project provider resource reference is malformed")
 		}
 		if !found {
 			if kind == "providerReference" {
-				return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("providerReference has no resourceRef")
+				return serviceaccounts.WorkloadIdentityScope{}, revokedScope("providerReference has no resourceRef")
 			}
 			continue
 		}
 		resource, err := providerResourceScope(ref)
 		if err != nil {
-			return serviceaccounts.WorkloadIdentityScope{}, err
+			return serviceaccounts.WorkloadIdentityScope{}, revokedScope(err.Error())
 		}
 		if kind == "providerReference" {
 			actions, err := providerReferenceActions(binding)
 			if err != nil {
-				return serviceaccounts.WorkloadIdentityScope{}, err
+				return serviceaccounts.WorkloadIdentityScope{}, revokedScope(err.Error())
 			}
 			resource.Actions = actions
+			if len(actions) > 0 {
+				integrationActions = true
+			}
 		}
 		// The runtime instance must be the infrastructure-owned binding (or
 		// App Studio's exact generated development binding). A providerReference
@@ -166,21 +198,32 @@ func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID s
 		if instanceBinding {
 			instanceMatched = true
 		}
-		// Every providerReference is granted explicitly. The matching
-		// providerResource is included so the attested infrastructure instance
-		// remains reachable without a provider-specific wildcard.
-		if kind == "providerReference" || instanceBinding {
+		// Only active providerReference grants contribute a foreign resource
+		// read/action rule. Revoked or actionless bindings must not leave an
+		// access path behind. The matching providerResource is included so the
+		// attested infrastructure instance remains reachable without a wildcard.
+		if (kind == "providerReference" && len(resource.Actions) > 0) || instanceBinding {
 			providerResources = append(providerResources, resource)
 		}
 	}
 	if !instanceMatched {
-		return serviceaccounts.WorkloadIdentityScope{}, fmt.Errorf("instance does not belong to project environment")
+		return serviceaccounts.WorkloadIdentityScope{}, revokedScope("instance does not belong to project environment")
 	}
 	providerResources = dedupeProviderResources(providerResources)
 	return serviceaccounts.WorkloadIdentityScope{
 		TenantPath: req.TenantPath, Project: req.Project, ProjectUID: req.ProjectUID,
-		Environment: req.Environment, Instance: req.Instance, ProviderResources: providerResources,
+		Environment: req.Environment, Instance: req.Instance, IntegrationActions: integrationActions,
+		ProviderResources: providerResources,
 	}, nil
+}
+
+// revokedScope identifies failures derived from the current Project contents
+// (or corruption of the stored scope tuple). The identity sweep consumes this
+// marker and tears down the old credential. API reads and client construction
+// failures intentionally remain ordinary errors, preserving permissions
+// across transient control-plane outages.
+func revokedScope(reason string) error {
+	return fmt.Errorf("%w: %s", identity.ErrWorkloadScopeRevoked, reason)
 }
 
 func providerResourceScope(ref map[string]any) (serviceaccounts.ProviderResourceScope, error) {

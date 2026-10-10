@@ -40,6 +40,7 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 	appskills "github.com/railgrid/provider-app-studio/skills"
 	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 type CreateProjectRequest struct {
@@ -90,19 +91,21 @@ type ProjectView struct {
 	// Deleting is derived from metadata.deletionTimestamp, not from the
 	// controller's eventually-updated status phase. This keeps terminating
 	// projects visibly locked while their finalizers complete.
-	Deleting       bool                          `json:"deleting"`
-	DisplayName    string                        `json:"displayName"`
-	Description    string                        `json:"description,omitempty"`
-	Phase          string                        `json:"phase,omitempty"`
-	Template       string                        `json:"template,omitempty"`
-	Repository     *ProjectRepositoryView        `json:"repository,omitempty"`
-	Memory         aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
-	Sharing        aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
-	Environments   []ProjectEnvironmentView      `json:"environments,omitempty"`
-	CreatedAt      time.Time                     `json:"createdAt"`
-	UpdatedAt      *time.Time                    `json:"updatedAt,omitempty"`
-	SourceRevision uint64                        `json:"sourceRevision,omitempty"`
-	Thumbnail      *ProjectThumbnailView         `json:"thumbnail,omitempty"`
+	Deleting              bool                          `json:"deleting"`
+	DisplayName           string                        `json:"displayName"`
+	Description           string                        `json:"description,omitempty"`
+	Phase                 string                        `json:"phase,omitempty"`
+	Template              string                        `json:"template,omitempty"`
+	Repository            *ProjectRepositoryView        `json:"repository,omitempty"`
+	Memory                aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
+	Sharing               aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
+	Environments          []ProjectEnvironmentView      `json:"environments,omitempty"`
+	CreatedAt             time.Time                     `json:"createdAt"`
+	UpdatedAt             *time.Time                    `json:"updatedAt,omitempty"`
+	LastSourceChange      *workspace.SourceChange       `json:"lastSourceChange,omitempty"`
+	LastPreviewCheckpoint *workspace.SourceChange       `json:"lastPreviewCheckpoint,omitempty"`
+	SourceRevision        uint64                        `json:"sourceRevision,omitempty"`
+	Thumbnail             *ProjectThumbnailView         `json:"thumbnail,omitempty"`
 }
 
 type ProjectEnvironmentView struct {
@@ -194,11 +197,12 @@ type projectAssistantMutation struct {
 // contract for typed workspace mutations. Operation/path/guidance are
 // presentation metadata; recoveryOf is only a correlation to another action.
 type projectAssistantMutationFailure struct {
-	Code       string `json:"code"`
-	Operation  string `json:"operation"`
-	Path       string `json:"path,omitempty"`
-	Guidance   string `json:"guidance"`
-	RecoveryOf string `json:"recoveryOf,omitempty"`
+	ChangedFiles []string `json:"changedFiles,omitempty"`
+	Code         string   `json:"code"`
+	Operation    string   `json:"operation"`
+	Path         string   `json:"path,omitempty"`
+	Guidance     string   `json:"guidance"`
+	RecoveryOf   string   `json:"recoveryOf,omitempty"`
 }
 
 type projectAssistantMutationFailureResult struct {
@@ -710,7 +714,7 @@ func (s *Server) reserveProjectExternalOperation(
 			return nil, false
 		}
 	}
-	release, err := s.projectAssistantSupervisor().Reserve(scope)
+	release, err := s.projectAssistantSupervisor().ReserveWorkspace(ctx, scope)
 	if err != nil {
 		if errors.Is(err, store.ErrAssistantRunConflict) {
 			writeStatus(w, http.StatusConflict, "Conflict", "wait for or stop the active assistant run before "+action)
@@ -748,6 +752,11 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	run, err := s.store.GetAssistantRun(r.Context(), scope, runID)
 	if err != nil {
 		writeProjectError(w, err)
+		return
+	}
+	threadID := strings.TrimSpace(mux.Vars(r)["thread"])
+	if threadID != "" && run.ThreadID != threadID {
+		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
 		return
 	}
 	if run.Status != store.AssistantRunStatusPendingPermission && run.Status != store.AssistantRunStatusPendingInput {
@@ -1536,6 +1545,8 @@ func (s *Server) projectViewWithSourceRevision(ctx context.Context, c *asclient.
 	}
 	if revision, err := s.workspaces.SourceRevision(ctx, projectWorkspaceScope(id, p)); err == nil {
 		view.SourceRevision = revision
+		view.LastSourceChange, _ = s.workspaces.LastSourceChange(ctx, projectWorkspaceScope(id, p))
+		view.LastPreviewCheckpoint, _ = s.workspaces.LastPreviewCheckpoint(ctx, projectWorkspaceScope(id, p))
 	}
 	return view
 }

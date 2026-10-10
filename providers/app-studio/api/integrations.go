@@ -30,7 +30,9 @@ import (
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/bindings"
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/workloadidentity"
 )
 
 const (
@@ -394,16 +396,14 @@ func (s *Server) invokeProjectIntegration(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if isProjectWorkloadIdentityCaller(id.caller) && !projectWorkloadIdentityMatchesCurrentProject(id, project) {
+		writeStatus(w, http.StatusForbidden, "Forbidden", "Project workload identity does not match the current Project incarnation or runtime binding")
+		return
+	}
 	alias := strings.TrimSpace(muxVars(r)["integration"])
 	var req projectIntegrationInvokeRequest
 	if !decodeStrictJSON(w, r, &req) {
 		return
-	}
-	if strings.TrimSpace(req.Action) == "" {
-		// The action path form is useful for generated clients that keep the
-		// action outside the JSON body. The body form remains canonical and can
-		// carry an explicit actionVersion for version negotiation.
-		req.Action = strings.TrimSpace(muxVars(r)["action"])
 	}
 	requestedVersion := req.ActionVersion
 	if strings.TrimSpace(requestedVersion) == "" {
@@ -491,6 +491,77 @@ func (s *Server) invokeProjectIntegration(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, statusCode, envelope)
 	_ = envName // environment is included in binding lookup for ambiguity checks
+}
+
+// isProjectWorkloadIdentityCaller recognizes hub-managed railgrid-wi caller
+// identities. Those identities are stable named ServiceAccounts, so a stale
+// token could otherwise remain valid briefly if a Project is deleted and
+// recreated under the same name before identity garbage collection finishes.
+func isProjectWorkloadIdentityCaller(caller *dataplane.ProxiedIdentity) bool {
+	if caller == nil {
+		return false
+	}
+	const serviceAccountPrefix = "system:serviceaccount:"
+	user := strings.TrimSpace(caller.User)
+	if !strings.HasPrefix(user, serviceAccountPrefix) {
+		return false
+	}
+	identity := strings.TrimPrefix(user, serviceAccountPrefix)
+	_, name, found := strings.Cut(identity, ":")
+	return found && workloadidentity.IsServiceAccountName(name)
+}
+
+// projectWorkloadIdentityMatchesCurrentProject derives the only acceptable
+// ServiceAccount names from the current Project and its current runtime
+// bindings. The cluster-name extra is stamped by kcp and fences identical
+// account names across workspaces; no caller-supplied Project UID is trusted.
+func projectWorkloadIdentityMatchesCurrentProject(id identity, project *aiv1alpha1.Project) bool {
+	if project == nil || strings.TrimSpace(project.Name) == "" || strings.TrimSpace(string(project.UID)) == "" ||
+		strings.TrimSpace(id.workspacePath) == "" || !dataplane.IsClusterID(id.clusterID) || id.caller == nil {
+		return false
+	}
+	if id.caller.ClusterName() != id.clusterID {
+		return false
+	}
+	user := strings.TrimSpace(id.caller.User)
+	const serviceAccountPrefix = "system:serviceaccount:"
+	identity := strings.TrimPrefix(user, serviceAccountPrefix)
+	namespace, name, found := strings.Cut(identity, ":")
+	if !found || namespace != "default" || !workloadidentity.IsServiceAccountName(name) {
+		return false
+	}
+
+	for _, environment := range project.Spec.Environments {
+		environmentName := strings.TrimSpace(environment.Name)
+		if environmentName == "" {
+			continue
+		}
+		for _, binding := range environment.Bindings {
+			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource ||
+				(binding.Provider != "infrastructure" && (strings.TrimSpace(binding.Name) != "dev" || binding.Provider != "app-studio")) {
+				continue
+			}
+			values, err := bindings.Values(binding)
+			if err != nil {
+				continue
+			}
+			instance := bindings.ResourceName(project, binding, values)
+			if instance == "" {
+				continue
+			}
+			candidate := workloadidentity.ServiceAccountName(workloadidentity.Scope{
+				TenantPath:  strings.TrimSpace(id.workspacePath),
+				Project:     strings.TrimSpace(project.Name),
+				ProjectUID:  string(project.UID),
+				Environment: environmentName,
+				Instance:    instance,
+			})
+			if name == candidate {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateProjectIntegrationAlias(alias string) error {

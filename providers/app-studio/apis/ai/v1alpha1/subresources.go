@@ -542,6 +542,18 @@ type IntegrationActionsRequest struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// Action is the action name from the provider catalog. Its version is
+	// carried separately in ActionVersion; neither value is a URL path segment.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Action string `json:"action"`
+	// ActionVersion pins the catalog version of Action. The handler also accepts
+	// Version as a compatibility alias when ActionVersion is omitted.
+	// +optional
+	ActionVersion string `json:"actionVersion,omitempty"`
+	// Version is a compatibility alias for ActionVersion.
+	// +optional
+	Version string `json:"version,omitempty"`
 	// Input is the request body's "input" member.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields

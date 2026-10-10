@@ -25,6 +25,13 @@ export interface ProjectMemory {
   constraints?: string[]
 }
 
+/** Immutable attribution for the last durable source or preview checkpoint. */
+export interface ProjectSourceChange {
+  threadID?: string
+  runID?: string
+  sourceRevision: number
+}
+
 export interface ProjectMessage {
   id: string
   projectID: string
@@ -420,6 +427,8 @@ export interface Project {
   createdAt: string
   updatedAt?: string
   sourceRevision?: number
+  lastSourceChange?: ProjectSourceChange
+  lastPreviewCheckpoint?: ProjectSourceChange
   thumbnail?: {
     available: boolean
     refreshing?: boolean

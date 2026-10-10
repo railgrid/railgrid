@@ -14,6 +14,7 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 config.define_string('external-providers-dir', usage='Comma-separated external provider checkout paths')
 config.define_string('external-providers')
+config.define_string('app-studio-sandbox-mode', usage='App Studio sandbox mode: off, byo-only, or force')
 # Run kcp from a published image instead of the server compiled into the hub,
 # so a kcp change can be tried without moving this repository's kcp dependency.
 # The hub then starts with --external-kcp and the embedded server stays off.
@@ -30,6 +31,17 @@ config.define_string('kcp-image')
 cfg = config.parse()
 
 kcp_image = cfg.get('kcp-image', '') or os.getenv('RAILGRID_KCP_IMAGE', '')
+# Universal sandbox stays opt-in in local Tilt. Resolve one mode for both the
+# resource graph and provider process, with an explicit Tilt arg taking
+# precedence over the existing environment override.
+app_studio_sandbox_mode = (
+    (cfg.get('app-studio-sandbox-mode', '') or '').strip().lower()
+    or os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower()
+    or 'off'
+)
+if app_studio_sandbox_mode not in ('off', 'byo-only', 'force'):
+    fail('--app-studio-sandbox-mode must be one of: off, byo-only, force')
+app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 kcp_external_root = '.kcp-external'
 kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 
@@ -197,10 +209,6 @@ dev_agent_image = 'ghcr.io/railgrid/railgrid-dev-agent:latest'
 dev_agent_image_repository = 'ghcr.io/railgrid/railgrid-dev-agent'
 universal_dev_image = 'ghcr.io/railgrid/railgrid-universal-dev:latest'
 universal_dev_image_repository = 'ghcr.io/railgrid/railgrid-universal-dev'
-# Universal sandbox is opt-in locally. Use the same resolved mode for Tilt's
-# resource graph and the provider process so they cannot disagree.
-app_studio_sandbox_mode = os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower() or 'off'
-app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 # Host address as seen FROM INSIDE the railgrid-kro containers. Resolve
 # host.docker.internal inside the node first: on Docker Desktop/OrbStack the
 # bridge gateway below is the VM, not the host, and dialing it gets connection

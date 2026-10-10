@@ -176,3 +176,48 @@ func TestFileStoreManagedTransactionRollsBackPackageWhenPolicyCommitFails(t *tes
 		}
 	}
 }
+
+func TestManagedTransactionReportsAllConflictsAndKeepsOtherFiles(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if err := store.ApplyFiles(ctx, scope, []File{{Path: "a.txt", Content: "a"}, {Path: "b.txt", Content: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "a.txt", Operation: ManagedFileReplace, Content: "new", ExpectedVersion: "sha256:old"},
+		{Path: "b.txt", Operation: ManagedFileDelete, ExpectedVersion: "sha256:old"},
+		{Path: "c.txt", Operation: ManagedFileCreate, Content: "c"},
+	})
+	var conflict *MutationError
+	if !errors.As(err, &conflict) || strings.Join(conflict.ChangedFiles, ",") != "a.txt,b.txt" {
+		t.Fatalf("structured conflict = %#v, %v", conflict, err)
+	}
+	if exists, _ := store.FileExists(ctx, scope, "c.txt"); exists {
+		t.Fatal("unrelated create landed in rejected transaction")
+	}
+}
+
+func TestManagedBinaryUploadIsAtomicOnStaleReplacement(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.PutFile(ctx, scope, PutOptions{Path: "image.png", Data: []byte{0, 255, 1}, CreateOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "new.png", Operation: ManagedFileCreate, Data: []byte{0, 255}},
+		{Path: "image.png", Operation: ManagedFileReplace, Data: []byte{0, 254}, ExpectedVersion: "sha256:old"},
+	})
+	if err == nil {
+		t.Fatal("stale binary replacement accepted")
+	}
+	if exists, _ := store.FileExists(ctx, scope, "new.png"); exists {
+		t.Fatal("binary upload partially applied")
+	}
+	version := testFileVersion(t, ctx, store, scope, "image.png")
+	result, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{{Path: "image.png", Operation: ManagedFileReplace, Data: []byte{0, 254}, ExpectedVersion: version}})
+	if err != nil || len(result) != 1 || !result[0].Binary {
+		t.Fatalf("binary replacement = %#v, %v", result, err)
+	}
+}

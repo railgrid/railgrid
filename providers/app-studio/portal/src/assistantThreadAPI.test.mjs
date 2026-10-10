@@ -18,21 +18,24 @@ const context = {
   basePath: '/ui/providers/app-studio',
 }
 
-function installRequestMocks(pages, calls) {
+function installRequestMocks(pages, calls, requestOptions = []) {
   const previousFetch = globalThis.fetch
   const previousStorage = globalThis.localStorage
   const storage = new Map([['railgrid:portal:tenant', JSON.stringify({ orgUUID: 'org-1', workspaceUUID: 'workspace-1' })]])
   globalThis.localStorage = {
     getItem(key) { return storage.get(key) ?? null },
   }
-  globalThis.fetch = async (path) => {
+  globalThis.fetch = async (path, init) => {
     const url = new URL(String(path), 'https://app-studio.test')
     const cursor = url.searchParams.get('cursor') ?? ''
     calls.push(url)
+    requestOptions.push(init || {})
     const page = pages(cursor, url)
     return {
       ok: true,
       async text() { return JSON.stringify(page) },
+      async json() { return page },
+      body: { getReader: () => ({ async read() { return { done: true } }, releaseLock() {} }) },
     }
   }
   return () => {
@@ -120,6 +123,33 @@ test('requests bounded assistant item windows and carries the older-history curs
     assert.equal(calls[0].searchParams.get('limit'), '20')
     assert.equal(calls[0].searchParams.has('beforeSequence'), false)
     assert.equal(calls[1].searchParams.get('beforeSequence'), '21')
+  } finally {
+    restore()
+  }
+})
+
+test('routes assistant session reads, writes, and event streams with the exact project hint', async () => {
+  const calls = []
+  const requestOptions = []
+  const restore = installRequestMocks(() => ({ items: [], nextCursor: '' }), calls, requestOptions)
+  try {
+    await api.listAssistantThreadItemPage(context, 'project-alpha', 'thread-alpha', '17')
+    await api.getActiveAssistantTurn(context, 'project-bravo', 'thread-bravo')
+    await api.startAssistantTurn(context, 'project-charlie', 'thread-charlie', {
+      content: 'hello',
+      clientUserMessageID: 'client-message',
+      collaborationMode: 'default',
+    })
+    await api.interruptAssistantTurn(context, 'project-delta', 'thread-delta', 'turn-delta', 'stop-request')
+    await api.streamAssistantThread(context, 'project-echo', 'thread-echo', 9, () => {})
+
+    assert.deepEqual(requestOptions.map((init) => new Headers(init.headers).get('X-Railgrid-Project')), [
+      'project-alpha', 'project-bravo', 'project-charlie', 'project-delta', 'project-echo',
+    ])
+    assert.equal(calls[0].searchParams.get('beforeSequence'), '17')
+    assert.equal(calls[0].pathname.endsWith('/sessions/thread-alpha/items'), true)
+    assert.equal(calls[4].searchParams.get('afterSequence'), '9')
+    assert.equal(new Headers(requestOptions[4].headers).get('accept'), 'text/event-stream')
   } finally {
     restore()
   }

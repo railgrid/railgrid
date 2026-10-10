@@ -605,6 +605,7 @@ func (t projectEinoAssistantTool) Info(context.Context) (*schema.ToolInfo, error
 
 func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
 	t.req = t.req.currentExecutionRequest()
+	ctx = workspace.ContextWithMutationOrigin(ctx, t.req.ThreadID, projectAssistantRunID(t.req))
 	if cause := context.Cause(ctx); cause != nil {
 		return "", cause
 	}
@@ -873,6 +874,12 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 	if ledgerDecision.Replay != nil {
 		return t.replayDurableToolCall(ctx, callID, spec, args, *ledgerDecision.Replay)
 	}
+	if projectAssistantWorkspaceMutationTool(spec.Name) && t.runState != nil {
+		if blocked := t.runState.MutationTargetBlockedError(spec.Name, args); blocked != nil {
+			failed := t.finishFailedMutationToolCall(callID, spec.Name, args, blocked)
+			return t.finishDurableToolFailureForModel(ctx, ledgerDecision, failed, blocked)
+		}
+	}
 	if projectEinoAssistantCommitTool(spec.Name) {
 		if err := t.validateV2CommitWorkspace(ctx, args); err != nil {
 			failed := t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error())
@@ -923,6 +930,15 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 			return modelResult, durableErr
 		}
 		result, err = t.req.ToolPort.Invoke(ctx, t.tool, callRequest)
+	}
+	if err == nil && projectEinoAssistantSuccessfulWorkspaceMutationResult(spec.Name, result) {
+		if sandbox := projectAssistantRunSandboxForRequest(callRequest); sandbox != nil {
+			if checkpointErr := sandbox.checkpoint(ctx, t.req); checkpointErr != nil {
+				// Private sandbox bytes are a proposal until the shared transaction
+				// accepts their expected file versions. A conflict is a failed edit.
+				result, err = "", checkpointErr
+			}
+		}
 	}
 	// recoveryOf is presentation-only. Accept it only when this run previously
 	// issued the referenced failed action, then carry it into the typed mutation
@@ -1911,8 +1927,8 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 	publicRecovery := ""
 	if t.runState != nil {
 		// Record the server-owned retry budget before publishing the failure. The
-		// lifecycle boundary observes this state after the tool result and stops
-		// before another model sample once the repair budget is exhausted.
+		// lifecycle boundary observes this state after the tool result and keeps
+		// an exhausted target blocked while allowing unrelated work to continue.
 		t.runState.RecordMutationFailure(name, args)
 		publicRecovery = t.runState.RecordMutationRecoveryReferenceForMutation(callID, name, args)
 	} else {
@@ -1942,11 +1958,12 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 			RecoveryOf: inputRecovery,
 		},
 		MutationError: &projectAssistantMutationFailure{
-			Code:       failure.Code,
-			Operation:  failure.Operation,
-			Path:       failure.Path,
-			Guidance:   failure.Guidance,
-			RecoveryOf: inputRecovery,
+			Code:         failure.Code,
+			Operation:    failure.Operation,
+			Path:         failure.Path,
+			Guidance:     failure.Guidance,
+			RecoveryOf:   inputRecovery,
+			ChangedFiles: append([]string(nil), failure.ChangedFiles...),
 		},
 	})
 	payload, err := json.Marshal(encodedFailure)

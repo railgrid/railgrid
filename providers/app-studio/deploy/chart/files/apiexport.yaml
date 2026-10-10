@@ -136,7 +136,7 @@ spec:
   resources:
   - group: ai.railgrid.ai
     name: projects
-    schema: v260920-91c16a31.projects.ai.railgrid.ai
+    schema: v261010-bd55da08.projects.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai
@@ -268,7 +268,7 @@ spec:
           name: ai.railgrid.ai
   - group: ai.railgrid.ai
     name: projects/integration-actions
-    schema: v260924-87f1980f.integration-actions.ai.railgrid.ai
+    schema: v261010-bd55da08.integration-actions.ai.railgrid.ai
     storage:
       virtual:
         reference:

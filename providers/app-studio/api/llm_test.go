@@ -771,18 +771,15 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 	}
 	prompt := projectSystemPromptForMode(project, nil, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
-		`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.1.0"`,
-		"server component's package.json MUST declare this exact dependency alias",
+		`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"`,
+		"For this existing project, if package.json lacks or pins another version of this dependency",
+		".railgrid/proposals/provider-actions-sdk.patch",
+		"Apply it to package.json only after the user explicitly approves that proposed change",
 		"import { createActionsClient } from '@railgrid/actions-node';",
 		"RAILGRID_ACTIONS_BASE_URL",
-		"RAILGRID_PROJECT",
-		"RAILGRID_PROJECT_UID",
 		"RAILGRID_ACTIONS_TOKEN_FILE",
-		"RAILGRID_ACTIONS_ENVIRONMENT",
-		"RAILGRID_ACTIONS_INSTANCE",
-		"RAILGRID_ACTIONS_TENANT_PATH",
-		"RAILGRID_ACTIONS_ORG",
-		"RAILGRID_ACTIONS_WORKSPACE",
+		"invokes `POST <RAILGRID_ACTIONS_BASE_URL>/<alias>` with `{ action, actionVersion, input }`",
+		"treat a successful invoke as integration access verification",
 		"component automatically installs and reloads dependencies after the manifest synchronizes",
 		"do not manually run npm install, npm exec, npm search, or package discovery",
 		"do not discover the gateway",
@@ -792,6 +789,13 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("active-grant prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	freshPrompt := projectSystemPromptForMode(project, nil, projectAssistantCollaborationModeDefault, true)
+	if !strings.Contains(freshPrompt, "This is a fresh scaffolded project: add the dependency to the server component's existing package.json") {
+		t.Fatalf("fresh-project prompt did not add the SDK dependency to its scaffold manifest:\n%s", freshPrompt)
+	}
+	if strings.Contains(freshPrompt, ".railgrid/proposals/provider-actions-sdk.patch") {
+		t.Fatalf("fresh-project prompt incorrectly requires an existing-project proposal:\n%s", freshPrompt)
 	}
 }
 

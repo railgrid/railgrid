@@ -18,6 +18,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -46,6 +47,13 @@ const (
 	workloadOwnerVersion  = "v1alpha1"
 	workloadOwnerResource = "projects"
 )
+
+// ErrWorkloadScopeRevoked marks a recorded Project environment identity whose
+// current Project state can no longer authorize the recorded environment and
+// runtime. A sweep must remove the identity instead of retaining its last
+// known-good permissions. Resolver transport and client errors must not wrap
+// this sentinel, so transient reads leave the identity intact.
+var ErrWorkloadScopeRevoked = errors.New("workload identity scope revoked")
 
 // EnsureWorkload records and mints a pod-attested workload identity for a
 // verified Project scope. clusterID is the tenant workspace (the workload
@@ -82,4 +90,55 @@ func (s *Service) EnsureWorkload(ctx context.Context, clusterID string, scope se
 		return nil, err
 	}
 	return token, nil
+}
+
+// reconcileWorkloadScope updates a recorded workload identity when the
+// Project's current environment grants have changed. It is called by the
+// ordinary identity sweep after the owner UID is verified. Updating the
+// record and ClusterRole removes revoked permissions while existing tokens
+// continue to use the same ServiceAccount; it does not issue a new token.
+func (s *Service) reconcileWorkloadScope(
+	ctx context.Context,
+	record *tenancyv1alpha1.ScopedIdentity,
+	resolver WorkloadScopeResolver,
+) (*tenancyv1alpha1.ScopedIdentity, bool, error) {
+	if s == nil || s.records == nil || s.clients == nil || resolver == nil || record == nil {
+		return nil, false, fmt.Errorf("workload identity reconciliation is unavailable")
+	}
+	if record.Spec.Attestation.Mode != tenancyv1alpha1.ScopedIdentityAttestationWorkload {
+		return record, false, nil
+	}
+	scope, err := resolver.ResolveRecord(ctx, record)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolving current workload scope: %w", err)
+	}
+	if err := serviceaccounts.ValidateWorkloadScope(scope); err != nil {
+		return nil, false, fmt.Errorf("%w: current workload scope is invalid: %v", ErrWorkloadScopeRevoked, err)
+	}
+	if scope.Project != record.Spec.Owner.Name || scope.ProjectUID != record.Spec.Owner.UID ||
+		scope.TenantPath != record.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityTenantPath] ||
+		scope.Environment != record.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityEnvironment] ||
+		scope.Instance != record.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityInstance] {
+		return nil, false, fmt.Errorf("%w: current workload scope does not match the recorded Project identity", ErrWorkloadScopeRevoked)
+	}
+
+	owner := Owner{
+		Provider: workloadOwnerProvider, Kind: workloadOwnerKind, Group: workloadOwnerGroup,
+		Version: workloadOwnerVersion, Resource: workloadOwnerResource,
+		Name: scope.Project, UID: scope.ProjectUID, ClusterID: record.Spec.ClusterID,
+	}
+	shape := serviceaccounts.WorkloadIdentityShape(scope)
+	updated, err := s.upsertRecord(ctx, record.Spec.ClusterID, owner,
+		tenancyv1alpha1.ScopedIdentityAttestationWorkload, record.Spec.Attestation.Subject, shape, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if updated.Generation == record.Generation {
+		return updated, false, nil
+	}
+	if _, err := s.materialize(ctx, updated); err != nil {
+		s.markFailed(ctx, updated, err)
+		return updated, true, err
+	}
+	return updated, true, nil
 }

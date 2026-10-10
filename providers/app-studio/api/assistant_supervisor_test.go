@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +75,209 @@ func TestProjectAssistantSupervisorOwnsExecutionAfterStarterCancellation(t *test
 	case <-finished:
 	case <-time.After(time.Second):
 		t.Fatal("Abort did not cancel active worker")
+	}
+}
+
+func TestProjectAssistantSupervisorSharesWorkspaceAndIsolatesThreadControls(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	supervisor := newProjectAssistantSupervisor(context.Background(), memoryStore)
+	t.Cleanup(func() { supervisor.Shutdown(context.Background()) })
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	started := make(chan string, 2)
+	finished := make(chan string, 2)
+	startRun := func(id, threadID string) store.AssistantRun {
+		run := store.AssistantRun{
+			ID: "run-" + id, ThreadID: threadID, Mode: store.AssistantRunModeDefault,
+			Status: store.AssistantRunStatusRunning, ClientRequestID: "request-" + id,
+			UserMessageID: "user-" + id, ActiveMessageID: "assistant-" + id,
+			Revision: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "build", CreatedAt: now, UpdatedAt: now}
+		assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now.Add(time.Microsecond), UpdatedAt: now.Add(time.Microsecond)}
+		if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
+			t.Fatalf("CreateAssistantRun for %s: %v", threadID, err)
+		}
+		if err := supervisor.Start(context.Background(), scope, run, assistant, func(ctx context.Context, _ *projectAssistantSnapshotAccumulator) {
+			started <- threadID
+			<-ctx.Done()
+			_, _ = supervisor.AbortWith(scope, run.ID, nil, threadID)
+			finished <- threadID
+		}); err != nil {
+			t.Fatalf("Start for %s: %v", threadID, err)
+		}
+		return run
+	}
+	runA := startRun("a", "thread-a")
+	runB := startRun("b", "thread-b")
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("both thread workers did not start")
+		}
+	}
+
+	owner, ok, err := memoryStore.GetReplicaClaim(context.Background(), store.ActivityClaimKey(scope))
+	if err != nil || !ok || owner.Detail != "workspace-owner" {
+		t.Fatalf("shared project owner = %#v, %v, want workspace owner", owner, err)
+	}
+	for _, run := range []store.AssistantRun{runA, runB} {
+		claim, found, claimErr := memoryStore.GetReplicaClaim(context.Background(), store.AssistantRunClaimKey(scope, run.ThreadID, run.ID))
+		if claimErr != nil || !found || claim.Detail != run.ID {
+			t.Fatalf("run claim for %s = %#v, %v", run.ThreadID, claim, claimErr)
+		}
+	}
+
+	releaseMutation, err := supervisor.ReserveMutation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("ReserveMutation alongside thread turns: %v", err)
+	}
+	if _, err := supervisor.ReserveWorkspace(context.Background(), scope); !errors.Is(err, store.ErrAssistantRunConflict) {
+		t.Fatalf("exclusive workspace reservation error = %v, want conflict", err)
+	}
+	if supervisor.Steering(scope, runA.ID, "thread-b") != nil {
+		t.Fatal("thread-b received thread-a's steering channel")
+	}
+	if _, _, err := supervisor.Subscribe(scope, runA.ID, 0, "thread-b"); !errors.Is(err, store.ErrAssistantRunNotFound) {
+		t.Fatalf("cross-thread subscription error = %v, want not found", err)
+	}
+	if _, found, err := supervisor.StopWithIdentity(context.Background(), identity{}, scope, runA.ID, "thread-b"); err != nil || found {
+		t.Fatalf("cross-thread stop found=%v err=%v, want isolated miss", found, err)
+	}
+
+	if _, found, err := supervisor.StopWithIdentity(context.Background(), identity{}, scope, runA.ID, "thread-a"); err != nil || !found {
+		t.Fatalf("thread-a stop found=%v err=%v", found, err)
+	}
+	select {
+	case threadID := <-finished:
+		if threadID != "thread-a" {
+			t.Fatalf("stopped worker = %s, want thread-a", threadID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("thread-a worker did not stop")
+	}
+	runBAfterStop, err := memoryStore.GetAssistantRun(context.Background(), scope, runB.ID)
+	if err != nil || runBAfterStop.Status != store.AssistantRunStatusRunning {
+		t.Fatalf("thread-b after stopping thread-a = %#v, %v", runBAfterStop, err)
+	}
+	if _, ok, err := memoryStore.GetReplicaClaim(context.Background(), store.ActivityClaimKey(scope)); err != nil || !ok {
+		t.Fatalf("project owner released while thread-b and mutation remained: ok=%v err=%v", ok, err)
+	}
+	if _, err := supervisor.ReserveWorkspace(context.Background(), scope); !errors.Is(err, store.ErrAssistantRunConflict) {
+		t.Fatalf("exclusive reservation while sibling/mutation remains = %v, want conflict", err)
+	}
+
+	if _, found, err := supervisor.StopWithIdentity(context.Background(), identity{}, scope, runB.ID, "thread-b"); err != nil || !found {
+		t.Fatalf("thread-b stop found=%v err=%v", found, err)
+	}
+	select {
+	case threadID := <-finished:
+		if threadID != "thread-b" {
+			t.Fatalf("second stopped worker = %s, want thread-b", threadID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("thread-b worker did not stop")
+	}
+	releaseMutation()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok, _ := memoryStore.GetReplicaClaim(context.Background(), store.ActivityClaimKey(scope)); !ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	releaseWorkspace, err := supervisor.ReserveWorkspace(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("ReserveWorkspace after all threads and mutation ended: %v", err)
+	}
+	releaseWorkspace()
+}
+
+type assistantActivityReleaseGate struct {
+	store.Store
+	releaseStarted   chan struct{}
+	continueRelease  chan struct{}
+	releaseFirstOnce sync.Once
+}
+
+func (s *assistantActivityReleaseGate) ReleaseReplicaClaim(ctx context.Context, key, ownerReplica string) error {
+	s.releaseFirstOnce.Do(func() {
+		close(s.releaseStarted)
+		<-s.continueRelease
+	})
+	return s.Store.ReleaseReplicaClaim(ctx, key, ownerReplica)
+}
+
+func TestProjectAssistantSupervisorReservationWaitsForDurableOwnerRelease(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	claimStore := &assistantActivityReleaseGate{
+		Store:           memoryStore,
+		releaseStarted:  make(chan struct{}),
+		continueRelease: make(chan struct{}),
+	}
+	supervisor := newProjectAssistantSupervisor(context.Background(), claimStore)
+	t.Cleanup(func() { supervisor.Shutdown(context.Background()) })
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+
+	releaseFirst, err := supervisor.ReserveMutation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("first reservation: %v", err)
+	}
+	releaseFinished := make(chan struct{})
+	go func() {
+		releaseFirst()
+		close(releaseFinished)
+	}()
+	select {
+	case <-claimStore.releaseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("durable activity release did not begin")
+	}
+
+	secondStarted := make(chan struct{})
+	secondResult := make(chan struct {
+		release func()
+		err     error
+	}, 1)
+	go func() {
+		close(secondStarted)
+		release, reserveErr := supervisor.ReserveMutation(context.Background(), scope)
+		secondResult <- struct {
+			release func()
+			err     error
+		}{release: release, err: reserveErr}
+	}()
+	<-secondStarted
+	select {
+	case result := <-secondResult:
+		if result.release != nil {
+			result.release()
+		}
+		t.Fatalf("reservation completed while the old durable release was blocked: %v", result.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(claimStore.continueRelease)
+	select {
+	case <-releaseFinished:
+	case <-time.After(time.Second):
+		t.Fatal("old durable activity release did not finish")
+	}
+	var releaseSecond func()
+	select {
+	case result := <-secondResult:
+		if result.err != nil {
+			t.Fatalf("second reservation after release: %v", result.err)
+		}
+		releaseSecond = result.release
+	case <-time.After(time.Second):
+		t.Fatal("second reservation did not proceed after durable release")
+	}
+	defer releaseSecond()
+
+	if claim, ok, err := memoryStore.GetReplicaClaim(context.Background(), store.ActivityClaimKey(scope)); err != nil || !ok {
+		t.Fatalf("fresh owner claim was lost after reacquire: claim=%#v ok=%v err=%v", claim, ok, err)
 	}
 }
 
@@ -268,13 +472,13 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 	server.tenantActors = defaultTestActors.lookup
 	server.assistantSupervisor = supervisor
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
-	release, err := supervisor.Reserve(scope)
+	release, err := supervisor.ReserveThread(scope, "thread-1")
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
 	defer release()
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", ThreadID: "thread-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: "assistant-1", Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
@@ -1476,7 +1680,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
-		ID: "run-pending", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		ID: "run-pending", ThreadID: "thread-1", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
 		Status: store.AssistantRunStatusPendingPermission, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1",
 		RequestID: "perm-1", Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
@@ -1520,7 +1724,7 @@ func TestProjectAssistantThreadMirrorPublishesPendingApproval(t *testing.T) {
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
 	now := time.Now().UTC()
 	run := store.AssistantRun{
-		ID: "run-approval", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		ID: "run-approval", ThreadID: "thread-approval", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
 		Status: store.AssistantRunStatusRunning, ClientRequestID: "client-request", UserMessageID: "user-1", ActiveMessageID: "assistant-1",
 		Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
@@ -1832,7 +2036,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "follow-up-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", ThreadID: "thread-1", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusPendingInput, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", RequestID: "follow-up-1", Checkpoint: checkpoint, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {

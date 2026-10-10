@@ -15,8 +15,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +32,10 @@ import (
 // giteaStyleArchive serves a gzip tarball with a <root>/ prefix, the
 // convention the non-github scaffold path expects.
 func giteaStyleArchive(t *testing.T, files map[string]string) *httptest.Server {
+	return giteaStyleArchiveWithHook(t, files, nil)
+}
+
+func giteaStyleArchiveWithHook(t *testing.T, files map[string]string, onRequest func()) *httptest.Server {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -49,7 +56,16 @@ func giteaStyleArchive(t *testing.T, files map[string]string) *httptest.Server {
 		t.Fatal(err)
 	}
 	payload := buf.Bytes()
+	var requested bool
+	var requestMu sync.Mutex
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestMu.Lock()
+		firstRequest := !requested
+		requested = true
+		requestMu.Unlock()
+		if firstRequest && onRequest != nil {
+			onRequest()
+		}
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(payload)
 	}))
@@ -182,6 +198,89 @@ func TestSeedProjectScaffoldSeedsOverRepositoryBoilerplate(t *testing.T) {
 	ignore, err := store.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: ".gitignore"})
 	if err != nil || ignore.Content != "node_modules\n" {
 		t.Fatalf(".gitignore after seed = %#v, err=%v; the scaffold's copy wins", ignore, err)
+	}
+}
+
+func TestSeedProjectScaffoldDoesNotReplaceConcurrentBoilerplateEdit(t *testing.T) {
+	ctx := context.Background()
+	store := workspace.NewFileStore(t.TempDir())
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+	scope := projectWorkspaceScope(id, p)
+	if err := store.ApplyFiles(ctx, scope, []workspace.File{{Path: ".gitignore", Content: "generated\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := giteaStyleArchiveWithHook(t, map[string]string{
+		"web/index.html": "scaffold source",
+		".gitignore":     "scaffold ignore\n",
+	}, func() {
+		if err := store.ApplyFiles(ctx, scope, []workspace.File{{Path: ".gitignore", Content: "user edit\n"}}); err != nil {
+			t.Errorf("concurrent .gitignore edit: %v", err)
+		}
+	})
+	defer srv.Close()
+	info := projectTemplateInfo{Name: "x", ScaffoldRepo: srv.URL + "/team/starter", Components: map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}}}
+	if _, err := s.seedProjectScaffold(ctx, id, p, info); err == nil {
+		t.Fatal("stale scaffold overwrite succeeded; want version conflict")
+	} else {
+		var conflict *workspace.MutationError
+		if !errors.As(err, &conflict) || conflict.Code != workspace.MutationErrorStale || len(conflict.ChangedFiles) != 1 || conflict.ChangedFiles[0] != ".gitignore" {
+			t.Fatalf("scaffold conflict = %#v, want structured stale .gitignore conflict", err)
+		}
+	}
+	ignore, err := store.ReadFile(ctx, scope, workspace.ReadOptions{Path: ".gitignore"})
+	if err != nil || ignore.Content != "user edit\n" {
+		t.Fatalf("concurrent .gitignore after seed = %#v err=%v", ignore, err)
+	}
+	if _, err := store.ReadFile(ctx, scope, workspace.ReadOptions{Path: "web/index.html"}); err == nil {
+		t.Fatal("partial scaffold survived an all-or-nothing conflict")
+	}
+}
+
+func TestSeedProjectScaffoldKeepsSupportedFileCountAtomic(t *testing.T) {
+	files := make(map[string]string, 129)
+	for index := range 129 {
+		files[fmt.Sprintf("web/file-%03d.txt", index)] = "source"
+	}
+	srv := giteaStyleArchive(t, files)
+	defer srv.Close()
+	store := workspace.NewFileStore(t.TempDir())
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+	info := projectTemplateInfo{Name: "x", ScaffoldRepo: srv.URL + "/team/starter", Components: map[string]projectTemplateComponent{"app": {WorkspacePath: "."}}}
+	seeded, err := s.seedProjectScaffold(context.Background(), id, p, info)
+	if err != nil || seeded != len(files) {
+		t.Fatalf("seedProjectScaffold seeded=%d err=%v; want all %d files in one transaction", seeded, err, len(files))
+	}
+}
+
+func TestSeedMissingBuildWorkflowDoesNotReplaceConcurrentFile(t *testing.T) {
+	ctx := context.Background()
+	store := workspace.NewFileStore(t.TempDir())
+	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+	id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+	scope := projectWorkspaceScope(id, p)
+	want := ".github/workflows/build.yaml"
+	if err := store.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/app.js", Content: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := giteaStyleArchiveWithHook(t, map[string]string{want: "scaffold workflow\n"}, func() {
+		if err := store.ApplyFiles(ctx, scope, []workspace.File{{Path: want, Content: "user workflow\n"}}); err != nil {
+			t.Errorf("concurrent workflow create: %v", err)
+		}
+	})
+	defer srv.Close()
+	info := projectTemplateInfo{Name: "x", ScaffoldRepo: srv.URL + "/team/starter", BuildWorkflowPath: want}
+	seeded, err := s.seedMissingBuildWorkflow(ctx, id, p, info)
+	if err != nil || seeded != "" {
+		t.Fatalf("seedMissingBuildWorkflow = %q, %v; concurrent file should make it a no-op", seeded, err)
+	}
+	workflow, err := store.ReadFile(ctx, scope, workspace.ReadOptions{Path: want})
+	if err != nil || workflow.Content != "user workflow\n" {
+		t.Fatalf("workflow after seed = %#v err=%v", workflow, err)
 	}
 }
 

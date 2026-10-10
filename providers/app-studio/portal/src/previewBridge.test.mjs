@@ -211,11 +211,23 @@ test('annotation commit synchronizes durable pins immediately', async () => {
   assert.match(appSource, /aria-label="Delete annotation"/)
 })
 
-test('hydrates annotation drafts per active thread and clears only after accepted sends', async () => {
+test('hydrates full composer drafts per active thread and clears only after accepted sends', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(appSource, /watch\(activeAssistantAnnotationDraftScopeKey,[\s\S]*hydrateCurrentAssistantAnnotationDraft\(\)[\s\S]*\{ flush: 'post' \}/)
-  assert.match(appSource, /startPostAccepted = true\s+submissionOwner\.postAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID, sendContext\)\s+commitAttachments\(turnContentParts\)[\s\S]*?clearSelectedTurnAttachments\(\)/)
-  assert.match(appSource, /assistantComposerParts\.value = turnContentParts[\s\S]*persistCurrentAssistantAnnotationDraft\(turnContentParts\)/)
+  assert.match(appSource, /watch\(activeAssistantComposerDraftScopeKey,[\s\S]*hydrateCurrentAssistantComposerDraft\(\)[\s\S]*\{ flush: 'sync' \}/)
+  assert.match(appSource, /startPostAccepted = true\s+submissionOwner\.postAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantComposerDraft\(projectName, requestedThreadID, sendContext, projectUID\)\s+commitAttachments\(turnContentParts\)[\s\S]*?clearSelectedTurnAttachments\(\)/)
+  assert.match(appSource, /assistantComposerParts\.value = turnContentParts[\s\S]*persistCurrentAssistantComposerDraft\(turnContentParts\)/)
+})
+
+test('preview provenance attributes source and checkpoint revisions without claiming verification', async () => {
+  const [appSource, typesSource] = await Promise.all([
+    readFile(new URL('./App.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./types.ts', import.meta.url), 'utf8'),
+  ])
+  assert.match(typesSource, /export interface ProjectSourceChange[\s\S]*threadID\?: string[\s\S]*runID\?: string[\s\S]*sourceRevision: number/)
+  assert.match(typesSource, /lastSourceChange\?: ProjectSourceChange[\s\S]*lastPreviewCheckpoint\?: ProjectSourceChange/)
+  assert.match(appSource, /<span class="font-medium text-text-secondary">Source change<\/span>[\s\S]*sourceChangeProducer\(selected\.lastSourceChange\)[\s\S]*sourceRevision/)
+  assert.match(appSource, /<span class="font-medium text-text-secondary">Preview checkpoint<\/span>[\s\S]*sourceChangeProducer\(selected\.lastPreviewCheckpoint\)[\s\S]*sourceRevision/)
+  assert.doesNotMatch(appSource.slice(appSource.indexOf('aria-label="Development source provenance"'), appSource.indexOf('developmentSyncError || developmentPreviewAuthorizationError')), /verified|passed tests|checks passed/i)
 })
 
 test('hot reload replaces only the local bridge without waiting for remote deletion', async () => {

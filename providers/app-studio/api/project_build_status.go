@@ -104,6 +104,11 @@ func (s *Server) getProjectBuildLogs(ctx context.Context, id identity, p *aiv1al
 // rebuildProject re-runs the build workflow without a code change (retry a
 // flaky/failed build) through the Code provider's rebuild tool.
 func (s *Server) rebuildProject(ctx context.Context, id identity, p *aiv1alpha1.Project, httpReq *http.Request, ref string) (string, error) {
+	release, err := s.acquireProjectRuntimeOperation(ctx, projectWorkspaceScope(id, p))
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	repositoryRef, err := s.projectBuildRepositoryRef(id, p)
 	if err != nil {
 		return "", err

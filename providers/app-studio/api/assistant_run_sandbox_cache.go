@@ -219,9 +219,9 @@ func projectAssistantRunSandboxTenantKey(id identity, scope workspace.Scope) str
 }
 
 func projectAssistantRunSandboxName(scope workspace.Scope, project *aiv1alpha1.Project, runID string) string {
-	// runID is intentionally ignored. The Instance is a project-scoped cache;
-	// run ownership is a durable annotation claim, while this name keeps every
-	// new chat/follow-up on the same workspace volume for up to the hard TTL.
+	// Each durable run has its own command workspace. Sharing a project cache
+	// would let a parallel turn reseed files underneath an executing command.
+	// Continuations retain the run ID and therefore retain their pinned volume.
 	projectName := strings.TrimSpace(scope.ProjectName)
 	projectUID := strings.TrimSpace(scope.ProjectUID)
 	if project != nil {
@@ -232,7 +232,7 @@ func projectAssistantRunSandboxName(scope workspace.Scope, project *aiv1alpha1.P
 			projectUID = string(project.UID)
 		}
 	}
-	material := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, projectName, projectUID}, "\x00")
+	material := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, projectName, projectUID, strings.TrimSpace(runID)}, "\x00")
 	sum := sha256.Sum256([]byte(material))
 	base := dnsSafeSandboxName(projectName)
 	name := projectAssistantRunSandboxNamePrefix + base + "-" + hex.EncodeToString(sum[:projectAssistantRunSandboxHashBytes])

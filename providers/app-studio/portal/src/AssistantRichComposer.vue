@@ -45,6 +45,7 @@ const MAX_CHIPS = 8
 const props = withDefaults(defineProps<{
   modelValue: string
   contentParts?: ProjectAssistantContentPart[]
+  draftScopeKey?: string
   projectName: string
   skills: ProjectAssistantSkill[]
   selectedSkills?: ProjectAssistantSkill[]
@@ -61,6 +62,7 @@ const props = withDefaults(defineProps<{
   unresolvedAnnotationIds?: string[]
 }>(), {
   contentParts: () => [],
+  draftScopeKey: '',
   selectedSkills: () => [],
   selectedResources: () => [],
   disabled: false,
@@ -79,7 +81,6 @@ const emit = defineEmits<{
   'update:selectedSkills': [value: ProjectAssistantSkill[]]
   'update:selectedResources': [value: ProjectAssistantContextResource[]]
   'update:attachmentsPending': [value: boolean]
-  state: [value: AssistantComposerState]
   submit: [value: AssistantComposerState, intent: 'queue' | 'steer']
   selectMode: [mode: ProjectAssistantRunMode]
 }>()
@@ -108,6 +109,10 @@ interface AssistantAttachmentChip {
   receipt?: ProjectAssistantAttachmentReceipt
   /** Project that accepted the upload; cleanup must not follow a later route. */
   projectName?: string
+  /** Thread/user/project-UID scope that owns this uncommitted receipt. */
+  draftScopeKey: string
+  /** Preserve the authority that created the receipt across navigation. */
+  context?: RailgridContext | null
   /** The accepted turn now owns this receipt; the composer must not delete it. */
   committed?: boolean
   status: AssistantAttachmentStatus
@@ -117,6 +122,7 @@ interface AssistantAttachmentChip {
 }
 
 const attachmentChips = ref<AssistantAttachmentChip[]>([])
+const visibleAttachmentChips = computed(() => attachmentChips.value.filter((chip) => chip.draftScopeKey === props.draftScopeKey))
 
 const { waitForPicker, restorePickerFocus } = useAssistantFilePickerFocus(() => {
   const editor = editorRef.value
@@ -128,7 +134,7 @@ const localAnnotations = computed(() => localParts.value
   .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'annotation' }> => part.type === 'annotation')
   .map((part) => part.annotation))
 
-const attachmentChipsPending = computed(() => attachmentChips.value.some((chip) => chip.status !== 'ready'))
+const attachmentChipsPending = computed(() => visibleAttachmentChips.value.some((chip) => chip.status !== 'ready'))
 
 function attachmentLabel(chip: AssistantAttachmentChip): string {
   return chip.receipt?.filename || chip.file?.name || 'attachment'
@@ -150,13 +156,13 @@ function attachmentCleanupIDs(chip: Pick<AssistantAttachmentChip, 'clientID' | '
 
 /** Best-effort cleanup for cancelled or ambiguously failed draft uploads. */
 async function bestEffortDeleteAttachment(
-  chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt'>,
+  chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt' | 'context'>,
   projectName: string,
 ): Promise<void> {
   if (!projectName) return
   for (const attachmentID of attachmentCleanupIDs(chip)) {
     try {
-      await api.deleteAssistantAttachment(props.ctx, projectName, attachmentID)
+      await api.deleteAssistantAttachment(chip.context ?? props.ctx, projectName, attachmentID)
     } catch {
       // A 409 is expected when the receipt was bound by an accepted turn:
       // bound attachment bytes are immutable. A 404 is expected when a draft
@@ -210,6 +216,7 @@ function emitAttachmentPending() {
 }
 
 function reconcileAttachmentChips(parts: readonly ProjectAssistantContentPart[]) {
+  const scopeKey = props.draftScopeKey
   const receipts = parts
     .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'attachment' }> => part.type === 'attachment')
     .map((part) => part.attachment)
@@ -220,15 +227,18 @@ function reconcileAttachmentChips(parts: readonly ProjectAssistantContentPart[])
   // server finishes binding it. Unsubmitted ready drafts still get a
   // best-effort cleanup here before they leave the local chip set.
   for (const chip of attachmentChips.value) {
-    if (chip.status === 'ready' && !chip.committed && chip.receipt && !receiptIDs.has(chip.receipt.id)) {
+    if (chip.draftScopeKey === scopeKey && chip.status === 'ready' && !chip.committed && chip.receipt && !receiptIDs.has(chip.receipt.id)) {
       void bestEffortDeleteAttachment(chip, chip.projectName || props.projectName)
     }
   }
-  const retained = attachmentChips.value.filter((chip) => chip.status !== 'ready' || (chip.receipt && receiptIDs.has(chip.receipt.id)))
+  const retained = attachmentChips.value.filter((chip) => {
+    if (chip.draftScopeKey !== scopeKey) return chip.status === 'ready' && Boolean(chip.receipt)
+    return chip.status !== 'ready' || Boolean(chip.receipt && receiptIDs.has(chip.receipt.id))
+  })
   const knownIDs = new Set(retained.flatMap((chip) => chip.receipt ? [chip.receipt.id] : []))
   for (const receipt of receipts) {
     if (knownIDs.has(receipt.id)) continue
-    retained.push({ clientID: `receipt:${receipt.id}`, receipt, projectName: props.projectName, status: 'ready' })
+    retained.push({ clientID: `receipt:${receipt.id}`, receipt, projectName: props.projectName, draftScopeKey: scopeKey, context: props.ctx, status: 'ready' })
     knownIDs.add(receipt.id)
   }
   attachmentChips.value = retained
@@ -456,7 +466,6 @@ function emitState(): AssistantComposerState {
     contextResources: [...localResources.value],
     attachmentsPending: attachmentChipsPending.value,
   }
-  emit('state', state)
   return state
 }
 
@@ -626,13 +635,16 @@ function attachmentError(file: File, message: string): AssistantAttachmentChip {
   return {
     clientID: `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     file,
+    projectName: props.projectName,
+    draftScopeKey: props.draftScopeKey,
+    context: props.ctx,
     status: 'error',
     error: message,
   }
 }
 
 function appendAttachmentError(file: File, message: string) {
-  if (attachmentChips.value.length >= MAX_ASSISTANT_COMPOSER_PARTS) return
+  if (visibleAttachmentChips.value.length >= MAX_ASSISTANT_COMPOSER_PARTS) return
   attachmentChips.value = [...attachmentChips.value, attachmentError(file, message)]
   emitAttachmentPending()
 }
@@ -642,32 +654,36 @@ async function uploadAttachment(file: File, existingClientID?: string, allowWhil
   // and update props while the upload is in flight; cleanup must still target
   // the project that accepted the original upload request.
   const projectName = props.projectName
+  const draftScopeKey = props.draftScopeKey
+  const context = props.ctx
   if ((props.disabled || props.activeRun) && !allowWhileInactive) return
   if (!projectName.trim()) {
     appendAttachmentError(file, 'Select a project before adding an attachment.')
     return
   }
   const existingChip = existingClientID
-    ? attachmentChips.value.find((candidate) => candidate.clientID === existingClientID)
+    ? visibleAttachmentChips.value.find((candidate) => candidate.clientID === existingClientID)
     : undefined
   const clientID = existingClientID || `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const validationCandidates = existingChip
-    ? attachmentChips.value.filter((candidate) => candidate.clientID !== existingClientID)
-    : attachmentChips.value
+    ? visibleAttachmentChips.value.filter((candidate) => candidate.clientID !== existingClientID)
+    : visibleAttachmentChips.value
   const sharedValidationError = assistantAttachmentValidationError(file, validationCandidates)
   if (sharedValidationError) {
     appendAttachmentError(file, sharedValidationError)
     return
   }
-  const unresolvedCount = attachmentChips.value.filter((candidate) => candidate.clientID !== clientID && candidate.status !== 'ready').length
+  const unresolvedCount = visibleAttachmentChips.value.filter((candidate) => candidate.clientID !== clientID && candidate.status !== 'ready').length
   if (localParts.value.length + unresolvedCount >= MAX_ASSISTANT_COMPOSER_PARTS) {
     appendAttachmentError(file, `A turn can contain at most ${MAX_ASSISTANT_COMPOSER_PARTS} content parts.`)
     return
   }
   const controller = new AbortController()
-  const chip: AssistantAttachmentChip = existingChip || { clientID, file, projectName, status: 'uploading', retryAction: 'upload', controller }
+  const chip: AssistantAttachmentChip = existingChip || { clientID, file, projectName, draftScopeKey, context, status: 'uploading', retryAction: 'upload', controller }
   chip.file = file
   chip.projectName = projectName
+  chip.draftScopeKey = draftScopeKey
+  chip.context = context
   chip.committed = false
   chip.status = 'uploading'
   chip.error = undefined
@@ -676,15 +692,15 @@ async function uploadAttachment(file: File, existingClientID?: string, allowWhil
   if (!existingChip) attachmentChips.value = [...attachmentChips.value, chip]
   emitAttachmentPending()
   try {
-    const receipt = projectAssistantAttachmentReceipt(await api.uploadAssistantAttachment(props.ctx, projectName, file, controller.signal, clientID))
+    const receipt = projectAssistantAttachmentReceipt(await api.uploadAssistantAttachment(context, projectName, file, controller.signal, clientID))
     if (!receipt) throw new Error('The attachment upload returned an invalid receipt.')
-    if (props.projectName !== projectName) {
-      void bestEffortDeleteAttachment({ ...chip, receipt }, projectName)
+    if (props.projectName !== projectName || props.draftScopeKey !== draftScopeKey) {
+      void bestEffortDeleteAttachment({ ...chip, receipt, context }, projectName)
       return
     }
-    const current = attachmentChips.value.find((candidate) => candidate.clientID === clientID)
+    const current = visibleAttachmentChips.value.find((candidate) => candidate.clientID === clientID)
     if (!current) {
-      void bestEffortDeleteAttachment({ ...chip, receipt }, projectName)
+      void bestEffortDeleteAttachment({ ...chip, receipt, context }, projectName)
       return
     }
     current.receipt = receipt
@@ -695,10 +711,10 @@ async function uploadAttachment(file: File, existingClientID?: string, allowWhil
     localParts.value = [...localParts.value, assistantAttachmentPart(receipt)]
     emitState()
   } catch (error) {
-    const current = attachmentChips.value.find((candidate) => candidate.clientID === clientID)
+    const current = visibleAttachmentChips.value.find((candidate) => candidate.clientID === clientID)
     if (isAttachmentAbortError(error)) {
       void bestEffortDeleteAttachment(chip, projectName)
-      if (current && props.projectName === projectName) {
+      if (current && props.projectName === projectName && props.draftScopeKey === draftScopeKey) {
         current.status = 'staged'
         current.controller = undefined
         current.error = undefined
@@ -710,7 +726,7 @@ async function uploadAttachment(file: File, existingClientID?: string, allowWhil
     // Preserve the File candidate after an ambiguous response. The server may
     // have created a draft even when the browser received an error.
     void bestEffortDeleteAttachment(chip, projectName)
-    if (!current || props.projectName !== projectName) return
+    if (!current || props.projectName !== projectName || props.draftScopeKey !== draftScopeKey) return
     current.status = 'error'
     current.controller = undefined
     current.error = error instanceof Error ? error.message : 'Attachment upload failed.'
@@ -739,7 +755,7 @@ async function recoverUnavailableAttachments(receiptIDs: readonly string[]): Pro
   let removed = 0
   let unresolved = 0
 
-  for (const chip of [...attachmentChips.value]) {
+  for (const chip of [...visibleAttachmentChips.value]) {
     const receiptID = chip.receipt?.id.trim() || ''
     if (!receiptID || !requestedIDs.has(receiptID)) continue
     const previousReceiptID = receiptID
@@ -759,8 +775,8 @@ async function recoverUnavailableAttachments(receiptIDs: readonly string[]): Pro
     chip.controller = undefined
     emitState()
     await uploadAttachment(replacementFile, chip.clientID, true)
-    if (props.projectName !== projectName) return { recovered, removed, unresolved: unresolved + 1 }
-    const replacement = attachmentChips.value.find((candidate) => candidate.clientID === chip.clientID)
+    if (props.projectName !== projectName || chip.draftScopeKey !== props.draftScopeKey) return { recovered, removed, unresolved: unresolved + 1 }
+    const replacement = visibleAttachmentChips.value.find((candidate) => candidate.clientID === chip.clientID)
     if (replacement?.status === 'ready' && replacement.receipt) recovered += 1
     else unresolved += 1
   }
@@ -853,22 +869,23 @@ function retryAttachment(chip: AssistantAttachmentChip) {
 }
 
 async function removeAttachment(chip: AssistantAttachmentChip) {
+  const projectName = chip.projectName || props.projectName
   if (chip.status === 'uploading') {
     chip.controller?.abort()
-    void bestEffortDeleteAttachment(chip, props.projectName)
+    void bestEffortDeleteAttachment(chip, projectName)
     attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
     emitAttachmentPending()
     return
   }
   if (chip.status === 'deleting') return
-  if (!chip.receipt) void bestEffortDeleteAttachment(chip, props.projectName)
+  if (!chip.receipt) void bestEffortDeleteAttachment(chip, projectName)
   if (chip.receipt) {
     chip.status = 'deleting'
     chip.error = undefined
     chip.retryAction = undefined
     emitAttachmentPending()
     try {
-      await api.deleteAssistantAttachment(props.ctx, props.projectName, chip.receipt.id)
+      await api.deleteAssistantAttachment(chip.context ?? props.ctx, projectName, chip.receipt.id)
     } catch (error) {
       if (isProjectAPINotFoundError(error)) {
         // DELETE is idempotent from the composer perspective: an expired or
@@ -1106,13 +1123,17 @@ function syncFromProps() {
   }
 }
 
-watch(() => [props.modelValue, partSignature(props.contentParts), props.selectedSkills.map((skill) => skill.id).join(','), props.selectedResources.map(assistantResourceSelectionKey).join(',')], syncFromProps)
-watch(() => props.projectName, (current, previous) => {
-  if (current === previous) return
-  cleanupAttachmentChips(attachmentChips.value, previous)
-  attachmentChips.value = []
+watch(() => [props.modelValue, partSignature(props.contentParts), props.selectedSkills.map((skill) => skill.id).join(','), props.selectedResources.map(assistantResourceSelectionKey).join(','), props.draftScopeKey], syncFromProps)
+watch(() => [props.projectName, props.draftScopeKey] as const, ([currentProject, currentScope], [previousProject, previousScope]) => {
+  if (currentProject === previousProject && currentScope === previousScope) return
+  const pendingFromPreviousScope = attachmentChips.value.filter((chip) =>
+    chip.draftScopeKey === previousScope && chip.projectName === previousProject && chip.status !== 'ready',
+  )
+  cleanupAttachmentChips(pendingFromPreviousScope, previousProject)
+  const pendingIDs = new Set(pendingFromPreviousScope.map((chip) => chip.clientID))
+  attachmentChips.value = attachmentChips.value.filter((chip) => !pendingIDs.has(chip.clientID))
   emitAttachmentPending()
-})
+}, { flush: 'sync' })
 watch(() => [props.disabled, props.activeRun], ([disabled, active]) => {
   if (disabled || active) {
     closePalette(false)
@@ -1170,8 +1191,8 @@ defineExpose({
     />
     <!-- Retain draft receipts until acceptance: clearing them while sending
          would trigger cleanup of files the pending turn still needs. -->
-    <div v-if="attachmentChips.length" v-show="!submitting" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5">
-      <template v-for="chip in attachmentChips" :key="chip.clientID">
+    <div v-if="visibleAttachmentChips.length" v-show="!submitting" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5">
+      <template v-for="chip in visibleAttachmentChips" :key="chip.clientID">
         <AssistantAttachmentPreview
           v-if="chip.file && assistantAttachmentIsImage(chip.file)"
           :file="chip.file"

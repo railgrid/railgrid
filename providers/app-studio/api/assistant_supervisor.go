@@ -69,9 +69,20 @@ type projectAssistantSupervisor struct {
 	replicaID   string
 	replicaAddr string
 
-	mu           sync.Mutex
-	runs         map[projectAssistantRunKey]*projectAssistantSupervisedRun
-	reservations map[projectAssistantRunKey]store.Scope
+	mu             sync.Mutex
+	runs           map[projectAssistantRunKey]*projectAssistantSupervisedRun
+	reservations   map[projectAssistantRunKey]store.Scope
+	activityOwners map[projectAssistantRunKey]*projectAssistantActivityOwner
+}
+
+type projectAssistantActivityOwner struct {
+	scope       store.Scope
+	refs        int
+	exclusive   bool
+	releasing   bool
+	ready       chan struct{}
+	releaseDone chan struct{}
+	err         error
 }
 
 type projectAssistantSupervisedRun struct {
@@ -94,6 +105,7 @@ type projectAssistantSupervisedRun struct {
 	steering               chan projectAssistantSteeringInput
 	steeringReceipts       map[string]store.Message
 	acceptingSteering      bool
+	releaseActivityOwner   func()
 }
 
 type projectAssistantSnapshotAccumulator struct {
@@ -168,8 +180,10 @@ func newProjectAssistantSupervisor(parent context.Context, msgStore store.Store)
 	// the server-owned work "interrupted".
 	ctx, cancel := context.WithCancel(context.Background())
 	supervisor := &projectAssistantSupervisor{
-		store: msgStore, ctx: ctx, cancel: cancel, lifecycleLog: logProjectAssistantLifecycle, runs: map[projectAssistantRunKey]*projectAssistantSupervisedRun{}, reservations: map[projectAssistantRunKey]store.Scope{},
-		replicaID: defaultReplicaIdentity(),
+		store: msgStore, ctx: ctx, cancel: cancel, lifecycleLog: logProjectAssistantLifecycle,
+		runs: map[projectAssistantRunKey]*projectAssistantSupervisedRun{}, reservations: map[projectAssistantRunKey]store.Scope{},
+		activityOwners: map[projectAssistantRunKey]*projectAssistantActivityOwner{},
+		replicaID:      defaultReplicaIdentity(),
 	}
 	go func() {
 		select {
@@ -253,6 +267,214 @@ func (s *projectAssistantSupervisor) releaseActivity(scope store.Scope) {
 	}
 }
 
+func projectAssistantWorkspaceKey(scope store.Scope) projectAssistantRunKey {
+	return projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+}
+
+func projectAssistantThreadKey(scope store.Scope, threadID string) projectAssistantRunKey {
+	key := projectAssistantWorkspaceKey(scope)
+	key.ThreadID = strings.TrimSpace(threadID)
+	return key
+}
+
+func (s *projectAssistantSupervisor) runKey(scope store.Scope, runID string, threadIDs ...string) projectAssistantRunKey {
+	if len(threadIDs) > 0 {
+		return projectAssistantThreadKey(scope, threadIDs[0])
+	}
+	workspaceKey := projectAssistantWorkspaceKey(scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, active := range s.runs {
+		if key.OrgUUID == workspaceKey.OrgUUID && key.WorkspaceUUID == workspaceKey.WorkspaceUUID &&
+			key.ProjectName == workspaceKey.ProjectName && key.ProjectUID == workspaceKey.ProjectUID && active.run.ID == runID {
+			return key
+		}
+	}
+	return workspaceKey
+}
+
+// acquireActivityOwner keeps one durable project claim shared by concurrent
+// thread runs and short source mutations. Exclusive workspace operations use
+// the same owner and are admitted only when no other reference exists.
+func (s *projectAssistantSupervisor) acquireActivityOwner(ctx context.Context, scope store.Scope, exclusive bool) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := projectAssistantWorkspaceKey(scope)
+	if !key.valid() || s == nil || s.store == nil {
+		return nil, errors.New("assistant workspace owner scope and store are required")
+	}
+	for {
+		s.mu.Lock()
+		if owner := s.activityOwners[key]; owner != nil {
+			if owner.releasing {
+				released := owner.releaseDone
+				s.mu.Unlock()
+				select {
+				case <-released:
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			if exclusive || owner.exclusive {
+				s.mu.Unlock()
+				return nil, store.ErrAssistantRunConflict
+			}
+			owner.refs++
+			ready := owner.ready
+			s.mu.Unlock()
+			select {
+			case <-ready:
+				if owner.err != nil {
+					s.releaseActivityOwnerRef(key, owner)
+					return nil, owner.err
+				}
+			case <-ctx.Done():
+				s.releaseActivityOwnerRef(key, owner)
+				return nil, ctx.Err()
+			}
+			return s.activityOwnerRelease(key, owner), nil
+		}
+		owner := &projectAssistantActivityOwner{scope: scope, refs: 1, exclusive: exclusive, ready: make(chan struct{})}
+		s.activityOwners[key] = owner
+		s.mu.Unlock()
+
+		err := s.claimActivity(scope, "workspace-owner")
+		s.mu.Lock()
+		owner.err = err
+		close(owner.ready)
+		if err != nil && s.activityOwners[key] == owner {
+			delete(s.activityOwners, key)
+		}
+		s.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return s.activityOwnerRelease(key, owner), nil
+	}
+}
+
+func (s *projectAssistantSupervisor) activityOwnerRelease(key projectAssistantRunKey, owner *projectAssistantActivityOwner) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() { s.releaseActivityOwnerRef(key, owner) })
+	}
+}
+
+func (s *projectAssistantSupervisor) releaseActivityOwnerRef(key projectAssistantRunKey, owner *projectAssistantActivityOwner) {
+	if s == nil || owner == nil {
+		return
+	}
+	s.mu.Lock()
+	current := s.activityOwners[key]
+	if current != owner {
+		s.mu.Unlock()
+		return
+	}
+	owner.refs--
+	release := owner.refs <= 0 && owner.err == nil
+	if release {
+		// Keep the owner visible until the durable release finishes. A new
+		// reservation for this project must not renew the old claim and then
+		// have this delayed release delete that fresh claim.
+		owner.releasing = true
+		owner.releaseDone = make(chan struct{})
+	} else if owner.refs <= 0 {
+		delete(s.activityOwners, key)
+	}
+	s.mu.Unlock()
+	if release {
+		s.releaseActivity(owner.scope)
+		s.mu.Lock()
+		if s.activityOwners[key] == owner {
+			delete(s.activityOwners, key)
+		}
+		close(owner.releaseDone)
+		s.mu.Unlock()
+	}
+}
+
+func (s *projectAssistantSupervisor) claimRunActivity(scope store.Scope, run store.AssistantRun) error {
+	if s == nil || s.store == nil {
+		return errors.New("assistant supervisor store not configured")
+	}
+	s.mu.Lock()
+	replicaID, replicaAddr := s.replicaID, s.replicaAddr
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, held, err := s.store.TryClaimReplica(ctx, store.ReplicaClaim{
+		Key:          store.AssistantRunClaimKey(scope, run.ThreadID, run.ID),
+		Kind:         store.ReplicaClaimKindActivity,
+		ScopeKey:     store.ReplicaClaimScopeKey(scope),
+		OwnerReplica: replicaID,
+		OwnerAddr:    replicaAddr,
+		Detail:       run.ID,
+	}, assistantActivityClaimTTL)
+	if err != nil {
+		return fmt.Errorf("assistant run activity claim: %w", err)
+	}
+	if !held {
+		return store.ErrAssistantRunConflict
+	}
+	return nil
+}
+
+func (s *projectAssistantSupervisor) releaseRunActivity(scope store.Scope, run store.AssistantRun) {
+	if s == nil || s.store == nil {
+		return
+	}
+	s.mu.Lock()
+	replicaID := s.replicaID
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.ReleaseReplicaClaim(ctx, store.AssistantRunClaimKey(scope, run.ThreadID, run.ID), replicaID); err != nil {
+		klog.Background().Error(err, "releasing assistant run claim", "run", run.ID, "thread", run.ThreadID)
+	}
+}
+
+func (s *projectAssistantSupervisor) claimThreadReservation(scope store.Scope, threadID string) error {
+	if s == nil || s.store == nil || strings.TrimSpace(threadID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	replicaID, replicaAddr := s.replicaID, s.replicaAddr
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, held, err := s.store.TryClaimReplica(ctx, store.ReplicaClaim{
+		Key:          store.AssistantThreadClaimKey(scope, threadID),
+		Kind:         store.ReplicaClaimKindActivity,
+		ScopeKey:     store.ReplicaClaimScopeKey(scope),
+		OwnerReplica: replicaID,
+		OwnerAddr:    replicaAddr,
+		Detail:       "thread-reservation",
+	}, assistantActivityClaimTTL)
+	if err != nil {
+		return fmt.Errorf("assistant thread reservation claim: %w", err)
+	}
+	if !held {
+		return store.ErrAssistantRunConflict
+	}
+	return nil
+}
+
+func (s *projectAssistantSupervisor) releaseThreadReservation(scope store.Scope, threadID string) {
+	if s == nil || s.store == nil || strings.TrimSpace(threadID) == "" {
+		return
+	}
+	s.mu.Lock()
+	replicaID := s.replicaID
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.ReleaseReplicaClaim(ctx, store.AssistantThreadClaimKey(scope, threadID), replicaID); err != nil {
+		klog.Background().Error(err, "releasing assistant thread reservation claim", "thread", threadID)
+	}
+}
+
 // renewActivityClaims heartbeats the durable claim for every live local run
 // and reservation until the supervisor shuts down. A lost renewal (a peer
 // took the claim over after this replica stalled past the TTL) is logged —
@@ -268,29 +490,58 @@ func (s *projectAssistantSupervisor) renewActivityClaims() {
 		}
 		s.mu.Lock()
 		replicaID := s.replicaID
-		scopes := make([]store.Scope, 0, len(s.runs)+len(s.reservations))
-		for _, active := range s.runs {
-			scopes = append(scopes, active.scope)
+		owners := make([]*projectAssistantActivityOwner, 0, len(s.activityOwners))
+		type threadClaimRef struct {
+			scope    store.Scope
+			threadID string
 		}
-		for _, scope := range s.reservations {
-			scopes = append(scopes, scope)
+		threadClaims := make([]threadClaimRef, 0, len(s.reservations))
+		type runClaimRef struct {
+			scope store.Scope
+			run   store.AssistantRun
+		}
+		activeRuns := make([]runClaimRef, 0, len(s.runs))
+		for _, owner := range s.activityOwners {
+			owners = append(owners, owner)
+		}
+		for _, active := range s.runs {
+			activeRuns = append(activeRuns, runClaimRef{scope: active.scope, run: active.run})
+		}
+		for key, scope := range s.reservations {
+			if key.ThreadID != "" {
+				threadClaims = append(threadClaims, threadClaimRef{scope: scope, threadID: key.ThreadID})
+			}
 		}
 		s.mu.Unlock()
-		for _, scope := range scopes {
+		for _, owner := range owners {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			held, err := s.store.RenewReplicaClaim(ctx, store.ActivityClaimKey(scope), replicaID)
+			held, err := s.store.RenewReplicaClaim(ctx, store.ActivityClaimKey(owner.scope), replicaID)
 			if err != nil {
 				klog.Background().Error(err, "renewing assistant activity claim",
-					"org", scope.OrgUUID, "workspace", scope.WorkspaceUUID, "project", scope.ProjectName)
+					"org", owner.scope.OrgUUID, "workspace", owner.scope.WorkspaceUUID, "project", owner.scope.ProjectName)
 			} else if !held {
 				klog.Background().Info("assistant activity claim lost to another replica",
-					"org", scope.OrgUUID, "workspace", scope.WorkspaceUUID, "project", scope.ProjectName)
+					"org", owner.scope.OrgUUID, "workspace", owner.scope.WorkspaceUUID, "project", owner.scope.ProjectName)
 			}
 			// A long turn can outlive the request-path renewals of the project
 			// PIN (the run writes the workspace without further HTTP traffic);
 			// renew it alongside so the project cannot be adopted mid-turn.
 			// Owner-checked: a pin legitimately held elsewhere is untouched.
-			_, _ = s.store.RenewReplicaClaim(ctx, projectClaimKey(scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName), replicaID)
+			_, _ = s.store.RenewReplicaClaim(ctx, projectClaimKey(owner.scope.OrgUUID, owner.scope.WorkspaceUUID, owner.scope.ProjectName), replicaID)
+			cancel()
+		}
+		for _, reservation := range threadClaims {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if held, err := s.store.RenewReplicaClaim(ctx, store.AssistantThreadClaimKey(reservation.scope, reservation.threadID), replicaID); err != nil || !held {
+				klog.Background().Info("assistant thread reservation claim lost", "thread", reservation.threadID, "held", held, "error", err)
+			}
+			cancel()
+		}
+		for _, active := range activeRuns {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if held, err := s.store.RenewReplicaClaim(ctx, store.AssistantRunClaimKey(active.scope, active.run.ThreadID, active.run.ID), replicaID); err != nil || !held {
+				klog.Background().Info("assistant run activity claim lost", "thread", active.run.ThreadID, "run", active.run.ID, "held", held, "error", err)
+			}
 			cancel()
 		}
 	}
@@ -307,10 +558,17 @@ func (s *projectAssistantSupervisor) log(event string, scope store.Scope, run st
 // owned, otherwise a concurrent latest/stream request can incorrectly mark a
 // freshly-created run interrupted.
 func (s *projectAssistantSupervisor) Reserve(scope store.Scope) (func(), error) {
+	return s.ReserveWorkspace(context.Background(), scope)
+}
+
+// ReserveThread owns the start boundary for one thread while sharing the
+// project's durable workspace owner with turns on other threads.
+func (s *projectAssistantSupervisor) ReserveThread(scope store.Scope, threadID string) (func(), error) {
 	if s == nil {
 		return nil, errors.New("assistant supervisor not configured")
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := projectAssistantThreadKey(scope, threadID)
+	threadID = key.ThreadID
 	if !key.valid() {
 		return nil, errors.New("assistant supervisor scope is required")
 	}
@@ -328,40 +586,65 @@ func (s *projectAssistantSupervisor) Reserve(scope store.Scope) (func(), error) 
 	}
 	s.reservations[key] = scope
 	s.mu.Unlock()
-	// The durable twin: peers observe the reservation through the activity
-	// claim, so an external operation here and a turn on another replica
-	// cannot interleave. A fresh foreign claim (or an unverifiable store)
-	// conflicts, mirroring the local semantics.
-	if err := s.claimActivity(scope, "operation"); err != nil {
+	releaseOwner, err := s.acquireActivityOwner(context.Background(), scope, false)
+	if err != nil {
 		s.mu.Lock()
 		delete(s.reservations, key)
 		s.mu.Unlock()
 		return nil, err
 	}
+	if err := s.claimThreadReservation(scope, threadID); err != nil {
+		s.mu.Lock()
+		delete(s.reservations, key)
+		s.mu.Unlock()
+		releaseOwner()
+		return nil, err
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			s.releaseThreadReservation(scope, threadID)
 			s.mu.Lock()
 			delete(s.reservations, key)
-			// A run attached during the reservation now owns the claim
-			// (Attach re-claimed it with the run ID); releasing here would
-			// drop the live run's claim.
-			runOwnsClaim := s.runs[key] != nil
 			s.mu.Unlock()
-			if !runOwnsClaim {
-				s.releaseActivity(scope)
-			}
+			releaseOwner()
 		})
 	}, nil
 }
 
-func (s *projectAssistantSupervisor) reserved(scope store.Scope) bool {
+// ReserveMutation shares the project's owner for a short source mutation.
+// Its caller must hold the workspace store's transaction lock as well.
+func (s *projectAssistantSupervisor) ReserveMutation(ctx context.Context, scope store.Scope) (func(), error) {
+	return s.acquireActivityOwner(ctx, scope, false)
+}
+
+// ReserveWorkspace excludes turns and source transactions while a destructive
+// or runtime-wide operation changes the project workspace.
+func (s *projectAssistantSupervisor) ReserveWorkspace(ctx context.Context, scope store.Scope) (func(), error) {
+	return s.acquireActivityOwner(ctx, scope, true)
+}
+
+func (s *projectAssistantSupervisor) reserved(scope store.Scope, threadIDs ...string) bool {
 	if s == nil {
 		return false
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := projectAssistantWorkspaceKey(scope)
+	if len(threadIDs) > 0 {
+		key.ThreadID = strings.TrimSpace(threadIDs[0])
+		s.mu.Lock()
+		_, reserved := s.reservations[key]
+		s.mu.Unlock()
+		return reserved
+	}
 	s.mu.Lock()
-	_, reserved := s.reservations[key]
+	reserved := false
+	for reservation := range s.reservations {
+		if reservation.OrgUUID == key.OrgUUID && reservation.WorkspaceUUID == key.WorkspaceUUID &&
+			reservation.ProjectName == key.ProjectName && reservation.ProjectUID == key.ProjectUID {
+			reserved = true
+			break
+		}
+	}
 	s.mu.Unlock()
 	return reserved
 }
@@ -382,12 +665,22 @@ func (s *projectAssistantSupervisor) Shutdown(ctx context.Context) {
 			accumulators = append(accumulators, interruptedRun{accumulator: &projectAssistantSnapshotAccumulator{supervisor: s, key: key, runID: active.run.ID}, scope: active.scope, run: active.run})
 		}
 	}
+	type threadReservation struct {
+		scope    store.Scope
+		threadID string
+	}
+	threadReservations := make([]threadReservation, 0, len(s.reservations))
+	for key, scope := range s.reservations {
+		if key.ThreadID != "" {
+			threadReservations = append(threadReservations, threadReservation{scope: scope, threadID: key.ThreadID})
+		}
+	}
 	s.mu.Unlock()
 	for _, interrupted := range accumulators {
 		_, err := s.AbortWith(interrupted.scope, interrupted.run.ID, func(run *store.AssistantRun, _ *store.Message) error {
 			run.AbortReason = store.AssistantRunAbortReasonInterrupted
 			return nil
-		})
+		}, interrupted.run.ThreadID)
 		if err == nil {
 			interrupted.run.Status = store.AssistantRunStatusInterrupted
 			interrupted.run.AbortReason = store.AssistantRunAbortReasonInterrupted
@@ -395,19 +688,24 @@ func (s *projectAssistantSupervisor) Shutdown(ctx context.Context) {
 			_ = appendProjectAssistantInterruptedBoundary(ctx, s.store, interrupted.scope, interrupted.run)
 		}
 	}
-	// Hand back any reservation claims so a peer can take the projects over
-	// immediately rather than after the claim TTL.
-	s.mu.Lock()
-	reservationScopes := make([]store.Scope, 0, len(s.reservations))
-	for _, scope := range s.reservations {
-		reservationScopes = append(reservationScopes, scope)
-	}
-	s.mu.Unlock()
-	for _, scope := range reservationScopes {
-		s.releaseActivity(scope)
+	for _, reservation := range threadReservations {
+		s.releaseThreadReservation(reservation.scope, reservation.threadID)
 	}
 	if s.cancel != nil {
 		s.cancel()
+	}
+	// Shutdown has durably interrupted every active run, so release each
+	// project owner once regardless of how many thread and mutation refs it
+	// carried. Any deferred holder release after this point is idempotent.
+	s.mu.Lock()
+	ownerScopes := make([]store.Scope, 0, len(s.activityOwners))
+	for _, owner := range s.activityOwners {
+		ownerScopes = append(ownerScopes, owner.scope)
+	}
+	s.activityOwners = map[projectAssistantRunKey]*projectAssistantActivityOwner{}
+	s.mu.Unlock()
+	for _, scope := range ownerScopes {
+		s.releaseActivity(scope)
 	}
 }
 
@@ -415,40 +713,44 @@ func (s *projectAssistantSupervisor) Attach(scope store.Scope, run store.Assista
 	if s == nil || s.store == nil {
 		return nil, errors.New("assistant supervisor store not configured")
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	run.ThreadID = strings.TrimSpace(run.ThreadID)
+	key := projectAssistantThreadKey(scope, run.ThreadID)
 	if !key.valid() || run.ID == "" {
 		return nil, errors.New("assistant supervisor scope and run id are required")
+	}
+	releaseOwner, err := s.acquireActivityOwner(context.Background(), scope, false)
+	if err != nil {
+		return nil, err
 	}
 	run.ProjectName = scope.ProjectName
 	message.ProjectName = scope.ProjectName
 	s.mu.Lock()
 	if existing := s.runs[key]; existing != nil {
 		s.mu.Unlock()
+		releaseOwner()
 		if existing.run.ID == run.ID {
 			return &projectAssistantSnapshotAccumulator{supervisor: s, key: key, runID: run.ID}, nil
 		}
 		return nil, store.ErrAssistantRunConflict
 	}
-	delete(s.reservations, key)
 	_, cancel := context.WithCancelCause(s.ctx)
 	inserted := &projectAssistantSupervisedRun{
-		scope:            scope,
-		run:              run,
-		message:          message,
-		committedRun:     run,
-		committedMessage: message,
-		cancel:           cancel,
-		subscribers:      map[uint64]chan projectAssistantRunSnapshot{},
-		steering:         make(chan projectAssistantSteeringInput, projectAssistantSteeringQueueCapacity),
-		steeringReceipts: map[string]store.Message{},
+		scope:                scope,
+		run:                  run,
+		message:              message,
+		committedRun:         run,
+		committedMessage:     message,
+		cancel:               cancel,
+		subscribers:          map[uint64]chan projectAssistantRunSnapshot{},
+		steering:             make(chan projectAssistantSteeringInput, projectAssistantSteeringQueueCapacity),
+		steeringReceipts:     map[string]store.Message{},
+		releaseActivityOwner: releaseOwner,
 	}
 	s.runs[key] = inserted
 	s.mu.Unlock()
-	// Durable ownership: record this replica as the run's owner (upgrading a
-	// reservation's claim in place — same owner). A fresh foreign claim means
-	// another replica is mid-run on this project; back the local attach out
-	// and surface the same conflict the local map would have.
-	if err := s.claimActivity(scope, run.ID); err != nil {
+	// Keep an independent execution lease for thread-scoped recovery while the
+	// project claim continues fencing the shared workspace.
+	if err := s.claimRunActivity(scope, run); err != nil {
 		s.mu.Lock()
 		s.removeRunLocked(key, inserted)
 		s.mu.Unlock()
@@ -460,11 +762,11 @@ func (s *projectAssistantSupervisor) Attach(scope store.Scope, run store.Assista
 // Steering returns the run-scoped input queue owned by the supervisor. It is
 // intentionally receive-only outside the supervisor: EnqueueSteering persists
 // the user message and advances the durable run revision before delivery.
-func (s *projectAssistantSupervisor) Steering(scope store.Scope, runID string) <-chan projectAssistantSteeringInput {
+func (s *projectAssistantSupervisor) Steering(scope store.Scope, runID string, threadIDs ...string) <-chan projectAssistantSteeringInput {
 	if s == nil {
 		return nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if active := s.runs[key]; active != nil && active.run.ID == runID {
@@ -476,11 +778,11 @@ func (s *projectAssistantSupervisor) Steering(scope store.Scope, runID string) <
 // SealSteering atomically closes the active turn's input boundary when its
 // queue is empty. EnqueueSteering uses the same transition lock, so an input is
 // either durably queued before this boundary or rejected for a later run.
-func (s *projectAssistantSupervisor) SealSteering(scope store.Scope, runID string) bool {
+func (s *projectAssistantSupervisor) SealSteering(scope store.Scope, runID string, threadIDs ...string) bool {
 	if s == nil {
 		return true
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	s.mu.Unlock()
@@ -513,6 +815,7 @@ func (s *projectAssistantSupervisor) EnqueueSteering(
 	content string,
 	clientRequestID string,
 	mode store.AssistantRunMode,
+	threadIDs ...string,
 ) (store.AssistantRun, store.Message, store.Message, bool, error) {
 	if s == nil || s.store == nil {
 		return store.AssistantRun{}, store.Message{}, store.Message{}, false, nil
@@ -521,7 +824,7 @@ func (s *projectAssistantSupervisor) EnqueueSteering(
 	if expectedRunID == "" {
 		return store.AssistantRun{}, store.Message{}, store.Message{}, false, nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, expectedRunID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	if active == nil || active.run.ID != expectedRunID {
@@ -640,11 +943,12 @@ func (s *projectAssistantSupervisor) ActivateSteering(
 	scope store.Scope,
 	runID string,
 	inputs []projectAssistantSteeringInput,
+	threadIDs ...string,
 ) error {
 	if s == nil || len(inputs) == 0 {
 		return nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	s.mu.Unlock()
@@ -739,11 +1043,11 @@ func (a *projectAssistantSnapshotAccumulator) ActiveMessageID() string {
 	return ""
 }
 
-func (s *projectAssistantSupervisor) accumulatorFor(scope store.Scope, runID string) *projectAssistantSnapshotAccumulator {
+func (s *projectAssistantSupervisor) accumulatorFor(scope store.Scope, runID string, threadIDs ...string) *projectAssistantSnapshotAccumulator {
 	if s == nil {
 		return nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if active := s.runs[key]; active != nil && active.run.ID == runID {
@@ -756,11 +1060,12 @@ func (s *projectAssistantSupervisor) accumulatorForActiveMessage(scope store.Sco
 	if s == nil {
 		return nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if active := s.runs[key]; active != nil && active.message.ID == messageID {
-		return &projectAssistantSnapshotAccumulator{supervisor: s, key: key, runID: active.run.ID}
+	for key, active := range s.runs {
+		if key.OrgUUID == scope.OrgUUID && key.WorkspaceUUID == scope.WorkspaceUUID && key.ProjectName == scope.ProjectName && key.ProjectUID == scope.ProjectUID && active.message.ID == messageID {
+			return &projectAssistantSnapshotAccumulator{supervisor: s, key: key, runID: active.run.ID}
+		}
 	}
 	return nil
 }
@@ -768,11 +1073,11 @@ func (s *projectAssistantSupervisor) accumulatorForActiveMessage(scope store.Sco
 // BindStopRequest durably reserves the retry identity for a supervised Stop.
 // It shares the lifecycle transition lock so concurrent callers cannot replace
 // one another's receipt before Stop changes the run status.
-func (s *projectAssistantSupervisor) BindStopRequest(ctx context.Context, scope store.Scope, runID, actor, clientRequestID string) (bool, error) {
+func (s *projectAssistantSupervisor) BindStopRequest(ctx context.Context, scope store.Scope, runID, actor, clientRequestID string, threadIDs ...string) (bool, error) {
 	if s == nil {
 		return false, nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	if active == nil || active.run.ID != runID {
@@ -911,9 +1216,12 @@ func (s *projectAssistantSupervisor) removeRunLocked(key projectAssistantRunKey,
 		close(subscriber)
 	}
 	active.subscribers = nil
-	// Release the durable activity claim off the lock; owner-checked, so a
-	// replacement owner's claim survives a late release.
-	go s.releaseActivity(active.scope)
+	// Release this run's recovery lease and one reference to the shared project
+	// owner. The last run, mutation, or reservation releases the project claim.
+	go s.releaseRunActivity(active.scope, active.run)
+	if active.releaseActivityOwner != nil {
+		go active.releaseActivityOwner()
+	}
 }
 
 func assistantRunTerminal(status store.AssistantRunStatus) bool {
@@ -925,8 +1233,8 @@ func assistantRunTerminal(status store.AssistantRunStatus) bool {
 	return false
 }
 
-func (s *projectAssistantSupervisor) Abort(scope store.Scope, runID string) bool {
-	ok, _ := s.AbortWith(scope, runID, nil)
+func (s *projectAssistantSupervisor) Abort(scope store.Scope, runID string, threadIDs ...string) bool {
+	ok, _ := s.AbortWith(scope, runID, nil, threadIDs...)
 	return ok
 }
 
@@ -935,19 +1243,19 @@ func (s *projectAssistantSupervisor) Abort(scope store.Scope, runID string) bool
 // Callers with the authenticated request identity should use
 // StopWithIdentity so a suspended run sandbox can be deleted in the run's
 // workspace cluster.
-func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string) (store.AssistantRun, bool, error) {
-	return s.stopWithIdentity(context.Background(), identity{}, scope, runID)
+func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string, threadIDs ...string) (store.AssistantRun, bool, error) {
+	return s.stopWithIdentity(context.Background(), identity{}, scope, runID, threadIDs...)
 }
 
-func (s *projectAssistantSupervisor) StopWithIdentity(ctx context.Context, id identity, scope store.Scope, runID string) (store.AssistantRun, bool, error) {
-	return s.stopWithIdentity(ctx, id, scope, runID)
+func (s *projectAssistantSupervisor) StopWithIdentity(ctx context.Context, id identity, scope store.Scope, runID string, threadIDs ...string) (store.AssistantRun, bool, error) {
+	return s.stopWithIdentity(ctx, id, scope, runID, threadIDs...)
 }
 
-func (s *projectAssistantSupervisor) stopWithIdentity(ctx context.Context, id identity, scope store.Scope, runID string) (store.AssistantRun, bool, error) {
+func (s *projectAssistantSupervisor) stopWithIdentity(ctx context.Context, id identity, scope store.Scope, runID string, threadIDs ...string) (store.AssistantRun, bool, error) {
 	if s == nil {
 		return store.AssistantRun{}, false, nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	if active == nil || active.run.ID != runID {
@@ -961,7 +1269,7 @@ func (s *projectAssistantSupervisor) stopWithIdentity(ctx context.Context, id id
 	}
 	if active.run.Status == store.AssistantRunStatusPendingPermission || active.run.Status == store.AssistantRunStatusPendingInput {
 		s.mu.Unlock()
-		ok, err := s.AbortWith(scope, runID, nil)
+		ok, err := s.AbortWith(scope, runID, nil, threadIDs...)
 		if !ok || err != nil {
 			return store.AssistantRun{}, ok, err
 		}
@@ -1046,11 +1354,11 @@ func (s *projectAssistantSupervisor) stopWithIdentity(ctx context.Context, id id
 // Releasing transitionMu is the admission point of no return: a call admitted
 // before Stop may execute, while Stop closes the durable run before any later
 // caller can pass this check.
-func (s *projectAssistantSupervisor) AdmitMutation(ctx context.Context, scope store.Scope, runID, actor string) error {
+func (s *projectAssistantSupervisor) AdmitMutation(ctx context.Context, scope store.Scope, runID, actor string, threadIDs ...string) error {
 	if s == nil || s.store == nil {
 		return store.ErrAssistantRunConflict
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	actor = strings.TrimSpace(actor)
@@ -1081,11 +1389,11 @@ func (s *projectAssistantSupervisor) AdmitMutation(ctx context.Context, scope st
 // AbortWith applies the caller's synchronous terminal bookkeeping (audit and
 // pending-action sanitization) inside the same serialized transition that
 // persists the interrupted snapshot. Its name is retained for API stability.
-func (s *projectAssistantSupervisor) AbortWith(scope store.Scope, runID string, mutate func(*store.AssistantRun, *store.Message) error) (bool, error) {
+func (s *projectAssistantSupervisor) AbortWith(scope store.Scope, runID string, mutate func(*store.AssistantRun, *store.Message) error, threadIDs ...string) (bool, error) {
 	if s == nil {
 		return false, nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	if active == nil || active.run.ID != runID {
@@ -1151,11 +1459,11 @@ func (s *projectAssistantSupervisor) AbortWith(scope store.Scope, runID string, 
 	return true, nil
 }
 
-func (s *projectAssistantSupervisor) Subscribe(scope store.Scope, runID string, afterRevision int64) (<-chan projectAssistantRunSnapshot, func(), error) {
+func (s *projectAssistantSupervisor) Subscribe(scope store.Scope, runID string, afterRevision int64, threadIDs ...string) (<-chan projectAssistantRunSnapshot, func(), error) {
 	if s == nil {
 		return nil, nil, errors.New("assistant supervisor not configured")
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := s.runKey(scope, runID, threadIDs...)
 	s.mu.Lock()
 	active := s.runs[key]
 	if active == nil || active.run.ID != runID {

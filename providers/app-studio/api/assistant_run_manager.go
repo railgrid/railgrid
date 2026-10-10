@@ -48,6 +48,7 @@ type projectAssistantTurnItem struct {
 	WorkspaceUUID      string                                    `json:"workspaceUUID"`
 	ProjectName        string                                    `json:"projectName"`
 	ProjectUID         string                                    `json:"projectUID,omitempty"`
+	ThreadID           string                                    `json:"threadID,omitempty"`
 	User               string                                    `json:"user,omitempty"`
 	RunID              string                                    `json:"runID,omitempty"`
 	RequestID          string                                    `json:"requestID,omitempty"`
@@ -59,8 +60,8 @@ type projectAssistantTurnItem struct {
 	CreatedAt          time.Time                                 `json:"createdAt"`
 }
 
-func newProjectAssistantTurnItem(kind projectAssistantTurnKind, id identity, projectName string) projectAssistantTurnItem {
-	return projectAssistantTurnItem{
+func newProjectAssistantTurnItem(kind projectAssistantTurnKind, id identity, projectName string, threadIDs ...string) projectAssistantTurnItem {
+	item := projectAssistantTurnItem{
 		Kind:          kind,
 		OrgUUID:       strings.TrimSpace(id.orgUUID),
 		WorkspaceUUID: strings.TrimSpace(id.workspaceUUID),
@@ -68,6 +69,10 @@ func newProjectAssistantTurnItem(kind projectAssistantTurnKind, id identity, pro
 		User:          strings.TrimSpace(id.user),
 		CreatedAt:     time.Now().UTC(),
 	}
+	if len(threadIDs) > 0 {
+		item.ThreadID = strings.TrimSpace(threadIDs[0])
+	}
+	return item
 }
 
 func (i projectAssistantTurnItem) key() projectAssistantRunKey {
@@ -76,6 +81,7 @@ func (i projectAssistantTurnItem) key() projectAssistantRunKey {
 		WorkspaceUUID: strings.TrimSpace(i.WorkspaceUUID),
 		ProjectName:   strings.TrimSpace(i.ProjectName),
 		ProjectUID:    strings.TrimSpace(i.ProjectUID),
+		ThreadID:      strings.TrimSpace(i.ThreadID),
 	}
 }
 
@@ -84,6 +90,7 @@ type projectAssistantRunKey struct {
 	WorkspaceUUID string
 	ProjectName   string
 	ProjectUID    string
+	ThreadID      string
 }
 
 func (k projectAssistantRunKey) valid() bool {
@@ -187,8 +194,17 @@ func (m *projectAssistantRunManager) busy(key projectAssistantRunKey) bool {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, active := m.active[key]
-	return active
+	if key.ThreadID != "" {
+		_, active := m.active[key]
+		return active
+	}
+	for activeKey := range m.active {
+		if activeKey.OrgUUID == key.OrgUUID && activeKey.WorkspaceUUID == key.WorkspaceUUID &&
+			activeKey.ProjectName == key.ProjectName && activeKey.ProjectUID == key.ProjectUID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *projectAssistantRunManager) activeCount() int {

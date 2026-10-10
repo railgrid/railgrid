@@ -117,6 +117,8 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 
 	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
 		record.SourceRevision = 7
+		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7}
+		record.LastPreviewCheckpoint = &workspace.SourceChange{ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: 6}
 		record.UncommittedPaths = []string{"src/b.ts", "src/a.ts"}
 		record.PendingCommit = &workspace.PendingCommit{
 			Name: "commit-1", RepositoryRef: "demo-repo", WorkspaceDigest: "sha256:abc", Paths: []string{"src/a.ts"},
@@ -133,6 +135,12 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("source revision = %d, want 7", record.SourceRevision)
+	}
+	if record.LastSourceChange == nil || record.LastSourceChange.ThreadID != "thread-source" || record.LastSourceChange.RunID != "run-source" || record.LastSourceChange.SourceRevision != 7 {
+		t.Fatalf("source attribution = %#v", record.LastSourceChange)
+	}
+	if record.LastPreviewCheckpoint == nil || record.LastPreviewCheckpoint.ThreadID != "thread-preview" || record.LastPreviewCheckpoint.RunID != "run-preview" || record.LastPreviewCheckpoint.SourceRevision != 6 {
+		t.Fatalf("preview attribution = %#v", record.LastPreviewCheckpoint)
 	}
 	// Normalization is the ledger's, so readers never depend on which writer
 	// produced the record.

@@ -28,10 +28,10 @@ import (
 )
 
 const (
-	// Managed transactions are deliberately bounded. Project skill lifecycle
-	// requests are smaller than these limits, while the bound keeps a malformed
-	// request from retaining an unbounded before/after snapshot under the lock.
-	maxManagedTransactionChanges   = 128
+	// Managed transactions are deliberately bounded. The file count covers the
+	// largest supported scaffold import in one atomic write; the byte limit
+	// bounds before/after snapshots retained under the lock.
+	maxManagedTransactionChanges   = 400
 	maxManagedTransactionBytes     = 8 << 20
 	managedTransactionTempPrefix   = workspaceTempFilePrefix + "txn-"
 	managedTransactionBackupPrefix = workspaceTempFilePrefix + "backup-"
@@ -53,9 +53,11 @@ const (
 // version returned by ReadFile. Create is create-only and must omit
 // ExpectedVersion.
 type ManagedFileChange struct {
-	Path            string
-	Operation       ManagedFileOperation
-	Content         string
+	Path      string
+	Operation ManagedFileOperation
+	Content   string
+	// Data admits bounded binary uploads; nil retains the text-only contract.
+	Data            []byte
 	ExpectedVersion string
 }
 
@@ -176,7 +178,15 @@ func (s *FileStore) ApplyManagedTransaction(ctx context.Context, scope Scope, ch
 func (s *FileStore) preflightManagedTransaction(ctx context.Context, scope Scope, dir string, changes []ManagedFileChange) ([]*managedTransactionEntry, error) {
 	entries := make([]*managedTransactionEntry, 0, len(changes))
 	seen := make(map[string]struct{}, len(changes))
+	byteLimit := maxManagedTransactionBytes
+	for _, input := range changes {
+		if input.Data != nil {
+			byteLimit = 48 << 20
+			break
+		}
+	}
 	var aggregateBytes int
+	var conflict *MutationError
 	for _, change := range changes {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -193,13 +203,22 @@ func (s *FileStore) preflightManagedTransaction(ctx context.Context, scope Scope
 			return nil, err
 		}
 
+		if change.Data != nil {
+			if change.Content != "" {
+				return nil, newMutationError(MutationErrorInvalid, clean, "content and data cannot be combined")
+			}
+			if err := ValidateFileBytes(clean, change.Data); err != nil {
+				return nil, err
+			}
+			change.Content = string(change.Data)
+		}
 		entry := &managedTransactionEntry{change: change, clean: clean, target: filepath.Join(dir, filepath.FromSlash(clean)), mode: 0o644, changed: true}
 		switch change.Operation {
 		case ManagedFileCreate:
 			if strings.TrimSpace(change.ExpectedVersion) != "" {
 				return nil, newMutationError(MutationErrorInvalid, clean, "create must not include expectedVersion")
 			}
-			if err := validateMutationContent(clean, change.Content); err != nil {
+			if err := validateManagedContent(clean, change); err != nil {
 				return nil, newMutationError(MutationErrorInvalid, clean, "managed transaction content is invalid")
 			}
 			aggregateBytes += len([]byte(change.Content))
@@ -207,7 +226,7 @@ func (s *FileStore) preflightManagedTransaction(ctx context.Context, scope Scope
 			if err := validateExpectedVersion(clean, change.ExpectedVersion); err != nil {
 				return nil, err
 			}
-			if err := validateMutationContent(clean, change.Content); err != nil {
+			if err := validateManagedContent(clean, change); err != nil {
 				return nil, newMutationError(MutationErrorInvalid, clean, "managed transaction content is invalid")
 			}
 			aggregateBytes += len([]byte(change.Content))
@@ -218,11 +237,15 @@ func (s *FileStore) preflightManagedTransaction(ctx context.Context, scope Scope
 		default:
 			return nil, newMutationError(MutationErrorInvalid, clean, "managed transaction operation is unsupported")
 		}
-		if aggregateBytes > maxManagedTransactionBytes {
+		if aggregateBytes > byteLimit {
 			return nil, newMutationError(MutationErrorInvalid, clean, "managed transaction content is too large")
 		}
 
-		before, existed, err := s.readMutationTargetLimited(ctx, scope, clean, MaxWriteBytes)
+		readLimit := MaxWriteBytes
+		if change.Data != nil {
+			readLimit = MaxBinaryWriteBytes
+		}
+		before, existed, err := s.readMutationTargetLimited(ctx, scope, clean, readLimit)
 		if err != nil {
 			var tooLarge *workspaceFileTooLargeError
 			if errors.As(err, &tooLarge) {
@@ -234,16 +257,23 @@ func (s *FileStore) preflightManagedTransaction(ctx context.Context, scope Scope
 		switch change.Operation {
 		case ManagedFileCreate:
 			if existed {
-				return nil, newMutationError(MutationErrorTargetExists, clean, "target already exists")
+				conflict = appendManagedConflict(conflict, newMutationError(MutationErrorTargetExists, clean, "target already exists"))
+				continue
 			}
 		case ManagedFileReplace, ManagedFileDelete:
 			if !existed {
-				return nil, newMutationError(MutationErrorTargetNotFound, clean, "target file does not exist")
+				conflict = appendManagedConflict(conflict, newMutationError(MutationErrorTargetNotFound, clean, "target file does not exist"))
+				continue
 			}
 			if err := requireExpectedVersion(clean, before, change.ExpectedVersion); err != nil {
-				return nil, err
+				var stale *MutationError
+				if !errors.As(err, &stale) {
+					return nil, err
+				}
+				conflict = appendManagedConflict(conflict, stale)
+				continue
 			}
-			if !validTextContent(string(before)) {
+			if change.Data == nil && !validTextContent(string(before)) {
 				return nil, newMutationError(MutationErrorInvalid, clean, "source file is not UTF-8 text")
 			}
 		}
@@ -262,7 +292,25 @@ func (s *FileStore) preflightManagedTransaction(ctx context.Context, scope Scope
 		}
 		entries = append(entries, entry)
 	}
+	if conflict != nil {
+		return nil, conflict
+	}
 	return entries, nil
+}
+
+func validateManagedContent(path string, change ManagedFileChange) error {
+	if change.Data != nil {
+		return ValidateFileBytes(path, change.Data)
+	}
+	return validateMutationContent(path, change.Content)
+}
+
+func appendManagedConflict(existing, next *MutationError) *MutationError {
+	if existing == nil {
+		return next
+	}
+	existing.ChangedFiles = append(existing.ChangedFiles, next.ChangedFiles...)
+	return existing
 }
 
 func stageManagedTransaction(entries []*managedTransactionEntry, stageDir string, ctx context.Context) error {
@@ -283,7 +331,11 @@ func stageManagedTransaction(entries []*managedTransactionEntry, stageDir string
 }
 
 func (s *FileStore) verifyManagedTransactionEntry(ctx context.Context, scope Scope, entry *managedTransactionEntry) error {
-	current, existed, err := s.readMutationTargetLimited(ctx, scope, entry.clean, MaxWriteBytes)
+	readLimit := MaxWriteBytes
+	if entry.change.Data != nil {
+		readLimit = MaxBinaryWriteBytes
+	}
+	current, existed, err := s.readMutationTargetLimited(ctx, scope, entry.clean, readLimit)
 	if err != nil {
 		var tooLarge *workspaceFileTooLargeError
 		if errors.As(err, &tooLarge) {
@@ -392,7 +444,13 @@ func managedTransactionResults(entries []*managedTransactionEntry) []MutationRes
 			operation = "delete_file"
 			after = ""
 		}
-		result := mutationResult(operation, entry.clean, entry.before, after, 0)
+		var result MutationResult
+		if entry.change.Data != nil && (!validTextContent(after) || !validTextContent(string(entry.before))) {
+			result = MutationResult{Operation: operation, Path: entry.clean, Size: int64(len(after)), Version: fileVersion([]byte(after)), Binary: true}
+		} else {
+			result = mutationResult(operation, entry.clean, entry.before, after, 0)
+		}
+		result.Created = entry.change.Operation == ManagedFileCreate
 		result.Changed = entry.changed
 		results = append(results, result)
 	}

@@ -91,7 +91,7 @@ func readyRunSandboxStatus(generation int64) map[string]any {
 	}
 }
 
-func TestProjectAssistantRunSandboxNameIsProjectScoped(t *testing.T) {
+func TestProjectAssistantRunSandboxNameIsRunScoped(t *testing.T) {
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "shop", ProjectUID: "uid-a"}
 	one := projectAssistantRunSandboxName(scope, &aiv1alpha1.Project{}, "run-a")
 	if one == "" || len(one) > projectAssistantRunSandboxNameMaxLength {
@@ -112,8 +112,8 @@ func TestProjectAssistantRunSandboxNameIsProjectScoped(t *testing.T) {
 			t.Errorf("%s input collided with %q", changed.name, one)
 		}
 	}
-	if got := projectAssistantRunSandboxName(scope, &aiv1alpha1.Project{}, "run-b"); got != one {
-		t.Fatalf("run ID changed project cache identity: %q vs %q", got, one)
+	if got := projectAssistantRunSandboxName(scope, &aiv1alpha1.Project{}, "run-b"); got == one {
+		t.Fatalf("parallel runs share a command workspace: %q", got)
 	}
 }
 
@@ -634,7 +634,7 @@ func TestProjectAssistantRunSandboxSuspensionPreservesDurableClaim(t *testing.T)
 	}
 }
 
-func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *testing.T) {
+func TestProjectAssistantRunSandboxSameRunClaimsAndRebasesItsCache(t *testing.T) {
 	t.Setenv(projectAssistantRunSandboxModeEnv, string(CodingSandboxModeForce))
 	t.Setenv(projectAssistantDevelopmentModeEnv, "true")
 	ctx := context.Background()
@@ -677,7 +677,7 @@ func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *
 		Project:        project,
 		Workspace:      files,
 		WorkspaceScope: scope,
-		AssistantRun:   &store.AssistantRun{ID: "run-2"},
+		AssistantRun:   &store.AssistantRun{ID: "run-1"},
 	}
 	sandbox, release, err := server.ensureProjectAssistantRunSandbox(ctx, req, newProjectEinoAssistantRunState())
 	if err != nil {
@@ -691,8 +691,8 @@ func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *
 	if metadata.Instance.Name != cacheName {
 		t.Fatalf("follow-up cache name = %q, want %q", metadata.Instance.Name, cacheName)
 	}
-	if metadata.RunID != "run-2" || metadata.CacheGeneration != "run-2" {
-		t.Fatalf("follow-up metadata run=%q generation=%q, want run-2 for both", metadata.RunID, metadata.CacheGeneration)
+	if metadata.RunID != "run-1" || metadata.CacheGeneration != "run-1" {
+		t.Fatalf("follow-up metadata run=%q generation=%q, want run-1 for both", metadata.RunID, metadata.CacheGeneration)
 	}
 	if metadata.RemoteCheckpointID != "baseline-next" {
 		t.Fatalf("follow-up baseline = %q, want fresh baseline-next", metadata.RemoteCheckpointID)
@@ -711,8 +711,8 @@ func TestProjectAssistantRunSandboxFreshFollowUpClaimsAndRebasesProjectCache(t *
 		t.Fatal(err)
 	}
 	annotations := updated.GetAnnotations()
-	if annotations[projectAssistantRunSandboxClaimOwner] != "run-2" || annotations[projectAssistantRunSandboxCacheGeneration] != "run-2" || annotations[projectAssistantRunSandboxCacheState] != projectAssistantRunSandboxCacheStateActive {
-		t.Fatalf("follow-up durable claim = %#v, want run-2 active generation", annotations)
+	if annotations[projectAssistantRunSandboxClaimOwner] != "run-1" || annotations[projectAssistantRunSandboxCacheGeneration] != "run-1" || annotations[projectAssistantRunSandboxCacheState] != projectAssistantRunSandboxCacheStateActive {
+		t.Fatalf("follow-up durable claim = %#v, want run-1 active generation", annotations)
 	}
 }
 
@@ -769,7 +769,7 @@ func TestProjectAssistantRunSandboxColdMultiMutationWarmFollowUpKeepsRemoteRevis
 	}
 	releaseFirst()
 
-	second, releaseSecond, err := server.ensureProjectAssistantRunSandbox(ctx, request("run-warm"), newProjectEinoAssistantRunState())
+	second, releaseSecond, err := server.ensureProjectAssistantRunSandbox(ctx, request("run-cold"), newProjectEinoAssistantRunState())
 	if err != nil {
 		t.Fatalf("warm ensure: %v", err)
 	}
@@ -1249,8 +1249,14 @@ func TestProjectAssistantRunSandboxCheckpointIsAtomicAndSyncs(t *testing.T) {
 	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
 	sandbox := &projectAssistantRunSandbox{
 		server: server, client: fake, project: sandboxProject, id: identity{orgUUID: "org", workspaceUUID: "ws"}, scope: scope,
-		target:   projectDevelopmentSyncTargetInfo{Resource: "instances", ResourceName: "run", Components: map[string]projectTemplateComponent{"app": {WorkspacePath: "."}}},
-		metadata: projectAssistantRunSandboxMetadata{Status: "active", SourceRevision: revision, SourceDigest: fake.response.SourceDigest, RemoteRevision: revision, RemoteDigest: fake.response.SourceDigest, RemoteCheckpointID: "baseline", RunID: "run", HardExpiresAt: time.Now().Add(time.Hour)},
+		target: projectDevelopmentSyncTargetInfo{Resource: "instances", ResourceName: "run", Components: map[string]projectTemplateComponent{"app": {WorkspacePath: "."}}},
+		metadata: projectAssistantRunSandboxMetadata{
+			Status: "active", SourceRevision: revision, SourceDigest: fake.response.SourceDigest,
+			RemoteRevision: revision, RemoteDigest: fake.response.SourceDigest, RemoteCheckpointID: "baseline", RunID: "run", HardExpiresAt: time.Now().Add(time.Hour),
+			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
+				"main.go": {Version: projectAssistantSandboxContentVersion("new\n")},
+			},
+		},
 	}
 	if err := sandbox.checkpoint(ctx, projectAssistantRunRequest{Workspace: files, WorkspaceScope: scope, Identity: identity{orgUUID: "org", workspaceUUID: "ws"}, Project: project}); err != nil {
 		t.Fatal(err)
@@ -1265,14 +1271,26 @@ func TestProjectAssistantRunSandboxCheckpointIsAtomicAndSyncs(t *testing.T) {
 		t.Fatal("checkpoint did not trigger preview sync")
 	}
 
-	// A source revision drift rejects the complete checkpoint before the fake
-	// worker response can be applied, preserving the local bytes atomically.
+	// An unrelated thread edit leaves this changed file version valid.
 	if _, err := files.CreateFile(ctx, scope, workspace.CreateOptions{Path: "other.txt", Content: "drift"}); err != nil {
 		t.Fatal(err)
 	}
 	fake.response.Changes = []projectAssistantSandboxWorkspaceChange{{Path: "main.go", Operation: string(workspace.ManagedFileReplace), Content: "bad\n", ExpectedVersion: got.Version}}
-	if err := sandbox.checkpoint(ctx, projectAssistantRunRequest{Workspace: files, WorkspaceScope: scope, Identity: identity{orgUUID: "org", workspaceUUID: "ws"}, Project: project}); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
-		t.Fatalf("checkpoint drift err = %v, want conflict", err)
+	sandbox.metadata.ApprovedMutations = map[string]projectAssistantSandboxMutationReceipt{
+		"main.go": {Version: projectAssistantSandboxContentVersion("bad\n")},
+	}
+	if err := sandbox.checkpoint(ctx, projectAssistantRunRequest{Workspace: files, WorkspaceScope: scope, Identity: identity{orgUUID: "org", workspaceUUID: "ws"}, Project: project}); err != nil {
+		t.Fatalf("disjoint checkpoint: %v", err)
+	}
+	if other, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: "other.txt", MaxBytes: workspace.MaxReadMaxBytes}); err != nil || other.Content != "drift" {
+		t.Fatalf("other thread edit = %#v, %v", other, err)
+	}
+	fake.response.Changes[0].ExpectedVersion = got.Version
+	sandbox.metadata.ApprovedMutations = map[string]projectAssistantSandboxMutationReceipt{
+		"main.go": {Version: projectAssistantSandboxContentVersion("bad\n")},
+	}
+	if err := sandbox.checkpoint(ctx, projectAssistantRunRequest{Workspace: files, WorkspaceScope: scope}); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
+		t.Fatalf("same-file conflict = %v", err)
 	}
 }
 
@@ -1387,6 +1405,9 @@ func TestProjectAssistantRunSandboxCheckpointPersistsWithoutPreviewTemplate(t *t
 			Status: "active", Template: projectAssistantRunSandboxDefaultTemplate,
 			SourceRevision: revision, SourceDigest: oldDigest, RemoteRevision: revision + 1, RemoteDigest: "changed",
 			RemoteCheckpointID: "baseline", RunID: "run", HardExpiresAt: time.Now().Add(time.Hour),
+			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
+				"main.go": {Version: projectAssistantSandboxContentVersion("package main\n")},
+			},
 		},
 	}
 	state.SetSandbox(sandbox)
@@ -1467,6 +1488,9 @@ func TestProjectAssistantRunSandboxInspectionCheckpointsDirtyMutationBeforeBrows
 			Status: "active", SourceRevision: revision, SourceDigest: oldDigest,
 			RemoteRevision: revision + 1, RemoteDigest: newDigest, RemoteCheckpointID: "baseline",
 			RunID: "run", HardExpiresAt: time.Now().Add(time.Hour),
+			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
+				"main.go": {Version: projectAssistantSandboxContentVersion("new\n")},
+			},
 		},
 	}
 	state.SetSandbox(sandbox)
@@ -1495,7 +1519,7 @@ func TestProjectAssistantRunSandboxInspectionCheckpointsDirtyMutationBeforeBrows
 	}
 }
 
-func TestProjectAssistantRunSandboxCheckpointIfDirtySkipsReadOnlyAndCleanRuns(t *testing.T) {
+func TestProjectAssistantRunSandboxCheckpointIfDirtyReadOnlyRequiresMatchingSnapshot(t *testing.T) {
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: workspace.NewFileStore(t.TempDir())}
 	id := identity{orgUUID: "org", workspaceUUID: "ws"}
 	project := &aiv1alpha1.Project{}
@@ -1512,11 +1536,10 @@ func TestProjectAssistantRunSandboxCheckpointIfDirtySkipsReadOnlyAndCleanRuns(t 
 	}
 	state.SetSandbox(sandbox)
 	checkpointed, err := server.checkpointProjectAssistantRunSandboxIfDirty(context.Background(), state)
-	if err != nil || checkpointed || fake.workspaceCalls != 0 {
-		t.Fatalf("read-only checkpoint = (%v, %v), worker calls=%d; want clean no-op", checkpointed, err, fake.workspaceCalls)
+	if !errors.Is(err, errProjectAssistantRunSandboxConflict) || !checkpointed || fake.workspaceCalls != 0 {
+		t.Fatalf("read-only evidence = (%v, %v), worker calls=%d; want conflict without writeback", checkpointed, err, fake.workspaceCalls)
 	}
 
-	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
 	sandbox.mu.Lock()
 	sandbox.metadata.RemoteRevision = sandbox.metadata.SourceRevision
 	sandbox.metadata.RemoteDigest = sandbox.metadata.SourceDigest
@@ -1526,6 +1549,13 @@ func TestProjectAssistantRunSandboxCheckpointIfDirtySkipsReadOnlyAndCleanRuns(t 
 	checkpointed, err = server.checkpointProjectAssistantRunSandboxIfDirty(context.Background(), state)
 	if err != nil || checkpointed || fake.workspaceCalls != 0 {
 		t.Fatalf("clean checkpoint = (%v, %v), worker calls=%d; want no-op", checkpointed, err, fake.workspaceCalls)
+	}
+	if err := server.workspaces.ApplyFiles(context.Background(), sandbox.scope, []workspace.File{{Path: "sibling.txt", Content: "new source"}}); err != nil {
+		t.Fatal(err)
+	}
+	checkpointed, err = server.checkpointProjectAssistantRunSandboxIfDirty(context.Background(), state)
+	if !errors.Is(err, errProjectAssistantRunSandboxConflict) || !checkpointed || fake.workspaceCalls != 0 {
+		t.Fatalf("read-only sibling source evidence = (%v, %v), calls=%d", checkpointed, err, fake.workspaceCalls)
 	}
 }
 
@@ -1621,7 +1651,7 @@ func (f *sandboxRevisionDomainFake) Workspace(_ context.Context, _ identity, _ d
 		if !ok {
 			return projectAssistantSandboxWorkspaceResponse{}, fs.ErrNotExist
 		}
-		return projectAssistantSandboxWorkspaceResponse{Status: "ok", SourceRevision: f.revision, SourceDigest: f.digest, File: workspace.FileContent{Path: request.Path, Content: content}}, nil
+		return projectAssistantSandboxWorkspaceResponse{Status: "ok", SourceRevision: f.revision, SourceDigest: f.digest, File: workspace.FileContent{Path: request.Path, Content: content, Version: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content)))}}, nil
 	case "replace":
 		if request.SourceRevision != f.revision || !sandboxDigestEqual(request.SourceDigest, f.digest) {
 			return projectAssistantSandboxWorkspaceResponse{}, errProjectAssistantRunSandboxConflict

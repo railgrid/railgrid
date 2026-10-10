@@ -233,7 +233,7 @@ type projectAssistantAuditCompaction struct {
 }
 
 func (s *Server) saveProjectAssistantRun(ctx context.Context, scope store.Scope, run store.AssistantRun) error {
-	if accumulator := s.projectAssistantSupervisor().accumulatorFor(scope, run.ID); accumulator != nil {
+	if accumulator := s.projectAssistantSupervisor().accumulatorFor(scope, run.ID, run.ThreadID); accumulator != nil {
 		return accumulator.UpdateRun(ctx, func(current *store.AssistantRun) {
 			current.Status = run.Status
 			current.RequestID = run.RequestID
@@ -510,9 +510,9 @@ func projectAssistantPermissionReasonForArguments(spec projectAssistantToolSpec,
 	case projectToolExecCommand:
 		component := projectToolString(args["component"])
 		if component == "" {
-			return "Run one bounded compiler, test, or lint command in the synchronized live development runtime."
+			return "Run one bounded compiler, test, or lint command in this run's isolated coding sandbox, pinned to its source snapshot."
 		}
-		return fmt.Sprintf("Run the approved bounded argv in live development component %q using application-container authority and the application network; no App Studio source writeback is allowed.", component)
+		return fmt.Sprintf("Run the approved bounded argv in this run's isolated coding sandbox component %q using application-container authority and the application network; no App Studio source writeback is allowed.", component)
 	case projectToolRebuildProject:
 		if ref := projectToolString(args["ref"]); ref != "" {
 			return fmt.Sprintf("Re-run this project's build workflow for branch or ref %q without changing code.", ref)
@@ -667,7 +667,7 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
-	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, runID)
+	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, runID, preflightRun.ThreadID)
 	if accumulator == nil {
 		return projectAssistantResumeResponse{}, store.ErrAssistantRunConflict
 	}
@@ -780,7 +780,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	out projectAssistantResumeResponse,
 ) (projectAssistantResumeResponse, error) {
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, id, p.Name)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, id, p.Name, run.ThreadID)
 	turn.ProjectUID = messageScope.ProjectUID
 	turn.RunID = run.ID
 	turn.RequestID = run.RequestID
@@ -831,7 +831,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		assistantID = newMessageID()
 	}
 	assistantContent := &strings.Builder{}
-	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, run.ID)
+	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, run.ID, run.ThreadID)
 	metadataState := &projectAssistantDurableMetadataState{
 		status:             "Working",
 		workSegmentStarted: time.Now().UTC(),
@@ -975,12 +975,12 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		ApprovalMode:             projectAssistantApprovalModeFromRun(resumeRun),
 		Continuation:             &state,
 		AssistantRun:             &resumeRun,
-		Steering:                 s.projectAssistantSupervisor().Steering(messageScope, resumeRun.ID),
+		Steering:                 s.projectAssistantSupervisor().Steering(messageScope, resumeRun.ID, resumeRun.ThreadID),
 		SealSteering: func() bool {
-			return s.projectAssistantSupervisor().SealSteering(messageScope, resumeRun.ID)
+			return s.projectAssistantSupervisor().SealSteering(messageScope, resumeRun.ID, resumeRun.ThreadID)
 		},
 		ActivateSteering: func(activateCtx context.Context, inputs []projectAssistantSteeringInput) error {
-			return s.projectAssistantSupervisor().ActivateSteering(activateCtx, messageScope, resumeRun.ID, inputs)
+			return s.projectAssistantSupervisor().ActivateSteering(activateCtx, messageScope, resumeRun.ID, inputs, resumeRun.ThreadID)
 		},
 		StreamCallbacks: projectAssistantStreamCallbacks{
 			OnChunk: func(chunk string) {

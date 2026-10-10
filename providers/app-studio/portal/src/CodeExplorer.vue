@@ -61,17 +61,13 @@ import {
 // edits and development sync pushes into the sandbox. Left: a collapsible tree
 // built from the flat path list, with upload, new-file, and drop targets.
 // Right: the selected file's content, or metadata, preview, and download for
-// binary files. Writes are paused while an assistant run owns the project.
+// binary files. Source transactions use exact versions while threads run.
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   ctx: RailgridContext | null
   projectName: string
   refreshRevision: number
-  /** An assistant run owns the workspace; the server answers writes with 409. */
-  assistantBusy?: boolean
-}>(), {
-  assistantBusy: false,
-})
+}>()
 
 const files = ref<ProjectFileInfo[]>([])
 const loadingTree = ref(false)
@@ -188,7 +184,7 @@ const contextDir = computed(() => {
   return directoryPaths.value.has(active) ? active : projectFileParentDir(active)
 })
 
-const writesDisabled = computed(() => !props.projectName || props.assistantBusy || writeBusy.value)
+const writesDisabled = computed(() => !props.projectName || writeBusy.value)
 
 function dirLabel(dir: string): string {
   return dir || 'project root'
@@ -419,10 +415,6 @@ async function uploadFiles(candidates: File[], dir: string) {
   const projectName = props.projectName
   const requestContext = props.ctx
   if (!projectName) return
-  if (props.assistantBusy) {
-    toast('info', 'Wait for the assistant run to finish, then upload again.')
-    return
-  }
   if (writeBusy.value) return
   const pending = acceptUploadCandidates(candidates)
   if (!pending.length) return
@@ -441,6 +433,11 @@ async function uploadFiles(candidates: File[], dir: string) {
         uploaded.push(...await api.uploadProjectFiles(requestContext, projectName, [file], { dir }))
       } catch (error) {
         if (isProjectFileRequestError(error) && error.reason === 'exists') {
+          const baseline = await api.readProjectFile(requestContext, projectName, target)
+          if (!baseline.version) {
+            failures.push(`${target}: the current file version could not be read. Refresh and try again.`)
+            continue
+          }
           const replace = await confirmDialog({
             title: `Replace ${file.name}?`,
             message: `${target} already exists. Uploading replaces it.`,
@@ -453,7 +450,7 @@ async function uploadFiles(candidates: File[], dir: string) {
           }
           if (!isCurrentProject(projectName, requestContext)) return
           try {
-            uploaded.push(...await api.uploadProjectFiles(requestContext, projectName, [file], { dir, overwrite: true }))
+            uploaded.push(...await api.uploadProjectFiles(requestContext, projectName, [file], { dir, overwrite: true, expectedVersions: { [target]: baseline.version } }))
           } catch (retryError) {
             failures.push(errorMessage(retryError, `Could not upload ${file.name}.`))
             if (isProjectFileRequestError(retryError) && retryError.reason === 'busy') break
@@ -521,10 +518,6 @@ function handleTreeDrop(event: DragEvent) {
   const { files: dropped, skippedFolders } = droppedFiles(event.dataTransfer)
   if (skippedFolders) toast('info', skippedFolders === 1 ? 'Folders cannot be uploaded. Drop the files inside it instead.' : `${skippedFolders} folders were skipped. Drop the files inside them instead.`)
   if (!dropped.length) return
-  if (props.assistantBusy) {
-    toast('info', 'Wait for the assistant run to finish, then upload again.')
-    return
-  }
   if (writeBusy.value) {
     toast('info', 'Another file change is still in progress.')
     return
@@ -685,7 +678,7 @@ async function loadPreview(file: ProjectFileContent) {
   try {
     const blob = await api.fetchProjectFileRaw(requestContext, projectName, file.path, { signal: controller.signal })
     if (previewController !== controller || !isCurrentProject(projectName, requestContext)) return
-    // <img> needs an image type; the server's type is by extension but may
+    // Image previews need an image type; the server's type is by extension but may
     // fall back to octet-stream.
     const extension = file.path.split('.').pop()?.toLowerCase() ?? ''
     const typed = blob.type.startsWith('image/') ? blob : new Blob([blob], { type: IMAGE_TYPES[extension] ?? 'application/octet-stream' })
@@ -747,12 +740,7 @@ watch(
   },
 )
 
-watch(() => props.assistantBusy, (busy) => {
-  if (busy) {
-    uploadDraft.value = null
-    newFileOpen.value = false
-  }
-})
+
 
 onBeforeUnmount(releasePreview)
 </script>
@@ -806,10 +794,7 @@ onBeforeUnmount(releasePreview)
         <input ref="uploadInputRef" type="file" class="hidden" multiple @change="handleUploadInput" />
       </div>
 
-      <p v-if="assistantBusy && projectName" class="border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-muted" role="status">
-        File changes are paused while the assistant runs.
-      </p>
-      <div v-else-if="writeBusy" class="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-secondary" role="status" aria-live="polite">
+      <div v-if="writeBusy" class="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-secondary" role="status" aria-live="polite">
         <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         <span class="truncate">{{ writeStatus || 'Saving…' }}</span>
       </div>

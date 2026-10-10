@@ -12,7 +12,8 @@ the repository root (web/public/logo.png on the application template).
   railgrid app files ls shop
   railgrid app files get shop api/server.mjs > server.mjs
   railgrid app files put shop web/public/logo.png ./logo.png
-  railgrid app files rm shop web/public/old.png
+  railgrid app files get shop web/public/old.png --version-only
+  railgrid app files rm shop web/public/old.png --expected-version <version>
 
 ```
 railgrid app files [flags]

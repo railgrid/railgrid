@@ -105,12 +105,30 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 	if repositoryRef == "" {
 		return projectHydrateResponse{}, newValidationError("project has no Code repository to hydrate from")
 	}
+	scope := projectWorkspaceScope(id, p)
+	// Serialize the full checkout/apply operation with runtime replacement and
+	// preview activation. This helper is also called outside the HTTP handler
+	// (assistant tools, project import, and replica adoption), so the lock must
+	// live here. The HTTP handler's owner context makes this reentrant with its
+	// existing exclusive workspace reservation without reacquiring ownership.
+	releaseRuntime, err := s.acquireProjectRuntimeOperation(ctx, scope)
+	if err != nil {
+		return projectHydrateResponse{}, err
+	}
+	defer releaseRuntime()
+	// Checkout can take long enough for another thread or file request to edit
+	// the shared source tree. Fence the eventual replacement against the exact
+	// ledger revision we are reading now; ReplaceTree checks it atomically with
+	// the tree mutation.
+	expectedRevision, err := s.workspaces.SourceRevision(ctx, scope)
+	if err != nil {
+		return projectHydrateResponse{}, fmt.Errorf("read workspace source revision before repository checkout: %w", err)
+	}
 	checkout, err := s.checkoutProjectRepository(ctx, id, repositoryRef, strings.TrimSpace(ref))
 	if err != nil {
 		return projectHydrateResponse{}, err
 	}
 
-	scope := projectWorkspaceScope(id, p)
 	resp := projectHydrateResponse{
 		RepositoryRef: repositoryRef,
 		Ref:           checkout.Ref,
@@ -138,9 +156,10 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 	// managed tree anyway, but a skipped binary or an uncommitted file the
 	// checkout never had must not be deleted by a hydrate).
 	result, err := s.workspaces.ReplaceTree(ctx, scope, workspace.ReplaceTreeOptions{
-		Files:           files,
-		PreserveOmitted: true,
-		Committed:       true,
+		Files:                  files,
+		ExpectedSourceRevision: &expectedRevision,
+		PreserveOmitted:        true,
+		Committed:              true,
 	})
 	if err != nil {
 		return projectHydrateResponse{}, fmt.Errorf("rebuild workspace tree: %w", err)
@@ -204,6 +223,7 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer release()
+	r = r.WithContext(contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, p)))
 	if s.workspaces == nil {
 		// A server configuration gap, not an upstream failure — 503, not 502.
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")
@@ -220,6 +240,10 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	}
 	resp, err := s.hydrateWorkspaceFromRepository(r.Context(), id, p, req.Ref)
 	if err != nil {
+		if errors.Is(err, workspace.ErrSourceRevisionConflict) {
+			writeStatus(w, http.StatusConflict, "Conflict", "project files changed while the repository was loading; refresh the workspace and try again")
+			return
+		}
 		writeUpstreamError(w, err)
 		return
 	}

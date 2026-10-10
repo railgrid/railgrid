@@ -2,15 +2,16 @@
 
 Provider Actions is the catalog-backed, synchronous action contract for
 server-side generated applications. Providers publish versioned action
-metadata in their `CatalogEntry`; App Studio grants an exact action and
-resource to a Project and materializes the grant as **kcp RBAC** on the
-workload identity; an invocation is a request to a **kcp custom subresource**
-`{resource}/{action}` published on the provider's APIExport, which kcp
-authorizes with ordinary RBAC and reverse-proxies to the provider with the
-caller's identity stamped, exactly like the infrastructure data plane's exec
-verb. There is no dedicated hub action router and no hub-proxied action
-route. The public contract is generic, but the only shipped action is
-Databricks `query-table/v1`.
+metadata in their `CatalogEntry`; App Studio saves an exact action and resource
+grant on a Project and materializes it as **kcp RBAC** on the Project workload
+identity. Generated applications call App Studio's Project-scoped
+`projects/{project}/integration-actions/{alias}` custom subresource; App Studio
+checks the saved grant and then invokes the provider's own
+`{resource}/{action}` custom subresource through kcp. There is no separate hub
+action proxy. Callers with their own workspace RBAC may invoke a provider
+subresource directly, but generated apps use the saved Project integration.
+The public contract is generic, but the only shipped action is Databricks
+`query-table/v1`.
 
 The action route grammar is the kube path of the custom subresource:
 
@@ -163,18 +164,24 @@ server-owned `revokedBy` and `revokedAt`. Repeated revocation is idempotent;
 reactivation requires a fresh catalog verification and consent.
 
 This is generic catalog-backed authorization, not a provider-specific App
-Studio adapter. Integration CRUD is exposed under
-`/services/providers/app-studio/api/projects/{project}/integrations`; invoke
-uses the same alias and accepts a provider-neutral action name/version.
+Studio adapter. Integration CRUD and invocation are custom subresources on
+App Studio's Project API, addressed through the cluster-qualified kcp path.
+The SDK receives the trusted Project-scoped base URL from App Studio and uses
+the same alias that names the saved binding.
 
 ## Invocation and security boundary
 
 ```text
 generated server application
   -> @railgrid/actions-node
-  -> App Studio integration invoke
+  -> POST /clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/projects/{project}/integration-actions/{alias}
+       body: { action, actionVersion, input }
+       kcp authenticates the workload identity and checks RBAC on the named Project
+  -> App Studio integration handler
+       fence the identity against the current Project UID and runtime binding
        verify persisted grant (non-revoked, complete audit)
        re-verify the grant digest against the live catalog (409 on drift)
+       authorize the saved action before forwarding
        POST {hub}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{action}
   -> hub kcp proxy
        membership check, forward to kcp as the caller
@@ -281,11 +288,10 @@ paths, or backend resource details. Application authors should branch on the
 typed `code` and `retryable` fields, repair permanent input/schema failures,
 and retry only bounded, idempotent transient failures.
 
-There is deliberately no hub invoke route: the custom subresource on the kcp
-front door is the public data-plane surface, and calling it directly is
-legitimate — kcp's RBAC on the coordinate and the provider's gate are the
-enforcement, so "bypassing App Studio" gains a caller nothing kcp RBAC does
-not already allow. What the backend proxy does reserve is the **hub-only** prefix
+The generated application's public entry is the App Studio Project
+integration subresource. A caller with its own RBAC may also call the provider
+action subresource directly; kcp's RBAC on that coordinate and the provider's
+gate remain the enforcement. What the backend proxy does reserve is the **hub-only** prefix
 `/workload-identities/*` on every provider backend: the attestation endpoint
 must never be reachable with a caller bearer, where it would act as a
 TokenReview oracle. App Studio's invoke gateway adds the consumer-side value
@@ -311,16 +317,21 @@ workload exchange and a short-lived workload capability:
    each granted action's virtual subresource — the RBAC materialization of
    the Project's action grants. The current token TTL is ten minutes and the
    token is not persisted in a Secret or annotation. Grant changes reconcile
-   on the next exchange; the five-field identity tuple is immutable for the
+   through the hub's normal identity sweep and on exchange; the five-field
+   identity tuple is immutable for the
    ServiceAccount's lifetime.
 4. The runtime atomically refreshes a mode-`0600` token file. The generated
    server reads that file on each request, or uses a refreshable credential
    provider; a single `401` triggers one forced refresh.
 
-The SDK is server-only. Its base URL must be absolute HTTPS; HTTP is allowed
-only for an explicit loopback test override. Do not pass provider URLs,
-provider credentials, resource coordinates, or raw SQL in action input. The
-runtime's `RAILGRID_ACTIONS_CA_FILE` can add an explicitly configured CA for the
+The SDK is server-only. App Studio injects `RAILGRID_ACTIONS_BASE_URL` as the
+cluster-qualified
+`.../projects/{project}/integration-actions` path. Its base URL must be
+absolute HTTPS; HTTP is allowed only for an explicit loopback test override.
+The SDK appends only the saved integration alias and sends action/version/input
+in the body. Do not pass provider URLs, provider credentials, resource
+coordinates, or raw SQL in action input. The runtime's
+`RAILGRID_ACTIONS_CA_FILE` can add an explicitly configured CA for the
 workload exchange, but the source does not provide automatic custom-CA
 distribution. Production external URLs therefore require HTTPS with a
 system- or publicly-trusted certificate unless deployment configuration
@@ -328,15 +339,17 @@ explicitly supplies the CA.
 
 ## Server-side SDK
 
-The published artifact is `@crwilhit/railgrid-actions-node@0.1.0`. Generated
-server components must install it under the stable consumer name with this
-exact npm alias in their `package.json`; the artifact name and import name are
-intentionally different:
+The package is `@crwilhit/railgrid-actions-node@0.2.0`; public npm publication
+is pending. Atlas currently uses the reviewed tarball at
+`api/vendor/railgrid-actions-node-0.2.0.tgz` with a local `file:` dependency.
+After registry publication, generated server components can install it under
+the stable consumer name with this npm alias in `package.json`; the package
+name and import name are intentionally different:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.1.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"
   }
 }
 ```
@@ -349,7 +362,6 @@ import { createActionsClient } from '@railgrid/actions-node';
 
 const railgrid = createActionsClient({
   baseURL: process.env.RAILGRID_ACTIONS_BASE_URL,
-  project: process.env.RAILGRID_PROJECT,
   tokenFile: process.env.RAILGRID_ACTIONS_TOKEN_FILE,
 });
 
@@ -364,8 +376,15 @@ console.log(result);
 `tokenFile` defaults to `RAILGRID_ACTIONS_TOKEN_FILE`; it is read for every
 request. A `getToken`/credential provider receives `{ forceRefresh, signal }`
 and is retried once after an HTTP `401`. The SDK propagates caller aborts and
-local timeouts, rejects browser globals, and returns typed transport or
-provider-action errors. There is no development-token fallback.
+local timeouts, rejects browser globals, and reports route, authentication,
+authorization, contract, upstream, network, credential, and configuration
+failures separately. A successful invocation verifies the saved integration;
+token issuance and freshness alone do not.
+
+For an existing application with a customized manifest, the assistant writes a
+unified dependency patch to `.railgrid/proposals/provider-actions-sdk.patch`
+and shows the diff for review. It applies the patch only after the user
+approves it; it never silently rewrites `package.json`.
 
 ### Development sandbox delivery
 

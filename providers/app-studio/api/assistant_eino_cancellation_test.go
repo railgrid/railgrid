@@ -84,6 +84,9 @@ func TestProjectEinoAssistantSandboxExecFollowsSupervisorCancellation(t *testing
 			}},
 			metadata: projectAssistantRunSandboxMetadata{
 				Status:         "active",
+				RunID:          projectAssistantRunID(h.req),
+				SourceRevision: 1,
+				SourceDigest:   "sha256:cancel-probe",
 				RemoteRevision: 1,
 				RemoteDigest:   "sha256:cancel-probe",
 			},

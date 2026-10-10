@@ -773,6 +773,17 @@ func (s *encryptedStore) FindAssistantRunByClientRequestID(ctx context.Context, 
 	return run, nil
 }
 
+func (s *encryptedStore) FindAssistantRunByThreadClientRequestID(ctx context.Context, scope Scope, threadID, clientRequestID string) (AssistantRun, error) {
+	run, err := s.inner.FindAssistantRunByThreadClientRequestID(ctx, scope, threadID, clientRequestID)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
 func (s *encryptedStore) LatestAssistantRun(ctx context.Context, scope Scope) (AssistantRun, error) {
 	run, err := s.inner.LatestAssistantRun(ctx, scope)
 	if err != nil {
@@ -782,6 +793,30 @@ func (s *encryptedStore) LatestAssistantRun(ctx context.Context, scope Scope) (A
 		return AssistantRun{}, err
 	}
 	return run, nil
+}
+
+func (s *encryptedStore) LatestAssistantRunForThread(ctx context.Context, scope Scope, threadID string) (AssistantRun, error) {
+	run, err := s.inner.LatestAssistantRunForThread(ctx, scope, threadID)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
+func (s *encryptedStore) ListActiveAssistantRuns(ctx context.Context, scope Scope) ([]AssistantRun, error) {
+	runs, err := s.inner.ListActiveAssistantRuns(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		if err := s.decryptAssistantRunBlobs(scope, &runs[i]); err != nil {
+			return nil, err
+		}
+	}
+	return runs, nil
 }
 
 func (s *encryptedStore) AppendAssistantRunEvent(ctx context.Context, scope Scope, event AssistantRunEvent, expectedSequence int64) (AssistantRunEvent, error) {

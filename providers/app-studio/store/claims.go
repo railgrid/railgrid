@@ -26,9 +26,12 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -74,6 +77,24 @@ func ReplicaClaimScopeKey(scope Scope) string {
 // ActivityClaimKey is the claim key for a project's assistant activity.
 func ActivityClaimKey(scope Scope) string {
 	return ReplicaClaimKindActivity + "/" + ReplicaClaimScopeKey(scope)
+}
+
+// AssistantRunClaimKey identifies one execution lease while ActivityClaimKey
+// continues to fence the shared project workspace owner. Multiple thread runs
+// on that owner therefore remain independently observable to recovery.
+func AssistantRunClaimKey(scope Scope, threadID, runID string) string {
+	material := ReplicaClaimScopeKey(scope) + "\x00" + threadID + "\x00" + runID
+	digest := sha256.Sum256([]byte(material))
+	return ReplicaClaimKindActivity + "/run/" + hex.EncodeToString(digest[:])
+}
+
+// AssistantThreadClaimKey fences the short transaction that creates and
+// attaches a run to a thread. It closes the recovery gap before the new run's
+// immutable run-specific claim can be acquired.
+func AssistantThreadClaimKey(scope Scope, threadID string) string {
+	material := ReplicaClaimScopeKey(scope) + "\x00" + strings.TrimSpace(threadID)
+	digest := sha256.Sum256([]byte(material))
+	return ReplicaClaimKindActivity + "/thread/" + hex.EncodeToString(digest[:])
 }
 
 // ThumbnailClaimKey is the capture lease key for one project incarnation.

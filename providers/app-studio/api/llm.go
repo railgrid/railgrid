@@ -440,6 +440,13 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	if !hasDurableRun {
 		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
 	}
+	threadID := strings.TrimSpace(durable.ThreadID)
+	if threadID == "" {
+		threadID = strings.TrimSpace(mux.Vars(r)["thread"])
+	}
+	if start != nil && strings.TrimSpace(start.ThreadID) != "" {
+		threadID = strings.TrimSpace(start.ThreadID)
+	}
 	modelStarted := time.Now()
 	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(durable)
 	modelCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
@@ -460,7 +467,7 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		return projectAssistantRunResult{}, fmt.Errorf("prepare assistant worker read client: %w", err)
 	}
 	c = workerClient
-	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
+	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name, threadID)
 	turn.ProjectUID = string(p.UID)
 	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
 	defer func() {
@@ -474,10 +481,6 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	}
 	r = r.WithContext(ctx)
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	threadID := strings.TrimSpace(mux.Vars(r)["thread"])
-	if start != nil && strings.TrimSpace(start.ThreadID) != "" {
-		threadID = strings.TrimSpace(start.ThreadID)
-	}
 	var recent []store.Message
 	if threadID == "" {
 		recent, err = s.store.LoadRecentMessages(ctx, messageScope, 24)
@@ -539,12 +542,12 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		CollaborationMode:        mode,
 		TurnProfile:              turnPolicy.profile,
 		TurnPolicy:               turnPolicy,
-		Steering:                 s.projectAssistantSupervisor().Steering(messageScope, durable.ID),
+		Steering:                 s.projectAssistantSupervisor().Steering(messageScope, durable.ID, threadID),
 		SealSteering: func() bool {
-			return s.projectAssistantSupervisor().SealSteering(messageScope, durable.ID)
+			return s.projectAssistantSupervisor().SealSteering(messageScope, durable.ID, threadID)
 		},
 		ActivateSteering: func(activateCtx context.Context, inputs []projectAssistantSteeringInput) error {
-			return s.projectAssistantSupervisor().ActivateSteering(activateCtx, messageScope, durable.ID, inputs)
+			return s.projectAssistantSupervisor().ActivateSteering(activateCtx, messageScope, durable.ID, inputs, threadID)
 		},
 	}
 	if hasDurableRun {
@@ -2402,9 +2405,14 @@ func projectSystemPromptForMode(p *aiv1alpha1.Project, repository *ProjectReposi
 		b.WriteString("- NONE. Do not invent an integration alias or claim that a provider action is available.\n")
 	}
 	if projectHasProviderActionGrant(p) {
-		b.WriteString("When an active integration action grant is listed above, the server component's package.json MUST declare this exact dependency alias before generated server code imports the SDK: `\"@railgrid/actions-node\": \"npm:@crwilhit/railgrid-actions-node@0.1.0\"`. Import it exactly as `import { createActionsClient } from '@railgrid/actions-node';` — the published artifact name is not the consumer import name. Never use a monorepo-relative path, a provider-specific SDK, or a browser import.\n")
-		b.WriteString("The server runtime injects these application-facing environment variables: RAILGRID_ACTIONS_BASE_URL, RAILGRID_PROJECT, RAILGRID_PROJECT_UID, RAILGRID_ACTIONS_TOKEN_FILE, RAILGRID_ACTIONS_ENVIRONMENT, RAILGRID_ACTIONS_INSTANCE, RAILGRID_ACTIONS_TENANT_PATH, RAILGRID_ACTIONS_ORG, and RAILGRID_ACTIONS_WORKSPACE. Pass the injected RAILGRID_ACTIONS_BASE_URL, RAILGRID_PROJECT, and RAILGRID_ACTIONS_TOKEN_FILE to createActionsClient (the SDK reads the remaining context defaults), then invoke only an alias and non-revoked action version explicitly listed above. The component automatically installs and reloads dependencies after the manifest synchronizes; do not manually run npm install, npm exec, npm search, or package discovery for this dependency, do not discover the gateway, and do not call provider URLs directly. Runtime verification is the authority for that install: if it reports a failed synchronization or dependency reload, surface the concrete blocker and stop unless you make a relevant source or configuration repair. Never describe a failed install as still running, and never repeat an identical wait or verification claim without changed evidence.\n")
-		b.WriteString("The SDK is server-only and routes through the App Studio integration gateway; never expose its caller credential in browser code. Actions marked revoked are unavailable. Never request, store, or emit Databricks/API credentials, provider backend URLs, or raw SQL.\n")
+		b.WriteString("When an active integration action grant is listed above, server code may import the server-only SDK as `import { createActionsClient } from '@railgrid/actions-node';` using the exact dependency alias `\"@railgrid/actions-node\": \"npm:@crwilhit/railgrid-actions-node@0.2.0\"`. Never use a monorepo-relative path, provider-specific SDK, or browser import.\n")
+		if initialBuild {
+			b.WriteString("This is a fresh scaffolded project: add the dependency to the server component's existing package.json while preserving its scripts and other entries, then write the server code.\n")
+		} else {
+			b.WriteString("For this existing project, if package.json lacks or pins another version of this dependency, do not edit or replace that customized manifest as part of implementing the feature: first read the complete file, then write a unified patch proposal to `.railgrid/proposals/provider-actions-sdk.patch` containing only the dependency change and show that patch to the user for review. Apply it to package.json only after the user explicitly approves that proposed change.\n")
+		}
+		b.WriteString("The server runtime injects RAILGRID_ACTIONS_BASE_URL and RAILGRID_ACTIONS_TOKEN_FILE. Pass those two values to createActionsClient; the URL is already scoped to this Project and the SDK derives no tenant or provider route from application input. Invoke only a saved integration alias and non-revoked action/version explicitly listed above, with action-specific input. The component automatically installs and reloads dependencies after the manifest synchronizes; do not manually run npm install, npm exec, npm search, or package discovery, do not discover the gateway, and do not call provider URLs directly. Runtime verification is the authority for that install: if it reports a failed synchronization or dependency reload, surface the concrete blocker and stop unless you make a relevant source or configuration repair. Never describe a failed install as still running, and never repeat an identical wait or verification claim without changed evidence.\n")
+		b.WriteString("The SDK is server-only and invokes `POST <RAILGRID_ACTIONS_BASE_URL>/<alias>` with `{ action, actionVersion, input }`; never expose its caller credential in browser code. Credential refresh readiness does not prove the saved integration route or authorization works: report route, authentication, authorization, contract, or upstream failures distinctly, and treat a successful invoke as integration access verification. Actions marked revoked are unavailable. Never request, store, or emit Databricks/API credentials, provider backend URLs, or raw SQL.\n")
 	} else {
 		b.WriteString("No active integration action grant is present. Do not claim that provider actions, an Actions SDK, or an App Studio gateway are available; do not discover or call provider URLs. Explain that the user must configure an explicit integration action grant before generated application code can use provider actions.\n")
 	}

@@ -69,16 +69,21 @@ export interface ActionsRequestOptions {
   headers?: Record<string, string>;
 }
 
+export type ActionsFailureKind =
+  | 'configuration'
+  | 'credentials'
+  | 'route'
+  | 'authentication'
+  | 'authorization'
+  | 'contract'
+  | 'upstream'
+  | 'network'
+  | 'request';
+
 export interface ActionsClientOptions extends ActionsRequestOptions {
-  /** URL of the authenticated App Studio service, not a provider backend URL. */
+  /** App Studio-injected, cluster-qualified projects/{project}/integration-actions URL. */
   baseURL?: string;
   baseUrl?: string;
-  /** Defaults to RAILGRID_PROJECT. */
-  project?: string;
-  /** Defaults to RAILGRID_ACTIONS_ORG and RAILGRID_ACTIONS_WORKSPACE. */
-  org?: string;
-  organization?: string;
-  workspace?: string;
   /** Test/local-only escape hatch for HTTP loopback URLs. */
   allowInsecureLoopback?: boolean;
   token?: string | CredentialProvider;
@@ -113,6 +118,7 @@ export interface ActionsClientErrorOptions {
   actionVersion?: string;
   resourceRef?: ProviderResourceReference;
   retryable?: boolean;
+  failureKind?: ActionsFailureKind;
   body?: unknown;
   cause?: unknown;
 }
@@ -127,6 +133,8 @@ export class ActionsClientError extends Error {
   readonly actionVersion: string;
   readonly resourceRef?: ProviderResourceReference;
   readonly retryable: boolean;
+  /** The failure stage, useful for distinguishing route, auth, and upstream errors. */
+  readonly failureKind: ActionsFailureKind;
   readonly body?: unknown;
   readonly cause?: unknown;
 
@@ -138,10 +146,7 @@ export class ProviderActionError extends ActionsClientError {
 }
 
 export class ActionsClient {
-  readonly baseURL?: string;
-  readonly project: string;
-  readonly org: string;
-  readonly workspace: string;
+  readonly baseURL: string;
 
   constructor(options: ActionsClientOptions);
 

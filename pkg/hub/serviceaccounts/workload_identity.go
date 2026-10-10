@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/railgrid/provider-sdk/dataplane"
+	sdkworkloadidentity "github.com/railgrid/provider-sdk/workloadidentity"
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -88,6 +89,7 @@ const (
 	// derived from the verified Project environment and are never hard-coded.
 	workloadProjectGroup    = "ai.railgrid.ai"
 	workloadProjectResource = "projects"
+	workloadProjectAction   = "integration-actions"
 )
 
 // WorkloadIdentityScope is the verified identity tuple supplied by the
@@ -95,12 +97,16 @@ const (
 // ServiceAccount name, so a deleted-and-recreated project cannot inherit an
 // old runtime identity when its UID changes.
 type WorkloadIdentityScope struct {
-	TenantPath        string
-	Project           string
-	ProjectUID        string
-	Environment       string
-	Instance          string
-	ProviderResources []ProviderResourceScope
+	TenantPath  string
+	Project     string
+	ProjectUID  string
+	Environment string
+	Instance    string
+	// IntegrationActions grants this Project's workload the App Studio
+	// integration gateway. It is true only while the selected environment has
+	// at least one active provider action grant.
+	IntegrationActions bool
+	ProviderResources  []ProviderResourceScope
 }
 
 // ProviderResourceScope is one exact provider reference from the verified
@@ -127,14 +133,10 @@ type ProviderResourceScope struct {
 // project names can contain information that should not be reflected in
 // cluster-wide RBAC object names.
 func WorkloadServiceAccountName(scope WorkloadIdentityScope) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		scope.TenantPath,
-		scope.Project,
-		scope.ProjectUID,
-		scope.Environment,
-		scope.Instance,
-	}, "\x00")))
-	return workloadIdentityNamePrefix + hex.EncodeToString(sum[:20])
+	return sdkworkloadidentity.ServiceAccountName(sdkworkloadidentity.Scope{
+		TenantPath: scope.TenantPath, Project: scope.Project, ProjectUID: scope.ProjectUID,
+		Environment: scope.Environment, Instance: scope.Instance,
+	})
 }
 
 // WorkloadIdentityRoleName returns the deterministic ClusterRole and
@@ -323,7 +325,8 @@ func verifyWorkloadServiceAccountAnnotations(ctx context.Context, sa *corev1.Ser
 }
 
 // workloadIdentityRules is the exact rule set a workload identity carries:
-// GET on its own Project, GET on each verified provider resource, and one
+// GET on its own Project and create on its integration gateway while action
+// grants are active, GET on each verified provider resource, and one
 // rule per granted action on that action's kcp custom subresource. The
 // subresource IS the capability, so the rule carries dataplane.SubresourceVerbs:
 // kcp authorizes a verb call by mapping the HTTP method onto the RBAC verb
@@ -332,13 +335,18 @@ func verifyWorkloadServiceAccountAnnotations(ctx context.Context, sa *corev1.Ser
 // Materializing a Project action grant IS writing this rule; revoking it
 // removes the rule.
 func workloadIdentityRules(scope WorkloadIdentityScope) []rbacv1.PolicyRule {
-	wantRules := []rbacv1.PolicyRule{
-		{
-			APIGroups:     []string{workloadProjectGroup},
-			Resources:     []string{workloadProjectResource},
-			Verbs:         []string{"get"},
-			ResourceNames: []string{scope.Project},
-		},
+	var wantRules []rbacv1.PolicyRule
+	if scope.IntegrationActions {
+		wantRules = append(wantRules,
+			rbacv1.PolicyRule{
+				APIGroups: []string{workloadProjectGroup}, Resources: []string{workloadProjectResource},
+				Verbs: []string{"get"}, ResourceNames: []string{scope.Project},
+			},
+			rbacv1.PolicyRule{
+				APIGroups: []string{workloadProjectGroup}, Resources: []string{workloadProjectResource + "/" + workloadProjectAction},
+				Verbs: []string{"create"}, ResourceNames: []string{scope.Project},
+			},
+		)
 	}
 	providerRules := make([]rbacv1.PolicyRule, 0, len(scope.ProviderResources))
 	for _, resource := range scope.ProviderResources {
@@ -422,7 +430,10 @@ func workloadScopeMarker(scope WorkloadIdentityScope) string {
 	sort.Slice(resources, func(i, j int) bool {
 		return resources[i].APIVersion+"/"+resources[i].Resource+"/"+resources[i].Name < resources[j].APIVersion+"/"+resources[j].Resource+"/"+resources[j].Name
 	})
-	parts := []string{scope.TenantPath, scope.Project, scope.ProjectUID, scope.Environment, scope.Instance}
+	parts := []string{
+		scope.TenantPath, scope.Project, scope.ProjectUID, scope.Environment, scope.Instance,
+		fmt.Sprintf("integration-actions=%t", scope.IntegrationActions),
+	}
 	for _, resource := range resources {
 		parts = append(parts, resource.APIVersion, resource.Kind, resource.Resource, resource.Name)
 		actions := append([]string(nil), resource.Actions...)

@@ -582,18 +582,25 @@ func projectAssistantMutationFailureFromError(name string, args map[string]any, 
 	code := "mutation_failed"
 	path := projectAssistantMutationFailurePath(operation, args)
 	var mutationErr *workspace.MutationError
+	var changedFiles []string
 	if errors.As(invokeErr, &mutationErr) && mutationErr != nil {
+		for _, file := range mutationErr.ChangedFiles {
+			if clean, err := workspace.CleanProjectPath(file); err == nil {
+				changedFiles = append(changedFiles, projectAssistantActionSafeTarget(clean))
+			}
+		}
 		code = string(mutationErr.Code)
 		if clean, err := workspace.CleanProjectPath(mutationErr.Path); err == nil {
 			path = projectAssistantActionSafeTarget(clean)
 		}
 	}
 	return projectAssistantMutationFailure{
-		Code:       projectAssistantBoundedMutationField(code, 64),
-		Operation:  projectAssistantBoundedMutationField(operation, 64),
-		Path:       projectAssistantBoundedMutationField(path, 240),
-		Guidance:   projectAssistantBoundedMutationField(projectAssistantMutationRecoveryGuidance(operation, code), 320),
-		RecoveryOf: projectAssistantBoundedMutationField(recoveryOf, 120),
+		ChangedFiles: changedFiles,
+		Code:         projectAssistantBoundedMutationField(code, 64),
+		Operation:    projectAssistantBoundedMutationField(operation, 64),
+		Path:         projectAssistantBoundedMutationField(path, 240),
+		Guidance:     projectAssistantBoundedMutationField(projectAssistantMutationRecoveryGuidance(operation, code), 320),
+		RecoveryOf:   projectAssistantBoundedMutationField(recoveryOf, 120),
 	}
 }
 

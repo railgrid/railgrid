@@ -192,6 +192,12 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 		return workspace.LedgerRecord{}
 	}
 	record := workspace.LedgerRecord{}
+	if source := status.LastSourceChange; source != nil {
+		record.LastSourceChange = &workspace.SourceChange{ThreadID: source.ThreadID, RunID: source.RunID, SourceRevision: uint64(source.SourceRevision)}
+	}
+	if source := status.LastPreviewCheckpoint; source != nil {
+		record.LastPreviewCheckpoint = &workspace.SourceChange{ThreadID: source.ThreadID, RunID: source.RunID, SourceRevision: uint64(source.SourceRevision)}
+	}
 	if status.SourceRevision > 0 {
 		record.SourceRevision = uint64(status.SourceRevision)
 	}
@@ -222,6 +228,12 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 	status := &aiv1alpha1.ProjectWorkspaceStatus{
 		SourceRevision:   int64(record.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
 		UncommittedPaths: record.UncommittedPaths,
+	}
+	if source := record.LastSourceChange; source != nil {
+		status.LastSourceChange = &aiv1alpha1.ProjectSourceChange{ThreadID: source.ThreadID, RunID: source.RunID, SourceRevision: int64(source.SourceRevision)}
+	}
+	if source := record.LastPreviewCheckpoint; source != nil {
+		status.LastPreviewCheckpoint = &aiv1alpha1.ProjectSourceChange{ThreadID: source.ThreadID, RunID: source.RunID, SourceRevision: int64(source.SourceRevision)}
 	}
 	if pending := record.PendingCommit; pending != nil {
 		requestedAt := &metav1.Time{Time: now}
@@ -265,10 +277,12 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 		body = nil
 	} else {
 		ledger := map[string]any{
-			"sourceRevision":   status.SourceRevision,
-			"uncommittedPaths": nullIfEmpty(status.UncommittedPaths),
-			"pendingCommit":    nil,
-			"settlement":       nil,
+			"sourceRevision":        status.SourceRevision,
+			"lastSourceChange":      status.LastSourceChange,
+			"lastPreviewCheckpoint": status.LastPreviewCheckpoint,
+			"uncommittedPaths":      nullIfEmpty(status.UncommittedPaths),
+			"pendingCommit":         nil,
+			"settlement":            nil,
 		}
 		if status.PendingCommit != nil {
 			ledger["pendingCommit"] = map[string]any{

@@ -1506,10 +1506,12 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sourceMutationRevision++
-	// A successful source mutation establishes progress for every prior
-	// recovery target. Keep no stale same-revision failure budget after the
-	// revision advances.
-	s.mutationRecoveryAttempts = map[string]projectAssistantMutationRecoveryAttempt{}
+	// Unrelated source progress must not reopen a contended file's retry
+	// budget. A successful mutation of that file clears its own entry.
+	for target, attempt := range s.mutationRecoveryAttempts {
+		attempt.SourceRevision = s.sourceMutationRevision
+		s.mutationRecoveryAttempts[target] = attempt
+	}
 	if s.developmentSyncRevision != s.sourceMutationRevision {
 		s.developmentSyncRevision = s.sourceMutationRevision
 		s.developmentSyncStatus = "unknown"
@@ -2262,7 +2264,10 @@ func projectEinoAssistantCompleteBinaryReadFileReceiptKey(value string) (project
 	}
 	allowed := map[string]struct{}{
 		"path": {}, "content": {}, "size": {}, "version": {}, "complete": {},
-		"truncated": {}, "binary": {}, "offset": {}, "limit": {},
+		"truncated": {}, "binary": {}, "offset": {}, "limit": {}, "missing": {}, "conflictProposal": {},
+	}
+	if !projectEinoAssistantValidateStructuredReadFileExtras(fields) {
+		return projectEinoAssistantCompleteReadFileKey{}, false
 	}
 	for name := range fields {
 		if _, ok := allowed[name]; !ok {
@@ -2361,10 +2366,10 @@ func (s *projectEinoAssistantRunState) ClearSuccessfulMutationPaths() {
 }
 
 // RecordMutationFailure records one failed workspace mutation at the current
-// source revision. A later complete read marks the target as eligible for one
-// deterministic repair attempt. The second failed attempt for the same
-// canonical target and revision is marked blocked; lifecycle checks turn that
-// marker into a typed terminal error before another model sample.
+// source revision. A complete reread marks the target as eligible for another
+// reconciliation attempt. The initial failure plus two retries are allowed;
+// the third failure for the same canonical target and revision is marked
+// blocked, and lifecycle checks stop another model sample from repeating it.
 func (s *projectEinoAssistantRunState) RecordMutationFailure(name string, args map[string]any) (projectAssistantMutationRecoveryAttempt, bool) {
 	if s == nil {
 		return projectAssistantMutationRecoveryAttempt{}, false
@@ -3535,4 +3540,22 @@ func projectEinoAssistantFallbackToolCall(callID, name, arguments string) chatTo
 			Arguments: strings.TrimSpace(arguments),
 		},
 	}
+}
+
+// MutationTargetBlockedError keeps persistent contention local to one file.
+func (s *projectEinoAssistantRunState) MutationTargetBlockedError(name string, args map[string]any) error {
+	if s == nil {
+		return nil
+	}
+	identity, ok := projectAssistantMutationRecoveryIdentityFromTool(name, args)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attempt := s.mutationRecoveryAttempts[identity.Target]
+	if !attempt.Blocked {
+		return nil
+	}
+	return newProjectEinoAssistantRecoveryBlockedError(attempt, s.verifiedMutationRevision)
 }

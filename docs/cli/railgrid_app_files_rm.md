@@ -9,7 +9,8 @@ railgrid app files rm <name> <path> [flags]
 ### Options
 
 ```
-  -h, --help   help for rm
+      --expected-version string   Delete only the exact file version returned by files get
+  -h, --help                      help for rm
 ```
 
 ### Options inherited from parent commands

@@ -22,6 +22,47 @@ import (
 	"testing"
 )
 
+func TestFileStoreTurnAttributionPersistsSeparatelyFromPreview(t *testing.T) {
+	ctx := context.Background()
+	files := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	turnCtx := ContextWithMutationOrigin(ctx, "thread-a", "run-a")
+	if err := files.ApplyFiles(turnCtx, scope, []File{{Path: "app.txt", Content: "first"}}); err != nil {
+		t.Fatal(err)
+	}
+	change, err := files.LastSourceChange(ctx, scope)
+	if err != nil || change == nil || change.ThreadID != "thread-a" || change.RunID != "run-a" || change.SourceRevision != 2 {
+		t.Fatalf("source attribution = %#v, %v", change, err)
+	}
+	if err := files.RecordPreviewCheckpoint(ctx, scope, *change); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-b", "run-b"), scope, []File{{Path: "other.txt", Content: "second"}}); err != nil {
+		t.Fatal(err)
+	}
+	peer := peerReplica(files, files.root)
+	latest, err := peer.LastSourceChange(ctx, scope)
+	if err != nil || latest == nil || latest.ThreadID != "thread-b" || latest.SourceRevision != 3 {
+		t.Fatalf("peer source attribution = %#v, %v", latest, err)
+	}
+	preview, err := peer.LastPreviewCheckpoint(ctx, scope)
+	if err != nil || preview == nil || preview.ThreadID != "thread-a" || preview.SourceRevision != 2 {
+		t.Fatalf("peer preview attribution = %#v, %v", preview, err)
+	}
+	latest.ThreadID = "changed-copy"
+	again, _ := peer.LastSourceChange(ctx, scope)
+	if again.ThreadID != "thread-b" {
+		t.Fatal("source attribution shares mutable ledger state")
+	}
+	if err := files.ApplyFiles(ctx, scope, []File{{Path: "manual.txt", Content: "manual"}}); err != nil {
+		t.Fatal(err)
+	}
+	manual, _ := peer.LastSourceChange(ctx, scope)
+	if manual.ThreadID != "" || manual.RunID != "" {
+		t.Fatal("manual edit retained another thread's attribution")
+	}
+}
+
 func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

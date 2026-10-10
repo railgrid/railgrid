@@ -171,11 +171,15 @@ func TestProjectFilePutReadRawAndDelete(t *testing.T) {
 	}
 	f.waitForSyncs(t, 2)
 
-	if deleted := f.request(http.MethodDelete, target, nil, nil); deleted.Code != http.StatusNoContent {
+	var replacementResult projectFileWriteResult
+	if err := json.Unmarshal(replaced.Body.Bytes(), &replacementResult); err != nil {
+		t.Fatal(err)
+	}
+	if deleted := f.request(http.MethodDelete, target, nil, map[string]string{"If-Match": replacementResult.Version}); deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d %s", deleted.Code, deleted.Body.String())
 	}
 	f.waitForSyncs(t, 3)
-	if missing := f.request(http.MethodDelete, target, nil, nil); missing.Code != http.StatusNotFound {
+	if missing := f.request(http.MethodDelete, target, nil, map[string]string{"If-Match": replacementResult.Version}); missing.Code != http.StatusNotFound {
 		t.Fatalf("delete missing = %d, want 404", missing.Code)
 	}
 	if missing := f.request(http.MethodGet, target, nil, nil); missing.Code != http.StatusNotFound {
@@ -185,39 +189,39 @@ func TestProjectFilePutReadRawAndDelete(t *testing.T) {
 
 func TestProjectFilePutBoundsAndPathValidation(t *testing.T) {
 	f := newProjectFilesFixture(t)
-	tooBig := f.request(http.MethodPut, "/api/projects/shop/files/content?path=big.bin", bytes.NewReader(testPNG(workspace.MaxBinaryWriteBytes+1)), nil)
+	tooBig := f.request(http.MethodPut, "/api/projects/shop/files/content?path=big.bin", bytes.NewReader(testPNG(workspace.MaxBinaryWriteBytes+1)), map[string]string{"If-None-Match": "*"})
 	if tooBig.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized binary = %d, want 413", tooBig.Code)
 	}
-	bigText := f.request(http.MethodPut, "/api/projects/shop/files/content?path=big.json", strings.NewReader(strings.Repeat("x", workspace.MaxWriteBytes+1)), nil)
+	bigText := f.request(http.MethodPut, "/api/projects/shop/files/content?path=big.json", strings.NewReader(strings.Repeat("x", workspace.MaxWriteBytes+1)), map[string]string{"If-None-Match": "*"})
 	if bigText.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized text = %d, want 413", bigText.Code)
 	}
 	for _, target := range []string{"../escape.txt", ".git/config", "node_modules/x.js", ""} {
-		response := f.request(http.MethodPut, "/api/projects/shop/files/content?path="+target, strings.NewReader("x"), nil)
+		response := f.request(http.MethodPut, "/api/projects/shop/files/content?path="+target, strings.NewReader("x"), map[string]string{"If-None-Match": "*"})
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("PUT %q = %d, want 400", target, response.Code)
 		}
 	}
-	text := f.request(http.MethodPut, "/api/projects/shop/files/content?path=src/app.ts", strings.NewReader("export {}\n"), nil)
+	text := f.request(http.MethodPut, "/api/projects/shop/files/content?path=src/app.ts", strings.NewReader("export {}\n"), map[string]string{"If-None-Match": "*"})
 	if text.Code != http.StatusCreated || strings.Contains(text.Body.String(), `"binary":true`) {
 		t.Fatalf("text upsert = %d %s", text.Code, text.Body.String())
 	}
 }
 
-func TestProjectFileWritesConflictWithActiveAssistantRun(t *testing.T) {
+func TestProjectFileWritesShareOwnerWithActiveAssistantRun(t *testing.T) {
 	f := newProjectFilesFixture(t)
-	release, err := f.server.projectAssistantSupervisor().Reserve(projectMessageScope("org-a", "workspace-a", f.project))
+	release, err := f.server.projectAssistantSupervisor().ReserveThread(projectMessageScope("org-a", "workspace-a", f.project), "thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	response := f.request(http.MethodPut, "/api/projects/shop/files/content?path=a.bin", bytes.NewReader([]byte{0, 1}), nil)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("write during run = %d, want 409", response.Code)
+	response := f.request(http.MethodPut, "/api/projects/shop/files/content?path=a.bin", bytes.NewReader([]byte{0, 1}), map[string]string{"If-None-Match": "*"})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("write during run = %d, want 201", response.Code)
 	}
-	if exists, _ := f.workspaces.FileExists(context.Background(), f.scope, "a.bin"); exists {
-		t.Fatal("write landed while an assistant run owned the project")
+	if exists, _ := f.workspaces.FileExists(context.Background(), f.scope, "a.bin"); !exists {
+		t.Fatal("disjoint write did not land under the shared project owner")
 	}
 }
 
@@ -229,6 +233,17 @@ func TestProjectFileUpload(t *testing.T) {
 		_ = writer.WriteField("dir", dir)
 		if overwrite {
 			_ = writer.WriteField("overwrite", "true")
+			versions := map[string]string{}
+			for name := range files {
+				target := strings.TrimSuffix(dir, "/") + "/" + name
+				meta, err := f.workspaces.InspectFile(context.Background(), f.scope, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				versions[target] = meta.Version
+			}
+			encoded, _ := json.Marshal(versions)
+			_ = writer.WriteField("expectedVersions", string(encoded))
 		}
 		for name, data := range files {
 			part, err := writer.CreateFormFile("file", name)
