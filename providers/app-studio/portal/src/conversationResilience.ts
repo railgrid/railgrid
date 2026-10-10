@@ -306,6 +306,10 @@ export interface AssistantComposerStopControlState {
   disabled: boolean
 }
 
+export function assistantComposerWrapperDisabled(controlsDisabled: boolean, stopVisible: boolean): boolean {
+  return controlsDisabled && !stopVisible
+}
+
 /**
  * Keeps the composer stop action stable across asynchronous run
  * reconciliation. Once the local latch is set, transient loss of the active

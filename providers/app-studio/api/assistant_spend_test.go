@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strings"
@@ -284,6 +285,89 @@ func TestProjectEinoAssistantOrgSpendModelStopsRunAndRecordsEvent(t *testing.T) 
 	// The ledger stays consistent for subsequent tool events after the notice.
 	if _, err := ledger.RecordToolRequest(ctx, "call-1", projectAssistantToolSpec{Name: projectToolLS, Risk: projectAssistantToolRiskRead}, map[string]any{"path": "."}); err != nil {
 		t.Fatalf("tool request after spend notice: %v", err)
+	}
+}
+
+func TestProjectEinoAssistantOrgSpendCapCallbackIsNotATransportFailure(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	memory := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-cap-callback", WorkspaceUUID: "workspace-cap-callback", ProjectName: "demo", ProjectUID: "project-cap-callback"}
+	run := store.AssistantRun{
+		ID:        "run-cap-callback",
+		Mode:      store.AssistantRunModeDefault,
+		Status:    store.AssistantRunStatusRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := memory.SaveAssistantRun(ctx, scope, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.AddOrganizationSpend(ctx, scope.OrgUUID, now, store.OrganizationSpendDelta{USDMicros: 10_000_000}, now); err != nil {
+		t.Fatal(err)
+	}
+	ledger := newProjectAssistantRunEventLedger(memory, scope, run.ID)
+	guard := newProjectEinoAssistantOrgSpendGuard(memory, scope.OrgUUID, "gpt-4o", 10_000_000, func(ctx context.Context, spend store.OrganizationSpend) {
+		if err := ledger.RecordSpendCapReached(ctx, spend); err != nil {
+			t.Errorf("RecordSpendCapReached: %v", err)
+		}
+	})
+	base := &projectAssistantRolloutBudgetTestModel{usages: []*schema.TokenUsage{{PromptTokens: 1}}}
+	model := projectEinoAssistantOrgSpendModelWithGuard(base, guard)
+
+	runState := newProjectEinoAssistantRunState()
+	ordinal := runState.NextModelCallOrdinal()
+	auditRecorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, &run, now)
+	if err := auditRecorder.recordModelCall(ctx, ordinal, 0, 0, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{}, runState, auditRecorder)
+	modelInfo := projectEinoAssistantChatModelRunInfoForTest()
+	input := []*schema.Message{schema.UserMessage("prompt observed by the model callback")}
+	modelCtx := handler.OnStart(ctx, modelInfo, &einomodel.CallbackInput{Messages: input})
+
+	_, callErr := model.Generate(ctx, input)
+	if !projectEinoAssistantOrgSpendCapExceeded(callErr) {
+		t.Fatalf("spend-guard call error = %v, want organization cap error", callErr)
+	}
+	if base.calls != 0 {
+		t.Fatalf("underlying model calls = %d, want zero after local cap rejection", base.calls)
+	}
+	// Eino's graph error wrapper must not turn the local preflight rejection
+	// into a claimed provider transport failure.
+	wrappedErr := fmt.Errorf("[NodeRunError] node path: [node_1, ChatModel]: %w", callErr)
+	handler.OnError(modelCtx, modelInfo, wrappedErr)
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode run audit: %v", err)
+	}
+	if len(audit.ModelCalls) != 1 {
+		t.Fatalf("model call audit rows = %#v, want one failed attempt", audit.ModelCalls)
+	}
+	call := audit.ModelCalls[0]
+	if call.Outcome != "error" || call.TransportErrorObserved {
+		t.Fatalf("cap-rejected model audit = %#v, want failed outcome without transport error", call)
+	}
+	if !call.ProviderInputObserved || call.MessageBytes == 0 {
+		t.Fatalf("model callback input observation = %#v, want observed non-empty input despite pre-dispatch rejection", call)
+	}
+	if projectAssistantFailureKind(wrappedErr) != "org_spend_cap" || projectAssistantBudgetLimitedErrorInfo(wrappedErr) != "org_spend_cap_exceeded" {
+		t.Fatalf("wrapped cap classification = (%q, %q)", projectAssistantFailureKind(wrappedErr), projectAssistantBudgetLimitedErrorInfo(wrappedErr))
+	}
+
+	rawEvents, err := memory.ListAssistantRunEvents(ctx, scope, run.ID, 0, 10)
+	if err != nil || len(rawEvents) != 1 || rawEvents[0].Type != projectAssistantRunSpendCapReachedEventType {
+		t.Fatalf("cap events = %#v, %v; want one spend_cap_reached event", rawEvents, err)
+	}
+
+	public := projectAssistantRunErrorJSON(wrappedErr, projectAssistantBudgetLimitedErrorInfo(wrappedErr))
+	var publicError projectAssistantRunErrorView
+	if err := json.Unmarshal(public, &publicError); err != nil {
+		t.Fatalf("decode public terminal error: %v", err)
+	}
+	if publicError.ErrorInfo != "org_spend_cap_exceeded" || publicError.Message != callErr.Error() || strings.Contains(publicError.Message, "NodeRunError") {
+		t.Fatalf("public cap error = %#v, want clean typed message and cap code", publicError)
 	}
 }
 

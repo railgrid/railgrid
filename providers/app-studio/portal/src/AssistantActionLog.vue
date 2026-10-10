@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import {
   CircleHelp,
   FileSearch,
@@ -24,8 +24,8 @@ import AIActivityFeed from './agentkit/AIActivityFeed.vue'
 
 const props = withDefaults(defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[]; stopping?: boolean }>(), { stopping: false })
 const openExecID = ref<string | null>(null)
-const manuallyCollapsed = ref(false)
-const userExpanded = ref(false)
+// Disclosure state belongs to the user, independently of action lifecycle updates.
+const expanded = ref(false)
 const collapsedGroups = ref<Set<string>>(new Set())
 const rows = computed(() => groupAssistantActions(props.items))
 const count = computed(() => assistantActionCount(rows.value))
@@ -75,16 +75,6 @@ function isCanceledItem(item: typeof rows.value[number]): boolean {
 const hasBusyAction = computed(() => rows.value.some((item) => isBusyItem(item)))
 const hasErrorAction = computed(() => rows.value.some((item) => isErrorItem(item)))
 const hasAttentionAction = computed(() => rows.value.some((item) => isAttentionItem(item)))
-const requiresVisibility = computed(() => hasBusyAction.value || hasAttentionAction.value || hasErrorAction.value)
-const expanded = computed(() => requiresVisibility.value ? !manuallyCollapsed.value : userExpanded.value)
-
-watch(requiresVisibility, (visible) => {
-  if (visible) {
-    manuallyCollapsed.value = false
-    userExpanded.value = false
-    collapsedGroups.value = new Set()
-  }
-})
 
 interface ActionGroup {
   key: string
@@ -135,8 +125,8 @@ function execActionTitle(item: typeof rows.value[number]): string {
  * Keep a group's presentation identity tied to its first source item. The
  * group list is rebuilt while the assistant streams, so an array position
  * would move when an earlier group appears or a group splits. The group key
- * remains stable while later rows are appended or status changes split/merge
- * adjacent groups, preserving a caller's manual collapse choice.
+ * remains stable while later rows are appended. Lifecycle status must not
+ * split a collapsed group into a new, implicitly expanded group.
  */
 function actionGroupKey(item: typeof rows.value[number]): string {
   const scope = item.groupKey?.trim() || `${item.kind}:${item.mediaKind || 'default'}`
@@ -153,8 +143,20 @@ const groups = computed<ActionGroup[]>(() => {
       ? (busy ? 'Running commands' : 'Ran commands')
       : item.groupTitle?.trim() || groupLabel(item, busy)
     const previous = result[result.length - 1]
-    if (previous?.kind === item.kind && previous.mediaKind === item.mediaKind && previous.busy === busy && previous.label === label) {
+    const first = previous?.items[0]
+    if (previous?.kind === item.kind && previous.mediaKind === item.mediaKind
+      && Boolean(first?.exec) === Boolean(item.exec)
+      && first?.groupKey === item.groupKey && first?.groupTitle === item.groupTitle) {
       previous.items.push(item)
+      previous.busy ||= busy
+      // Keep the group's progress visible without changing its identity or
+      // disclosure state when completed and active calls coexist.
+      const representative = previous.items.find(isBusyItem) ?? item
+      previous.label = item.mediaKind === 'image'
+        ? groupLabel(representative, previous.busy)
+        : item.exec
+        ? (previous.busy ? 'Running commands' : 'Ran commands')
+        : item.groupTitle?.trim() || groupLabel(representative, previous.busy)
       previous.attention ||= isAttentionItem(item) || isErrorItem(item)
       previous.error ||= isErrorItem(item)
       continue
@@ -199,8 +201,7 @@ const activityGroups = computed<AIActivityGroup[]>(() => groups.value.map((group
 })))
 
 function toggleLog() {
-  if (requiresVisibility.value) manuallyCollapsed.value = expanded.value
-  else userExpanded.value = !userExpanded.value
+  expanded.value = !expanded.value
 }
 
 function groupScrollable(group: ActionGroup): boolean {

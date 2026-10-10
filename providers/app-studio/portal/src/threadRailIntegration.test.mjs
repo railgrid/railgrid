@@ -9,7 +9,7 @@ test('mounts the shared conversation rail against App Studio lifecycle handlers'
   assert.match(app, /<AIConversationRail[\s\S]*:threads="assistantThreads"[\s\S]*:active-thread-i-d="activeAssistantThreadID"/)
   assert.match(app, /<AIConversationRail[\s\S]*:unread-thread-i-ds="unreadAssistantThreadIDs"/)
   assert.match(app, /<AIConversationRail[\s\S]*:pinned-thread-i-ds="pinnedAssistantThreadIDs"/)
-  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, pin: true, unread: true, archive: true \}"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, pin: true, unread: true, archive: !messageStreaming \}"/)
   assert.match(app, /<AIConversationRail[\s\S]*@select="selectAssistantThread"[\s\S]*@create="createAssistantThread"/)
   assert.match(app, /<AIConversationRail[\s\S]*@archive="archiveAssistantThread"[\s\S]*@toggle-pin="toggleThreadPin"[\s\S]*@set-unread="setThreadUnread"/)
   assert.match(app, /<AIConversationRail[\s\S]*:storage-scope="assistantConversationRailStorageScope"/)
@@ -107,13 +107,13 @@ test('does not apply or present create-thread responses after unmount', () => {
   assert.match(firstProjectSource, /const current = \(\) => appComponentMounted && pendingFirstProjectSubmission === submission[\s\S]*firstProjectSubmissionIsCurrent\(/)
 
   const sendSource = app.slice(app.indexOf('async function sendMessage'), app.indexOf('function cancelMessageStream'))
-  assert.match(sendSource, /const sendRequestSerial = assistantThreadRequestSerial/)
-  assert.match(sendSource, /const sendContextFingerprint = projectContextFingerprint\(props\.ctx\)/)
-  assert.match(sendSource, /const firstSendIsCurrent = \(\) =>[\s\S]*appComponentMounted &&[\s\S]*sendRequestSerial === assistantThreadRequestSerial[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*pendingMessageSubmission\?\.fingerprint === submissionFingerprint/)
+  assert.match(sendSource, /const sendContextFingerprint = projectContextFingerprint\(sendContext\)/)
+  assert.match(sendSource, /const submissionIsCurrent = \(\) => appComponentMounted &&[\s\S]*submissionOwner\.generation === assistantSubmissionGeneration[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*selected\.value\?\.name === submissionOwner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === submissionOwner\.projectUID[\s\S]*activeAssistantThreadID\.value === submissionOwner\.threadID/)
+  assert.match(app, /watch\(\s*activeAssistantThreadID,[\s\S]*current !== owner\.threadID[\s\S]*invalidateAssistantMessageSubmission\(\)/)
   const firstThreadStart = sendSource.indexOf('let thread = assistantThreads.value.find')
   const firstThreadEnd = sendSource.indexOf('\n      const canonical', firstThreadStart)
   assert.ok(firstThreadStart >= 0 && firstThreadEnd > firstThreadStart)
-  assert.match(sendSource.slice(firstThreadStart, firstThreadEnd), /thread = await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!firstSendIsCurrent\(\)\) return false[\s\S]*assistantThreads\.value = \[thread, \.\.\.assistantThreads\.value\]/)
+  assert.match(sendSource.slice(firstThreadStart, firstThreadEnd), /thread = await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*assistantThreads\.value = \[thread, \.\.\.assistantThreads\.value\]/)
 })
 
 test('derives unread dots from persisted project-scoped update markers', () => {

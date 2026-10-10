@@ -1297,6 +1297,10 @@ func projectAssistantRunErrorMessage(err error) string {
 	if errors.As(err, &noProgress) {
 		return strings.TrimSpace(noProgress.Error())
 	}
+	var spendCap *projectAssistantOrgSpendCapExceededError
+	if errors.As(err, &spendCap) {
+		return strings.TrimSpace(spendCap.Error())
+	}
 	return strings.TrimSpace(projectEinoAssistantSafeErrorText(err))
 }
 

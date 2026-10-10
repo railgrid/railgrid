@@ -190,9 +190,10 @@ test('an accepted send from older history replaces the whole window with the liv
 
   const accepted = app.slice(acceptedStart, snapshotStart)
   assert.match(accepted, /const items = page\.items/)
-  const staleGuard = accepted.indexOf("if (!firstSendIsCurrent() || activeAssistantThreadID.value !== canonicalThreadID) return false")
+  const staleGuard = accepted.indexOf('if (!submissionIsCurrent()) {')
   const windowReplacement = accepted.indexOf('messages.value = canonicalMessages.map(toProjectMessageView)')
   assert.ok(staleGuard >= 0 && windowReplacement > staleGuard, 'stale send responses must be rejected before replacing the mounted page')
+  assert.match(accepted.slice(staleGuard, windowReplacement), /return finishAcceptedSubmission\(\)/)
   assert.match(accepted, /if \(assistantThreadViewingOlderHistory\.value\) \{[\s\S]*messages\.value = canonicalMessages\.map\(toProjectMessageView\)[\s\S]*\}[\s\S]*commitAssistantThreadItemPage\(page\)/)
   assert.doesNotMatch(accepted, /mergeAssistantThreadMessages/)
   assert.doesNotMatch(accepted, /messages\.value\s*=\s*\[\.\.\.messages\.value/)
