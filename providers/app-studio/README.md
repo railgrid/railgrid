@@ -617,6 +617,34 @@ exactly like the platform copy. See
 [docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
 [deploy/chart/README.md](deploy/chart/README.md) for every chart value.
 
+### Project identity revisions
+
+The API and Project reconciler read the current Project before deriving its
+scoped identity rules. Mint requests include that Project's generation and
+opaque resourceVersion. The hub verifies the exact observation before writing
+the identity record; a record update conflict repeats the record read and owner
+check. The SDK requires an affirmative `ownerRevisionVerified` response.
+
+The hub also writes the ScopedIdentity record's UID and generation atomically
+with the tenant ClusterRole's rules. An older materialization cannot overwrite
+a newer permission set, including changes derived from Project status within
+one Project generation. A delayed request or sweep re-reads the current record
+before applying it. ResourceVersions are compared only for equality.
+
+Unchanged rules reuse a verified live token. A resourceVersion-only change
+updates the next refresh's observation without minting another token; a rule or
+generation change rebuilds the source. Adopting revision checks on an older
+unverified cached token forces a new mint. A freshness refusal cannot fall back
+to that cached token. API and controller retries are bounded and derive rules
+again from a fresh Project read.
+
+For rollout, finish upgrading and draining old hub reconcilers before relying
+on the fences: older binaries do not honor the ClusterRole annotations. Then
+upgrade or drain older App Studio identity writers; once a record is fenced,
+unversioned requests are rejected. No new permission claims or API schemas are
+required. The fences cover concurrent rule refresh and materialization; they
+do not make Release's deletion of several Kubernetes objects atomic.
+
 ### Private preview browser authentication
 
 App Studio exchanges the Project identity at `POST /auth/apps/preview-handoff`

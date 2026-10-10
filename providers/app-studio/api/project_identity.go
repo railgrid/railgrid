@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -23,16 +24,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/internal/projectidentity"
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/identityclient"
 )
 
 type providerRESTConfigFactory interface {
 	ProviderRESTConfig(string) (*rest.Config, error)
 }
+
+const projectIdentityRevisionAttempts = 3
 
 // projectIdentityToken derives the Project-owner identity from the current
 // persisted Project every time. scopedidentity.Cache reuses a live token only
@@ -50,29 +55,85 @@ func (s *Server) projectIdentityToken(ctx context.Context, id identity, p *aiv1a
 	if !dataplane.IsClusterID(id.clusterID) {
 		return "", fmt.Errorf("project identity requires a kcp cluster ID, got %q", id.clusterID)
 	}
-	current, err := s.currentProjectForIdentity(ctx, id, p)
-	if err != nil {
-		return "", err
+	var previousRevision identityclient.OwnerRevision
+	var previousStaleOwnerErr error
+	for attempt := 0; attempt < projectIdentityRevisionAttempts; attempt++ {
+		current, err := s.currentProjectForIdentity(ctx, id, p)
+		if err != nil {
+			return "", err
+		}
+		revision := projectidentity.OwnerRevision(current)
+		if previousStaleOwnerErr != nil && revision == previousRevision {
+			return "", previousStaleOwnerErr
+		}
+		token, err := s.projectIdentities.TokenVersionedObserved(
+			ctx,
+			projectidentity.Owner(current, id.clusterID),
+			revision,
+			projectidentity.Rules(current),
+		)
+		if err == nil {
+			return token, nil
+		}
+		if !projectidentity.IsRevisionConflict(err) || attempt+1 == projectIdentityRevisionAttempts {
+			return "", err
+		}
+		if projectidentity.IsStaleOwnerRevision(err) {
+			previousRevision, previousStaleOwnerErr = revision, err
+		} else {
+			previousStaleOwnerErr = nil
+		}
 	}
-	return s.projectIdentities.TokenVersioned(ctx, projectidentity.Owner(current, id.clusterID), current.Generation, projectidentity.Rules(current))
+	return "", errors.New("project identity revision changed repeatedly")
 }
 
 func (s *Server) currentProjectForIdentity(ctx context.Context, id identity, project *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
 	if project == nil {
 		return nil, errors.New("project identity requires a persisted Project")
 	}
-	provider := id.provider
+	readCtx := ctx
+	var waitObservation *projectAssistantRateLimiterWaitObservation
+	if _, observed := projectAssistantRateLimiterWaitSummaryFromContext(ctx); !observed {
+		readCtx, waitObservation = projectAssistantObserveRateLimiterWaits(ctx)
+	}
+	readStarted := time.Now()
+	logRead := func(success bool) {
+		if waitObservation == nil {
+			return
+		}
+		fields := []any{"stage", "current_project_identity_read", "duration", time.Since(readStarted), "success", success}
+		fields = append(fields, projectAssistantRateLimiterWaitLogFields("rateLimiter", waitObservation.Snapshot())...)
+		klog.FromContext(readCtx).Info("App Studio current Project read", fields...)
+	}
+	provider, err := s.projectAssistantCurrentProjectReadClient(readCtx, id, id.provider)
+	if err != nil {
+		logRead(false)
+		return nil, fmt.Errorf("resolve App Studio client for current Project read: %w", err)
+	}
 	if provider == nil && s.callers != nil {
-		var err error
-		provider, err = s.callers.AsProvider(id.clusterID)
+		var supported bool
+		var factoryErr error
+		provider, supported, factoryErr = projectAssistantAsProviderWithReadLimiter(readCtx, s.callers, id.clusterID, s.assistantWorkerReadBudget.rateLimiter())
+		if factoryErr != nil {
+			logRead(false)
+			return nil, fmt.Errorf("resolve App Studio client for current Project read: %w", factoryErr)
+		}
+		if !supported {
+			provider, err = s.callers.AsProvider(id.clusterID)
+		} else {
+			err = nil
+		}
 		if err != nil {
+			logRead(false)
 			return nil, fmt.Errorf("resolve App Studio client for current Project read: %w", err)
 		}
 	}
 	if provider == nil {
+		logRead(false)
 		return nil, errors.New("current Project read requires App Studio's provider client")
 	}
-	object, err := provider.Resource(asclient.ProjectGVR).Get(ctx, project.Name, metav1.GetOptions{})
+	object, err := provider.Resource(asclient.ProjectGVR).Get(readCtx, project.Name, metav1.GetOptions{})
+	logRead(err == nil)
 	if err != nil {
 		return nil, fmt.Errorf("read current Project before identity mint: %w", err)
 	}

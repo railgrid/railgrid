@@ -27,6 +27,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
+
+	"k8s.io/klog/v2"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -84,6 +88,72 @@ type automaticIntegrationDiscovery struct {
 	status              integrationDiscoveryStatus
 }
 
+type automaticIntegrationTimeInterval struct {
+	started time.Time
+	ended   time.Time
+}
+
+type automaticIntegrationResourceMetrics struct {
+	metadataRequests                     int
+	metadataFailures                     int
+	metadataItems                        int
+	metadataHTTPDuration                 time.Duration
+	metadataHTTPIntervals                []automaticIntegrationTimeInterval
+	parentReviewCalls                    int
+	parentReviewAllows                   int
+	parentReviewDenials                  int
+	parentReviewErrors                   int
+	parentReviewDuration                 time.Duration
+	parentReviewIntervals                []automaticIntegrationTimeInterval
+	parentReviewServiceDurations         []time.Duration
+	parentReviewWaits                    projectAssistantRateLimiterWaitSummary
+	actionReviewCalls                    int
+	actionReviewAllows                   int
+	actionReviewDenials                  int
+	actionReviewErrors                   int
+	actionReviewDuration                 time.Duration
+	actionReviewIntervals                []automaticIntegrationTimeInterval
+	actionReviewServiceDurations         []time.Duration
+	actionReviewWaits                    projectAssistantRateLimiterWaitSummary
+	actionReviewDuplicateVersionsSkipped int
+	reviewIntervals                      []automaticIntegrationTimeInterval
+	canceled                             bool
+}
+
+type automaticIntegrationDiscoveryMetrics struct {
+	catalogDuration                      time.Duration
+	identityDuration                     time.Duration
+	resourceWorkDuration                 time.Duration
+	resourceTypes                        int
+	catalogActionVersions                int
+	actionSubresourceCoordinates         int
+	metadataRequests                     int
+	metadataFailures                     int
+	metadataItems                        int
+	metadataHTTPDuration                 time.Duration
+	metadataHTTPWall                     time.Duration
+	parentReviewCalls                    int
+	parentReviewAllows                   int
+	parentReviewDenials                  int
+	parentReviewErrors                   int
+	parentReviewDuration                 time.Duration
+	parentReviewWall                     time.Duration
+	parentReviewService                  automaticIntegrationServiceDurationSummary
+	parentReviewWaits                    projectAssistantRateLimiterWaitSummary
+	actionReviewCalls                    int
+	actionReviewAllows                   int
+	actionReviewDenials                  int
+	actionReviewErrors                   int
+	actionReviewDuration                 time.Duration
+	actionReviewWall                     time.Duration
+	actionReviewService                  automaticIntegrationServiceDurationSummary
+	actionReviewWaits                    projectAssistantRateLimiterWaitSummary
+	reviewDuration                       time.Duration
+	reviewWall                           time.Duration
+	actionReviewDuplicateVersionsSkipped int
+	canceledResources                    int
+}
+
 const automaticIntegrationUpdateAttempts = 3
 
 // materializeAutomaticProjectIntegrations temporarily removes the requirement
@@ -112,93 +182,180 @@ func (s *Server) materializeAutomaticProjectIntegrations(ctx context.Context, c 
 }
 
 func (s *Server) discoverAutomaticProjectIntegrations(ctx context.Context, c *asclient.Client, id identity, project *aiv1alpha1.Project) automaticIntegrationDiscovery {
+	started := time.Now()
+	metrics := automaticIntegrationDiscoveryMetrics{}
 	discovery := automaticIntegrationDiscovery{
 		failedResourceTypes: map[string]struct{}{},
 		status:              integrationDiscoveryStatus{State: "available", Issues: []integrationDiscoveryIssue{}},
 	}
+	defer func() {
+		klog.FromContext(ctx).Info("App Studio integration discovery completed",
+			"resourceTypes", metrics.resourceTypes,
+			"catalogActionVersions", metrics.catalogActionVersions,
+			"actionSubresourceCoordinates", metrics.actionSubresourceCoordinates,
+			"metadataRequests", metrics.metadataRequests,
+			"metadataFailures", metrics.metadataFailures,
+			"metadataItems", metrics.metadataItems,
+			"metadataHTTPDuration", metrics.metadataHTTPDuration,
+			"metadataHTTPWall", metrics.metadataHTTPWall,
+			"parentReviewCalls", metrics.parentReviewCalls,
+			"parentReviewAllows", metrics.parentReviewAllows,
+			"parentReviewDenials", metrics.parentReviewDenials,
+			"parentReviewErrors", metrics.parentReviewErrors,
+			"parentReviewDuration", metrics.parentReviewDuration,
+			"parentReviewWall", metrics.parentReviewWall,
+			"parentReviewServiceCalls", metrics.parentReviewService.calls,
+			"parentReviewServiceP50", metrics.parentReviewService.p50,
+			"parentReviewServiceP95", metrics.parentReviewService.p95,
+			"parentReviewServiceMax", metrics.parentReviewService.max,
+			"parentReviewRateLimiterWaitCalls", metrics.parentReviewWaits.calls,
+			"parentReviewRateLimiterWaitDuration", metrics.parentReviewWaits.total,
+			"parentReviewRateLimiterWaitDelayed", metrics.parentReviewWaits.delayed,
+			"reviewRateLimiterWaitDelayedThreshold", projectAssistantRateLimiterDelayedThreshold,
+			"parentReviewRateLimiterWaitMax", metrics.parentReviewWaits.max,
+			"actionReviewCalls", metrics.actionReviewCalls,
+			"actionReviewAllows", metrics.actionReviewAllows,
+			"actionReviewDenials", metrics.actionReviewDenials,
+			"actionReviewErrors", metrics.actionReviewErrors,
+			"actionReviewDuration", metrics.actionReviewDuration,
+			"actionReviewWall", metrics.actionReviewWall,
+			"actionReviewServiceCalls", metrics.actionReviewService.calls,
+			"actionReviewServiceP50", metrics.actionReviewService.p50,
+			"actionReviewServiceP95", metrics.actionReviewService.p95,
+			"actionReviewServiceMax", metrics.actionReviewService.max,
+			"actionReviewRateLimiterWaitCalls", metrics.actionReviewWaits.calls,
+			"actionReviewRateLimiterWaitDuration", metrics.actionReviewWaits.total,
+			"actionReviewRateLimiterWaitDelayed", metrics.actionReviewWaits.delayed,
+			"actionReviewRateLimiterWaitMax", metrics.actionReviewWaits.max,
+			"authorizationReviewDuration", metrics.reviewDuration,
+			"authorizationReviewWall", metrics.reviewWall,
+			"duplicateActionVersionReviewsSkipped", metrics.actionReviewDuplicateVersionsSkipped,
+			"canceledResources", metrics.canceledResources,
+			"catalogDuration", metrics.catalogDuration,
+			"identityDuration", metrics.identityDuration,
+			"resourceWorkDuration", metrics.resourceWorkDuration,
+			"targets", len(discovery.targets),
+			"issues", len(discovery.status.Issues),
+			"duration", time.Since(started),
+		)
+	}()
 	if s == nil || c == nil {
 		discovery.status = unavailableIntegrationDiscovery("discovery_unavailable", "Provider integration discovery is unavailable.", "", "")
 		return discovery
 	}
+	catalogStarted := time.Now()
 	catalog, err := s.providerActionCatalogForProject(ctx, id, project)
+	metrics.catalogDuration = time.Since(catalogStarted)
 	if err != nil {
 		discovery.catalogUnavailable = true
 		discovery.status = unavailableIntegrationDiscovery("catalog_unavailable", "The provider action catalog could not be loaded.", "", "")
 		return discovery
 	}
 	resources := automaticProviderCatalogResources(catalog)
-	targets := make([]automaticIntegrationTarget, 0)
-	resourceSuccesses := 0
+	metrics.resourceTypes = len(resources)
 	for _, resource := range resources {
-		list, listErr := s.fetchProviderResourceMetadata(ctx, id, resource.provider, resource.apiVersion, resource.kind, resource.resource)
-		if listErr != nil {
-			discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
-			discovery.addIssue(integrationIssueForResourceError(listErr, resource.provider, resource.resource))
-			continue
-		}
-		resourceSuccesses++
-		if list.Truncated {
-			discovery.addIssue(integrationDiscoveryIssue{Code: "results_truncated", Message: "Some provider resources were omitted because the discovery limit was reached.", Provider: resource.provider, Resource: resource.resource})
-		}
-		for _, object := range list.Items {
-			name := strings.TrimSpace(object.Metadata.Name)
-			if name == "" {
+		metrics.catalogActionVersions += len(resource.actions)
+		seen := make(map[string]struct{}, len(resource.actions))
+		for _, action := range resource.actions {
+			if _, exists := seen[action.name]; exists {
 				continue
 			}
-			ref := &aiv1alpha1.ProjectProviderResourceReference{
-				Name: name, APIVersion: resource.apiVersion, Kind: resource.kind, Resource: resource.resource,
-			}
-			parentAllowed, authErr := s.authorizeCaller(ctx, id, dataplane.ResourceAttributes{
-				Group: resource.gvr.Group, Version: resource.gvr.Version, Resource: resource.resource,
-				Name: name, Verb: "get",
-			})
-			if authErr != nil {
-				discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Caller access to a discovered provider resource could not be verified.", Provider: resource.provider, Resource: resource.resource})
-				continue
-			}
-			if !parentAllowed {
-				discovery.addIssue(integrationDiscoveryIssue{Code: "resource_denied", Message: "The caller cannot read a discovered provider resource.", Provider: resource.provider, Resource: resource.resource})
-				continue
-			}
-			actions := make([]aiv1alpha1.ProjectProviderActionSpec, 0, len(resource.actions))
-			catalogActions := make([]providerCatalogAction, 0, len(resource.actions))
-			for _, action := range resource.actions {
-				allowed, actionErr := s.authorizeCaller(ctx, id, dataplane.ResourceAttributes{
-					Group: resource.gvr.Group, Version: resource.gvr.Version, Resource: resource.resource,
-					Subresource: action.name, Name: name, Verb: "create",
-				})
-				if actionErr != nil {
-					discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Caller access to a provider action could not be verified.", Provider: resource.provider, Resource: resource.resource})
-					continue
-				}
-				if !allowed {
-					discovery.addIssue(integrationDiscoveryIssue{Code: "action_denied", Message: "The caller is not authorized for one or more provider actions.", Provider: resource.provider, Resource: resource.resource})
-					continue
-				}
-				catalogAction := action.catalog
-				if strings.TrimSpace(catalogAction.ID) == "" {
-					catalogAction.ID = action.name + "/" + action.version
-				}
-				catalogActions = append(catalogActions, catalogAction)
-				// Listing an action does not grant it. Actions requiring consent stay
-				// visible as candidates, where the explicit add flow can collect
-				// consentAccepted, but automatic turn-start materialization never
-				// grants them on the caller's behalf.
-				if !action.catalog.Consent.Required {
-					actions = append(actions, aiv1alpha1.ProjectProviderActionSpec{
-						Name: action.name, Version: action.version, SchemaDigest: action.schemaDigest,
-					})
-				}
-			}
-			if len(catalogActions) == 0 {
-				continue
-			}
-			targets = append(targets, automaticIntegrationTarget{
-				provider: resource.provider, ref: ref, uid: object.Metadata.UID,
-				resourceVersion: strings.TrimSpace(object.Metadata.ResourceVersion), actions: actions, catalogActions: catalogActions,
-			})
+			seen[action.name] = struct{}{}
+			metrics.actionSubresourceCoordinates++
 		}
 	}
+	if len(resources) == 0 {
+		return discovery
+	}
+	identityStarted := time.Now()
+	reviewID, err := s.integrationDiscoveryIdentity(ctx, id)
+	metrics.identityDuration = time.Since(identityStarted)
+	if err != nil {
+		discovery.status = unavailableIntegrationDiscovery("authorization_unavailable", "Integration authorization is unavailable.", "", "")
+		return discovery
+	}
+	budget := s.discoveryBudget()
+	type result struct {
+		discovery automaticIntegrationDiscovery
+		success   bool
+		metrics   automaticIntegrationResourceMetrics
+	}
+	results := make([]result, len(resources))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	var metadataIntervals, parentReviewIntervals, actionReviewIntervals, reviewIntervals []automaticIntegrationTimeInterval
+	var parentReviewServiceDurations, actionReviewServiceDurations []time.Duration
+	resourceWorkStarted := time.Now()
+	for worker := 0; worker < min(integrationDiscoveryConcurrency, len(resources)); worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				select {
+				case budget.slots <- struct{}{}:
+					results[i].discovery, results[i].success, results[i].metrics = s.discoverAutomaticIntegrationResource(ctx, reviewID, resources[i])
+					<-budget.slots
+				case <-ctx.Done():
+					results[i].metrics.canceled = true
+					results[i].discovery.status.Issues = []integrationDiscoveryIssue{{Code: "authorization_unavailable", Message: "Integration discovery was canceled.", Provider: resources[i].provider, Resource: resources[i].resource}}
+				}
+			}
+		}()
+	}
+	for i := range resources {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
+	targets := make([]automaticIntegrationTarget, 0)
+	resourceSuccesses := 0
+	// Merge in catalog order, independent of worker scheduling. Each worker
+	// owns its result; no shared target maps or grant lists are mutated concurrently.
+	for i, result := range results {
+		targets = append(targets, result.discovery.targets...)
+		discovery.status.Issues = append(discovery.status.Issues, result.discovery.status.Issues...)
+		metrics.metadataRequests += result.metrics.metadataRequests
+		metrics.metadataFailures += result.metrics.metadataFailures
+		metrics.metadataItems += result.metrics.metadataItems
+		metrics.metadataHTTPDuration += result.metrics.metadataHTTPDuration
+		metrics.parentReviewCalls += result.metrics.parentReviewCalls
+		metrics.parentReviewAllows += result.metrics.parentReviewAllows
+		metrics.parentReviewDenials += result.metrics.parentReviewDenials
+		metrics.parentReviewErrors += result.metrics.parentReviewErrors
+		metrics.parentReviewDuration += result.metrics.parentReviewDuration
+		metrics.reviewDuration += result.metrics.parentReviewDuration
+		metrics.actionReviewCalls += result.metrics.actionReviewCalls
+		metrics.actionReviewAllows += result.metrics.actionReviewAllows
+		metrics.actionReviewDenials += result.metrics.actionReviewDenials
+		metrics.actionReviewErrors += result.metrics.actionReviewErrors
+		metrics.actionReviewDuration += result.metrics.actionReviewDuration
+		metrics.reviewDuration += result.metrics.actionReviewDuration
+		metrics.actionReviewDuplicateVersionsSkipped += result.metrics.actionReviewDuplicateVersionsSkipped
+		if result.metrics.canceled {
+			metrics.canceledResources++
+		}
+		metadataIntervals = append(metadataIntervals, result.metrics.metadataHTTPIntervals...)
+		parentReviewIntervals = append(parentReviewIntervals, result.metrics.parentReviewIntervals...)
+		parentReviewServiceDurations = append(parentReviewServiceDurations, result.metrics.parentReviewServiceDurations...)
+		actionReviewIntervals = append(actionReviewIntervals, result.metrics.actionReviewIntervals...)
+		actionReviewServiceDurations = append(actionReviewServiceDurations, result.metrics.actionReviewServiceDurations...)
+		reviewIntervals = append(reviewIntervals, result.metrics.reviewIntervals...)
+		metrics.parentReviewWaits.add(result.metrics.parentReviewWaits)
+		metrics.actionReviewWaits.add(result.metrics.actionReviewWaits)
+		if result.success {
+			resourceSuccesses++
+		} else {
+			resource := resources[i]
+			discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
+		}
+	}
+	metrics.resourceWorkDuration = time.Since(resourceWorkStarted)
+	metrics.metadataHTTPWall = automaticIntegrationIntervalUnion(metadataIntervals)
+	metrics.parentReviewWall = automaticIntegrationIntervalUnion(parentReviewIntervals)
+	metrics.actionReviewWall = automaticIntegrationIntervalUnion(actionReviewIntervals)
+	metrics.reviewWall = automaticIntegrationIntervalUnion(reviewIntervals)
+	metrics.parentReviewService = automaticIntegrationServiceDurationSummaryFor(parentReviewServiceDurations)
+	metrics.actionReviewService = automaticIntegrationServiceDurationSummaryFor(actionReviewServiceDurations)
 	sort.Slice(targets, func(i, j int) bool {
 		return automaticProviderReferenceKey(targets[i].provider, targets[i].ref) < automaticProviderReferenceKey(targets[j].provider, targets[j].ref)
 	})
@@ -210,6 +367,238 @@ func (s *Server) discoverAutomaticProjectIntegrations(ctx context.Context, c *as
 		}
 	}
 	return discovery
+}
+
+// Each resource retains the parent-read check before checking any actions.
+// Only an explicit allow is included; denial, cancellation and errors never
+// produce a grant. Consent and schema checks remain in the original flow.
+func (s *Server) discoverAutomaticIntegrationResource(ctx context.Context, id identity, resource automaticProviderCatalogResource) (automaticIntegrationDiscovery, bool, automaticIntegrationResourceMetrics) {
+	discovery := automaticIntegrationDiscovery{failedResourceTypes: map[string]struct{}{}}
+	metrics := automaticIntegrationResourceMetrics{}
+	targets := make([]automaticIntegrationTarget, 0)
+	metrics.metadataRequests = 1
+	listStarted := time.Now()
+	list, listErr := s.fetchProviderResourceMetadata(ctx, id, resource.provider, resource.apiVersion, resource.kind, resource.resource)
+	listEnded := time.Now()
+	metrics.metadataHTTPDuration = listEnded.Sub(listStarted)
+	metrics.metadataHTTPIntervals = append(metrics.metadataHTTPIntervals, automaticIntegrationTimeInterval{started: listStarted, ended: listEnded})
+	if ctx.Err() != nil && listErr == nil {
+		listErr = ctx.Err()
+	}
+	if listErr != nil {
+		metrics.metadataFailures = 1
+		metrics.canceled = errors.Is(listErr, context.Canceled) || errors.Is(listErr, context.DeadlineExceeded)
+		discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
+		discovery.addIssue(integrationIssueForResourceError(listErr, resource.provider, resource.resource))
+		return discovery, false, metrics
+	}
+	metrics.metadataItems = len(list.Items)
+	if list.Truncated {
+		discovery.addIssue(integrationDiscoveryIssue{Code: "results_truncated", Message: "Some provider resources were omitted because the discovery limit was reached.", Provider: resource.provider, Resource: resource.resource})
+	}
+	for _, object := range list.Items {
+		if ctx.Err() != nil {
+			metrics.canceled = true
+			discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
+			discovery.targets = nil
+			discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Integration discovery was canceled.", Provider: resource.provider, Resource: resource.resource})
+			return discovery, false, metrics
+		}
+		name := strings.TrimSpace(object.Metadata.Name)
+		if name == "" {
+			continue
+		}
+		ref := &aiv1alpha1.ProjectProviderResourceReference{
+			Name: name, APIVersion: resource.apiVersion, Kind: resource.kind, Resource: resource.resource,
+		}
+		parentStarted := time.Now()
+		parentReviewCtx, parentWaitObservation := projectAssistantObserveRateLimiterWaits(ctx)
+		parentAllowed, authErr := s.authorizeCaller(parentReviewCtx, id, dataplane.ResourceAttributes{
+			Group: resource.gvr.Group, Version: resource.gvr.Version, Resource: resource.resource,
+			Name: name, Verb: "get",
+		})
+		parentEnded := time.Now()
+		parentWaits := parentWaitObservation.Snapshot()
+		metrics.parentReviewWaits.add(parentWaits)
+		metrics.parentReviewCalls++
+		metrics.parentReviewDuration += parentEnded.Sub(parentStarted)
+		metrics.parentReviewIntervals = append(metrics.parentReviewIntervals, automaticIntegrationTimeInterval{started: parentStarted, ended: parentEnded})
+		metrics.parentReviewServiceDurations = append(metrics.parentReviewServiceDurations, automaticIntegrationReviewServiceDuration(parentEnded.Sub(parentStarted), parentWaits))
+		metrics.reviewIntervals = append(metrics.reviewIntervals, automaticIntegrationTimeInterval{started: parentStarted, ended: parentEnded})
+		if ctx.Err() != nil && authErr == nil {
+			authErr = ctx.Err()
+			parentAllowed = false
+		}
+		if authErr != nil {
+			metrics.parentReviewErrors++
+			discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Caller access to a discovered provider resource could not be verified.", Provider: resource.provider, Resource: resource.resource})
+			if errors.Is(authErr, context.Canceled) || errors.Is(authErr, context.DeadlineExceeded) {
+				metrics.canceled = true
+				discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
+				discovery.targets = nil
+				return discovery, false, metrics
+			}
+			continue
+		}
+		if !parentAllowed {
+			metrics.parentReviewDenials++
+			discovery.addIssue(integrationDiscoveryIssue{Code: "resource_denied", Message: "The caller cannot read a discovered provider resource.", Provider: resource.provider, Resource: resource.resource})
+			continue
+		}
+		metrics.parentReviewAllows++
+		actions := make([]aiv1alpha1.ProjectProviderActionSpec, 0, len(resource.actions))
+		catalogActions := make([]providerCatalogAction, 0, len(resource.actions))
+		type actionReviewResult struct {
+			allowed bool
+			err     error
+		}
+		actionReviews := make(map[string]actionReviewResult, len(resource.actions))
+		for _, action := range resource.actions {
+			result, reviewed := actionReviews[action.name]
+			if reviewed {
+				metrics.actionReviewDuplicateVersionsSkipped++
+			} else {
+				actionStarted := time.Now()
+				actionReviewCtx, actionWaitObservation := projectAssistantObserveRateLimiterWaits(ctx)
+				result.allowed, result.err = s.authorizeCaller(actionReviewCtx, id, dataplane.ResourceAttributes{
+					Group: resource.gvr.Group, Version: resource.gvr.Version, Resource: resource.resource,
+					Subresource: action.name, Name: name, Verb: "create",
+				})
+				actionEnded := time.Now()
+				actionWaits := actionWaitObservation.Snapshot()
+				metrics.actionReviewWaits.add(actionWaits)
+				metrics.actionReviewCalls++
+				metrics.actionReviewDuration += actionEnded.Sub(actionStarted)
+				metrics.actionReviewIntervals = append(metrics.actionReviewIntervals, automaticIntegrationTimeInterval{started: actionStarted, ended: actionEnded})
+				metrics.actionReviewServiceDurations = append(metrics.actionReviewServiceDurations, automaticIntegrationReviewServiceDuration(actionEnded.Sub(actionStarted), actionWaits))
+				metrics.reviewIntervals = append(metrics.reviewIntervals, automaticIntegrationTimeInterval{started: actionStarted, ended: actionEnded})
+				if ctx.Err() != nil && result.err == nil {
+					result.err = ctx.Err()
+					result.allowed = false
+				}
+				if result.err != nil {
+					metrics.actionReviewErrors++
+				} else if result.allowed {
+					metrics.actionReviewAllows++
+				} else {
+					metrics.actionReviewDenials++
+				}
+				actionReviews[action.name] = result
+			}
+			allowed, actionErr := result.allowed, result.err
+			if actionErr != nil {
+				discovery.addIssue(integrationDiscoveryIssue{Code: "authorization_unavailable", Message: "Caller access to a provider action could not be verified.", Provider: resource.provider, Resource: resource.resource})
+				if errors.Is(actionErr, context.Canceled) || errors.Is(actionErr, context.DeadlineExceeded) {
+					metrics.canceled = true
+					discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
+					discovery.targets = nil
+					return discovery, false, metrics
+				}
+				continue
+			}
+			if !allowed {
+				discovery.addIssue(integrationDiscoveryIssue{Code: "action_denied", Message: "The caller is not authorized for one or more provider actions.", Provider: resource.provider, Resource: resource.resource})
+				continue
+			}
+			catalogAction := action.catalog
+			if strings.TrimSpace(catalogAction.ID) == "" {
+				catalogAction.ID = action.name + "/" + action.version
+			}
+			catalogActions = append(catalogActions, catalogAction)
+			// Listing an action does not grant it. Actions requiring consent stay
+			// visible as candidates, where the explicit add flow can collect
+			// consentAccepted, but automatic turn-start materialization never
+			// grants them on the caller's behalf.
+			if !action.catalog.Consent.Required {
+				actions = append(actions, aiv1alpha1.ProjectProviderActionSpec{
+					Name: action.name, Version: action.version, SchemaDigest: action.schemaDigest,
+				})
+			}
+		}
+		if len(catalogActions) == 0 {
+			continue
+		}
+		targets = append(targets, automaticIntegrationTarget{
+			provider: resource.provider, ref: ref, uid: object.Metadata.UID,
+			resourceVersion: strings.TrimSpace(object.Metadata.ResourceVersion), actions: actions, catalogActions: catalogActions,
+		})
+	}
+	discovery.targets = targets
+	return discovery, true, metrics
+}
+
+func automaticIntegrationIntervalUnion(intervals []automaticIntegrationTimeInterval) time.Duration {
+	valid := make([]automaticIntegrationTimeInterval, 0, len(intervals))
+	for _, interval := range intervals {
+		if interval.started.IsZero() || interval.ended.Before(interval.started) || interval.ended.Equal(interval.started) {
+			continue
+		}
+		valid = append(valid, interval)
+	}
+	if len(valid) == 0 {
+		return 0
+	}
+	sort.Slice(valid, func(i, j int) bool { return valid[i].started.Before(valid[j].started) })
+	started, ended := valid[0].started, valid[0].ended
+	var total time.Duration
+	for _, interval := range valid[1:] {
+		if interval.started.After(ended) {
+			total += ended.Sub(started)
+			started, ended = interval.started, interval.ended
+			continue
+		}
+		if interval.ended.After(ended) {
+			ended = interval.ended
+		}
+	}
+	return total + ended.Sub(started)
+}
+
+type automaticIntegrationServiceDurationSummary struct {
+	calls int
+	p50   time.Duration
+	p95   time.Duration
+	max   time.Duration
+}
+
+// automaticIntegrationReviewServiceDuration estimates time spent in the
+// review request itself by removing the observed client-go rate-limiter wait
+// from the end-to-end review call. It intentionally retains no request or
+// identity data.
+func automaticIntegrationReviewServiceDuration(elapsed time.Duration, waits projectAssistantRateLimiterWaitSummary) time.Duration {
+	service := elapsed - waits.total
+	if service < 0 {
+		return 0
+	}
+	return service
+}
+
+func automaticIntegrationServiceDurationSummaryFor(values []time.Duration) automaticIntegrationServiceDurationSummary {
+	if len(values) == 0 {
+		return automaticIntegrationServiceDurationSummary{}
+	}
+	sorted := append([]time.Duration(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return automaticIntegrationServiceDurationSummary{
+		calls: len(sorted),
+		p50:   sorted[automaticIntegrationNearestRankIndex(len(sorted), 50)],
+		p95:   sorted[automaticIntegrationNearestRankIndex(len(sorted), 95)],
+		max:   sorted[len(sorted)-1],
+	}
+}
+
+func automaticIntegrationNearestRankIndex(count, percentile int) int {
+	if count <= 1 || percentile <= 0 {
+		return 0
+	}
+	if percentile >= 100 {
+		return count - 1
+	}
+	rank := (percentile*count + 99) / 100
+	if rank < 1 {
+		rank = 1
+	}
+	return rank - 1
 }
 
 func (d *automaticIntegrationDiscovery) addIssue(issue integrationDiscoveryIssue) {

@@ -440,21 +440,26 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	if !hasDurableRun {
 		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
 	}
-	registry, err := readProjectLLMRegistry(ctx, c)
-	if err != nil {
-		return projectAssistantRunResult{}, err
-	}
+	modelStarted := time.Now()
 	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(durable)
-	settings, err := registry.selectedSettings(modelID, modelRevisionID)
+	modelCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	selectedModel, err := readProjectLLMModelForTurn(modelCtx, c, modelID, modelRevisionID)
+	projectAssistantLogWorkerPreparationWithRateLimiterWaits(modelCtx, durable.ID, "model", modelStarted)
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
+	settings := selectedModel.Settings
 	if err := normalizeProjectLLMSettings(&settings); err != nil {
 		return projectAssistantRunResult{}, err
 	}
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return projectAssistantRunResult{}, errProjectLLMNotConfigured
 	}
+	workerClient, err := s.projectAssistantWorkerReadClient(ctx, id, c)
+	if err != nil {
+		return projectAssistantRunResult{}, fmt.Errorf("prepare assistant worker read client: %w", err)
+	}
+	c = workerClient
 	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
 	turn.ProjectUID = string(p.UID)
 	ctx, finishTurn := s.projectAssistantRunManager().Begin(ctx, turn)
@@ -480,12 +485,17 @@ func (s *Server) generateProjectAssistantResultWithStart(
 			return projectAssistantRunResult{}, err
 		}
 	}
+	historyStarted := time.Now()
 	conversationProjection, err := loadProjectAssistantConversationProjection(ctx, s.store, messageScope, threadID)
+	klog.FromContext(ctx).Info("App Studio worker preparation", "run", durable.ID, "stage", "conversation", "duration", time.Since(historyStarted))
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
 	conversation, conversationCheckpointed := projectAssistantConversationForRun(conversationProjection, recent)
-	p = projectWithLiveBindingStatus(ctx, c, p, id)
+	bindingStarted := time.Now()
+	bindingCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	p = projectWithLiveRuntimeBindingStatus(bindingCtx, c, p, id)
+	projectAssistantLogWorkerPreparationWithRateLimiterWaits(bindingCtx, durable.ID, "binding", bindingStarted)
 	mode, ok := projectAssistantCollaborationModeForRun(durable)
 	if !ok {
 		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
@@ -503,12 +513,16 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		// progress remain scoped to the current user turn.
 		modelContentParts = cloneProjectAssistantContentParts(start.ContentParts)
 	}
+	repositoryStarted := time.Now()
+	repositoryCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
+	repository := projectRepositoryView(repositoryCtx, c, p)
+	projectAssistantLogWorkerPreparationWithRateLimiterWaits(repositoryCtx, durable.ID, "repository", repositoryStarted)
 	req := projectAssistantRunRequest{
 		Identity:                 id,
 		ToolPort:                 newProjectAssistantHTTPToolPort(s, r),
 		Client:                   c,
 		Project:                  p,
-		Repository:               projectRepositoryView(ctx, c, p),
+		Repository:               repository,
 		WorkspaceScope:           projectWorkspaceScope(id, p),
 		Workspace:                s.workspaces,
 		MessageScope:             messageScope,
@@ -1921,18 +1935,42 @@ func projectMCPRequestWithTimeout(ctx context.Context, endpoint, method string, 
 	return envelope.Result, nil
 }
 
+var projectMCPDevelopmentTransport struct {
+	mu        sync.Mutex
+	base      *http.Transport
+	transport *http.Transport
+}
+
 func projectMCPTransport(insecureSkipVerify bool) http.RoundTripper {
 	if !insecureSkipVerify {
 		return http.DefaultTransport
 	}
 
-	if baseTransport, ok := http.DefaultTransport.(*http.Transport); ok {
-		clone := baseTransport.Clone()
-		clone.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // dev-only
-		return clone
+	// A Transport owns the connection pool, not caller credentials. Reuse the
+	// explicit development TLS transport across short-lived clients while each
+	// request keeps its own authorization headers and each client its timeout.
+	base, _ := http.DefaultTransport.(*http.Transport)
+	projectMCPDevelopmentTransport.mu.Lock()
+	defer projectMCPDevelopmentTransport.mu.Unlock()
+	if projectMCPDevelopmentTransport.transport != nil && projectMCPDevelopmentTransport.base == base {
+		return projectMCPDevelopmentTransport.transport
 	}
-
-	return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // dev-only
+	transport := &http.Transport{}
+	if base != nil {
+		transport = base.Clone()
+	}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // explicit dev-only setting
+	if previous := projectMCPDevelopmentTransport.transport; previous != nil {
+		previous.CloseIdleConnections()
+	}
+	projectMCPDevelopmentTransport.base = base
+	projectMCPDevelopmentTransport.transport = transport
+	return transport
 }
 
 func projectMCPShouldRetryInsecure(endpoint string, err error, skipTLSVerify bool) bool {
