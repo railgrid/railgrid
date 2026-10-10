@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -145,6 +146,123 @@ func TestCoordinatorMutationLockCoversCompleteDispatchAndCancelDoesNotWait(t *te
 	case <-locked:
 	case <-time.After(time.Second):
 		t.Fatal("dispatch did not release mutation lock after cancellation")
+	}
+}
+
+func TestCoordinatorCancelBeforeStartIsDurableAndPreventsDispatch(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	dispatch := &blockingDispatcher{started: make(chan struct{}), release: make(chan struct{})}
+	coordinator, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := testWorkerRequest()
+	cancel := start
+	cancel.Action = "cancel"
+	canceled, err := coordinator.cancel(cancel)
+	if err != nil || canceled.State != "canceled" || canceled.SessionID != start.SessionID || canceled.RequestID != start.RequestID {
+		t.Fatalf("request-ID cancel before start = %+v, %v", canceled, err)
+	}
+	record, found, err := coordinator.readRecord(start.SessionID)
+	if err != nil || !found || !record.CanceledBeforeStart {
+		t.Fatalf("durable tombstone = %+v, found=%t, err=%v", record, found, err)
+	}
+
+	// The marker must survive coordinator replacement; a delayed START for the
+	// exact same caller and request cannot reach the dispatcher.
+	restarted, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := restarted.start(start)
+	if err != nil || started.State != "canceled" {
+		t.Fatalf("delayed start = %+v, %v; want canceled", started, err)
+	}
+	select {
+	case <-dispatch.started:
+		t.Fatal("delayed START was dispatched after its cancellation tombstone")
+	case <-time.After(50 * time.Millisecond):
+	}
+	dispatch.mu.Lock()
+	if dispatch.calls != 0 {
+		t.Fatalf("dispatcher calls = %d, want 0", dispatch.calls)
+	}
+	dispatch.mu.Unlock()
+}
+
+func TestCoordinatorCancelBeforeStartRejectsDifferentSessionBinding(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	dispatch := &blockingDispatcher{started: make(chan struct{}), release: make(chan struct{})}
+	coordinator, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := testWorkerRequest()
+	if _, err := coordinator.cancel(workerExecRequest{Action: "cancel", SessionID: first.SessionID, RequestID: first.RequestID, CallerKey: first.CallerKey}); err != nil {
+		t.Fatal(err)
+	}
+	otherSession := first
+	otherSession.SessionID = strings.Repeat("c", 32)
+	if _, err := coordinator.cancel(workerExecRequest{Action: "cancel", SessionID: otherSession.SessionID, RequestID: otherSession.RequestID, CallerKey: otherSession.CallerKey}); err == nil {
+		t.Fatal("same request ID was allowed to cancel a different session binding")
+	} else {
+		var httpErr *workerHTTPError
+		if !errors.As(err, &httpErr) || httpErr.status != http.StatusConflict {
+			t.Fatalf("cross-session cancel error = %v, want 409", err)
+		}
+	}
+}
+
+func TestCoordinatorCancelTombstonesHaveBoundedCapacityAndRetention(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	dispatch := &blockingDispatcher{started: make(chan struct{}), release: make(chan struct{})}
+	coordinator, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make([]workerExecRequest, 0, execSessionCapacity)
+	for i := 0; i < execSessionCapacity; i++ {
+		request := workerExecRequest{
+			Action: "cancel", SessionID: fmt.Sprintf("%032x", i+1),
+			RequestID: fmt.Sprintf("cancel-%d", i), CallerKey: "caller-1",
+		}
+		if _, err := coordinator.cancel(request); err != nil {
+			t.Fatalf("cancel %d: %v", i, err)
+		}
+		requests = append(requests, request)
+	}
+	if _, err := coordinator.cancel(workerExecRequest{
+		Action: "cancel", SessionID: strings.Repeat("f", 32), RequestID: "cancel-over-capacity", CallerKey: "caller-1",
+	}); err == nil {
+		t.Fatal("cancel beyond tombstone capacity unexpectedly succeeded")
+	} else {
+		var httpErr *workerHTTPError
+		if !errors.As(err, &httpErr) || httpErr.status != http.StatusServiceUnavailable {
+			t.Fatalf("over-capacity cancel error = %v, want 503", err)
+		}
+	}
+	start := testWorkerRequest()
+	start.SessionID, start.RequestID, start.CallerKey = requests[0].SessionID, requests[0].RequestID, requests[0].CallerKey
+	if got, err := coordinator.start(start); err != nil || got.State != "canceled" {
+		t.Fatalf("first tombstone after capacity pressure = %+v, %v; want canceled", got, err)
+	}
+
+	old := time.Now().Add(-execSessionRetention - time.Second)
+	for _, request := range requests {
+		record, found, err := coordinator.readRecord(request.SessionID)
+		if err != nil || !found {
+			t.Fatalf("read tombstone %s: found=%t err=%v", request.SessionID, found, err)
+		}
+		record.CreatedAt, record.UpdatedAt = old, old
+		if err := coordinator.persistRecord(record); err != nil {
+			t.Fatalf("age tombstone %s: %v", request.SessionID, err)
+		}
+	}
+	if err := coordinator.gcLocked(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := coordinator.recordCount(); err != nil || count != 0 {
+		t.Fatalf("records after tombstone retention = %d, %v; want 0", count, err)
 	}
 }
 

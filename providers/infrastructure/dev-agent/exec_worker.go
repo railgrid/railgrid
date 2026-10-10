@@ -58,13 +58,14 @@ type workerExecResult struct {
 }
 
 type execSessionRecord struct {
-	SessionID   string           `json:"sessionID"`
-	RequestID   string           `json:"requestID"`
-	CallerKey   string           `json:"callerKey"`
-	Fingerprint string           `json:"fingerprint"`
-	Result      workerExecResult `json:"result"`
-	CreatedAt   time.Time        `json:"createdAt"`
-	UpdatedAt   time.Time        `json:"updatedAt"`
+	SessionID           string           `json:"sessionID"`
+	RequestID           string           `json:"requestID"`
+	CallerKey           string           `json:"callerKey"`
+	Fingerprint         string           `json:"fingerprint"`
+	CanceledBeforeStart bool             `json:"canceledBeforeStart,omitempty"`
+	Result              workerExecResult `json:"result"`
+	CreatedAt           time.Time        `json:"createdAt"`
+	UpdatedAt           time.Time        `json:"updatedAt"`
 }
 
 type execDispatcher interface {
@@ -236,28 +237,37 @@ func (w *execCoordinator) start(req workerExecRequest) (workerExecResult, error)
 	if err := w.gcLocked(time.Now()); err != nil {
 		return workerExecResult{}, err
 	}
-	byRequest, found, err := w.findByRequest(req.CallerKey, req.RequestID)
-	if err != nil {
-		return workerExecResult{}, err
-	}
-	if found {
-		if byRequest.Fingerprint != req.Fingerprint {
-			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "idempotency key was already used for a different execution request"}
-		}
-		return byRequest.Result, nil
-	}
 	existing, found, err := w.readRecord(req.SessionID)
 	if err != nil {
 		return workerExecResult{}, err
 	}
 	if found {
+		if existing.SessionID != req.SessionID {
+			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "execution record session binding is invalid"}
+		}
 		if existing.CallerKey != req.CallerKey {
 			return workerExecResult{}, &workerHTTPError{status: http.StatusForbidden, message: "execution session belongs to another caller"}
 		}
-		if existing.RequestID != req.RequestID || existing.Fingerprint != req.Fingerprint {
+		if existing.RequestID != req.RequestID {
+			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "idempotency key was already used for a different execution request"}
+		}
+		if existing.CanceledBeforeStart {
+			return existing.Result, nil
+		}
+		if existing.Fingerprint != req.Fingerprint {
 			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "idempotency key was already used for a different execution request"}
 		}
 		return existing.Result, nil
+	}
+	byRequest, found, err := w.findByRequest(req.CallerKey, req.RequestID)
+	if err != nil {
+		return workerExecResult{}, err
+	}
+	if found {
+		if byRequest.SessionID != req.SessionID || byRequest.Fingerprint != req.Fingerprint {
+			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "idempotency key was already used for a different execution request"}
+		}
+		return byRequest.Result, nil
 	}
 	count, err := w.recordCount()
 	if err != nil {
@@ -293,9 +303,54 @@ func (w *execCoordinator) poll(req workerExecRequest) (workerExecResult, error) 
 func (w *execCoordinator) cancel(req workerExecRequest) (workerExecResult, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	record, err := w.boundRecord(req)
+	if err := w.gcLocked(time.Now()); err != nil {
+		return workerExecResult{}, err
+	}
+	record, found, err := w.readRecord(req.SessionID)
 	if err != nil {
 		return workerExecResult{}, err
+	}
+	if !found {
+		if req.RequestID == "" {
+			return workerExecResult{}, &workerHTTPError{status: http.StatusNotFound, message: "execution session not found"}
+		}
+		byRequest, found, err := w.findByRequest(req.CallerKey, req.RequestID)
+		if err != nil {
+			return workerExecResult{}, err
+		}
+		if found && byRequest.SessionID != req.SessionID {
+			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "idempotency key is already bound to another execution session"}
+		}
+		count, err := w.recordCount()
+		if err != nil {
+			return workerExecResult{}, err
+		}
+		if count >= execSessionCapacity {
+			return workerExecResult{}, &workerHTTPError{status: http.StatusServiceUnavailable, message: "exec coordinator session capacity is exhausted"}
+		}
+		now := time.Now().UTC()
+		record = execSessionRecord{
+			SessionID: req.SessionID, RequestID: req.RequestID, CallerKey: req.CallerKey,
+			CanceledBeforeStart: true,
+			Result:              workerExecResult{SessionID: req.SessionID, RequestID: req.RequestID, State: "canceled"},
+			CreatedAt:           now, UpdatedAt: now,
+		}
+		if err := w.persistRecord(record); err != nil {
+			return workerExecResult{}, err
+		}
+		return record.Result, nil
+	}
+	if record.SessionID != req.SessionID {
+		return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "execution record session binding is invalid"}
+	}
+	if record.CallerKey != req.CallerKey {
+		return workerExecResult{}, &workerHTTPError{status: http.StatusForbidden, message: "execution session belongs to another caller"}
+	}
+	if req.RequestID != "" && record.RequestID != req.RequestID {
+		return workerExecResult{}, &workerHTTPError{status: http.StatusForbidden, message: "execution request belongs to another caller request"}
+	}
+	if record.CanceledBeforeStart {
+		return record.Result, nil
 	}
 	if workerTerminal(record.Result.State) {
 		return record.Result, nil
@@ -318,6 +373,9 @@ func (w *execCoordinator) boundRecord(req workerExecRequest) (execSessionRecord,
 	}
 	if !found {
 		return execSessionRecord{}, &workerHTTPError{status: http.StatusNotFound, message: "execution session not found"}
+	}
+	if record.SessionID != req.SessionID {
+		return execSessionRecord{}, &workerHTTPError{status: http.StatusConflict, message: "execution record session binding is invalid"}
 	}
 	if record.CallerKey != req.CallerKey {
 		return execSessionRecord{}, &workerHTTPError{status: http.StatusForbidden, message: "execution session belongs to another caller"}
@@ -540,25 +598,49 @@ func (w *execCoordinator) gcLocked(now time.Time) error {
 		at   time.Time
 	}
 	var terminal []terminalRecord
+	count := 0
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		record, found, err := w.readRecord(strings.TrimSuffix(entry.Name(), ".json"))
+		filenameID := strings.TrimSuffix(entry.Name(), ".json")
+		record, found, err := w.readRecord(filenameID)
 		if err != nil {
 			return err
 		}
-		if found && workerTerminal(record.Result.State) {
-			terminal = append(terminal, terminalRecord{w.recordPath(record.SessionID), record.UpdatedAt})
+		if !found {
+			continue
+		}
+		count++
+		if !workerTerminal(record.Result.State) {
+			continue
+		}
+		at := record.UpdatedAt
+		if record.CanceledBeforeStart && !record.CreatedAt.IsZero() {
+			// Keep the cancellation intent for a fixed interval from its
+			// creation. Repeated CANCEL requests must not extend it forever.
+			at = record.CreatedAt
+		}
+		if at.Before(now.Add(-execSessionRetention)) {
+			if err := os.Remove(w.recordPath(filenameID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			count--
+			continue
+		}
+		if !record.CanceledBeforeStart {
+			terminal = append(terminal, terminalRecord{w.recordPath(filenameID), at})
 		}
 	}
 	sort.Slice(terminal, func(i, j int) bool { return terminal[i].at.Before(terminal[j].at) })
-	for i, record := range terminal {
-		if record.at.Before(now.Add(-execSessionRetention)) || len(entries)-i > execSessionCapacity {
-			if err := os.Remove(record.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
+	for _, record := range terminal {
+		if count <= execSessionCapacity {
+			break
 		}
+		if err := os.Remove(record.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		count--
 	}
 	return nil
 }

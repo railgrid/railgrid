@@ -255,6 +255,25 @@ and enforces the 12-hour idle and hard lifetime bounds. Hosted installations
 keep the feature disabled; BYO chart self-hosting values explicitly opt in and
 must provide immutable universal and dev-agent image references.
 
+### Exec cancellation after a lost START response
+
+App Studio can cancel an exec by its request ID when START fails ambiguously or
+returns no session ID. The infrastructure provider derives the same session ID
+as START from the authenticated caller, workspace, resource, instance,
+component, and idempotency key. The dev-agent coordinator durably records a
+cancel-before-start marker before replying, so a later START with that exact
+binding returns `canceled` without dispatching a process. Existing session-ID
+cancellation continues to work.
+
+The dev-agent retains these markers for 10 minutes and counts them toward its
+128-record capacity. If capacity is exhausted, a new cancel returns `503`
+instead of dropping an accepted marker. The full race guarantee requires the
+updated dev-agent image: an older worker accepts session-ID cancellation for an
+existing session but returns `404` for an unknown session and cannot prevent a
+delayed START. Roll out the infrastructure provider and updated dev-agent image
+before App Studio begins sending request-ID-only cleanup; restart existing
+development components so they run the updated worker.
+
 Every synthesized development pod, the coding sandbox included, runs
 PSS-restricted (non-root UID 1000, seccomp `RuntimeDefault`, all capabilities
 dropped, no privilege escalation) but still shares the host kernel. Set

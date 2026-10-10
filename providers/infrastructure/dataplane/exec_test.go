@@ -650,3 +650,41 @@ func TestDecodeExecRequestRunUsesRequestIDAsKey(t *testing.T) {
 		t.Fatalf("key/requestID = %q/%q, want body requestID", key, req.RequestID)
 	}
 }
+
+func TestDecodeExecRequestCancelByRequestID(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		header  string
+		wantID  string
+		wantKey string
+		wantErr string
+	}{
+		{name: "body request ID", body: `{"action":"cancel","requestID":"request-1"}`, wantID: "request-1", wantKey: "request-1"},
+		{name: "matching header", body: `{"action":"cancel","requestID":"request-1"}`, header: "request-1", wantID: "request-1", wantKey: "request-1"},
+		{name: "legacy session ID", body: `{"action":"cancel","sessionID":"session-1"}`},
+		{name: "missing target", body: `{"action":"cancel"}`, wantErr: "sessionID or requestID is required"},
+		{name: "mismatched key", body: `{"action":"cancel","requestID":"request-1"}`, header: "request-2", wantErr: "requestID must match Idempotency-Key"},
+		{name: "poll still requires session ID", body: `{"action":"poll","requestID":"request-1"}`, wantErr: "sessionID is required for poll"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			if tc.header != "" {
+				r.Header.Set("Idempotency-Key", tc.header)
+			}
+			request, key, err := decodeExecRequest(httptest.NewRecorder(), r, &infrav1alpha1.TemplateDataPlaneExec{})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("decodeExecRequest error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeExecRequest error = %v", err)
+			}
+			if request.RequestID != tc.wantID || key != tc.wantKey {
+				t.Fatalf("requestID/key = %q/%q, want %q/%q", request.RequestID, key, tc.wantID, tc.wantKey)
+			}
+		})
+	}
+}
