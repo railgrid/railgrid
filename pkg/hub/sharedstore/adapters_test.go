@@ -18,12 +18,14 @@ package sharedstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/railgrid/railgrid/pkg/browsersession"
@@ -116,10 +118,141 @@ func TestSessionExpiryIsEnforcedAcrossReplicas(t *testing.T) {
 	}
 }
 
+// Older hub replicas decode only the legacy session fields and silently
+// ignore newer AppScope/AppExpiresAt fields. Preview handles therefore live in
+// a distinct collection so even a value copied under the portal cookie name
+// cannot resolve as a generic login on an old replica.
+func TestPreviewSessionsAreInvisibleToLegacySessionReaders(t *testing.T) {
+	clientset := kubefake.NewClientset()
+	ctx := context.Background()
+	previewBackend := &SessionBackend{store: &Store{
+		client: clientset, namespace: testNamespace, kind: PreviewSessionKind, now: time.Now,
+	}}
+	legacyBackend := &SessionBackend{store: &Store{
+		client: clientset, namespace: testNamespace, kind: SessionKind, now: time.Now,
+	}}
+	preview := browsersession.New(browsersession.Config{Backend: previewBackend})
+	legacy := browsersession.New(browsersession.Config{Backend: legacyBackend})
+
+	value, session, err := preview.IssueTransient(ctx, browsersession.Identity{
+		UserID: "system:serviceaccount:app-studio:preview-one", AppScope: "cluster/infrastructure.railgrid.ai/instances/preview-one",
+		AppExpiresAt: time.Now().Add(time.Minute),
+	}, time.Minute)
+	if err != nil {
+		t.Fatalf("issue preview session: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{Name: browsersession.CookieName, Value: value})
+	if _, err := legacy.ResolveRequest(request); !errors.Is(err, browsersession.ErrNotFound) {
+		t.Fatalf("legacy portal store resolved preview handle under portal cookie name: %v", err)
+	}
+	if got, err := preview.Resolve(ctx, value); err != nil || got.Identity.AppScope != session.Identity.AppScope {
+		t.Fatalf("preview store resolve = (%+v, %v), want scoped identity", got.Identity, err)
+	}
+
+	// Model the old JSON decoder too: unknown scoped fields deserialize to the
+	// zero value, which is why storage isolation, not a cookie rename or JSON
+	// field, is the compatibility boundary.
+	secrets, err := clientset.CoreV1().Secrets(testNamespace).List(ctx, metav1.ListOptions{LabelSelector: LabelKind + "=" + PreviewSessionKind})
+	if err != nil || len(secrets.Items) != 1 {
+		t.Fatalf("preview session secrets = %d, err=%v; want one", len(secrets.Items), err)
+	}
+	var legacyWire struct {
+		UserID    string    `json:"userID"`
+		IssuedAt  time.Time `json:"issuedAt"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(secrets.Items[0].Data[dataKeyValue], &legacyWire); err != nil {
+		t.Fatalf("decode preview record with old schema: %v", err)
+	}
+	if legacyWire.UserID != session.Identity.UserID || legacyWire.ExpiresAt.IsZero() {
+		t.Fatalf("legacy decoded record = %+v, want identity metadata with unknown fields ignored", legacyWire)
+	}
+
+	portalValue, _, err := legacy.Issue(ctx, browsersession.Identity{UserID: "user-1"})
+	if err != nil {
+		t.Fatalf("issue ordinary portal session: %v", err)
+	}
+	portalRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	portalRequest.AddCookie(&http.Cookie{Name: browsersession.CookieName, Value: portalValue})
+	if got, err := legacy.ResolveRequest(portalRequest); err != nil || got.Identity.UserID != "user-1" {
+		t.Fatalf("legacy ordinary session resolve = (%+v, %v), want normal flow", got.Identity, err)
+	}
+}
+
 func newTestAppCodeStore(clientset *kubefake.Clientset) *AppCodeStore {
 	return &AppCodeStore{store: &Store{
 		client: clientset, namespace: testNamespace, kind: AppCodeKind, now: time.Now,
 	}}
+}
+
+func newTestPreviewAppCodeStore(clientset *kubefake.Clientset) *AppCodeStore {
+	return &AppCodeStore{store: &Store{
+		client: clientset, namespace: testNamespace, kind: PreviewAppCodeKind, now: time.Now,
+	}}
+}
+
+// Old app-code decoders ignore Purpose/AppScope and old exchange handlers
+// turn any matching legacy code into a fixed-TTL proxy session. Scoped codes
+// must be absent from their collection, while ordinary codes stay compatible.
+func TestPreviewAppCodesAreInvisibleToLegacyExchangeReaders(t *testing.T) {
+	clientset := kubefake.NewClientset()
+	legacy := newTestAppCodeStore(clientset)
+	preview := newTestPreviewAppCodeStore(clientset)
+	ctx := context.Background()
+	ref := appauth.InstanceRef{
+		Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai",
+		Resource: "instances", Name: "preview-one",
+	}
+	previewCode := "p2a.random-preview-code"
+	previewRecord := appauth.CodeRecord{
+		Ref: ref, RedirectHost: "preview.example.test",
+		Identity: browsersession.Identity{
+			UserID:       "system:serviceaccount:app-studio:preview-one",
+			AppScope:     ref.Cluster + "/" + ref.Group + "/" + ref.Resource + "/" + ref.Name,
+			AppExpiresAt: time.Now().Add(time.Minute),
+		},
+		ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if err := preview.Put(ctx, previewCode, previewRecord); err != nil {
+		t.Fatalf("put preview code: %v", err)
+	}
+	if _, ok := legacy.Take(ctx, previewCode); ok {
+		t.Fatal("legacy AppCodeKind consumed a scoped preview code")
+	}
+	secrets, err := clientset.CoreV1().Secrets(testNamespace).List(ctx, metav1.ListOptions{LabelSelector: LabelKind + "=" + PreviewAppCodeKind})
+	if err != nil || len(secrets.Items) != 1 {
+		t.Fatalf("preview code secrets = %d, err=%v; want one", len(secrets.Items), err)
+	}
+	var legacyWire struct {
+		Cluster   string    `json:"cluster"`
+		UserID    string    `json:"userID"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(secrets.Items[0].Data[dataKeyValue], &legacyWire); err != nil {
+		t.Fatalf("decode preview code with old schema: %v", err)
+	}
+	if legacyWire.UserID != previewRecord.Identity.UserID || legacyWire.ExpiresAt.IsZero() {
+		t.Fatalf("legacy decoded code = %+v, want unknown purpose/scope ignored", legacyWire)
+	}
+	if got, ok := preview.Take(ctx, previewCode); !ok || got.Identity.AppScope != previewRecord.Identity.AppScope {
+		t.Fatalf("preview code resolve = (%+v, %v), want scoped record", got.Identity, ok)
+	}
+
+	ordinaryCode := "ordinary-code"
+	ordinaryRecord := appauth.CodeRecord{
+		Ref: ref, RedirectHost: "preview.example.test",
+		Identity: browsersession.Identity{UserID: "user-1"}, ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if err := legacy.Put(ctx, ordinaryCode, ordinaryRecord); err != nil {
+		t.Fatalf("put ordinary code: %v", err)
+	}
+	if _, ok := preview.Take(ctx, ordinaryCode); ok {
+		t.Fatal("preview store consumed an ordinary legacy code")
+	}
+	if got, ok := legacy.Take(ctx, ordinaryCode); !ok || got.Identity.UserID != "user-1" {
+		t.Fatalf("ordinary code redeem = (%+v, %v), want normal legacy flow", got.Identity, ok)
+	}
 }
 
 // A published-app code is minted during the browser's authorize hop and

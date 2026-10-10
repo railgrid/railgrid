@@ -88,7 +88,10 @@ func (s *Server) resolveBrowserDataPlaneRef(ctx context.Context, id identity) (d
 // against the snapshot, and (optionally) capture a screenshot. It builds the
 // same projectAssistantPreviewInspectionResult the retired worker produced.
 func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, ref dataPlaneRef, req projectAssistantPreviewInspectionRequest) (projectAssistantPreviewInspectionResult, error) {
-	unlock := lockBrowserInstance(id.clusterID, ref)
+	unlock, err := lockBrowserInstanceContext(ctx, id.clusterID, ref)
+	if err != nil {
+		return projectAssistantPreviewInspectionResult{}, err
+	}
 	defer unlock()
 	if err := s.rejectUnmanagedBrowserSession(id, ref); err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
@@ -266,57 +269,131 @@ func (s *Server) privatePreviewConfiguredHubOrigin() (*url.URL, error) {
 }
 
 func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, project *aiv1alpha1.Project, authorization *url.URL) (string, error) {
-	configuredOrigin, err := s.privatePreviewConfiguredHubOrigin()
+	handoff, err := s.browserSessionHandoff(ctx, id, project, authorization)
 	if err != nil {
 		return "", err
 	}
+	return handoff.URL, nil
+}
+
+type projectAssistantPrivatePreviewHandoff struct {
+	URL       string
+	ScopeKey  string
+	ExpiresAt time.Time
+}
+
+const projectAssistantPrivatePreviewHandoffRefreshMargin = 30 * time.Second
+
+func projectAssistantPrivatePreviewHandoffNeedsRenewal(cachedBase, requestedBase, cachedScope, requestedScope string, expiresAt, now time.Time) bool {
+	if cachedBase == "" || cachedBase != requestedBase || cachedScope == "" || cachedScope != requestedScope || expiresAt.IsZero() {
+		return true
+	}
+	return !now.Add(projectAssistantPrivatePreviewHandoffRefreshMargin).Before(expiresAt)
+}
+
+func projectAssistantPrivatePreviewScopeKey(id identity, authorization *url.URL) (string, error) {
+	if authorization == nil {
+		return "", errors.New("invalid private preview authorization target")
+	}
+	query := authorization.Query()
+	readSingle := func(name string) (string, error) {
+		values, ok := query[name]
+		if !ok || len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+			return "", errors.New("invalid private preview authorization target")
+		}
+		return strings.TrimSpace(values[0]), nil
+	}
+	cluster, err := readSingle("cluster")
+	if err != nil {
+		return "", err
+	}
+	group, err := readSingle("group")
+	if err != nil {
+		return "", err
+	}
+	resource, err := readSingle("resource")
+	if err != nil {
+		return "", err
+	}
+	name, err := readSingle("name")
+	if err != nil || cluster != strings.TrimSpace(id.clusterID) || group != "infrastructure.railgrid.ai" || resource != "instances" {
+		return "", errors.New("invalid private preview authorization target")
+	}
+	parts := []string{cluster, group, resource, name}
+	for i := range parts {
+		parts[i] = fmt.Sprintf("%d:%s", len(parts[i]), parts[i])
+	}
+	return strings.Join(parts, "|"), nil
+}
+
+func (s *Server) browserSessionHandoff(ctx context.Context, id identity, project *aiv1alpha1.Project, authorization *url.URL) (projectAssistantPrivatePreviewHandoff, error) {
+	configuredOrigin, err := s.privatePreviewConfiguredHubOrigin()
+	if err != nil {
+		return projectAssistantPrivatePreviewHandoff{}, err
+	}
 	if authorization == nil || authorization.User != nil || authorization.Path != privateAppAuthorizePath || authorization.Fragment != "" || authorization.Opaque != "" || !strings.EqualFold(authorization.Scheme, configuredOrigin.Scheme) || !strings.EqualFold(authorization.Host, configuredOrigin.Host) {
-		return "", errors.New("public hub origin does not match RAILGRID_HUB_PUBLIC_URL")
+		return projectAssistantPrivatePreviewHandoff{}, errors.New("public hub origin does not match RAILGRID_HUB_PUBLIC_URL")
 	}
 	query := authorization.Query()
 	if query.Get("cluster") != id.clusterID || query.Get("group") != "infrastructure.railgrid.ai" || query.Get("resource") != "instances" || query.Get("name") == "" {
-		return "", errors.New("invalid private preview authorization target")
+		return projectAssistantPrivatePreviewHandoff{}, errors.New("invalid private preview authorization target")
+	}
+	scopeKey, err := projectAssistantPrivatePreviewScopeKey(id, authorization)
+	if err != nil {
+		return projectAssistantPrivatePreviewHandoff{}, err
 	}
 	token, err := s.projectIdentityToken(ctx, id, project)
 	if err != nil {
-		return "", fmt.Errorf("resolve preview Project identity: %w", err)
+		return projectAssistantPrivatePreviewHandoff{}, fmt.Errorf("resolve preview Project identity: %w", err)
 	}
 	if strings.TrimSpace(token) == "" {
-		return "", errors.New("preview Project identity is unavailable")
+		return projectAssistantPrivatePreviewHandoff{}, errors.New("preview Project identity is unavailable")
 	}
 	body, err := json.Marshal(map[string]string{"cluster": id.clusterID, "group": query.Get("group"), "resource": query.Get("resource"), "name": query.Get("name")})
 	if err != nil {
-		return "", err
+		return projectAssistantPrivatePreviewHandoff{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.hubBase, "/")+browserSessionHandoffPath, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return projectAssistantPrivatePreviewHandoff{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.hubHTTPClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
-		return "", fmt.Errorf("mint browser session handoff: %w", err)
+		return projectAssistantPrivatePreviewHandoff{}, fmt.Errorf("mint browser session handoff: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 	if err != nil {
-		return "", err
+		return projectAssistantPrivatePreviewHandoff{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("mint browser session handoff: status %d", resp.StatusCode)
+		return projectAssistantPrivatePreviewHandoff{}, fmt.Errorf("mint browser session handoff: status %d", resp.StatusCode)
 	}
 	var payload struct {
-		Path string `json:"path"`
+		Path      string          `json:"path"`
+		ExpiresAt json.RawMessage `json:"expiresAt"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return "", errors.New("mint browser session handoff: invalid response")
+		return projectAssistantPrivatePreviewHandoff{}, errors.New("mint browser session handoff: invalid response")
 	}
 	reference, err := url.Parse(strings.TrimSpace(payload.Path))
 	if err != nil || reference.IsAbs() || reference.Host != "" || reference.Path != browserSessionHandoffPath || strings.TrimSpace(reference.Query().Get("code")) == "" || reference.Fragment != "" {
-		return "", errors.New("mint browser session handoff: invalid path")
+		return projectAssistantPrivatePreviewHandoff{}, errors.New("mint browser session handoff: invalid path")
 	}
-	return configuredOrigin.ResolveReference(reference).String(), nil
+	handoff := projectAssistantPrivatePreviewHandoff{URL: configuredOrigin.ResolveReference(reference).String(), ScopeKey: scopeKey}
+	if len(payload.ExpiresAt) != 0 && string(payload.ExpiresAt) != "null" {
+		var expiresAtUnix int64
+		if json.Unmarshal(payload.ExpiresAt, &expiresAtUnix) == nil {
+			expiresAt := time.Unix(expiresAtUnix, 0)
+			if !time.Now().Before(expiresAt) {
+				return projectAssistantPrivatePreviewHandoff{}, errors.New("mint browser session handoff: expired response")
+			}
+			handoff.ExpiresAt = expiresAt
+		}
+	}
+	return handoff, nil
 }
 
 // browserMCPSession is one initialized Playwright MCP session over the

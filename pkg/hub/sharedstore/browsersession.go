@@ -31,6 +31,12 @@ import (
 // SessionKind is the shared-store collection holding browser sessions.
 const SessionKind = "railgrid-session"
 
+// PreviewSessionKind is deliberately separate from SessionKind. Older hub
+// replicas decode session JSON without scoped fields and would otherwise
+// treat a preview handle as an ordinary portal session if it were presented
+// under the portal cookie name.
+const PreviewSessionKind = "railgrid-preview-session-v2"
+
 // SessionBackend adapts Store to browsersession.Backend so every hub replica
 // resolves and revokes the same cookies.
 //
@@ -46,6 +52,18 @@ type SessionBackend struct {
 // target the workspace holding the entries.
 func NewSessionBackend(config *rest.Config, namespace string) (*SessionBackend, error) {
 	store, err := New(config, namespace, SessionKind)
+	if err != nil {
+		return nil, err
+	}
+	return &SessionBackend{store: store}, nil
+}
+
+// NewPreviewSessionBackend builds the isolated collection for short-lived,
+// one-app preview sessions. It must not share SessionKind with portal logins:
+// older hub replicas ignore the scoped identity fields when decoding a shared
+// session record.
+func NewPreviewSessionBackend(config *rest.Config, namespace string) (*SessionBackend, error) {
+	store, err := New(config, namespace, PreviewSessionKind)
 	if err != nil {
 		return nil, err
 	}
