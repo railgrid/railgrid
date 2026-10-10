@@ -2,11 +2,8 @@
 
 This server-only SDK invokes an App Studio Project's saved integration through
 the project's cluster-qualified kcp subresource. Generated applications import
-the stable consumer name, `@railgrid/actions-node`. Version 0.2.0 is currently
-available as a locally packed tarball; public npm publication is pending. Atlas
-uses the reviewed tarball at `api/vendor/railgrid-actions-node-0.2.0.tgz` with
-`"@railgrid/actions-node": "file:vendor/railgrid-actions-node-0.2.0.tgz"`.
-After registry publication, consumers can use this npm alias:
+the stable consumer name, `@railgrid/actions-node`, mapped to the package name
+with an npm alias:
 
 ```json
 {
@@ -15,6 +12,12 @@ After registry publication, consumers can use this npm alias:
   }
 }
 ```
+
+Atlas uses a reviewed local package artifact at
+`api/vendor/railgrid-actions-node-0.2.0.tgz` with
+`"@railgrid/actions-node": "file:vendor/railgrid-actions-node-0.2.0.tgz"`.
+That explicit vendored source keeps the application pinned to the reviewed
+artifact independently of registry availability.
 
 App Studio injects `RAILGRID_ACTIONS_BASE_URL` from trusted Project context. It
 has the form
@@ -98,11 +101,11 @@ and `failureKind`.
 ## Development sandboxes
 
 The server component's manifest owns this dependency, so development and
-production use the same declared package source. Atlas currently uses the
-reviewed local tarball while registry publication is pending. Infrastructure
-installs the declared dependency through the normal package install and reload
-flow; the platform-owned `railgrid-dev-agent` supplies the coordinator and
-runtime supervisor only. It does not copy, validate, or mount this SDK.
+production use the same declared package source. Atlas uses the reviewed local
+tarball as its declared package source. Infrastructure installs the declared
+dependency through the normal package install and reload flow; the
+platform-owned `railgrid-dev-agent` supplies the coordinator and runtime
+supervisor only. It does not copy, validate, or mount this SDK.
 
 When adding the SDK to an existing customized application, App Studio must
 show the exact package manifest change for review before applying it. It must
@@ -112,13 +115,9 @@ not silently edit or replace an existing `package.json`.
 
 The GitHub Actions workflow publishes from tags named
 `actions-node/v<version>`. The tag must exactly match `package.json`. The npm
-package configures that workflow as a trusted publisher; no long-lived npm
-token is stored in the repository. The workflow runs the unit suite, installs
-the packed artifact in a clean consumer under the public alias, publishes with
-provenance, and verifies the registry alias install.
-
-The first public version is the bootstrap exception: npm cannot attach a
-trusted publisher until the package exists. A maintainer must authenticate with
-npm and publish that first version from the reviewed package directory, then
-configure `railgrid/railgrid` and `actions-node-release.yaml` as the package's
-trusted publisher before creating subsequent release tags.
+package must trust GitHub Actions for repository `railgrid/railgrid` and
+workflow `.github/workflows/actions-node-release.yaml` as its trusted
+publisher. The workflow runs the unit suite, installs the packed artifact in a
+clean consumer under the public alias, publishes with provenance, and verifies
+the registry alias install. It uses GitHub's short-lived OIDC identity; no
+long-lived npm token is stored in the repository.
