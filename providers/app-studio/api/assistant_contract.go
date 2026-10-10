@@ -54,6 +54,7 @@ type projectAssistantRunRequest struct {
 	WorkspaceScope           workspace.Scope
 	Workspace                *workspace.FileStore
 	MessageScope             store.Scope
+	ThreadID                 string
 	LLM                      projectLLMSettings
 	History                  []store.Message
 	Conversation             []chatMessage

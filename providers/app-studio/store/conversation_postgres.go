@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 func (s *PostgresStore) AppendAssistantConversationItem(ctx context.Context, scope Scope, item AssistantConversationItem) (AssistantConversationItem, error) {
@@ -107,6 +108,17 @@ func assistantConversationLockKey(scope Scope) string {
 }
 
 func (s *PostgresStore) ListAssistantConversationItems(ctx context.Context, scope Scope, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
+	return s.listAssistantConversationItems(ctx, scope, "", afterSequence, limit)
+}
+
+func (s *PostgresStore) ListAssistantThreadConversationItems(ctx context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return nil, fmt.Errorf("assistant conversation thread is required")
+	}
+	return s.listAssistantConversationItems(ctx, scope, threadID, afterSequence, limit)
+}
+
+func (s *PostgresStore) listAssistantConversationItems(ctx context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("postgres store is nil")
 	}
@@ -115,9 +127,15 @@ func (s *PostgresStore) ListAssistantConversationItems(ctx context.Context, scop
 	}
 	limit = normalizeLimit(limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT item_id, run_id, sequence, item_type, payload, created_at
-		FROM app_studio_assistant_conversation_items
+		FROM app_studio_assistant_conversation_items AS c
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND sequence>$5
-		ORDER BY sequence ASC LIMIT $6`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, afterSequence, limit)
+		AND ($7 = '' OR EXISTS (
+			SELECT 1 FROM app_studio_assistant_turns AS t
+			WHERE t.org_uuid=c.org_uuid AND t.workspace_uuid=c.workspace_uuid
+			AND t.project_name=c.project_name AND t.project_uid=c.project_uid
+			AND t.turn_id=c.run_id AND t.thread_id=$7
+		))
+		ORDER BY sequence ASC LIMIT $6`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, afterSequence, limit, threadID)
 	if err != nil {
 		return nil, fmt.Errorf("list assistant conversation items: %w", err)
 	}

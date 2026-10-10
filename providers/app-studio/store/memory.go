@@ -636,6 +636,17 @@ func (s *MemoryStore) AppendAssistantConversationItem(_ context.Context, scope S
 }
 
 func (s *MemoryStore) ListAssistantConversationItems(_ context.Context, scope Scope, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
+	return s.listAssistantConversationItems(scope, "", afterSequence, limit)
+}
+
+func (s *MemoryStore) ListAssistantThreadConversationItems(_ context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return nil, fmt.Errorf("assistant conversation thread is required")
+	}
+	return s.listAssistantConversationItems(scope, threadID, afterSequence, limit)
+}
+
+func (s *MemoryStore) listAssistantConversationItems(scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
 	if err := scope.validate(); err != nil {
 		return nil, err
 	}
@@ -644,6 +655,11 @@ func (s *MemoryStore) ListAssistantConversationItems(_ context.Context, scope Sc
 	defer s.mu.RUnlock()
 	items := make([]AssistantConversationItem, 0, limit)
 	for _, item := range s.conversationItems[scope] {
+		if threadID != "" {
+			if _, ok := s.assistantTurns[scope][threadID][item.RunID]; !ok {
+				continue
+			}
+		}
 		if item.Sequence <= afterSequence {
 			continue
 		}

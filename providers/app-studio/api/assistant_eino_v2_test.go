@@ -1178,6 +1178,7 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	ctx := context.Background()
 	h := newProjectAssistantV2ToolHarnessWithApprovalMode(t, "v2-resume-run-local-grant", store.AssistantApprovalModeAlwaysAsk)
+	h.req.ThreadID = "thread-resume"
 	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeBYOOnly, ReplicaCount: 1})
 	type resolverCall struct {
 		id    identity
@@ -1299,6 +1300,9 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	if err := json.Unmarshal(pending.Checkpoint, &checkpoint); err != nil {
 		t.Fatal(err)
 	}
+	if checkpoint.ThreadID != h.req.ThreadID {
+		t.Fatalf("checkpoint thread = %q, want %q", checkpoint.ThreadID, h.req.ThreadID)
+	}
 	if checkpoint.ApprovedPlan == nil || !checkpoint.ApprovedPlan.RunLocal ||
 		strings.Join(checkpoint.ApprovedPlan.TargetPaths, ",") != "src/App.tsx" {
 		t.Fatalf("saved run-local grant = %#v", checkpoint.ApprovedPlan)
@@ -1367,5 +1371,22 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	}
 	if _, err := h.workspaces.ReadFile(ctx, h.req.WorkspaceScope, workspace.ReadOptions{Path: "src/Admin.tsx"}); err == nil {
 		t.Fatal("scope-changed edited arguments invoked the workspace mutation before fresh approval")
+	}
+}
+
+func TestProjectEinoResumeRejectsUnscopedOrForeignThreadCheckpoint(t *testing.T) {
+	for _, checkpointThread := range []string{"", "other-thread"} {
+		t.Run("checkpoint-"+checkpointThread, func(t *testing.T) {
+			engine := projectEinoAssistantEngine{}
+			_, err := engine.ResumeProjectAssistant(context.Background(), projectAssistantRunRequest{
+				Project: &aiv1alpha1.Project{}, ThreadID: "current-thread",
+			}, projectAssistantResumeRequest{}, projectAssistantCheckpointState{
+				ThreadID: checkpointThread,
+				Eino:     &projectAssistantEinoCheckpointState{Checkpoint: []byte("checkpoint"), CheckpointID: "checkpoint", InterruptID: "interrupt"},
+			})
+			if err == nil || !strings.Contains(err.Error(), "no matching thread boundary") {
+				t.Fatalf("resume error = %v", err)
+			}
+		})
 	}
 }

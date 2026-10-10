@@ -651,3 +651,61 @@ func TestEncryptedStoreSetAssistantThreadTitleIfEmptyProtectsTitleAndEvent(t *te
 		t.Fatalf("decrypted title event = %#v err=%v", events, err)
 	}
 }
+
+func TestAssistantThreadConversationItems(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		name := "memory"
+		if encrypted {
+			name = "encrypted"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			var s Store = NewMemoryStore()
+			if encrypted {
+				var err error
+				s, err = NewEncryptedStore(s, testEncryptionKeys(t))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+			for _, thread := range []string{"a", "b"} {
+				if _, err := s.CreateAssistantThread(ctx, scope, AssistantThread{ID: thread, ActorID: "alice"}, nil); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.SaveAssistantRun(ctx, scope, AssistantRun{ID: thread, Mode: AssistantRunModeDefault, Status: AssistantRunStatusCompleted}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.CreateAssistantTurn(ctx, scope, AssistantTurn{ID: thread, ThreadID: thread, ActorID: "alice", ClientUserMessageID: thread, Status: AssistantTurnStatusCompleted}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, thread := range []string{"b", "a", "b", "a"} {
+				item := AssistantConversationItem{ID: string(rune('1' + i)), RunID: thread, Type: "message", Payload: json.RawMessage(`{"content":"` + thread + `"}`)}
+				if _, err := s.AppendAssistantConversationItem(ctx, scope, item); err != nil {
+					t.Fatal(err)
+				}
+			}
+			after := int64(0)
+			for _, want := range []string{"2", "4"} {
+				items, err := s.ListAssistantThreadConversationItems(ctx, scope, "a", after, 1)
+				if err != nil || len(items) != 1 || items[0].ID != want || string(items[0].Payload) != `{"content":"a"}` {
+					t.Fatalf("page = %#v, %v", items, err)
+				}
+				after = items[0].Sequence
+			}
+			items, err := s.ListAssistantThreadConversationItems(ctx, scope, "a", after, 1)
+			if err != nil || len(items) != 0 {
+				t.Fatalf("last page = %#v, %v", items, err)
+			}
+			if _, err := s.ListAssistantThreadConversationItems(ctx, scope, "", 0, 10); err == nil {
+				t.Fatal("empty thread accepted")
+			}
+			scope.ProjectUID = "other"
+			items, err = s.ListAssistantThreadConversationItems(ctx, scope, "a", 0, 10)
+			if err != nil || len(items) != 0 {
+				t.Fatalf("other project = %#v, %v", items, err)
+			}
+		})
+	}
+}

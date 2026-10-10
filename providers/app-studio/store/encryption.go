@@ -904,6 +904,20 @@ func (s *encryptedStore) ListAssistantConversationItems(ctx context.Context, sco
 	return items, nil
 }
 
+func (s *encryptedStore) ListAssistantThreadConversationItems(ctx context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
+	items, err := s.inner.ListAssistantThreadConversationItems(ctx, scope, threadID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		run := AssistantRun{ID: items[i].RunID}
+		if err := s.decryptAssistantRunBlob(scope, &run, "conversation:"+items[i].ID, &items[i].Payload); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
 func (s *encryptedStore) DeleteProjectMessages(ctx context.Context, scope Scope) error {
 	return s.inner.DeleteProjectMessages(ctx, scope)
 }

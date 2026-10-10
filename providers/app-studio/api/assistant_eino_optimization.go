@@ -48,7 +48,13 @@ type projectEinoAssistantToolSearchResult struct {
 }
 
 func projectEinoAssistantOptimizationModeFromEnvironment() string {
-	return projectEinoAssistantNormalizeOptimizationMode(os.Getenv(projectEinoAssistantOptimizationEnv))
+	mode := strings.TrimSpace(os.Getenv(projectEinoAssistantOptimizationEnv))
+	if mode == "" {
+		// Provider catalogs can exceed the model's tool limit. Keep them
+		// searchable and expose only selected tools by default.
+		return projectEinoAssistantOptimizationCodexPOC
+	}
+	return projectEinoAssistantNormalizeOptimizationMode(mode)
 }
 
 func projectEinoAssistantNormalizeOptimizationMode(mode string) string {
@@ -230,7 +236,7 @@ func projectEinoAssistantSearchDynamicTools(tools []projectAssistantTool, query 
 		haystack := strings.ToLower(name + " " + description + " " + aliases)
 		score := 0
 		switch {
-		case name == query:
+		case name == query || strings.Contains(query, name):
 			score = 3
 		case strings.Contains(name, query):
 			score = 2

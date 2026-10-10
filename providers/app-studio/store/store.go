@@ -239,6 +239,7 @@ type Store interface {
 	ListAssistantRunEventsByRuns(ctx context.Context, scope Scope, runIDs []string, eventType string, perRunLimit int) ([]AssistantRunEvent, error)
 	AppendAssistantConversationItem(ctx context.Context, scope Scope, item AssistantConversationItem) (AssistantConversationItem, error)
 	ListAssistantConversationItems(ctx context.Context, scope Scope, afterSequence int64, limit int) ([]AssistantConversationItem, error)
+	ListAssistantThreadConversationItems(ctx context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantConversationItem, error)
 	DeleteProjectMessages(ctx context.Context, scope Scope) error
 	DeleteMessagesOlderThan(ctx context.Context, before time.Time) (int64, error)
 	// Replica claims — the fleet-wide ownership map for assistant activity
