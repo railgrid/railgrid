@@ -1,6 +1,7 @@
 .PHONY: sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual test-terminal-dock-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
+.PHONY: build-app-studio-provider-go
 .PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
 
 BINDIR ?= bin
@@ -292,9 +293,12 @@ docker-build-edges-provider: ## Build the edges provider image (context = provid
 		providers/edges
 
 build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
-	cd providers/app-studio/portal && npm install --no-audit --no-fund && npm run build
+	cd providers/app-studio/portal && node scripts/ensure-dependencies.mjs && npm run build
 
-build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
+build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio portal and embedded provider binary
+	$(MAKE) --no-print-directory build-app-studio-provider-go
+
+build-app-studio-provider-go: ## Build the App Studio provider Go binary from the existing portal/dist
 	cd providers/app-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider .
 
 build-agents-provider-portal: ## Build the agents provider's micro-frontend (Vite + TS → portal/dist)
@@ -548,6 +552,10 @@ test-tilt-sandbox-default: ## Verify universal sandbox is opt-in in Tilt
 .PHONY: test-tilt-code-sequence
 test-tilt-code-sequence: ## Verify Code updates initialize before serving in Tilt
 	python3 hack/scripts/verify-tilt-code-sequence.test.py
+
+.PHONY: test-tilt-app-studio-sequence
+test-tilt-app-studio-sequence: ## Verify App Studio builds once and ignores test-only edits in Tilt
+	python3 hack/scripts/verify-tilt-app-studio-sequence.test.py
 
 test-util:
 	go test ./pkg/util/...
@@ -1961,7 +1969,7 @@ verify-app-studio-preview-bridge-dev-key: ## Verify local preview-bridge key gen
 	node --test providers/app-studio/hack/preview-bridge-dev-keys.test.mjs
 
 verify-app-studio-eval: ## Verify the terminal-aware assistant evaluation harness
-	@output="$$(node providers/app-studio/hack/eval/terminal-turn.test.mjs 2>&1)"; \
+	@output="$$(node --test-reporter=tap providers/app-studio/hack/eval/terminal-turn.test.mjs 2>&1)"; \
 	status=$$?; \
 	printf '%s\n' "$$output"; \
 	if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
@@ -2021,7 +2029,11 @@ app-studio-db-down: ## Stop and remove the local App Studio Postgres container (
 		echo "App Studio Postgres container not found ($(APP_STUDIO_POSTGRES_CONTAINER))"; \
 	fi
 
-run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-preview-bridge-dev-key ## Run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
+run-provider-app-studio: build-app-studio-provider ## Build and run the App Studio provider (requires: make run-hub-embedded-static + make install-provider-app-studio)
+	$(MAKE) run-provider-app-studio-prebuilt
+
+.PHONY: run-provider-app-studio-prebuilt
+run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev-key ## Run App Studio using the existing provider binary
 	@echo "Starting App Studio provider on :$(APP_STUDIO_PORT)"
 	@echo "  hub:   $(APP_STUDIO_HUB_URL)"
 	@echo "  token: $(APP_STUDIO_TOKEN)"
@@ -2808,7 +2820,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
