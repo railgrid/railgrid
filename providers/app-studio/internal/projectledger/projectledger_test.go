@@ -17,6 +17,7 @@ limitations under the License.
 package projectledger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,7 +78,7 @@ func (f *fakeProjects) PatchStatus(_ context.Context, name string, patch []byte)
 		Metadata struct {
 			ResourceVersion string `json:"resourceVersion"`
 		} `json:"metadata"`
-		Status map[string]any `json:"status"`
+		Status map[string]json.RawMessage `json:"status"`
 	}
 	if err := json.Unmarshal(patch, &body); err != nil {
 		return err
@@ -86,22 +87,74 @@ func (f *fakeProjects) PatchStatus(_ context.Context, name string, patch []byte)
 		return apierrors.NewConflict(projectGR, name,
 			errors.New("the object has been modified; please apply your changes to the latest version and try again"))
 	}
-	// Apply just the member the ledger writes, the way a merge patch would.
-	raw, err := json.Marshal(body.Status["workspace"])
-	if err != nil {
-		return err
-	}
-	if string(raw) == "null" {
+	// Apply just the member the ledger writes, using JSON merge-patch semantics
+	// so nested nulls delete fields as they do on the API server.
+	raw := bytes.TrimSpace(body.Status["workspace"])
+	if bytes.Equal(raw, []byte("null")) {
 		f.project.Status.Workspace = nil
 	} else {
+		workspace := map[string]json.RawMessage{}
+		if f.project.Status.Workspace != nil {
+			current, err := json.Marshal(f.project.Status.Workspace)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(current, &workspace); err != nil {
+				return err
+			}
+		}
+		var workspacePatch map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &workspacePatch); err != nil {
+			return err
+		}
+		if err := applyJSONMergePatch(workspace, workspacePatch); err != nil {
+			return err
+		}
+		merged, err := json.Marshal(workspace)
+		if err != nil {
+			return err
+		}
 		var status aiv1alpha1.ProjectWorkspaceStatus
-		if err := json.Unmarshal(raw, &status); err != nil {
+		if err := json.Unmarshal(merged, &status); err != nil {
 			return err
 		}
 		f.project.Status.Workspace = &status
 	}
 	rv, _ := strconv.Atoi(f.project.ResourceVersion)
 	f.project.ResourceVersion = strconv.Itoa(rv + 1)
+	return nil
+}
+
+func applyJSONMergePatch(target, patch map[string]json.RawMessage) error {
+	for key, raw := range patch {
+		raw = bytes.TrimSpace(raw)
+		if bytes.Equal(raw, []byte("null")) {
+			delete(target, key)
+			continue
+		}
+		var patchObject map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &patchObject); err == nil && patchObject != nil {
+			var targetObject map[string]json.RawMessage
+			if current := target[key]; len(current) > 0 {
+				if err := json.Unmarshal(current, &targetObject); err != nil {
+					return err
+				}
+			}
+			if targetObject == nil {
+				targetObject = map[string]json.RawMessage{}
+			}
+			if err := applyJSONMergePatch(targetObject, patchObject); err != nil {
+				return err
+			}
+			merged, err := json.Marshal(targetObject)
+			if err != nil {
+				return err
+			}
+			target[key] = merged
+			continue
+		}
+		target[key] = append(json.RawMessage(nil), raw...)
+	}
 	return nil
 }
 
@@ -177,6 +230,76 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("clearing the dirty set moved the revision to %d", record.SourceRevision)
+	}
+}
+
+func TestLedgerMutationMergePatchClearsOnlyManualProducer(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	projects.project.Status.Workspace = &aiv1alpha1.ProjectWorkspaceStatus{
+		SourceRevision: 7,
+		LastSourceChange: &aiv1alpha1.ProjectSourceChange{
+			ThreadID:       "thread-assistant",
+			RunID:          "run-assistant",
+			SourceRevision: 7,
+		},
+		LastPreviewCheckpoint: &aiv1alpha1.ProjectSourceChange{
+			ThreadID:       "thread-preview",
+			RunID:          "run-preview",
+			SourceRevision: 6,
+		},
+	}
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.SourceRevision++
+		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-next", RunID: "run-next", SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("record next assistant source mutation: %v", err)
+	}
+	got, err := ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read ledger after assistant source mutation: %v", err)
+	}
+	if got.LastSourceChange == nil || got.LastSourceChange.SourceRevision != 8 || got.LastSourceChange.ThreadID != "thread-next" || got.LastSourceChange.RunID != "run-next" {
+		t.Fatalf("assistant source attribution = %#v, want the new producer at revision 8", got.LastSourceChange)
+	}
+	if got.LastPreviewCheckpoint == nil || got.LastPreviewCheckpoint.ThreadID != "thread-preview" || got.LastPreviewCheckpoint.RunID != "run-preview" || got.LastPreviewCheckpoint.SourceRevision != 6 {
+		t.Fatalf("assistant source mutation changed prior preview attribution: %#v", got.LastPreviewCheckpoint)
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.SourceRevision++
+		record.LastSourceChange = &workspace.SourceChange{SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("record manual source mutation: %v", err)
+	}
+	got, err = ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read ledger after manual source mutation: %v", err)
+	}
+	if got.LastSourceChange == nil || got.LastSourceChange.SourceRevision != 9 || got.LastSourceChange.ThreadID != "" || got.LastSourceChange.RunID != "" {
+		t.Fatalf("manual source attribution = %#v, want revision 9 with no assistant producer", got.LastSourceChange)
+	}
+	if got.LastPreviewCheckpoint == nil || got.LastPreviewCheckpoint.ThreadID != "thread-preview" || got.LastPreviewCheckpoint.RunID != "run-preview" || got.LastPreviewCheckpoint.SourceRevision != 6 {
+		t.Fatalf("manual source mutation changed preview attribution: %#v", got.LastPreviewCheckpoint)
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.LastPreviewCheckpoint = &workspace.SourceChange{SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("record manual preview checkpoint: %v", err)
+	}
+	got, err = ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read ledger after manual preview checkpoint: %v", err)
+	}
+	if got.LastPreviewCheckpoint == nil || got.LastPreviewCheckpoint.SourceRevision != 9 || got.LastPreviewCheckpoint.ThreadID != "" || got.LastPreviewCheckpoint.RunID != "" {
+		t.Fatalf("manual preview attribution = %#v, want revision 9 with no assistant producer", got.LastPreviewCheckpoint)
+	}
+	if got.LastSourceChange == nil || got.LastSourceChange.SourceRevision != 9 || got.LastSourceChange.ThreadID != "" || got.LastSourceChange.RunID != "" {
+		t.Fatalf("manual preview checkpoint changed source attribution: %#v", got.LastSourceChange)
 	}
 }
 
