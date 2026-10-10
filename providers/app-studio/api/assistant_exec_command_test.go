@@ -50,6 +50,11 @@ func TestNormalizeProjectAssistantExecCommandInput(t *testing.T) {
 		wantTime int
 	}{
 		{name: "defaults", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go", "test", "./..."}}, wantWork: "", wantTime: projectAssistantExecDefaultTimeout},
+		{name: "accepts 4096 byte argv token", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{strings.Repeat("x", 4096)}}, wantWork: "", wantTime: projectAssistantExecDefaultTimeout},
+		{name: "rejects 4097 byte argv token with precise guidance", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{strings.Repeat("x", 4097)}}, wantErr: "argv token 1 is 4097 UTF-8 bytes; maximum is 4096. Use an existing workspace script"},
+		{name: "counts unicode argv bytes", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{strings.Repeat("雪", 1366)}}, wantErr: "argv token 1 is 4098 UTF-8 bytes; maximum is 4096"},
+		{name: "rejects empty argv token", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{""}}, wantErr: "argv token 1 is empty (0 UTF-8 bytes); provide a non-empty token"},
+		{name: "rejects NUL argv token", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go\x00test"}}, wantErr: "argv token 1 contains NUL (7 UTF-8 bytes); remove the NUL byte"},
 		{name: "cleans component relative workdir", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go", "test"}, Workdir: "./internal"}, wantWork: "internal", wantTime: projectAssistantExecDefaultTimeout},
 		{name: "rejects parent", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go", "test"}, Workdir: "../other"}, wantErr: "under the selected component"},
 		{name: "rejects absolute", input: &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go", "test"}, Workdir: "/workspace"}, wantErr: "relative path"},
@@ -81,7 +86,7 @@ func TestProjectAssistantExecCommandContractAndPolicy(t *testing.T) {
 	if !ok {
 		t.Fatal("exec_command workflow spec is missing")
 	}
-	for _, want := range []string{"user-authorized", "compiler, test, lint, or read-only diagnostic", "argv tokens", "cannot write back to App Studio source"} {
+	for _, want := range []string{"user-authorized", "compiler, test, lint, or read-only diagnostic", "argv tokens", "4096 UTF-8 bytes", "existing workspace script", "cannot write back to App Studio source"} {
 		if !strings.Contains(spec.Description, want) {
 			t.Errorf("live exec_command description missing %q: %s", want, spec.Description)
 		}
@@ -142,7 +147,7 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 	if !strings.Contains(info.Desc, `ALWAYS pass component="workspace"`) || strings.Contains(info.Desc, "for example, backend or frontend") {
 		t.Fatalf("sandbox exec description = %q, want an explicit workspace-only contract", info.Desc)
 	}
-	for _, want := range []string{"user-authorized", "read-only diagnostic", "Go, Node.js, and Python", "has no public preview", "MUST NOT mutate source files", "gofmt -d", "never gofmt -w"} {
+	for _, want := range []string{"user-authorized", "read-only diagnostic", "Go, Node.js, and Python", "has no public preview", "4096 UTF-8 bytes", "existing workspace script", "256 UTF-8 bytes", "MUST NOT mutate source files", "gofmt -d", "never gofmt -w"} {
 		if !strings.Contains(info.Desc, want) {
 			t.Fatalf("sandbox exec description = %q, want %q", info.Desc, want)
 		}
@@ -170,6 +175,18 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 	enum, ok := component["enum"].([]any)
 	if !ok || len(enum) != 1 || enum[0] != projectAssistantRunSandboxWorkspaceVerb {
 		t.Fatalf("sandbox component enum = %#v, want [workspace]", component["enum"])
+	}
+	argv, ok := properties["argv"].(map[string]any)
+	if !ok {
+		t.Fatalf("sandbox argv schema = %#v", properties["argv"])
+	}
+	items, ok := argv["items"].(map[string]any)
+	if !ok || items["maxLength"] != float64(projectAssistantExecMaxArgBytes) || !strings.Contains(projectToolString(items["description"]), "4096 UTF-8 bytes") {
+		t.Fatalf("sandbox argv item schema = %#v, want a 4096 UTF-8 byte cap", argv["items"])
+	}
+	workdir, ok := properties["workdir"].(map[string]any)
+	if !ok || workdir["maxLength"] != float64(projectAssistantExecMaxWorkdir) || !strings.Contains(projectToolString(workdir["description"]), "256 UTF-8 bytes") {
+		t.Fatalf("sandbox workdir schema = %#v, want the existing 256 UTF-8 byte cap", properties["workdir"])
 	}
 
 	generated, err := info.ToJSONSchema()

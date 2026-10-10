@@ -51,7 +51,7 @@ const (
 	projectAssistantExecDefaultTimeout      = 30
 	projectAssistantExecMaxTimeout          = 120
 	projectAssistantExecMaxArgv             = 32
-	projectAssistantExecMaxArgBytes         = 256
+	projectAssistantExecMaxArgBytes         = 4096
 	projectAssistantExecMaxWorkdir          = 256
 	projectAssistantExecMaxSnapshot         = 8 << 20
 	projectAssistantExecMaxOutput           = 1 << 20
@@ -161,7 +161,7 @@ func projectAssistantExecCommandToolSpecForRun(spec projectAssistantToolSpec, ru
 	if runCtx.RunState == nil || (!runCtx.RunState.SandboxRemoteEnabled() && runCtx.RunState.Sandbox() == nil) {
 		return spec
 	}
-	spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens rather than a shell string; App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
+	spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens directly rather than a shell string: provide 1-32 non-empty items, each at most 4096 UTF-8 bytes. Use an existing workspace script instead of embedding longer code in argv. workdir is an optional relative directory of at most 256 UTF-8 bytes; omit it to use the workspace root. App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
 	spec.Parameters = projectAssistantExecCommandParametersForRun(spec.Parameters)
 	return spec
 }
@@ -1063,8 +1063,15 @@ func normalizeProjectAssistantExecCommandInput(input *projectAssistantExecComman
 		blockers = append(blockers, fmt.Sprintf("argv must contain between 1 and %d tokens", projectAssistantExecMaxArgv))
 	}
 	for index, token := range out.Argv {
-		if token == "" || len([]byte(token)) > projectAssistantExecMaxArgBytes || strings.IndexByte(token, 0) >= 0 {
-			blockers = append(blockers, fmt.Sprintf("argv token %d is empty, too large, or contains NUL", index+1))
+		tokenIndex := index + 1
+		tokenBytes := len([]byte(token))
+		switch {
+		case token == "":
+			blockers = append(blockers, fmt.Sprintf("argv token %d is empty (0 UTF-8 bytes); provide a non-empty token", tokenIndex))
+		case tokenBytes > projectAssistantExecMaxArgBytes:
+			blockers = append(blockers, fmt.Sprintf("argv token %d is %d UTF-8 bytes; maximum is %d. Use an existing workspace script instead of embedding long source in argv", tokenIndex, tokenBytes, projectAssistantExecMaxArgBytes))
+		case strings.IndexByte(token, 0) >= 0:
+			blockers = append(blockers, fmt.Sprintf("argv token %d contains NUL (%d UTF-8 bytes); remove the NUL byte", tokenIndex, tokenBytes))
 		}
 	}
 	if len([]byte(out.Workdir)) > projectAssistantExecMaxWorkdir || strings.IndexByte(out.Workdir, 0) >= 0 || strings.Contains(out.Workdir, "\\") || path.IsAbs(out.Workdir) {

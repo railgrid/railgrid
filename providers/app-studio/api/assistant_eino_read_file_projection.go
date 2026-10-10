@@ -252,13 +252,16 @@ func projectEinoAssistantWriteLiteralSourceSegment(builder *strings.Builder, fen
 	builder.WriteString(fence)
 	builder.WriteString("text\n")
 	builder.WriteString(source)
-	builder.WriteByte('\n')
+	if !strings.HasSuffix(source, "\n") {
+		builder.WriteByte('\n')
+	}
 	builder.WriteString(fence)
 }
 
-// projectEinoAssistantParseLiteralReadFileOutput accepts only the exact
-// formatter grammar. Source lengths are byte counts, not runes or lines, and
-// the required close fence is checked after consuming exactly those bytes.
+// projectEinoAssistantParseLiteralReadFileOutput accepts the current formatter
+// grammar and the old single-newline delimiter for checkpoint compatibility.
+// Source lengths are byte counts, not runes or lines, and the close fence is
+// checked after consuming exactly those bytes.
 func projectEinoAssistantParseLiteralReadFileOutput(value string) (projectEinoAssistantLiteralReadFileOutput, bool) {
 	if !utf8.ValidString(value) || !strings.HasPrefix(value, projectEinoAssistantLiteralReadFileHeader) {
 		return projectEinoAssistantLiteralReadFileOutput{}, false
@@ -467,14 +470,25 @@ func projectEinoAssistantParseLiteralSourceFence(line string) (string, bool) {
 }
 
 func projectEinoAssistantConsumeLiteralSourceSegment(remaining *string, byteCount int, fence string) (string, bool) {
-	if remaining == nil || byteCount < 0 || byteCount >= len(*remaining) || (*remaining)[byteCount] != '\n' {
+	if remaining == nil || byteCount < 0 || byteCount > len(*remaining) {
 		return "", false
 	}
 	source := (*remaining)[:byteCount]
-	*remaining = (*remaining)[byteCount+1:]
-	if !utf8.ValidString(source) || !strings.HasPrefix(*remaining, fence) {
+	following := (*remaining)[byteCount:]
+	if !utf8.ValidString(source) {
 		return "", false
 	}
-	*remaining = strings.TrimPrefix(*remaining, fence)
-	return source, true
+
+	// New projections close the fence immediately after source bytes that
+	// already end in LF. Older checkpoints always included one extra LF before
+	// the closing fence, so accept that exact legacy delimiter as well.
+	if strings.HasSuffix(source, "\n") && strings.HasPrefix(following, fence) {
+		*remaining = strings.TrimPrefix(following, fence)
+		return source, true
+	}
+	if strings.HasPrefix(following, "\n"+fence) {
+		*remaining = strings.TrimPrefix(following, "\n"+fence)
+		return source, true
+	}
+	return "", false
 }
