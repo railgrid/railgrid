@@ -80,10 +80,10 @@ type projectSandboxExecFile struct {
 }
 
 type projectAssistantExecSnapshotEntry struct {
-	path    string
-	file    projectSandboxExecFile
-	version string
-	size    int64
+	path   string
+	file   projectSandboxExecFile
+	size   int64
+	binary bool
 }
 
 // projectSandboxExecRequest is the typed infrastructure data-plane protocol.
@@ -909,11 +909,36 @@ func projectAssistantExecStartMayHaveBeenAccepted(err error) bool {
 	if err == nil {
 		return false
 	}
+	var notDispatched *projectAssistantExecStartNotDispatchedError
+	if errors.As(err, &notDispatched) {
+		return false
+	}
 	var statusErr *projectAssistantExecHTTPError
 	if errors.As(err, &statusErr) {
 		return statusErr.status == http.StatusRequestTimeout || statusErr.status >= http.StatusInternalServerError
 	}
 	return true
+}
+
+// projectAssistantExecStartNotDispatchedError marks failures that happened
+// before the START callback could send a request. In those cases, a
+// request-ID-only cancel would create a coordinator tombstone for work that
+// was never submitted.
+type projectAssistantExecStartNotDispatchedError struct {
+	cause error
+}
+
+func (e *projectAssistantExecStartNotDispatchedError) Error() string {
+	return "exec start was not dispatched: " + e.cause.Error()
+}
+
+func (e *projectAssistantExecStartNotDispatchedError) Unwrap() error { return e.cause }
+
+func projectAssistantExecStartNotDispatched(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &projectAssistantExecStartNotDispatchedError{cause: err}
 }
 
 // projectAssistantCancelExecByRequestID uses a fresh bounded context because
@@ -935,7 +960,7 @@ func projectAssistantCancelExecByRequestID(requestID string, exec func(context.C
 // through this helper.
 func retryProjectAssistantExecStart(ctx context.Context, request projectSandboxExecRequest, start func(context.Context, projectSandboxExecRequest) (projectSandboxExecResponse, error)) (projectSandboxExecResponse, error) {
 	if start == nil {
-		return projectSandboxExecResponse{}, errors.New("exec start function is not configured")
+		return projectSandboxExecResponse{}, projectAssistantExecStartNotDispatched(errors.New("exec start function is not configured"))
 	}
 	retryCtx, cancel := context.WithTimeout(ctx, projectAssistantExecStartRetryTimeout)
 	defer cancel()
@@ -944,7 +969,11 @@ func retryProjectAssistantExecStart(ctx context.Context, request projectSandboxE
 	var lastErr error
 	for attempt := 1; ; attempt++ {
 		if ctx.Err() != nil {
-			return projectSandboxExecResponse{}, ctx.Err()
+			err := ctx.Err()
+			if attempt == 1 {
+				err = projectAssistantExecStartNotDispatched(err)
+			}
+			return projectSandboxExecResponse{}, err
 		}
 		// START is idempotent. Reserve budget for another request when a
 		// response is lost, including after the coordinator accepted the command.
@@ -1143,7 +1172,7 @@ func projectAssistantExecBinaryInclusion(ctx context.Context, server *Server, id
 // included is true for text that sync sends; in-bound binaries are returned
 // separately so the capability probe can happen outside the workspace lock.
 func projectAssistantExecSnapshotEntryFor(snapshot workspace.ReadSnapshot, clean, relative string) (projectAssistantExecSnapshotEntry, bool, int, error) {
-	read, err := snapshot.ReadFile(clean, workspace.MaxWriteBytes)
+	read, err := snapshot.ReadFileWithoutVersion(clean, workspace.MaxWriteBytes)
 	if err != nil {
 		return projectAssistantExecSnapshotEntry{}, false, 0, err
 	}
@@ -1153,10 +1182,10 @@ func projectAssistantExecSnapshotEntryFor(snapshot workspace.ReadSnapshot, clean
 			return projectAssistantExecSnapshotEntry{}, false, 0, nil
 		}
 		entry := projectAssistantExecSnapshotEntry{
-			path:    clean,
-			file:    projectSandboxExecFile{Path: relative},
-			version: read.Version,
-			size:    read.Size,
+			path:   clean,
+			file:   projectSandboxExecFile{Path: relative},
+			size:   read.Size,
+			binary: true,
 		}
 		return entry, false, 0, nil
 	case read.Truncated:
@@ -1203,7 +1232,7 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 					}
 					return readErr
 				}
-				if entry.version != "" && !included {
+				if entry.binary && !included {
 					binaryEntries = append(binaryEntries, entry)
 					continue
 				}
@@ -1265,7 +1294,7 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 				for _, entry := range orderedEntries {
 					_, _ = hash.Write([]byte(entry.file.Path))
 					_, _ = hash.Write([]byte{0})
-					if entry.version != "" {
+					if entry.binary {
 						data, readErr := snapshot.ReadFileBytes(entry.path, hubmcp.BinaryFileMaxBytes)
 						if readErr != nil {
 							if errors.Is(readErr, fs.ErrNotExist) {
@@ -1273,11 +1302,6 @@ func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWo
 								return nil
 							}
 							return readErr
-						}
-						sum := sha256.Sum256(data)
-						if entry.version != "sha256:"+hex.EncodeToString(sum[:]) {
-							retry = true
-							return nil
 						}
 						_, _ = hash.Write(data)
 					} else {

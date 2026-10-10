@@ -140,11 +140,8 @@ type projectWorkspaceSyncSnapshot struct {
 	// them; BinaryPaths always lists every binary in the workspace.
 	BinaryFiles []projectSandboxSyncFile
 	BinaryPaths []string
-	// BinarySizes and BinaryVersions describe in-bound binaries from the first
-	// text snapshot. They let a later read fetch only eligible bytes and verify
-	// that the file did not change between the two snapshots.
-	BinarySizes    map[string]int64
-	BinaryVersions map[string]string
+	// BinarySizes lets a later read fetch only in-bound, eligible binary bytes.
+	BinarySizes map[string]int64
 	// OversizedPaths are files left out for size: text past the workspace
 	// read bound and binaries past the per-file binary bound.
 	OversizedPaths []string
@@ -400,7 +397,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		}
 		sort.Strings(eligiblePaths)
 		if len(eligiblePaths) > 0 {
-			snapshot.BinaryFiles, err = s.projectWorkspaceSyncBinaryFiles(ctx, scope, snapshot.SourceRevision, snapshot.BinaryVersions, eligiblePaths)
+			snapshot.BinaryFiles, err = s.projectWorkspaceSyncBinaryFiles(ctx, scope, snapshot.SourceRevision, eligiblePaths)
 			if errors.Is(err, errProjectWorkspaceSyncRevisionChanged) {
 				continue
 			}
@@ -893,7 +890,7 @@ func (s *Server) projectWorkspaceSyncFilesWithBinaries(ctx context.Context, scop
 				paths = append(paths, filePath)
 			}
 			sort.Strings(paths)
-			snapshot.BinaryFiles, err = s.projectWorkspaceSyncBinaryFiles(ctx, scope, revisionBefore, snapshot.BinaryVersions, paths)
+			snapshot.BinaryFiles, err = s.projectWorkspaceSyncBinaryFiles(ctx, scope, revisionBefore, paths)
 			if errors.Is(err, errProjectWorkspaceSyncRevisionChanged) {
 				continue
 			}
@@ -927,10 +924,9 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 		files := make([]projectSandboxSyncFile, 0, len(readSnapshot.Files.Files))
 		var binaryPaths, oversizedPaths []string
 		binarySizes := map[string]int64{}
-		binaryVersions := map[string]string{}
 		presentPaths = make(map[string]struct{}, len(readSnapshot.Files.Files))
 		for _, fileInfo := range readSnapshot.Files.Files {
-			read, err := readSnapshot.ReadFile(fileInfo.Path, workspace.MaxWriteBytes)
+			read, err := readSnapshot.ReadFileWithoutVersion(fileInfo.Path, workspace.MaxWriteBytes)
 			if err != nil {
 				return err
 			}
@@ -942,7 +938,6 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 					continue
 				}
 				binarySizes[read.Path] = read.Size
-				binaryVersions[read.Path] = read.Version
 				continue
 			}
 			if read.Truncated {
@@ -952,7 +947,7 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 			files = append(files, projectSandboxSyncFile{Path: read.Path, Content: read.Content})
 		}
 		snapshot = projectWorkspaceSyncSnapshot{
-			Files: files, BinaryPaths: binaryPaths, BinarySizes: binarySizes, BinaryVersions: binaryVersions,
+			Files: files, BinaryPaths: binaryPaths, BinarySizes: binarySizes,
 			OversizedPaths: oversizedPaths, SourceRevision: readSnapshot.SourceRevision,
 		}
 		return nil
@@ -976,14 +971,12 @@ func (s *Server) projectWorkspaceSyncFilesOnce(ctx context.Context, scope worksp
 }
 
 // projectWorkspaceSyncBinaryFiles reads only selected binary paths from a
-// revision-pinned snapshot. The first pass records each binary's SHA-256; this
-// pass checks that version after reading bytes, so callers can retain their
-// first-pass text content without weakening the source fence.
+// revision-pinned snapshot. The snapshot revision keeps these bytes consistent
+// with the text files collected during the first pass.
 func (s *Server) projectWorkspaceSyncBinaryFiles(
 	ctx context.Context,
 	scope workspace.Scope,
 	expectedRevision uint64,
-	versions map[string]string,
 	paths []string,
 ) ([]projectSandboxSyncFile, error) {
 	if len(paths) == 0 {
@@ -997,20 +990,12 @@ func (s *Server) projectWorkspaceSyncBinaryFiles(
 			return errProjectWorkspaceSyncRevisionChanged
 		}
 		for _, filePath := range selected {
-			version, ok := versions[filePath]
-			if !ok {
-				continue
-			}
 			data, err := snapshot.ReadFileBytes(filePath, hubmcp.BinaryFileMaxBytes)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					return errProjectWorkspaceSyncRevisionChanged
 				}
 				return err
-			}
-			sum := sha256.Sum256(data)
-			if version != "sha256:"+hex.EncodeToString(sum[:]) {
-				return errProjectWorkspaceSyncRevisionChanged
 			}
 			files = append(files, projectSandboxSyncFile{
 				Path: filePath, Content: base64.StdEncoding.EncodeToString(data), Encoding: hubmcp.EncodingBase64,

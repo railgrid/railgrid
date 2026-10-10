@@ -43,6 +43,16 @@ func (s ReadSnapshot) ReadFile(filePath string, maxBytes int) (FileContent, erro
 	return s.store.ReadFile(s.ctx, s.scope, ReadOptions{Path: filePath, MaxBytes: maxBytes})
 }
 
+// ReadFileWithoutVersion reads one bounded file without hashing it for a
+// content version. Use this when the snapshot's source revision fences any
+// later use of the file and the caller does not need read-then-mutate authority.
+func (s ReadSnapshot) ReadFileWithoutVersion(filePath string, maxBytes int) (FileContent, error) {
+	if s.store == nil || s.ctx == nil {
+		return FileContent{}, errors.New("workspace read snapshot is not active")
+	}
+	return s.store.readFile(s.ctx, s.scope, ReadOptions{Path: filePath, MaxBytes: maxBytes}, false)
+}
+
 // ReadFileBytes reads the complete bytes of one file from this snapshot.
 func (s ReadSnapshot) ReadFileBytes(filePath string, limit int64) ([]byte, error) {
 	if s.store == nil || s.ctx == nil {
