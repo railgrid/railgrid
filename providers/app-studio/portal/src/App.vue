@@ -1008,10 +1008,49 @@ function setActiveAssistantRun(run: AssistantRun | null) {
 }
 let activeAssistantProject = ''
 let activeAssistantThreadSequence = 0
+let activeAssistantThreadSequenceScope = ''
 let busyOperationSequence = 0
 let busyOperationOwner = 0
 let assistantQueueOperationGeneration = 0
 let assistantStopRequestGeneration = 0
+
+function assistantThreadSequenceScopeKey(projectName: string, threadID: string): string {
+  return JSON.stringify([
+    appContextFingerprint(props.ctx),
+    projectName,
+    selected.value?.name === projectName ? selected.value.uid ?? '' : '',
+    threadID,
+  ])
+}
+
+function ensureActiveAssistantThreadSequenceScope(projectName: string, threadID: string): string {
+  if (!projectName || !threadID) return ''
+  const scope = assistantThreadSequenceScopeKey(projectName, threadID)
+  if (scope !== activeAssistantThreadSequenceScope) {
+    activeAssistantThreadSequenceScope = scope
+    activeAssistantThreadSequence = 0
+  }
+  return scope
+}
+
+function synchronizeActiveAssistantThreadSequence(projectName: string, threadID: string, sequence: number) {
+  const scope = ensureActiveAssistantThreadSequenceScope(projectName, threadID)
+  if (!scope || !Number.isFinite(sequence)) return
+  activeAssistantThreadSequence = Math.max(activeAssistantThreadSequence, sequence)
+}
+
+function acceptAssistantThreadEventSequence(projectName: string, threadID: string, sequence: number): boolean {
+  const scope = ensureActiveAssistantThreadSequenceScope(projectName, threadID)
+  if (!scope || !Number.isFinite(sequence) || sequence <= activeAssistantThreadSequence) return false
+  activeAssistantThreadSequence = sequence
+  return true
+}
+
+function resetActiveAssistantThreadSequence() {
+  activeAssistantThreadSequence = 0
+  activeAssistantThreadSequenceScope = ''
+}
+
 interface PendingAssistantMessageSubmission {
   fingerprint: string
   clientRequestID: string
@@ -1464,7 +1503,7 @@ function invalidateProjectContextState() {
   setActiveAssistantRun(null)
   activeAssistantProject = ''
   activeAssistantThreadID.value = ''
-  activeAssistantThreadSequence = 0
+  resetActiveAssistantThreadSequence()
   resetAssistantThreadItemWindow()
   messageStreaming.value = false
   queuedAssistantMessages.value = []
@@ -1906,6 +1945,7 @@ const assistantRunController = new ConversationRunController({
     activeAssistantSubscription = controller
     setDisconnect(() => controller.abort())
     if (!threadID) throw new Error('active assistant thread is missing')
+    ensureActiveAssistantThreadSequenceScope(projectName, threadID)
     await api.streamAssistantThread(props.ctx, projectName, threadID, activeAssistantThreadSequence, (event) => {
       if (
         controller.signal.aborted || activeAssistantThreadID.value !== threadID ||
@@ -1914,7 +1954,7 @@ const assistantRunController = new ConversationRunController({
         selected.value?.name !== projectName ||
         event.turnID && event.turnID !== runID
       ) return
-      activeAssistantThreadSequence = Math.max(activeAssistantThreadSequence, event.sequence)
+      if (!acceptAssistantThreadEventSequence(projectName, threadID, event.sequence)) return
       applyAssistantThreadEvent(event, projectName, runID)
     }, controller.signal)
   },
@@ -2989,7 +3029,7 @@ watch(
       activeAssistantProject = ''
       activeAssistantThreadID.value = ''
       activeProjectContextFingerprint = ''
-      activeAssistantThreadSequence = 0
+      resetActiveAssistantThreadSequence()
       messageStreaming.value = false
       conversationStatus.value = ''
       reviewPanelHold.value = null
@@ -3307,6 +3347,7 @@ async function load() {
     setActiveAssistantRun(null)
     activeAssistantProject = ''
     activeAssistantThreadID.value = ''
+    resetActiveAssistantThreadSequence()
     messageStreaming.value = false
     conversationStatus.value = ''
     reviewPanelHold.value = null
@@ -5217,7 +5258,7 @@ async function createProjectAndStartConversation(
     if (!current()) return
     const items = threadPage.items
     commitAssistantThreadItemPage(threadPage)
-    activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+    synchronizeActiveAssistantThreadSequence(projectName, canonicalThreadID, maxAssistantThreadSequence(items))
     const projected = assistantThreadItemsToMessages(items, projectName)
     const user = projected.find((message) => message.role === 'user' && message.id === items.find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')?.id)
     const assistant = projected.find((message) => message.role === 'assistant' && message.id === items.find((item) => item.turnID === canonical.turn.id && item.type === 'agentMessage')?.id)
@@ -5472,7 +5513,7 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
       assistantThreadLoadSerial !== assistantThreadRequestSerial
     ) return
     commitAssistantThreadItemPage(threadPage)
-    activeAssistantThreadSequence = maxAssistantThreadSequence(threadPage.items)
+    synchronizeActiveAssistantThreadSequence(name, activeAssistantThreadID.value, maxAssistantThreadSequence(threadPage.items))
     messages.value = projectAssistantThreadItems(threadPage.items, name)
     approvalMode.value = preference?.mode ?? 'on_request'
     await recoverAssistantConversation(name, requestGuard)
@@ -5542,7 +5583,7 @@ async function refreshSelectedProjectConversation(projectName: string) {
     ) return
     const keepOlderWindow = currentThreadID === previousThreadID && assistantThreadViewingOlderHistory.value
     if (!keepOlderWindow) commitAssistantThreadItemPage(threadPage)
-    activeAssistantThreadSequence = maxAssistantThreadSequence(threadPage.items)
+    synchronizeActiveAssistantThreadSequence(projectName, currentThreadID, maxAssistantThreadSequence(threadPage.items))
     // A refresh can race the live stream. Merge the durable list into the live
     // projection while this project/run is still active so a newer delta or
     // commentary item is never rolled back to the request's earlier snapshot.
@@ -5832,13 +5873,15 @@ async function steerQueuedAssistantMessage(message: QueuedAssistantMessage) {
   queuedAssistantSteeringID.value = message.id
   prompt.value = message.content
   clearSelectedTurnAttachments()
+  let accepted = false
   try {
-    const accepted = await sendMessage('steer')
+    accepted = await sendMessage('steer')
     if (accepted && canRemoveAcceptedQueuedMessage(owner)) removeQueuedAssistantMessage(message, scope)
   } finally {
     if (assistantQueueOperationIsCurrent(owner)) {
-      if (!prompt.value.trim() && assistantComposerParts.value.length === 0 &&
-          selectedTurnSkills.value.length === 0 && selectedTurnResources.value.length === 0) {
+      const composerIsEmpty = !prompt.value.trim() && assistantComposerParts.value.length === 0 &&
+        selectedTurnSkills.value.length === 0 && selectedTurnResources.value.length === 0
+      if (!accepted || composerIsEmpty) {
         prompt.value = draft.prompt
         assistantComposerParts.value = draft.parts
         selectedTurnSkills.value = draft.skills
@@ -5950,7 +5993,7 @@ async function selectAssistantThread(threadID: string): Promise<boolean> {
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
     reviewPanelHold.value = null
     commitAssistantThreadItemPage(page)
-    activeAssistantThreadSequence = maxAssistantThreadSequence(page.items)
+    synchronizeActiveAssistantThreadSequence(projectName, threadID, maxAssistantThreadSequence(page.items))
     messages.value = projectAssistantThreadItems(page.items, projectName)
     messageStreaming.value = false
     conversationStatus.value = ''
@@ -5994,7 +6037,7 @@ async function createAssistantThread() {
     assistantThreads.value = [thread, ...assistantThreads.value]
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
-    activeAssistantThreadSequence = 1
+    synchronizeActiveAssistantThreadSequence(projectName, thread.id, 1)
     resetAssistantThreadItemWindow()
     messages.value = []
     setActiveAssistantRun(null)
@@ -6136,7 +6179,7 @@ async function archiveAssistantThread(threadID: string) {
     setActiveAssistantRun(null)
     activeAssistantProject = ''
     activeAssistantThreadID.value = ''
-    activeAssistantThreadSequence = 0
+    resetActiveAssistantThreadSequence()
     messageStreaming.value = false
     conversationStatus.value = ''
     reviewPanelHold.value = null
@@ -6306,7 +6349,7 @@ async function recoverAssistantConversation(
   const items = page.items
   if (!projectRequestIsCurrent(requestGuard, projectName) || activeAssistantThreadID.value !== threadID) return undefined
   reconcileAcceptedAssistantOptimisticMessages(projectName, threadID, items, turn)
-  activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+  synchronizeActiveAssistantThreadSequence(projectName, threadID, maxAssistantThreadSequence(items))
   const viewingOlderHistory = assistantThreadViewingOlderHistory.value
   const keepOlderWindow = viewingOlderHistory && !turn
   const preserveExistingHistory = messages.value.length > 0 && !viewingOlderHistory
@@ -7382,7 +7425,7 @@ async function requestDeleteProject(project: Project) {
       setActiveAssistantRun(null)
       activeAssistantProject = ''
       activeAssistantThreadID.value = ''
-      activeAssistantThreadSequence = 0
+      resetActiveAssistantThreadSequence()
       messageStreaming.value = false
       conversationStatus.value = ''
       reviewPanelHold.value = null
@@ -7579,7 +7622,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       if (!submissionIsCurrent()) return finishAcceptedSubmission()
       const items = page.items
       commitAssistantThreadItemPage(page)
-      activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+      synchronizeActiveAssistantThreadSequence(projectName, acceptedThreadID, maxAssistantThreadSequence(items))
       reconcileAcceptedAssistantOptimisticMessages(projectName, acceptedThreadID, items, {
         id: acceptedTurnID,
         clientUserMessageID: clientRequestID,
@@ -7694,7 +7737,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         return finishAcceptedSubmission()
       }
       const items = page.items
-      activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+      synchronizeActiveAssistantThreadSequence(projectName, canonicalThreadID, maxAssistantThreadSequence(items))
       const userItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')
       const assistantItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'agentMessage')
       if (!userItem || !assistantItem) throw new Error('assistant turn did not create its canonical message items')

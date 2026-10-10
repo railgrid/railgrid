@@ -9,7 +9,7 @@ test('mounts the shared conversation rail against App Studio lifecycle handlers'
   assert.match(app, /<AIConversationRail[\s\S]*:threads="assistantThreads"[\s\S]*:active-thread-i-d="activeAssistantThreadID"/)
   assert.match(app, /<AIConversationRail[\s\S]*:unread-thread-i-ds="unreadAssistantThreadIDs"/)
   assert.match(app, /<AIConversationRail[\s\S]*:pinned-thread-i-ds="pinnedAssistantThreadIDs"/)
-  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, pin: true, unread: true, archive: true \}"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, pin: true, unread: true, archive: !messageStreaming \}"/)
   assert.match(app, /<AIConversationRail[\s\S]*@select="selectAssistantThread"[\s\S]*@create="createAssistantThread"/)
   assert.match(app, /<AIConversationRail[\s\S]*@archive="archiveAssistantThread"[\s\S]*@toggle-pin="toggleThreadPin"[\s\S]*@set-unread="setThreadUnread"/)
   assert.match(app, /<AIConversationRail[\s\S]*:storage-scope="assistantConversationRailStorageScope"/)

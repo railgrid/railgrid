@@ -271,7 +271,6 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const assistantRunTerminal = isTerminal;
     const firstProjectSubmissionMatches = () => false;
     const firstProjectSubmissionAccepted = () => false;
-    let activeAssistantSubscription = null;
     const assistantRunController = { disconnect() {}, stop: async () => { stopCalls.push(activeAssistantRun?.id ?? ''); } };
     const resetAssistantStopState = () => {};
     const resetAssistantThreadItemWindow = () => {};
@@ -348,6 +347,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const toProjectMessageView = (item) => item;
     const commitAssistantThreadItemPage = () => {};
     const maxAssistantThreadSequence = (items) => Math.max(0, ...items.map(item => item.sequence ?? 0));
+    const synchronizeActiveAssistantThreadSequence = () => {};
     const projectAssistantThreadItems = (items, projectName) => assistantThreadItemsToMessages(items, projectName);
     const rebindAssistantRunFromThreadItems = () => true;
     const replaceOptimisticUserMessage = (items) => items;
@@ -395,6 +395,101 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     };
   `)(ref, computed, watch, api, outputText, state.assistantRunStartFingerprint, initialParts, initialState, startCalls, createCalls, clearDraftCalls, committedParts, mutationCalls, steerCalls, recoveryCalls, pageCalls, pageOutcomes, activeTurnCalls, activeTurnOutcomes, state, (run) => Boolean(run && !state.assistantRunTerminal(run.status)), state.assistantRunTerminal, startControllerCalls, stopCalls))
 }
+
+function assistantThreadSequenceHarness() {
+  const functions = new Set([
+    'assistantThreadSequenceScopeKey',
+    'ensureActiveAssistantThreadSequenceScope',
+    'synchronizeActiveAssistantThreadSequence',
+    'acceptAssistantThreadEventSequence',
+  ])
+  const statements = ast.statements.filter(node => ts.isFunctionDeclaration(node) && functions.has(node.name?.text))
+  assert.equal(statements.length, functions.size)
+  const outputText = compileStatements(statements)
+  return new Function('ref', 'outputText', `
+    const props = { ctx: { tenant: 'tenant-a', workspaceUUID: 'workspace-a', subPath: '/project-a' } };
+    const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const appContextFingerprint = (ctx) => JSON.stringify([ctx.tenant, ctx.workspaceUUID, ctx.subPath]);
+    let activeAssistantThreadSequence = 0;
+    let activeAssistantThreadSequenceScope = '';
+    ${outputText}
+    return {
+      get sequence() { return activeAssistantThreadSequence; },
+      page(threadID, sequence) { synchronizeActiveAssistantThreadSequence('project-a', threadID, sequence); },
+      event(threadID, sequence) { return acceptAssistantThreadEventSequence('project-a', threadID, sequence); },
+    };
+  `)(ref, outputText)
+}
+
+function queuedSteerHarness(sendResult) {
+  const statement = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'steerQueuedAssistantMessage')
+  assert.ok(statement)
+  const outputText = compileStatements([statement])
+  return new Function('ref', 'outputText', 'sendResult', `
+    const activeAssistantRun = { status: 'running' };
+    const messageStreaming = ref(true);
+    const prompt = ref('My unsent draft');
+    const assistantComposerParts = ref([{ type: 'annotation', annotation: { id: 'draft-note' } }]);
+    const selectedTurnSkills = ref(['skill-a']);
+    const selectedTurnResources = ref(['resource-a']);
+    const queuedAssistantSteeringID = ref('');
+    const queuedMessage = { id: 'queued-1', content: 'queued prompt' };
+    const scope = {};
+    const owner = {};
+    let removed = 0;
+    const assistantMessageQueueScope = () => scope;
+    const beginAssistantQueueOperation = () => owner;
+    const assistantQueueOperationIsCurrent = () => true;
+    const canRemoveAcceptedQueuedMessage = () => true;
+    const removeQueuedAssistantMessage = () => { removed++; };
+    const clearSelectedTurnAttachments = () => {
+      assistantComposerParts.value = [];
+      selectedTurnSkills.value = [];
+      selectedTurnResources.value = [];
+    };
+    const sendMessage = async () => {
+      if (sendResult) {
+        prompt.value = '';
+        return true;
+      }
+      prompt.value = 'queued prompt';
+      assistantComposerParts.value = [{ type: 'text', text: 'queued prompt' }];
+      return false;
+    };
+    ${outputText}
+    return {
+      steer: () => steerQueuedAssistantMessage(queuedMessage),
+      prompt, assistantComposerParts, selectedTurnSkills, selectedTurnResources,
+      queuedAssistantSteeringID, removed: () => removed,
+    };
+  `)(ref, outputText, sendResult)
+}
+
+test('thread sequence cursors ignore replayed events and do not rewind on stale pages', () => {
+  const h = assistantThreadSequenceHarness()
+  h.page('thread-a', 7)
+  assert.equal(h.event('thread-a', 7), false, 'an event already covered by the page is ignored')
+  assert.equal(h.event('thread-a', 8), true, 'the next stream event advances the cursor')
+  h.page('thread-a', 6)
+  assert.equal(h.sequence, 8, 'a stale page cannot move the active thread cursor backward')
+  assert.equal(h.event('thread-a', 8), false, 'reconnecting does not reapply an already accepted delta')
+  h.page('thread-b', 2)
+  assert.equal(h.sequence, 2, 'switching threads starts from the target thread page')
+  assert.equal(h.event('thread-b', 2), false)
+  h.page('thread-a', 8)
+  assert.equal(h.event('thread-a', 8), false, 'returning to a thread resumes from its newly loaded page')
+})
+
+test('a rejected queued steer restores the draft that was in the composer', async () => {
+  const h = queuedSteerHarness(false)
+  await h.steer()
+  assert.equal(h.prompt.value, 'My unsent draft')
+  assert.deepEqual(h.assistantComposerParts.value, [{ type: 'annotation', annotation: { id: 'draft-note' } }])
+  assert.deepEqual(h.selectedTurnSkills.value, ['skill-a'])
+  assert.deepEqual(h.selectedTurnResources.value, ['resource-a'])
+  assert.equal(h.queuedAssistantSteeringID.value, '')
+  assert.equal(h.removed(), 0, 'the unaccepted queue entry remains available')
+})
 
 test('delayed thread creation disables the composer and preserves a fast-submit draft for the new thread', async t => {
   const h = await assistantSubmissionHarness(t)
