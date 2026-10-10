@@ -66,6 +66,53 @@ func TestLoadProjectAssistantConversationStartsAtLatestCompactionAndKeepsToolEvi
 	}
 }
 
+func TestAssistantConversationProjectionIsolatesThreadsAndCompaction(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "project", ProjectUID: "uid"}
+	for _, name := range []string{"a", "b"} {
+		if _, err := memory.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: name, ActorID: "alice"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := memory.SaveAssistantRun(ctx, scope, store.AssistantRun{ID: name, Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusCompleted}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := memory.CreateAssistantTurn(ctx, scope, store.AssistantTurn{ID: name, ThreadID: name, ActorID: "alice", ClientUserMessageID: name, Status: store.AssistantTurnStatusCompleted}, nil); err != nil {
+			t.Fatal(err)
+		}
+		appendRawProjectAssistantConversationItem(t, memory, scope, name, "user-"+name, projectAssistantConversationUser, chatMessage{Role: "user", Content: "secret-" + name})
+	}
+	checkpoint := projectAssistantConversationCompactionCheckpoint{
+		Version: projectAssistantConversationCheckpointV1, Summary: "contaminated",
+		ReplacementHistory: []chatMessage{{Role: "user", Content: "secret-b"}},
+		TriggerID:          "trigger", WindowNumber: 1, FirstWindowID: "window", WindowID: "window",
+	}
+	// An old summary created by A may contain B. It must not be reused.
+	appendRawProjectAssistantConversationItem(t, memory, scope, "a", "legacy-summary", projectAssistantConversationCompaction, checkpoint)
+	checkpoint.ThreadID = "b"
+	appendRawProjectAssistantConversationItem(t, memory, scope, "b", "b-summary", projectAssistantConversationCompaction, checkpoint)
+	appendRawProjectAssistantConversationItem(t, memory, scope, "a", "tool-a", projectAssistantConversationToolResult, chatMessage{Role: "tool", Content: "tool-secret-a", ToolCallID: "call-a"})
+	projection, err := loadProjectAssistantConversationProjection(ctx, memory, scope, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.messages) != 2 || projection.messages[0].Content != "secret-a" || projection.messages[1].Content != "tool-secret-a" || projection.compactionCheckpoint != nil {
+		t.Fatalf("thread A projection = %#v", projection)
+	}
+	checkpoint.ThreadID = "a"
+	checkpoint.Summary = "summary-a"
+	checkpoint.ReplacementHistory = []chatMessage{{Role: "user", Content: "summary-a"}}
+	appendRawProjectAssistantConversationItem(t, memory, scope, "a", "a-summary", projectAssistantConversationCompaction, checkpoint)
+	projection, err = loadProjectAssistantConversationProjection(ctx, memory, scope, "a")
+	if err != nil || len(projection.messages) != 1 || projection.messages[0].Content != "summary-a" || projection.compactionCheckpoint == nil {
+		t.Fatalf("thread A checkpoint projection = %#v, %v", projection, err)
+	}
+	projection, err = loadProjectAssistantConversationProjection(ctx, memory, scope, "b")
+	if err != nil || len(projection.messages) != 1 || projection.messages[0].Content != "secret-b" {
+		t.Fatalf("thread B projection = %#v, %v", projection, err)
+	}
+}
+
 func TestProjectAssistantConversationToolResultItemIDIsRunScoped(t *testing.T) {
 	if first, second := projectAssistantConversationToolResultItemID("run-1", "call-1"), projectAssistantConversationToolResultItemID("run-2", "call-1"); first == second {
 		t.Fatalf("tool result IDs = %q and %q, want run-scoped identity", first, second)

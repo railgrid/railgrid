@@ -40,6 +40,7 @@ import (
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	einoschema "github.com/cloudwego/eino/schema"
+	"github.com/gorilla/mux"
 	openaisdk "github.com/openai/openai-go/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -468,11 +469,18 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	}
 	r = r.WithContext(ctx)
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	recent, err := s.store.LoadRecentMessages(ctx, messageScope, 24)
-	if err != nil {
-		return projectAssistantRunResult{}, err
+	threadID := strings.TrimSpace(mux.Vars(r)["thread"])
+	if start != nil && strings.TrimSpace(start.ThreadID) != "" {
+		threadID = strings.TrimSpace(start.ThreadID)
 	}
-	conversationProjection, err := loadProjectAssistantConversationProjection(ctx, s.store, messageScope)
+	var recent []store.Message
+	if threadID == "" {
+		recent, err = s.store.LoadRecentMessages(ctx, messageScope, 24)
+		if err != nil {
+			return projectAssistantRunResult{}, err
+		}
+	}
+	conversationProjection, err := loadProjectAssistantConversationProjection(ctx, s.store, messageScope, threadID)
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
@@ -504,6 +512,7 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		WorkspaceScope:           projectWorkspaceScope(id, p),
 		Workspace:                s.workspaces,
 		MessageScope:             messageScope,
+		ThreadID:                 threadID,
 		AttachmentReader:         s.projectAssistantAttachmentReader(),
 		LLM:                      settings,
 		History:                  recent,
@@ -2496,7 +2505,7 @@ func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec,
 		// provider — effectful, so read-only collaboration modes exclude it.
 		risk = projectAssistantToolRiskRuntime
 	default:
-		return projectAssistantToolSpec{}, false
+		risk = projectAssistantToolRiskRuntime
 	}
 	description := strings.TrimSpace(tool.Description)
 	if description == "" {

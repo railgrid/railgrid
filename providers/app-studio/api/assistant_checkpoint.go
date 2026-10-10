@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -34,6 +35,7 @@ import (
 )
 
 type projectAssistantCheckpointState struct {
+	ThreadID                         string                                              `json:"threadID,omitempty"`
 	AssistantMessageID               string                                              `json:"assistantMessageID,omitempty"`
 	ToolCalls                        []chatToolCall                                      `json:"toolCalls"`
 	CurrentIndex                     int                                                 `json:"currentIndex"`
@@ -958,6 +960,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		WorkspaceScope:           projectWorkspaceScope(id, p),
 		Workspace:                s.workspaces,
 		MessageScope:             messageScope,
+		ThreadID:                 strings.TrimSpace(mux.Vars(r)["thread"]),
 		AttachmentReader:         s.projectAssistantAttachmentReader(),
 		LLM:                      settings,
 		MCPBaseURL:               s.hubBase,

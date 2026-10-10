@@ -159,7 +159,7 @@ func projectEinoAssistantCompactionMiddleware(
 		if server.store == nil {
 			return nil, fmt.Errorf("assistant conversation checkpoint store is not configured")
 		}
-		projection, err := loadProjectAssistantConversationProjection(ctx, server.store, req.MessageScope)
+		projection, err := loadProjectAssistantConversationProjection(ctx, server.store, req.MessageScope, req.ThreadID)
 		if err != nil {
 			return nil, fmt.Errorf("load assistant conversation compaction checkpoint: %w", err)
 		}
@@ -194,7 +194,7 @@ func projectEinoAssistantCompactionMiddleware(
 			}
 			conversationTail := int64(0)
 			if server != nil && server.store != nil {
-				projection, err := loadProjectAssistantConversationProjection(modelCtx, server.store, req.MessageScope)
+				projection, err := loadProjectAssistantConversationProjection(modelCtx, server.store, req.MessageScope, req.ThreadID)
 				if err != nil {
 					return nil, fmt.Errorf("load assistant conversation tail before compaction: %w", err)
 				}
@@ -241,6 +241,7 @@ func projectEinoAssistantCompactionMiddleware(
 			}
 			checkpoint := projectAssistantConversationCompactionCheckpoint{
 				Version:                         projectAssistantConversationCheckpointV1,
+				ThreadID:                        req.ThreadID,
 				ReplacementHistory:              projectEinoMessagesToChat(finalized),
 				Summary:                         summaryText,
 				TriggerID:                       attempt.triggerID,
