@@ -692,7 +692,7 @@ func (c projectAssistantDataPlaneSandboxClient) workspaceMutate(ctx context.Cont
 			}
 			count := strings.Count(current.Content, request.OldString)
 			if count == 0 {
-				return projectAssistantSandboxWorkspaceResponse{}, fmt.Errorf("workspace oldString was not found in %q", cleanPath)
+				return projectAssistantSandboxWorkspaceResponse{}, workspace.EditTextNotFoundError(cleanPath, current.Content, request.OldString)
 			}
 			if count > 1 && !request.ReplaceAll {
 				return projectAssistantSandboxWorkspaceResponse{}, fmt.Errorf("workspace oldString matched %d times in %q", count, cleanPath)

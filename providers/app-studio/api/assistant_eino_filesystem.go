@@ -52,6 +52,7 @@ Usage:
 
 Usage:
 - The file_path parameter must be project-relative.
+- The content field contains the source text, with no line-number prefixes. For edit_file, copy literal source characters and exact whitespace into oldString; JSON escaping is transport syntax, not extra characters to insert into the source.
 - By default, it reads up to 2000 lines starting from the beginning of the file.
 - Prefer one explicitly bounded read_file(file_path, limit=2000) call for a reasonably sized source file that fits within the 2000-line cap. Do not crawl a small or medium file through many adjacent short ranges.
 - For generated, minified, or unusually dense files, search for the relevant content or read a purposeful smaller range rather than loading 2000 lines.

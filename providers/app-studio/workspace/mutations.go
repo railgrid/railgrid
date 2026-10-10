@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 func validateExpectedVersion(path, expected string) error {
@@ -59,6 +60,8 @@ const (
 	MutationErrorTargetNotFound  MutationErrorCode = "target_not_found"
 	MutationErrorVersionRequired MutationErrorCode = "expected_version_required"
 	MutationErrorStale           MutationErrorCode = "stale_source"
+	MutationErrorTextNotFound    MutationErrorCode = "edit_text_not_found"
+	MutationErrorInvalidEditText MutationErrorCode = "invalid_edit_text"
 	MutationErrorAmbiguous       MutationErrorCode = "ambiguous_source"
 	MutationErrorNoChanges       MutationErrorCode = "no_changes"
 	MutationErrorConflict        MutationErrorCode = "workspace_conflict"
@@ -85,6 +88,24 @@ func (e *MutationError) Error() string {
 
 func newMutationError(code MutationErrorCode, path, message string) *MutationError {
 	return &MutationError{Code: code, Path: path, Message: message}
+}
+
+// EditTextNotFoundError classifies an exact-match failure against the source
+// actually read by the mutation. It exposes no source contents and never
+// guesses a replacement for malformed text. Both workspace backends use it.
+func EditTextNotFoundError(path, source, oldString string) *MutationError {
+	checked := make(map[rune]bool)
+	for _, char := range oldString {
+		if char == '\n' || char == '\r' || char == '\t' || !unicode.IsControl(char) || checked[char] {
+			continue
+		}
+		checked[char] = true
+		if !strings.ContainsRune(source, char) {
+			return newMutationError(MutationErrorInvalidEditText, path,
+				fmt.Sprintf("oldString contains control character U+%04X absent from the current file; copy the literal source characters exactly. No files were changed", char))
+		}
+	}
+	return newMutationError(MutationErrorTextNotFound, path, "oldString does not match the current file exactly; copy its text, whitespace, and punctuation exactly. No files were changed")
 }
 
 // EditOptions follows Eino's ordinary edit contract. oldString must identify
@@ -292,7 +313,7 @@ func (s *FileStore) editFile(ctx context.Context, scope Scope, opts EditOptions,
 	}
 	occurrences := strings.Count(string(before), opts.OldString)
 	if occurrences == 0 {
-		return MutationResult{}, newMutationError(MutationErrorStale, clean, "oldString was not found in the current file")
+		return MutationResult{}, EditTextNotFoundError(clean, string(before), opts.OldString)
 	}
 	if !opts.ReplaceAll && occurrences != 1 {
 		return MutationResult{}, &MutationError{Code: MutationErrorAmbiguous, Path: clean, Occurrences: occurrences, Message: "oldString matched more than one location; provide more context or set replaceAll"}
