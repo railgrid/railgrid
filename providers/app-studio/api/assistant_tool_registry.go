@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -711,7 +712,7 @@ func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStor
 			req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)
 		}
 	}
-	return projectAssistantToolJSONResult(result, nil)
+	return projectAssistantSourceReadResult(result)
 }
 
 func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projectAssistantRunSandbox, req projectAssistantToolCallRequest) (string, error) {
@@ -760,7 +761,21 @@ func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projec
 	if result.Complete && result.Version != "" && req.RunState != nil {
 		req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)
 	}
-	return projectAssistantToolJSONResult(result, nil)
+	return projectAssistantSourceReadResult(result)
+}
+
+// Source reads are JSON text for the model, not JSON embedded in HTML. Keep
+// literal source characters readable while retaining JSON's required escaping
+// and the read's version/completeness metadata. HTTP and browser serializers
+// keep their own escaping policies.
+func projectAssistantSourceReadResult(result any) (string, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(result); err != nil {
+		return "", fmt.Errorf("encode source read result: %w", err)
+	}
+	return strings.TrimSuffix(out.String(), "\n"), nil
 }
 
 func projectAssistantToolServer(server *Server) (*Server, error) {
