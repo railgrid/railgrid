@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -656,7 +657,6 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		request.CollaborationMode = store.AssistantRunModeDefault
 	}
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
-	generateThreadTitle := s.assistantThreadTitleNeedsGeneration(r.Context(), scope, thread)
 	skillIDs, err := projectAssistantValidateRequestedSkillIDs(request.Skills)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
@@ -703,25 +703,11 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		return
 	}
 	if !replay {
-		registry, registryErr := readProjectLLMRegistry(r.Context(), c)
-		if registryErr != nil {
-			writeProjectError(w, registryErr)
-			return
-		}
-		var selected projectLLMModelSettings
-		if request.modelRevisionID != "" {
-			var found bool
-			selected, found = registry.modelRevision(request.ModelID, request.modelRevisionID)
-			if !found {
-				registryErr = newValidationError("selected model configuration was not found")
-			} else if strings.TrimSpace(selected.Settings.APIKey) == "" {
-				registryErr = newValidationError("selected model configuration does not have a credential")
-			}
-		} else {
-			selected, registryErr = registry.selectedModel(request.ModelID)
-		}
-		if registryErr != nil {
-			writeProjectError(w, registryErr)
+		modelStarted := time.Now()
+		selected, modelErr := readProjectLLMModelForTurn(r.Context(), c, request.ModelID, request.modelRevisionID)
+		klog.FromContext(r.Context()).Info("App Studio turn preparation", "stage", "model", "project", project.Name, "cluster", id.clusterID, "duration", time.Since(modelStarted))
+		if modelErr != nil {
+			writeProjectError(w, modelErr)
 			return
 		}
 		if projectAssistantContentPartsContainImageAttachment(request.ContentParts) && !projectAssistantCapabilitiesForModel(selected.Settings).VisionToolResults {
@@ -750,21 +736,52 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	var selectedSkills []projectAssistantSkillReceipt
 	var selectedContextResources []projectAssistantContextResourceReceipt
 	if !replay {
-		// Discover provider resources once. The same per-request snapshot both
-		// validates structured context hints and drives temporary automatic grants.
-		project, selectedContextResources, err = s.prepareProjectAssistantContextResources(r.Context(), c, id, project, contextResources, request.contextResourceReceipts)
-		if err != nil {
-			s.writeAssistantThreadError(w, err)
+		// Integration discovery and the skill catalog are independent read-only
+		// preparations. Run them concurrently so the slower hub round trip does
+		// not hold turn admission open after the other result is ready.
+		type integrationPreparationResult struct {
+			project  *aiv1alpha1.Project
+			receipts []projectAssistantContextResourceReceipt
+			err      error
+		}
+		type skillPreparationResult struct {
+			snapshot appskills.Snapshot
+			receipts []projectAssistantSkillReceipt
+			err      error
+		}
+		integrationsCh := make(chan integrationPreparationResult, 1)
+		skillsCh := make(chan skillPreparationResult, 1)
+		skillScope := projectWorkspaceScope(id, project)
+		go func() {
+			started := time.Now()
+			preparedProject, receipts, prepErr := s.prepareProjectAssistantContextResources(r.Context(), c, id, project, contextResources, request.contextResourceReceipts)
+			klog.FromContext(r.Context()).Info("App Studio turn preparation", "stage", "integrations", "project", project.Name, "cluster", id.clusterID, "duration", time.Since(started))
+			integrationsCh <- integrationPreparationResult{project: preparedProject, receipts: receipts, err: prepErr}
+		}()
+		go func() {
+			started := time.Now()
+			snapshot, prepErr := s.projectAssistantSkillSnapshotForIdentity(r.Context(), skillScope, id)
+			var receipts []projectAssistantSkillReceipt
+			if prepErr == nil {
+				receipts, prepErr = projectAssistantSelectedSkillReceipts(snapshot, skillIDs)
+			}
+			klog.FromContext(r.Context()).Info("App Studio turn preparation", "stage", "skills", "project", project.Name, "cluster", id.clusterID, "duration", time.Since(started))
+			skillsCh <- skillPreparationResult{snapshot: snapshot, receipts: receipts, err: prepErr}
+		}()
+		integrations := <-integrationsCh
+		if integrations.err != nil {
+			s.writeAssistantThreadError(w, integrations.err)
 			return
 		}
-		skillSnapshot, err = s.projectAssistantSkillSnapshotForIdentity(r.Context(), projectWorkspaceScope(id, project), id)
-		if err == nil {
-			selectedSkills, err = projectAssistantSelectedSkillReceipts(skillSnapshot, skillIDs)
+		skills := <-skillsCh
+		if skills.err != nil {
+			s.writeAssistantThreadError(w, skills.err)
+			return
 		}
-	}
-	if err != nil {
-		s.writeAssistantThreadError(w, err)
-		return
+		project = integrations.project
+		selectedContextResources = integrations.receipts
+		skillSnapshot = skills.snapshot
+		selectedSkills = skills.receipts
 	}
 	var canonicalTurn store.AssistantTurn
 	started, err := s.startProjectAssistantRunDurablyWithModeAndSkills(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{
@@ -834,9 +851,6 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 				}
 				return err
 			}
-			if generateThreadTitle {
-				s.startAssistantThreadTitleGeneration(c, scope, id, thread, request.Content)
-			}
 			if err := s.projectAssistantSupervisor().Start(r.Context(), scope, created, assistant, func(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator) {
 				s.runProjectAssistantWorker(ctx, accumulator, r, id, c, project, created, start)
 			}); err != nil {
@@ -847,6 +861,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 			}
 			s.startAssistantThreadMirror(scope, thread.ID, canonicalTurn, created)
 			attachmentBindingCommitted = true
+			s.startAssistantThreadTitleGeneration(c, scope, id, thread, created.UserMessageID, request.Content)
 			return nil
 		})
 	if err != nil {
@@ -1157,7 +1172,7 @@ func (s *Server) steerProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 		s.writeAssistantThreadError(w, err)
 		return
 	}
-	item := assistantThreadItem{ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, CreatedAt: user.CreatedAt}
+	item := assistantThreadSteeringUserMessageItem(user, turn.ID)
 	payload, _ := json.Marshal(map[string]any{"item": item})
 	_, err = s.appendAssistantThreadEvent(r.Context(), scope, store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: turn.ID, Type: assistantThreadEventItemCompleted, ItemID: item.ID, Payload: payload})
 	if err != nil {
@@ -1165,6 +1180,17 @@ func (s *Server) steerProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusAccepted, turn)
+}
+
+func assistantThreadSteeringUserMessageItem(user store.Message, turnID string) assistantThreadItem {
+	var data json.RawMessage
+	if requestID, ok := user.Metadata[projectAssistantSteeringRequestMetadata].(string); ok && strings.TrimSpace(requestID) != "" {
+		data, _ = json.Marshal(map[string]string{"clientUserMessageID": strings.TrimSpace(requestID)})
+	}
+	return assistantThreadItem{
+		ID: user.ID, TurnID: turnID, Type: assistantThreadEventUserMessage,
+		Status: "completed", Content: user.Content, Data: data, CreatedAt: user.CreatedAt,
+	}
 }
 
 func (s *Server) interruptProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {

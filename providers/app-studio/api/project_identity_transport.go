@@ -39,43 +39,44 @@ func projectProviderActionTransport(providerConfig *rest.Config, hubInsecure boo
 	if !ok {
 		return nil, errors.New("cannot enforce verified hub TLS with the configured HTTP transport")
 	}
-	transport := base.Clone()
-	// These hooks can perform TLS outside Transport.TLSClientConfig, bypassing
-	// the certificate policy configured below. The standard Transport uses the
-	// normal TLS handshake, so discard any process-wide overrides here.
-	transport.DialTLS = nil //nolint:staticcheck // Clear the deprecated hook too; it can bypass certificate verification.
-	transport.DialTLSContext = nil
-	transport.TLSNextProto = nil
-
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
-	}
+	var bundle []byte
 	if len(providerConfig.CAData) != 0 {
-		if err := appendHubTrustBundle(roots, providerConfig.CAData, "provider kubeconfig"); err != nil {
-			return nil, err
-		}
+		bundle = providerConfig.CAData
 	} else if strings.TrimSpace(providerConfig.CAFile) != "" {
-		bundle, err := os.ReadFile(providerConfig.CAFile)
+		var err error
+		bundle, err = os.ReadFile(providerConfig.CAFile)
 		if err != nil {
 			return nil, fmt.Errorf("read provider kubeconfig CA file %q: %w", providerConfig.CAFile, err)
 		}
-		if err := appendHubTrustBundle(roots, bundle, "provider kubeconfig"); err != nil {
-			return nil, err
+		if len(bundle) == 0 {
+			return nil, errors.New("provider kubeconfig CA bundle contains no PEM certificates")
 		}
 	}
-
-	// The target URL's host supplies the TLS server name. A kubeconfig server
-	// name can belong to a different hub origin, so it must not survive when
-	// this client is retargeted to hub.url. Build a fresh TLS config instead of
-	// cloning provider credentials such as client certificates or callbacks.
-	tlsConfig := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		RootCAs:            roots,
-		InsecureSkipVerify: hubInsecure, // Explicit RAILGRID_HUB_INSECURE development opt-in; false by default.
-	}
-	transport.TLSClientConfig = tlsConfig
-	return transport, nil
+	return projectProviderActionTransports.load(base, bundle, hubInsecure, func() (*http.Transport, error) {
+		transport := base.Clone()
+		// These hooks can bypass Transport.TLSClientConfig. Always use the
+		// normal TLS handshake governed by the trust policy below.
+		transport.DialTLS = nil //nolint:staticcheck // Clear the deprecated hook too; it can bypass certificate verification.
+		transport.DialTLSContext = nil
+		transport.TLSNextProto = nil
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if len(bundle) != 0 {
+			if err := appendHubTrustBundle(roots, bundle, "provider kubeconfig"); err != nil {
+				return nil, err
+			}
+		}
+		// The URL host supplies the server name. Build fresh TLS settings,
+		// retaining no provider certificate, callback, or credential.
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			RootCAs:            roots,
+			InsecureSkipVerify: hubInsecure, // Explicit development opt-in; false by default.
+		}
+		return transport, nil
+	})
 }
 
 func appendHubTrustBundle(roots *x509.CertPool, bundle []byte, source string) error {

@@ -23,6 +23,8 @@ import (
 	"github.com/railgrid/provider-app-studio/internal/projectidentity"
 )
 
+const projectIdentityRevisionAttempts = 3
+
 // identityToken returns the project's current token, minting or refreshing it
 // through the hub. The rule set is shared with App Studio's API so a save,
 // revoke, or removal updates one Project-owned identity consistently.
@@ -30,11 +32,37 @@ func (r *Reconciler) identityToken(ctx context.Context, clusterName string, p *a
 	if !r.Identities.Enabled() {
 		return "", nil
 	}
-	current, err := r.currentProjectForIdentity(ctx, clusterName, p)
-	if err != nil {
-		return "", err
+	var previousGeneration int64
+	var previousResourceVersion string
+	var previousStaleOwnerErr error
+	for attempt := 0; attempt < projectIdentityRevisionAttempts; attempt++ {
+		current, err := r.currentProjectForIdentity(ctx, clusterName, p)
+		if err != nil {
+			return "", err
+		}
+		revision := projectidentity.OwnerRevision(current)
+		if previousStaleOwnerErr != nil && revision.Generation == previousGeneration && revision.ResourceVersion == previousResourceVersion {
+			return "", previousStaleOwnerErr
+		}
+		token, err := r.Identities.TokenVersionedObserved(
+			ctx,
+			projectidentity.Owner(current, clusterName),
+			revision,
+			projectidentity.Rules(current),
+		)
+		if err == nil {
+			return token, nil
+		}
+		if !projectidentity.IsRevisionConflict(err) || attempt+1 == projectIdentityRevisionAttempts {
+			return "", err
+		}
+		if projectidentity.IsStaleOwnerRevision(err) {
+			previousGeneration, previousResourceVersion, previousStaleOwnerErr = revision.Generation, revision.ResourceVersion, err
+		} else {
+			previousStaleOwnerErr = nil
+		}
 	}
-	return r.Identities.TokenVersioned(ctx, projectidentity.Owner(current, clusterName), current.Generation, projectidentity.Rules(current))
+	return "", fmt.Errorf("project identity revision changed repeatedly")
 }
 
 func (r *Reconciler) currentProjectForIdentity(ctx context.Context, clusterName string, project *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {

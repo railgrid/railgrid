@@ -15,6 +15,7 @@ You may obtain a copy of the License at
 package projectidentity
 
 import (
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -62,6 +63,39 @@ func Owner(p *aiv1alpha1.Project, clusterID string) identityclient.Owner {
 		UID:       string(p.UID),
 		ClusterID: clusterID,
 	}
+}
+
+// OwnerRevision is the persisted observation used to derive Rules. The
+// Project generation fences spec changes; resourceVersion also changes for
+// status updates that can affect permissions, such as pending commit state.
+// The hub treats resourceVersion as opaque and checks it for exact equality.
+func OwnerRevision(p *aiv1alpha1.Project) identityclient.OwnerRevision {
+	if p == nil {
+		return identityclient.OwnerRevision{}
+	}
+	return identityclient.OwnerRevision{
+		Generation:      p.Generation,
+		ResourceVersion: p.ResourceVersion,
+	}
+}
+
+// IsRevisionConflict reports the two hub refusals that can be resolved by
+// re-reading the Project and re-deriving its rules. Policy refusals and an
+// unsupported hub are not retried.
+func IsRevisionConflict(err error) bool {
+	var hubErr *identityclient.Error
+	if !errors.As(err, &hubErr) {
+		return false
+	}
+	return hubErr.Code == identityclient.ErrorCodeStaleOwner || hubErr.Code == identityclient.ErrorCodeVersionConflict
+}
+
+// IsStaleOwnerRevision reports a refusal caused by the Project observation
+// changing before the hub accepted the request. Retrying the same revision
+// cannot help; callers must first obtain a different fresh observation.
+func IsStaleOwnerRevision(err error) bool {
+	var hubErr *identityclient.Error
+	return errors.As(err, &hubErr) && hubErr.Code == identityclient.ErrorCodeStaleOwner
 }
 
 // Rules returns the exact permissions a Project needs. Foreign object reads

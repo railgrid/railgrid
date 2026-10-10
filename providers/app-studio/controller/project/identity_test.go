@@ -46,10 +46,18 @@ var (
 // fakeIdentityHub stands in for the hub identity service: it records what it
 // was asked for and hands back a token per request.
 type fakeIdentityHub struct {
-	mu      sync.Mutex
-	posts   []map[string]any
-	deletes []string
-	mints   int
+	mu           sync.Mutex
+	posts        []map[string]any
+	deletes      []string
+	mints        int
+	responses    []fakeIdentityHubResponse
+	onStaleOwner func()
+}
+
+type fakeIdentityHubResponse struct {
+	status  int
+	code    string
+	message string
 }
 
 func (h *fakeIdentityHub) server(t *testing.T) *identityclient.Client {
@@ -62,13 +70,34 @@ func (h *fakeIdentityHub) server(t *testing.T) *identityclient.Client {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			h.mu.Lock()
 			h.posts = append(h.posts, body)
+			var response fakeIdentityHubResponse
+			if len(h.responses) > 0 {
+				response = h.responses[0]
+				h.responses = h.responses[1:]
+			}
+			if response.status != 0 {
+				staleOwner := response.code == identityclient.ErrorCodeStaleOwner
+				onStaleOwner := h.onStaleOwner
+				h.mu.Unlock()
+				if staleOwner && onStaleOwner != nil {
+					onStaleOwner()
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(response.status)
+				_ = json.NewEncoder(w).Encode(identityclient.Error{Code: response.code, Message: response.message})
+				return
+			}
 			h.mints++
 			mint := h.mints
 			h.mu.Unlock()
-			writeIdentityJSON(w, identityclient.Token{
+			token := identityclient.Token{
 				Token: fmt.Sprintf("token-%d", mint), TokenType: "Bearer",
 				ExpiresAt: time.Now().Add(time.Hour), ServiceAccount: "railgrid-si-abc", Name: "si-abc",
-			})
+			}
+			if _, versioned := body["expectedOwnerGeneration"]; versioned {
+				token.OwnerRevisionVerified = true
+			}
+			writeIdentityJSON(w, token)
 		case http.MethodGet:
 			writeIdentityJSON(w, struct {
 				Items []identityclient.Identity `json:"items"`
@@ -111,7 +140,7 @@ func boundProject() *aiv1alpha1.Project {
 		}
 	}
 	return &aiv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid", Generation: 1, ResourceVersion: "rv-1"},
 		Spec: aiv1alpha1.ProjectSpec{
 			Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "demo-repo", ConnectionRef: "github-main"},
 			Environments: []aiv1alpha1.ProjectEnvironmentSpec{
@@ -432,6 +461,160 @@ func TestProjectIdentityTokenRejectsStaleGenerationAfterRevocation(t *testing.T)
 	if len(hub.posts) != 2 {
 		t.Fatalf("identity mints = %d, want the original and revoked rule sets only", len(hub.posts))
 	}
+}
+
+func TestProjectIdentitySameGenerationStatusRulesUseLatestOwnerRevision(t *testing.T) {
+	hub := &fakeIdentityHub{}
+	r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
+	p := boundProject()
+	p.Generation = 8
+	p.ResourceVersion = "rv-before-pending-commit"
+
+	if token, err := r.identityToken(context.Background(), "cluster-a", p); err != nil || token != "token-1" {
+		t.Fatalf("initial identity token = %q, %v", token, err)
+	}
+
+	// pendingCommit is status-derived authorization data. It can change while
+	// Project generation stays the same, so the new rule set must be minted
+	// with the resourceVersion from the exact observation that produced it.
+	p.Status.Workspace = &aiv1alpha1.ProjectWorkspaceStatus{
+		PendingCommit: &aiv1alpha1.ProjectPendingCommit{Name: "commit-8"},
+	}
+	p.ResourceVersion = "rv-with-pending-commit"
+	if token, err := r.identityToken(context.Background(), "cluster-a", p); err != nil || token != "token-2" {
+		t.Fatalf("status-updated identity token = %q, %v", token, err)
+	}
+
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.posts) != 2 {
+		t.Fatalf("mints = %d, want initial and status-derived rule set", len(hub.posts))
+	}
+	second := hub.posts[1]
+	if second["expectedOwnerGeneration"] != float64(8) || second["expectedOwnerResourceVersion"] != "rv-with-pending-commit" {
+		t.Fatalf("second request owner revision = %#v/%#v", second["expectedOwnerGeneration"], second["expectedOwnerResourceVersion"])
+	}
+	rules, ok := second["rules"].([]any)
+	if !ok {
+		t.Fatalf("second request rules = %#v", second["rules"])
+	}
+	found := false
+	for _, raw := range rules {
+		rule, _ := raw.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		resourceNames, _ := rule["resourceNames"].([]any)
+		if len(resources) == 1 && resources[0] == "repositorycommits" && len(resourceNames) == 1 && resourceNames[0] == "commit-8" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("same-generation status rules did not include pending commit: %#v", rules)
+	}
+}
+
+func TestProjectIdentityRetriesRevisionRaceWithFreshStatusRules(t *testing.T) {
+	hub := &fakeIdentityHub{
+		responses: []fakeIdentityHubResponse{{
+			status: http.StatusConflict, code: identityclient.ErrorCodeStaleOwner, message: "owner revision changed",
+		}},
+	}
+	r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
+	p := boundProject()
+	p.Generation = 11
+	p.ResourceVersion = "rv-before"
+	hub.onStaleOwner = func() {
+		p.Status.Workspace = &aiv1alpha1.ProjectWorkspaceStatus{
+			PendingCommit: &aiv1alpha1.ProjectPendingCommit{Name: "commit-after-race"},
+		}
+		p.ResourceVersion = "rv-after"
+	}
+
+	token, err := r.identityToken(context.Background(), "cluster-a", p)
+	if err != nil || token != "token-1" {
+		t.Fatalf("identityToken after fresh-read retry = %q, %v", token, err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.posts) != 2 {
+		t.Fatalf("request count = %d, want one stale observation and one fresh retry", len(hub.posts))
+	}
+	if hub.posts[0]["expectedOwnerResourceVersion"] != "rv-before" || hub.posts[1]["expectedOwnerResourceVersion"] != "rv-after" {
+		t.Fatalf("retries did not use fresh owner revisions: %#v", hub.posts)
+	}
+	secondRules, ok := hub.posts[1]["rules"].([]any)
+	if !ok {
+		t.Fatalf("retry rules = %#v", hub.posts[1]["rules"])
+	}
+	foundPendingCommit := false
+	for _, raw := range secondRules {
+		rule, _ := raw.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		resourceNames, _ := rule["resourceNames"].([]any)
+		if len(resources) == 1 && resources[0] == "repositorycommits" && len(resourceNames) == 1 && resourceNames[0] == "commit-after-race" {
+			foundPendingCommit = true
+		}
+	}
+	if !foundPendingCommit {
+		t.Fatalf("retry did not derive rules from updated Project status: %#v", secondRules)
+	}
+}
+
+func TestProjectIdentityRevisionRetryIsBoundedAndDoesNotRetryPolicyRefusal(t *testing.T) {
+	t.Run("identical stale owner revision is not replayed", func(t *testing.T) {
+		hub := &fakeIdentityHub{responses: []fakeIdentityHubResponse{{
+			status: http.StatusConflict, code: identityclient.ErrorCodeStaleOwner, message: "owner revision changed",
+		}}}
+		r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
+		if _, err := r.identityToken(context.Background(), "cluster-a", boundProject()); err == nil {
+			t.Fatal("stale owner response unexpectedly succeeded")
+		}
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		if len(hub.posts) != 1 {
+			t.Fatalf("identical stale request replay count = %d, want 1", len(hub.posts))
+		}
+	})
+
+	t.Run("different stale revisions stop after three attempts", func(t *testing.T) {
+		hub := &fakeIdentityHub{responses: []fakeIdentityHubResponse{
+			{status: http.StatusConflict, code: identityclient.ErrorCodeStaleOwner, message: "stale 1"},
+			{status: http.StatusConflict, code: identityclient.ErrorCodeStaleOwner, message: "stale 2"},
+			{status: http.StatusConflict, code: identityclient.ErrorCodeStaleOwner, message: "stale 3"},
+		}}
+		r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
+		p := boundProject()
+		p.Generation = 12
+		p.ResourceVersion = "rv-1"
+		version := 1
+		hub.onStaleOwner = func() {
+			version++
+			p.ResourceVersion = fmt.Sprintf("rv-%d", version)
+		}
+		if _, err := r.identityToken(context.Background(), "cluster-a", p); err == nil {
+			t.Fatal("repeated owner revision races unexpectedly succeeded")
+		}
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		if len(hub.posts) != projectIdentityRevisionAttempts {
+			t.Fatalf("stale requests = %d, want bounded attempts %d", len(hub.posts), projectIdentityRevisionAttempts)
+		}
+	})
+
+	t.Run("policy refusal is not retried", func(t *testing.T) {
+		hub := &fakeIdentityHub{responses: []fakeIdentityHubResponse{{
+			status: http.StatusForbidden, code: "foreign_write_forbidden", message: "policy refused",
+		}}}
+		r := &Reconciler{Identities: scopedidentity.New(hub.server(t))}
+		p := boundProject()
+		if _, err := r.identityToken(context.Background(), "cluster-a", p); err == nil {
+			t.Fatal("policy refusal unexpectedly succeeded")
+		}
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		if len(hub.posts) != 1 {
+			t.Fatalf("policy refusal requests = %d, want 1", len(hub.posts))
+		}
+	})
 }
 
 func TestReleaseIdentityRevokesAtTheHub(t *testing.T) {

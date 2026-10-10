@@ -195,6 +195,61 @@ func projectWithLiveBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	return next
 }
 
+// projectWithLiveRuntimeBindingStatus refreshes owned runtime resources for
+// assistant startup. Optional integrations retain the controller's status
+// mirror: their prompt inventory comes from spec, and their invocation paths
+// perform fresh scoped reads and authorization. Reading every reference here
+// adds client throttling and cannot observe groups outside our export claims.
+// This projection is never an authorization decision.
+func projectWithLiveRuntimeBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) *aiv1alpha1.Project {
+	if c == nil || p == nil {
+		return p
+	}
+	next := p.DeepCopy()
+	var live []aiv1alpha1.ProjectEnvironmentStatus
+	for _, env := range next.Spec.Environments {
+		if env.Mode != aiv1alpha1.ProjectEnvironmentModeLive {
+			continue
+		}
+		var observed []aiv1alpha1.ProjectProviderBindingStatus
+		for _, binding := range env.Bindings {
+			if binding.Kind == aiv1alpha1.ProjectBindingKindProviderResource && binding.ResourceRef != nil {
+				observed = append(observed, projectProviderBindingStatus(ctx, c, next, binding, id))
+			}
+		}
+		if len(observed) == 0 {
+			continue
+		}
+		var current []aiv1alpha1.ProjectProviderBindingStatus
+		for _, status := range next.Status.Environments {
+			if status.Name == env.Name {
+				current = status.Bindings
+				break
+			}
+		}
+		byName := make(map[string]aiv1alpha1.ProjectProviderBindingStatus, len(current)+len(observed))
+		for _, status := range current {
+			byName[status.Name] = status
+		}
+		for _, status := range observed {
+			byName[status.Name] = status
+		}
+		// Follow current spec order and discard status for removed bindings.
+		merged := make([]aiv1alpha1.ProjectProviderBindingStatus, 0, len(byName))
+		for _, binding := range env.Bindings {
+			if status, exists := byName[binding.Name]; exists {
+				merged = append(merged, status)
+			}
+		}
+		live = append(live, bindings.FoldEnvironment(env, merged))
+	}
+	if len(live) == 0 {
+		return p
+	}
+	next.Status.Environments = bindings.MergeEnvironmentStatuses(next.Status.Environments, live)
+	return next
+}
+
 func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) []aiv1alpha1.ProjectEnvironmentStatus {
 	if c == nil || p == nil {
 		return nil

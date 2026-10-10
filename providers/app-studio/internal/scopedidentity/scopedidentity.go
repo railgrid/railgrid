@@ -72,7 +72,7 @@ func (c *Cache) Enabled() bool { return c != nil && c.client != nil }
 // narrows: that is the difference from the create-if-absent ClusterRole this
 // replaced, where a removed binding never removed the access it carried.
 func (c *Cache) Token(ctx context.Context, owner identityclient.Owner, rules []rbacv1.PolicyRule) (string, error) {
-	return c.token(ctx, owner, 0, false, rules)
+	return c.token(ctx, owner, 0, false, identityclient.OwnerRevision{}, rules)
 }
 
 // TokenVersioned returns a Project token under a spec generation. Calls for
@@ -80,10 +80,25 @@ func (c *Cache) Token(ctx context.Context, owner identityclient.Owner, rules []r
 // older Project generation cannot replace a source installed for a newer
 // generation. Status-derived rules may still change within one generation.
 func (c *Cache) TokenVersioned(ctx context.Context, owner identityclient.Owner, generation int64, rules []rbacv1.PolicyRule) (string, error) {
-	return c.token(ctx, owner, generation, true, rules)
+	return c.token(ctx, owner, generation, true, identityclient.OwnerRevision{}, rules)
 }
 
-func (c *Cache) token(ctx context.Context, owner identityclient.Owner, generation int64, versioned bool, rules []rbacv1.PolicyRule) (string, error) {
+// TokenVersionedObserved is TokenVersioned with the exact persisted Project
+// revision from which rules were derived. The resourceVersion is refreshed on
+// every call, including cache hits, so a later token refresh is fenced against
+// the newest observation without forcing a token mint for status churn that
+// did not change permissions.
+func (c *Cache) TokenVersionedObserved(ctx context.Context, owner identityclient.Owner, revision identityclient.OwnerRevision, rules []rbacv1.PolicyRule) (string, error) {
+	if err := revision.Validate(); err != nil {
+		return "", err
+	}
+	if !revision.Present() {
+		return "", errors.New("persisted owner revision is required")
+	}
+	return c.token(ctx, owner, revision.Generation, true, revision, rules)
+}
+
+func (c *Cache) token(ctx context.Context, owner identityclient.Owner, generation int64, versioned bool, revision identityclient.OwnerRevision, rules []rbacv1.PolicyRule) (string, error) {
 	if !c.Enabled() {
 		return "", errors.New("the hub identity service is not configured")
 	}
@@ -99,15 +114,23 @@ func (c *Cache) token(ctx context.Context, owner identityclient.Owner, generatio
 	if versioned && entry.versioned && generation < entry.generation {
 		return "", errors.New("stale Project generation cannot refresh its scoped identity")
 	}
+	if revision.Present() && revision.Generation != generation {
+		return "", errors.New("owner revision generation does not match the scoped identity generation")
+	}
 	fingerprint := Fingerprint(rules)
 	if entry.source == nil || entry.fingerprint != fingerprint || versioned && (!entry.versioned || generation > entry.generation) {
 		entry.source = identityclient.NewTokenSource(c.client, identityclient.Request{
-			Owner: owner, ClusterID: owner.ClusterID, Rules: rules,
+			Owner: owner, ClusterID: owner.ClusterID, Rules: rules, OwnerRevision: revision,
 		})
 		entry.fingerprint = fingerprint
 		entry.versioned = versioned
 		if versioned {
 			entry.generation = generation
+		}
+	}
+	if revision.Present() {
+		if err := entry.source.UpdateOwnerRevision(revision); err != nil {
+			return "", err
 		}
 	}
 	// Hold the per-owner lock for Token() too. TokenSource refreshes its token

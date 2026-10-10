@@ -360,6 +360,95 @@ func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLM
 	return registry, nil
 }
 
+// readProjectLLMModelForTurn resolves one logical model or pinned revision and
+// reads only that model's credential. Registry views still use
+// readProjectLLMRegistry; a turn should not fetch unrelated model Secrets just
+// to build its runtime configuration.
+func readProjectLLMModelForTurn(ctx context.Context, c *asclient.Client, modelID, revisionID string) (projectLLMModelSettings, error) {
+	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+	}
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	var studio aiv1alpha1.Studio
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(st.Object, &studio); err != nil {
+		return projectLLMModelSettings{}, fmt.Errorf("decode studio: %w", err)
+	}
+	if studio.Spec.LLM == nil {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+	}
+
+	runtimeSettings := defaultProjectLLMSettings()
+	applyProjectLLMRuntimeSpec(&runtimeSettings, studio.Spec.LLM.Runtime)
+	candidates := projectLLMRegistry{Runtime: runtimeSettings}
+	secretRefs := make([]string, 0, len(studio.Spec.LLM.Models))
+	for _, item := range studio.Spec.LLM.Models {
+		revision := strings.TrimSpace(item.RevisionID)
+		if revision == "" {
+			// Match readProjectLLMRegistry's compatibility behavior for legacy
+			// Studio objects that predate explicit revision IDs.
+			revision = uuid.NewString()
+		}
+		candidates.Models = append(candidates.Models, projectLLMModelSettings{
+			ID: projectLLMModelID(item.ID), RevisionID: revision, Archived: item.Archived,
+		})
+		secretName := ""
+		if item.SecretRef != nil {
+			secretName = strings.TrimSpace(item.SecretRef.Name)
+		}
+		secretRefs = append(secretRefs, secretName)
+	}
+	candidates.DefaultModelID = strings.TrimSpace(studio.Spec.LLM.DefaultModel)
+	if _, ok := candidates.model(candidates.DefaultModelID); !ok {
+		candidates.DefaultModelID = ""
+		for _, candidate := range candidates.Models {
+			if !candidate.Archived {
+				candidates.DefaultModelID = candidate.ID
+				break
+			}
+		}
+	}
+
+	var selected projectLLMModelSettings
+	var found bool
+	if strings.TrimSpace(revisionID) != "" {
+		selected, found = candidates.modelRevision(modelID, revisionID)
+	} else {
+		selected, found = candidates.model(modelID)
+	}
+	if !found {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+	}
+	selectedIndex := -1
+	for index, candidate := range candidates.Models {
+		if candidate.ID == selected.ID && candidate.RevisionID == selected.RevisionID {
+			selectedIndex = index
+			break
+		}
+	}
+	if selectedIndex < 0 || selectedIndex >= len(studio.Spec.LLM.Models) {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+	}
+	item := studio.Spec.LLM.Models[selectedIndex]
+	selected.Name = item.Name
+	selected.Settings = projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model}
+	if name := secretRefs[selectedIndex]; name != "" {
+		selected.Settings.APIKey, err = readProjectLLMCredential(ctx, c, name)
+		if err != nil {
+			return projectLLMModelSettings{}, err
+		}
+	}
+	if err := normalizeProjectLLMModel(&selected, runtimeSettings); err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if strings.TrimSpace(selected.Settings.APIKey) == "" {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration does not have a credential")
+	}
+	return selected, nil
+}
+
 // readProjectLLMCredential reads one model's key. A Secret that is absent or
 // has no apiKey yields "", which reads downstream as "not configured" — the
 // same state a model has before anyone enters a key, and the state the
