@@ -631,11 +631,11 @@ defineExpose({
     <div
       ref="railPanel"
       class="k-ai-conversation-rail__panel"
-      :class="{ 'k-ai-conversation-rail__panel--expanded': expanded, 'k-ai-conversation-rail__panel--overlay': expanded && (!anchored || mobileOpen) }"
+      :class="{ 'k-ai-conversation-rail__panel--expanded': visibleExpanded, 'k-ai-conversation-rail__panel--overlay': visibleExpanded && (!anchored || mobileOpen) }"
       @pointerenter="scheduleHoverOpen"
       @pointerleave="scheduleClose"
     >
-      <div v-show="expanded" class="k-ai-conversation-rail__content" :aria-hidden="!expanded">
+      <div class="k-ai-conversation-rail__content" :aria-hidden="!visibleExpanded" :inert="!visibleExpanded">
         <div class="k-ai-conversation-rail__header">
           <MessageSquare class="k-ai-conversation-rail__header-icon" :stroke-width="1.75" aria-hidden="true" />
           <span class="k-ai-conversation-rail__header-title">{{ labels.heading }}</span>
