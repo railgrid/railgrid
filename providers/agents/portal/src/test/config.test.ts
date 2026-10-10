@@ -1839,6 +1839,37 @@ describe('agent backend', () => {
     })
   })
 
+  it('offers the workspace github connections to a harness agent and saves the chosen one', async () => {
+    const { el, patchAgent, store } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', githubConnectionRef: 'gh-main' } } },
+      CREDS,
+      EDGES,
+    )
+    store.connections.data = [
+      { metadata: { name: 'gh-main' }, spec: { type: 'github' } },
+      { metadata: { name: 'gh-bot' }, spec: { type: 'github', displayName: 'Review bot' } },
+      { metadata: { name: 'team-slack' }, spec: { type: 'slack' } },
+    ]
+    store.dispatchEvent(new Event('change'))
+    await settle(2)
+    const select = [...el.querySelectorAll<HTMLElement>('[data-form-select]')]
+      .find(c => c.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes('agent-harness-github-label'))!
+    const combobox = select.querySelector<HTMLButtonElement>('[role="combobox"]')!
+    expect(text(combobox)).toContain('gh-main')
+    combobox.click()
+    await settle()
+    const labels = [...document.querySelectorAll<HTMLElement>('[role="option"]')].map(option => option.textContent?.trim() || '')
+    expect(labels).toEqual(['— none —', 'gh-main', 'Review bot'])
+    ;[...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => (option.textContent || '').includes('Review bot'))!.click()
+    await settle()
+    sectionButton(el, 'Save backend').click()
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledWith('scout', {
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', workspace: 'persistent', githubConnectionRef: 'gh-bot' },
+    })
+  })
+
   it('says the harness a credential selects rather than asking for one', async () => {
     const { el } = await mountConfig(
       { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },

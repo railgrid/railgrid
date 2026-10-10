@@ -113,6 +113,11 @@ type Config struct {
 	Model string
 	// Credential is the identity the turn runs as. Required.
 	Credential llm.HarnessIdentity
+	// Environment is what else the identity brings to every dispatch of this
+	// turn (start and resume alike): credentials the harness child runs with,
+	// exported under the names given — the agent's GitHub connection token as
+	// GH_TOKEN, for one. Dispatch data like the credential, never persisted.
+	Environment []runner.EnvironmentVariable
 	// Provenance is what the run is, for the approvedInput envelope the runner
 	// requires on every dispatch.
 	Provenance map[string]any
@@ -736,7 +741,10 @@ func (b *Backend) validate() error {
 // credential renders the protocol shape. It is built per call and never stored:
 // the value is a login, and the fewer places it sits the better.
 func (b *Backend) credential() runner.HarnessCredential {
-	return runner.HarnessCredential{Kind: b.cfg.Credential.Kind, Value: b.cfg.Credential.Value}
+	return runner.HarnessCredential{
+		Kind: b.cfg.Credential.Kind, Value: b.cfg.Credential.Value,
+		Environment: append([]runner.EnvironmentVariable(nil), b.cfg.Environment...),
+	}
 }
 
 // approvedInput is the envelope the runner requires on every dispatch. It must

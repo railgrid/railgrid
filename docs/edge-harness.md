@@ -289,6 +289,29 @@ it. Choose the runner account accordingly.
 from scratch: `HOME` and `PATH`, nothing else), the agent's credential files,
 the reverse tunnel, and the hub. It has no kcp client and no token for one.
 
+**What the identity brings.** A caller may send further credentials WITH the
+harness credential (`harnessCredential.environment`, a short list of
+name/value pairs), and the Claude Code adapter exports them into the child
+beside the model credential — the agents provider sends the agent's GitHub
+connection token as `GH_TOKEN`/`GITHUB_TOKEN` so a reviewer can `gh pr
+review`. They are dispatch data exactly like the model credential: stripped
+before fingerprinting and persisting, held in the runner's memory for the
+attempt, redacted from every event, and sent again on every resume. The runner
+accepts only the names on its allow-list — `GH_TOKEN` and `GITHUB_TOKEN` today
+— and the Claude Code adapter checks the same list again, so a caller can
+bring a credential but never configure the child: no `HOME`, no `NODE_OPTIONS`,
+no `HTTPS_PROXY`, no `GH_HOST` to send the token somewhere else. The same
+`GH_TOKEN` inherited from the agent's own environment is still stripped: that
+one is the machine owner's, not the tenant's.
+
+Two limits to design around. Redaction is exact-match on the value, so a token
+the model re-encodes (base64 in an `Authorization` header it prints, say) is
+not caught; and a reviewer reads untrusted pull-request text while holding a
+token that works for everything its scopes allow. Bring the narrowest token
+that does the job: a fine-grained token limited to the repositories to review
+with `pull_requests: write` and `contents: read`, on a bot account that cannot
+approve or merge, and nothing on the tenant's own account.
+
 **The model credential.** It is the caller's, it arrives per attempt, and it
 lives in the caller's workspace rather than on the machine. On the host it
 exists only in the runner process's memory, and for Codex in one `0600` file

@@ -99,6 +99,25 @@ func (r *Reconciler) validateBackend(ctx context.Context, c client.Client, agent
 			"model credential %q is not Ready; check its status for what to fix", cfg.CredentialRef), out, nil
 	}
 
+	// The GitHub connection the harness runs with, when one is named. Its token
+	// is read per turn; here it is enough that the object exists and is the
+	// right type, so a reviewer agent pointed at a deleted or renamed
+	// connection says so before its first run fails.
+	if connName := strings.TrimSpace(cfg.GitHubConnectionRef); connName != "" {
+		var conn agentsv1alpha1.Connection
+		switch err := c.Get(ctx, types.NamespacedName{Name: connName}, &conn); {
+		case apierrors.IsNotFound(err):
+			return agentsv1alpha1.ReasonUnknownConnectionRef, fmt.Sprintf(
+				"spec.backend.harness.githubConnectionRef names connection %q, which does not exist in this workspace", connName), out, nil
+		case err != nil:
+			return "", "", out, err
+		}
+		if conn.Spec.Type != agentsv1alpha1.ConnectionTypeGitHub {
+			return agentsv1alpha1.ReasonInvalidSpec, fmt.Sprintf(
+				"spec.backend.harness.githubConnectionRef names connection %q of type %q; the harness needs a github connection", connName, conn.Spec.Type), out, nil
+		}
+	}
+
 	// The edge.
 	gvk, ok := edgeref.EdgeGVK(cfg.EdgeRef.Kind)
 	if !ok {

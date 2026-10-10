@@ -66,7 +66,12 @@ const expanded = ref(new Set<string>())
 const stepsExpanded = ref(true)
 const inspectorOpen = ref(true)
 const resolvingInboxID = ref('')
-const resolvingDecision = ref<'approve' | 'deny' | ''>('')
+const resolvingDecision = ref<'approve' | 'deny' | 'answer' | ''>('')
+const answerDraft = ref('')
+// A pending question is resolved with words, not a verdict. The server stamps
+// kind on every pending block; a legacy block without one is an approval, so
+// a malformed approval still gets the disclosure guard rather than a reply box.
+const pendingQuestion = computed(() => run.value?.phase === 'PendingApproval' && run.value.pending?.kind === 'question')
 const cancellingRuns = ref(new Set<string>())
 const now = ref(Date.now())
 let pollHandle = 0
@@ -234,16 +239,20 @@ async function cancel(): Promise<void> {
   }
 }
 
-async function resolve(inboxID: string, decision: 'approve' | 'deny'): Promise<void> {
+async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: string): Promise<void> {
   if (resolvingInboxID.value) return
+  if (decision === 'answer' && !(response ?? '').trim()) return
   const authority = captureAuthority()
   const id = props.runId
   resolvingInboxID.value = inboxID
   resolvingDecision.value = decision
   try {
-    await authority.api.resolveInbox(inboxID, decision)
+    await (decision === 'answer'
+      ? authority.api.resolveInbox(inboxID, 'answer', response!.trim())
+      : authority.api.resolveInbox(inboxID, decision))
     if (!authorityIsCurrent(authority) || id !== props.runId) return
-    toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
+    if (decision === 'answer') answerDraft.value = ''
+    toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : decision === 'answer' ? 'Answered — the run is resuming.' : 'Denied.')
     await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
     if (authorityIsCurrent(authority) && id === props.runId) {
@@ -529,6 +538,40 @@ onBeforeUnmount(() => {
                     :diagnostic="run.message"
                     @recovery="navigateForFailure"
                   />
+                  <!--
+                    A question is not an approval: it names no tool, so rendering
+                    it as one gave an approval card reading "tool unavailable"
+                    over a button that could never be enabled. It gets the
+                    question and a reply box instead, as in chat.
+                  -->
+                  <AIInterrupt
+                    v-else-if="pendingQuestion && run.pending"
+                    class="agents-approval"
+                    kind="follow-up"
+                    :status="resolvingInboxID ? 'busy' : 'pending'"
+                    :busy="!!resolvingInboxID"
+                    title="The agent has a question"
+                    aria-label="The agent is waiting for an answer"
+                  >
+                    <p class="agents-approval-question">{{ run.pending.question || 'The agent is waiting for an answer.' }}</p>
+                    <template #actions>
+                      <div class="agents-approval-actions">
+                        <input
+                          v-model="answerDraft"
+                          class="k-input agents-approval-answer"
+                          type="text"
+                          :disabled="!!resolvingInboxID"
+                          placeholder="Your answer…"
+                          :aria-label="run.pending.question || 'Your answer'"
+                          @keydown.enter.prevent="resolve(run.pending!.inboxID, 'answer', answerDraft)"
+                        />
+                        <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !answerDraft.trim()" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' || undefined" @click="resolve(run.pending!.inboxID, 'answer', answerDraft)">
+                          <LoaderCircle v-if="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer'" class="agents-spinner k-spin" aria-hidden="true" />
+                          <Check v-else :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' ? 'Sending…' : 'Send answer' }}
+                        </button>
+                      </div>
+                    </template>
+                  </AIInterrupt>
                   <AIInterrupt
                     v-else-if="run.phase === 'PendingApproval' && run.pending"
                     class="agents-approval"

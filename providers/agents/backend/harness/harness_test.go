@@ -1630,3 +1630,53 @@ func TestInitialStateCarriesCancellationCoordinatesWithoutCredential(t *testing.
 		t.Fatal("initial state contains credential or workspace data")
 	}
 }
+
+// The environment the identity brings (the agent's GitHub connection token as
+// GH_TOKEN) rides inside the harness credential on the start AND on every
+// resume, because a resume may be the first request a restarted runner sees
+// and nothing about the caller survives on the host.
+func TestDispatchCarriesTheBroughtEnvironmentOnStartAndResume(t *testing.T) {
+	parked := &fakeRunner{
+		receipt: runner.Receipt{
+			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "Which PR?"},
+		},
+	}
+	environment := []runner.EnvironmentVariable{{Name: "GH_TOKEN", Value: "ghp_tenant"}, {Name: "GITHUB_TOKEN", Value: "ghp_tenant"}}
+	cfg := testConfig(parked, 1, "")
+	cfg.Environment = environment
+	out, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "review #835"}},
+	}, &recordingSink{})
+	if err != nil || out.Status != backend.StatusParked {
+		t.Fatalf("Turn = %+v, %v; want a parked turn", out, err)
+	}
+	if len(parked.starts) != 1 || parked.starts[0].HarnessCredential == nil {
+		t.Fatalf("starts = %+v, want one with a credential", parked.starts)
+	}
+	start := parked.starts[0].HarnessCredential
+	if len(start.Environment) != 2 || start.Environment[0].Name != "GH_TOKEN" || start.Environment[0].Value != "ghp_tenant" {
+		t.Fatalf("start credential environment = %+v, want the brought GH_TOKEN", start.Environment)
+	}
+
+	answered := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
+			Clarification: &runner.Clarification{ID: "clar-1", Text: "Which PR?"}},
+		phases: []runner.Phase{runner.PhaseNeedsInput, runner.PhaseCompleted},
+		events: []runner.Event{event(1, runner.EventProgress, "ok", ""), event(2, runner.EventCompleted, "", "")},
+	}
+	resumeCfg := testConfig(answered, 1, "sess-1")
+	resumeCfg.Environment = environment
+	if _, err := New(resumeCfg).Continue(context.Background(), testRun(), backend.Answer{
+		State: out.Parked.State, Decided: true, Approved: true, Note: "835",
+	}, &recordingSink{}); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if len(answered.resumes) != 1 || answered.resumes[0].HarnessCredential == nil {
+		t.Fatalf("resumes = %+v, want one with a credential", answered.resumes)
+	}
+	resume := answered.resumes[0].HarnessCredential
+	if len(resume.Environment) != 2 || resume.Environment[0].Value != "ghp_tenant" {
+		t.Fatalf("resume credential environment = %+v, want the brought GH_TOKEN again", resume.Environment)
+	}
+}

@@ -380,6 +380,16 @@ Still verb-only:
 | Delete a project | `kubectl delete project <p>` (or `DELETE $AS/projects/<p>` with the UID precondition); annotate `ai.railgrid.ai/delete-repository=true` first to drop the GitHub repo too |
 | Per-user approval mode | `GET\|PATCH $AS/projects/<p>/approval-mode` |
 
+`railgrid app sync <p> --from <dir>` sends `infrastructure__dev_sync` through
+the same path as `railgrid mcp proxy` (your login, your RBAC) from v0.2.15;
+earlier builds used the workspace MCPServer token, which some hubs refuse for
+`instances/sync`. `railgrid app files get <p> <path> --out <file>` writes a
+binary to disk (stdout otherwise). A sandbox command given a project name
+instead of `<project>-dev` gets a 404 that says so. `railgrid app status -o
+json` carries `project`, `preview`, `publishing`, `promotionError` and
+`checkpoints.items[]` (`key`, `label`, `state done|blocked|pending`, `reason`,
+`remediation`); `railgrid app checkpoints -o json` is the same `items` array.
+
 ## 10. Loop from a terminal
 
 ```bash

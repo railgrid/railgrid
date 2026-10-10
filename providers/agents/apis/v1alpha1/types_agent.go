@@ -216,6 +216,19 @@ type AgentHarnessBackend struct {
 	// +kubebuilder:validation:Enum=persistent;ephemeral
 	// +kubebuilder:default=persistent
 	Workspace string `json:"workspace,omitempty"`
+
+	// GitHubConnectionRef names a Connection of type "github" in this
+	// workspace whose token the harness runs with: it is exported into the
+	// harness child as GH_TOKEN and GITHUB_TOKEN for the length of one turn,
+	// so `gh` and git over HTTPS authenticate as that connection. The token
+	// travels like the harness credential — per turn, in the runner's memory,
+	// never on the machine's disk — which is what lets a reviewer post to a
+	// pull request without anybody logging in on the edge. Empty means the
+	// harness has no GitHub credential. Honored by Claude Code; Codex runs
+	// with its network disabled and cannot use one.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	GitHubConnectionRef string `json:"githubConnectionRef,omitempty"`
 }
 
 // AgentHarnessEdgeRef names the host edge a harness runs on. Only host edges

@@ -63,6 +63,19 @@ const (
 type Credential struct {
 	Kind  CredentialKind
 	Value string
+	// Environment is what else the identity brings to the launch: further
+	// credentials the caller wants the turn to run with, exported into the
+	// child's environment under the names given (a GitHub token as GH_TOKEN,
+	// say). They travel, live and die exactly as Value does — per launch, in
+	// memory, never on disk — and the runner has already refused every name
+	// outside its allow-list, so an adapter sees only credential names.
+	Environment []EnvironmentVariable
+}
+
+// EnvironmentVariable is one name=value an identity brings to a launch.
+type EnvironmentVariable struct {
+	Name  string
+	Value string
 }
 
 // Empty reports whether c carries nothing to inject.

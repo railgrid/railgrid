@@ -827,6 +827,33 @@ describe('RunDetail.vue', () => {
     await settleVue()
   })
 
+  it('renders a pending harness question with a reply box instead of an approval card', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const api = stubApi({
+      getRun: vi.fn().mockResolvedValue(detail({
+        phase: 'PendingApproval',
+        pending: { inboxID: 'i9', kind: 'question', tool: '', args: '', question: 'Which pull request should I review?' },
+      })),
+      resolveInbox,
+    })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+
+    expect(text(view.element)).toContain('The agent has a question')
+    expect(text(view.element.querySelector('.agents-approval-question'))).toBe('Which pull request should I review?')
+    expect(text(view.element)).not.toContain('tool unavailable')
+    expect(text(view.element)).not.toContain('Approve & resume')
+    const send = buttonWithText(view.element, 'Send answer')
+    expect(send.disabled).toBe(true)
+
+    const answer = view.element.querySelector<HTMLInputElement>('input.agents-approval-answer')!
+    setValue(answer, ' #835 ')
+    await settleVue()
+    expect(send.disabled).toBe(false)
+    send.click()
+    await settleVue(2)
+    expect(resolveInbox).toHaveBeenCalledWith('i9', 'answer', '#835')
+  })
+
   it('blocks a run approval with missing disclosure while leaving denial available', async () => {
     const resolveInbox = vi.fn().mockResolvedValue({})
     const api = stubApi({
@@ -1106,7 +1133,7 @@ describe('Automation.vue', () => {
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'on-issue' })
 
     await settleVue()
-    setValue(view.element.querySelector<HTMLTextAreaElement>('textarea')!, 'new task')
+    setValue(view.element.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!, 'new task')
     view.element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
 
@@ -1114,7 +1141,94 @@ describe('Automation.vue', () => {
       source: 'github', connectionRef: 'github-main', task: 'new task', suspend: false, channelRef: '',
     })
     expect(view.element.querySelector('form')).not.toBeNull()
-    expect(view.element.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('new task')
+    expect(view.element.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!.value).toBe('new task')
+  })
+
+  it('shows the minted webhook URL on a trigger edit and copies it from the form and the row', async () => {
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    const webhookPath = '/services/providers/agents/webhooks/triggers/c1/pr-review/0123456789abcdef'
+    store.triggers.data = [
+      { metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', source: 'github' }, status: { webhookPath } },
+      { metadata: { name: 'unminted' }, spec: { agentRef: 'scout', source: 'webhook' } },
+    ]
+    store.triggers.hasSnapshot = true
+
+    const edit = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'pr-review' })
+    await settleVue()
+    const url = `${location.origin}${webhookPath}`
+    expect(text(edit.element.querySelector('[data-testid="automation-webhook-url"]'))).toBe(url)
+    expect(text(edit.element)).toContain('Settings → Webhooks')
+    buttonWithText(edit.element, 'Copy webhook URL').click()
+    await settleVue()
+    expect(writeText).toHaveBeenCalledWith(url)
+    expect(text(buttonWithText(edit.element, 'Copied'))).toContain('Copied')
+
+    const pending = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'unminted' })
+    await settleVue()
+    expect(pending.element.querySelector('[data-testid="automation-webhook-url"]')).toBeNull()
+    expect(text(pending.element)).toContain('has not been minted yet')
+
+    const list = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
+    await settleVue()
+    expect(list.element.querySelector('button[aria-label="Copy webhook URL for unminted"]')).toBeNull()
+    list.element.querySelector<HTMLButtonElement>('button[aria-label="Copy webhook URL for pr-review"]')!.click()
+    await settleVue()
+    expect(writeText).toHaveBeenLastCalledWith(url)
+    expect(writeText).toHaveBeenCalledTimes(2)
+  })
+
+  it('edits spec.filter as key=value lines and sends only the changed keys as a merge-patch fragment', async () => {
+    const patchTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'github' } })
+    const api = stubApi({ patchTrigger })
+    const store = storeWithAgent(api)
+    store.triggers.data = [{ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'github', filter: { eventType: 'issues', match: 'bug' }, task: 'triage' } }]
+    store.triggers.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'on-issue' })
+    await settleVue()
+
+    const filter = view.element.querySelector<HTMLTextAreaElement>('textarea[name="filter"]')!
+    expect(filter.value).toBe('eventType=issues\nmatch=bug')
+    const form = view.element.querySelector<HTMLFormElement>('form')!
+
+    setValue(filter, 'eventType=pull_request\nheader.X-GitHub-Event')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(patchTrigger).not.toHaveBeenCalled()
+    expect(filter.getAttribute('aria-invalid')).toBe('true')
+    expect(text(view.element.querySelector('#automation-trigger-filter-error'))).toContain('key=value')
+
+    setValue(filter, 'eventType=pull_request\n')
+    await settleVue()
+    expect(filter.getAttribute('aria-invalid')).toBeNull()
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(patchTrigger).toHaveBeenCalledWith('on-issue', expect.objectContaining({
+      filter: { eventType: 'pull_request', match: null },
+    }))
+  })
+
+  it('creates a trigger with the parsed filter and leaves it out when the editor is empty', async () => {
+    const createTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', source: 'github' } })
+    const api = stubApi({ createTrigger })
+    const store = storeWithAgent(api)
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', createRoute: true })
+    await settleVue()
+    expect(text(view.element)).toContain('appears here, and on the trigger row, once the trigger is created')
+
+    setValue(view.element.querySelector<HTMLInputElement>('input[placeholder="on-issue"]')!, 'pr-review')
+    setValue(view.element.querySelector<HTMLTextAreaElement>('textarea[name="filter"]')!, ' eventType = pull_request ')
+    view.element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(createTrigger).toHaveBeenCalledWith(expect.objectContaining({ name: 'pr-review', agentRef: 'scout', source: 'webhook', filter: { eventType: 'pull_request' } }))
+
+    const bare = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', createRoute: true })
+    await settleVue()
+    setValue(bare.element.querySelector<HTMLInputElement>('input[placeholder="on-issue"]')!, 'plain')
+    bare.element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(createTrigger).toHaveBeenLastCalledWith(expect.not.objectContaining({ filter: expect.anything() }))
   })
 
   it('routes collection create and edit actions to the four focused automation surfaces', async () => {
