@@ -23,13 +23,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
@@ -37,25 +41,27 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
+	"k8s.io/klog/v2"
 
 	"github.com/railgrid/provider-app-studio/hubmcp"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
-	projectAssistantExecDefaultTimeout    = 30
-	projectAssistantExecMaxTimeout        = 120
-	projectAssistantExecMaxArgv           = 32
-	projectAssistantExecMaxArgBytes       = 256
-	projectAssistantExecMaxWorkdir        = 256
-	projectAssistantExecMaxSnapshot       = 8 << 20
-	projectAssistantExecMaxOutput         = 1 << 20
-	projectAssistantExecPollInterval      = 250 * time.Millisecond
-	projectAssistantExecPollTimeout       = 2 * time.Minute
-	projectAssistantExecCancelTimeout     = 5 * time.Second
-	projectAssistantExecSnapshotAttempts  = 3
-	projectAssistantExecStartRetryTimeout = 10 * time.Second
-	projectAssistantExecStartRetryPoll    = 250 * time.Millisecond
+	projectAssistantExecDefaultTimeout      = 30
+	projectAssistantExecMaxTimeout          = 120
+	projectAssistantExecMaxArgv             = 32
+	projectAssistantExecMaxArgBytes         = 256
+	projectAssistantExecMaxWorkdir          = 256
+	projectAssistantExecMaxSnapshot         = 8 << 20
+	projectAssistantExecMaxOutput           = 1 << 20
+	projectAssistantExecPollInterval        = 250 * time.Millisecond
+	projectAssistantExecPollTimeout         = 2 * time.Minute
+	projectAssistantExecCancelTimeout       = 5 * time.Second
+	projectAssistantExecSnapshotAttempts    = 3
+	projectAssistantExecStartRetryTimeout   = 30 * time.Second
+	projectAssistantExecStartAttemptTimeout = 10 * time.Second
+	projectAssistantExecStartRetryPoll      = 250 * time.Millisecond
 )
 
 var errProjectAssistantExecRevisionChanged = errors.New("workspace mutation revision changed while preparing the execution snapshot")
@@ -74,8 +80,10 @@ type projectSandboxExecFile struct {
 }
 
 type projectAssistantExecSnapshotEntry struct {
-	path string
-	file projectSandboxExecFile
+	path    string
+	file    projectSandboxExecFile
+	version string
+	size    int64
 }
 
 // projectSandboxExecRequest is the typed infrastructure data-plane protocol.
@@ -153,7 +161,7 @@ func projectAssistantExecCommandToolSpecForRun(spec projectAssistantToolSpec, ru
 	if runCtx.RunState == nil || (!runCtx.RunState.SandboxRemoteEnabled() && runCtx.RunState.Sandbox() == nil) {
 		return spec
 	}
-	spec.Description = "Run one approved compiler, test, or lint argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens rather than a shell string; App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
+	spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens rather than a shell string; App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
 	spec.Parameters = projectAssistantExecCommandParametersForRun(spec.Parameters)
 	return spec
 }
@@ -597,7 +605,7 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 				break
 			}
 			includeBinary := projectAssistantExecBinaryInclusion(ctx, server, id, target.dataPlaneRefFor(component))
-			_, digest, sourceRevision, err = projectAssistantExecSnapshot(ctx, current, componentInfo, revision, includeBinary)
+			digest, sourceRevision, err = projectAssistantExecSnapshot(ctx, current, componentInfo, revision, includeBinary)
 			if !errors.Is(err, errProjectAssistantExecRevisionChanged) {
 				break
 			}
@@ -623,9 +631,17 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 			return projectAssistantExecCall(startCtx, server, id, target.dataPlaneRefFor(component), request)
 		})
 		if err != nil {
-			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution could not start: " + err.Error(), Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
+			if projectAssistantExecStartMayHaveBeenAccepted(err) {
+				projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+					return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
+				})
+			}
+			return &projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
 		}
 		if started.SessionID == "" {
+			projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+				return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
+			})
 			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
 		}
 		startedAt := time.Now()
@@ -650,15 +666,24 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 		}()
 		deadline := time.NewTimer(projectAssistantExecPollTimeout)
 		defer deadline.Stop()
+		pollImmediately := true
 		for !projectAssistantExecTerminal(result.State) {
-			select {
-			case <-ctx.Done():
-				cancelSession()
-				return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"), nil
-			case <-deadline.C:
-				cancelSession()
-				return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "timed_out"), nil
-			case <-time.After(projectAssistantExecPollInterval):
+			if pollImmediately {
+				pollImmediately = false
+				if ctx.Err() != nil {
+					cancelSession()
+					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"), nil
+				}
+			} else {
+				select {
+				case <-ctx.Done():
+					cancelSession()
+					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"), nil
+				case <-deadline.C:
+					cancelSession()
+					return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "timed_out"), nil
+				case <-time.After(projectAssistantExecPollInterval):
+				}
 			}
 			result, err = projectAssistantExecCall(ctx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "poll", SessionID: started.SessionID, RequestID: requestID})
 			if err != nil {
@@ -693,9 +718,23 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 	start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds}
 	started, err := sandbox.exec(ctx, sandbox.target.dataPlaneRefFor(component), start)
 	if err != nil {
-		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution could not start: " + err.Error(), Component: component}, nil
+		if projectAssistantExecStartMayHaveBeenAccepted(err) {
+			projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+				if sandbox.client == nil {
+					return projectSandboxExecResponse{}, errors.New("assistant sandbox client is not configured")
+				}
+				return sandbox.client.Exec(cancelCtx, sandbox.id, sandbox.target.dataPlaneRefFor(component), request)
+			})
+		}
+		return &projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component}, nil
 	}
 	if started.SessionID == "" {
+		projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+			if sandbox.client == nil {
+				return projectSandboxExecResponse{}, errors.New("assistant sandbox client is not configured")
+			}
+			return sandbox.client.Exec(cancelCtx, sandbox.id, sandbox.target.dataPlaneRefFor(component), request)
+		})
 		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component}, nil
 	}
 	startedAt := time.Now()
@@ -717,19 +756,30 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 	}()
 	deadline := time.NewTimer(projectAssistantExecPollTimeout)
 	defer deadline.Stop()
+	pollImmediately := true
 	for !projectAssistantExecTerminal(result.State) {
-		select {
-		case <-ctx.Done():
-			cancelSession()
-			meta := sandbox.metadataSnapshot()
-			revision, digest := projectAssistantSandboxRemoteFence(meta)
-			return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
-		case <-deadline.C:
-			cancelSession()
-			meta := sandbox.metadataSnapshot()
-			revision, digest := projectAssistantSandboxRemoteFence(meta)
-			return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "timed_out"), nil
-		case <-time.After(projectAssistantExecPollInterval):
+		if pollImmediately {
+			pollImmediately = false
+			if ctx.Err() != nil {
+				cancelSession()
+				meta := sandbox.metadataSnapshot()
+				revision, digest := projectAssistantSandboxRemoteFence(meta)
+				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				cancelSession()
+				meta := sandbox.metadataSnapshot()
+				revision, digest := projectAssistantSandboxRemoteFence(meta)
+				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+			case <-deadline.C:
+				cancelSession()
+				meta := sandbox.metadataSnapshot()
+				revision, digest := projectAssistantSandboxRemoteFence(meta)
+				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "timed_out"), nil
+			case <-time.After(projectAssistantExecPollInterval):
+			}
 		}
 		result, err = sandbox.exec(ctx, sandbox.target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "poll", SessionID: started.SessionID, RequestID: requestID})
 		if err != nil {
@@ -835,10 +885,48 @@ func projectAssistantExecLooksUpstreamUnavailable(err error) bool {
 func projectAssistantExecStartRetryable(err error) bool {
 	var statusErr *projectAssistantExecHTTPError
 	if errors.As(err, &statusErr) {
-		return statusErr.status == http.StatusBadGateway || statusErr.status == http.StatusServiceUnavailable
+		return statusErr.status == http.StatusBadGateway || statusErr.status == http.StatusServiceUnavailable || statusErr.status == http.StatusGatewayTimeout || statusErr.status == http.StatusRequestTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var timeoutErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeoutErr) && timeoutErr.Timeout()) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) {
+		return true
 	}
 	var unavailableErr *projectAssistantExecUpstreamUnavailableError
 	return errors.As(err, &unavailableErr)
+}
+
+// projectAssistantExecStartMayHaveBeenAccepted reports whether the transport
+// outcome leaves it possible that the worker persisted or dispatched START.
+// A definitive client rejection cannot have started a command; all transport,
+// timeout, malformed-success, and server failures need a detached cleanup.
+func projectAssistantExecStartMayHaveBeenAccepted(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *projectAssistantExecHTTPError
+	if errors.As(err, &statusErr) {
+		return statusErr.status == http.StatusRequestTimeout || statusErr.status >= http.StatusInternalServerError
+	}
+	return true
+}
+
+// projectAssistantCancelExecByRequestID uses a fresh bounded context because
+// the START context may already be canceled or expired. Request-ID-only cancel
+// reaches the exact deterministic session even when START returned no session
+// ID to App Studio.
+func projectAssistantCancelExecByRequestID(requestID string, exec func(context.Context, projectSandboxExecRequest) (projectSandboxExecResponse, error)) {
+	if requestID == "" || exec == nil {
+		return
+	}
+	cancelCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecCancelTimeout)
+	defer cancel()
+	_, _ = exec(cancelCtx, projectSandboxExecRequest{Action: "cancel", RequestID: requestID})
 }
 
 // retryProjectAssistantExecStart retries only the initial idempotent START
@@ -854,10 +942,22 @@ func retryProjectAssistantExecStart(ctx context.Context, request projectSandboxE
 	ticker := time.NewTicker(projectAssistantExecStartRetryPoll)
 	defer ticker.Stop()
 	var lastErr error
-	for {
-		response, err := start(retryCtx, request)
+	for attempt := 1; ; attempt++ {
+		if ctx.Err() != nil {
+			return projectSandboxExecResponse{}, ctx.Err()
+		}
+		// START is idempotent. Reserve budget for another request when a
+		// response is lost, including after the coordinator accepted the command.
+		attemptCtx, attemptCancel := context.WithTimeout(retryCtx, projectAssistantExecStartAttemptTimeout)
+		startedAt := time.Now()
+		response, err := start(attemptCtx, request)
+		attemptCancel()
 		if err == nil {
 			return response, nil
+		}
+		klog.InfoS("App Studio exec start attempt failed", "requestID", request.RequestID, "attempt", attempt, "duration", time.Since(startedAt), "error", err)
+		if ctx.Err() != nil {
+			return projectSandboxExecResponse{}, ctx.Err()
 		}
 		if !projectAssistantExecStartRetryable(err) {
 			return projectSandboxExecResponse{}, err
@@ -872,6 +972,19 @@ func retryProjectAssistantExecStart(ctx context.Context, request projectSandboxE
 		case <-ticker.C:
 		}
 	}
+}
+
+// Keep the cause ahead of long internal URLs so the action feed's bounded
+// summary retains it. A lost START response does not prove execution never began.
+func projectAssistantExecStartFailureSummary(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "Command start could not be confirmed: the execution service did not respond before the startup deadline."
+	}
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		err = requestErr.Err
+	}
+	return "Command start could not be confirmed: " + err.Error()
 }
 
 func projectAssistantExecCall(ctx context.Context, server *Server, id identity, ref dataPlaneRef, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
@@ -1025,147 +1138,183 @@ func projectAssistantExecBinaryInclusion(ctx context.Context, server *Server, id
 }
 
 // projectAssistantExecSnapshotEntryFor reads one component file the way
-// development sync ships it: bounded text as-is, binaries (as raw bytes)
-// only when the agent receives them, and nothing for text beyond the sync
-// bound. included is false for a file sync leaves out; textBytes counts
-// toward the text snapshot bound.
-func projectAssistantExecSnapshotEntryFor(ctx context.Context, runCtx projectAssistantWorkflowRunContext, clean, relative string, includeBinary func() bool) (projectAssistantExecSnapshotEntry, bool, int, error) {
-	read, err := runCtx.Workspace.ReadFile(ctx, runCtx.WorkspaceScope, workspace.ReadOptions{Path: clean, MaxBytes: workspace.MaxWriteBytes})
+// development sync ships it: bounded text as-is, binary metadata for files
+// within the per-file bound, and nothing for oversized text or binaries.
+// included is true for text that sync sends; in-bound binaries are returned
+// separately so the capability probe can happen outside the workspace lock.
+func projectAssistantExecSnapshotEntryFor(snapshot workspace.ReadSnapshot, clean, relative string) (projectAssistantExecSnapshotEntry, bool, int, error) {
+	read, err := snapshot.ReadFile(clean, workspace.MaxWriteBytes)
 	if err != nil {
 		return projectAssistantExecSnapshotEntry{}, false, 0, err
 	}
 	switch {
 	case read.Binary:
-		if includeBinary == nil || !includeBinary() || read.Size > hubmcp.BinaryFileMaxBytes {
+		if read.Size > hubmcp.BinaryFileMaxBytes {
 			return projectAssistantExecSnapshotEntry{}, false, 0, nil
 		}
-		data, err := runCtx.Workspace.ReadFileBytes(ctx, runCtx.WorkspaceScope, clean, hubmcp.BinaryFileMaxBytes)
-		if err != nil {
-			return projectAssistantExecSnapshotEntry{}, false, 0, err
+		entry := projectAssistantExecSnapshotEntry{
+			path:    clean,
+			file:    projectSandboxExecFile{Path: relative},
+			version: read.Version,
+			size:    read.Size,
 		}
-		return projectAssistantExecSnapshotEntry{path: clean, file: projectSandboxExecFile{Path: relative, Content: string(data)}}, true, 0, nil
+		return entry, false, 0, nil
 	case read.Truncated:
 		return projectAssistantExecSnapshotEntry{}, false, 0, nil
 	}
 	return projectAssistantExecSnapshotEntry{path: clean, file: projectSandboxExecFile{Path: relative, Content: read.Content}}, true, len([]byte(read.Content)), nil
 }
 
-func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWorkflowRunContext, component projectTemplateComponent, expectedRevision uint64, includeBinary func() bool) ([]projectSandboxExecFile, string, uint64, error) {
+func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWorkflowRunContext, component projectTemplateComponent, expectedRevision uint64, includeBinary func() bool) (string, uint64, error) {
 	if runCtx.Workspace == nil {
-		return nil, "", 0, errors.New("project workspace store is not configured")
+		return "", 0, errors.New("project workspace store is not configured")
 	}
 	root := path.Clean(strings.TrimSpace(component.WorkspacePath))
 	if root == "" {
 		root = "."
 	}
 	for attempt := 0; attempt < projectAssistantExecSnapshotAttempts; attempt++ {
-		sourceRevisionBefore, err := runCtx.Workspace.SourceRevision(ctx, runCtx.WorkspaceScope)
-		if err != nil {
-			return nil, "", 0, err
-		}
-		list, err := runCtx.Workspace.ListFiles(ctx, runCtx.WorkspaceScope, workspace.ListOptions{Limit: workspace.MaxListLimit})
-		if err != nil {
-			return nil, "", 0, err
-		}
-		if list.Truncated {
-			return nil, "", 0, fmt.Errorf("workspace snapshot exceeds the %d-file limit", workspace.MaxListLimit)
-		}
-		paths := projectAssistantExecComponentPaths(list, root)
-		entries := make([]projectAssistantExecSnapshotEntry, 0, len(paths))
-		total := 0
-		retry := false
-		for _, clean := range paths {
-			relative := clean
-			if root != "." {
-				relative = strings.TrimPrefix(clean, root+"/")
+		var (
+			digest               string
+			sourceRevisionBefore uint64
+			retry                bool
+			entries              []projectAssistantExecSnapshotEntry
+			binaryEntries        []projectAssistantExecSnapshotEntry
+		)
+		err := runCtx.Workspace.WithReadSnapshot(ctx, runCtx.WorkspaceScope, workspace.ListOptions{Limit: workspace.MaxListLimit}, func(snapshot workspace.ReadSnapshot) error {
+			if snapshot.Files.Truncated {
+				return fmt.Errorf("workspace snapshot exceeds the %d-file limit", workspace.MaxListLimit)
 			}
-			entry, included, textBytes, readErr := projectAssistantExecSnapshotEntryFor(ctx, runCtx, clean, relative, includeBinary)
-			if readErr != nil {
-				if errors.Is(readErr, fs.ErrNotExist) {
-					retry = true
-					break
+			sourceRevisionBefore = snapshot.SourceRevision
+			paths := projectAssistantExecComponentPaths(snapshot.Files, root)
+			entries = make([]projectAssistantExecSnapshotEntry, 0, len(paths))
+			binaryEntries = nil
+			total := 0
+			for _, clean := range paths {
+				relative := clean
+				if root != "." {
+					relative = strings.TrimPrefix(clean, root+"/")
 				}
-				return nil, "", 0, readErr
+				entry, included, textBytes, readErr := projectAssistantExecSnapshotEntryFor(snapshot, clean, relative)
+				if readErr != nil {
+					if errors.Is(readErr, fs.ErrNotExist) {
+						retry = true
+						return nil
+					}
+					return readErr
+				}
+				if entry.version != "" && !included {
+					binaryEntries = append(binaryEntries, entry)
+					continue
+				}
+				if !included {
+					continue
+				}
+				total += textBytes
+				if total > projectAssistantExecMaxSnapshot {
+					return fmt.Errorf("component snapshot exceeds %d bytes", projectAssistantExecMaxSnapshot)
+				}
+				entries = append(entries, entry)
 			}
-			if !included {
-				continue
+			// The snapshot lock keeps the list and all text content tied to one
+			// source revision. A mutation that starts after this callback is
+			// caught by the revision read below.
+			if runCtx.RunState != nil {
+				currentRevision, _ := runCtx.RunState.SourceMutationRevisions()
+				if currentRevision != expectedRevision {
+					return errProjectAssistantExecRevisionChanged
+				}
 			}
-			total += textBytes
-			if total > projectAssistantExecMaxSnapshot {
-				return nil, "", 0, fmt.Errorf("component snapshot exceeds %d bytes", projectAssistantExecMaxSnapshot)
-			}
-			entries = append(entries, entry)
+			return nil
+		})
+		if err != nil {
+			return "", 0, err
 		}
 		if retry {
 			continue
 		}
-		files, digest := projectAssistantExecSnapshotDigest(entries)
-
-		// FileStore deliberately exposes separate bounded list/read/digest
-		// operations. Re-list and then compare its digest under the store lock
-		// before accepting this bundle, so a concurrent mutation cannot leave
-		// the executor with bytes from one revision and a digest from another.
-		confirm, err := runCtx.Workspace.ListFiles(ctx, runCtx.WorkspaceScope, workspace.ListOptions{Limit: workspace.MaxListLimit})
-		if err != nil {
-			return nil, "", 0, err
-		}
-		if confirm.Truncated {
-			return nil, "", 0, fmt.Errorf("workspace snapshot exceeds the %d-file limit", workspace.MaxListLimit)
-		}
-		if !projectAssistantExecStringSlicesEqual(paths, projectAssistantExecComponentPaths(confirm, root)) {
-			continue
-		}
-		if len(paths) > 0 {
-			currentDigest, err := projectAssistantExecWorkspaceDigest(ctx, runCtx, paths, root, includeBinary)
-			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					continue
-				}
-				return nil, "", 0, err
+		selectedBinaryEntries := make([]projectAssistantExecSnapshotEntry, 0, len(binaryEntries))
+		if len(binaryEntries) > 0 && includeBinary != nil && includeBinary() {
+			textFiles := make([]projectSandboxSyncFile, 0, len(entries))
+			for _, entry := range entries {
+				textFiles = append(textFiles, projectSandboxSyncFile{Path: entry.file.Path, Content: entry.file.Content})
 			}
-			if currentDigest != digest {
+			candidates := make([]projectSyncBinaryCandidate, 0, len(binaryEntries))
+			binaryByRelativePath := make(map[string]projectAssistantExecSnapshotEntry, len(binaryEntries))
+			for _, entry := range binaryEntries {
+				candidates = append(candidates, projectSyncBinaryCandidate{Path: entry.file.Path, DecodedSize: projectSyncBinaryDecodedSize(entry.size)})
+				binaryByRelativePath[entry.file.Path] = entry
+			}
+			selected, _ := selectProjectSyncBinaryPaths(textFiles, candidates)
+			for _, relativePath := range selected {
+				selectedBinaryEntries = append(selectedBinaryEntries, binaryByRelativePath[relativePath])
+			}
+		}
+		if len(selectedBinaryEntries) > 0 {
+			orderedEntries := append(append([]projectAssistantExecSnapshotEntry(nil), entries...), selectedBinaryEntries...)
+			sort.Slice(orderedEntries, func(i, j int) bool { return orderedEntries[i].file.Path < orderedEntries[j].file.Path })
+			err := runCtx.Workspace.WithReadSnapshot(ctx, runCtx.WorkspaceScope, workspace.ListOptions{Limit: workspace.MaxListLimit}, func(snapshot workspace.ReadSnapshot) error {
+				if snapshot.Files.Truncated {
+					return fmt.Errorf("workspace snapshot exceeds the %d-file limit", workspace.MaxListLimit)
+				}
+				if snapshot.SourceRevision != sourceRevisionBefore {
+					retry = true
+					return nil
+				}
+				hash := sha256.New()
+				for _, entry := range orderedEntries {
+					_, _ = hash.Write([]byte(entry.file.Path))
+					_, _ = hash.Write([]byte{0})
+					if entry.version != "" {
+						data, readErr := snapshot.ReadFileBytes(entry.path, hubmcp.BinaryFileMaxBytes)
+						if readErr != nil {
+							if errors.Is(readErr, fs.ErrNotExist) {
+								retry = true
+								return nil
+							}
+							return readErr
+						}
+						sum := sha256.Sum256(data)
+						if entry.version != "sha256:"+hex.EncodeToString(sum[:]) {
+							retry = true
+							return nil
+						}
+						_, _ = hash.Write(data)
+					} else {
+						_, _ = hash.Write([]byte(entry.file.Content))
+					}
+					_, _ = hash.Write([]byte{0})
+				}
+				digest = hex.EncodeToString(hash.Sum(nil))
+				return nil
+			})
+			if err != nil {
+				return "", 0, err
+			}
+			if retry {
 				continue
 			}
+		} else {
+			digest = projectAssistantExecSnapshotDigest(entries)
 		}
-		// Bind the accepted bytes to the exact mutation revision whose
-		// development sync was verified by the caller. If another assistant
-		// mutation landed during List/Read/Digest, the outer preparation loop
-		// waits for that newer revision and captures again.
-		if runCtx.RunState != nil {
-			currentRevision, _ := runCtx.RunState.SourceMutationRevisions()
-			if currentRevision != expectedRevision {
-				return nil, "", 0, errProjectAssistantExecRevisionChanged
-			}
+		if sourceRevisionBefore == 0 {
+			continue
 		}
 		sourceRevisionAfter, err := runCtx.Workspace.SourceRevision(ctx, runCtx.WorkspaceScope)
 		if err != nil {
-			return nil, "", 0, err
+			return "", 0, err
 		}
-		if sourceRevisionBefore == 0 || sourceRevisionBefore != sourceRevisionAfter {
-			continue
-		}
-		return files, digest, sourceRevisionBefore, nil
-	}
-	return nil, "", 0, errors.New("workspace changed while preparing the execution snapshot")
-}
-
-func projectAssistantExecWorkspaceDigest(ctx context.Context, runCtx projectAssistantWorkflowRunContext, paths []string, root string, includeBinary func() bool) (string, error) {
-	entries := make([]projectAssistantExecSnapshotEntry, 0, len(paths))
-	for _, clean := range paths {
-		relative := clean
-		if root != "." {
-			relative = strings.TrimPrefix(clean, root+"/")
-		}
-		entry, included, _, err := projectAssistantExecSnapshotEntryFor(ctx, runCtx, clean, relative, includeBinary)
-		if err != nil {
-			return "", err
-		}
-		if included {
-			entries = append(entries, entry)
+		if sourceRevisionBefore == sourceRevisionAfter {
+			if runCtx.RunState != nil {
+				currentRevision, _ := runCtx.RunState.SourceMutationRevisions()
+				if currentRevision != expectedRevision {
+					return "", 0, errProjectAssistantExecRevisionChanged
+				}
+			}
+			return digest, sourceRevisionBefore, nil
 		}
 	}
-	_, digest := projectAssistantExecSnapshotDigest(entries)
-	return digest, nil
+	return "", 0, errors.New("workspace changed while preparing the execution snapshot")
 }
 
 func projectAssistantExecComponentPaths(list workspace.FileList, root string) []string {
@@ -1182,33 +1331,18 @@ func projectAssistantExecComponentPaths(list workspace.FileList, root string) []
 	return paths
 }
 
-func projectAssistantExecSnapshotDigest(entries []projectAssistantExecSnapshotEntry) ([]projectSandboxExecFile, string) {
+func projectAssistantExecSnapshotDigest(entries []projectAssistantExecSnapshotEntry) string {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	hash := sha256.New()
-	files := make([]projectSandboxExecFile, 0, len(entries))
 	for _, entry := range entries {
 		// entry.file.Path is component-relative and matches the development
-		// agent's managed-manifest digest. The full workspace path is still
-		// used by the caller's FileStore digest confirmation below.
+		// agent's managed-manifest digest.
 		_, _ = hash.Write([]byte(entry.file.Path))
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write([]byte(entry.file.Content))
 		_, _ = hash.Write([]byte{0})
-		files = append(files, entry.file)
 	}
-	return files, hex.EncodeToString(hash.Sum(nil))
-}
-
-func projectAssistantExecStringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func projectAssistantExecRequestID(runID, callID string) string {
