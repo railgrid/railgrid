@@ -658,7 +658,7 @@ func projectEinoAssistantModels(
 	// reminder state. Capture the bounded base before applying those stateful
 	// wrappers to the ordinary agent model.
 	compactionModel = bounded
-	mainModel = projectEinoAssistantModelWithContextRecovery(bounded)
+	mainModel = projectEinoAssistantModelWithContextRecovery(bounded, runState)
 	mainModel = projectEinoAssistantBudgetModel(mainModel, runState.RolloutBudget())
 	mainModel = &projectEinoAssistantTransientEvidenceModel{
 		BaseChatModel: mainModel,
