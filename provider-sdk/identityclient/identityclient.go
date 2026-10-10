@@ -56,6 +56,16 @@ const (
 	// PathIdentities is the hub collection route.
 	PathIdentities = "/api/identities"
 
+	// ErrorCodeStaleOwner is returned when the owner's current persisted
+	// revision no longer matches the caller's observation.
+	ErrorCodeStaleOwner = "stale_owner"
+	// ErrorCodeVersionConflict is returned when the hub cannot complete a
+	// bounded compare-and-swap against a concurrent identity update.
+	ErrorCodeVersionConflict = "version_conflict"
+	// ErrorCodeUnsupportedOwnerRevision means the hub did not acknowledge
+	// enforcement of the requested owner revision.
+	ErrorCodeUnsupportedOwnerRevision = "unsupported_owner_revision"
+
 	defaultTimeout = 20 * time.Second
 	maxResponse    = 256 << 10
 )
@@ -75,10 +85,37 @@ type Owner struct {
 	ClusterID string `json:"clusterID,omitempty"`
 }
 
+// OwnerRevision identifies the exact persisted owner observation whose rules
+// a caller derived. ResourceVersion is an opaque equality token: callers must
+// never order or parse it. Generation protects spec-derived state, while the
+// resourceVersion also fences status-only changes that can affect grants.
+type OwnerRevision struct {
+	Generation      int64
+	ResourceVersion string
+}
+
+func (r OwnerRevision) Present() bool {
+	return r.Generation != 0 || strings.TrimSpace(r.ResourceVersion) != ""
+}
+
+func (r OwnerRevision) Validate() error {
+	if !r.Present() {
+		return nil
+	}
+	if r.Generation <= 0 || strings.TrimSpace(r.ResourceVersion) == "" {
+		return errors.New("expected owner generation and resourceVersion must be supplied together")
+	}
+	return nil
+}
+
 // Request is one create-or-refresh.
 type Request struct {
 	Owner     Owner
 	ClusterID string
+	// OwnerRevision is optional for compatibility with existing callers. A
+	// revision-aware hub must confirm it enforced the expected owner snapshot
+	// in the returned Token before the caller may use that token.
+	OwnerRevision OwnerRevision
 	// Rules must satisfy the hub's policy: any verb on the caller's own
 	// exported group, get on NAMED resources of another provider's group, or
 	// create on a declared {resource}/{verb} subresource of one, name-scoped.
@@ -91,11 +128,12 @@ type Request struct {
 
 // Token is a minted capability. It is never written to disk by this package.
 type Token struct {
-	Token          string    `json:"token"`
-	TokenType      string    `json:"tokenType"`
-	ExpiresAt      time.Time `json:"expiresAt"`
-	ServiceAccount string    `json:"serviceAccount"`
-	Name           string    `json:"name"`
+	Token                 string    `json:"token"`
+	TokenType             string    `json:"tokenType"`
+	ExpiresAt             time.Time `json:"expiresAt"`
+	ServiceAccount        string    `json:"serviceAccount"`
+	Name                  string    `json:"name"`
+	OwnerRevisionVerified bool      `json:"ownerRevisionVerified,omitempty"`
 }
 
 // Identity is one record as the hub lists it.
@@ -127,7 +165,16 @@ func (e *Error) Error() string {
 // Permanent reports whether retrying the identical request could ever
 // succeed. A policy refusal cannot; an unreachable hub can.
 func (e *Error) Permanent() bool {
-	return e.Status == http.StatusForbidden || e.Status == http.StatusBadRequest
+	if e.Status == http.StatusForbidden || e.Status == http.StatusBadRequest {
+		return true
+	}
+	if e.Status == http.StatusConflict {
+		switch e.Code {
+		case ErrorCodeStaleOwner, ErrorCodeVersionConflict:
+			return true
+		}
+	}
+	return e.Code == ErrorCodeUnsupportedOwnerRevision
 }
 
 // Client talks to the hub identity service as the provider itself.
@@ -208,6 +255,9 @@ func (c *Client) Ensure(ctx context.Context, req Request) (*Token, error) {
 	if c == nil {
 		return nil, errors.New("identity client is nil")
 	}
+	if err := req.OwnerRevision.Validate(); err != nil {
+		return nil, err
+	}
 	owner := req.Owner
 	if owner.Provider == "" {
 		owner.Provider = c.provider
@@ -217,6 +267,10 @@ func (c *Client) Ensure(ctx context.Context, req Request) (*Token, error) {
 		clusterID = owner.ClusterID
 	}
 	body := map[string]any{"owner": owner, "clusterID": clusterID, "rules": req.Rules}
+	if req.OwnerRevision.Present() {
+		body["expectedOwnerGeneration"] = req.OwnerRevision.Generation
+		body["expectedOwnerResourceVersion"] = req.OwnerRevision.ResourceVersion
+	}
 	if req.TTL > 0 {
 		body["ttlSeconds"] = int64(req.TTL / time.Second)
 	}
@@ -226,6 +280,9 @@ func (c *Client) Ensure(ctx context.Context, req Request) (*Token, error) {
 	}
 	if strings.TrimSpace(token.Token) == "" || token.ExpiresAt.IsZero() {
 		return nil, &Error{Status: http.StatusBadGateway, Code: "invalid_response", Message: "the hub returned an incomplete token"}
+	}
+	if req.OwnerRevision.Present() && !token.OwnerRevisionVerified {
+		return nil, &Error{Status: http.StatusBadGateway, Code: ErrorCodeUnsupportedOwnerRevision, Message: "the hub did not confirm owner revision enforcement"}
 	}
 	return &token, nil
 }
@@ -388,6 +445,39 @@ func (s *TokenSource) Token(ctx context.Context) (*Token, error) {
 		s.refresh = s.now().Add(time.Duration(float64(lifetime) * refreshFraction))
 	}
 	return token, nil
+}
+
+// UpdateOwnerRevision changes only the expected owner observation used by the
+// next refresh. A resourceVersion-only change within the same generation keeps
+// an already fenced token; an unfenced cached token must be replaced before
+// the source can serve a versioned request. Callers rebuild the source when
+// rules or generation change. The mutex makes the request update atomic with
+// Token's refresh.
+func (s *TokenSource) UpdateOwnerRevision(revision OwnerRevision) error {
+	if s == nil {
+		return errors.New("token source is not configured")
+	}
+	if err := revision.Validate(); err != nil || !revision.Present() {
+		if err != nil {
+			return err
+		}
+		return errors.New("expected owner revision is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.request.OwnerRevision
+	if current.Present() && revision.Generation != current.Generation {
+		return errors.New("owner generation changed; rebuild the token source")
+	}
+	if !current.Present() {
+		// A token minted before the expected revision was supplied cannot prove
+		// that the hub checked that revision. Do not serve it after upgrading
+		// this source, even if a malformed legacy response set the acknowledgement
+		// bit without receiving an expected revision.
+		s.token, s.refresh = nil, time.Time{}
+	}
+	s.request.OwnerRevision = revision
+	return nil
 }
 
 // Invalidate drops the cached token so the next Token() re-mints. Call it when

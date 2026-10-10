@@ -72,7 +72,7 @@ func (s *Service) EnsureWorkload(ctx context.Context, clusterID string, scope se
 		Resource: workloadOwnerResource, Name: scope.Project, UID: scope.ProjectUID,
 		ClusterID: clusterID,
 	}
-	record, err := s.upsertRecord(ctx, clusterID, owner, tenancyv1alpha1.ScopedIdentityAttestationWorkload, subject, shape)
+	record, err := s.upsertRecord(ctx, clusterID, owner, tenancyv1alpha1.ScopedIdentityAttestationWorkload, subject, shape, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -33,11 +33,12 @@ type fakeHub struct {
 	gets    []string
 	auth    []string
 
-	mints  int
-	status int
-	body   string
-	items  []Identity
-	ttl    time.Duration
+	mints            int
+	status           int
+	body             string
+	items            []Identity
+	ttl              time.Duration
+	ackOwnerRevision bool
 }
 
 func newFakeHub() *fakeHub { return &fakeHub{ttl: time.Hour} }
@@ -64,11 +65,16 @@ func (h *fakeHub) handler() http.Handler {
 			h.mints++
 			mint := h.mints
 			ttl := h.ttl
+			ackOwnerRevision := h.ackOwnerRevision
 			h.mu.Unlock()
-			writeJSON(w, Token{
+			token := Token{
 				Token: "token-" + itoa(mint), TokenType: "Bearer",
 				ExpiresAt: time.Now().Add(ttl), ServiceAccount: "railgrid-si-abc", Name: "si-abc",
-			})
+			}
+			if _, versioned := body["expectedOwnerGeneration"]; versioned {
+				token.OwnerRevisionVerified = ackOwnerRevision
+			}
+			writeJSON(w, token)
 		case http.MethodGet:
 			h.mu.Lock()
 			h.gets = append(h.gets, r.URL.RawQuery)
@@ -86,6 +92,72 @@ func (h *fakeHub) handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux
+}
+
+func TestEnsureSendsFlatOwnerRevisionAndRequiresHubAcknowledgement(t *testing.T) {
+	hub := newFakeHub()
+	hub.ackOwnerRevision = true
+	client := testClient(t, hub)
+
+	_, err := client.Ensure(context.Background(), Request{
+		Owner: agentOwner(), ClusterID: "cluster-1",
+		OwnerRevision: OwnerRevision{Generation: 7, ResourceVersion: "opaque-rv-91"},
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if len(hub.posts) != 1 {
+		t.Fatalf("posts = %d, want 1", len(hub.posts))
+	}
+	if got := hub.posts[0]["expectedOwnerGeneration"]; got != float64(7) {
+		t.Fatalf("expectedOwnerGeneration = %#v", got)
+	}
+	if got := hub.posts[0]["expectedOwnerResourceVersion"]; got != "opaque-rv-91" {
+		t.Fatalf("expectedOwnerResourceVersion = %#v", got)
+	}
+}
+
+func TestEnsureRejectsPartialOwnerRevision(t *testing.T) {
+	hub := newFakeHub()
+	client := testClient(t, hub)
+	_, err := client.Ensure(context.Background(), Request{
+		Owner: agentOwner(), ClusterID: "cluster-1",
+		OwnerRevision: OwnerRevision{Generation: 7},
+	})
+	if err == nil || len(hub.posts) != 0 {
+		t.Fatalf("partial revision result err=%v posts=%d; want local rejection before request", err, len(hub.posts))
+	}
+}
+
+func TestEnsureFailsClosedWhenOldHubIgnoresOwnerRevision(t *testing.T) {
+	hub := newFakeHub() // The legacy response omits ownerRevisionVerified.
+	client := testClient(t, hub)
+	_, err := client.Ensure(context.Background(), Request{
+		Owner: agentOwner(), ClusterID: "cluster-1",
+		OwnerRevision: OwnerRevision{Generation: 7, ResourceVersion: "opaque-rv-91"},
+	})
+	var hubErr *Error
+	if !errors.As(err, &hubErr) || hubErr.Code != ErrorCodeUnsupportedOwnerRevision || !hubErr.Permanent() {
+		t.Fatalf("missing revision acknowledgement error = %#v", err)
+	}
+}
+
+func TestOwnerRevisionConflictErrorsArePermanentOnlyForExactCodes(t *testing.T) {
+	for _, tc := range []struct {
+		code      string
+		status    int
+		permanent bool
+	}{
+		{code: ErrorCodeStaleOwner, status: http.StatusConflict, permanent: true},
+		{code: ErrorCodeVersionConflict, status: http.StatusConflict, permanent: true},
+		{code: "another_conflict", status: http.StatusConflict},
+		{code: ErrorCodeStaleOwner, status: http.StatusBadGateway},
+	} {
+		err := &Error{Code: tc.code, Status: tc.status}
+		if got := err.Permanent(); got != tc.permanent {
+			t.Errorf("Permanent(%q, %d) = %v, want %v", tc.code, tc.status, got, tc.permanent)
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
@@ -233,6 +305,147 @@ func TestTokenSourceRefreshesAtEightyPercentOfTheTTL(t *testing.T) {
 	}
 	if third.Token == first.Token || hub.mints != 2 {
 		t.Fatalf("did not refresh at 80%%: mints=%d", hub.mints)
+	}
+}
+
+func TestTokenSourceRefreshUsesLatestOwnerRevisionWithoutEarlyMint(t *testing.T) {
+	hub := newFakeHub()
+	hub.ttl = 100 * time.Second
+	hub.ackOwnerRevision = true
+	client := testClient(t, hub)
+	now := time.Now()
+	source := NewTokenSource(client, Request{
+		Owner: agentOwner(), ClusterID: "cluster-1",
+		OwnerRevision: OwnerRevision{Generation: 4, ResourceVersion: "rv-1"},
+	})
+	source.now = func() time.Time { return now }
+	first, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("initial Token: %v", err)
+	}
+	if err := source.UpdateOwnerRevision(OwnerRevision{Generation: 4, ResourceVersion: "rv-2"}); err != nil {
+		t.Fatalf("UpdateOwnerRevision: %v", err)
+	}
+	second, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("cached Token: %v", err)
+	}
+	if second.Token != first.Token || len(hub.posts) != 1 {
+		t.Fatalf("revision-only change reminted: token=%q posts=%d", second.Token, len(hub.posts))
+	}
+
+	now = source.refresh.Add(time.Second)
+	third, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("refreshed Token: %v", err)
+	}
+	if third.Token == first.Token || len(hub.posts) != 2 {
+		t.Fatalf("refresh did not mint once: token=%q posts=%d", third.Token, len(hub.posts))
+	}
+	if got := hub.posts[1]["expectedOwnerResourceVersion"]; got != "rv-2" {
+		t.Fatalf("refresh used owner resourceVersion %#v, want latest rv-2", got)
+	}
+}
+
+func TestTokenSourceRevisionUpgradeReplacesLegacyCachedToken(t *testing.T) {
+	hub := newFakeHub()
+	hub.ttl = 100 * time.Second
+	hub.ackOwnerRevision = true
+	source := NewTokenSource(testClient(t, hub), Request{Owner: agentOwner(), ClusterID: "cluster-1"})
+
+	first, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("initial legacy Token: %v", err)
+	}
+	if first.OwnerRevisionVerified {
+		t.Fatal("unversioned request unexpectedly had an owner-revision acknowledgement")
+	}
+	if err := source.UpdateOwnerRevision(OwnerRevision{Generation: 4, ResourceVersion: "rv-1"}); err != nil {
+		t.Fatalf("UpdateOwnerRevision: %v", err)
+	}
+
+	second, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("versioned Token: %v", err)
+	}
+	if second.Token == first.Token || !second.OwnerRevisionVerified {
+		t.Fatalf("versioned Token reused an unfenced token: first=%#v second=%#v", first, second)
+	}
+	if len(hub.posts) != 2 {
+		t.Fatalf("Ensure calls = %d, want 2", len(hub.posts))
+	}
+	if hub.posts[1]["expectedOwnerGeneration"] != float64(4) || hub.posts[1]["expectedOwnerResourceVersion"] != "rv-1" {
+		t.Fatalf("upgrade Ensure omitted owner revision: %#v", hub.posts[1])
+	}
+}
+
+func TestTokenSourceRevisionUpgradeRejectsGenerationChange(t *testing.T) {
+	source := NewTokenSource(testClient(t, newFakeHub()), Request{
+		Owner: agentOwner(), ClusterID: "cluster-1",
+		OwnerRevision: OwnerRevision{Generation: 4, ResourceVersion: "rv-1"},
+	})
+	if err := source.UpdateOwnerRevision(OwnerRevision{Generation: 5, ResourceVersion: "rv-2"}); err == nil {
+		t.Fatal("generation change unexpectedly updated an existing token source")
+	}
+	if err := source.UpdateOwnerRevision(OwnerRevision{Generation: 4, ResourceVersion: "rv-2"}); err != nil {
+		t.Fatalf("same-generation resourceVersion update: %v", err)
+	}
+}
+
+func TestTokenSourceDoesNotServeCachedTokenAfterStaleOwnerRefusal(t *testing.T) {
+	hub := newFakeHub()
+	hub.ttl = 100 * time.Second
+	hub.ackOwnerRevision = true
+	client := testClient(t, hub)
+	now := time.Now()
+	source := NewTokenSource(client, Request{
+		Owner: agentOwner(), ClusterID: "cluster-1",
+		OwnerRevision: OwnerRevision{Generation: 4, ResourceVersion: "rv-old"},
+	})
+	source.now = func() time.Time { return now }
+	first, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("initial Token: %v", err)
+	}
+	now = source.refresh.Add(time.Second)
+	hub.mu.Lock()
+	hub.status = http.StatusConflict
+	hub.body = `{"code":"stale_owner","message":"owner revision changed"}`
+	hub.mu.Unlock()
+	refused, err := source.Token(context.Background())
+	var hubErr *Error
+	if !errors.As(err, &hubErr) || hubErr.Code != ErrorCodeStaleOwner {
+		t.Fatalf("refresh error = %#v", err)
+	}
+	if refused != nil || first.Token == "" {
+		t.Fatalf("stale owner refusal returned a cached token: %#v", refused)
+	}
+}
+
+func TestTokenSourceDoesNotServeCachedTokenWhenHubLacksRevisionSupport(t *testing.T) {
+	hub := newFakeHub()
+	hub.ttl = 100 * time.Second
+	client := testClient(t, hub) // Legacy hub omits ownerRevisionVerified.
+	now := time.Now()
+	source := NewTokenSource(client, Request{Owner: agentOwner(), ClusterID: "cluster-1"})
+	source.now = func() time.Time { return now }
+	first, err := source.Token(context.Background())
+	if err != nil || first.Token == "" {
+		t.Fatalf("legacy initial token = %#v, %v", first, err)
+	}
+	if err := source.UpdateOwnerRevision(OwnerRevision{Generation: 4, ResourceVersion: "rv-4"}); err != nil {
+		t.Fatalf("UpdateOwnerRevision: %v", err)
+	}
+	refused, err := source.Token(context.Background())
+	var hubErr *Error
+	if !errors.As(err, &hubErr) || hubErr.Code != ErrorCodeUnsupportedOwnerRevision || !hubErr.Permanent() {
+		t.Fatalf("missing acknowledgement refresh error = %#v", err)
+	}
+	if refused != nil {
+		t.Fatalf("old hub silently returned cached token %#v", refused)
+	}
+	if len(hub.posts) != 2 {
+		t.Fatalf("Ensure calls = %d, want immediate versioned retry after cache invalidation", len(hub.posts))
 	}
 }
 
