@@ -62,6 +62,8 @@ type storedSession struct {
 	UserID       string    `json:"userID"`
 	Email        string    `json:"email,omitempty"`
 	Name         string    `json:"name,omitempty"`
+	AppExpiresAt time.Time `json:"appExpiresAt,omitempty"`
+	AppScope     string    `json:"appScope,omitempty"`
 	RBACIdentity string    `json:"rbacIdentity,omitempty"`
 	Issuer       string    `json:"issuer,omitempty"`
 	Subject      string    `json:"subject,omitempty"`
@@ -75,6 +77,8 @@ func (b *SessionBackend) Put(ctx context.Context, key string, record browsersess
 		UserID:       record.Identity.UserID,
 		Email:        record.Identity.Email,
 		Name:         record.Identity.Name,
+		AppScope:     record.Identity.AppScope,
+		AppExpiresAt: record.Identity.AppExpiresAt,
 		RBACIdentity: record.Identity.RBACIdentity,
 		Issuer:       record.Identity.Issuer,
 		Subject:      record.Identity.Subject,
@@ -106,6 +110,8 @@ func (b *SessionBackend) Get(ctx context.Context, key string) (browsersession.Re
 			UserID:       stored.UserID,
 			Email:        stored.Email,
 			Name:         stored.Name,
+			AppScope:     stored.AppScope,
+			AppExpiresAt: stored.AppExpiresAt,
 			RBACIdentity: stored.RBACIdentity,
 			Issuer:       stored.Issuer,
 			Subject:      stored.Subject,

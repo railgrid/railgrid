@@ -92,8 +92,7 @@ type Server struct {
 	projectIdentityTokenFor        func(context.Context, identity, *aiv1alpha1.Project) (string, error)
 	projectProviderReferenceReader func(context.Context, identity, *aiv1alpha1.Project, *aiv1alpha1.ProjectProviderResourceReference) (*unstructured.Unstructured, error)
 	// hubToken is the bearer this provider presents on the hub's OWN REST API
-	// — the provider catalog, the membership rosters, the browser-session
-	// handoff. Those are not data-plane verbs and are still reached on the
+	// — the provider catalog and the membership rosters. Those are not data-plane verbs and are still reached on the
 	// hub; a verb carries no caller credential to forward there, so they are
 	// made as the provider, with the kcp-authenticated caller's name as the
 	// X-Railgrid-User label. It is never presented to the workspace MCP

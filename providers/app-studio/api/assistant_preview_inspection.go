@@ -47,6 +47,7 @@ type projectAssistantPreviewInspector interface {
 }
 
 type projectAssistantPreviewInspectionRequest struct {
+	Project            *aiv1alpha1.Project                          `json:"-"`
 	URL                string                                       `json:"url"`
 	Assertions         []projectAssistantPreviewInspectionAssertion `json:"assertions,omitempty"`
 	IncludeScreenshot  bool                                         `json:"includeScreenshot,omitempty"`
@@ -272,6 +273,7 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		return projectAssistantPreviewInspectionResult{}, err
 	}
 	inspectionReq := projectAssistantPreviewInspectionRequest{
+		Project:            req.Project,
 		URL:                targetURL,
 		Assertions:         assertions,
 		IncludeScreenshot:  includeScreenshot,

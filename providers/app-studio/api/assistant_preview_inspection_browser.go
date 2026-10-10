@@ -18,6 +18,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -33,6 +34,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
 // Development-preview inspection now rides the shared, infrastructure-provisioned
@@ -54,7 +57,7 @@ const (
 	browserMCPToolSnapshot    = "browser_snapshot"
 	browserMCPToolConsole     = "browser_console_messages"
 	browserMCPToolScreenshot  = "browser_take_screenshot"
-	browserSessionHandoffPath = "/auth/session/handoff"
+	browserSessionHandoffPath = "/auth/apps/preview-handoff"
 	privateAppAuthorizePath   = "/auth/apps/authorize"
 	privateAppCallbackPath    = "/__railgrid/auth/callback"
 )
@@ -97,7 +100,7 @@ func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, r
 	}
 	defer session.closeWithReason("inspection_complete", "inspectPreviewViaBrowserMCP")
 	if req.RequiresHubSession {
-		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.URL); err != nil {
+		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.Project, req.URL); err != nil {
 			return projectAssistantPreviewInspectionResult{}, err
 		}
 	}
@@ -169,17 +172,15 @@ func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, r
 	return result, nil
 }
 
-// preparePrivatePreviewBrowserSession transfers the authenticated App Studio
-// caller into the fresh headless browser without exposing its bearer token to
-// Chromium. The private app gate supplies the authoritative public hub origin;
-// App Studio asks the hub for a one-minute, one-use handoff and navigates the
-// browser to redeem it before loading the app normally.
-func (s *Server) preparePrivatePreviewBrowserSession(ctx context.Context, session *browserMCPSession, id identity, targetURL string) error {
-	hubOrigin, err := s.privatePreviewHubOrigin(ctx, id, targetURL)
+// preparePrivatePreviewBrowserSession gives the browser a one-app session as
+// the Project identity. Neither the Project bearer nor a portal session reaches
+// the preview app; the ordinary gate still validates its state and app code.
+func (s *Server) preparePrivatePreviewBrowserSession(ctx context.Context, session *browserMCPSession, id identity, project *aiv1alpha1.Project, targetURL string) error {
+	authorization, err := s.privatePreviewAuthorization(ctx, id, targetURL)
 	if err != nil {
 		return err
 	}
-	handoffURL, err := s.browserSessionHandoffURL(ctx, id, hubOrigin)
+	handoffURL, err := s.browserSessionHandoffURL(ctx, id, project, authorization)
 	if err != nil {
 		return err
 	}
@@ -194,6 +195,13 @@ func (s *Server) preparePrivatePreviewBrowserSession(ctx context.Context, sessio
 }
 
 func (s *Server) privatePreviewHubOrigin(ctx context.Context, id identity, targetURL string) (*url.URL, error) {
+	if _, err := s.privatePreviewAuthorization(ctx, id, targetURL); err != nil {
+		return nil, err
+	}
+	return s.privatePreviewConfiguredHubOrigin()
+}
+
+func (s *Server) privatePreviewAuthorization(ctx context.Context, id identity, targetURL string) (*url.URL, error) {
 	target, err := url.Parse(strings.TrimSpace(targetURL))
 	if err != nil || target.Scheme != "https" || target.Host == "" {
 		return nil, errors.New("private preview URL is invalid")
@@ -235,7 +243,7 @@ func (s *Server) privatePreviewHubOrigin(ctx context.Context, id identity, targe
 	if strings.TrimSpace(query.Get("cluster")) != strings.TrimSpace(id.clusterID) {
 		return nil, errors.New("private preview authorization targeted a different workspace")
 	}
-	return trustedOrigin, nil
+	return location, nil
 }
 
 // errPrivatePreviewHubOriginUnconfigured is a deployment configuration
@@ -257,21 +265,35 @@ func (s *Server) privatePreviewConfiguredHubOrigin() (*url.URL, error) {
 	return &url.URL{Scheme: "https", Host: configured.Host}, nil
 }
 
-func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, hubOrigin *url.URL) (string, error) {
+func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, project *aiv1alpha1.Project, authorization *url.URL) (string, error) {
 	configuredOrigin, err := s.privatePreviewConfiguredHubOrigin()
 	if err != nil {
 		return "", err
 	}
-	if hubOrigin == nil || hubOrigin.User != nil || hubOrigin.Path != "" || hubOrigin.RawQuery != "" || hubOrigin.ForceQuery || hubOrigin.Fragment != "" || hubOrigin.Opaque != "" || !strings.EqualFold(hubOrigin.Scheme, configuredOrigin.Scheme) || !strings.EqualFold(hubOrigin.Host, configuredOrigin.Host) {
+	if authorization == nil || authorization.User != nil || authorization.Path != privateAppAuthorizePath || authorization.Fragment != "" || authorization.Opaque != "" || !strings.EqualFold(authorization.Scheme, configuredOrigin.Scheme) || !strings.EqualFold(authorization.Host, configuredOrigin.Host) {
 		return "", errors.New("public hub origin does not match RAILGRID_HUB_PUBLIC_URL")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.hubBase, "/")+browserSessionHandoffPath, nil)
+	query := authorization.Query()
+	if query.Get("cluster") != id.clusterID || query.Get("group") != "infrastructure.railgrid.ai" || query.Get("resource") != "instances" || query.Get("name") == "" {
+		return "", errors.New("invalid private preview authorization target")
+	}
+	token, err := s.projectIdentityToken(ctx, id, project)
+	if err != nil {
+		return "", fmt.Errorf("resolve preview Project identity: %w", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("preview Project identity is unavailable")
+	}
+	body, err := json.Marshal(map[string]string{"cluster": id.clusterID, "group": query.Get("group"), "resource": query.Get("resource"), "name": query.Get("name")})
 	if err != nil {
 		return "", err
 	}
-	// A hub REST call, made as the provider (there is no caller bearer on a
-	// verb); the caller's name travels as a label.
-	s.setHubCallerHeaders(req.Header, id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.hubBase, "/")+browserSessionHandoffPath, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.hubHTTPClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("mint browser session handoff: %w", err)
@@ -294,7 +316,7 @@ func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, hubO
 	if err != nil || reference.IsAbs() || reference.Host != "" || reference.Path != browserSessionHandoffPath || strings.TrimSpace(reference.Query().Get("code")) == "" || reference.Fragment != "" {
 		return "", errors.New("mint browser session handoff: invalid path")
 	}
-	return hubOrigin.ResolveReference(reference).String(), nil
+	return configuredOrigin.ResolveReference(reference).String(), nil
 }
 
 // browserMCPSession is one initialized Playwright MCP session over the
