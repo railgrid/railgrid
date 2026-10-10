@@ -31,7 +31,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1050,10 +1049,5 @@ func projectObservedRedeployRevision(instance *unstructured.Unstructured) string
 }
 
 func writeProjectPromoteError(w http.ResponseWriter, err error) {
-	var validationErr *ValidationError
-	if errors.As(err, &validationErr) {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+	writeUpstreamError(w, err)
 }

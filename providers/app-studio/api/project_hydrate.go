@@ -220,12 +220,7 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	}
 	resp, err := s.hydrateWorkspaceFromRepository(r.Context(), id, p, req.Ref)
 	if err != nil {
-		var validationErr *ValidationError
-		if errors.As(err, &validationErr) {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-			return
-		}
-		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+		writeUpstreamError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
