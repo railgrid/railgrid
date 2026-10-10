@@ -636,6 +636,10 @@ func projectAssistantMutationRecoveryGuidance(operation, code string) string {
 		return "The move destination already exists. Read the current workspace and choose a different destination; do not overwrite it implicitly."
 	case (operation == projectToolReplaceFile || operation == projectToolEditFile) && code == string(workspace.MutationErrorStale):
 		return "The source is stale. Read the complete current file, then retry with its current expectedVersion; edit_file also needs an exact current oldString."
+	case operation == projectToolEditFile && code == string(workspace.MutationErrorInvalidEditText):
+		return "The edit contains control characters absent from the file. Copy oldString exactly from read_file content, using literal source characters such as < and >. Do not insert control characters or double-escape JSON. This edit changed no files."
+	case operation == projectToolEditFile && code == string(workspace.MutationErrorTextNotFound):
+		return "oldString did not match the file. Read the relevant source and copy a unique exact substring, including whitespace and punctuation; do not include search line numbers. Retry with that oldString. This edit changed no files."
 	case (operation == projectToolDeleteFile || operation == projectToolMoveFile) && code == string(workspace.MutationErrorTargetNotFound):
 		return "The source file is missing. Re-read the workspace and retry only with an existing source path."
 	case operation == projectToolEditFile && code == string(workspace.MutationErrorAmbiguous):
@@ -1144,6 +1148,10 @@ func projectAssistantMutationDiagnosticMessage(operation, code string) string {
 		return "The move destination already exists."
 	case (operation == projectToolReplaceFile || operation == projectToolEditFile) && code == string(workspace.MutationErrorStale):
 		return "The file changed before this update was applied."
+	case operation == projectToolEditFile && code == string(workspace.MutationErrorInvalidEditText):
+		return "The edit contained unexpected characters. This edit changed no files."
+	case operation == projectToolEditFile && code == string(workspace.MutationErrorTextNotFound):
+		return "The text to replace did not match the file. This edit changed no files."
 	case (operation == projectToolDeleteFile || operation == projectToolMoveFile) && code == string(workspace.MutationErrorTargetNotFound):
 		return "The source file no longer exists."
 	case operation == projectToolEditFile && code == string(workspace.MutationErrorAmbiguous):
@@ -1171,6 +1179,8 @@ func projectAssistantMutationErrorCode(raw string) string {
 		workspace.MutationErrorTargetNotFound,
 		workspace.MutationErrorVersionRequired,
 		workspace.MutationErrorStale,
+		workspace.MutationErrorTextNotFound,
+		workspace.MutationErrorInvalidEditText,
 		workspace.MutationErrorAmbiguous,
 		workspace.MutationErrorNoChanges,
 		workspace.MutationErrorConflict,
@@ -1204,6 +1214,10 @@ func projectAssistantActionDiagnosticMessage(category, raw string) string {
 	value := strings.ToLower(raw)
 	if category == "validation" {
 		switch {
+		case strings.Contains(value, string(workspace.MutationErrorInvalidEditText)):
+			return projectAssistantMutationDiagnosticMessage(projectToolEditFile, string(workspace.MutationErrorInvalidEditText))
+		case strings.Contains(value, string(workspace.MutationErrorTextNotFound)):
+			return projectAssistantMutationDiagnosticMessage(projectToolEditFile, string(workspace.MutationErrorTextNotFound))
 		case strings.Contains(value, string(workspace.MutationErrorStale)):
 			return "The file changed or the requested source text was not present. App Studio will reread it before retrying."
 		case strings.Contains(value, string(workspace.MutationErrorAmbiguous)):
@@ -1245,6 +1259,7 @@ func projectAssistantActionDiagnosticCategory(raw string) string {
 	case strings.Contains(value, "validation"), strings.Contains(value, "invalid"), strings.Contains(value, "malformed"),
 		strings.Contains(value, "required"), strings.Contains(value, "repository binding"),
 		strings.Contains(value, string(workspace.MutationErrorStale)),
+		strings.Contains(value, string(workspace.MutationErrorTextNotFound)),
 		strings.Contains(value, string(workspace.MutationErrorAmbiguous)),
 		strings.Contains(value, string(workspace.MutationErrorTargetExists)),
 		strings.Contains(value, string(workspace.MutationErrorTargetNotFound)),

@@ -600,6 +600,9 @@ func projectEinoAssistantSafeToolFailureResult(toolName string, err error) strin
 	recovery := ""
 	lowerReason := strings.ToLower(safeReason)
 	switch {
+	case projectToolBaseName(toolName) == projectToolEditFile &&
+		(strings.Contains(lowerReason, string(workspace.MutationErrorInvalidEditText)) || strings.Contains(lowerReason, string(workspace.MutationErrorTextNotFound))):
+		recovery = " Recovery: " + projectAssistantMutationRecoveryGuidance(projectToolEditFile, projectAssistantMutationErrorCode(safeReason))
 	case projectAssistantWorkspaceMutationTool(toolName) && strings.Contains(lowerReason, string(workspace.MutationErrorStale)):
 		recovery = " Recovery: reread the current file and retry edit_file with an exact current oldString."
 	case projectAssistantWorkspaceMutationTool(toolName) && strings.Contains(lowerReason, string(workspace.MutationErrorAmbiguous)):
