@@ -88,6 +88,7 @@ type fakeSkipAgent struct {
 	mu        sync.Mutex
 	encodings map[string][]string
 	received  map[string][]projectSandboxSyncFile
+	onProcess func(component string)
 }
 
 func (a *fakeSkipAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +104,9 @@ func (a *fakeSkipAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	verb := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 	switch {
 	case r.Method == http.MethodGet && verb == "process":
+		if a.onProcess != nil {
+			a.onProcess(component)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"running": true, "syncEncodings": a.encodings[component]})
 	case r.Method == http.MethodPost && verb == "sync":
 		var req projectSandboxSyncRequest
@@ -118,6 +122,66 @@ func (a *fakeSkipAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"phase": "Synced", "changed": changed, "restarted": true, "sourceRevision": req.SourceRevision})
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func TestSyncProjectDevelopmentTargetRetriesMutationDuringUnsupportedBinaryProbe(t *testing.T) {
+	ctx := context.Background()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	project := &aiv1alpha1.Project{}
+	project.Name, project.UID = "demo", "uid"
+	id := identity{clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a"}
+	scope := projectWorkspaceScope(id, project)
+	for _, file := range []workspace.PutOptions{
+		{Path: "web/index.html", Data: []byte("<html>old</html>")},
+		{Path: "web/public/logo.png", Data: testPNG(64)},
+	} {
+		if _, err := workspaces.PutFile(ctx, scope, file); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mutationErr error
+	var mutateOnce sync.Once
+	agent := &fakeSkipAgent{
+		encodings: map[string][]string{"web": {"utf-8"}},
+		received:  map[string][]projectSandboxSyncFile{},
+	}
+	agent.onProcess = func(component string) {
+		if component != "web" {
+			return
+		}
+		mutateOnce.Do(func() {
+			_, mutationErr = workspaces.PutFile(ctx, scope, workspace.PutOptions{Path: "web/index.html", Data: []byte("<html>new</html>")})
+		})
+	}
+	hub := httptest.NewServer(agent)
+	defer hub.Close()
+
+	instance := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
+		"kind":       "Instance",
+		"metadata":   map[string]any{"name": "demo-dev"},
+	}}
+	client := asclient.NewFromDynamic(publishingTestDynamic(instance))
+	target := projectDevelopmentSyncTargetInfo{
+		ResourceName: "demo-dev",
+		Resource:     "instances",
+		Kind:         "Instance",
+		APIVersion:   "infrastructure.railgrid.ai/v1alpha1",
+		Components:   map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}},
+	}
+	server := &Server{
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: hub.URL, callers: newTestCallers(nil, hub.URL), workspaces: workspaces,
+	}
+	if _, err := server.syncProjectDevelopmentTarget(ctx, client, id, project, target); err != nil {
+		t.Fatalf("syncProjectDevelopmentTarget: %v", err)
+	}
+	if mutationErr != nil {
+		t.Fatalf("mutate workspace during component status probe: %v", mutationErr)
+	}
+	if got := agent.received["web"]; len(got) != 1 || got[0].Path != "index.html" || got[0].Content != "<html>new</html>" {
+		t.Fatalf("unsupported-binary sync sent stale files: %+v", got)
 	}
 }
 

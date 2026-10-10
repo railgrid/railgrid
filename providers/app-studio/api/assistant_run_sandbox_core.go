@@ -154,9 +154,16 @@ func (b *projectAssistantRunSandbox) mutate(ctx context.Context, request project
 
 func (b *projectAssistantRunSandbox) exec(ctx context.Context, ref dataPlaneRef, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 	if b == nil || b.client == nil {
-		return projectSandboxExecResponse{}, errors.New("assistant sandbox client is not configured")
+		err := errors.New("assistant sandbox client is not configured")
+		if strings.EqualFold(strings.TrimSpace(request.Action), "start") {
+			err = projectAssistantExecStartNotDispatched(err)
+		}
+		return projectSandboxExecResponse{}, err
 	}
 	if err := b.touch(); err != nil {
+		if strings.EqualFold(strings.TrimSpace(request.Action), "start") {
+			err = projectAssistantExecStartNotDispatched(err)
+		}
 		return projectSandboxExecResponse{}, err
 	}
 	meta := b.metadataSnapshot()
