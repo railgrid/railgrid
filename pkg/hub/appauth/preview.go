@@ -131,7 +131,7 @@ func (h *Handler) HandlePreviewHandoff(w http.ResponseWriter, r *http.Request) {
 			h.rejectBearer(w, source)
 			return
 		}
-		// Transient TokenReview, configuration, and request-context failures are
+		// Transient TokenReview API, configuration, and request-context failures are
 		// not evidence that the caller supplied a bad credential. Preserve the
 		// retryable dependency-failure response without spending their budget.
 		http.Error(w, "preview identity service unavailable", http.StatusServiceUnavailable)
