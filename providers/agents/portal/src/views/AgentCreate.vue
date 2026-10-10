@@ -63,6 +63,7 @@ const harnessEdge = ref(initialDraft.harnessEdge)
 const harnessCredential = ref(initialDraft.harnessCredential)
 const harnessModel = ref(initialDraft.harnessModel)
 const harnessWorkspace = ref<HarnessWorkspace>(initialDraft.harnessWorkspace)
+const harnessGitHubConnection = ref(initialDraft.harnessGitHubConnection)
 const systemPrompt = ref(initialDraft.systemPrompt)
 const channel = ref(initialDraft.channel)
 const web = ref(initialDraft.web)
@@ -114,6 +115,11 @@ const selectedHarness = computed(() => harnessLabel(
   harnessCredentials.value.find(credential => credential.name === harnessCredential.value)?.provider,
 ))
 const channels = computed(() => { revision.value; return props.store.channelConnections() })
+const githubConnections = computed(() => { revision.value; return props.store.githubConnections() })
+const githubConnectionOptions = computed(() => [
+  { value: '', label: '— none —' },
+  ...githubConnections.value.map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
+])
 const credentialOptions = computed(() => chatCredentials.value.map(item => ({
   value: item.name,
   label: `${item.name}${item.model ? ` (${item.model})` : ''}`,
@@ -200,6 +206,7 @@ function addCredential(family: AgentCredentialFamily): void {
       harnessCredential: harnessCredential.value,
       harnessModel: harnessModel.value,
       harnessWorkspace: harnessWorkspace.value,
+      harnessGitHubConnection: harnessGitHubConnection.value,
       systemPrompt: systemPrompt.value,
       channel: channel.value,
       web: web.value,
@@ -250,6 +257,7 @@ async function submit(): Promise<void> {
       credentialRef: harnessCredential.value,
       ...(harnessModel.value.trim() ? { model: harnessModel.value.trim() } : {}),
       workspace: harnessWorkspace.value,
+      ...(harnessGitHubConnection.value ? { githubConnectionRef: harnessGitHubConnection.value } : {}),
     }
   } else {
     body.modelCredential = modelCredential.value
@@ -429,6 +437,12 @@ async function submit(): Promise<void> {
                 <label>
                   <span id="agent-create-workspace-label">Working directory</span>
                   <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" :disabled="busy" labelledby="agent-create-workspace-label" />
+                </label>
+
+                <label>
+                  <span id="agent-create-github-label">GitHub connection</span>
+                  <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="githubConnectionOptions" :disabled="busy" labelledby="agent-create-github-label" describedby="agent-create-github-hint" />
+                  <span id="agent-create-github-hint" class="agents-hint">Optional — its token reaches the harness as GH_TOKEN for each turn, never the machine, so `gh` can read and review pull requests.</span>
                 </label>
               </template>
             </template>

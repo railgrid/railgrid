@@ -174,6 +174,20 @@ type HarnessCredential struct {
 	// Value is the credential itself. It is never logged, never written to
 	// disk by the runner, and never placed on a command line.
 	Value string `json:"value"`
+	// Environment is what else the identity brings: further credentials the
+	// turn runs with, exported into the harness child's environment under the
+	// names given — a GitHub token as GH_TOKEN is the case this exists for. It
+	// is dispatch data like Value: stripped with it, held in memory for the
+	// attempt, and sent again on every resume. The runner refuses a name an
+	// adapter sets itself (HOME, PATH, the harness's own variables, git's
+	// configuration and transport), so nothing here can redirect the harness.
+	Environment []EnvironmentVariable `json:"environment,omitempty"`
+}
+
+// EnvironmentVariable is one name=value an identity brings to a launch.
+type EnvironmentVariable struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // StartRequest is the approved execution envelope accepted by Start.

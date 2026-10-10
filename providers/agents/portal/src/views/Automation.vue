@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Pause, Play, Plus } from 'lucide-vue-next'
+import { Check, Copy, Pause, Play, Plus } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { hashFor, type Route } from '../router'
@@ -46,6 +46,7 @@ interface Draft {
   timeZone: string
   source: string
   connectionRef: string
+  filter: string
   task: string
   channelRef: string
   suspend: boolean
@@ -80,6 +81,7 @@ const EMPTY: Draft = {
   timeZone: '',
   source: 'webhook',
   connectionRef: '',
+  filter: '',
   task: '',
   channelRef: '',
   suspend: false,
@@ -101,6 +103,8 @@ const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.s
 const editing = ref<string | null>(null)
 const draft = reactive<Draft>({ ...EMPTY })
 const nameError = ref('')
+const filterError = ref('')
+const copied = ref(false)
 const formBusy = ref(false)
 const actionBusy = ref('')
 
@@ -153,6 +157,58 @@ const channelOptions = computed(() => [
   { value: '', label: '— primary channel —' },
   ...channels.value.map(channel => ({ value: channel.name, label: `${channel.name}${channel.primary ? ' (primary)' : ''}` })),
 ])
+const wantsWebhook = computed(() => props.kind === 'trigger' && (draft.source === 'webhook' || draft.source === 'github'))
+// The inbound URL is status.webhookPath (minted by the trigger reconciler,
+// token included) on the hub the portal is served from — the same origin the
+// Connections view hands the provider as publicBaseURL.
+const webhookURL = computed(() => currentEdit.value ? webhookURLFor(currentEdit.value) : '')
+
+function webhookURLFor(row: Automation): string {
+  const path = automationStatus(row)?.webhookPath
+  return path && props.kind === 'trigger' ? `${location.origin}${path}` : ''
+}
+
+// spec.filter is edited as one key=value per line: the map is small, the keys
+// are a fixed vocabulary (eventType, match, header.<name>) and a table editor
+// would be heavier than the thing it edits.
+function filterToText(filter: Record<string, string> | undefined): string {
+  return Object.entries(filter ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
+}
+
+function parseFilterText(input: string): { filter: Record<string, string>; error: string } {
+  const filter: Record<string, string> = {}
+  for (const raw of input.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    const at = line.indexOf('=')
+    const key = at > 0 ? line.slice(0, at).trim() : ''
+    const value = at > 0 ? line.slice(at + 1).trim() : ''
+    if (!key || !value) return { filter, error: `Each filter line is key=value — “${line}” is not.` }
+    filter[key] = value
+  }
+  return { filter, error: '' }
+}
+
+// filterPatch is the merge-patch fragment that turns `before` into `after`:
+// changed and added keys carry their value, removed keys carry null, and an
+// unchanged map yields undefined so the save does not touch spec.filter.
+function filterPatch(before: Record<string, string> | undefined, after: Record<string, string>): Record<string, string | null> | undefined {
+  const out: Record<string, string | null> = {}
+  for (const [key, value] of Object.entries(after)) if (before?.[key] !== value) out[key] = value
+  for (const key of Object.keys(before ?? {})) if (!(key in after)) out[key] = null
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+async function copyWebhookURL(url: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(url)
+    copied.value = true
+    toast('ok', 'Webhook URL copied.')
+  } catch {
+    copied.value = false
+    toast('error', 'Could not copy. Check clipboard permission and try again.')
+  }
+}
 
 function automationSpec(row: Automation): Schedule['spec'] & Trigger['spec'] {
   return row.spec as Schedule['spec'] & Trigger['spec']
@@ -199,11 +255,14 @@ function hydrateEdit(row: Automation): void {
     timeZone: spec.timeZone || '',
     source: spec.source || 'webhook',
     connectionRef: spec.connectionRef || '',
+    filter: filterToText(spec.filter),
     task: spec.task || spec.checklist || '',
     channelRef: spec.channelRef || '',
     suspend: !!spec.suspend,
   })
   nameError.value = ''
+  filterError.value = ''
+  copied.value = false
   editing.value = row.metadata.name
 }
 
@@ -224,13 +283,16 @@ function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
     else body.schedule = draft.schedule
     return body
   }
-  return {
+  const body: TriggerPatch = {
     source: draft.source || 'webhook',
     connectionRef: draft.connectionRef,
     task: draft.task,
     suspend: draft.suspend,
     channelRef: draft.channelRef,
   }
+  const filter = filterPatch(currentEdit.value ? automationSpec(currentEdit.value).filter : undefined, parseFilterText(draft.filter).filter)
+  if (filter) body.filter = filter
+  return body
 }
 
 async function save(): Promise<void> {
@@ -240,11 +302,18 @@ async function save(): Promise<void> {
   const agent = props.agent
   const editingName = editing.value
   const one = META[kind].one
-  const bodyPatch = patch(kind)
   if (!editingName && !draft.name.trim()) {
     nameError.value = 'A name is required.'
     return
   }
+  if (kind === 'trigger') {
+    const parsed = parseFilterText(draft.filter)
+    if (parsed.error) {
+      filterError.value = parsed.error
+      return
+    }
+  }
+  const bodyPatch = patch(kind)
   formBusy.value = true
   try {
     const name = draft.name.trim()
@@ -339,6 +408,8 @@ async function runNow(name: string): Promise<void> {
 watch(() => [props.kind, props.agent] as const, () => {
   editing.value = null
   nameError.value = ''
+  filterError.value = ''
+  copied.value = false
   formBusy.value = false
   actionBusy.value = ''
   resetDraft()
@@ -353,6 +424,8 @@ watch([() => props.createRoute, () => props.editName, () => revision.value], () 
 		if (editing.value !== '') {
 			resetDraft()
 			nameError.value = ''
+			filterError.value = ''
+			copied.value = false
 			editing.value = ''
 		}
 		return
@@ -396,6 +469,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           </span>
         </template>
         <template #actions="{ row }">
+          <ResourceTableActionButton v-if="webhookURLFor(row.resource as Automation)" :icon="Copy" :label="`Copy webhook URL for ${row.name}`" :disabled="!!actionBusy" @click="copyWebhookURL(webhookURLFor(row.resource as Automation))" />
           <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
           <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
           <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />
@@ -436,10 +510,26 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           <label v-if="draft.type === 'wakeup'">Run at (RFC3339)<input v-model="draft.runAt" class="k-input mono" name="runAt" placeholder="2026-01-01T09:00:00Z" :disabled="formBusy" /></label>
           <label v-else>Cron<input v-model="draft.schedule" class="k-input mono" name="schedule" aria-label="Cron" :aria-describedby="`automation-${kind}-cron-hint`" placeholder="0 9 * * *" :disabled="formBusy" /><span :id="`automation-${kind}-cron-hint`" class="agents-hint">5-field cron · crontab.guru</span></label>
         </template>
-        <div v-else class="agents-grid2">
-          <label><span :id="`automation-${kind}-source-label`">Source</span><FormSelect v-model="draft.source" :options="sourceOptions" :disabled="formBusy" :labelledby="`automation-${kind}-source-label`" /></label>
-          <label><span :id="`automation-${kind}-connection-label`">Connection</span><FormSelect v-model="draft.connectionRef" :options="connectionOptions" :disabled="formBusy" :labelledby="`automation-${kind}-connection-label`" /></label>
-        </div>
+        <template v-else>
+          <div class="agents-grid2">
+            <label><span :id="`automation-${kind}-source-label`">Source</span><FormSelect v-model="draft.source" :options="sourceOptions" :disabled="formBusy" :labelledby="`automation-${kind}-source-label`" :describedby="`automation-${kind}-source-hint`" /><span :id="`automation-${kind}-source-hint`" class="agents-hint">{{ draft.source === 'github' ? 'GitHub delivers to the webhook URL below; filter on the X-GitHub-Event name.' : 'Any sender that can POST JSON to the webhook URL below.' }}</span></label>
+            <label><span :id="`automation-${kind}-connection-label`">Connection</span><FormSelect v-model="draft.connectionRef" :options="connectionOptions" :disabled="formBusy" :labelledby="`automation-${kind}-connection-label`" /></label>
+          </div>
+          <label>Filter<textarea v-model="draft.filter" class="k-input mono" name="filter" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="eventType=pull_request" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">One key=value per line. eventType matches the event header (X-GitHub-Event), match is a substring of the payload, header.&lt;name&gt; matches a request header. Empty fires on every delivery.</span></label>
+          <section v-if="editing && webhookURL" class="k-card agents-secret-handoff agents-webhook-url" aria-label="Webhook URL">
+            <div>
+              <strong>Webhook URL</strong>
+              <code data-testid="automation-webhook-url">{{ webhookURL }}</code>
+              <span class="agents-hint">{{ draft.source === 'github' ? 'Paste as the Payload URL under the repository’s Settings → Webhooks, content type application/json. ' : 'POST JSON deliveries here. ' }}The URL embeds this trigger’s secret token; treat it like a password.</span>
+            </div>
+            <div class="agents-secret-handoff-actions">
+              <button type="button" class="k-btn k-btn--ghost" :disabled="formBusy" @click="copyWebhookURL(webhookURL)"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>
+            </div>
+            <span class="sr-only" role="status" aria-live="polite">{{ copied ? 'Webhook URL copied.' : '' }}</span>
+          </section>
+          <p v-else-if="editing && wantsWebhook" class="agents-hint" role="status">The webhook URL has not been minted yet — the provider stamps it shortly after the trigger is created. Reload to pick it up.</p>
+          <p v-else-if="!editing && wantsWebhook" class="agents-hint">The inbound webhook URL appears here, and on the trigger row, once the trigger is created.</p>
+        </template>
         <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" name="task" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" :describedby="`automation-${kind}-channel-hint`" /><span :id="`automation-${kind}-channel-hint`" class="agents-hint">Where output is delivered</span></label>
         <label class="agents-check k-checkbox-hit"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>

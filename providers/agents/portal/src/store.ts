@@ -155,6 +155,11 @@ export class AppStore extends EventTarget {
   channelConnections(): Connection[] {
     return this.connections.data.filter((c) => CONN_CATEGORY[c.spec.type] === 'channel')
   }
+  // GitHub connections a harness-backed agent can run with: its token is
+  // exported into the harness child as GH_TOKEN for the length of a turn.
+  githubConnections(): Connection[] {
+    return this.connections.data.filter((c) => c.spec.type === 'github')
+  }
   // Chat endpoints an in-process model backend can call, and harness identities
   // an edge harness runs as. They are not variants of each other: the API
   // rejects one where the other belongs, so each picker offers only its own.

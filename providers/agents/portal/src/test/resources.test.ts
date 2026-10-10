@@ -208,6 +208,21 @@ describe('agents', () => {
     expect(kcp.calls.filter((c) => c.method === 'POST')).toHaveLength(0)
   })
 
+  it('passes the harness GitHub connection through and drops a blank one', async () => {
+    await resources.createAgent({
+      name: 'reviewer',
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', githubConnectionRef: ' gh-main ' },
+    })
+    const spec = (kcp.lastOf('POST').body as { spec: { backend: { harness: Record<string, unknown> } } }).spec
+    expect(spec.backend.harness.githubConnectionRef).toBe('gh-main')
+    await resources.patchAgent('reviewer', {
+      backendType: 'harness',
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', githubConnectionRef: '' },
+    })
+    expect(JSON.stringify(kcp.lastOf('PATCH').body)).not.toContain('githubConnectionRef')
+  })
+
   it('patches the chat credential under spec.backend.model without touching the type', async () => {
     // The model section owns its own fields and nothing else: naming the type
     // here would let it clobber a choice the backend section owns.
@@ -226,6 +241,9 @@ describe('agents', () => {
       backendType: 'harness',
       harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex' },
     })
+    // Tool grants and delegates go with the model block: the provider refuses
+    // a harness agent that still carries them, so a switch that kept a
+    // model-era grant would leave an agent no run can start.
     expect(kcp.lastOf('PATCH').body).toEqual({
       spec: {
         backend: {
@@ -233,6 +251,8 @@ describe('agents', () => {
           harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex' },
           model: null,
         },
+        tools: null,
+        delegates: null,
       },
     })
 
@@ -355,6 +375,20 @@ describe('schedules and triggers', () => {
 
   it('refuses a trigger source the provider cannot deliver', async () => {
     await expect(resources.createTrigger({ name: 't', agentRef: 'a', source: 'email' })).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('writes a trimmed spec.filter on create and omits an empty one', async () => {
+    await resources.createTrigger({ name: 't', agentRef: 'a', source: 'github', filter: { eventType: ' pull_request ', match: '', stale: null } })
+    expect((kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec.filter).toEqual({ eventType: 'pull_request' })
+    await resources.createTrigger({ name: 't', agentRef: 'a', source: 'github', filter: {} })
+    expect(JSON.stringify(kcp.lastOf('POST').body)).not.toContain('filter')
+  })
+
+  it('patches spec.filter as a merge fragment where null removes a key', async () => {
+    await resources.patchTrigger('t', { filter: { eventType: 'pull_request', match: null } })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { filter: { eventType: 'pull_request', match: null } } })
+    await resources.patchTrigger('t', { task: 'x', filter: {} })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { task: 'x' } })
   })
 
   it('never writes a webhook path, because the token is the provider’s to mint', async () => {

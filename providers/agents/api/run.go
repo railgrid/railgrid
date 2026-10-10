@@ -186,9 +186,13 @@ type runCheckpoint struct {
 	HarnessRunner *harnessCancelTarget `json:"harnessRunner,omitempty"`
 	Tool          string               `json:"tool"`
 	Args          string               `json:"args"`
-	InboxID       string               `json:"inboxID"`
-	SourceName    string               `json:"sourceName,omitempty"`
-	NotifyChannel string               `json:"notifyChannel,omitempty"`
+	// Question is what the turn asked when the park is a question rather than
+	// a gated call (Tool empty). Without it the run detail could say only that
+	// the agent is waiting, not what for.
+	Question      string `json:"question,omitempty"`
+	InboxID       string `json:"inboxID"`
+	SourceName    string `json:"sourceName,omitempty"`
+	NotifyChannel string `json:"notifyChannel,omitempty"`
 	// Worker carries a spawned sub-task's constraints (its narrowed families,
 	// approval class and tool-turn budget) so a resumed worker is rebuilt as the
 	// worker it was rather than as a top-level run of its agent.
@@ -882,7 +886,7 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 	}
 	requestID := out.Parked.RequestID
 	ck := runCheckpoint{
-		Tool: out.Parked.Tool, Args: out.Parked.Args,
+		Tool: out.Parked.Tool, Args: out.Parked.Args, Question: out.Parked.Question,
 		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
 		WorkedDurationMS: tracker.durationMS(),
 	}

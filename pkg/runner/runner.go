@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -1537,7 +1538,78 @@ func harnessCredentialOf(value *HarnessCredential) (harness.Credential, error) {
 	if kind != harness.CredentialCodexAuth && strings.ContainsAny(raw, "\r\n") {
 		return harness.Credential{}, errors.New("harnessCredential value contains invalid whitespace")
 	}
-	return harness.Credential{Kind: kind, Value: raw}, nil
+	environment, err := credentialEnvironmentOf(value.Environment)
+	if err != nil {
+		return harness.Credential{}, err
+	}
+	return harness.Credential{Kind: kind, Value: raw, Environment: environment}, nil
+}
+
+// maxCredentialEnvironment bounds how many variables an identity may bring.
+const maxCredentialEnvironment = 8
+
+// credentialEnvironmentPattern is the shape of a variable name an identity may
+// bring: upper-case, the way every credential the harnesses read is spelled.
+var credentialEnvironmentPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// credentialEnvironmentOf validates the variables an identity brings.
+//
+// The names an adapter sets itself are refused rather than overridden: HOME and
+// the harness's own configuration decide WHERE the child runs and WHAT it
+// authenticates to a model with, git's variables decide what code runs through
+// hooks and transport, and the loader's decide what code runs at all. A caller
+// that could set any of them would be configuring the machine, not bringing a
+// credential. Everything else is the caller's to name.
+func credentialEnvironmentOf(variables []EnvironmentVariable) ([]harness.EnvironmentVariable, error) {
+	if len(variables) == 0 {
+		return nil, nil
+	}
+	if len(variables) > maxCredentialEnvironment {
+		return nil, fmt.Errorf("harnessCredential environment has %d variables, more than %d", len(variables), maxCredentialEnvironment)
+	}
+	out := make([]harness.EnvironmentVariable, 0, len(variables))
+	seen := make(map[string]struct{}, len(variables))
+	for _, variable := range variables {
+		name := strings.TrimSpace(variable.Name)
+		if !credentialEnvironmentPattern.MatchString(name) {
+			return nil, fmt.Errorf("harnessCredential environment name %q is not an upper-case variable name", variable.Name)
+		}
+		if reservedCredentialEnvironment(name) {
+			return nil, fmt.Errorf("harnessCredential environment name %q is set by the runner and cannot be brought by a credential", name)
+		}
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("harnessCredential environment names %q twice", name)
+		}
+		seen[name] = struct{}{}
+		if variable.Value == "" {
+			return nil, fmt.Errorf("harnessCredential environment %s is empty", name)
+		}
+		if len(variable.Value) > maxHarnessCredentialBytes {
+			return nil, fmt.Errorf("harnessCredential environment %s is oversized", name)
+		}
+		if strings.ContainsAny(variable.Value, "\r\n\x00") {
+			return nil, fmt.Errorf("harnessCredential environment %s contains invalid whitespace", name)
+		}
+		out = append(out, harness.EnvironmentVariable{Name: name, Value: variable.Value})
+	}
+	return out, nil
+}
+
+// reservedCredentialEnvironment names the variables no identity may bring,
+// because the runner or an adapter sets them to isolate the child.
+func reservedCredentialEnvironment(name string) bool {
+	switch name {
+	case "HOME", "PATH", "USER", "LOGNAME", "SHELL", "TMPDIR", "PWD", "OLDPWD",
+		"GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "GIT_DIR", "GIT_WORK_TREE", "GIT_EXEC_PATH",
+		"SSH_AUTH_SOCK", "SSH_AGENT_PID", "OPENAI_API_KEY", "CODEX_API_KEY":
+		return true
+	}
+	for _, prefix := range []string{"CLAUDE_", "ANTHROPIC_", "CODEX_", "XDG_", "DISABLE_", "GIT_CONFIG_", "LD_", "DYLD_", "RAILGRID_"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func nonEmptyJSON(raw json.RawMessage) bool {

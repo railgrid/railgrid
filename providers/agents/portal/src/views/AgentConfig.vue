@@ -97,6 +97,7 @@ interface BackendSnapshot {
   credentialRef: string
   model: string
   workspace: HarnessWorkspace
+  githubConnectionRef: string
 }
 
 interface PolicySnapshot {
@@ -137,6 +138,7 @@ const harnessEdge = ref('')
 const harnessCredential = ref('')
 const harnessModel = ref('')
 const harnessWorkspace = ref<HarnessWorkspace>('persistent')
+const harnessGitHubConnection = ref('')
 const harnessError = ref('')
 const autonomy = ref<Autonomy>('ask')
 const budgetUSD = ref('')
@@ -318,6 +320,7 @@ function backendSnapshot(source: Agent): BackendSnapshot {
     credentialRef: harness?.credentialRef || '',
     model: harness?.model || '',
     workspace: harness?.workspace || 'persistent',
+    githubConnectionRef: harness?.githubConnectionRef || '',
   }
 }
 
@@ -352,7 +355,15 @@ const backendDraft = computed<BackendSnapshot>(() => ({
   credentialRef: backendType.value === AGENT_BACKEND_HARNESS ? harnessCredential.value : '',
   model: backendType.value === AGENT_BACKEND_HARNESS ? harnessModel.value.trim() : '',
   workspace: backendType.value === AGENT_BACKEND_HARNESS ? harnessWorkspace.value : 'persistent',
+  githubConnectionRef: backendType.value === AGENT_BACKEND_HARNESS ? harnessGitHubConnection.value : '',
 }))
+const githubConnectionOptions = computed<FormSelectOption[]>(() => {
+  revision.value
+  return [
+    { value: '', label: '— none —' },
+    ...props.store.githubConnections().map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
+  ]
+})
 const policyDraft = computed<PolicySnapshot>(() => {
   const budget = validateBudgetInputs(budgetUSD.value, budgetTokens.value)
   return {
@@ -485,6 +496,7 @@ function hydrate(source: Agent): void {
   harnessCredential.value = backend.credentialRef
   harnessModel.value = backend.model
   harnessWorkspace.value = backend.workspace
+  harnessGitHubConnection.value = backend.githubConnectionRef
   harnessError.value = ''
   autonomy.value = (source.spec?.autonomy as Autonomy) || 'ask'
   budgetUSD.value = source.spec?.budget?.usdLimit || ''
@@ -644,6 +656,7 @@ function saveBackend(): void {
       credentialRef: snapshot.credentialRef,
       workspace: snapshot.workspace,
       ...(snapshot.model ? { model: snapshot.model } : {}),
+      ...(snapshot.githubConnectionRef ? { githubConnectionRef: snapshot.githubConnectionRef } : {}),
     }
     void saveRegion(
       'backend',
@@ -651,6 +664,10 @@ function saveBackend(): void {
       { backendType: AGENT_BACKEND_HARNESS, harness },
       spec => {
         spec.backend = { type: AGENT_BACKEND_HARNESS, harness }
+        // The write drops these too (resources.patchAgent): a harness agent
+        // that still carries them fails validation on every run.
+        delete spec.tools
+        delete spec.delegates
       },
       'Backend saved.',
       'the backend',
@@ -1042,6 +1059,11 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
               <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" labelledby="agent-harness-workspace-label" />
             </label>
           </div>
+          <label>
+            <span id="agent-harness-github-label">GitHub connection</span>
+            <FormSelect v-model="harnessGitHubConnection" :options="githubConnectionOptions" labelledby="agent-harness-github-label" describedby="agent-harness-github-hint" />
+            <span id="agent-harness-github-hint" class="agents-hint">Optional — its token reaches the harness as GH_TOKEN for each turn and never touches the machine, so `gh` can read and review pull requests as that connection.</span>
+          </label>
         </template>
       </template>
 
