@@ -278,8 +278,8 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 	} else {
 		ledger := map[string]any{
 			"sourceRevision":        status.SourceRevision,
-			"lastSourceChange":      status.LastSourceChange,
-			"lastPreviewCheckpoint": status.LastPreviewCheckpoint,
+			"lastSourceChange":      sourceChangePatch(status.LastSourceChange),
+			"lastPreviewCheckpoint": sourceChangePatch(status.LastPreviewCheckpoint),
 			"uncommittedPaths":      nullIfEmpty(status.UncommittedPaths),
 			"pendingCommit":         nil,
 			"settlement":            nil,
@@ -308,11 +308,31 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 	})
 }
 
+func sourceChangePatch(source *aiv1alpha1.ProjectSourceChange) any {
+	if source == nil {
+		return nil
+	}
+	// This is a merge patch: an omitted producer field would keep the previous
+	// assistant's ID when a manual source or preview mutation advances it.
+	return map[string]any{
+		"threadID":       nullableString(source.ThreadID),
+		"runID":          nullableString(source.RunID),
+		"sourceRevision": source.SourceRevision,
+	}
+}
+
 func nullIfEmpty(paths []string) any {
 	if len(paths) == 0 {
 		return nil
 	}
 	return paths
+}
+
+func nullableString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 // typedProjects is the adapter over the provider-scoped typed client the HTTP
