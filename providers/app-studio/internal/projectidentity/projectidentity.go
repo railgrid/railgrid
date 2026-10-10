@@ -38,6 +38,7 @@ const (
 	defaultMCPServer        = "default"
 	mcpServersGroup         = "railgrid.ai"
 	mcpServersResource      = "mcpservers"
+	templatesResource       = "templates"
 )
 
 var (
@@ -123,6 +124,13 @@ func Rules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	}
 	if p == nil {
 		return rules
+	}
+
+	if template := projectTemplateRef(p); template != "" {
+		rules = append(rules, rbacv1.PolicyRule{
+			APIGroups: []string{infraAPIGroup}, Resources: []string{templatesResource},
+			ResourceNames: []string{template}, Verbs: []string{"get"},
+		})
 	}
 
 	instances := projectInstanceNames(p)
@@ -301,6 +309,13 @@ func projectRepositoryRef(p *aiv1alpha1.Project) string {
 		return ""
 	}
 	return strings.TrimSpace(p.Spec.Repository.RepositoryRef)
+}
+
+func projectTemplateRef(p *aiv1alpha1.Project) string {
+	if p == nil || p.Spec.Template == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.Spec.Template.Name)
 }
 
 func projectConnectionRef(p *aiv1alpha1.Project) string {

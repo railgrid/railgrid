@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -748,6 +749,9 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	}
 	if err := projectAssistantValidateGrantBearingToolArguments(spec, args); err != nil {
 		reason := "invalid workspace approval scope: " + err.Error()
+		if feedback, ok := projectAssistantLocalMutationArgumentFeedback(spec, err, !t.discoveredMCPBound && !t.discoveredBrowserBound); ok {
+			reason = feedback
+		}
 		failed := t.finishFailedToolCall(
 			callID,
 			spec.Name,
@@ -1997,6 +2001,86 @@ func projectEinoToolArguments(argumentsInJSON string) (map[string]any, error) {
 		return nil, err
 	}
 	return args, nil
+}
+
+// projectAssistantLocalMutationArgumentFeedback adds compact, model-facing
+// field guidance only when the tool and schema exactly match the local trusted
+// mutation registry. It never includes argument values or schema descriptions.
+func projectAssistantLocalMutationArgumentFeedback(spec projectAssistantToolSpec, validationErr error, trustedLocalTool bool) (string, bool) {
+	if validationErr == nil || !trustedLocalTool || !projectAssistantWorkspaceMutationTool(spec.Name) {
+		return "", false
+	}
+	canonical, ok := projectAssistantLocalToolRegistry(nil).Spec(spec.Name)
+	if !ok || canonical.Name != spec.Name || string(canonical.Parameters) != string(spec.Parameters) ||
+		len(spec.Parameters) == 0 || len(spec.Parameters) > 4<<10 {
+		return "", false
+	}
+	var schema map[string]json.RawMessage
+	var schemaType string
+	var properties map[string]json.RawMessage
+	var required []string
+	if json.Unmarshal(spec.Parameters, &schema) != nil ||
+		json.Unmarshal(schema["type"], &schemaType) != nil ||
+		json.Unmarshal(schema["properties"], &properties) != nil ||
+		json.Unmarshal(schema["required"], &required) != nil ||
+		schemaType != "object" || len(properties) == 0 || len(properties) > 16 ||
+		len(required) == 0 || len(required) > 16 {
+		return "", false
+	}
+	allowed := make([]string, 0, len(properties))
+	for name := range properties {
+		if name == "" || len(name) > 64 {
+			return "", false
+		}
+		allowed = append(allowed, name)
+	}
+	for _, name := range required {
+		if _, ok := properties[name]; !ok || name == "" || len(name) > 64 {
+			return "", false
+		}
+	}
+	sort.Strings(allowed)
+	sort.Strings(required)
+
+	const (
+		prefix        = "invalid tool arguments: "
+		failurePrefix = "Tool call failed: "
+	)
+	guidance := fmt.Sprintf(
+		". Required fields: %s. Allowed fields: %s. Use exact field spelling and correct the arguments before retrying.",
+		strings.Join(required, ", "),
+		strings.Join(allowed, ", "),
+	)
+	reasonLimit := projectToolInfoLimit - len(failurePrefix) - len(prefix) - len(guidance)
+	if reasonLimit <= 0 {
+		return "", false
+	}
+	reason := projectEinoAssistantTruncateFailureReason(projectAssistantLocalMutationArgumentReason(validationErr), reasonLimit)
+	return projectEinoAssistantSafeText(prefix + reason + guidance), true
+}
+
+func projectAssistantLocalMutationArgumentReason(validationErr error) string {
+	message := strings.TrimSpace(validationErr.Error())
+	if detail, ok := strings.CutPrefix(message, "file path "); ok {
+		// CleanProjectPath quotes the caller's path. Skip the whole Go-quoted
+		// value (including escaped quotes) and retain only known validation
+		// reasons, never caller-controlled path or reserved-segment text.
+		if quoted, err := strconv.QuotedPrefix(detail); err == nil {
+			detail = strings.TrimSpace(detail[len(quoted):])
+		}
+		switch detail {
+		case "cannot be empty", "must be relative", `cannot contain a ".." segment`, "cannot contain NUL":
+			return "file path " + detail
+		case "is too long":
+			return fmt.Sprintf("file path exceeds the %d-byte limit", workspace.MaxProjectPathBytes)
+		default:
+			if strings.HasPrefix(detail, "contains reserved segment ") {
+				return "file path contains a reserved segment; use a project source path outside dependency, Git, and internal workspace directories"
+			}
+			return "workspace path arguments failed server validation"
+		}
+	}
+	return projectEinoAssistantSafeErrorText(validationErr)
 }
 
 func projectEinoFollowUpToolResult(answers map[string]projectAssistantFollowUpAnswer) string {

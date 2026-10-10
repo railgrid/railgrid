@@ -22,6 +22,10 @@ import (
 	"strings"
 	"testing"
 
+	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -88,6 +92,186 @@ func TestAssistantRegistryExposesStrictOrdinaryWorkspaceMutationTools(t *testing
 		if !strings.Contains(editSchema.Properties[name].Description, want) {
 			t.Fatalf("edit_file %s schema description = %q, want %q", name, editSchema.Properties[name].Description, want)
 		}
+	}
+}
+
+func TestAssistantMutationPathFeedbackPreservesReasonWithoutPath(t *testing.T) {
+	spec, _ := projectAssistantLocalToolRegistry(nil).Spec(projectToolEditFile)
+	for _, tt := range []struct {
+		name, path, want string
+	}{
+		{"empty", "", "requires path"},
+		{"current directory", ".", "cannot be empty"},
+		{"absolute", "/TOP_SECRET_file", "must be relative"},
+		{"traversal", "TOP_SECRET_dir/../file", `cannot contain a ".." segment`},
+		{"reserved", "TOP_SECRET_dir/.git/config", "contains a reserved segment"},
+		{"reserved internal", ".workspace-write-TOP_SECRET_file", "contains a reserved segment"},
+		{"long", strings.Repeat("TOP_SECRET_", workspace.MaxProjectPathBytes), "1024-byte limit"},
+		{"nul", "TOP_SECRET_\x00file", "cannot contain NUL"},
+		{"quoted", "/TOP_SECRET_\" cannot contain NUL", "must be relative"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := projectAssistantValidateGrantBearingToolArguments(spec, map[string]any{
+				"path": tt.path, "oldString": "old", "newString": "new",
+			})
+			if err == nil {
+				t.Fatal("invalid path passed validation")
+			}
+			feedback, ok := projectAssistantLocalMutationArgumentFeedback(spec, err, true)
+			if !ok || !strings.Contains(feedback, tt.want) || strings.Contains(feedback, "TOP_SECRET_") {
+				t.Fatalf("feedback = %q (ok=%t); want reason %q without path contents", feedback, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestAssistantMutationArgumentFeedbackAndCorrectedRetry(t *testing.T) {
+	spec, ok := projectAssistantLocalToolRegistry(nil).Spec(projectToolEditFile)
+	if !ok {
+		t.Fatal("edit_file schema is not registered")
+	}
+	typos := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{
+			name: "oldString typo",
+			args: map[string]any{"path": "src/App.tsx", "old_string": "TOP_SECRET_OLD", "newString": "new"},
+			want: "unexpected mutation argument \"old_string\"",
+		},
+		{
+			name: "newString typo",
+			args: map[string]any{"path": "src/App.tsx", "oldString": "old", "new_string": "TOP_SECRET_NEW"},
+			want: "unexpected mutation argument \"new_string\"",
+		},
+	}
+	for _, tt := range typos {
+		t.Run(tt.name, func(t *testing.T) {
+			validationErr := projectAssistantValidateGrantBearingToolArguments(spec, tt.args)
+			if validationErr == nil {
+				t.Fatal("invalid mutation arguments passed validation")
+			}
+			feedback, ok := projectAssistantLocalMutationArgumentFeedback(spec, validationErr, true)
+			if !ok {
+				t.Fatal("trusted local mutation schema did not produce feedback")
+			}
+			for _, want := range []string{
+				tt.want,
+				"Required fields: newString, oldString, path.",
+				"Allowed fields: expectedVersion, newString, oldString, path, recoveryOf, replaceAll.",
+				"Use exact field spelling and correct the arguments before retrying.",
+			} {
+				if !strings.Contains(feedback, want) {
+					t.Fatalf("feedback %q does not contain %q", feedback, want)
+				}
+			}
+			if strings.Contains(feedback, "TOP_SECRET_") {
+				t.Fatalf("feedback echoed an argument value: %q", feedback)
+			}
+			again, ok := projectAssistantLocalMutationArgumentFeedback(spec, validationErr, true)
+			if !ok || again != feedback {
+				t.Fatalf("feedback is not deterministic: first %q, second %q, ok=%t", feedback, again, ok)
+			}
+		})
+	}
+
+	if err := projectAssistantValidateWorkspaceMutationArguments(projectToolEditFile, map[string]any{
+		"path": "src/App.tsx", "oldString": "old", "newString": "new", "z_typo": "", "a_typo": "",
+	}); err == nil || err.Error() != "unexpected mutation argument \"a_typo\"" {
+		t.Fatalf("unknown-key validation = %v, want stable first key a_typo", err)
+	}
+	validationErr := projectAssistantValidateWorkspaceMutationArguments(projectToolEditFile, map[string]any{
+		"path": "src/App.tsx", "old_string": "old", "newString": "new",
+	})
+	if validationErr == nil {
+		t.Fatal("test arguments unexpectedly passed validation")
+	}
+	missingSchema := spec
+	missingSchema.Parameters = nil
+	if _, ok := projectAssistantLocalMutationArgumentFeedback(missingSchema, validationErr, true); ok {
+		t.Fatal("schema-missing mutation received enriched feedback")
+	}
+	if _, ok := projectAssistantLocalMutationArgumentFeedback(spec, validationErr, false); ok {
+		t.Fatal("same-name foreign MCP tool received enriched feedback")
+	}
+	foreignSchema := spec
+	foreignSchema.Name = "mcp__edit_file"
+	if _, ok := projectAssistantLocalMutationArgumentFeedback(foreignSchema, validationErr, true); ok {
+		t.Fatal("unknown foreign tool received enriched feedback")
+	}
+
+	ctx := context.Background()
+	h := newProjectAssistantV2ToolHarness(t, "invalid-mutation-arguments-feedback")
+	defer h.server.Shutdown(ctx)
+	calls := 0
+	backend := projectAssistantToolFunc{
+		spec: spec,
+		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+			calls++
+			return "{\"operation\":\"edit_file\",\"paths\":[\"src/App.tsx\"],\"additions\":1}", nil
+		},
+	}
+	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: h.req, runState: newProjectEinoAssistantRunState()}
+	node, err := compose.NewToolNode(ctx, &compose.ToolsNodeConfig{Tools: []einotool.BaseTool{tool}, ExecuteSequentially: true})
+	if err != nil {
+		t.Fatalf("create tool node: %v", err)
+	}
+	invoke := func(callID, arguments string) string {
+		t.Helper()
+		messages, err := node.Invoke(ctx, schema.AssistantMessage("", []schema.ToolCall{{
+			ID:       callID,
+			Function: schema.FunctionCall{Name: projectToolEditFile, Arguments: arguments},
+		}}))
+		if err != nil {
+			t.Fatalf("invoke %s: %v", callID, err)
+		}
+		if len(messages) != 1 {
+			t.Fatalf("invoke %s returned %d messages, want one", callID, len(messages))
+		}
+		return messages[0].Content
+	}
+
+	invalidResult := invoke("call-invalid-edit", "{\"path\":\"src/App.tsx\",\"old_string\":\"TOP_SECRET_VALUE\",\"newString\":\"new\"}")
+	if calls != 0 {
+		t.Fatalf("invalid invocation dispatched %d times", calls)
+	}
+	if !strings.Contains(invalidResult, "invalid tool arguments") || !strings.Contains(invalidResult, "unexpected mutation argument \"old_string\"") {
+		t.Fatalf("invalid invocation feedback = %q", invalidResult)
+	}
+	if strings.Contains(invalidResult, "TOP_SECRET_VALUE") {
+		t.Fatalf("invalid invocation feedback echoed an argument value: %q", invalidResult)
+	}
+	longArguments := map[string]any{
+		"path": "src/App.tsx", "oldString": "old", "newString": "TOP_SECRET_LONG_VALUE",
+	}
+	longArguments[strings.Repeat("misspelled_", 140)] = "hidden"
+	longRaw, err := json.Marshal(longArguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	longResult := invoke("call-long-invalid-edit", string(longRaw))
+	if calls != 0 {
+		t.Fatalf("long invalid invocation dispatched %d times", calls)
+	}
+	if len(longResult) > projectToolInfoLimit {
+		t.Fatalf("long invalid feedback length = %d, want <= %d", len(longResult), projectToolInfoLimit)
+	}
+	for _, want := range []string{
+		"Required fields: newString, oldString, path.",
+		"Allowed fields: expectedVersion, newString, oldString, path, recoveryOf, replaceAll.",
+		"Use exact field spelling and correct the arguments before retrying.",
+	} {
+		if !strings.Contains(longResult, want) {
+			t.Fatalf("long invalid feedback clipped guidance %q", want)
+		}
+	}
+	if strings.Contains(longResult, "TOP_SECRET_LONG_VALUE") {
+		t.Fatal("long invalid feedback echoed a sensitive argument value")
+	}
+	correctedResult := invoke("call-corrected-edit", "{\"path\":\"src/App.tsx\",\"oldString\":\"old\",\"newString\":\"new\"}")
+	if calls != 1 || !strings.Contains(correctedResult, "\"operation\":\"edit_file\"") {
+		t.Fatalf("corrected invocation result = %q after %d dispatches, want one successful dispatch", correctedResult, calls)
 	}
 }
 

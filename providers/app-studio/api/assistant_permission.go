@@ -432,10 +432,15 @@ func projectAssistantValidateWorkspaceMutationArguments(toolName string, args ma
 	default:
 		return fmt.Errorf("tool %q cannot use workspace mutation arguments", toolName)
 	}
+	var unexpected []string
 	for key := range args {
 		if _, ok := allowed[key]; !ok {
-			return fmt.Errorf("unexpected mutation argument %q", key)
+			unexpected = append(unexpected, key)
 		}
+	}
+	sort.Strings(unexpected)
+	if len(unexpected) > 0 {
+		return fmt.Errorf("unexpected mutation argument %q", unexpected[0])
 	}
 	if _, err := projectAssistantWriteTargetPaths(toolName, args); err != nil {
 		return err
