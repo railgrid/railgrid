@@ -7,6 +7,11 @@
  * remain authoritative in standalone and embedded provider bundles.
  */
 
+/* Match the response width instead of shrink-wrapping the progress label. */
+.k-ai-conversation-turn.k-ai-message--assistant .k-ai-message__before {
+  width: 100%;
+}
+
 .k-ai-conversation-turn__progress,
 .k-ai-conversation-turn__trace,
 .k-ai-conversation-turn__interrupt,
@@ -60,6 +65,15 @@
 
 .k-ai-turn-progress__trigger:hover {
   color: var(--color-text-secondary, #8a8ca6);
+}
+
+/* Keep the divider immediately below the header, even with details open. */
+.k-ai-turn-progress--divided > .k-ai-turn-progress__trigger,
+.k-ai-turn-progress--divided > .k-ai-turn-progress__status {
+  width: 100%;
+  border-block-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  padding-block-end: 8px;
+  margin-block-end: 8px;
 }
 
 .k-ai-turn-progress__trigger:focus-visible {

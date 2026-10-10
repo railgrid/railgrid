@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 10;
+  --railgrid-agent-ui-version: 13;
 }
 
 /* Conversation headers keep their neutral icon-only back control in the core
@@ -731,6 +731,8 @@ button.k-workbench-tab {
 .k-ai-composer:not(.k-ai-composer--queued) { border-radius: 4px; }
 .k-ai-composer__editor {
   position: relative;
+  /* Keep flow controls' bottom margin inside the primary action's anchor. */
+  display: flow-root;
   min-width: 0;
   min-height: 72px;
 }
@@ -810,6 +812,7 @@ button.k-workbench-tab {
 }
 .k-ai-composer__primary {
   position: absolute;
+  display: flex;
   right: 8px;
   bottom: 8px;
   z-index: 2;
@@ -891,24 +894,42 @@ button.k-workbench-tab {
   height: auto;
   align-self: stretch;
   flex-shrink: 0;
+  transition: width 280ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.k-ai-conversation-rail--desktop { display: none; }
+.k-ai-conversation-rail--desktop { position: absolute; inset: 0 auto 0 0; width: 0; }
 .k-ai-conversation-rail--mobile-open { position: absolute; inset: 0 auto 0 0; display: block; width: 256px; }
 .k-ai-conversation-rail--anchored { width: var(--k-ai-conversation-rail-width); }
-.k-ai-conversation-rail--collapsed { width: 0; }
+.k-ai-conversation-rail--collapsed { width: 0; transition-duration: 190ms; }
 .k-ai-conversation-rail__peek { position: absolute; inset: 0 auto 0 0; z-index: 1; width: 16px; cursor: e-resize; }
 .k-ai-conversation-rail__panel {
   position: absolute;
   inset: 0 auto 0 0;
   display: flex;
-  width: 0;
+  width: var(--k-ai-conversation-rail-width);
   overflow: hidden;
   background: var(--color-surface-raised, #111320);
-  transition: box-shadow .2s ease;
+  border-inline-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
+  transform: translateX(-100%);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform 190ms cubic-bezier(0.16, 1, 0.3, 1), opacity 190ms ease-out, visibility 0s linear 190ms;
 }
+.k-ai-conversation-rail--resizing,
 .k-ai-conversation-rail--resizing .k-ai-conversation-rail__panel { transition: none; }
-.k-ai-conversation-rail__panel--expanded { width: var(--k-ai-conversation-rail-width); border-inline-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07)); }
+.k-ai-conversation-rail__panel--expanded {
+  transform: translateX(0);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1), opacity 280ms ease-out, visibility 0s;
+}
 .k-ai-conversation-rail--mobile-open .k-ai-conversation-rail__panel--expanded { width: 256px; }
+@media (max-width: 767px) {
+  .k-ai-conversation-rail--desktop { width: 0; }
+  .k-ai-conversation-rail__panel { width: 256px; }
+  .k-ai-conversation-rail__peek { display: none; }
+}
 .k-ai-conversation-rail__panel--overlay { box-shadow: 0 16px 36px color-mix(in srgb, var(--color-surface, #0a0b12) 70%, transparent); }
 .k-ai-conversation-rail__content { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .k-ai-conversation-rail__header { display: flex; height: 56px; flex: none; align-items: center; gap: 8px; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07)); padding: 0 12px; }
@@ -971,7 +992,7 @@ button.k-workbench-tab {
 
 @media (min-width: 768px) {
   .k-ai-conversation-layout { flex-direction: row; }
-  .k-ai-conversation-rail--desktop { display: block; }
+  .k-ai-conversation-rail--desktop { position: relative; inset: auto; }
   .k-ai-conversation-rail__resize { display: block; }
 }
 @media (hover: none), (any-pointer: coarse) {
@@ -1001,6 +1022,7 @@ button.k-workbench-tab {
   .k-ai-action-row__chevron,
   .k-ai-composer,
   .k-ai-primary-action,
+  .k-ai-conversation-rail,
   .k-ai-conversation-rail__panel,
   .k-ai-conversation-rail__item-actions,
   .k-ai-conversation-rail__item-fade { transition: none; }
