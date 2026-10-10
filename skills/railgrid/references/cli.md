@@ -34,8 +34,8 @@ longer prints the group's help and exits 0).
   `workspace "<w>" is not ready yet (no cluster assigned); try again shortly`.
   Any error containing `401` gets ` (token missing or expired; run 'railgrid login')` appended.
 - Requests carry `X-Railgrid-Org`, `X-Railgrid-Workspace` and
-  `User-Agent: railgrid-cli/<version>` (explicit because Cloudflare 403s some
-  library user agents). Non-streaming calls time out after 2 min. API
+  `User-Agent: railgrid-cli/<version>` (explicit because a hub's front-door
+  proxy may 403 some library user agents). Non-streaming calls time out after 2 min. API
   failures print `<METHOD> <path>: HTTP <code>: <message>` (the Kubernetes
   `Status` message, prefixed with its `reason` when there is one; else
   `{"error"|"message"}`; else the body, else the status text).
@@ -188,9 +188,9 @@ named `studio`; declared in `providers/app-studio/manifest.yaml`, served by
 | Command | Flags | Behavior |
 |---|---|---|
 | `app list` (alias `ls`) | `-o json` | `GET $AS/projects` (the Project CRs); table `NAME DISPLAY NAME PHASE TEMPLATE REPOSITORY AGE` (`Deleting` while a deletion timestamp is set; `No projects found.`). `-o json` prints `{"items":[{name, displayName, description, phase, template, deleting, repository{ref}?, createdAt, updatedAt?}]}` projected from the CRs. |
-| `app create <name>` | `--template`, `--display-name`, `--description`, `--prompt`, `--existing-repository <ref>`, `--wait`, `--timeout` (5m), `-o json` | Ensures the Studio exists (`GET $AS/studios/studio`, else `POST $AS/studios` with `spec.search.size`/`spec.browser.size` `small`; 409 is fine; otherwise `creating the workspace's App Studio Studio (is App Studio enabled in this workspace?): …`), then `POST $AS/studios/studio/create-project` with `{name, displayName, description, prompt, templateName, inferDevelopmentTemplate, existingRepositoryRef}`. `--template` is required unless `--prompt` is given (`--template is required (or pass --prompt to let App Studio choose)`; with `--prompt` alone `inferDevelopmentTemplate: true`, and the prompt does not start an assistant turn). `--existing-repository <ref>` adopts a code `Repository` you created first instead of creating one ([app-studio.md](app-studio.md)). A taken name is `project "<n>" not created (HTTP 409): <server message>`. Prints `project <n> created (phase <p>, template <t>, repository <ref>)`. `--wait` prints `railgrid app: waiting for repository and scaffold commit of <n>…` on stderr and polls `GET …/<n>/view` every 5 s until `repository.ready` and at least one `Succeeded` commit (the point from which clone and `railgrid commit` work); timeout error `project <n>: repository not ready with a succeeded commit after <t>; check 'railgrid app status <n>'`. |
+| `app create <name>` | `--template`, `--display-name`, `--description`, `--prompt`, `--existing-repository <ref>`, `--wait`, `--timeout` (5m), `-o json` | Ensures the Studio exists (`GET $AS/studios/studio`, else `POST $AS/studios` with `spec.search.size`/`spec.browser.size` `small`; 409 is fine; otherwise `creating the workspace's App Studio Studio (is App Studio enabled in this workspace?): …`), then `POST $AS/studios/studio/create-project` with `{name, displayName, description, prompt, templateName, inferDevelopmentTemplate, existingRepositoryRef}`. `--template` is required unless `--prompt` is given (`--template is required (or pass --prompt to let App Studio choose)`; with `--prompt` alone `inferDevelopmentTemplate: true`, and the prompt does not start an assistant turn). `--existing-repository <ref>` adopts a code `Repository` you created first instead of creating one ([app-studio.md](app-studio.md)). A taken name is `project "<n>" not created (HTTP 409): <server message>`. Prints `project <n> created (phase <p>, template <t>, repository <ref>)`. `--wait` prints `railgrid app: waiting for repository and scaffold commit of <n>…` on stderr and polls `GET …/<n>/view` every 5 s until `repository.ready` and at least one `Succeeded` commit (the point from which clone and `railgrid commit` work; 17 s measured on one hub) — it does not wait for the dev instance, which `app status` reports as `Dev URL: -` for another 1–2 min; timeout error `project <n>: repository not ready with a succeeded commit after <t>; check 'railgrid app status <n>'`. |
 | `app status <name>` | `-o json` | `GET …/view`, `…/promotion`, `…/publishing`; prints `Project:` (name, phase, template), `Repository:` ref + `ready=` + URL (+ `(message)` when not ready; after 2 min with no status message and no commit it adds `not ready for <age> with no status: the code provider is not reconciling (kubectl get repositories.code.railgrid.ai <ref> -o yaml has no status); wait for the operator, don't recreate the project`), `Commits:` the latest 3 (`<sha7> <phase> <message> <age> ago`), `Dev URL:`, `Promotion:` `promotable=<bool> build=<status> [commit=<sha7>] [missing=a,b]`, `Production:` phase + URL (`- (never promoted)` before the first promote; `- (promoted; the production instance has not reported yet, re-run in a few seconds)` for a few seconds after one), `Publishing:` `private` or `<mode> <url> [(not ready: <phase>)] [error: …] [grants=N]`. A failed promotion/publishing read prints `unavailable: <err>` on that line. `-o json` = `{project, promotion?, promotionError?, publishing?, publishingError?}`. |
-| `app sync <name>` | `-o json` | `POST …/hydrate-workspace {}` (`hydrating the workspace: …` on failure) then `POST …/sync-development {}` (`syncing the development instance: …`); progress on stderr. Prints `workspace: loaded from <repositoryRef>@<ref> (<sha7>), N written, M skipped` (+ `  skipped <path>` lines), then per component `<instance>/<component>: <phase>, N changed, M deleted, restarted=<bool>, revision R[, K skipped]` with `  skipped <path> (<reason>)` lines; a `binary-unsupported` reason adds `binary-unsupported: the component's dev agent does not accept binary files; update the instance to sync them`. `-o json` = `{hydrate, sync}` as returned. Use it instead of `railgrid sandbox sync` for App Studio dev instances. |
+| `app sync <name>` | `-o json` | `POST …/hydrate-workspace {}` (`hydrating the workspace: …` on failure; an instant `HTTP 502` bad-gateway page from the hub's front door while `GET $HUB/api/providers` shows `code` Ready is App Studio's handler, not git — SKILL.md 4.4 "When git → workspace is down" and section 8) then `POST …/sync-development {}` (`syncing the development instance: …`); progress on stderr. Prints `workspace: loaded from <repositoryRef>@<ref> (<sha7>), N written, M skipped` (+ `  skipped <path>` lines), then per component `<instance>/<component>: <phase>, N changed, M deleted, restarted=<bool>, revision R[, K skipped]` with `  skipped <path> (<reason>)` lines; a `binary-unsupported` reason adds `binary-unsupported: the component's dev agent does not accept binary files; update the instance to sync them`. `-o json` = `{hydrate, sync}` as returned. Use it instead of `railgrid sandbox sync` for App Studio dev instances. |
 | `app promote <name>` | `--hostname-prefix`, `--commit <sha>`, `-o json` | `POST …/promote` with `values.expose.hostnamePrefix` and/or `commitSHA`; prints `promoted <n> to <instance> (commit <sha>, rollout <revision>)` and `  <component> built=<bool> <image>` per component. The prefix is locked after the first production deploy: pass it on the first promote, later the same value or nothing. Every promote rolls pods. |
 | `app publish <name>` | `--mode public\|restricted\|private` (required; `--mode must be public, restricted or private`), `-o json` | `public`/`restricted` → `POST …/publishing {mode}`; `private` → `DELETE …/publishing` (unpublish, drop grants) and prints `<n>: private (unpublished; anonymous requests are redirected to sign-in, your own app tokens still work)` regardless of the response. `public`/`restricted` are accepted before prod is Ready; the text output then re-reads `GET …/publishing` every 2 s for up to 15 s, so a remaining `(not ready: <phase>)` means prod is not Ready yet. A ready `public` line adds `(anonymous requests may still be redirected to sign-in for ~20s)`. `-o json` prints the response as is (`{}` for an empty body), without waiting. |
 
@@ -288,6 +288,14 @@ Notes:
 - A CLI sync and App Studio's own sync both write the component; App Studio
   renumbers past the CLI's revision and its next sync replaces the files
   (see [app-studio.md](app-studio.md), Dev sandbox).
+- `status` shows `Source: - (not synced authoritatively yet)` and `exec`
+  fails with `has no source revision` whenever a managed file no longer
+  matches the synced manifest. On `simple-webapp` the start command itself
+  does that: it appends `.railgrid-vite.config.mjs` to `.gitignore` on every
+  (re)start, so syncing a `.gitignore` without that line loses the revision
+  at the next restart (`--restart always`, `restart`, or an `auto` restart
+  for `package.json`). Keep the line in `.gitignore` or leave `.gitignore`
+  out of the directory you sync; a no-op re-sync restores the revision.
 
 ## 7. Edges: `edge`, `connect`, `disconnect`, `ssh`
 
@@ -344,7 +352,35 @@ Not documented here; the per-command pages are `docs/cli/railgrid_<cmd>.md`.
 | `init` | `docs/cli/railgrid_init.md` | Runs a hub in-process; server side |
 | `version`, `completion`, `docs` (hidden), `kcp-workspace` (hidden) | — | Build info, shell completion, `make docs-cli`, raw kcp `kubectl ws` navigation |
 
-## 9. Loop from a terminal
+## 9. The newer `app` subcommands, and what still needs the verb
+
+Added after the first `app` set; an older CLI answers `unknown command`, and
+the verb column is what they call (`fc` and `$AS` from SKILL.md section 0;
+details in [app-studio.md](app-studio.md)). MCP has no App Studio tools.
+
+| Command | Behavior | Verb |
+|---|---|---|
+| `app preview <p> [--mode public\|restricted\|private]` | Shows or sets the dev preview's access; `public` prints the ~20 s convergence note; `app status` shows the same as `Preview:` | `GET\|POST\|DELETE $AS/projects/<p>/preview` |
+| `app checkpoints <p>` | Template / Source / Production stages with state, reason and fix; `app status` lists the not-done ones under `Blocked:` | `GET $AS/projects/<p>/checkpoints` |
+| `app files ls\|get\|put\|rm <p> [path] [local]` | Workspace files, binary-safe; `put` reads a local file or stdin (`--create-only` = `If-None-Match: *`), `get --out <file>` | `GET …/files`, `GET …/files-raw?path=`, `PUT\|DELETE …/files-content?path=` |
+| `app sync <p> --from <dir>` | Pushes a local tree into `<p>-dev` through `infrastructure__dev_sync` (additive; binaries base64; nothing committed, nothing replaced) instead of hydrate + sync-development | MCP `infrastructure__dev_sync` (workspace MCP token, like `commit`) |
+| `mcp call <tool> [json] [--args-file f\|-] [--list]` | One `tools/call` (or `tools/list`) through the proxy path, as you; prints structured content or the text, exits non-zero on a tool error | the aggregate MCP endpoint |
+
+Still verb-only:
+
+| You want to | Call |
+|---|---|
+| Grant one person a private preview / production | `POST $AS/projects/<p>/preview-grants` / `…/publishing-grants -d '{"user":"<email>","invite":true}'` |
+| Sync the sandbox without hydrating from git | `POST $AS/projects/<p>/sync-development -d '{}'` (what `app sync` does second); `…/restart-development`, `…/development-logs` |
+| Drive the assistant | `POST $AS/projects/<p>/create-session`, `POST $AS/sessions/<s>/turn`, `GET …/events` (SSE), `…/approval/<turn>` |
+| Change the template of a prompt-only project | `POST $AS/projects/<p>/set-template -d '{"template":"simple-webapp"}'` |
+| Rename or describe a project | `PATCH $AS/projects/<p>` (merge patch of `spec.displayName` / `spec.description`) |
+| Re-seed scaffold files into an empty project, or add the missing build workflow to a non-empty one | `POST $AS/projects/<p>/scaffold` (non-empty workspace: writes only the template's workflow when absent, `seededWorkflow` in the reply; else `seeded: 0`) |
+| Roll the workspace back to a commit | `POST $AS/projects/<p>/restore-workspace -d '{"commitSHA":"…","expectedSourceRevision":N}'` |
+| Delete a project | `kubectl delete project <p>` (or `DELETE $AS/projects/<p>` with the UID precondition); annotate `ai.railgrid.ai/delete-repository=true` first to drop the GitHub repo too |
+| Per-user approval mode | `GET\|PATCH $AS/projects/<p>/approval-mode` |
+
+## 10. Loop from a terminal
 
 ```bash
 eval "$(railgrid env)"

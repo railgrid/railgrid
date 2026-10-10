@@ -140,6 +140,9 @@ func runCommit(ctx context.Context, out, errOut io.Writer, target hubTarget, rep
 		_, _ = fmt.Fprintf(errOut, "railgrid commit: nothing to send; HEAD matches %s/%s\n", remote, branch)
 		return nil
 	}
+	if hasWorkflow, err := repositoryHasBuildWorkflow(ctx, g); err == nil && !hasWorkflow {
+		_, _ = fmt.Fprintf(errOut, "railgrid commit: warning: no .github/workflows/*.y*ml in HEAD; without the template's build workflow nothing builds an image and the project never becomes promotable (copy build.yaml from the scaffold repository)\n")
+	}
 	for _, w := range plan.warnings {
 		_, _ = fmt.Fprintf(errOut, "railgrid commit: warning: %s\n", w)
 	}
@@ -194,6 +197,9 @@ func runCommit(ctx context.Context, out, errOut io.Writer, target hubTarget, rep
 			formatStringOrDash(res.Phase), strings.TrimSpace(string(raw)), repo)
 	}
 
+	defer func() {
+		_, _ = fmt.Fprintf(errOut, "railgrid commit: the dev sandbox is not updated by a commit; run 'railgrid app sync <project>' (or 'railgrid app sync <project> --from .') to see it there\n")
+	}()
 	base := remote + "/" + branch
 	if _, err := g.run(ctx, "fetch", "-q", remote, branch); err != nil {
 		return fmt.Errorf("recorded %s, but fetching it failed: %w", res.CommitSHA, err)
@@ -560,4 +566,21 @@ func (g gitRunner) revParse(ctx context.Context, rev string) (string, error) {
 		return "", fmt.Errorf("resolving %s: %w", rev, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// repositoryHasBuildWorkflow reports whether HEAD carries a GitHub Actions
+// workflow. App Studio builds images only through the template's workflow
+// (.github/workflows/build.yaml in the shipped scaffolds), so a tree without
+// one is committed fine but never promotable.
+func repositoryHasBuildWorkflow(ctx context.Context, g gitRunner) (bool, error) {
+	out, err := g.run(ctx, "ls-tree", "-r", "--name-only", "HEAD", "--", ".github/workflows")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasSuffix(line, ".yaml") || strings.HasSuffix(line, ".yml") {
+			return true, nil
+		}
+	}
+	return false, nil
 }

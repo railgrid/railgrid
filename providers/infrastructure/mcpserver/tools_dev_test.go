@@ -679,7 +679,6 @@ func TestNormalizeDevSyncFiles(t *testing.T) {
 	}{
 		"unknown encoding":  {[]devSyncFile{{Path: "a.bin", Content: "00", Encoding: "hex"}}, "unsupported encoding"},
 		"invalid base64":    {[]devSyncFile{{Path: "a.bin", Content: "@@@@", Encoding: "base64"}}, "invalid base64"},
-		"line breaks":       {[]devSyncFile{{Path: "a.bin", Content: "AAAA\nAAAA", Encoding: "base64"}}, "line breaks"},
 		"binary file bytes": {[]devSyncFile{{Path: "a.glb", Content: base64.StdEncoding.EncodeToString(make([]byte, devSyncMaxFileBytes+1)), Encoding: "base64"}}, "per-file limit"},
 		"decoded total":     {[]devSyncFile{{Path: "a", Content: half}, {Path: "b", Content: half}, {Path: "c", Content: "x"}}, "limit (decoded)"},
 		"file count":        {tooMany, "file limit"},
@@ -687,6 +686,11 @@ func TestNormalizeDevSyncFiles(t *testing.T) {
 		if _, err := normalizeDevSyncFiles(tc.files); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
 		}
+	}
+	// Wrapped base64 is normalized to one line, not rejected.
+	wrapped, err := normalizeDevSyncFiles([]devSyncFile{{Path: "a.bin", Content: "AAAA\nAAAA\n", Encoding: "base64"}})
+	if err != nil || len(wrapped) != 1 || wrapped[0].Content != "AAAAAAAA" {
+		t.Fatalf("wrapped base64 = %+v, %v; want one-line content", wrapped, err)
 	}
 	// The cap is on decoded bytes: base64 expansion alone must not reject a
 	// payload whose decoded size fits.
