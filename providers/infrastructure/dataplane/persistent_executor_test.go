@@ -32,6 +32,7 @@ import (
 type persistentRuntimeRoundTripper struct {
 	mu                sync.Mutex
 	request           *http.Request
+	lastRequest       execCoordinatorRequest
 	records           map[string]execCoordinatorRequest
 	lostFirstResponse bool
 	calls             int
@@ -50,6 +51,7 @@ func (t *persistentRuntimeRoundTripper) RoundTrip(r *http.Request) (*http.Respon
 	defer t.mu.Unlock()
 	t.calls++
 	t.request = r.Clone(r.Context())
+	t.lastRequest = request
 	if t.records == nil {
 		t.records = map[string]execCoordinatorRequest{}
 	}
@@ -153,5 +155,51 @@ func TestPersistentExecutorChangedFingerprintConflicts(t *testing.T) {
 	call.Request.Argv = []string{"go", "version"}
 	if _, err := executor.Start(context.Background(), call); err == nil {
 		t.Fatal("changed request fingerprint was accepted")
+	}
+}
+
+func TestPersistentExecutorCancelByRequestIDDerivesBoundSession(t *testing.T) {
+	transport := &persistentRuntimeRoundTripper{}
+	executor, err := NewPersistentExecutor(&persistentTestRuntime{transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := persistentTestCall()
+	call.Request = ExecRequest{Action: ExecActionCancel, RequestID: "request-1"}
+	result, err := executor.Cancel(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCall := call
+	wantCall.IdempotencyKey = "request-1"
+	wantSessionID := execSessionID(wantCall)
+	if result.SessionID != wantSessionID {
+		t.Fatalf("cancel response sessionID = %q, want %q", result.SessionID, wantSessionID)
+	}
+	if got := transport.lastRequest; got.Action != ExecActionCancel || got.SessionID != wantSessionID || got.RequestID != "request-1" || got.CallerKey != call.CallerKey {
+		t.Fatalf("coordinator cancel request = %+v, want exact request-bound session", got)
+	}
+
+	otherTarget := call
+	otherTarget.Component = "frontend"
+	if other := execSessionID(wantCall); other == execSessionID(ExecCall{
+		CallerKey: call.CallerKey, Workspace: call.Workspace, Resource: call.Resource, Name: call.Name,
+		Component: otherTarget.Component, IdempotencyKey: "request-1",
+	}) {
+		t.Fatal("session ID did not change with the authorized component")
+	}
+}
+
+func TestPersistentExecutorCancelRejectsMismatchedRequestIDKey(t *testing.T) {
+	transport := &persistentRuntimeRoundTripper{}
+	executor, _ := NewPersistentExecutor(&persistentTestRuntime{transport: transport})
+	call := persistentTestCall()
+	call.Request = ExecRequest{Action: ExecActionCancel, RequestID: "request-1"}
+	call.IdempotencyKey = "request-2"
+	if _, err := executor.Cancel(context.Background(), call); err == nil {
+		t.Fatal("cancel accepted a request ID that disagreed with the idempotency key")
+	}
+	if transport.calls != 0 {
+		t.Fatalf("coordinator calls = %d, want none", transport.calls)
 	}
 }

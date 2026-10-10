@@ -99,9 +99,37 @@ func (e *PersistentExecutor) lifecycle(ctx context.Context, call ExecCall, actio
 	if err := validatePersistentExecTarget(call); err != nil {
 		return ExecResult{}, err
 	}
+	sessionID := strings.TrimSpace(call.Request.SessionID)
+	requestID := strings.TrimSpace(call.Request.RequestID)
+	if action == ExecActionPoll && sessionID == "" {
+		return ExecResult{}, fmt.Errorf("persistent executor poll requires a session ID")
+	}
+	if action == ExecActionCancel {
+		if sessionID == "" {
+			if requestID == "" {
+				return ExecResult{}, fmt.Errorf("persistent executor cancel requires a session ID or request ID")
+			}
+			key := strings.TrimSpace(call.IdempotencyKey)
+			if key != "" && key != requestID {
+				return ExecResult{}, fmt.Errorf("persistent executor cancel request ID must match its idempotency key")
+			}
+			// The data-plane handler has already authorized this caller and
+			// resolved the workspace, resource, instance, and component. START
+			// derives the same session ID from those fields plus the request ID.
+			// Reuse that derivation here so a request-ID-only cancellation is
+			// bound to exactly the session that START would create.
+			call.IdempotencyKey = requestID
+			sessionID = execSessionID(call)
+		} else if requestID != "" {
+			key := strings.TrimSpace(call.IdempotencyKey)
+			if key != "" && key != requestID {
+				return ExecResult{}, fmt.Errorf("persistent executor cancel request ID must match its idempotency key")
+			}
+		}
+	}
 	return e.execute(ctx, call.ControlTarget, execCoordinatorRequest{
-		Action: action, SessionID: strings.TrimSpace(call.Request.SessionID),
-		RequestID: strings.TrimSpace(call.Request.RequestID), CallerKey: call.CallerKey,
+		Action: action, SessionID: sessionID,
+		RequestID: requestID, CallerKey: call.CallerKey,
 	})
 }
 
