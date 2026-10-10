@@ -70,9 +70,9 @@ func TestDNS1123LabelWithSuffix(t *testing.T) {
 	}
 }
 
-func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
-	if projectMCPToolAllowed("code__commit_files") {
-		t.Fatal("code__commit_files should not be directly model-callable")
+func TestProjectToolRegistryIncludesDiscoveredProviderTools(t *testing.T) {
+	if !projectMCPToolAllowed("code__commit_files") {
+		t.Fatal("code__commit_files should be available through tool discovery")
 	}
 	for _, name := range []string{
 		"code__commit_files",
@@ -85,8 +85,8 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"code__mkdir",
 		"code__commit_project_files",
 	} {
-		if projectMCPToolAllowed(name) {
-			t.Fatalf("%s should not be allowed; project file inspection belongs to App Studio workspace tools", name)
+		if !projectMCPToolAllowed(name) {
+			t.Fatalf("%s should be available through tool discovery", name)
 		}
 	}
 	for _, legacy := range []string{"list_project_files", "read_project_file", "search_project_files"} {
@@ -118,8 +118,8 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 			t.Fatalf("%s should be allowed as an App Studio workspace-local tool", name)
 		}
 	}
-	if projectMCPToolAllowed("code__delete_repository") {
-		t.Fatal("delete_repository should not be allowed from App Studio")
+	if !projectMCPToolAllowed("code__delete_repository") {
+		t.Fatal("delete_repository should be available through tool discovery")
 	}
 	for _, name := range []string{
 		"infrastructure__list_templates",
@@ -134,14 +134,14 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 			t.Fatalf("%s should be allowed from the aggregate MCP infrastructure provider", name)
 		}
 	}
-	if projectMCPToolAllowed("infrastructure__delete_instance") {
-		t.Fatal("infrastructure__delete_instance should not be allowed from App Studio")
+	if !projectMCPToolAllowed("infrastructure__delete_instance") {
+		t.Fatal("infrastructure__delete_instance should be available through tool discovery")
 	}
-	if projectMCPToolAllowed("databricks__import_table") {
-		t.Fatal("databricks__import_table should not be allowed from App Studio")
+	if !projectMCPToolAllowed("databricks__import_table") {
+		t.Fatal("databricks__import_table should be available through tool discovery")
 	}
-	if projectMCPToolAllowed("databricks__query_table") {
-		t.Fatal("databricks__query_table should not be auto-allowed from App Studio")
+	if !projectMCPToolAllowed("databricks__query_table") {
+		t.Fatal("databricks__query_table should be available through tool discovery")
 	}
 }
 
@@ -306,14 +306,10 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 			t.Fatalf("tool names = %#v, want %s", names, want)
 		}
 	}
-	if names["code__commit_files"] || names["code__read_repository_file"] {
-		t.Fatalf("tool names = %#v, should not expose raw provider-code tools", names)
-	}
-	if names["infrastructure__delete_instance"] {
-		t.Fatalf("tool names = %#v, should not expose destructive infrastructure tools", names)
-	}
-	if names["databricks__import_table"] {
-		t.Fatalf("tool names = %#v, should not expose table import tools", names)
+	for _, want := range []string{"code__commit_files", "code__read_repository_file", "infrastructure__delete_instance", "databricks__import_table"} {
+		if !names[want] {
+			t.Fatalf("tool names = %#v, want discovered tool %s", names, want)
+		}
 	}
 }
 
@@ -383,14 +379,14 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 	if strings.Contains(joined, projectToolReadFile+":") {
 		t.Fatalf("prompt duplicates local tool descriptions: %q", joined)
 	}
-	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
-		t.Fatalf("model tools = %#v, want the V2 commit tool advertised; invocation validates current-run mutation and verification evidence", model.Inputs[0].Tools)
+	if projectChatToolsInclude(model.Inputs[0].Tools, projectToolCommitProjectFiles) {
+		t.Fatal("commit tool should be deferred until searched")
 	}
 	if !projectChatToolsInclude(model.Inputs[0].Tools, projectToolDefineInitialProjectPlan) {
 		t.Fatalf("model tools = %#v, want plan approval in the initial phase", model.Inputs[0].Tools)
 	}
-	if projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
-		t.Fatalf("model tools = %#v, want no tool_search without provider tools", model.Inputs[0].Tools)
+	if !projectChatToolsInclude(model.Inputs[0].Tools, "tool_search") {
+		t.Fatal("tool_search must be available to discover deferred provider tools")
 	}
 }
 

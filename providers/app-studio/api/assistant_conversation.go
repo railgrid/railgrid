@@ -78,6 +78,7 @@ func appendProjectAssistantInterruptedBoundary(ctx context.Context, messageStore
 
 type projectAssistantConversationCompactionCheckpoint struct {
 	Version                         int           `json:"version"`
+	ThreadID                        string        `json:"threadID,omitempty"`
 	ReplacementHistory              []chatMessage `json:"replacementHistory"`
 	Summary                         string        `json:"summary"`
 	TriggerID                       string        `json:"triggerID"`
@@ -375,7 +376,11 @@ func loadProjectAssistantConversation(ctx context.Context, messageStore store.St
 	return projection.messages, nil
 }
 
-func loadProjectAssistantConversationProjection(ctx context.Context, messageStore store.Store, scope store.Scope) (projectAssistantConversationProjection, error) {
+func loadProjectAssistantConversationProjection(ctx context.Context, messageStore store.Store, scope store.Scope, threadIDs ...string) (projectAssistantConversationProjection, error) {
+	threadID := ""
+	if len(threadIDs) > 0 {
+		threadID = strings.TrimSpace(threadIDs[0])
+	}
 	projection := projectAssistantConversationProjection{
 		messages: make([]chatMessage, 0, projectAssistantConversationPageSize),
 	}
@@ -392,13 +397,33 @@ func loadProjectAssistantConversationProjection(ctx context.Context, messageStor
 		}
 	}
 	for {
-		page, err := messageStore.ListAssistantConversationItems(ctx, scope, after, projectAssistantConversationPageSize)
+		var page []store.AssistantConversationItem
+		var err error
+		if threadID != "" {
+			page, err = messageStore.ListAssistantThreadConversationItems(ctx, scope, threadID, after, projectAssistantConversationPageSize)
+		} else {
+			page, err = messageStore.ListAssistantConversationItems(ctx, scope, after, projectAssistantConversationPageSize)
+		}
 		if err != nil {
 			return projectAssistantConversationProjection{}, err
 		}
 		for _, item := range page {
 			projection.lastSequence = item.Sequence
 			if item.Type == projectAssistantConversationCompaction {
+				// Pre-isolation summaries can contain other threads even when the
+				// summarizing run belongs to this thread. Rebuild from its original
+				// items instead of reusing a summary without an explicit boundary.
+				if threadID != "" {
+					var boundary struct {
+						ThreadID string `json:"threadID"`
+					}
+					if err := json.Unmarshal(item.Payload, &boundary); err != nil {
+						return projectAssistantConversationProjection{}, err
+					}
+					if boundary.ThreadID != threadID {
+						continue
+					}
+				}
 				var envelope map[string]json.RawMessage
 				if err := json.Unmarshal(item.Payload, &envelope); err != nil {
 					return projectAssistantConversationProjection{}, fmt.Errorf("decode assistant conversation compaction item %q: %w", item.ID, err)

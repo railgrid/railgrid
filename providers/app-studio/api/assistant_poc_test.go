@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -295,6 +296,10 @@ func TestProjectEinoAssistantRetryRecordsAuditAttempt(t *testing.T) {
 }
 
 func TestProjectEinoAssistantOptimizationModeIsStickyAcrossCheckpointResume(t *testing.T) {
+	t.Setenv(projectEinoAssistantOptimizationEnv, "")
+	if got := projectEinoAssistantOptimizationModeFromEnvironment(); got != projectEinoAssistantOptimizationCodexPOC {
+		t.Fatalf("default environment mode = %q, want searchable tools", got)
+	}
 	t.Setenv(projectEinoAssistantOptimizationEnv, "unknown")
 	if got := projectEinoAssistantOptimizationModeFromEnvironment(); got != "" {
 		t.Fatalf("unknown environment mode = %q, want legacy", got)
@@ -419,6 +424,49 @@ func TestProjectEinoAssistantToolSearchReducesSchemasAndLoadsSelectedCapability(
 		t.Fatal(err)
 	}
 	assertProjectEinoAssistantToolInfoPresence(t, pocModel.ToolInfos, projectToolCommitProjectFiles, true)
+}
+
+func TestProjectAssistantFullMCPCatalogIsSearchableWithinToolLimit(t *testing.T) {
+	t.Setenv(projectEinoAssistantOptimizationEnv, "")
+	h := newProjectAssistantV2ToolHarness(t, "full-mcp-catalog")
+	h.req.TurnPolicy = projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+	catalog := []projectMCPTool{{Name: "planner__planner_issues", Description: "Invoke issues on a registered Board."}}
+	for i := 0; i < 150; i++ {
+		catalog = append(catalog, projectMCPTool{Name: fmt.Sprintf("provider__operation_%d", i)})
+	}
+	discovery := projectEinoAssistantToolDiscovery{MCPTools: projectAssistantMCPToolsForSpecs(catalog)}
+	if len(discovery.MCPTools) != len(catalog) {
+		t.Fatal("discovered provider tools were filtered out")
+	}
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(h.req.TurnPolicy)
+	state.SetAgentOptimizationMode(projectEinoAssistantOptimizationModeFromEnvironment())
+	state.SetToolDiscovery(discovery)
+	lifecycle := projectEinoAssistantLifecycleMiddleware(h.req, state, h.server).(*projectEinoAssistantLifecycle)
+	model := &adk.ChatModelAgentState{}
+	if err := lifecycle.refreshExecutableToolContext(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectEinoAssistantToolInfoPresence(t, model.ToolInfos, "tool_search", true)
+	assertProjectEinoAssistantToolInfoPresence(t, model.ToolInfos, "planner__planner_issues", false)
+	matches := projectEinoAssistantSearchDynamicTools(discovery.MCPTools, "Planner issue list capability planner__planner_issues board issues", 5)
+	if len(matches) != 1 || matches[0].Name != "planner__planner_issues" {
+		t.Fatalf("Planner search matches = %#v", matches)
+	}
+	result, err := json.Marshal(projectEinoAssistantToolSearchResult{CatalogDigest: projectEinoAssistantDynamicToolCatalogDigest(discovery), Matches: matches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ApplyDynamicToolSearchResult(string(result)); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.refreshExecutableToolContext(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectEinoAssistantToolInfoPresence(t, model.ToolInfos, "planner__planner_issues", true)
+	if len(model.ToolInfos) > 128 {
+		t.Fatalf("selected catalog exposes %d tools, exceeding model limit", len(model.ToolInfos))
+	}
 }
 
 func TestProjectEinoAssistantPOCDefersCommitBeforeBackendAdmission(t *testing.T) {

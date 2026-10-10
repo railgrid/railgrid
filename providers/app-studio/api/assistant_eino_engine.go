@@ -193,6 +193,9 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	if state.Eino == nil || len(state.Eino.Checkpoint) == 0 || strings.TrimSpace(state.Eino.CheckpointID) == "" || strings.TrimSpace(state.Eino.InterruptID) == "" {
 		return projectAssistantRunResult{}, errors.New("eino checkpoint is required")
 	}
+	if state.ThreadID != req.ThreadID {
+		return projectAssistantRunResult{}, errors.New("assistant checkpoint has no matching thread boundary; start a new turn")
+	}
 	if err := projectAssistantValidateSkillCheckpointProvenance(state); err != nil {
 		projectAssistantSkillMetric("drift", "detected")
 		return projectAssistantRunResult{}, err
@@ -1096,6 +1099,7 @@ func (e projectEinoAssistantEngine) saveProjectAssistantPermissionInterrupt(
 ) error {
 	_, index, toolCalls := runState.ToolCallByID(info.ToolCallID, info.ToolName, info.ArgumentsInJSON)
 	state := runState.CheckpointState()
+	state.ThreadID = req.ThreadID
 	if len(state.ToolCalls) == 0 {
 		state.ToolCalls = cloneProjectAssistantToolCalls(toolCalls)
 	}
@@ -1139,6 +1143,7 @@ func (e projectEinoAssistantEngine) saveProjectAssistantFollowUpInterrupt(
 ) error {
 	_, index, toolCalls := runState.ToolCallByID(info.ToolCallID, projectToolAskFollowUp, projectEinoToolArgumentsString(map[string]any{"questions": info.Questions}))
 	state := runState.CheckpointState()
+	state.ThreadID = req.ThreadID
 	if len(state.ToolCalls) == 0 {
 		state.ToolCalls = cloneProjectAssistantToolCalls(toolCalls)
 	}
