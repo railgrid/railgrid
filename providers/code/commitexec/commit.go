@@ -61,6 +61,10 @@ const MaxCommitMessageLength = 512
 // (contents that still have to be stored) or Bundle (a bundle a large-upload
 // verb already stored under the same scope).
 type Request struct {
+	// RequestID enables replay-safe creation for an immutable staged bundle.
+	RequestID string
+	// RepositoryUID pins keyed requests to one Repository incarnation.
+	RepositoryUID string
 	// RepositoryRef names the managed Repository to commit into.
 	RepositoryRef string
 	// Message is the commit message; empty lets the backend choose one.
@@ -86,6 +90,12 @@ type Result struct {
 // with its own error shape (an MCP error, an action's invalid_action_input)
 // before any work starts.
 func (req *Request) Validate() error {
+	if req.RequestID != "" {
+		if !validCommitRequestID(req.RequestID) || strings.TrimSpace(req.RepositoryUID) == "" ||
+			req.Bundle == nil || strings.TrimSpace(req.Bundle.Digest) == "" {
+			return fmt.Errorf("requestID requires a repository UID and an immutable staged bundle with a digest")
+		}
+	}
 	req.RepositoryRef = strings.TrimSpace(req.RepositoryRef)
 	if req.RepositoryRef == "" {
 		return fmt.Errorf("repositoryRef is required")
@@ -124,9 +134,10 @@ func (req *Request) Validate() error {
 // ID, which is both the staging scope and — barring a disagreement the
 // function repairs — the scope the RepositoryCommit controller reads under.
 //
-// Every failure leaves nothing behind: a bundle written for a CR that could
-// not be created is deleted again, and a CR whose bundle could not be moved
-// into the controller's scope is deleted with it.
+// Legacy unkeyed requests clean up failed creations. Keyed requests retain
+// their immutable staged bundle on uncertain failures: a Create may have been
+// accepted even when its response was lost, and retry must recover that same
+// RepositoryCommit rather than destroy its source.
 func Create(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Store, tenantScope string, req Request) (Result, error) {
 	if bundles == nil {
 		return Result{}, fmt.Errorf("commit bundle store is unavailable")
@@ -140,6 +151,10 @@ func Create(ctx context.Context, dyn dynamic.Interface, bundles commitbundle.Sto
 	}
 	if err := req.Validate(); err != nil {
 		return Result{}, err
+	}
+
+	if req.RequestID != "" {
+		return createKeyedCommit(ctx, dyn, bundles, tenantScope, req)
 	}
 
 	// A staged bundle is read back (digest-verified) into the same file list

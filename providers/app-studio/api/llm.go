@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ import (
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	einoschema "github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	openaisdk "github.com/openai/openai-go/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -873,6 +875,14 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if projectRepositoryRef == "" {
 		return "", errors.New("project repository is not configured")
 	}
+	if s.workspaces == nil {
+		return "", errors.New("project workspace ledger is not configured; refusing to create an untracked repository commit")
+	}
+	if pending, ok, err := s.workspaces.PendingCommit(ctx, scope); err != nil {
+		return "", fmt.Errorf("read pending project commit: %w", err)
+	} else if ok {
+		return "", fmt.Errorf("project commit %q is already pending; wait for it to settle before requesting another commit", pending.RequestID)
+	}
 	repositoryRef := projectToolString(args["repositoryRef"])
 	if repositoryRef == "" {
 		return "", errors.New("repositoryRef is required")
@@ -899,6 +909,10 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		}
 		seen[clean] = struct{}{}
 		cleanPaths = append(cleanPaths, clean)
+	}
+	sourceRevision, err := s.workspaces.SourceRevision(ctx, scope)
+	if err != nil {
+		return "", fmt.Errorf("capture project source revision: %w", err)
 	}
 	files := make([]codecommit.File, 0, len(cleanPaths))
 	writtenPaths := make([]string, 0, len(cleanPaths))
@@ -942,6 +956,13 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		expectedDigest != workspaceDigest {
 		return "", errors.New("workspace content changed after commit approval; request approval again for the current content")
 	}
+	attributions, err := s.workspaces.SourceAttributions(ctx, scope, cleanPaths)
+	if err != nil {
+		return "", fmt.Errorf("capture project source attributions: %w", err)
+	}
+	if err := s.workspaces.VerifySourceRevision(ctx, scope, sourceRevision); err != nil {
+		return "", errors.New("workspace changed while the commit contents were being prepared; request approval again for the current content")
+	}
 
 	// The action is addressed at the Repository by name and PINNED by UID: the
 	// provider refuses a UID that does not match what its own read returns, so
@@ -955,43 +976,91 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if s.callers == nil {
 		return "", errors.New("no provider credential configured; cannot reach the Code provider to commit")
 	}
-	created, err := (&codecommit.Client{Callers: s.callers}).Commit(ctx, codecommit.Request{
+	message := strings.TrimSpace(projectToolString(args["message"]))
+	branch := strings.TrimSpace(projectToolString(args["branch"]))
+	requestID := uuid.NewString()
+	code := &codecommit.Client{Callers: s.callers}
+	request := codecommit.Request{
 		Cluster:       id.clusterID,
 		RepositoryRef: projectRepositoryRef,
 		RepositoryUID: repositoryUID,
-		Message:       projectToolString(args["message"]),
-		Branch:        projectToolString(args["branch"]),
+		Message:       message,
+		Branch:        branch,
 		Files:         files,
-	})
-	if err != nil {
-		return "", err
 	}
-
-	// Record the commit the way the reconciler records its own, so the single
-	// settlement path converges it: the RepositoryCommit watch reads this
-	// record, checks the digest still matches, clears exactly those paths and
-	// announces the SHA. Recording it is best-effort in one direction only —
-	// the commit HAS been requested, so failing the tool here would invite a
-	// duplicate commit on retry; what is lost without the record is the
-	// automatic settlement, and the next reconcile re-commits the same paths.
-	if s.workspaces != nil {
-		if err := s.workspaces.RecordPendingCommit(ctx, scope, workspace.PendingCommit{
-			Name:            created.Name,
-			RepositoryRef:   projectRepositoryRef,
-			WorkspaceDigest: workspaceDigest,
-			Paths:           cleanPaths,
-		}); err != nil {
-			klog.V(2).Infof("record pending RepositoryCommit %s for project %s: %v", created.Name, scope.ProjectName, err)
+	staged, err := code.StageBundle(ctx, request)
+	if err != nil {
+		return "", fmt.Errorf("stage immutable commit contents: %w", err)
+	}
+	intent := workspace.PendingCommit{
+		RequestID:       requestID,
+		RepositoryRef:   projectRepositoryRef,
+		RepositoryUID:   repositoryUID,
+		BundleRef:       staged.BundleRef,
+		BundleDigest:    staged.BundleDigest,
+		Message:         message,
+		Branch:          branch,
+		WorkspaceDigest: workspaceDigest,
+		Paths:           cleanPaths,
+		SourceRevision:  sourceRevision,
+		Attributions:    attributions,
+	}
+	if err := s.workspaces.ReservePendingCommit(ctx, scope, intent); err != nil {
+		if errors.Is(err, workspace.ErrPendingCommitExists) {
+			return "", errors.New("another project commit was reserved while this request was being prepared; no RepositoryCommit was created")
+		}
+		// A status write can commit while its response is lost. Confirm the
+		// exact immutable intent before deciding no action may be sent.
+		current, ok, readErr := s.workspaces.PendingCommit(ctx, scope)
+		if readErr != nil || !ok || current.RequestID != requestID || !sameCommitRequest(current, intent) {
+			return "", fmt.Errorf("reserve durable project commit: %w", err)
 		}
 	}
 	// Wake the Project reconciler now rather than on its next event: it is
-	// what follows the RepositoryCommit to settlement, and the sooner it has
-	// the record the sooner the committed paths stop reading as dirty.
+	// the durable owner of retries after this request is recorded.
 	s.signalProject(id.workspaceUUID, scope.ProjectName)
+
+	created, commitErr := code.Commit(ctx, codecommit.Request{
+		Cluster:       id.clusterID,
+		RepositoryRef: projectRepositoryRef,
+		RepositoryUID: repositoryUID,
+		RequestID:     requestID,
+		BundleRef:     staged.BundleRef,
+		BundleDigest:  staged.BundleDigest,
+		Message:       message,
+		Branch:        branch,
+	})
+	if commitErr == nil {
+		if err := s.workspaces.BindPendingCommitName(ctx, scope, requestID, created.Name); err != nil {
+			commitErr = fmt.Errorf("bind returned RepositoryCommit name: %w", err)
+		}
+	}
+	if commitErr != nil {
+		// The intent is already durable. The reconciler retries the same key and
+		// immutable bundle, so returning a transport error here must not invite a
+		// second request with different bytes.
+		klog.V(2).Infof("project %s commit intent %s is awaiting recovery: %v", scope.ProjectName, requestID, commitErr)
+		result := map[string]any{
+			"requestID":     requestID,
+			"repositoryRef": projectRepositoryRef,
+			"status":        "reserved",
+			"files":         writtenPaths,
+			"note":          "The commit request and its immutable contents are saved. App Studio is retrying the same request; wait for the RepositoryCommit to be reported before requesting another commit.",
+		}
+		if len(deletePaths) > 0 {
+			result["deletePaths"] = deletePaths
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
+	}
 
 	result := map[string]any{
 		"name":          created.Name,
 		"uid":           created.UID,
+		"requestID":     requestID,
 		"repositoryRef": projectRepositoryRef,
 		"files":         writtenPaths,
 		"note":          "The commit was requested; RepositoryCommit " + created.Name + " is the object it lands under. App Studio follows it to completion and clears the committed paths when it succeeds.",
@@ -999,7 +1068,7 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if len(deletePaths) > 0 {
 		result["deletePaths"] = deletePaths
 	}
-	if branch := projectToolString(args["branch"]); branch != "" {
+	if branch != "" {
 		result["branch"] = branch
 	}
 	raw, err := json.Marshal(result)
@@ -1007,6 +1076,13 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		return "", err
 	}
 	return string(raw), nil
+}
+
+func sameCommitRequest(a, b workspace.PendingCommit) bool {
+	return a.RequestID == b.RequestID && a.RepositoryRef == b.RepositoryRef && a.RepositoryUID == b.RepositoryUID &&
+		a.BundleRef == b.BundleRef && a.BundleDigest == b.BundleDigest && a.Message == b.Message && a.Branch == b.Branch &&
+		a.WorkspaceDigest == b.WorkspaceDigest && a.SourceRevision == b.SourceRevision &&
+		reflect.DeepEqual(a.Paths, b.Paths) && reflect.DeepEqual(a.Attributions, b.Attributions)
 }
 
 // projectRepositoryUID reads the Code Repository this project is bound to, as

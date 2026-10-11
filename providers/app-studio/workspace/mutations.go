@@ -70,10 +70,11 @@ const (
 // MutationError is a bounded, safe error returned by ordinary file
 // operations. Details never include file contents.
 type MutationError struct {
-	Code        MutationErrorCode `json:"code"`
-	Path        string            `json:"path,omitempty"`
-	Occurrences int               `json:"occurrences,omitempty"`
-	Message     string            `json:"message"`
+	Code         MutationErrorCode `json:"code"`
+	Path         string            `json:"path,omitempty"`
+	Occurrences  int               `json:"occurrences,omitempty"`
+	Message      string            `json:"message"`
+	ChangedFiles []string          `json:"changedFiles,omitempty"`
 }
 
 func (e *MutationError) Error() string {
@@ -87,7 +88,14 @@ func (e *MutationError) Error() string {
 }
 
 func newMutationError(code MutationErrorCode, path, message string) *MutationError {
-	return &MutationError{Code: code, Path: path, Message: message}
+	e := &MutationError{Code: code, Path: path, Message: message}
+	switch code {
+	case MutationErrorStale, MutationErrorConflict, MutationErrorTargetExists, MutationErrorTargetNotFound:
+		if path != "" {
+			e.ChangedFiles = []string{path}
+		}
+	}
+	return e
 }
 
 // EditTextNotFoundError classifies an exact-match failure against the source
@@ -533,11 +541,15 @@ func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOpti
 	if err := ctx.Err(); err != nil {
 		return MutationResult{}, err
 	}
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	mutation, err := s.beginSourceMutation(ctx, scope, []string{clean})
+	if err != nil {
 		return MutationResult{}, err
 	}
 	if err := os.Remove(target); err != nil {
-		return MutationResult{}, fmt.Errorf("delete %q: %w", clean, err)
+		return MutationResult{}, errors.Join(fmt.Errorf("delete %q: %w", clean, err), s.failSourceMutation(ctx, scope, mutation, true))
+	}
+	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+		return MutationResult{}, errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
 	}
 	if current.content == nil || current.binary {
 		result := binaryMutationResult("delete_file", clean, 0, "")
@@ -611,14 +623,20 @@ func (s *FileStore) MoveFile(ctx context.Context, scope Scope, opts MoveOptions)
 	if err := ctx.Err(); err != nil {
 		return MutationResult{}, err
 	}
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	mutation, err := s.beginSourceMutation(ctx, scope, []string{source, destination})
+	if err != nil {
 		return MutationResult{}, err
 	}
 	if err := linkAndRemoveSource(sourceTarget, destinationTarget); err != nil {
+		var rollbackErr *incompleteMoveRollbackError
+		treeRestored := !errors.As(err, &rollbackErr)
 		if errors.Is(err, fs.ErrExist) {
-			return MutationResult{}, newMutationError(MutationErrorTargetExists, destination, "destination file appeared during move")
+			return MutationResult{}, errors.Join(newMutationError(MutationErrorTargetExists, destination, "destination file appeared during move"), s.failSourceMutation(ctx, scope, mutation, treeRestored))
 		}
-		return MutationResult{}, fmt.Errorf("move %q to %q: %w", source, destination, err)
+		return MutationResult{}, errors.Join(fmt.Errorf("move %q to %q: %w", source, destination, err), s.failSourceMutation(ctx, scope, mutation, treeRestored))
+	}
+	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+		return MutationResult{}, errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
 	}
 	var result MutationResult
 	if current.content == nil || current.binary {
@@ -645,17 +663,36 @@ func linkAndRemoveSource(source, destination string) error {
 	} else {
 		rollbackErr := os.Remove(destination)
 		if rollbackErr != nil {
-			return errors.Join(err, fmt.Errorf("rollback destination: %w", rollbackErr))
+			return errors.Join(err, &incompleteMoveRollbackError{err: fmt.Errorf("rollback destination: %w", rollbackErr)})
 		}
 		return err
 	}
 }
 
+type incompleteMoveRollbackError struct {
+	err error
+}
+
+func (e *incompleteMoveRollbackError) Error() string {
+	return e.err.Error()
+}
+
+func (e *incompleteMoveRollbackError) Unwrap() error {
+	return e.err
+}
+
 func (s *FileStore) writeMutationLocked(ctx context.Context, scope Scope, clean string, content []byte, createOnly bool) error {
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	mutation, err := s.beginSourceMutation(ctx, scope, []string{clean})
+	if err != nil {
 		return err
 	}
-	return s.writeMutationFile(ctx, scope, clean, content, 0, createOnly)
+	if err := s.writeMutationFile(ctx, scope, clean, content, 0, createOnly); err != nil {
+		return errors.Join(err, s.failSourceMutation(ctx, scope, mutation, true))
+	}
+	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+		return errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
+	}
+	return nil
 }
 
 func (s *FileStore) writeMutationFile(ctx context.Context, scope Scope, clean string, content []byte, mode fs.FileMode, createOnly bool) error {

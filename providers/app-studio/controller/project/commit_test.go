@@ -13,6 +13,7 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,16 @@ func (env *commitTestEnv) commits() int {
 	return n
 }
 
+func (env *commitTestEnv) stages() int {
+	n := 0
+	for _, call := range env.calls {
+		if call.verb == codecommit.StageBundleAction {
+			n++
+		}
+	}
+	return n
+}
+
 func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), objects ...runtime.Object) *commitTestEnv {
 	t.Helper()
 	if respond == nil {
@@ -179,6 +190,14 @@ func newCommitTestEnv(t *testing.T, respond func(call int) (string, string), obj
 		}
 		name, failCode := env.respond(env.commits())
 		if failCode != "" {
+			if failCode == "lost_response" {
+				// Model Code accepting the request and persisting its object while
+				// the response is lost between providers.
+				commit := repositoryCommitObject(name, "Running", "")
+				if err := env.c.Create(env.ctx, commit); err != nil {
+					t.Errorf("persist accepted RepositoryCommit before losing response: %v", err)
+				}
+			}
 			w.WriteHeader(http.StatusBadGateway)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": failCode, "message": failCode}})
 			return
@@ -320,10 +339,9 @@ func repositoryCommitObject(name, phase, sha string) *unstructured.Unstructured 
 	return obj
 }
 
-// The whole protocol in one test: the action is invoked on the grammar with
-// the Repository's UID pinned, the RepositoryCommit it names is recorded as
-// pending on both the ledger and the Project, and nothing is settled until
-// the CR itself says Succeeded.
+// The whole protocol in one test: App Studio stages immutable bytes, records
+// a keyed intent before invoking the action, and follows the returned
+// RepositoryCommit. Nothing is settled until the CR itself says Succeeded.
 func TestCommitWorkspaceRequestsTheActionAndFollowsTheRepositoryCommit(t *testing.T) {
 	env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
 
@@ -331,19 +349,23 @@ func TestCommitWorkspaceRequestsTheActionAndFollowsTheRepositoryCommit(t *testin
 	if err != nil || !dirty {
 		t.Fatalf("commit = dirty %t, err %v; want the commit pending", dirty, err)
 	}
-	if env.commits() != 1 || env.calls[0].verb != codecommit.Action {
-		t.Fatalf("action calls = %+v, want one commit", env.calls)
+	if env.stages() != 1 || env.commits() != 1 || len(env.calls) != 2 ||
+		env.calls[0].verb != codecommit.StageBundleAction || env.calls[1].verb != codecommit.Action {
+		t.Fatalf("action calls = %+v, want one stage then one commit", env.calls)
 	}
-	input := env.calls[0].input
+	input := env.calls[1].input
 	if input["repositoryUID"] != "repo-uid" {
 		t.Fatalf("action input does not pin the Repository: %+v", input)
 	}
-	files, _ := input["files"].([]any)
-	if len(files) != 1 || files[0].(map[string]any)["path"] != "app.txt" {
-		t.Fatalf("action input files = %+v", files)
+	if input["requestID"] == "" || input["bundleRef"] != "bundle-1" || input["bundleDigest"] != "sha256:deadbeef" {
+		t.Fatalf("action input does not carry its keyed immutable bundle: %+v", input)
 	}
-	if _, hasBundle := input["bundleRef"]; hasBundle {
-		t.Fatalf("a one-file commit was staged: %+v", input)
+	if _, hasFiles := input["files"]; hasFiles {
+		t.Fatalf("keyed commit carried mutable inline files: %+v", input)
+	}
+	files, _ := env.calls[0].input["files"].([]any)
+	if len(files) != 1 || files[0].(map[string]any)["path"] != "app.txt" {
+		t.Fatalf("staged input files = %+v", files)
 	}
 	if name, ok := env.pendingCommit(); !ok || name != "commit-1" {
 		t.Fatalf("pending commit = %q, %t; want commit-1 recorded and pointed at", name, ok)
@@ -422,17 +444,19 @@ func TestCommitWorkspaceResendsAfterPendingCommitFails(t *testing.T) {
 	}
 }
 
-func TestCommitWorkspaceResendsWhenPendingCommitIsGone(t *testing.T) {
-	// No RepositoryCommit object at all: the provider never persisted it.
-	env := newCommitTestEnv(t, nil)
+func TestCommitWorkspaceReplaysWhenPendingCommitIsGone(t *testing.T) {
+	// No RepositoryCommit object at all: this fake models an action whose
+	// keyed object was not present when read. Replay still uses the same key,
+	// and Code must return that request's stable object name.
+	env := newCommitTestEnv(t, func(int) (string, string) { return "commit-1", "" })
 	if dirty, err := env.commit(); err != nil || !dirty {
 		t.Fatalf("first commit = dirty %t, err %v; want pending", dirty, err)
 	}
 	if dirty, err := env.commit(); err != nil || !dirty {
 		t.Fatalf("after the pending commit vanished = dirty %t, err %v", dirty, err)
 	}
-	if env.commits() != 2 || len(env.notified) != 0 {
-		t.Fatalf("calls = %d, notified = %+v; want one fresh commit and no announcement", env.commits(), env.notified)
+	if env.commits() != 2 || env.stages() != 1 || len(env.notified) != 0 {
+		t.Fatalf("stages=%d calls=%d notified=%+v; want same keyed replay and no announcement", env.stages(), env.commits(), env.notified)
 	}
 }
 
@@ -458,7 +482,9 @@ func TestPendingCommitIsOneRecordOnTheProject(t *testing.T) {
 	}
 	pending := stored.Status.Workspace.PendingCommit
 	if pending == nil || pending.Name != "commit-1" ||
-		pending.RepositoryRef != "demo-repo" || pending.WorkspaceDigest == "" ||
+		pending.RepositoryRef != "demo-repo" || pending.RepositoryUID != "repo-uid" ||
+		pending.BundleRef != "bundle-1" || pending.BundleDigest != "sha256:deadbeef" ||
+		pending.RequestID == "" || pending.WorkspaceDigest == "" ||
 		len(pending.Paths) != 1 || pending.Paths[0] != "app.txt" {
 		t.Fatalf("Project.status.workspace.pendingCommit = %#v", pending)
 	}
@@ -474,8 +500,87 @@ func TestPendingCommitIsOneRecordOnTheProject(t *testing.T) {
 	}
 }
 
-// A refused action leaves the files dirty and records nothing: there is no
-// RepositoryCommit to follow, so the next idle pass simply tries again.
+// If Code accepts a keyed commit but the response is lost, the Project keeps
+// the reservation without a name. Reconciliation repeats the exact request
+// and staged bundle; it never restages the now-mutable workspace contents.
+func TestCommitWorkspaceRecoversLostResponseWithSameImmutableIntent(t *testing.T) {
+	env := newCommitTestEnv(t, func(call int) (string, string) {
+		if call == 1 {
+			return "commit-1", "lost_response"
+		}
+		return "commit-1", ""
+	})
+
+	if dirty, err := env.commit(); err == nil || !dirty {
+		t.Fatalf("first pass = dirty %t, err %v; want the unknown outcome preserved", dirty, err)
+	}
+	reserved, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok {
+		t.Fatalf("reserved intent = %#v, %t, %v", reserved, ok, err)
+	}
+	if reserved.Name != "" || reserved.RequestID == "" || reserved.BundleRef != "bundle-1" || reserved.BundleDigest != "sha256:deadbeef" {
+		t.Fatalf("lost response did not leave the immutable unnamed intent: %#v", reserved)
+	}
+
+	// A later local mutation must not change what the existing request commits.
+	env.write("later.txt", "later\n")
+	if dirty, err := env.commit(); err != nil || !dirty {
+		t.Fatalf("recovery pass = dirty %t, err %v; want the same request pending", dirty, err)
+	}
+	if env.stages() != 1 || env.commits() != 2 {
+		t.Fatalf("stages=%d commits=%d; want one stage and an idempotent replay", env.stages(), env.commits())
+	}
+	first, second := env.calls[1].input, env.calls[2].input
+	for _, key := range []string{"requestID", "repositoryUID", "bundleRef", "bundleDigest", "message", "branch"} {
+		if first[key] != second[key] {
+			t.Fatalf("replayed input %s changed: first=%v second=%v", key, first[key], second[key])
+		}
+	}
+	if _, hasFiles := second["files"]; hasFiles {
+		t.Fatalf("recovery reread mutable files instead of using the reservation: %+v", second)
+	}
+	if name, ok := env.pendingCommit(); !ok || name != "commit-1" {
+		t.Fatalf("recovered pending name = %q, %t", name, ok)
+	}
+}
+
+type rejectCommitReservationLedger struct {
+	workspace.Ledger
+}
+
+func (l rejectCommitReservationLedger) Update(ctx context.Context, scope workspace.Scope, mutate func(*workspace.LedgerRecord) (bool, error)) (workspace.LedgerRecord, error) {
+	return l.Ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		changed, err := mutate(record)
+		if err != nil || !changed || record.PendingCommit == nil || record.PendingCommit.RequestID == "" {
+			return changed, err
+		}
+		return false, errors.New("injected Project reservation write failure")
+	})
+}
+
+// Staging may leave an orphan bundle, but no RepositoryCommit action may run
+// until the immutable intent has been durably reserved on the Project.
+func TestCommitWorkspaceDoesNotCallCommitWhenReservationFails(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	ledger := rejectCommitReservationLedger{Ledger: projectledger.FromControllerClient(env.c)}
+	env.files.SetLedger(ledger)
+	env.ctx = workspace.ContextWithLedger(env.ctx, ledger)
+
+	dirty, err := env.commit()
+	if err == nil || !dirty {
+		t.Fatalf("commit = dirty %t, err %v; want reservation failure", dirty, err)
+	}
+	if env.stages() != 1 || env.commits() != 0 {
+		t.Fatalf("stages=%d commits=%d; want an orphan stage and no commit action", env.stages(), env.commits())
+	}
+	if _, ok, err := env.files.PendingCommit(env.ctx, env.scope); err != nil || ok {
+		t.Fatalf("pending after failed reservation = %t, %v; want none", ok, err)
+	}
+}
+
+// Even a refused action leaves its immutable intent reserved: a timeout or
+// response lost after an earlier attempt must never allow a different request
+// to overwrite the possibly accepted commit.
 func TestCommitWorkspaceRefusalLeavesFilesDirty(t *testing.T) {
 	env := newCommitTestEnv(t, func(int) (string, string) { return "", "action_forbidden" })
 	dirty, err := env.commit()
@@ -485,8 +590,12 @@ func TestCommitWorkspaceRefusalLeavesFilesDirty(t *testing.T) {
 	if !strings.Contains(err.Error(), "action_forbidden") {
 		t.Fatalf("error does not carry the provider's typed code: %v", err)
 	}
-	if _, ok := env.pendingCommit(); ok {
-		t.Fatal("a refused commit was recorded as pending")
+	if name, ok := env.pendingCommit(); !ok || name != "" {
+		t.Fatalf("reserved commit = %q, %t; want the unnamed intent retained", name, ok)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.RequestID == "" || pending.BundleRef == "" {
+		t.Fatalf("pending recovery intent = %#v, %t, %v", pending, ok, err)
 	}
 	if got := env.pending(); len(got) != 1 {
 		t.Fatalf("uncommitted paths = %v, want the file still dirty", got)

@@ -330,6 +330,35 @@ Admission and the terminal boundary share one lock, so late input is either
 queued or rejected for the next run, never acknowledged and lost. The active
 collaboration mode remains sticky.
 
+The Project's durable workspace status supports source revisions and trusted
+thread/run attribution for source changes and acknowledged preview checkpoints.
+This storage foundation accepts origins attached by server-side callers; the
+thread-aware mutation and preview wiring is delivered separately. File
+transactions require current versions for replacements and deletions and
+create-only semantics for new files; conflicting transactions apply no changes.
+Writes without a trusted origin remain unattributed. A mutation reserves its
+revision before changing bytes and records its origin only after it succeeds.
+A complete rollback leaves the restored tree usable; an incomplete rollback or
+stale replica cannot certify that tree as current.
+
+Commits stage an immutable source bundle in Code, then reserve a single durable
+intent on the Project before requesting a RepositoryCommit. Retries use the
+saved bundle, repository UID, and request ID, so a lost response does not create
+a second commit or pick up newer edits. Settlement and failure callbacks are
+fenced to that intent. A changed repository binding or recreated Repository
+blocks an unbound intent for operator recovery rather than replaying it against
+a different repository. Code retains staged bundles under its existing 24-hour
+orphan retention policy. If an outage outlasts that window before a commit is
+created, recovery remains blocked for operator attention; it does not rebuild
+the saved request from newer source files.
+
+Roll out the Code provider's keyed commit support before this App Studio
+version, then drain older App Studio writers before admitting new commits:
+older writers do not understand reservations without a commit name. App Studio
+does not fall back to an unkeyed commit. The optional
+`requestID` input changes the commit action's schema digest; saved integration
+grants for that action must be reviewed against the new schema.
+
 New assistant runs use one sticky collaboration mode: `Default`, `Plan`, or
 `Review`. `Plan` is read-only. `Review` is an explicitly started, independently
 durable read-only turn over the `current_workspace` target; clients start one

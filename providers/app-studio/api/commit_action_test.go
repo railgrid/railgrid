@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,6 +46,7 @@ type codeCommitActionCall struct {
 	Verb  string
 	Input struct {
 		RepositoryUID string            `json:"repositoryUID"`
+		RequestID     string            `json:"requestID"`
 		Message       string            `json:"message"`
 		Branch        string            `json:"branch"`
 		Files         []codecommit.File `json:"files"`
@@ -126,6 +128,18 @@ func (h *codeCommitHub) commits() []codeCommitActionCall {
 	return out
 }
 
+func (h *codeCommitHub) actions(verb string) []codeCommitActionCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []codeCommitActionCall
+	for _, call := range h.calls {
+		if call.Verb == verb {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
 // testCodeRepository is the Repository the commit is pinned to: the tool reads
 // it as the caller to learn the UID the action refuses to commit without.
 func testCodeRepository(name, uid string) *unstructured.Unstructured {
@@ -183,15 +197,22 @@ func TestCommitToolCallsTheVerbAsTheProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	stages := hub.actions(codecommit.StageBundleAction)
 	commits := hub.commits()
+	if len(stages) != 1 || len(hub.actions(codecommit.Action)) != 1 {
+		t.Fatalf("stage calls=%d commit calls=%d; want one immutable stage then one keyed commit", len(stages), len(hub.actions(codecommit.Action)))
+	}
 	if len(commits) != 1 {
 		t.Fatalf("commit action calls = %d, want 1", len(commits))
 	}
 	if commits[0].Input.RepositoryUID != testCommitRepositoryUID {
 		t.Fatalf("repositoryUID = %q, want the Repository's own UID", commits[0].Input.RepositoryUID)
 	}
-	if len(commits[0].Input.Files) != 1 || commits[0].Input.Files[0].Path != "index.html" || commits[0].Input.Files[0].Content != "hello\n" {
-		t.Fatalf("files = %#v", commits[0].Input.Files)
+	if commits[0].Input.RequestID == "" || commits[0].Input.BundleRef != "bundle-1" || commits[0].Input.BundleDigest != "digest-1" || len(commits[0].Input.Files) != 0 {
+		t.Fatalf("commit input = %#v; want a keyed reference to the staged bundle", commits[0].Input)
+	}
+	if files := stages[0].Input.Files; len(files) != 1 || files[0].Path != "index.html" || files[0].Content != "hello\n" {
+		t.Fatalf("staged files = %#v", files)
 	}
 	decoded := map[string]any{}
 	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
@@ -206,7 +227,9 @@ func TestCommitToolCallsTheVerbAsTheProvider(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("pending commit = %v, %v, %v", pending, ok, err)
 	}
-	if pending.Name != "commit-1" || pending.RepositoryRef != testCommitRepositoryRef {
+	if pending.Name != "commit-1" || pending.RequestID != commits[0].Input.RequestID ||
+		pending.RepositoryRef != testCommitRepositoryRef || pending.RepositoryUID != testCommitRepositoryUID ||
+		pending.BundleRef != "bundle-1" || pending.BundleDigest != "digest-1" {
 		t.Fatalf("pending commit = %#v", pending)
 	}
 }
@@ -235,12 +258,12 @@ func TestCommitToolSendsDeletionsInTheFileList(t *testing.T) {
 		map[string]any{"repositoryRef": testCommitRepositoryRef, "paths": []any{"src/old.ts", "src/new.ts"}}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	commits := hub.commits()
-	if len(commits) != 1 {
-		t.Fatalf("commit action calls = %d, want 1", len(commits))
+	stages := hub.actions(codecommit.StageBundleAction)
+	if len(stages) != 1 || len(hub.commits()) != 1 {
+		t.Fatalf("stage calls=%d commit calls=%d, want one each", len(stages), len(hub.commits()))
 	}
 	var sawDelete, sawWrite bool
-	for _, file := range commits[0].Input.Files {
+	for _, file := range stages[0].Input.Files {
 		switch file.Path {
 		case "src/old.ts":
 			sawDelete = file.Delete && file.Content == ""
@@ -249,7 +272,7 @@ func TestCommitToolSendsDeletionsInTheFileList(t *testing.T) {
 		}
 	}
 	if !sawDelete || !sawWrite {
-		t.Fatalf("files = %#v, want one write and one deletion", commits[0].Input.Files)
+		t.Fatalf("staged files = %#v, want one write and one deletion", stages[0].Input.Files)
 	}
 }
 
@@ -293,12 +316,12 @@ func TestCommitToolSendsBinariesBase64(t *testing.T) {
 		map[string]any{"repositoryRef": testCommitRepositoryRef, "paths": []any{"public/logo.png", "src/app.ts"}}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	commits := hub.commits()
-	if len(commits) != 1 {
-		t.Fatalf("commit action calls = %d, want 1", len(commits))
+	stages := hub.actions(codecommit.StageBundleAction)
+	if len(stages) != 1 || len(hub.commits()) != 1 {
+		t.Fatalf("stage calls=%d commit calls=%d, want one each", len(stages), len(hub.commits()))
 	}
 	var sawBinary bool
-	for _, file := range commits[0].Input.Files {
+	for _, file := range stages[0].Input.Files {
 		switch file.Path {
 		case "public/logo.png":
 			sawBinary = file.Encoding == "base64"
@@ -309,7 +332,52 @@ func TestCommitToolSendsBinariesBase64(t *testing.T) {
 		}
 	}
 	if !sawBinary {
-		t.Fatalf("binary entry missing or not base64: %#v", commits[0].Input.Files)
+		t.Fatalf("binary entry missing or not base64: %#v", stages[0].Input.Files)
+	}
+}
+
+type rejectCommitReservationLedger struct {
+	workspace.Ledger
+}
+
+func (l rejectCommitReservationLedger) Update(ctx context.Context, scope workspace.Scope, mutate func(*workspace.LedgerRecord) (bool, error)) (workspace.LedgerRecord, error) {
+	return l.Ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		changed, err := mutate(record)
+		if err != nil || !changed || record.PendingCommit == nil || record.PendingCommit.RequestID == "" {
+			return changed, err
+		}
+		return false, errors.New("injected Project reservation write failure")
+	})
+}
+
+// The assistant can orphan an immutable staged bundle if Project status
+// reservation fails, but it must not create a RepositoryCommit first.
+func TestCommitToolDoesNotCallCommitWhenReservationFails(t *testing.T) {
+	ctx := context.Background()
+	hub := &codeCommitHub{}
+	upstream := hub.serve(t)
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
+	base := workspace.NewMemoryLedger()
+	workspaces.SetLedger(base)
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "index.html", Content: "hello\n"}})
+	// Inject a status failure only when ReservePendingCommit tries to publish
+	// its intent, while preserving the source state created above.
+	ledger := rejectCommitReservationLedger{Ledger: base}
+	ctx = workspace.ContextWithLedger(ctx, ledger)
+	server := newCommitActionServer(t, workspaces, upstream.URL)
+	if _, err := server.commitProjectWorkspaceFiles(ctx, testCommitIdentity(), scope, nil, testCommitRepositoryRef,
+		map[string]any{"repositoryRef": testCommitRepositoryRef, "paths": []any{"index.html"}}); err == nil {
+		t.Fatal("commit returned no error after Project reservation failed")
+	}
+	if got := hub.actions(codecommit.StageBundleAction); len(got) != 1 {
+		t.Fatalf("stage calls = %d, want one staged orphan", len(got))
+	}
+	if got := hub.commits(); len(got) != 0 {
+		t.Fatalf("commit calls = %d, want none before durable reservation", len(got))
+	}
+	if _, ok, err := workspaces.PendingCommit(ctx, scope); err != nil || ok {
+		t.Fatalf("pending commit after failed reservation = %t, %v; want none", ok, err)
 	}
 }
 

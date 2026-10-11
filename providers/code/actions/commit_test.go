@@ -10,9 +10,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/commitbundle"
@@ -222,5 +225,131 @@ func TestCommitActionDeniedWithoutVisibility(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Fatalf("a denied commit left %d RepositoryCommit(s) behind", len(list.Items))
+	}
+}
+
+func keyedCommitInput(t *testing.T, f *commitFixture) map[string]any {
+	t.Helper()
+	bundle, err := f.bundles.Put(context.Background(), testCluster, []commitbundle.File{{Path: "app.txt", Content: "source"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]any{"repositoryUID": "repo-uid", "requestID": "request-1", "bundleRef": bundle.Name, "bundleDigest": bundle.Digest, "message": "Saved source"}
+}
+
+func TestKeyedCommitReplaysAfterBundleCollectionAndStillAuthorizes(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial: %d %s", response.Code, response.Body.String())
+	}
+	if err := f.bundles.Delete(context.Background(), testCluster, input["bundleRef"].(string), input["bundleDigest"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replay after bundle GC: %d %s", response.Code, response.Body.String())
+	}
+	input["message"] = "A different commit"
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("changed request: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 {
+		t.Fatalf("commits=%v err=%v", list, err)
+	}
+	f.visible = false
+	input["message"] = "Saved source"
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code == http.StatusOK {
+		t.Fatal("replay bypassed current authorization")
+	}
+}
+
+func TestKeyedCommitRecoversAcceptedCreateWithLostResponse(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	lost := false
+	f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if lost {
+			return false, nil, nil
+		}
+		lost = true
+		object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		annotations := object.GetAnnotations()
+		annotations["kcp.io/cluster"] = testCluster
+		object.SetAnnotations(annotations)
+		object.SetUID("accepted-commit-uid")
+		if err := f.provider.Tracker().Add(object); err != nil {
+			return true, nil, err
+		}
+		return true, nil, errors.New("connection lost after create was accepted")
+	})
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("lost response: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := f.bundles.Get(context.Background(), testCluster, input["bundleRef"].(string), input["bundleDigest"].(string)); err != nil {
+		t.Fatalf("accepted commit bundle removed: %v", err)
+	}
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("recovered response: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 || list.Items[0].GetUID() != "accepted-commit-uid" {
+		t.Fatalf("recovery duplicated the commit: %v, %v", list, err)
+	}
+}
+
+func TestKeyedCommitConcurrentCreateReturnsExistingObject(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
+		object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		annotations := object.GetAnnotations()
+		annotations["kcp.io/cluster"] = testCluster
+		object.SetAnnotations(annotations)
+		object.SetUID("other-replica-commit")
+		if err := f.provider.Tracker().Add(object); err != nil {
+			return true, nil, err
+		}
+		return true, nil, apierrors.NewAlreadyExists(repositoryCommits.GroupResource(), object.GetName())
+	})
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("concurrent create: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 || list.Items[0].GetUID() != "other-replica-commit" {
+		t.Fatalf("did not reuse concurrent commit: %v, %v", list, err)
+	}
+}
+
+// A retained fingerprint must not certify a RepositoryCommit whose spec was
+// changed through the ordinary Kubernetes API after creation.
+func TestKeyedCommitRejectsChangedStoredIntent(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 {
+		t.Fatalf("commits=%v err=%v", list, err)
+	}
+	obj := list.Items[0].DeepCopy()
+	if err := unstructured.SetNestedField(obj.Object, "tampered", "spec", "message"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.provider.Resource(repositoryCommits).Update(context.Background(), obj, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("changed stored spec: %d %s", response.Code, response.Body.String())
 	}
 }

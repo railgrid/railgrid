@@ -40,6 +40,7 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 	appskills "github.com/railgrid/provider-app-studio/skills"
 	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 type CreateProjectRequest struct {
@@ -90,19 +91,21 @@ type ProjectView struct {
 	// Deleting is derived from metadata.deletionTimestamp, not from the
 	// controller's eventually-updated status phase. This keeps terminating
 	// projects visibly locked while their finalizers complete.
-	Deleting       bool                          `json:"deleting"`
-	DisplayName    string                        `json:"displayName"`
-	Description    string                        `json:"description,omitempty"`
-	Phase          string                        `json:"phase,omitempty"`
-	Template       string                        `json:"template,omitempty"`
-	Repository     *ProjectRepositoryView        `json:"repository,omitempty"`
-	Memory         aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
-	Sharing        aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
-	Environments   []ProjectEnvironmentView      `json:"environments,omitempty"`
-	CreatedAt      time.Time                     `json:"createdAt"`
-	UpdatedAt      *time.Time                    `json:"updatedAt,omitempty"`
-	SourceRevision uint64                        `json:"sourceRevision,omitempty"`
-	Thumbnail      *ProjectThumbnailView         `json:"thumbnail,omitempty"`
+	Deleting              bool                          `json:"deleting"`
+	DisplayName           string                        `json:"displayName"`
+	Description           string                        `json:"description,omitempty"`
+	Phase                 string                        `json:"phase,omitempty"`
+	Template              string                        `json:"template,omitempty"`
+	Repository            *ProjectRepositoryView        `json:"repository,omitempty"`
+	Memory                aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
+	Sharing               aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
+	Environments          []ProjectEnvironmentView      `json:"environments,omitempty"`
+	CreatedAt             time.Time                     `json:"createdAt"`
+	UpdatedAt             *time.Time                    `json:"updatedAt,omitempty"`
+	LastSourceChange      *workspace.SourceChange       `json:"lastSourceChange,omitempty"`
+	LastPreviewCheckpoint *workspace.SourceChange       `json:"lastPreviewCheckpoint,omitempty"`
+	SourceRevision        uint64                        `json:"sourceRevision,omitempty"`
+	Thumbnail             *ProjectThumbnailView         `json:"thumbnail,omitempty"`
 }
 
 type ProjectEnvironmentView struct {
@@ -1534,8 +1537,10 @@ func (s *Server) projectViewWithSourceRevision(ctx context.Context, c *asclient.
 	if s == nil || s.workspaces == nil || p == nil {
 		return view
 	}
-	if revision, err := s.workspaces.SourceRevision(ctx, projectWorkspaceScope(id, p)); err == nil {
-		view.SourceRevision = revision
+	if state, err := s.workspaces.SourceState(ctx, projectWorkspaceScope(id, p)); err == nil {
+		view.SourceRevision = state.SourceRevision
+		view.LastSourceChange = state.LastSourceChange
+		view.LastPreviewCheckpoint = state.LastPreviewCheckpoint
 	}
 	return view
 }

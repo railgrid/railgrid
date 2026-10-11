@@ -8,6 +8,7 @@ package actions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/railgrid/provider-code/commitbundle"
@@ -64,6 +65,7 @@ const MaxCommitBundleInputBytes = 68 << 20
 // therefore not in this contract; adding any of them starts at the CR and the
 // backend's RepositoryCommitInput, not here.
 type commitInput struct {
+	RequestID     string       `json:"requestID,omitempty"`
 	RepositoryUID string       `json:"repositoryUID"`
 	Message       string       `json:"message,omitempty"`
 	Branch        string       `json:"branch,omitempty"`
@@ -123,6 +125,8 @@ func (s *Server) commit(ctx context.Context, provider dynamic.Interface, req dat
 		return nil, wireError("action_forbidden")
 	}
 	request := commitexec.Request{
+		RequestID:     in.RequestID,
+		RepositoryUID: in.RepositoryUID,
 		RepositoryRef: req.Name,
 		Message:       in.Message,
 		Branch:        in.Branch,
@@ -136,6 +140,9 @@ func (s *Server) commit(ctx context.Context, provider dynamic.Interface, req dat
 	}
 	created, err := commitexec.Create(ctx, provider, s.Bundles, req.ClusterID, request)
 	if err != nil {
+		if errors.Is(err, commitexec.ErrCommitRequestConflict) {
+			return nil, wireError("commit_request_conflict")
+		}
 		if commitbundle.IsNotFound(err) {
 			return nil, wireError("bundle_unavailable")
 		}

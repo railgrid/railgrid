@@ -396,15 +396,103 @@ spec:
                   now holds only the working tree, which is rebuildable from the last
                   commit plus the dirty set recorded below.
                 properties:
+                  lastPreviewCheckpoint:
+                    description: |-
+                      LastPreviewCheckpoint attributes the source snapshot last synchronized
+                      successfully to all development components.
+                    properties:
+                      runID:
+                        maxLength: 253
+                        type: string
+                      sourceRevision:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      threadID:
+                        maxLength: 253
+                        type: string
+                    required:
+                    - sourceRevision
+                    type: object
+                  lastSourceChange:
+                    description: LastSourceChange identifies the thread and run that
+                      wrote this revision.
+                    properties:
+                      runID:
+                        maxLength: 253
+                        type: string
+                      sourceRevision:
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      threadID:
+                        maxLength: 253
+                        type: string
+                    required:
+                    - sourceRevision
+                    type: object
                   pendingCommit:
                     description: |-
                       PendingCommit is a RepositoryCommit the Code provider accepted but has
                       not finished. It is followed up by name over the RepositoryCommit watch
                       rather than resent.
                     properties:
+                      attributions:
+                        description: |-
+                          Attributions is the immutable grouping of committed paths by the
+                          assistant turn that produced them. Paths omitted here are deliberately
+                          unattributed (legacy, system-authored, or mixed source).
+                        items:
+                          description: |-
+                            ProjectCommitAttribution groups the paths in a pending commit that one
+                            assistant turn produced.
+                          properties:
+                            paths:
+                              description: Paths are the exact subset of the pending
+                                commit produced by this turn.
+                              items:
+                                maxLength: 1024
+                                type: string
+                              maxItems: 1024
+                              type: array
+                            runID:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            threadID:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - paths
+                          - runID
+                          - threadID
+                          type: object
+                        maxItems: 1024
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      branch:
+                        description: Branch is the captured target branch for the
+                          commit intent.
+                        maxLength: 255
+                        type: string
+                      bundleDigest:
+                        description: BundleDigest pins the staged payload contents.
+                        maxLength: 96
+                        type: string
+                      bundleRef:
+                        description: BundleRef names the immutable staged commit payload
+                          in Code.
+                        maxLength: 253
+                        type: string
+                      message:
+                        description: Message is captured before submission and preserved
+                          on retries.
+                        maxLength: 512
+                        type: string
                       name:
-                        description: Name is the RepositoryCommit object's name in
-                          the tenant workspace.
+                        description: Name is populated after the reserved request
+                          returns a RepositoryCommit.
                         maxLength: 253
                         minLength: 1
                         type: string
@@ -422,10 +510,26 @@ spec:
                           targets.
                         maxLength: 253
                         type: string
+                      repositoryUID:
+                        description: RepositoryUID pins the target Repository incarnation.
+                        maxLength: 253
+                        type: string
+                      requestID:
+                        description: RequestID identifies the durable replay-safe
+                          commit intent.
+                        maxLength: 128
+                        type: string
                       requestedAt:
                         description: RequestedAt is when the commit action was called.
                         format: date-time
                         type: string
+                      sourceRevision:
+                        description: |-
+                          SourceRevision is the source revision at which the pending commit's
+                          bytes and attributions were captured.
+                        format: int64
+                        minimum: 0
+                        type: integer
                       workspaceDigest:
                         description: |-
                           WorkspaceDigest binds Paths to the bytes they had when the commit was
@@ -433,8 +537,6 @@ spec:
                           same, so an edit made after the commit left stays dirty.
                         maxLength: 128
                         type: string
-                    required:
-                    - name
                     type: object
                   settlement:
                     description: |-
@@ -467,6 +569,45 @@ spec:
                     required:
                     - workspaceDigest
                     type: object
+                  sourcePathAttributions:
+                    description: |-
+                      SourcePathAttributions retains the last unambiguous assistant turn that
+                      changed each uncommitted path. Entries with no thread/run identify paths
+                      whose source is legacy, system-authored, or mixed and must not be guessed
+                      onto a conversation turn.
+                    items:
+                      description: |-
+                        ProjectSourcePathAttribution records the producing turn for one path in
+                        the durable working copy. An empty ThreadID and RunID deliberately mean
+                        that the path has no unambiguous assistant owner.
+                      properties:
+                        path:
+                          description: Path is a normalized project-relative source
+                            path.
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                        runID:
+                          maxLength: 253
+                          type: string
+                        sourceRevision:
+                          description: |-
+                            SourceRevision is the revision at which this path's current bytes were
+                            last changed.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        threadID:
+                          maxLength: 253
+                          type: string
+                      required:
+                      - path
+                      type: object
+                    maxItems: 1024
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - path
+                    x-kubernetes-list-type: map
                   sourceRevision:
                     description: |-
                       SourceRevision is the monotonic revision of the working copy. The

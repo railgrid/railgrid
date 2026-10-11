@@ -57,15 +57,14 @@ You may obtain a copy of the License at
 // else). The verb creates the CR as the Code provider behind its gate, so
 // the claim on the coordinate is the whole grant.
 //
-// Nothing here waits for the commit to land. The RepositoryCommit the action
-// creates is the durable thing, and the Project reconciler's watch on it is
-// what settles the workspace ledger — for both callers, because both record
-// the same pending commit.
-//
-// Files larger than the catalogue's 1 MiB input ceiling go up first through
-// `stage-commit-bundle` (the Code provider's uncatalogued large-upload verb,
-// docs/provider-actions.md §"Uncatalogued large-upload verbs") and the commit
-// then names the handle. A small commit skips the extra round trip.
+// Every commit is staged through `stage-commit-bundle` and named by an
+// immutable request ID. App Studio reserves that request and its source
+// snapshot before calling the keyed commit action, so a lost response can be
+// replayed without rereading mutable files. Nothing here waits for the commit
+// to land: the RepositoryCommit is the durable object, and the Project
+// reconciler's watch on it settles the workspace ledger for either caller.
+// `stage-commit-bundle` is the Code provider's uncatalogued large-upload verb
+// (docs/provider-actions.md §"Uncatalogued large-upload verbs").
 package codecommit
 
 import (
@@ -152,6 +151,12 @@ type Request struct {
 
 	RepositoryRef string
 	RepositoryUID string
+	// RequestID and the staged bundle identify one replay-safe, immutable
+	// commit intent. They are required together for commits recovered from the
+	// Project ledger after a timeout or process restart.
+	RequestID    string
+	BundleRef    string
+	BundleDigest string
 
 	Message string
 	Branch  string
@@ -181,12 +186,21 @@ func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
 	if c == nil || c.Callers == nil {
 		return Ref{}, fmt.Errorf("no provider credential configured to reach the Code provider with")
 	}
-	if len(req.Files) == 0 {
-		return Ref{}, fmt.Errorf("a commit needs at least one file")
-	}
 	input := map[string]any{
 		"repositoryUID": req.RepositoryUID,
-		"files":         req.Files,
+	}
+	if req.RequestID != "" {
+		if strings.TrimSpace(req.BundleRef) == "" || strings.TrimSpace(req.BundleDigest) == "" || len(req.Files) != 0 {
+			return Ref{}, fmt.Errorf("a replay-safe commit requires only an immutable staged bundle")
+		}
+		input["requestID"] = strings.TrimSpace(req.RequestID)
+		input["bundleRef"] = strings.TrimSpace(req.BundleRef)
+		input["bundleDigest"] = strings.TrimSpace(req.BundleDigest)
+	} else {
+		if len(req.Files) == 0 {
+			return Ref{}, fmt.Errorf("a commit needs at least one file")
+		}
+		input["files"] = req.Files
 	}
 	if message := strings.TrimSpace(req.Message); message != "" {
 		input["message"] = message
@@ -198,7 +212,7 @@ func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
 	if err != nil {
 		return Ref{}, err
 	}
-	if len(encoded) > InlineMaxBytes {
+	if req.RequestID == "" && len(encoded) > InlineMaxBytes {
 		staged, err := c.stage(ctx, req)
 		if err != nil {
 			return Ref{}, err
@@ -246,6 +260,20 @@ func (c *Client) stage(ctx context.Context, req Request) (StagedBundle, error) {
 		return StagedBundle{}, fmt.Errorf("staging returned no bundle handle")
 	}
 	return staged, nil
+}
+
+// StageBundle stores immutable commit contents in Code before a durable
+// Project intent is recorded. The returned handle is then reused on every
+// keyed Commit replay; mutable workspace files are never re-read for that
+// request.
+func (c *Client) StageBundle(ctx context.Context, req Request) (StagedBundle, error) {
+	if c == nil || c.Callers == nil {
+		return StagedBundle{}, fmt.Errorf("no provider credential configured to reach the Code provider with")
+	}
+	if strings.TrimSpace(req.RepositoryUID) == "" || len(req.Files) == 0 {
+		return StagedBundle{}, fmt.Errorf("staging a commit requires a repository UID and files")
+	}
+	return c.stage(ctx, req)
 }
 
 // CheckoutRequest is one read of a Repository's tree.

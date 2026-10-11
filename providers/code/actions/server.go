@@ -178,6 +178,7 @@ var statusFor = map[string]int{
 	"snapshot_unavailable":         http.StatusUnprocessableEntity,
 	"bundle_unavailable":           http.StatusUnprocessableEntity,
 	"clone_token_unavailable":      http.StatusBadGateway,
+	"commit_request_conflict":      http.StatusConflict,
 	"commit_not_created":           http.StatusBadGateway,
 	"checkout_not_created":         http.StatusBadGateway,
 	"checkout_not_completed":       http.StatusGatewayTimeout,

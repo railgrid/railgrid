@@ -296,27 +296,37 @@ func (s *FileStore) applyFiles(ctx context.Context, scope Scope, files []File) e
 	// fails (or the process stops mid-batch), the revision gap is safe: the
 	// next sync/exec must reconcile the current live workspace rather than
 	// trusting a stale revision.
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	changedPaths := make([]string, 0, len(planned))
+	for _, file := range planned {
+		changedPaths = append(changedPaths, file.Path)
+	}
+	mutation, err := s.beginSourceMutation(ctx, scope, changedPaths)
+	if err != nil {
 		return err
 	}
+	wrote := false
 	for _, f := range planned {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(err, s.failSourceMutation(ctx, scope, mutation, !wrote))
 		}
 		clean := f.Path
 		target := filepath.Join(dir, filepath.FromSlash(clean))
 		if err := ensureWithin(dir, target); err != nil {
-			return err
+			return errors.Join(err, s.failSourceMutation(ctx, scope, mutation, !wrote))
 		}
 		if err := mkdirAllForFile(dir, clean); err != nil {
-			return fmt.Errorf("create parent directory for %q: %w", clean, err)
+			return errors.Join(fmt.Errorf("create parent directory for %q: %w", clean, err), s.failSourceMutation(ctx, scope, mutation, !wrote))
 		}
 		if err := rejectSymlink(target, clean); err != nil {
-			return err
+			return errors.Join(err, s.failSourceMutation(ctx, scope, mutation, !wrote))
 		}
 		if err := writeFileAtomically(filepath.Dir(target), target, []byte(f.Content), 0o644, false); err != nil {
-			return fmt.Errorf("write %q: %w", clean, err)
+			return errors.Join(fmt.Errorf("write %q: %w", clean, err), s.failSourceMutation(ctx, scope, mutation, !wrote))
 		}
+		wrote = true
+	}
+	if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+		return errors.Join(err, s.failSourceMutation(ctx, scope, mutation, false))
 	}
 	return nil
 }

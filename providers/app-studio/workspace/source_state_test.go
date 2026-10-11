@@ -18,9 +18,117 @@ package workspace
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+func TestFileStoreTurnAttributionPersistsSeparatelyFromPreview(t *testing.T) {
+	ctx := context.Background()
+	files := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	turnCtx := ContextWithMutationOrigin(ctx, "thread-a", "run-a")
+	if err := files.ApplyFiles(turnCtx, scope, []File{{Path: "app.txt", Content: "first"}}); err != nil {
+		t.Fatal(err)
+	}
+	change, err := files.LastSourceChange(ctx, scope)
+	if err != nil || change == nil || change.ThreadID != "thread-a" || change.RunID != "run-a" || change.SourceRevision != 2 {
+		t.Fatalf("source attribution = %#v, %v", change, err)
+	}
+	if err := files.RecordPreviewCheckpoint(ctx, scope, *change); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-b", "run-b"), scope, []File{{Path: "other.txt", Content: "second"}}); err != nil {
+		t.Fatal(err)
+	}
+	peer := peerReplica(files, files.root)
+	latest, err := peer.LastSourceChange(ctx, scope)
+	if err != nil || latest == nil || latest.ThreadID != "thread-b" || latest.SourceRevision != 3 {
+		t.Fatalf("peer source attribution = %#v, %v", latest, err)
+	}
+	preview, err := peer.LastPreviewCheckpoint(ctx, scope)
+	if err != nil || preview == nil || preview.ThreadID != "thread-a" || preview.SourceRevision != 2 {
+		t.Fatalf("peer preview attribution = %#v, %v", preview, err)
+	}
+	latest.ThreadID = "changed-copy"
+	again, _ := peer.LastSourceChange(ctx, scope)
+	if again.ThreadID != "thread-b" {
+		t.Fatal("source attribution shares mutable ledger state")
+	}
+	if err := files.ApplyFiles(ctx, scope, []File{{Path: "manual.txt", Content: "manual"}}); err != nil {
+		t.Fatal(err)
+	}
+	manual, _ := peer.LastSourceChange(ctx, scope)
+	if manual.ThreadID != "" || manual.RunID != "" {
+		t.Fatal("manual edit retained another thread's attribution")
+	}
+}
+
+func TestFileStoreSourceAttributionsGroupPathsAndOmitMixedOrSystemSource(t *testing.T) {
+	ctx := context.Background()
+	files := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, []File{
+		{Path: "a-only.go", Content: "A"},
+		{Path: "shared.go", Content: "A"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"a-only.go", "shared.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-b", "run-b"), scope, []File{
+		{Path: "b-only.go", Content: "B"},
+		{Path: "shared.go", Content: "B"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"b-only.go", "shared.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ctx, scope, []File{{Path: "manual.txt", Content: "manual"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"manual.txt"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := files.SourceAttributions(ctx, scope, []string{"a-only.go", "b-only.go", "shared.go", "manual.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SourceAttribution{
+		{ThreadID: "thread-a", RunID: "run-a", Paths: []string{"a-only.go"}},
+		{ThreadID: "thread-b", RunID: "run-b", Paths: []string{"b-only.go"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("source attributions = %+v, want %+v", got, want)
+	}
+}
+
+func TestFileStoreCommitSnapshotRevisionFenceRejectsInterleavedMutation(t *testing.T) {
+	ctx := context.Background()
+	files := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, []File{{Path: "app.go", Content: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshotRevision, err := files.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.ReadFileBytes(ctx, scope, "app.go", 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-b", "run-b"), scope, []File{{Path: "app.go", Content: "B"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.VerifySourceRevision(ctx, scope, snapshotRevision); !errors.Is(err, ErrSourceRevisionConflict) {
+		t.Fatalf("verify source revision error = %v, want ErrSourceRevisionConflict", err)
+	}
+}
 
 func TestFileStoreUncommittedPathsPersistUnionClearAndProjectUIDIsolation(t *testing.T) {
 	ctx := context.Background()
@@ -337,4 +445,344 @@ func peerReplica(store *FileStore, root string) *FileStore {
 	peer := NewFileStore(root)
 	peer.SetLedger(store.ledger)
 	return peer
+}
+
+func TestIncrementalWriteCannotRelabelAStaleReplicaTree(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	ledger := NewMemoryLedger()
+	base := []File{{Path: "base.txt", Content: "baseline"}}
+	first := NewFileStore(t.TempDir())
+	first.SetLedger(ledger)
+	if _, err := first.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: base, Committed: true}); err != nil {
+		t.Fatalf("seed first replica: %v", err)
+	}
+	second := NewFileStore(t.TempDir())
+	if _, err := second.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: base, Committed: true}); err != nil {
+		t.Fatalf("seed second replica: %v", err)
+	}
+	second.SetLedger(ledger)
+
+	if _, err := second.WriteFile(ctx, scope, WriteOptions{Path: "remote.txt", Content: "written on second replica"}); err != nil {
+		t.Fatalf("write on current replica: %v", err)
+	}
+	if retained, err := first.RetainsSource(ctx, scope); err != nil || retained {
+		t.Fatalf("first replica retained source after second replica advanced it: retained=%v err=%v", retained, err)
+	}
+	before, err := first.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = first.WriteFile(ctx, scope, WriteOptions{Path: "local.txt", Content: "must not bless an incomplete tree"})
+	var mutationErr *MutationError
+	if !errors.As(err, &mutationErr) || mutationErr.Code != MutationErrorConflict {
+		t.Fatalf("stale replica write error = %v, want workspace conflict", err)
+	}
+	after, err := first.SourceRevision(ctx, scope)
+	if err != nil || after != before {
+		t.Fatalf("rejected stale write changed source revision: before=%d after=%d err=%v", before, after, err)
+	}
+	if retained, err := first.RetainsSource(ctx, scope); err != nil || retained {
+		t.Fatalf("rejected stale write made an incomplete tree current: retained=%v err=%v", retained, err)
+	}
+	if _, err := first.ReadFile(ctx, scope, ReadOptions{Path: "local.txt"}); err == nil {
+		t.Fatal("rejected stale write left local.txt on the stale replica")
+	}
+}
+
+type cancelLedgerAtRevision struct {
+	Ledger
+	revision uint64
+	cancel   context.CancelFunc
+	canceled bool
+}
+
+type failLedgerOnAttributedCompletion struct {
+	Ledger
+}
+
+func (l *failLedgerOnAttributedCompletion) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
+	return l.Ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		changed, err := mutate(record)
+		if err != nil || !changed || record.LastSourceChange == nil || record.LastSourceChange.ThreadID == "" {
+			return changed, err
+		}
+		return false, errors.New("injected source completion failure")
+	})
+}
+
+func (l *cancelLedgerAtRevision) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
+	record, err := l.Ledger.Update(ctx, scope, mutate)
+	if err == nil && !l.canceled && record.SourceRevision == l.revision {
+		l.canceled = true
+		l.cancel()
+	}
+	return record, err
+}
+
+func TestFailedOrdinaryWriteKeepsRevisionButDoesNotPublishProvenance(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{
+		Files: []File{{Path: "app.txt", Content: "before"}}, Committed: true,
+	}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	if _, err := store.WriteFile(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, WriteOptions{
+		Path: "app.txt", Content: "attributed before",
+	}); err != nil {
+		t.Fatalf("write attributed baseline: %v", err)
+	}
+	reservedRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedRevision := reservedRevision + 1
+	writeCtx, cancel := context.WithCancel(ctx)
+	store.SetLedger(&cancelLedgerAtRevision{Ledger: store.ledger, revision: failedRevision, cancel: cancel})
+	_, err = store.WriteFile(ContextWithMutationOrigin(writeCtx, "thread-b", "run-b"), scope, WriteOptions{
+		Path: "app.txt", Content: "write canceled after revision reservation",
+	})
+	cancel()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled ordinary write error = %v, want context.Canceled", err)
+	}
+	if got, err := store.SourceRevision(ctx, scope); err != nil || got != failedRevision {
+		t.Fatalf("failed write revision = %d, err=%v; want reserved revision %d", got, err, failedRevision)
+	}
+	last, err := store.LastSourceChange(ctx, scope)
+	if err != nil || last == nil || last.SourceRevision != failedRevision || last.ThreadID != "" || last.RunID != "" {
+		t.Fatalf("failed write published source owner: %#v err=%v", last, err)
+	}
+	owners, err := store.SourceAttributions(ctx, scope, []string{"app.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("failed write retained path attribution: %+v err=%v", owners, err)
+	}
+	file, err := store.ReadFile(ctx, scope, ReadOptions{Path: "app.txt"})
+	if err != nil || file.Content != "attributed before" {
+		t.Fatalf("canceled write changed file bytes: %#v err=%v", file, err)
+	}
+	localRevision, err := store.LocalTreeRevision(ctx, scope)
+	if err != nil || localRevision != failedRevision {
+		t.Fatalf("failed write did not tag unchanged tree at reserved revision: local=%d err=%v want=%d", localRevision, err, failedRevision)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("failed write with unchanged bytes made the tree stale: retained=%v err=%v", retained, err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "unrelated.txt", Content: "next edit"}); err != nil {
+		t.Fatalf("next edit after canceled write: %v", err)
+	}
+	owners, err = store.SourceAttributions(ctx, scope, []string{"app.txt", "unrelated.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("later write restored attribution for a failed mutation: %+v err=%v", owners, err)
+	}
+}
+
+func TestFailedInitialWriteCanRetryOnEmptyWorkspace(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	ledger := NewMemoryLedger()
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	writeCtx, cancel := context.WithCancel(ctx)
+	store.SetLedger(&cancelLedgerAtRevision{Ledger: ledger, revision: 2, cancel: cancel})
+	_, err := store.WriteFile(ContextWithMutationOrigin(writeCtx, "thread-a", "run-a"), scope, WriteOptions{
+		Path: "first.txt", Content: "first write is canceled",
+	})
+	cancel()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled initial write error = %v, want context.Canceled", err)
+	}
+	store.SetLedger(ledger)
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("unchanged empty workspace after canceled first write is not current: retained=%v err=%v", retained, err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "first.txt", Content: "retry succeeds"}); err != nil {
+		t.Fatalf("retry after canceled initial write: %v", err)
+	}
+	file, err := store.ReadFile(ctx, scope, ReadOptions{Path: "first.txt"})
+	if err != nil || file.Content != "retry succeeds" {
+		t.Fatalf("retry result = %#v err=%v", file, err)
+	}
+	owners, err := store.SourceAttributions(ctx, scope, []string{"first.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("retry claimed provenance from the canceled write: %+v err=%v", owners, err)
+	}
+}
+
+func TestManagedTransactionRollbackLeavesUnknownProvenanceAndStaleTree(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{
+		{Path: "a.txt", Content: "a-before"},
+		{Path: "b.txt", Content: "b-before"},
+	}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	if err := store.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, []File{
+		{Path: "a.txt", Content: "a-attributed"},
+		{Path: "b.txt", Content: "b-attributed"},
+	}); err != nil {
+		t.Fatalf("write attributed baseline: %v", err)
+	}
+	versionA := testFileVersion(t, ctx, store, scope, "a.txt")
+	versionB := testFileVersion(t, ctx, store, scope, "b.txt")
+	beforeRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.managedTransactionHook = func(change ManagedFileChange) error {
+		if change.Path == "b.txt" {
+			return errors.New("injected later transaction failure")
+		}
+		return nil
+	}
+	_, err = store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "a.txt", Operation: ManagedFileReplace, Content: "a-after", ExpectedVersion: versionA},
+		{Path: "b.txt", Operation: ManagedFileReplace, Content: "b-after", ExpectedVersion: versionB},
+	})
+	if err == nil {
+		t.Fatal("transaction succeeded despite injected second-file failure")
+	}
+	for path, want := range map[string]string{"a.txt": "a-attributed", "b.txt": "b-attributed"} {
+		file, readErr := store.ReadFile(ctx, scope, ReadOptions{Path: path})
+		if readErr != nil || file.Content != want {
+			t.Fatalf("rollback %s = %#v err=%v want=%q", path, file, readErr, want)
+		}
+	}
+	last, err := store.LastSourceChange(ctx, scope)
+	if err != nil || last == nil || last.SourceRevision != beforeRevision+1 || last.ThreadID != "" || last.RunID != "" {
+		t.Fatalf("rolled-back transaction published successful-looking last source: %#v err=%v", last, err)
+	}
+	owners, err := store.SourceAttributions(ctx, scope, []string{"a.txt", "b.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("rolled-back transaction retained path provenance: %+v err=%v", owners, err)
+	}
+	localRevision, err := store.LocalTreeRevision(ctx, scope)
+	if err != nil || localRevision != beforeRevision+1 {
+		t.Fatalf("rolled-back transaction did not tag restored bytes at reserved revision: local=%d err=%v want=%d", localRevision, err, beforeRevision+1)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("complete rollback left unchanged bytes stale: retained=%v err=%v", retained, err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "unrelated.txt", Content: "later edit"}); err != nil {
+		t.Fatalf("next edit after complete rollback: %v", err)
+	}
+	owners, err = store.SourceAttributions(ctx, scope, []string{"a.txt", "b.txt", "unrelated.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("next edit made rolled-back paths attributed: %+v err=%v", owners, err)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("next edit left source stale: retained=%v err=%v", retained, err)
+	}
+}
+
+func TestManagedTransactionIncompleteRollbackKeepsTreeStale(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{
+		{Path: "a.txt", Content: "a-before"},
+		{Path: "b.txt", Content: "b-before"},
+	}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	versionA := testFileVersion(t, ctx, store, scope, "a.txt")
+	versionB := testFileVersion(t, ctx, store, scope, "b.txt")
+	beforeRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.managedTransactionHook = func(change ManagedFileChange) error {
+		if change.Path != "b.txt" {
+			return nil
+		}
+		target := filepath.Join(dir, "a.txt")
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+		if err := os.Mkdir(target, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(target, "obstruction"), []byte("prevent rollback"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("injected later transaction failure")
+	}
+	_, err = store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "a.txt", Operation: ManagedFileReplace, Content: "a-after", ExpectedVersion: versionA},
+		{Path: "b.txt", Operation: ManagedFileReplace, Content: "b-after", ExpectedVersion: versionB},
+	})
+	if err == nil {
+		t.Fatal("transaction succeeded despite injected second-file failure")
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || retained {
+		t.Fatalf("incomplete rollback claimed source freshness: retained=%v err=%v", retained, err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "unrelated.txt", Content: "must wait for hydration"}); err == nil {
+		t.Fatal("incremental write succeeded on a tree with an incomplete rollback")
+	} else {
+		var mutationErr *MutationError
+		if !errors.As(err, &mutationErr) || mutationErr.Code != MutationErrorConflict {
+			t.Fatalf("write after incomplete rollback error = %v, want workspace conflict", err)
+		}
+	}
+	if got, err := store.SourceRevision(ctx, scope); err != nil || got != beforeRevision+1 {
+		t.Fatalf("rejected write changed source revision: got=%d err=%v want=%d", got, err, beforeRevision+1)
+	}
+}
+
+func TestManagedTransactionRollsBackWhenSourceCompletionFails(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	ledger := NewMemoryLedger()
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{
+		{Path: "a.txt", Content: "a-before"},
+		{Path: "b.txt", Content: "b-before"},
+	}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	versionA := testFileVersion(t, ctx, store, scope, "a.txt")
+	versionB := testFileVersion(t, ctx, store, scope, "b.txt")
+	beforeRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetLedger(&failLedgerOnAttributedCompletion{Ledger: ledger})
+	_, err = store.ApplyManagedTransaction(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, []ManagedFileChange{
+		{Path: "a.txt", Operation: ManagedFileReplace, Content: "a-after", ExpectedVersion: versionA},
+		{Path: "b.txt", Operation: ManagedFileReplace, Content: "b-after", ExpectedVersion: versionB},
+	})
+	if err == nil {
+		t.Fatal("transaction succeeded despite failed source completion")
+	}
+	for path, want := range map[string]string{"a.txt": "a-before", "b.txt": "b-before"} {
+		file, readErr := store.ReadFile(ctx, scope, ReadOptions{Path: path})
+		if readErr != nil || file.Content != want {
+			t.Fatalf("completion-failure rollback %s = %#v err=%v want=%q", path, file, readErr, want)
+		}
+	}
+	last, err := store.LastSourceChange(ctx, scope)
+	if err != nil || last == nil || last.SourceRevision != beforeRevision+1 || last.ThreadID != "" || last.RunID != "" {
+		t.Fatalf("failed completion retained successful source owner: %#v err=%v", last, err)
+	}
+	owners, err := store.SourceAttributions(ctx, scope, []string{"a.txt", "b.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("failed completion retained path provenance: %+v err=%v", owners, err)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("complete completion-failure rollback left unchanged tree stale: retained=%v err=%v", retained, err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "later.txt", Content: "retry"}); err != nil {
+		t.Fatalf("next edit after completion-failure rollback: %v", err)
+	}
 }

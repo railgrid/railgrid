@@ -19,6 +19,8 @@ package workspace
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -173,6 +175,142 @@ func TestFileStoreManagedTransactionRollsBackPackageWhenPolicyCommitFails(t *tes
 	for _, filePath := range []string{".agents/skills/demo/SKILL.md", ".agents/skills/.railgrid-catalog.json"} {
 		if _, readErr := store.ReadFile(ctx, scope, ReadOptions{Path: filePath}); readErr == nil {
 			t.Fatalf("%s survived policy rollback", filePath)
+		}
+	}
+}
+
+func TestManagedTransactionReportsAllConflictsAndKeepsOtherFiles(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if err := store.ApplyFiles(ctx, scope, []File{{Path: "a.txt", Content: "a"}, {Path: "b.txt", Content: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "a.txt", Operation: ManagedFileReplace, Content: "new", ExpectedVersion: "sha256:old"},
+		{Path: "b.txt", Operation: ManagedFileDelete, ExpectedVersion: "sha256:old"},
+		{Path: "c.txt", Operation: ManagedFileCreate, Content: "c"},
+	})
+	var conflict *MutationError
+	if !errors.As(err, &conflict) || strings.Join(conflict.ChangedFiles, ",") != "a.txt,b.txt" {
+		t.Fatalf("structured conflict = %#v, %v", conflict, err)
+	}
+	if exists, _ := store.FileExists(ctx, scope, "c.txt"); exists {
+		t.Fatal("unrelated create landed in rejected transaction")
+	}
+}
+
+func TestManagedBinaryUploadIsAtomicOnStaleReplacement(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.PutFile(ctx, scope, PutOptions{Path: "image.png", Data: []byte{0, 255, 1}, CreateOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
+		{Path: "new.png", Operation: ManagedFileCreate, Data: []byte{0, 255}},
+		{Path: "image.png", Operation: ManagedFileReplace, Data: []byte{0, 254}, ExpectedVersion: "sha256:old"},
+	})
+	if err == nil {
+		t.Fatal("stale binary replacement accepted")
+	}
+	if exists, _ := store.FileExists(ctx, scope, "new.png"); exists {
+		t.Fatal("binary upload partially applied")
+	}
+	version := testFileVersion(t, ctx, store, scope, "image.png")
+	result, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{{Path: "image.png", Operation: ManagedFileReplace, Data: []byte{0, 254}, ExpectedVersion: version}})
+	if err != nil || len(result) != 1 || !result[0].Binary {
+		t.Fatalf("binary replacement = %#v, %v", result, err)
+	}
+}
+
+func TestManagedTransactionPrintableDataUsesNoDiffResult(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	data := []byte(strings.Repeat("printable source\n", 1024))
+
+	results, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{{
+		Path:      "source.txt",
+		Operation: ManagedFileCreate,
+		Data:      data,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Binary || results[0].Size != int64(len(data)) || results[0].Version != fileVersion(data) {
+		t.Fatalf("printable Data result = %#v, want opaque byte result", results)
+	}
+	if results[0].Diff != "" || results[0].Additions != 0 || results[0].Deletions != 0 {
+		t.Fatalf("printable Data result generated text diff data: %#v", results[0])
+	}
+}
+
+func TestManagedTransactionPreflightBoundsAggregatePreimages(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	preimage := []byte(strings.Repeat("\x00", 25))
+	expectedVersion := fileVersion(preimage)
+	changes := make([]ManagedFileChange, 0, 3)
+	for i := 0; i < 3; i++ {
+		path := filepath.Join(dir, string(rune('a'+i))+".bin")
+		if err := os.WriteFile(path, preimage, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, ManagedFileChange{
+			Path:            string(rune('a'+i)) + ".bin",
+			Operation:       ManagedFileReplace,
+			Data:            []byte{0},
+			ExpectedVersion: expectedVersion,
+		})
+	}
+
+	// With a small injected cap, two 25-byte preimages plus all three payload
+	// bytes fit. The third preimage must be rejected before it is read because
+	// it would exceed the aggregate retained-byte limit.
+	_, err = store.preflightManagedTransactionWithLimits(ctx, scope, dir, changes, 8, 64)
+	var mutationErr *MutationError
+	if !errors.As(err, &mutationErr) || !strings.Contains(err.Error(), "managed transaction content is too large") {
+		t.Fatalf("aggregate preimage error = %v, want retained-byte limit", err)
+	}
+}
+
+func TestManagedTransactionPreflightPreservesBinaryPayloadBudgetWithoutCopy(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	first := make([]byte, maxManagedTransactionBinaryPayloadBytes/2)
+	second := make([]byte, maxManagedTransactionBinaryPayloadBytes/2)
+	first[0], second[0] = 0, 0
+	changes := []ManagedFileChange{
+		{Path: "first.bin", Operation: ManagedFileCreate, Data: first},
+		{Path: "second.bin", Operation: ManagedFileCreate, Data: second},
+	}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.preflightManagedTransaction(ctx, scope, dir, changes)
+	if err != nil {
+		t.Fatalf("48 MiB binary payload preflight: %v", err)
+	}
+	if len(entries) != len(changes) {
+		t.Fatalf("preflight entries = %d, want %d", len(entries), len(changes))
+	}
+	for i := range entries {
+		if entries[i].change.Content != "" {
+			t.Fatalf("entry %d copied binary data into Content", i)
+		}
+		if &entries[i].change.Data[0] != &changes[i].Data[0] {
+			t.Fatalf("entry %d copied the binary payload", i)
 		}
 	}
 }
