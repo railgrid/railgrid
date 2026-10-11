@@ -47,19 +47,32 @@ const fields = computed<AIExecutionField[] | undefined>(() => {
 const execution = computed<AIExecutionView | undefined>(() => {
   const exec = disclosure.value
   if (!exec) return undefined
+  const failed = ['failed', 'error', 'timed_out'].includes(exec.status || '')
+    || (exec.exitCode !== undefined && exec.exitCode !== null && exec.exitCode !== 0)
+  const unverified = !failed && (
+    exec.status === 'stale'
+    || exec.status === 'outcome_unknown'
+    || exec.status === 'unverifiable'
+    || (exec.sourceStale === true)
+    || (exec.status === 'succeeded' && (exec.exitCode === undefined || exec.exitCode === null))
+  )
+  const skipped = !failed && (exec.status === 'skipped' || exec.status === 'not_executed' || exec.status === 'rejected')
   return {
     ...(command.value ? { command: command.value } : {}),
     ...(exec.argv ? { argv: exec.argv } : {}),
     ...(fields.value ? { fields: fields.value } : {}),
     ...(output.value ? { output: output.value } : {}),
-    ...(exec.status ? { status: exec.status } : {}),
+    ...(exec.status || unverified || skipped ? { status: unverified || skipped ? 'blocked' : exec.status } : {}),
+    ...(unverified ? { statusLabel: 'Unverified' } : skipped ? { statusLabel: exec.status === 'skipped' ? 'Skipped' : 'Not run' } : {}),
     ...(exec.durationMs !== undefined ? {
       duration: formatAssistantExecDuration(exec.durationMs),
       durationMs: exec.durationMs,
     } : {}),
     ...(exec.exitCode !== undefined ? { exitCode: exec.exitCode } : {}),
     ...(exec.outputTruncated !== undefined ? { outputTruncated: exec.outputTruncated } : {}),
-    ...(exec.detail ? { detail: exec.detail } : {}),
+    ...(exec.sourceStale ? {
+      detail: exec.summary || 'The project source revision could not be verified, so this output may not reflect the current source.',
+    } : exec.detail ? { detail: exec.detail } : {}),
     ...(exec.detailURL ? { detailURL: exec.detailURL } : {}),
   }
 })

@@ -9,8 +9,12 @@ const execDisclosureKeys = new Set([
   'authorityProfile',
   'networkProfile',
   'writebackPolicy',
+  'sourceRevision',
+  'sourceDigest',
+  'syncStatus',
   'status',
   'summary',
+  'sourceStale',
   'exitCode',
   'durationMs',
   'stdout',
@@ -19,7 +23,15 @@ const execDisclosureKeys = new Set([
   'detail',
   'detailURL',
 ])
-const execStatuses = new Set(['succeeded', 'failed', 'timed_out', 'canceled', 'cancelled', 'blocked', 'error', 'running', 'permission_required'])
+const execStatuses = new Set([
+  'succeeded', 'failed', 'stale', 'timed_out', 'canceled', 'cancelled', 'blocked', 'error', 'running',
+  'permission_required', 'outcome_unknown', 'unverifiable', 'not_executed', 'rejected', 'skipped',
+  'requested', 'pending', 'waiting', 'input_required', 'retrying', 'recovered',
+])
+// The server accepts source argv tokens up to 4096 bytes. Secret redaction can
+// expand repeated short values (for example `passwd=x`), and the public
+// projection does not truncate argv, so allow a bounded 3x public token size.
+const maxPublicArgTokenBytes = 3 * 4096
 const maxOutputBytes = 1 << 20
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,6 +43,10 @@ function boundedString(value: unknown, maxBytes: number, required = false): valu
     && !value.includes('\u0000')
     && textEncoder.encode(value).byteLength <= maxBytes
     && (!required || value.trim().length > 0)
+}
+
+function boundedCodePointString(value: unknown, maxCodePoints: number, required = false): value is string {
+  return boundedString(value, maxCodePoints * 4, required) && [...value].length <= maxCodePoints
 }
 
 function hasOnlyKeys(value: Record<string, unknown>): boolean {
@@ -45,7 +61,7 @@ function validRelativeWorkdir(value: string): boolean {
 
 function parseArgv(value: unknown): string[] | undefined {
   if (!Array.isArray(value) || value.length < 1 || value.length > 32) return undefined
-  if (value.some((token) => !boundedString(token, 256, true))) return undefined
+  if (value.some((token) => !boundedString(token, maxPublicArgTokenBytes, true))) return undefined
   return value as string[]
 }
 
@@ -53,7 +69,7 @@ function parseOutput(value: unknown): string[] | undefined {
   if (!Array.isArray(value) || value.length > 200) return undefined
   let bytes = 0
   for (const line of value) {
-    if (!boundedString(line, 4_096)) return undefined
+    if (!boundedCodePointString(line, 4_096)) return undefined
     bytes += textEncoder.encode(line).byteLength
     if (bytes > maxOutputBytes) return undefined
   }
@@ -103,21 +119,33 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
   const status = value.status === undefined ? undefined : value.status
   if (status !== undefined && (typeof status !== 'string' || !execStatuses.has(status))) return undefined
 
+  const sourceRevision = value.sourceRevision === undefined ? undefined : value.sourceRevision
+  if (sourceRevision !== undefined && (!Number.isSafeInteger(sourceRevision) || (sourceRevision as number) < 0)) return undefined
+
+  const sourceDigest = value.sourceDigest === undefined ? undefined : value.sourceDigest
+  if (sourceDigest !== undefined && !boundedString(sourceDigest, 256, true)) return undefined
+
+  const syncStatus = value.syncStatus === undefined ? undefined : value.syncStatus
+  if (syncStatus !== undefined && !boundedString(syncStatus, 64, true)) return undefined
+
   const summary = value.summary === undefined ? undefined : value.summary
-  if (summary !== undefined && !boundedString(summary, 240, true)) return undefined
+  if (summary !== undefined && !boundedCodePointString(summary, 240, true)) return undefined
+
+  const sourceStale = value.sourceStale === undefined ? undefined : value.sourceStale
+  if (sourceStale !== undefined && typeof sourceStale !== 'boolean') return undefined
 
   let exitCode: number | null | undefined
   if (value.exitCode === null) {
     exitCode = null
   } else if (value.exitCode !== undefined) {
-    if (!Number.isSafeInteger(value.exitCode) || Number(value.exitCode) < -1 || Number(value.exitCode) > 255) return undefined
-    exitCode = Number(value.exitCode)
+    if (!Number.isSafeInteger(value.exitCode) || (value.exitCode as number) < -1 || (value.exitCode as number) > 255) return undefined
+    exitCode = value.exitCode as number
   }
 
   let durationMs: number | undefined
   if (value.durationMs !== undefined) {
-    if (!Number.isSafeInteger(value.durationMs) || Number(value.durationMs) < 0 || Number(value.durationMs) > 7 * 24 * 60 * 60 * 1000) return undefined
-    durationMs = Number(value.durationMs)
+    if (!Number.isSafeInteger(value.durationMs) || (value.durationMs as number) < 0 || (value.durationMs as number) > 7 * 24 * 60 * 60 * 1000) return undefined
+    durationMs = value.durationMs as number
   }
 
   const stdout = value.stdout === undefined ? undefined : parseOutput(value.stdout)
@@ -134,7 +162,8 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
   if (value.detailURL !== undefined && !detailURL) return undefined
 
   if (component === undefined && argv === undefined && workdir === undefined && timeoutSeconds === undefined
-    && authorityProfile === undefined && networkProfile === undefined && writebackPolicy === undefined && status === undefined && summary === undefined
+    && authorityProfile === undefined && networkProfile === undefined && writebackPolicy === undefined && status === undefined && summary === undefined && sourceStale === undefined
+    && sourceRevision === undefined && sourceDigest === undefined && syncStatus === undefined
     && exitCode === undefined && durationMs === undefined && stdout === undefined && stderr === undefined
     && outputTruncated === undefined && detail === undefined && detailURL === undefined) return undefined
 
@@ -146,8 +175,12 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
     ...(authorityProfile !== undefined ? { authorityProfile } : {}),
     ...(networkProfile !== undefined ? { networkProfile } : {}),
     ...(writebackPolicy !== undefined ? { writebackPolicy } : {}),
+    ...(sourceRevision !== undefined ? { sourceRevision: sourceRevision as number } : {}),
+    ...(sourceDigest !== undefined ? { sourceDigest } : {}),
+    ...(syncStatus !== undefined ? { syncStatus } : {}),
     ...(status !== undefined ? { status } : {}),
     ...(summary !== undefined ? { summary } : {}),
+    ...(sourceStale !== undefined ? { sourceStale } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(stdout !== undefined ? { stdout } : {}),
@@ -163,11 +196,11 @@ export function formatAssistantExecCommand(exec?: ProjectAssistantExecDisclosure
   return exec.argv.map((token) => /[\s"'\\]/.test(token) ? JSON.stringify(token) : token).join(' ')
 }
 
-export type AssistantExecDisplayState = 'running' | 'ran' | 'failed' | 'canceled' | 'timed_out' | 'blocked'
+export type AssistantExecDisplayState = 'running' | 'ran' | 'failed' | 'canceled' | 'timed_out' | 'blocked' | 'unverified' | 'skipped'
 
 export interface AssistantExecStatusPresentation {
   state: AssistantExecDisplayState
-  label: 'Running' | 'Ran' | 'Failed' | 'Canceled' | 'Timed out' | 'Blocked'
+  label: 'Running' | 'Ran' | 'Failed' | 'Canceled' | 'Timed out' | 'Blocked' | 'Unverified' | 'Skipped'
   busy: boolean
   error: boolean
   attention: boolean
@@ -186,44 +219,60 @@ export function assistantExecStatusPresentation(
   const nestedStatus = exec?.status
   const status = nestedStatus || fallbackStatus
   const nonZeroExit = exec?.exitCode !== undefined && exec.exitCode !== null && exec.exitCode !== 0
+  const hasExitCode = exec?.exitCode !== undefined && exec.exitCode !== null
   let state: AssistantExecDisplayState
-  switch (status) {
-    case 'running':
-      state = 'running'
-      break
-    case 'failed':
-    case 'error':
-      state = 'failed'
-      break
-    case 'canceled':
-    case 'cancelled':
-      state = 'canceled'
-      break
-    case 'timed_out':
-      state = 'timed_out'
-      break
-    case 'blocked':
-    case 'permission_required':
-    case 'waiting':
-    case 'rejected':
-      state = 'blocked'
-      break
-    case 'retrying':
-      state = 'running'
-      break
-    case 'succeeded':
-    case 'skipped':
-    case 'recovered':
-      // A missing nested status is still actionable when the server supplied a
-      // non-zero exit code. The outer action can settle before the command
-      // disclosure does, so do not call that command successful by default.
-      state = !nestedStatus && nonZeroExit ? 'failed' : 'ran'
-      break
-    default:
-      // Keep unknown future statuses truthful when the bounded disclosure has
-      // enough evidence to classify the command locally.
-      state = nonZeroExit ? 'failed' : 'ran'
-      break
+  if (nonZeroExit && !['failed', 'error', 'timed_out', 'canceled', 'cancelled', 'blocked', 'permission_required', 'rejected', 'not_executed'].includes(status || '')) {
+    state = 'failed'
+  } else if (exec?.sourceStale && !['failed', 'error', 'timed_out', 'canceled', 'cancelled', 'blocked', 'permission_required', 'rejected', 'not_executed'].includes(status || '')
+    && !nonZeroExit) {
+    state = 'unverified'
+  } else {
+    switch (status) {
+      case 'running':
+      case 'requested':
+      case 'pending':
+      case 'retrying':
+        state = 'running'
+        break
+      case 'failed':
+      case 'error':
+        state = 'failed'
+        break
+      case 'canceled':
+      case 'cancelled':
+        state = 'canceled'
+        break
+      case 'timed_out':
+        state = 'timed_out'
+        break
+      case 'blocked':
+      case 'permission_required':
+      case 'waiting':
+      case 'rejected':
+      case 'not_executed':
+      case 'input_required':
+        state = 'blocked'
+        break
+      case 'stale':
+      case 'outcome_unknown':
+      case 'unverifiable':
+        state = 'unverified'
+        break
+      case 'skipped':
+        state = 'skipped'
+        break
+      case 'succeeded':
+      case 'recovered':
+        // A success label on either the nested receipt or outer action is not
+        // terminal process proof. Only a reported exit code can establish Ran.
+        state = hasExitCode ? 'ran' : 'unverified'
+        break
+      default:
+        // A non-zero exit is enough to establish failure. Missing or future
+        // status values without an exit code are never presented as success.
+        state = !nestedStatus && !status && hasExitCode && exec?.exitCode === 0 ? 'ran' : 'unverified'
+        break
+    }
   }
 
   switch (state) {
@@ -235,6 +284,10 @@ export function assistantExecStatusPresentation(
       return { state, label: 'Timed out', busy: false, error: true, attention: false }
     case 'blocked':
       return { state, label: 'Blocked', busy: false, error: false, attention: true }
+    case 'unverified':
+      return { state, label: 'Unverified', busy: false, error: false, attention: true }
+    case 'skipped':
+      return { state, label: 'Skipped', busy: false, error: false, attention: false }
     case 'canceled':
       return { state, label: 'Canceled', busy: false, error: false, attention: false }
     default:

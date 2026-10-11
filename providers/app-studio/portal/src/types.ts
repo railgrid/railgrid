@@ -25,6 +25,13 @@ export interface ProjectMemory {
   constraints?: string[]
 }
 
+/** Immutable attribution for the latest durable source or preview checkpoint. */
+export interface ProjectSourceChange {
+  threadID?: string
+  runID?: string
+  sourceRevision: number
+}
+
 export interface ProjectMessage {
   id: string
   projectID: string
@@ -311,8 +318,12 @@ export interface ProjectAssistantExecDisclosure {
   authorityProfile?: string
   networkProfile?: string
   writebackPolicy?: string
+  sourceRevision?: number
+  sourceDigest?: string
+  syncStatus?: string
   status?: string
   summary?: string
+  sourceStale?: boolean
   exitCode?: number | null
   durationMs?: number
   stdout?: string[]
@@ -421,6 +432,8 @@ export interface Project {
   createdAt: string
   updatedAt?: string
   sourceRevision?: number
+  lastSourceChange?: ProjectSourceChange
+  lastPreviewCheckpoint?: ProjectSourceChange
   thumbnail?: {
     available: boolean
     refreshing?: boolean

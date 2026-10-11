@@ -62,6 +62,48 @@ test('keeps approved browser observations and interactions visible while hiding 
   assert.deepEqual(feed.parseAssistantActionFeed([{ ...click, arguments: 'secret', result: 'private receipt' }]), [])
 })
 
+test('keeps a blocked command receipt and its validation diagnostic in the UI feed', () => {
+  const blocked = action({
+    id: 'feed-command-workdir-blocked',
+    kind: 'run',
+    status: 'failed',
+    title: 'Command failed',
+    severity: 'error',
+    diagnostic: {
+      category: 'validation',
+      message: 'Command execution was blocked by its working-directory boundary.',
+      referenceID: 'action-0123456789abcdef01234567',
+      code: 'command_workdir_blocked',
+      operation: 'exec_command',
+      guidance: 'Use a relative directory inside the workspace root, or omit workdir.',
+    },
+  })
+
+  assert.deepEqual(feed.parseAssistantActionFeed([blocked]), [blocked])
+})
+
+test('keeps a stale command as failed applicability while preserving exit code zero', () => {
+  const stale = action({
+    id: 'feed-command-stale-source',
+    kind: 'run',
+    status: 'failed',
+    title: 'Command failed',
+    severity: 'error',
+    diagnostic: {
+      category: 'validation',
+      message: 'The command ran against an older source revision; its result does not verify the current workspace.',
+      referenceID: 'action-0123456789abcdef01234567',
+      code: 'source_revision_stale',
+      operation: 'exec_command',
+      guidance: 'Rerun the check against the current workspace revision before reporting its result.',
+    },
+    exec: { component: 'backend', status: 'stale', sourceStale: true, exitCode: 0 },
+  })
+
+  assert.deepEqual(feed.parseAssistantActionFeed([stale]), [stale])
+  assert.equal(feed.parseAssistantActionFeed([stale])[0].exec?.exitCode, 0)
+})
+
 test('parses server-owned image model-input evidence', () => {
   const imageWithLegacyOutcome = action({
     id: 'feed-image-1',

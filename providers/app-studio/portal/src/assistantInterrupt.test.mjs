@@ -36,7 +36,7 @@ test('preserves valid approval envelopes and bounded exec disclosure', () => {
 })
 
 test('keeps action identifiers while stripping an oversized exec disclosure', () => {
-  const raw = approval({ ...disclosure, argv: ['node', '-e', 'x'.repeat(313)] })
+  const raw = approval({ ...disclosure, argv: ['node', '-e', 'x'.repeat(12 * 1024 + 1)] })
   const parsed = interrupt.parseAssistantInterrupt(raw)
 
   assert.deepEqual(parsed?.action, {
@@ -46,7 +46,7 @@ test('keeps action identifiers while stripping an oversized exec disclosure', ()
   })
   assert.equal(parsed?.execDisclosureInvalid, true)
   assert.equal(interrupt.assistantInterruptAllowsApproval(parsed), false)
-  assert.equal(JSON.stringify(parsed).includes('x'.repeat(313)), false)
+  assert.equal(JSON.stringify(parsed).includes('x'.repeat(12 * 1024 + 1)), false)
 })
 
 test('marks invalid top-level disclosure without leaking its raw fields', () => {
