@@ -35,6 +35,13 @@ type ResourceTableColumn = {
   align?: 'start' | 'center' | 'end'
   /** Receives the table's remaining width and hosts row actions. */
   primary?: boolean
+  /**
+   * Caps the primary value's width (a CSS length). Table auto-layout otherwise
+   * widens the column to fit a long nowrap label, pushing the other columns out
+   * of view; with a cap the value truncates at that width and discloses in full
+   * on hover or focus like any truncated name.
+   */
+  maxWidth?: string
 }
 
 const CLIENT_FILTER_DEBOUNCE_MS = 100
@@ -310,6 +317,10 @@ const primaryColumnKey = computed(() => {
     ?? columns.find(column => column.key === 'name')?.key
     ?? columns[0]?.key
     ?? null
+})
+const primaryValueStyle = computed(() => {
+  const maxWidth = visibleColumns.value.find(column => column.key === primaryColumnKey.value)?.maxWidth
+  return maxWidth ? { '--k-table-primary-max-width': maxWidth } : undefined
 })
 const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (selectionSurfaceVisible.value ? 1 : 0), 1))
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
@@ -1139,7 +1150,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 <td v-for="col in visibleColumns" :key="col.key" class="k-table__cell" :class="[`k-table__cell--${col.align ?? 'start'}`, { 'k-table__cell--primary': col.key === primaryColumnKey }]">
                   <div v-if="col.key === primaryColumnKey && actionsColumn" class="k-table__primary">
                     <div class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
-                      <span class="k-table__primary-value">
+                      <span class="k-table__primary-value" :style="primaryValueStyle">
                         <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                       </span>
                     </div>
@@ -1148,7 +1159,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                     </div>
                   </div>
                   <div v-else-if="col.key === primaryColumnKey" class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
-                    <span class="k-table__primary-value">
+                    <span class="k-table__primary-value" :style="primaryValueStyle">
                       <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                     </span>
                   </div>

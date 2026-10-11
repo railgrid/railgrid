@@ -382,6 +382,27 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
   })
 
+  it('shows one bounded line of a long run input and discloses a longer cut on demand', async () => {
+    const prompt = `You are a principal software engineer conducting a rigorous code review.\n\n${'Evaluate the diff against agents.md and categorise every finding. '.repeat(40)}`
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [run({ id: 'r-long', agent: 'github-reviewer', inputPreview: prompt })], nextCursor: '' }) })
+    const view = await mount(Activity, { store: makeStore(api), api })
+
+    const value = view.element.querySelector<HTMLElement>('.k-table__primary-value')!
+    expect(value.style.getPropertyValue('--k-table-primary-max-width')).toBe('min(64ch, 55vw)')
+    const preview = text(value.querySelector('.agents-run-preview'))
+    expect(preview.length).toBeLessThanOrEqual(201)
+    expect(preview.endsWith('…')).toBe(true)
+    expect(preview).not.toMatch(/\s{2}/)
+    expect(preview.startsWith('You are a principal software engineer')).toBe(true)
+    expect(text(value.querySelector('.agents-run-secondary'))).toBe('github-reviewer')
+
+    const full = value.closest<HTMLElement>('.k-table__primary-content')!.dataset.fullValue!
+    expect(full.length).toBeGreaterThan(preview.length)
+    expect(full.length).toBeLessThanOrEqual(640)
+    expect(full).not.toMatch(/\s{2}/)
+    expect(full.endsWith(' · github-reviewer')).toBe(true)
+  })
+
   it('lets a pending question be answered from the feed', async () => {
     const resolveInbox = vi.fn().mockResolvedValue({})
     const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
