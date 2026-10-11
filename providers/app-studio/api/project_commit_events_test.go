@@ -87,4 +87,36 @@ func TestProjectCommittedAppendsEventToLatestRunTurn(t *testing.T) {
 	if !reflect.DeepEqual(payload, want) {
 		t.Fatalf("payload = %#v, want %#v", payload, want)
 	}
+	createAssistantThreadForHTTPTest(t, memory, scope, "thread-ambiguous", "test-user")
+	createAssistantTurnForHTTPTest(t, memory, scope, "thread-ambiguous", run)
+	if turn, ok, err := server.latestProjectAssistantThreadTurn(ctx, scope); err != nil || ok {
+		t.Fatalf("ambiguous legacy notification turn = %+v, %t, %v; want no inferred owner", turn, ok, err)
+	}
+
+}
+
+func TestLatestCommitNotificationTurnUsesDurableThreadWithRepeatedRequestID(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, memory, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-demo"}
+	now := time.Now().UTC()
+	for i, threadID := range []string{"thread-a", "thread-b"} {
+		at := now.Add(time.Duration(i) * time.Second)
+		run := store.AssistantRun{ID: "run-" + threadID, ThreadID: threadID, Mode: store.AssistantRunModeDefault,
+			ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantRunStatusCompleted,
+			ClientRequestID: "same-request", UserMessageID: "user-" + threadID, ActiveMessageID: "assistant-" + threadID,
+			Revision: 1, CreatedAt: at, UpdatedAt: at}
+		user := store.Message{ID: run.UserMessageID, ActorID: "test-user", Role: "user", Content: "update", CreatedAt: at, UpdatedAt: at}
+		assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Content: "done", CreatedAt: at, UpdatedAt: at}
+		if _, err := memory.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+			t.Fatal(err)
+		}
+		createAssistantThreadForHTTPTest(t, memory, scope, threadID, "test-user")
+		createAssistantTurnForHTTPTest(t, memory, scope, threadID, run)
+	}
+	turn, ok, err := server.latestProjectAssistantThreadTurn(ctx, scope)
+	if err != nil || !ok || turn.ThreadID != "thread-b" || turn.ID != "run-thread-b" {
+		t.Fatalf("latest notification turn = %+v, %t, %v", turn, ok, err)
+	}
 }

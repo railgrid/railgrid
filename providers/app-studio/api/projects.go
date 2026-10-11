@@ -703,18 +703,42 @@ func (s *Server) reserveProjectExternalOperation(
 	action string,
 ) (func(), bool) {
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	if s.store != nil {
+	checkAssistantActivity := func() (bool, error) {
+		if s.store == nil {
+			return false, nil
+		}
+		runs, err := s.store.ListActiveAssistantRuns(ctx, scope)
+		if err != nil {
+			return false, fmt.Errorf("list active assistant runs: %w", err)
+		}
+		for _, run := range runs {
+			if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID); err != nil {
+				return false, fmt.Errorf("reconcile assistant run %s: %w", run.ID, err)
+			}
+		}
+		// Preserve the terminal-run projection repair that used to be driven by
+		// the latest run, while also checking every outstanding per-thread run.
 		if latest, err := s.store.LatestAssistantRun(ctx, scope); err == nil {
 			if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, latest.ID); err != nil {
-				writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+err.Error())
-				return nil, false
+				return false, fmt.Errorf("reconcile latest assistant run %s: %w", latest.ID, err)
 			}
 		} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+err.Error())
-			return nil, false
+			return false, fmt.Errorf("read latest assistant run: %w", err)
 		}
+		remaining, err := s.store.ListActiveAssistantRuns(ctx, scope)
+		if err != nil {
+			return false, fmt.Errorf("verify active assistant runs: %w", err)
+		}
+		return len(remaining) > 0, nil
 	}
-	release, err := s.projectAssistantSupervisor().Reserve(scope)
+	if active, err := checkAssistantActivity(); err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+err.Error())
+		return nil, false
+	} else if active {
+		writeStatus(w, http.StatusConflict, "Conflict", "resolve or stop the active assistant run before "+action)
+		return nil, false
+	}
+	release, err := s.projectAssistantSupervisor().ReserveWorkspace(ctx, scope)
 	if err != nil {
 		if errors.Is(err, store.ErrAssistantRunConflict) {
 			writeStatus(w, http.StatusConflict, "Conflict", "wait for or stop the active assistant run before "+action)
@@ -723,18 +747,14 @@ func (s *Server) reserveProjectExternalOperation(
 		writeProjectError(w, err)
 		return nil, false
 	}
-	if s.store != nil {
-		run, latestErr := s.store.LatestAssistantRun(ctx, scope)
-		switch {
-		case latestErr == nil && !assistantRunTerminal(run.Status):
-			release()
-			writeStatus(w, http.StatusConflict, "Conflict", "resolve or stop the active assistant run before "+action)
-			return nil, false
-		case latestErr != nil && !errors.Is(latestErr, store.ErrAssistantRunNotFound):
-			release()
-			writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+latestErr.Error())
-			return nil, false
-		}
+	if active, err := checkAssistantActivity(); err != nil {
+		release()
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+err.Error())
+		return nil, false
+	} else if active {
+		release()
+		writeStatus(w, http.StatusConflict, "Conflict", "resolve or stop the active assistant run before "+action)
+		return nil, false
 	}
 	return release, true
 }
@@ -752,6 +772,11 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 	run, err := s.store.GetAssistantRun(r.Context(), scope, runID)
 	if err != nil {
 		writeProjectError(w, err)
+		return
+	}
+	threadID := strings.TrimSpace(mux.Vars(r)["thread"])
+	if threadID != "" && run.ThreadID != threadID {
+		writeStatus(w, http.StatusNotFound, "NotFound", "assistant run not found")
 		return
 	}
 	if run.Status != store.AssistantRunStatusPendingPermission && run.Status != store.AssistantRunStatusPendingInput {

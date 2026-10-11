@@ -301,6 +301,9 @@ func (s *MemoryStore) SaveAssistantRun(_ context.Context, scope Scope, run Assis
 		s.assistantRuns[scope] = map[string]AssistantRun{}
 	}
 	if existing, ok := s.assistantRuns[scope][run.ID]; ok {
+		if run.ThreadID != existing.ThreadID {
+			return fmt.Errorf("%w: immutable assistant run thread", ErrAssistantRunConflict)
+		}
 		run.CreatedAt = existing.CreatedAt
 		run.ClientRequestID = existing.ClientRequestID
 		run.UserMessageID = existing.UserMessageID
@@ -327,13 +330,13 @@ func (s *MemoryStore) CreateAssistantRun(_ context.Context, scope Scope, user Me
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.assistantRuns[scope][run.ID]; ok {
-		if existing.ClientRequestID != run.ClientRequestID {
+		if existing.ThreadID != run.ThreadID || existing.ClientRequestID != run.ClientRequestID {
 			return AssistantRun{}, fmt.Errorf("%w: assistant run %q already belongs to client request %q", ErrAssistantRunConflict, run.ID, existing.ClientRequestID)
 		}
 		return cloneAssistantRun(existing), nil
 	}
 	for _, existing := range s.assistantRuns[scope] {
-		if existing.ClientRequestID == run.ClientRequestID {
+		if existing.ThreadID == run.ThreadID && existing.ClientRequestID == run.ClientRequestID {
 			return cloneAssistantRun(existing), nil
 		}
 	}
@@ -353,11 +356,11 @@ func (s *MemoryStore) CreateAssistantRun(_ context.Context, scope Scope, user Me
 
 func validateUniqueAssistantRun(runs map[string]AssistantRun, run AssistantRun) error {
 	for id, existing := range runs {
-		if id != run.ID && run.ClientRequestID != "" && existing.ClientRequestID == run.ClientRequestID {
+		if id != run.ID && existing.ThreadID == run.ThreadID && run.ClientRequestID != "" && existing.ClientRequestID == run.ClientRequestID {
 			return fmt.Errorf("%w: client request %q", ErrAssistantRunConflict, run.ClientRequestID)
 		}
-		if id != run.ID && !assistantRunStatusTerminal(run.Status) && !assistantRunStatusTerminal(existing.Status) {
-			return fmt.Errorf("%w: project already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
+		if id != run.ID && existing.ThreadID == run.ThreadID && !assistantRunStatusTerminal(run.Status) && !assistantRunStatusTerminal(existing.Status) {
+			return fmt.Errorf("%w: thread already has active assistant run %q", ErrAssistantRunConflict, existing.ID)
 		}
 	}
 	return nil
@@ -418,6 +421,9 @@ func (s *MemoryStore) SaveAssistantRunSnapshot(_ context.Context, scope Scope, r
 	}
 	if run.Mode != current.Mode || run.ApprovalMode != current.ApprovalMode {
 		return fmt.Errorf("%w: immutable assistant run contract", ErrAssistantRunConflict)
+	}
+	if run.ThreadID != current.ThreadID {
+		return fmt.Errorf("%w: immutable assistant run thread", ErrAssistantRunConflict)
 	}
 	run.CreatedAt, run.ClientRequestID, run.UserMessageID = current.CreatedAt, current.ClientRequestID, current.UserMessageID
 	if err := validateUniqueAssistantRun(s.assistantRuns[scope], run); err != nil {
@@ -490,11 +496,29 @@ func (s *MemoryStore) FindAssistantRunByClientRequestID(_ context.Context, scope
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, run := range s.assistantRuns[scope] {
-		if run.ClientRequestID == clientRequestID {
+		if run.ThreadID == "" && run.ClientRequestID == clientRequestID {
 			return cloneAssistantRun(run), nil
 		}
 	}
 	return AssistantRun{}, fmt.Errorf("%w: client request %q", ErrAssistantRunNotFound, clientRequestID)
+}
+
+func (s *MemoryStore) FindAssistantRunByThreadClientRequestID(_ context.Context, scope Scope, threadID, clientRequestID string) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	threadID, clientRequestID = strings.TrimSpace(threadID), strings.TrimSpace(clientRequestID)
+	if threadID == "" || clientRequestID == "" {
+		return AssistantRun{}, fmt.Errorf("assistant thread and client request ids are required")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, run := range s.assistantRuns[scope] {
+		if run.ThreadID == threadID && run.ClientRequestID == clientRequestID {
+			return cloneAssistantRun(run), nil
+		}
+	}
+	return AssistantRun{}, fmt.Errorf("%w: thread %q client request %q", ErrAssistantRunNotFound, threadID, clientRequestID)
 }
 
 func (s *MemoryStore) LatestAssistantRun(_ context.Context, scope Scope) (AssistantRun, error) {
@@ -514,6 +538,53 @@ func (s *MemoryStore) LatestAssistantRun(_ context.Context, scope Scope) (Assist
 		return AssistantRun{}, fmt.Errorf("%w: latest run", ErrAssistantRunNotFound)
 	}
 	return cloneAssistantRun(latest), nil
+}
+
+func (s *MemoryStore) LatestAssistantRunForThread(_ context.Context, scope Scope, threadID string) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return AssistantRun{}, fmt.Errorf("assistant thread id is required")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest AssistantRun
+	found := false
+	for _, run := range s.assistantRuns[scope] {
+		if run.ThreadID != threadID {
+			continue
+		}
+		if !found || run.UpdatedAt.After(latest.UpdatedAt) || (run.UpdatedAt.Equal(latest.UpdatedAt) && run.ID > latest.ID) {
+			latest, found = run, true
+		}
+	}
+	if !found {
+		return AssistantRun{}, fmt.Errorf("%w: latest run for thread %q", ErrAssistantRunNotFound, threadID)
+	}
+	return cloneAssistantRun(latest), nil
+}
+
+func (s *MemoryStore) ListActiveAssistantRuns(_ context.Context, scope Scope) ([]AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	active := make([]AssistantRun, 0)
+	for _, run := range s.assistantRuns[scope] {
+		if !assistantRunStatusTerminal(run.Status) {
+			active = append(active, cloneAssistantRun(run))
+		}
+	}
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].CreatedAt.Equal(active[j].CreatedAt) {
+			return active[i].ID < active[j].ID
+		}
+		return active[i].CreatedAt.Before(active[j].CreatedAt)
+	})
+	return active, nil
 }
 
 func (s *MemoryStore) AppendAssistantRunEvent(_ context.Context, scope Scope, event AssistantRunEvent, expectedSequence int64) (AssistantRunEvent, error) {

@@ -433,9 +433,14 @@ func TestProjectAssistantContentPartsDurableReplayAndRepairProjection(t *testing
 		ContextResourceReceipts: []projectAssistantContextResourceReceipt{receipt},
 		ContentParts:            parts,
 	}
+	now := time.Now().UTC()
+	thread := store.AssistantThread{ID: "thread-content-parts", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
+	if _, err := messages.CreateAssistantThread(ctx, scope, thread, nil); err != nil {
+		t.Fatal(err)
+	}
 	start := func(store.AssistantRun, store.Message, bool) error { return nil }
-	first, err := server.startProjectAssistantRunDurablyWithModeAndSkills(
-		ctx, scope, "alice", "inspect [@resource:demo/demo.example/v1/Table/tables/orders]", "content-parts-1", store.AssistantRunModeDefault, selection, start,
+	first, err := server.startProjectAssistantRunDurablyForThread(
+		ctx, scope, thread.ID, "alice", "inspect [@resource:demo/demo.example/v1/Table/tables/orders]", "content-parts-1", store.AssistantRunModeDefault, selection, start,
 	)
 	if err != nil || !first.Started {
 		t.Fatalf("first durable start = %#v, %v", first, err)
@@ -451,25 +456,20 @@ func TestProjectAssistantContentPartsDurableReplayAndRepairProjection(t *testing
 		t.Fatalf("durable audit resource receipt = %#v, want %#v", got, receipt)
 	}
 
-	replay, err := server.startProjectAssistantRunDurablyWithModeAndSkills(
-		ctx, scope, "alice", "inspect [@resource:demo/demo.example/v1/Table/tables/orders]", "content-parts-1", store.AssistantRunModeDefault, selection, start,
+	replay, err := server.startProjectAssistantRunDurablyForThread(
+		ctx, scope, thread.ID, "alice", "inspect [@resource:demo/demo.example/v1/Table/tables/orders]", "content-parts-1", store.AssistantRunModeDefault, selection, start,
 	)
 	if err != nil || replay.Started || replay.Run.ID != first.Run.ID {
 		t.Fatalf("exact durable replay = %#v, %v", replay, err)
 	}
 	reordered := selection
 	reordered.ContentParts = []projectAssistantContentPart{selection.ContentParts[1], selection.ContentParts[0]}
-	if _, err := server.startProjectAssistantRunDurablyWithModeAndSkills(
-		ctx, scope, "alice", "inspect [@resource:demo/demo.example/v1/Table/tables/orders]", "content-parts-1", store.AssistantRunModeDefault, reordered, start,
+	if _, err := server.startProjectAssistantRunDurablyForThread(
+		ctx, scope, thread.ID, "alice", "inspect [@resource:demo/demo.example/v1/Table/tables/orders]", "content-parts-1", store.AssistantRunModeDefault, reordered, start,
 	); !errors.Is(err, store.ErrAssistantRunConflict) {
 		t.Fatalf("reordered replay error = %v, want run conflict", err)
 	}
 
-	now := run.CreatedAt
-	thread := store.AssistantThread{ID: "thread-content-parts", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
-	if _, err := messages.CreateAssistantThread(ctx, scope, thread, nil); err != nil {
-		t.Fatal(err)
-	}
 	turn, err := server.repairProjectAssistantThreadTurn(ctx, scope, thread, assistantThreadTurnCreateRequest{
 		Content:             "inspect [@resource:demo/demo.example/v1/Table/tables/orders]",
 		ClientUserMessageID: "content-parts-1",
@@ -503,36 +503,5 @@ func TestProjectAssistantContentPartsDurableReplayAndRepairProjection(t *testing
 	}
 	if strings.Contains(string(items[0].Data), "uid-orders") || strings.Contains(string(items[0].Data), "resourceVersion") || strings.Contains(string(items[0].Data), "catalogDigest") {
 		t.Fatalf("repaired projection exposed private receipt fields: %s", items[0].Data)
-	}
-}
-
-func TestProjectAssistantReplayFindsCanonicalTurnAcrossThreads(t *testing.T) {
-	ctx := context.Background()
-	messages := store.NewMemoryStore()
-	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
-	server.tenantWorkspaces = defaultTestWorkspaces.lookup
-	server.tenantActors = defaultTestActors.lookup
-	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
-	now := time.Now().UTC()
-	canonical, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: "thread-canonical", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: "thread-replay", ActorID: "alice", CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second)}, nil); err != nil {
-		t.Fatal(err)
-	}
-	turn, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
-		ID: "turn-canonical", ThreadID: canonical.ID, ActorID: "alice", ClientUserMessageID: "first-project-request",
-		Mode: store.AssistantRunModeDefault, Status: store.AssistantTurnStatusCompleted, CreatedAt: now, UpdatedAt: now,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recoveredThread, recoveredTurn, err := server.findProjectAssistantTurnAcrossThreads(ctx, scope, "alice", turn.ClientUserMessageID, "thread-replay")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recoveredThread.ID != canonical.ID || recoveredTurn.ID != turn.ID || recoveredTurn.ThreadID != canonical.ID {
-		t.Fatalf("replay recovered thread/turn = %#v/%#v", recoveredThread, recoveredTurn)
 	}
 }

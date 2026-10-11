@@ -40,15 +40,23 @@ func TestProbeOldSubscriberCleanupCannotTouchReplacementOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, oldUnsubscribe, err := supervisor.Subscribe(scope, run.ID, 0)
+	_, oldUnsubscribe, err := supervisor.Subscribe(scope, run.ID, 0, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	supervisor.mu.Lock()
+	lease := supervisor.runs[projectAssistantThreadKey(scope, run.ThreadID)].runClaimLease
+	supervisor.mu.Unlock()
 	accumulator.FailPersistence(errors.New("snapshot unavailable"))
+	select {
+	case <-lease.done:
+	case <-time.After(time.Second):
+		t.Fatal("old run lease was not released")
+	}
 	if _, err := supervisor.Attach(scope, run, assistant); err != nil {
 		t.Fatalf("replacement Attach: %v", err)
 	}
-	_, replacementUnsubscribe, err := supervisor.Subscribe(scope, run.ID, 0)
+	_, replacementUnsubscribe, err := supervisor.Subscribe(scope, run.ID, 0, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +123,7 @@ func TestProbeFallbackFailureAfterWorkerFinishClosesSubscribers(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0)
+	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +133,7 @@ func TestProbeFallbackFailureAfterWorkerFinishClosesSubscribers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("subscriber did not receive its initial snapshot")
 	}
-	accumulator := supervisor.accumulatorFor(scope, run.ID)
+	accumulator := supervisor.accumulatorFor(scope, run.ID, run.ThreadID)
 	if accumulator == nil {
 		t.Fatal("worker accumulator was not attached")
 	}

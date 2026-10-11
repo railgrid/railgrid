@@ -176,11 +176,17 @@ func validateProjectAssistantStartReplayWithSelectionsAndParts(run store.Assista
 	return nil
 }
 
-func (s *Server) recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, skills []string, resources []projectAssistantContextResourceInput, parts []projectAssistantContentPart) (store.AssistantRun, bool) {
+func (s *Server) recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, skills []string, resources []projectAssistantContextResourceInput, parts []projectAssistantContentPart, threadIDs ...string) (store.AssistantRun, bool) {
 	if !errors.Is(createErr, store.ErrAssistantRunConflict) {
 		return store.AssistantRun{}, false
 	}
-	prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
+	var prior store.AssistantRun
+	var err error
+	if len(threadIDs) > 0 && strings.TrimSpace(threadIDs[0]) != "" {
+		prior, err = s.store.FindAssistantRunByThreadClientRequestID(ctx, scope, threadIDs[0], clientRequestID)
+	} else {
+		prior, err = s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
+	}
 	if err != nil || validateProjectAssistantStartReplayWithSelectionsAndParts(prior, actor, content, mode, skills, resources, parts) != nil {
 		return store.AssistantRun{}, false
 	}

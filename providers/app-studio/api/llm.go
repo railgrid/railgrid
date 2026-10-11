@@ -540,12 +540,12 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		CollaborationMode:        mode,
 		TurnProfile:              turnPolicy.profile,
 		TurnPolicy:               turnPolicy,
-		Steering:                 s.projectAssistantSupervisor().Steering(messageScope, durable.ID),
+		Steering:                 s.projectAssistantSupervisor().Steering(messageScope, durable.ID, durable.ThreadID),
 		SealSteering: func() bool {
-			return s.projectAssistantSupervisor().SealSteering(messageScope, durable.ID)
+			return s.projectAssistantSupervisor().SealSteering(messageScope, durable.ID, durable.ThreadID)
 		},
 		ActivateSteering: func(activateCtx context.Context, inputs []projectAssistantSteeringInput) error {
-			return s.projectAssistantSupervisor().ActivateSteering(activateCtx, messageScope, durable.ID, inputs)
+			return s.projectAssistantSupervisor().ActivateSteering(activateCtx, messageScope, durable.ID, inputs, durable.ThreadID)
 		},
 	}
 	if hasDurableRun {

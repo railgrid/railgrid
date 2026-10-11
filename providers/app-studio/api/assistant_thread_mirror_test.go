@@ -798,6 +798,7 @@ func TestAssistantThreadMirrorReattachesAfterRestartAndCompletesWaitingExec(t *t
 	}
 	run := store.AssistantRun{
 		ID:              runID,
+		ThreadID:        threadID,
 		Mode:            store.AssistantRunModeDefault,
 		ApprovalMode:    store.AssistantApprovalModeOnRequest,
 		Status:          store.AssistantRunStatusPendingPermission,
@@ -881,7 +882,7 @@ func TestAssistantThreadMirrorReattachesAfterRestartAndCompletesWaitingExec(t *t
 		return countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, dynamicItemID) == 1
 	})
 
-	accumulator := server.projectAssistantSupervisor().accumulatorFor(scope, runID)
+	accumulator := server.projectAssistantSupervisor().accumulatorFor(scope, runID, threadID)
 	if accumulator == nil {
 		t.Fatal("restarted run has no supervisor accumulator")
 	}
@@ -1337,7 +1338,7 @@ func TestProjectAssistantStartFailureCompensatesAndRepairsCanonicalTurn(t *testi
 	}
 	startErr := errors.New("canonical turn startup failed")
 	selection := projectAssistantDurableSkillSelection{IDs: []string{"project:alpha"}, CatalogDigest: "catalog-digest", Receipts: []projectAssistantSkillReceipt{{ID: "project:alpha", Name: "alpha", Description: "Alpha guidance", Scope: appskills.ScopeProject, PackagePath: "alpha", Digest: "skill-digest", ContentDigest: "content-digest"}}}
-	started, err := server.startProjectAssistantRunDurablyWithModeAndSkills(context.Background(), scope, "alice", "build it", "client-repair", store.AssistantRunModeDefault, selection, func(store.AssistantRun, store.Message, bool) error {
+	started, err := server.startProjectAssistantRunDurablyForThread(context.Background(), scope, thread.ID, "alice", "build it", "client-repair", store.AssistantRunModeDefault, selection, func(store.AssistantRun, store.Message, bool) error {
 		return startErr
 	})
 	if !errors.Is(err, startErr) {

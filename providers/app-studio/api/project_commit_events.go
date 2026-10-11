@@ -124,16 +124,56 @@ func (s *Server) latestProjectAssistantThreadTurn(ctx context.Context, scope sto
 	if actor == "" {
 		return store.AssistantTurn{}, false, nil
 	}
-	_, turn, err := s.findProjectAssistantTurnAcrossThreads(ctx, scope, actor, run.ClientRequestID, "")
-	if errors.Is(err, store.ErrAssistantTurnNotFound) {
-		return store.AssistantTurn{}, false, nil
+	if run.ThreadID != "" {
+		thread, err := s.store.GetAssistantThread(ctx, scope, run.ThreadID)
+		if errors.Is(err, store.ErrAssistantThreadNotFound) {
+			return store.AssistantTurn{}, false, nil
+		}
+		if err != nil {
+			return store.AssistantTurn{}, false, err
+		}
+		if thread.ActorID != actor {
+			return store.AssistantTurn{}, false, nil
+		}
+		turn, err := s.store.GetAssistantTurn(ctx, scope, run.ThreadID, run.ID)
+		if errors.Is(err, store.ErrAssistantTurnNotFound) {
+			return store.AssistantTurn{}, false, nil
+		}
+		if err != nil {
+			return store.AssistantTurn{}, false, err
+		}
+		return turn, turn.ThreadID == run.ThreadID && turn.ID == run.ID, nil
 	}
-	if err != nil {
-		return store.AssistantTurn{}, false, err
+	// Unresolved legacy ownership must have exactly one matching canonical
+	// turn. Choosing the first thread would manufacture ownership for the
+	// ambiguous records the migration deliberately leaves unresolved.
+	var match store.AssistantTurn
+	found := false
+	cursor := ""
+	for {
+		page, err := s.store.ListAssistantThreads(ctx, scope, actor, true, 100, cursor)
+		if err != nil {
+			return store.AssistantTurn{}, false, err
+		}
+		for _, thread := range page.Items {
+			turn, err := s.store.GetAssistantTurn(ctx, scope, thread.ID, run.ID)
+			if errors.Is(err, store.ErrAssistantTurnNotFound) {
+				continue
+			}
+			if err != nil {
+				return store.AssistantTurn{}, false, err
+			}
+			if found {
+				return store.AssistantTurn{}, false, nil
+			}
+			match, found = turn, true
+		}
+		if page.NextCursor == "" {
+			return match, found, nil
+		}
+		if page.NextCursor == cursor {
+			return store.AssistantTurn{}, false, nil
+		}
+		cursor = page.NextCursor
 	}
-	// A thread turn shares its run's ID; anything else is not this run.
-	if turn.ID != run.ID {
-		return store.AssistantTurn{}, false, nil
-	}
-	return turn, true, nil
 }

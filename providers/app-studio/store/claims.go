@@ -26,18 +26,22 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // Replica claim kinds.
 const (
 	// ReplicaClaimKindActivity marks a project's assistant activity — an
-	// attached run or a reserved external operation (hydrate, template
-	// switch, delete). One per project scope; Detail carries the run ID or
-	// "operation".
+	// exclusive project operation (hydrate, template switch, delete) or a
+	// thread/run-specific execution lease. ActivityClaimKey remains the
+	// project-wide owner; AssistantThreadClaimKey and AssistantRunClaimKey
+	// scope run admission and recovery.
 	ReplicaClaimKindActivity = "activity"
 	// ReplicaClaimKindProject pins a project's workspace to a replica; the
 	// affinity middleware forwards workspace-touching requests to OwnerAddr.
@@ -74,6 +78,24 @@ func ReplicaClaimScopeKey(scope Scope) string {
 // ActivityClaimKey is the claim key for a project's assistant activity.
 func ActivityClaimKey(scope Scope) string {
 	return ReplicaClaimKindActivity + "/" + ReplicaClaimScopeKey(scope)
+}
+
+// AssistantRunClaimKey identifies one execution lease while ActivityClaimKey
+// continues to fence the shared project workspace owner. Multiple thread runs
+// on that owner therefore remain independently observable to recovery.
+func AssistantRunClaimKey(scope Scope, threadID, runID string) string {
+	material := ReplicaClaimScopeKey(scope) + "\x00" + threadID + "\x00" + runID
+	digest := sha256.Sum256([]byte(material))
+	return ReplicaClaimKindActivity + "/run/" + hex.EncodeToString(digest[:])
+}
+
+// AssistantThreadClaimKey fences the short transaction that creates and
+// attaches a run to a thread. It closes the recovery gap before the new run's
+// immutable run-specific claim can be acquired.
+func AssistantThreadClaimKey(scope Scope, threadID string) string {
+	material := ReplicaClaimScopeKey(scope) + "\x00" + strings.TrimSpace(threadID)
+	digest := sha256.Sum256([]byte(material))
+	return ReplicaClaimKindActivity + "/thread/" + hex.EncodeToString(digest[:])
 }
 
 // ThumbnailClaimKey is the capture lease key for one project incarnation.

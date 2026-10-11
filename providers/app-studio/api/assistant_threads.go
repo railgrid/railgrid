@@ -112,6 +112,14 @@ type assistantThreadTurnDetailResponse struct {
 	EffectiveSettings *projectAssistantAuditEffectiveSettings `json:"effectiveSettings,omitempty"`
 }
 
+// assistantRunMatchesThread preserves access to pre-thread runs only when the
+// canonical turn has already been resolved from the requested thread. New
+// runs always carry ThreadID; a non-empty mismatch is never accepted.
+func assistantRunMatchesThread(run store.AssistantRun, threadID string) bool {
+	runThreadID := strings.TrimSpace(run.ThreadID)
+	return runThreadID == "" || runThreadID == strings.TrimSpace(threadID)
+}
+
 type assistantThreadSteerRequest struct {
 	Content             string `json:"content"`
 	ClientUserMessageID string `json:"clientUserMessageID"`
@@ -584,6 +592,10 @@ func (s *Server) continueProjectAssistantThreadTurn(w http.ResponseWriter, r *ht
 		s.writeAssistantThreadError(w, err)
 		return
 	}
+	if predecessorRun.ThreadID != thread.ID {
+		writeStatus(w, http.StatusNotFound, "NotFound", "assistant turn not found")
+		return
+	}
 	if predecessor.Status != store.AssistantTurnStatusInterrupted ||
 		(predecessorRun.Status != store.AssistantRunStatusInterrupted && predecessorRun.Status != store.AssistantRunStatusAborted) {
 		writeStatus(w, http.StatusConflict, "Conflict", "assistant turn is not interrupted")
@@ -685,7 +697,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		return
 	}
 	replay := false
-	if prior, replayErr := s.store.FindAssistantRunByClientRequestID(r.Context(), scope, request.ClientUserMessageID); replayErr == nil {
+	if prior, replayErr := s.store.FindAssistantRunByThreadClientRequestID(r.Context(), scope, thread.ID, request.ClientUserMessageID); replayErr == nil {
 		if replayErr = validateProjectAssistantStartReplayWithSelectionsAndParts(prior, id.user, request.Content, request.CollaborationMode, skillIDs, contextResources, request.ContentParts); replayErr != nil {
 			s.writeAssistantThreadError(w, replayErr)
 			return
@@ -784,7 +796,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		selectedSkills = skills.receipts
 	}
 	var canonicalTurn store.AssistantTurn
-	started, err := s.startProjectAssistantRunDurablyWithModeAndSkills(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{
+	started, err := s.startProjectAssistantRunDurablyForThread(r.Context(), scope, thread.ID, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{
 		ModelID:         request.ModelID,
 		ModelRevisionID: request.modelRevisionID,
 		IDs:             skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills,
@@ -871,17 +883,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	if !started.Started {
 		canonicalTurn, err = s.store.FindAssistantTurnByClientUserMessageID(r.Context(), scope, thread.ID, request.ClientUserMessageID)
 		if errors.Is(err, store.ErrAssistantTurnNotFound) {
-			var recoveredThread store.AssistantThread
-			recoveredThread, canonicalTurn, err = s.findProjectAssistantTurnAcrossThreads(r.Context(), scope, id.user, request.ClientUserMessageID, thread.ID)
-			if err == nil {
-				// The generic idempotency record may have been created from a
-				// different thread during a first-project replay. Return and repair
-				// that canonical thread rather than attaching the run to this new
-				// request's thread.
-				thread = recoveredThread
-			} else if errors.Is(err, store.ErrAssistantTurnNotFound) {
-				canonicalTurn, err = s.repairProjectAssistantThreadTurn(r.Context(), scope, thread, request, started.Run)
-			}
+			canonicalTurn, err = s.repairProjectAssistantThreadTurn(r.Context(), scope, thread, request, started.Run)
 		}
 		if err != nil {
 			s.writeAssistantThreadError(w, err)
@@ -910,56 +912,6 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusAccepted, assistantThreadTurnStartResponse{Thread: thread, Turn: canonicalTurn, ContinuationOfTurnID: request.continuationOfTurnID})
 }
 
-// findProjectAssistantTurnAcrossThreads resolves the canonical turn for an
-// idempotent client message across all of the actor's threads. A replay can
-// arrive with a freshly created thread after the original request committed
-// its generic run; creating a second turn in that fresh thread would strand
-// the original transcript and its attachment ownership.
-func (s *Server) findProjectAssistantTurnAcrossThreads(ctx context.Context, scope store.Scope, actorID, clientUserMessageID, preferredThreadID string) (store.AssistantThread, store.AssistantTurn, error) {
-	actorID = strings.TrimSpace(actorID)
-	clientUserMessageID = strings.TrimSpace(clientUserMessageID)
-	preferredThreadID = strings.TrimSpace(preferredThreadID)
-	if actorID == "" || clientUserMessageID == "" {
-		return store.AssistantThread{}, store.AssistantTurn{}, store.ErrAssistantTurnNotFound
-	}
-	if preferredThreadID != "" {
-		if turn, err := s.store.FindAssistantTurnByClientUserMessageID(ctx, scope, preferredThreadID, clientUserMessageID); err == nil {
-			thread, threadErr := s.store.GetAssistantThread(ctx, scope, preferredThreadID)
-			if threadErr != nil {
-				return store.AssistantThread{}, store.AssistantTurn{}, threadErr
-			}
-			return thread, turn, nil
-		} else if !errors.Is(err, store.ErrAssistantTurnNotFound) {
-			return store.AssistantThread{}, store.AssistantTurn{}, err
-		}
-	}
-
-	cursor := ""
-	for {
-		page, err := s.store.ListAssistantThreads(ctx, scope, actorID, true, 100, cursor)
-		if err != nil {
-			return store.AssistantThread{}, store.AssistantTurn{}, err
-		}
-		for _, candidate := range page.Items {
-			if candidate.ID == preferredThreadID {
-				continue
-			}
-			turn, err := s.store.FindAssistantTurnByClientUserMessageID(ctx, scope, candidate.ID, clientUserMessageID)
-			if err == nil {
-				return candidate, turn, nil
-			}
-			if !errors.Is(err, store.ErrAssistantTurnNotFound) {
-				return store.AssistantThread{}, store.AssistantTurn{}, err
-			}
-		}
-		if page.NextCursor == "" || page.NextCursor == cursor {
-			break
-		}
-		cursor = page.NextCursor
-	}
-	return store.AssistantThread{}, store.AssistantTurn{}, store.ErrAssistantTurnNotFound
-}
-
 // repairProjectAssistantThreadTurn reconstructs the canonical thread boundary
 // when generic run creation committed but provider-specific turn creation did
 // not. It is intentionally idempotent: CreateAssistantTurn returns an
@@ -967,6 +919,9 @@ func (s *Server) findProjectAssistantTurnAcrossThreads(ctx context.Context, scop
 // through the normal mirror/reconciliation path before the replay responds.
 func (s *Server) repairProjectAssistantThreadTurn(ctx context.Context, scope store.Scope, thread store.AssistantThread, request assistantThreadTurnCreateRequest, run store.AssistantRun) (store.AssistantTurn, error) {
 	if strings.TrimSpace(run.ID) == "" {
+		return store.AssistantTurn{}, store.ErrAssistantTurnNotFound
+	}
+	if run.ThreadID != thread.ID {
 		return store.AssistantTurn{}, store.ErrAssistantTurnNotFound
 	}
 	user, err := s.findProjectMessage(ctx, scope, run.UserMessageID)
@@ -1099,7 +1054,10 @@ func (s *Server) getProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Re
 		return
 	}
 	run, err := s.store.GetAssistantRun(r.Context(), scope, turn.ID)
-	if err != nil {
+	if err != nil || !assistantRunMatchesThread(run, thread.ID) {
+		if err == nil {
+			err = store.ErrAssistantRunNotFound
+		}
 		s.writeAssistantThreadError(w, err)
 		return
 	}
@@ -1154,6 +1112,11 @@ func (s *Server) steerProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 		writeStatus(w, http.StatusNotFound, "NotFound", "active assistant turn not found")
 		return
 	}
+	run, err := s.store.GetAssistantRun(r.Context(), scope, turn.ID)
+	if err != nil || run.ThreadID != thread.ID {
+		writeStatus(w, http.StatusNotFound, "NotFound", "active assistant turn not found")
+		return
+	}
 	var request assistantThreadSteerRequest
 	if !decodeStrictJSON(w, r, &request) {
 		return
@@ -1164,7 +1127,7 @@ func (s *Server) steerProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 		writeProjectError(w, newValidationError("content and clientUserMessageID are required"))
 		return
 	}
-	_, user, _, handled, err := s.projectAssistantSupervisor().EnqueueSteering(r.Context(), scope, turn.ID, id.user, request.Content, request.ClientUserMessageID, turn.Mode)
+	_, user, _, handled, err := s.projectAssistantSupervisor().EnqueueSteering(r.Context(), scope, turn.ID, id.user, request.Content, request.ClientUserMessageID, turn.Mode, thread.ID)
 	if err != nil || !handled {
 		if err == nil {
 			err = store.ErrAssistantTurnConflict
@@ -1214,7 +1177,7 @@ func (s *Server) interruptProjectAssistantThreadTurn(w http.ResponseWriter, r *h
 		return
 	}
 	run, runErr := s.store.GetAssistantRun(r.Context(), scope, turn.ID)
-	if runErr != nil || s.authorizeProjectAssistantRunActor(r.Context(), scope, run, id.user, false) != nil {
+	if runErr != nil || run.ThreadID != thread.ID || s.authorizeProjectAssistantRunActor(r.Context(), scope, run, id.user, false) != nil {
 		writeStatus(w, http.StatusNotFound, "NotFound", "assistant turn not found")
 		return
 	}
@@ -1224,7 +1187,7 @@ func (s *Server) interruptProjectAssistantThreadTurn(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	if found, bindErr := s.projectAssistantSupervisor().BindStopRequest(r.Context(), scope, turn.ID, id.user, request.ClientRequestID); found {
+	if found, bindErr := s.projectAssistantSupervisor().BindStopRequest(r.Context(), scope, turn.ID, id.user, request.ClientRequestID, thread.ID); found {
 		if bindErr != nil {
 			s.writeAssistantThreadError(w, bindErr)
 			return
@@ -1240,7 +1203,7 @@ func (s *Server) interruptProjectAssistantThreadTurn(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	stopped, found, err := s.projectAssistantSupervisor().StopWithIdentity(r.Context(), id, scope, turn.ID)
+	stopped, found, err := s.projectAssistantSupervisor().StopWithIdentity(r.Context(), id, scope, turn.ID, thread.ID)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
 		return
@@ -1263,8 +1226,14 @@ func (s *Server) respondProjectAssistantThreadTurn(w http.ResponseWriter, r *htt
 		return
 	}
 	turnID := mux.Vars(r)["turn"]
-	turn, err := s.store.GetAssistantTurn(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, project), thread.ID, turnID)
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	turn, err := s.store.GetAssistantTurn(r.Context(), scope, thread.ID, turnID)
 	if err != nil || turn.ActorID != id.user || turn.Status != store.AssistantTurnStatusInProgress {
+		writeStatus(w, http.StatusNotFound, "NotFound", "active assistant turn not found")
+		return
+	}
+	run, err := s.store.GetAssistantRun(r.Context(), scope, turn.ID)
+	if err != nil || run.ThreadID != thread.ID {
 		writeStatus(w, http.StatusNotFound, "NotFound", "active assistant turn not found")
 		return
 	}
