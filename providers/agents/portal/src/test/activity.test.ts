@@ -1529,6 +1529,53 @@ describe('Automation.vue', () => {
     expect([...view.element.querySelectorAll<HTMLButtonElement>('td:last-child button')].every(button => !button.disabled)).toBe(true)
   })
 
+  it('offers Enable only on a disabled automation and clears the disabling through the enable verb', async () => {
+    const enableTrigger = vi.fn().mockResolvedValue({})
+    const disabled = {
+      metadata: { name: 'on-pr' },
+      spec: { agentRef: 'scout', source: 'webhook', task: 'review it' },
+      status: { disabledReason: 'disabled after 6 consecutive failures: the request exceeds the 2MiB protocol limit' },
+    }
+    const healthy = { metadata: { name: 'on-push' }, spec: { agentRef: 'scout', source: 'webhook', task: 'look' } }
+    // The write reloads the slice; the server's copy is what the row shows after.
+    const api = stubApi({ enableTrigger, listTriggers: vi.fn().mockResolvedValue([disabled, healthy]) })
+    const store = storeWithAgent(api)
+    store.triggers.data = [disabled, healthy]
+    store.triggers.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
+
+    expect(text(view.element)).toContain('2MiB protocol limit')
+    expect(view.element.querySelector('button[aria-label="Enable on-push"]')).toBeNull()
+    view.element.querySelector<HTMLButtonElement>('button[aria-label="Enable on-pr"]')!.click()
+    await settleVue(2)
+    expect(enableTrigger).toHaveBeenCalledWith('on-pr')
+    expect(disabled.status.disabledReason).toBeUndefined()
+    expect(text(view.element)).toContain('on-pr')
+    expect(text(view.element)).not.toContain('2MiB protocol limit')
+    expect(view.element.querySelector('button[aria-label="Enable on-pr"]')).toBeNull()
+  })
+
+  it('puts the disabling back when enable fails', async () => {
+    const enableSchedule = vi.fn().mockRejectedValue(new Error('conflict'))
+    const schedule: Schedule = {
+      metadata: { name: 'daily' },
+      spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' },
+      status: { disabledReason: 'disabled after 6 consecutive failures: agent gone' },
+    }
+    const api = stubApi({ enableSchedule, listSchedules: vi.fn().mockResolvedValue([schedule]) })
+    const store = storeWithAgent(api)
+    store.schedules.data = [schedule]
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout' })
+
+    view.element.querySelector<HTMLButtonElement>('button[aria-label="Enable daily"]')!.click()
+    await settleVue(2)
+    expect(enableSchedule).toHaveBeenCalledWith('daily')
+    expect(schedule.status?.disabledReason).toContain('agent gone')
+    expect(text(view.element)).toContain('agent gone')
+    expect(view.element.querySelector('button[aria-label="Enable daily"]')).not.toBeNull()
+  })
+
   it('queues run-now work and exposes the returned run as opt-in navigation', async () => {
     const runSchedule = vi.fn().mockResolvedValue({ runID: 'run-42' })
     const api = stubApi({ runSchedule })

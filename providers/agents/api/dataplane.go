@@ -147,10 +147,12 @@ func (s *Server) routes() map[string]resourceRoutes {
 			"authorize":      {methods: post, handler: s.oauthAuthorize},
 		}},
 		"schedules": {gvr: agentsclient.ScheduleGVR, verbs: map[string]verbRoute{
-			"run": {methods: post, handler: s.runScheduleNow},
+			"run":    {methods: post, handler: s.runScheduleNow},
+			"enable": {methods: post, handler: s.enableSchedule},
 		}},
 		"triggers": {gvr: agentsclient.TriggerGVR, verbs: map[string]verbRoute{
-			"run": {methods: post, handler: s.runTriggerNow},
+			"run":    {methods: post, handler: s.runTriggerNow},
+			"enable": {methods: post, handler: s.enableTrigger},
 		}},
 	}
 }

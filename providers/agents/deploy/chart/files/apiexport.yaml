@@ -274,8 +274,26 @@ spec:
           kind: DataPlaneEndpointSlice
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
+    name: schedules/enable
+    schema: v261011-8364154c.enable.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: schedules/run
     schema: v260924-87f1980f.run.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: triggers/enable
+    schema: v261011-8364154c.enable.agents.railgrid.ai
     storage:
       virtual:
         reference:

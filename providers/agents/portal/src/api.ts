@@ -505,6 +505,9 @@ export class ApiClient {
   // Run-now is asynchronous: 202 + the runID to follow in Activity.
   runSchedule = (name: string): Promise<{ runID: string }> =>
     this.sendVerb('POST', this.verb(SCHEDULES, name, 'run'))
+  // Clears the disabling the provider applied after repeated failures.
+  enableSchedule = (name: string): Promise<Schedule> =>
+    this.sendVerb('POST', this.verb(SCHEDULES, name, 'enable'))
 
   listTriggers = (): Promise<Trigger[]> => this.resources.listTriggers()
   createTrigger = (body: TriggerCreate): Promise<Trigger> => this.resources.createTrigger(body)
@@ -512,6 +515,8 @@ export class ApiClient {
   deleteTrigger = (name: string): Promise<void> => this.resources.deleteTrigger(name)
   runTrigger = (name: string): Promise<{ runID: string }> =>
     this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'))
+  enableTrigger = (name: string): Promise<Trigger> =>
+    this.sendVerb('POST', this.verb(TRIGGERS, name, 'enable'))
 
   listInbox = async (): Promise<InboxItem[]> => {
     const pages = await this.settleAll((agent) =>

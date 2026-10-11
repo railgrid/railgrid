@@ -140,12 +140,16 @@ spec:
         verbs:
           - name: run
             description: "Fire the schedule now, without waiting for its next tick."
+          - name: enable
+            description: "Re-enable a schedule the provider disabled after repeated failures, resetting its failure count."
       - name: triggers
         apiVersion: agents.railgrid.ai/v1alpha1
         kind: Trigger
         verbs:
           - name: run
             description: "Fire the trigger now with an empty event."
+          - name: enable
+            description: "Re-enable a trigger the provider disabled after repeated failures, resetting its failure count."
 
   # Everything this provider needs that it does not own, keyed by API group:
   # another provider's kinds and verbs, and the platform builtins its own

@@ -671,7 +671,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			return nil, runNowOutput{}, err
 		}
 		return s.mcpRunNow(ctx, r, c, trig.Spec.AgentRef, taskRun{
-			SessionID: "trigger:" + trig.Name, Task: trig.Spec.Task,
+			SessionID: triggerSessionID(trig.Name, ""), Task: trig.Spec.Task,
 			Trigger: agentsv1alpha1.RunTriggerEvent, SourceName: trig.Name,
 			NotifyChannel: trig.Spec.ChannelRef,
 		})

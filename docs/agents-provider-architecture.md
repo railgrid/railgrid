@@ -95,7 +95,13 @@ and tools are edited inside the agent, next to a live chat playground.
   primary channel (`spec.channels[]`).
 - **Trigger webhooks (inbound)** — webhook/github triggers get an HMAC-tokenized
   URL (shown in the Triggers tab): external `POST`s fire the agent with the
-  event payload, no tenant auth needed.
+  event payload, no tenant auth needed. Every delivery runs in its own session
+  (`trigger:<name>/<delivery id>`, GitHub's `X-GitHub-Delivery` when present):
+  events are independent work, and one session per trigger made each firing
+  replay every earlier payload until the harness request outgrew the runner's
+  2MiB limit. After five consecutive failed runs the provider sets
+  `status.disabledReason` and refuses deliveries; the Automation tab's Enable
+  action (the `enable` verb) clears it once the cause is fixed.
 
 - **Tool loop** — agents call tools mid-conversation via a real tool-call loop
   in the engine (bind → call → observe → continue, bounded by
@@ -491,7 +497,9 @@ part.
 | `connections` | `enable-inbound` | POST | register the inbound webhook |
 | `connections` | `authorize` | POST | start the OAuth flow |
 | `schedules` | `run` | POST | fire now |
+| `schedules` | `enable` | POST | clear `status.disabledReason` and the failure count after repeated failures disabled it |
 | `triggers` | `run` | POST | fire now |
+| `triggers` | `enable` | POST | clear `status.disabledReason` and the failure count after repeated failures disabled it |
 
 Every one of them is declared under `spec.export.resources[].verbs` on the
 CatalogEntry — on the resource it is served on — in
