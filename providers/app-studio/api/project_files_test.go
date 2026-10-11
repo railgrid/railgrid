@@ -436,10 +436,19 @@ func TestProjectFileUploadIsAtomicAndReportsChangedFiles(t *testing.T) {
 		t.Fatalf("stale upload = %d %s, want 409", response.Code, response.Body.String())
 	}
 	var envelope struct {
-		Conflict workspace.MutationError `json:"conflict"`
+		Kind       string                  `json:"kind"`
+		APIVersion string                  `json:"apiVersion"`
+		Metadata   map[string]any          `json:"metadata"`
+		Status     string                  `json:"status"`
+		Reason     string                  `json:"reason"`
+		Code       int                     `json:"code"`
+		Conflict   workspace.MutationError `json:"conflict"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode upload conflict: %v (%s)", err, response.Body.String())
+	}
+	if envelope.Kind != "Status" || envelope.APIVersion != "v1" || envelope.Metadata == nil || len(envelope.Metadata) != 0 || envelope.Status != "Failure" || envelope.Reason != "Conflict" || envelope.Code != http.StatusConflict {
+		t.Fatalf("upload conflict Status envelope = %#v, want the shared conflict Status shape", envelope)
 	}
 	if len(envelope.Conflict.ChangedFiles) != 1 || envelope.Conflict.ChangedFiles[0] != "uploads/existing.txt" {
 		t.Fatalf("conflict changedFiles = %v, want [uploads/existing.txt]", envelope.Conflict.ChangedFiles)

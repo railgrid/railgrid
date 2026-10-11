@@ -54,7 +54,10 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	if err != nil {
 		return 0, fmt.Errorf("listing workspace before scaffold seed: %w", err)
 	}
-	if existing.Truncated || !workspaceHoldsOnlyRepositoryBoilerplate(existing.Files) {
+	if existing.Truncated {
+		return 0, fmt.Errorf("listing workspace before scaffold seed was truncated at %d files", existing.Limit)
+	}
+	if !workspaceHoldsOnlyRepositoryBoilerplate(existing.Files) {
 		return 0, nil
 	}
 	existingPaths := make(map[string]struct{}, len(existing.Files))
@@ -90,7 +93,10 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	if err != nil {
 		return 0, fmt.Errorf("listing workspace after scaffold fetch: %w", err)
 	}
-	if current.Truncated || !workspaceHoldsOnlyRepositoryBoilerplate(current.Files) {
+	if current.Truncated {
+		return 0, fmt.Errorf("listing workspace after scaffold fetch was truncated at %d files", current.Limit)
+	}
+	if !workspaceHoldsOnlyRepositoryBoilerplate(current.Files) {
 		return 0, nil
 	}
 
@@ -156,7 +162,7 @@ func (s *Server) seedMissingBuildWorkflow(ctx context.Context, id identity, p *a
 		return "", fmt.Errorf("listing workspace: %w", err)
 	}
 	if existing.Truncated {
-		return "", nil
+		return "", fmt.Errorf("listing workspace before build workflow seed was truncated at %d files", existing.Limit)
 	}
 	for _, f := range existing.Files {
 		if path.Clean(f.Path) == want {
@@ -179,7 +185,7 @@ func (s *Server) seedMissingBuildWorkflow(ctx context.Context, id identity, p *a
 			return "", fmt.Errorf("rechecking workspace before seeding %s: %w", want, err)
 		}
 		if current.Truncated {
-			return "", nil
+			return "", fmt.Errorf("listing workspace before build workflow seed after scaffold fetch was truncated at %d files", current.Limit)
 		}
 		for _, file := range current.Files {
 			if path.Clean(file.Path) == want {

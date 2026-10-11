@@ -414,6 +414,10 @@ func TestWriteDevelopmentSyncErrorMapsSandboxRejectionsAndFailures(t *testing.T)
 		{name: "sandbox unreachable", err: fmt.Errorf("component app: development data plane sync: dial tcp: connection refused"), want: http.StatusBadGateway},
 		{name: "wrapped precondition", err: fmt.Errorf("sync: %w", &projectDevelopmentSyncPreconditionError{msg: "x"}), want: http.StatusUnprocessableEntity},
 		{name: "instance missing", err: apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "instances"}, "demo-dev"), want: http.StatusNotFound},
+		{name: "partial checkpoint ledger missing", err: &projectDevelopmentSyncPartialError{AppliedComponents: []string{"web"}, Checkpoint: true, Err: apierrors.NewNotFound(schema.GroupResource{Resource: "preview checkpoints"}, "demo")}, want: http.StatusInternalServerError},
+		{name: "partial checkpoint target changed", err: &projectDevelopmentSyncPartialError{AppliedComponents: []string{"web"}, Checkpoint: true, Err: errProjectRuntimeOperationTargetChanged}, want: http.StatusInternalServerError},
+		{name: "partial component target changed", err: &projectDevelopmentSyncPartialError{AppliedComponents: []string{"web"}, Stage: "syncing api", Err: errProjectRuntimeOperationTargetChanged}, want: http.StatusBadGateway},
+		{name: "partial component target not found", err: &projectDevelopmentSyncPartialError{AppliedComponents: []string{"web"}, Stage: "syncing api", Err: apierrors.NewNotFound(schema.GroupResource{Resource: "instances"}, "demo")}, want: http.StatusBadGateway},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()

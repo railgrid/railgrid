@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -69,6 +70,14 @@ func giteaStyleArchiveWithHook(t *testing.T, files map[string]string, onRequest 
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(payload)
 	}))
+}
+
+func filesForTruncatedListing(prefix string, count int) []workspace.File {
+	files := make([]workspace.File, 0, count)
+	for index := range count {
+		files = append(files, workspace.File{Path: fmt.Sprintf("%s/file-%03d.txt", prefix, index), Content: "existing"})
+	}
+	return files
 }
 
 func TestSeedProjectScaffoldPopulatesWorkspace(t *testing.T) {
@@ -254,6 +263,253 @@ func TestSeedProjectScaffoldKeepsSupportedFileCountAtomic(t *testing.T) {
 	if err != nil || seeded != len(files) {
 		t.Fatalf("seedProjectScaffold seeded=%d err=%v; want all %d files in one transaction", seeded, err, len(files))
 	}
+}
+
+func TestSeedProjectScaffoldRejectsTruncatedListings(t *testing.T) {
+	t.Run("before fetch", func(t *testing.T) {
+		ctx := context.Background()
+		store := workspace.NewFileStore(t.TempDir())
+		s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+		id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+		p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+		scope := projectWorkspaceScope(id, p)
+		if err := store.ApplyFiles(ctx, scope, filesForTruncatedListing("src", workspace.DefaultListLimit+1)); err != nil {
+			t.Fatal(err)
+		}
+		before, err := store.SourceRevision(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fetchCalls := make(chan struct{}, 1)
+		srv := giteaStyleArchiveWithHook(t, map[string]string{"web/index.html": "starter"}, func() { fetchCalls <- struct{}{} })
+		defer srv.Close()
+		seeded, err := s.seedProjectScaffold(ctx, id, p, projectTemplateInfo{
+			Name: "x", ScaffoldRepo: srv.URL + "/team/starter", Components: map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "truncated") || seeded != 0 {
+			t.Fatalf("seedProjectScaffold = %d, %v; want a truncation error before fetching", seeded, err)
+		}
+		select {
+		case <-fetchCalls:
+			t.Fatal("scaffold was fetched despite an incomplete workspace listing")
+		default:
+		}
+		after, err := store.SourceRevision(ctx, scope)
+		if err != nil || after != before {
+			t.Fatalf("source revision after rejected listing = %d, %v; want unchanged %d", after, err, before)
+		}
+		exists, err := store.FileExists(ctx, scope, "web/index.html")
+		if err != nil || exists {
+			t.Fatalf("scaffold file after rejected listing exists=%t err=%v", exists, err)
+		}
+	})
+
+	t.Run("after fetch", func(t *testing.T) {
+		ctx := context.Background()
+		store := workspace.NewFileStore(t.TempDir())
+		s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+		id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+		p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+		scope := projectWorkspaceScope(id, p)
+		hookResult := make(chan struct {
+			revision uint64
+			err      error
+		}, 1)
+		srv := giteaStyleArchiveWithHook(t, map[string]string{"web/index.html": "starter"}, func() {
+			err := store.ApplyFiles(ctx, scope, filesForTruncatedListing("src", workspace.DefaultListLimit+1))
+			revision, revisionErr := store.SourceRevision(ctx, scope)
+			if err == nil {
+				err = revisionErr
+			}
+			hookResult <- struct {
+				revision uint64
+				err      error
+			}{revision: revision, err: err}
+		})
+		defer srv.Close()
+		seeded, err := s.seedProjectScaffold(ctx, id, p, projectTemplateInfo{
+			Name: "x", ScaffoldRepo: srv.URL + "/team/starter", Components: map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "truncated") || seeded != 0 {
+			t.Fatalf("seedProjectScaffold = %d, %v; want a truncation error after fetching", seeded, err)
+		}
+		result := <-hookResult
+		if result.err != nil {
+			t.Fatalf("concurrent workspace population: %v", result.err)
+		}
+		after, err := store.SourceRevision(ctx, scope)
+		if err != nil || after != result.revision {
+			t.Fatalf("source revision after rejected recheck = %d, %v; want unchanged concurrent revision %d", after, err, result.revision)
+		}
+		exists, err := store.FileExists(ctx, scope, "web/index.html")
+		if err != nil || exists {
+			t.Fatalf("scaffold file after rejected recheck exists=%t err=%v", exists, err)
+		}
+	})
+}
+
+func TestSeedMissingBuildWorkflowRejectsTruncatedListings(t *testing.T) {
+	const want = ".github/workflows/build.yaml"
+	t.Run("before fetch", func(t *testing.T) {
+		ctx := context.Background()
+		store := workspace.NewFileStore(t.TempDir())
+		s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+		id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+		p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+		scope := projectWorkspaceScope(id, p)
+		if err := store.ApplyFiles(ctx, scope, filesForTruncatedListing("src", workspace.DefaultListLimit+1)); err != nil {
+			t.Fatal(err)
+		}
+		before, err := store.SourceRevision(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fetchCalls := make(chan struct{}, 1)
+		srv := giteaStyleArchiveWithHook(t, map[string]string{want: "workflow"}, func() { fetchCalls <- struct{}{} })
+		defer srv.Close()
+		seeded, err := s.seedMissingBuildWorkflow(ctx, id, p, projectTemplateInfo{ScaffoldRepo: srv.URL + "/team/starter", BuildWorkflowPath: want})
+		if err == nil || !strings.Contains(err.Error(), "truncated") || seeded != "" {
+			t.Fatalf("seedMissingBuildWorkflow = %q, %v; want a truncation error before fetching", seeded, err)
+		}
+		select {
+		case <-fetchCalls:
+			t.Fatal("scaffold was fetched despite an incomplete workspace listing")
+		default:
+		}
+		after, err := store.SourceRevision(ctx, scope)
+		if err != nil || after != before {
+			t.Fatalf("source revision after rejected listing = %d, %v; want unchanged %d", after, err, before)
+		}
+		exists, err := store.FileExists(ctx, scope, want)
+		if err != nil || exists {
+			t.Fatalf("workflow after rejected listing exists=%t err=%v", exists, err)
+		}
+	})
+
+	t.Run("after fetch", func(t *testing.T) {
+		ctx := context.Background()
+		store := workspace.NewFileStore(t.TempDir())
+		s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+		id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+		p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+		scope := projectWorkspaceScope(id, p)
+		if err := store.ApplyFiles(ctx, scope, []workspace.File{{Path: "src/app.js", Content: "existing"}}); err != nil {
+			t.Fatal(err)
+		}
+		hookResult := make(chan struct {
+			revision uint64
+			err      error
+		}, 1)
+		srv := giteaStyleArchiveWithHook(t, map[string]string{want: "workflow"}, func() {
+			err := store.ApplyFiles(ctx, scope, filesForTruncatedListing("src/new", workspace.DefaultListLimit+1))
+			revision, revisionErr := store.SourceRevision(ctx, scope)
+			if err == nil {
+				err = revisionErr
+			}
+			hookResult <- struct {
+				revision uint64
+				err      error
+			}{revision: revision, err: err}
+		})
+		defer srv.Close()
+		seeded, err := s.seedMissingBuildWorkflow(ctx, id, p, projectTemplateInfo{ScaffoldRepo: srv.URL + "/team/starter", BuildWorkflowPath: want})
+		if err == nil || !strings.Contains(err.Error(), "truncated") || seeded != "" {
+			t.Fatalf("seedMissingBuildWorkflow = %q, %v; want a truncation error after fetching", seeded, err)
+		}
+		result := <-hookResult
+		if result.err != nil {
+			t.Fatalf("concurrent workspace population: %v", result.err)
+		}
+		after, err := store.SourceRevision(ctx, scope)
+		if err != nil || after != result.revision {
+			t.Fatalf("source revision after rejected recheck = %d, %v; want unchanged concurrent revision %d", after, err, result.revision)
+		}
+		exists, err := store.FileExists(ctx, scope, want)
+		if err != nil || exists {
+			t.Fatalf("workflow after rejected recheck exists=%t err=%v", exists, err)
+		}
+	})
+}
+
+func TestScaffoldSeedsReturnWorkspaceListingErrorsBeforeFetch(t *testing.T) {
+	t.Run("full scaffold", func(t *testing.T) {
+		background := context.Background()
+		store := workspace.NewFileStore(t.TempDir())
+		s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+		id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+		p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+		scope := projectWorkspaceScope(id, p)
+		if err := store.ApplyFiles(background, scope, []workspace.File{{Path: "src/existing.js", Content: "keep"}}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := store.SourceRevision(background, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fetchCalls := make(chan struct{}, 1)
+		srv := giteaStyleArchiveWithHook(t, map[string]string{"web/index.html": "starter"}, func() { fetchCalls <- struct{}{} })
+		defer srv.Close()
+		ctx, cancel := context.WithCancel(background)
+		cancel()
+		seeded, err := s.seedProjectScaffold(ctx, id, p, projectTemplateInfo{
+			Name: "x", ScaffoldRepo: srv.URL + "/team/starter", Components: map[string]projectTemplateComponent{"web": {WorkspacePath: "web"}},
+		})
+		if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "listing workspace") || seeded != 0 {
+			t.Fatalf("seedProjectScaffold = %d, %v; want canceled listing error", seeded, err)
+		}
+		select {
+		case <-fetchCalls:
+			t.Fatal("scaffold was fetched after the workspace listing failed")
+		default:
+		}
+		after, err := store.SourceRevision(background, scope)
+		if err != nil || after != before {
+			t.Fatalf("source revision after failed listing = %d, %v; want unchanged %d", after, err, before)
+		}
+		exists, err := store.FileExists(background, scope, "web/index.html")
+		if err != nil || exists {
+			t.Fatalf("scaffold file after failed listing exists=%t err=%v", exists, err)
+		}
+	})
+
+	t.Run("build workflow", func(t *testing.T) {
+		background := context.Background()
+		store := workspace.NewFileStore(t.TempDir())
+		s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, workspaces: store}
+		id := identity{orgUUID: "org-1", workspaceUUID: "ws-1"}
+		p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")}}
+		scope := projectWorkspaceScope(id, p)
+		if err := store.ApplyFiles(background, scope, []workspace.File{{Path: "src/existing.js", Content: "keep"}}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := store.SourceRevision(background, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fetchCalls := make(chan struct{}, 1)
+		const workflowPath = ".github/workflows/build.yaml"
+		srv := giteaStyleArchiveWithHook(t, map[string]string{workflowPath: "workflow"}, func() { fetchCalls <- struct{}{} })
+		defer srv.Close()
+		ctx, cancel := context.WithCancel(background)
+		cancel()
+		seeded, err := s.seedMissingBuildWorkflow(ctx, id, p, projectTemplateInfo{ScaffoldRepo: srv.URL + "/team/starter", BuildWorkflowPath: workflowPath})
+		if err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "listing workspace") || seeded != "" {
+			t.Fatalf("seedMissingBuildWorkflow = %q, %v; want canceled listing error", seeded, err)
+		}
+		select {
+		case <-fetchCalls:
+			t.Fatal("scaffold was fetched after the workspace listing failed")
+		default:
+		}
+		after, err := store.SourceRevision(background, scope)
+		if err != nil || after != before {
+			t.Fatalf("source revision after failed listing = %d, %v; want unchanged %d", after, err, before)
+		}
+		exists, err := store.FileExists(background, scope, workflowPath)
+		if err != nil || exists {
+			t.Fatalf("workflow after failed listing exists=%t err=%v", exists, err)
+		}
+	})
 }
 
 func TestSeedMissingBuildWorkflowDoesNotReplaceConcurrentFile(t *testing.T) {

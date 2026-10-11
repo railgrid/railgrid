@@ -32,7 +32,12 @@ import (
 )
 
 var errProjectRuntimeOperationTargetChanged = errors.New("project changed while the runtime operation was waiting; reload and retry")
+var errProjectRuntimeOperationContention = errors.New("project runtime operation is reserved by another operation")
+var errProjectRuntimeOperationWaitTimeout = errors.New("timed out waiting for the project runtime operation")
 
+// projectRuntimeOperation is a process-local serialization token. The
+// supervisor's durable project owner is the cross-replica authority; this map
+// only prevents overlapping operations on one API instance.
 type projectRuntimeOperation struct {
 	token      chan struct{}
 	references int

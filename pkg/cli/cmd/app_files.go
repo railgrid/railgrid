@@ -241,6 +241,7 @@ request fails if the file changed after that read.`,
 		},
 	}
 	cmd.Flags().BoolVar(&createOnly, "create-only", false, "Create only (the default); fail when the file already exists")
+	_ = cmd.Flags().MarkDeprecated("create-only", "new files are already create-only; use --expected-version to replace an existing file")
 	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Replace only the exact file version returned by files get")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
 	return cmd
@@ -272,6 +273,7 @@ func newAppFilesRmCommand(target *hubTarget) *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Delete only the exact file version returned by files get")
+	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Delete only the exact file version returned by files get (required)")
+	_ = cmd.MarkFlagRequired("expected-version")
 	return cmd
 }

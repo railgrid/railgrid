@@ -78,7 +78,14 @@ func (s *Server) AssistantBusy(scope workspace.Scope) bool {
 // Each run is stopped independently so one thread cannot keep a sibling
 // thread's controller state or cancellation boundary hidden from deletion.
 func (s *Server) StopAssistantForDeletedProject(ctx context.Context, scope workspace.Scope) error {
-	if s == nil || s.store == nil {
+	if s == nil {
+		return nil
+	}
+	// Stop queued and in-flight development syncs before checking the durable
+	// assistant-run store. This cancellation applies only to this Project UID;
+	// a replacement with the same name owns a different worker key.
+	s.cancelDevelopmentSyncs(scope)
+	if s.store == nil {
 		return nil
 	}
 	storeScope := store.Scope{

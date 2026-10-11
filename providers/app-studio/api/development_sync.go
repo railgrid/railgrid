@@ -39,19 +39,21 @@ import (
 )
 
 const (
-	projectDevelopmentEnvironmentName   = "development"
-	projectDevelopmentBindingName       = "dev"
-	projectDevelopmentProviderAppStudio = "app-studio"
-	projectSandboxComponentSyncTimeout  = 5 * time.Minute
-	projectSandboxSyncTimeout           = 10 * time.Minute
-	projectDevelopmentSyncErrorMaxBytes = 4096
+	projectDevelopmentEnvironmentName         = "development"
+	projectDevelopmentBindingName             = "dev"
+	projectDevelopmentProviderAppStudio       = "app-studio"
+	projectSandboxComponentSyncTimeout        = 5 * time.Minute
+	projectSandboxSyncTimeout                 = 10 * time.Minute
+	projectDevelopmentSyncTargetLookupTimeout = 30 * time.Second
+	projectDevelopmentSyncErrorMaxBytes       = 4096
 
 	// A post-mutation sync keeps retrying for this long while the development
 	// environment is still being provisioned, backing off from the initial to
 	// the max interval. See syncProjectDevelopmentTargetWhenReady.
-	projectDevelopmentSyncReadyTimeout        = 5 * time.Minute
-	projectDevelopmentSyncReadyInitialBackoff = time.Second
-	projectDevelopmentSyncReadyMaxBackoff     = 15 * time.Second
+	projectDevelopmentSyncReadyTimeout         = 5 * time.Minute
+	projectDevelopmentSyncReadyInitialBackoff  = time.Second
+	projectDevelopmentSyncReadyMaxBackoff      = 15 * time.Second
+	projectDevelopmentSyncOperationAcquireWait = 5 * time.Second
 )
 
 type projectDevelopmentSyncTargetInfo struct {
@@ -252,9 +254,6 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 	}
 	defer release()
 	r = r.WithContext(contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, p)))
-	lock := s.developmentSyncLock(id, p)
-	lock.Lock()
-	defer lock.Unlock()
 	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
@@ -278,8 +277,21 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 // reported as 502 reached clients as a bare "error code: 502" with no hint that
 // a package.json was all that was missing.
 func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
+	var partial *projectDevelopmentSyncPartialError
+	if errors.As(err, &partial) {
+		if partial.Checkpoint {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
+			return
+		}
+		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
+		return
+	}
 	if errors.Is(err, errProjectRuntimeOperationTargetChanged) {
 		writeProjectRuntimeOperationConflict(w)
+		return
+	}
+	if errors.Is(err, errProjectRuntimeOperationContention) || errors.Is(err, errProjectRuntimeOperationWaitTimeout) {
+		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
 		return
 	}
 	var precondition *projectDevelopmentSyncPreconditionError
@@ -311,6 +323,41 @@ func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
 type projectDevelopmentSyncPreconditionError struct{ msg string }
 
 func (e *projectDevelopmentSyncPreconditionError) Error() string { return e.msg }
+
+// projectDevelopmentSyncPartialError means at least one component accepted
+// the workspace revision before a later component or checkpoint step failed.
+// It is deliberately not a retryable contention error: replaying the sync
+// would hide a partial external mutation behind an apparently transient error.
+type projectDevelopmentSyncPartialError struct {
+	AppliedComponents []string
+	Stage             string
+	Checkpoint        bool
+	Err               error
+}
+
+func (e *projectDevelopmentSyncPartialError) Error() string {
+	if e == nil {
+		return "development sync partially applied"
+	}
+	if e.Checkpoint {
+		return fmt.Sprintf("development components %s accepted the workspace, but preview checkpointing failed: %v", strings.Join(e.AppliedComponents, ", "), e.Err)
+	}
+	return fmt.Sprintf("development components %s accepted the workspace before %s failed: %v", strings.Join(e.AppliedComponents, ", "), e.Stage, e.Err)
+}
+
+func (e *projectDevelopmentSyncPartialError) Unwrap() error { return e.Err }
+
+func developmentSyncFailureMessage(name string, err error) string {
+	base := fmt.Sprintf("the workspace sync after %s failed; the development runtime may not match the workspace", projectToolBaseName(name))
+	var partial *projectDevelopmentSyncPartialError
+	if errors.As(err, &partial) {
+		if partial.Checkpoint {
+			return fmt.Sprintf("all listed development components accepted the workspace revision, but App Studio could not record the preview checkpoint; inspect or retry a normal sync: %v", err)
+		}
+		return fmt.Sprintf("%s: components %s accepted the workspace before %s failed, so runtime state may be partial: %v", base, strings.Join(partial.AppliedComponents, ", "), partial.Stage, err)
+	}
+	return fmt.Sprintf("%s: %v", base, err)
+}
 
 func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
@@ -354,15 +401,38 @@ func projectDevelopmentPreviewAuthorizationState(p *aiv1alpha1.Project, target p
 }
 
 func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
+	return s.syncProjectDevelopmentTargetWithAcquireContext(ctx, ctx, c, id, p, target)
+}
+
+// syncProjectDevelopmentTargetWithAcquireContext uses acquireCtx only while
+// obtaining the runtime-operation lease. Once the lease is held, the actual
+// operation gets its full ten-minute budget from ctx, even if lock contention
+// consumed most of the background worker's retry window.
+func (s *Server) syncProjectDevelopmentTargetWithAcquireContext(ctx, acquireCtx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
 	if s.workspaces == nil {
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if acquireCtx == nil {
+		acquireCtx = ctx
+	}
 	scope := projectWorkspaceScope(id, p)
-	release, err := s.acquireProjectRuntimeOperation(ctx, scope)
+	release, err := s.acquireProjectRuntimeOperation(acquireCtx, scope)
 	if err != nil {
+		if errors.Is(err, store.ErrAssistantRunConflict) {
+			return nil, fmt.Errorf("%w: %w", errProjectRuntimeOperationContention, err)
+		}
+		if errors.Is(acquireCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, fmt.Errorf("%w: %w", errProjectRuntimeOperationWaitTimeout, err)
+		}
 		return nil, err
 	}
 	defer release()
+	operationCtx, cancel := context.WithTimeout(ctx, projectSandboxSyncTimeout)
+	defer cancel()
+	ctx = operationCtx
 	if p != nil {
 		current, err := refreshProjectRuntimeOperationProject(ctx, c, p)
 		if err != nil {
@@ -440,8 +510,21 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 			continue
 		}
 		origin = workspace.SourceChange{SourceRevision: snapshot.SourceRevision}
-		if change, sourceErr := s.workspaces.LastSourceChange(ctx, scope); sourceErr == nil && change != nil && change.SourceRevision == snapshot.SourceRevision {
+		change, sourceErr := s.workspaces.LastSourceChange(ctx, scope)
+		if sourceErr != nil {
+			return nil, fmt.Errorf("read workspace source provenance for revision %d: %w", snapshot.SourceRevision, sourceErr)
+		}
+		if change != nil && change.SourceRevision == snapshot.SourceRevision {
 			origin = *change
+		} else if change != nil {
+			continue
+		}
+		currentRevision, revisionErr = s.workspaces.SourceRevision(ctx, scope)
+		if revisionErr != nil {
+			return nil, revisionErr
+		}
+		if currentRevision != snapshot.SourceRevision {
+			continue
 		}
 		snapshotReady = true
 		break
@@ -484,6 +567,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, err
 	}
 	results := map[string]json.RawMessage{}
+	var appliedComponents []string
 	for _, component := range target.sortedComponents() {
 		componentFiles := routed[component]
 		overBounds := overBoundsByComponent[component]
@@ -506,16 +590,23 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		}
 		body, err := s.postProjectComponentSync(ctx, id, target.dataPlaneRefFor(component), component, snapshot.SourceRevision, request)
 		if err != nil {
+			if len(appliedComponents) > 0 {
+				return nil, &projectDevelopmentSyncPartialError{AppliedComponents: appliedComponents, Stage: "sync component " + component, Err: err}
+			}
 			return nil, err
 		}
+		appliedComponents = append(appliedComponents, component)
 		results[component] = withProjectSyncSkipped(body, skipped)
 	}
 	aggregated, err := json.Marshal(results)
 	if err != nil {
+		if len(appliedComponents) > 0 {
+			return nil, &projectDevelopmentSyncPartialError{AppliedComponents: appliedComponents, Stage: "build sync result", Err: err}
+		}
 		return nil, err
 	}
 	if err := s.workspaces.RecordPreviewCheckpoint(ctx, scope, origin); err != nil {
-		return nil, fmt.Errorf("record preview checkpoint: %w", err)
+		return nil, &projectDevelopmentSyncPartialError{AppliedComponents: appliedComponents, Stage: "record preview checkpoint", Checkpoint: true, Err: err}
 	}
 	return aggregated, nil
 }
@@ -1289,7 +1380,7 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 	name string,
 	complete func(error),
 ) bool {
-	if s == nil || p == nil || !shouldSyncDevelopmentAfterTool(name) {
+	if s == nil || p == nil || p.DeletionTimestamp != nil || !shouldSyncDevelopmentAfterTool(name) {
 		return false
 	}
 	project := p.DeepCopy()
@@ -1298,27 +1389,64 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 	// is actually on disk; a rebuild notice from the takeover has done its job.
 	s.clearWorkspaceRebuild(id, project)
 	s.mu.Lock()
+	baseCtx := s.developmentSyncLifecycleLocked()
+	if s.developmentSyncStopping || baseCtx.Err() != nil {
+		s.mu.Unlock()
+		return false
+	}
 	hook := s.developmentSyncAfterMutation
 	if s.developmentSyncTails == nil {
 		s.developmentSyncTails = map[string]chan struct{}{}
 	}
+	if s.developmentSyncWorkers == nil {
+		s.developmentSyncWorkers = map[string]map[uint64]context.CancelFunc{}
+	}
 	previous := s.developmentSyncTails[key]
 	done := make(chan struct{})
 	s.developmentSyncTails[key] = done
+	workerCtx, workerCancel := context.WithCancel(baseCtx)
+	s.developmentSyncWorkerID++
+	workerID := s.developmentSyncWorkerID
+	if s.developmentSyncWorkers[key] == nil {
+		s.developmentSyncWorkers[key] = map[uint64]context.CancelFunc{}
+	}
+	s.developmentSyncWorkers[key][workerID] = workerCancel
+	s.developmentSyncWorkersWG.Add(1)
 	s.mu.Unlock()
 	go func() {
-		if previous != nil {
-			<-previous
-		}
-		defer func() {
+		defer s.developmentSyncWorkersWG.Done()
+		defer workerCancel()
+		cleaned := false
+		cleanup := func() {
+			if cleaned {
+				return
+			}
+			cleaned = true
 			close(done)
 			s.mu.Lock()
 			if s.developmentSyncTails[key] == done {
 				delete(s.developmentSyncTails, key)
 			}
+			if workers := s.developmentSyncWorkers[key]; workers != nil {
+				delete(workers, workerID)
+				if len(workers) == 0 {
+					delete(s.developmentSyncWorkers, key)
+				}
+			}
 			s.mu.Unlock()
-		}()
-		err := s.syncDevelopmentAfterMutationWithReservationRetry(id, project, name, hook)
+			// The sync's deferred runtime-owner release has finished before
+			// this signal wakes a deleting Project's finalizer.
+			s.signalProject(id.workspaceUUID, project.Name)
+		}
+		defer cleanup()
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-workerCtx.Done():
+			}
+		}
+		err := s.syncDevelopmentAfterMutationWithReservationRetry(workerCtx, id, project, name, hook)
+		cleanup()
 		if complete != nil {
 			complete(err)
 		}
@@ -1326,41 +1454,124 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 	return true
 }
 
-// syncDevelopmentAfterMutationWithReservationRetry waits through an exclusive
-// workspace operation that queued this background sync before releasing its
-// lease. Each retry uses the normal fresh context and must acquire the owner
-// again; the request's owner marker must never escape into this worker.
+// developmentSyncLifecycleLocked lazily initializes lifecycle state for test
+// Servers built as struct literals. The caller must hold s.mu.
+func (s *Server) developmentSyncLifecycleLocked() context.Context {
+	if s.developmentSyncContext == nil {
+		s.developmentSyncContext, s.developmentSyncCancel = context.WithCancel(context.Background())
+	}
+	return s.developmentSyncContext
+}
+
+// cancelDevelopmentSyncs stops active and queued workers for this exact
+// Project UID. Finished workers remove themselves, so old incarnations do not
+// leave process-lifetime tombstones.
+func (s *Server) cancelDevelopmentSyncs(scope workspace.Scope) {
+	if s == nil || scope.ProjectUID == "" {
+		return
+	}
+	key := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID}, "/")
+	s.mu.Lock()
+	workers := s.developmentSyncWorkers[key]
+	cancels := make([]context.CancelFunc, 0, len(workers))
+	for _, cancel := range workers {
+		cancels = append(cancels, cancel)
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+// stopDevelopmentSyncWorkers prevents new workers, cancels queued and active
+// work, and waits only until the provider shutdown deadline.
+func (s *Server) stopDevelopmentSyncWorkers(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	s.developmentSyncStopping = true
+	if s.developmentSyncCancel != nil {
+		s.developmentSyncCancel()
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.developmentSyncWorkersWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		klog.Warningf("development sync workers did not stop before provider shutdown deadline: %v", ctx.Err())
+	}
+}
+
+// syncDevelopmentAfterMutationWithReservationRetry waits through workspace
+// owner contention that queued this background sync. It retries only typed
+// lease-acquisition failures; a sync error after acquisition is never replayed.
 func (s *Server) syncDevelopmentAfterMutationWithReservationRetry(
+	ctx context.Context,
 	id identity,
 	p *aiv1alpha1.Project,
 	name string,
 	hook func(identity, *aiv1alpha1.Project, string) error,
 ) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timeout, backoff, maxBackoff := s.developmentSyncReadiness()
 	deadline := time.Now().Add(timeout)
 	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var err error
 		if hook != nil {
 			err = hook(id, p, name)
 		} else {
-			err = s.syncDevelopmentAfterMutation(id, p, name)
+			err = s.syncDevelopmentAfterMutation(ctx, deadline, id, p, name)
 		}
-		if err == nil || !errors.Is(err, store.ErrAssistantRunConflict) {
+		if err == nil || (!errors.Is(err, errProjectRuntimeOperationContention) && !errors.Is(err, errProjectRuntimeOperationWaitTimeout)) {
 			return err
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return fmt.Errorf("project workspace remained reserved for %s after %s: %w", timeout, projectToolBaseName(name), err)
+			return s.finishDevelopmentSyncContentionFailure(id, p, name, timeout, err)
 		}
 		wait := min(backoff, remaining)
 		klog.V(2).Infof("development sync after %s for project %s is waiting for a workspace operation (attempt %d, retrying in %s): %v", projectToolBaseName(name), p.Name, attempt, wait, err)
 		timer := time.NewTimer(wait)
-		<-timer.C
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if time.Until(deadline) <= 0 {
+			return s.finishDevelopmentSyncContentionFailure(id, p, name, timeout, err)
+		}
 		backoff = min(backoff*2, maxBackoff)
 	}
 }
 
-func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) error {
+func (s *Server) finishDevelopmentSyncContentionFailure(id identity, p *aiv1alpha1.Project, name string, timeout time.Duration, cause error) error {
+	finalErr := fmt.Errorf("project workspace remained reserved for %s after %s: %w", timeout, projectToolBaseName(name), cause)
+	klog.Warningf("development sync after %s could not acquire the runtime operation for project %s: %v", projectToolBaseName(name), p.Name, finalErr)
+	s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not acquire the development runtime operation within %s; retry a normal sync when project operations have settled: %v", projectToolBaseName(name), timeout, cause))
+	return finalErr
+}
+
+func (s *Server) syncDevelopmentAfterMutation(ctx context.Context, acquireDeadline time.Time, id identity, p *aiv1alpha1.Project, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.tenant == nil {
 		err := errors.New("tenant client is not configured")
 		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not start: %v", projectToolBaseName(name), err))
@@ -1373,34 +1584,42 @@ func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project
 		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
 		return err
 	}
-	return s.syncDevelopmentAfterMutationWithClient(c, id, p, name)
+	return s.syncDevelopmentAfterMutationWithClient(ctx, acquireDeadline, c, id, p, name)
 }
 
-func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
-	defer cancel()
+func (s *Server) syncDevelopmentAfterMutationWithClient(ctx context.Context, acquireDeadline time.Time, c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// A fresh context carries no working-copy ledger, and the store refuses to
 	// read or advance the tree without one (RequireContextLedger in main.go).
 	// Attach the caller's, as every request path does; without it every
 	// post-edit sync failed with "ledger is not configured" and the sandbox
 	// kept running the previous code.
 	ctx = s.withProjectLedger(ctx, id)
-	lock := s.developmentSyncLock(id, p)
-	lock.Lock()
-	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
-	lock.Unlock()
+	targetCtx, cancelTarget := context.WithTimeout(ctx, projectDevelopmentSyncTargetLookupTimeout)
+	target, err := s.projectDevelopmentTarget(targetCtx, c, p, id)
+	cancelTarget()
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not resolve its development target: %v", projectToolBaseName(name), err))
 		klog.V(2).Infof("development sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
 		return err
 	}
-	if _, err := s.syncProjectDevelopmentTargetWhenReady(ctx, c, id, p, target); err != nil {
-		// A failed post-mutation sync means the user's edit never reached the
-		// development sandbox — warn, don't bury it at debug verbosity, and
-		// record it so the assistant's own verification reports it instead of
-		// silently diagnosing a stale sandbox.
+	if _, err := s.syncProjectDevelopmentTargetWhenReadyWithAcquireBudget(ctx, c, id, p, target, s.developmentSyncAcquireWait(), acquireDeadline); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Lease contention is retried by the outer worker before any sync
+		// side-effect. Do not record that temporary state as a failed sync.
+		if errors.Is(err, errProjectRuntimeOperationContention) || errors.Is(err, errProjectRuntimeOperationWaitTimeout) {
+			return err
+		}
+		// Keep every other failure visible to the assistant's verification.
 		klog.Warningf("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
-		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the last workspace sync after %s failed, so the development sandbox is still running the previous code: %v", projectToolBaseName(name), err))
+		s.recordDevelopmentSyncFailure(id, p, developmentSyncFailureMessage(name, err))
 		return err
 	}
 	s.clearDevelopmentSyncFailure(id, p)
@@ -1419,19 +1638,48 @@ func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id i
 // preview served an empty workspace until some unrelated edit synced again.
 //
 // Only those provisioning races are retried (projectDevelopmentSyncProvisioning);
-// every other failure returns at once, as before. The sync lock is taken per
-// attempt rather than across the wait, so a manual sync is never stuck behind a
-// sandbox that is still starting. The readiness timeout only bounds when
-// retrying stops — each attempt runs under ctx, so a sync that starts just
-// before the deadline is not cut short.
+// every other failure returns at once, as before. The readiness timeout only
+// bounds when provisioning retries stop — each acquired attempt gets its own
+// ten-minute execution deadline. Background callers pass a short separate
+// acquisition wait so workspace-owner contention can be retried by the outer
+// bounded loop without consuming the sync's execution deadline.
 func (s *Server) syncProjectDevelopmentTargetWhenReady(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {
-	lock := s.developmentSyncLock(id, p)
+	return s.syncProjectDevelopmentTargetWhenReadyWithAcquireWait(ctx, c, id, p, target, 0)
+}
+
+func (s *Server) syncProjectDevelopmentTargetWhenReadyWithAcquireWait(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo, acquireWait time.Duration) (json.RawMessage, error) {
+	return s.syncProjectDevelopmentTargetWhenReadyWithAcquireBudget(ctx, c, id, p, target, acquireWait, time.Time{})
+}
+
+func (s *Server) syncProjectDevelopmentTargetWhenReadyWithAcquireBudget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo, acquireWait time.Duration, acquireDeadline time.Time) (json.RawMessage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	timeout, backoff, maxBackoff := s.developmentSyncReadiness()
 	deadline := time.Now().Add(timeout)
+	var lastProvisioningErr error
 	for attempt := 1; ; attempt++ {
-		lock.Lock()
-		result, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target)
-		lock.Unlock()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		acquireCtx := ctx
+		cancelAcquire := func() {}
+		if acquireWait > 0 {
+			wait := acquireWait
+			if !acquireDeadline.IsZero() {
+				remaining := time.Until(acquireDeadline)
+				if remaining <= 0 {
+					if lastProvisioningErr != nil {
+						return nil, fmt.Errorf("development environment was not ready before the runtime-operation retry window expired: %w", lastProvisioningErr)
+					}
+					return nil, fmt.Errorf("%w: contention retry window expired before another acquisition attempt", errProjectRuntimeOperationWaitTimeout)
+				}
+				wait = min(wait, remaining)
+			}
+			acquireCtx, cancelAcquire = context.WithTimeout(ctx, wait)
+		}
+		result, err := s.syncProjectDevelopmentTargetWithAcquireContext(ctx, acquireCtx, c, id, p, target)
+		cancelAcquire()
 		if err == nil {
 			if attempt > 1 {
 				klog.V(2).Infof("development sync for project %s succeeded on attempt %d once its environment was ready", p.Name, attempt)
@@ -1441,6 +1689,7 @@ func (s *Server) syncProjectDevelopmentTargetWhenReady(ctx context.Context, c *a
 		if !projectDevelopmentSyncProvisioning(err) {
 			return nil, err
 		}
+		lastProvisioningErr = err
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return nil, fmt.Errorf("development environment was not ready within %s: %w", timeout, err)
@@ -1453,6 +1702,12 @@ func (s *Server) syncProjectDevelopmentTargetWhenReady(ctx context.Context, c *a
 			timer.Stop()
 			return nil, fmt.Errorf("development environment was not ready before the sync was cancelled (%v): %w", ctx.Err(), err)
 		case <-timer.C:
+		}
+		if time.Until(deadline) <= 0 {
+			return nil, fmt.Errorf("development environment was not ready within %s: %w", timeout, err)
+		}
+		if !acquireDeadline.IsZero() && time.Until(acquireDeadline) <= 0 {
+			return nil, fmt.Errorf("development environment was not ready before the runtime-operation retry window expired: %w", err)
 		}
 		backoff = min(backoff*2, maxBackoff)
 	}
@@ -1474,6 +1729,13 @@ func (s *Server) developmentSyncReadiness() (timeout, backoff, maxBackoff time.D
 	return timeout, backoff, maxBackoff
 }
 
+func (s *Server) developmentSyncAcquireWait() time.Duration {
+	if s != nil && s.developmentSyncOperationAcquireWait > 0 {
+		return s.developmentSyncOperationAcquireWait
+	}
+	return projectDevelopmentSyncOperationAcquireWait
+}
+
 // projectDevelopmentSyncProvisioning reports whether a sync failed only because
 // the development environment is not up yet: the template instance does not
 // exist (the Project reconciler has not created it), or it exists but its
@@ -1481,11 +1743,15 @@ func (s *Server) developmentSyncReadiness() (timeout, backoff, maxBackoff time.D
 // run-sandbox seed retries. Validation, precondition, revision and auth
 // failures are not provisioning and must not be retried.
 func projectDevelopmentSyncProvisioning(err error) bool {
+	var partial *projectDevelopmentSyncPartialError
+	if errors.As(err, &partial) {
+		return false
+	}
 	return apierrors.IsNotFound(err) || projectAssistantRunSandboxSeedRetryable(err)
 }
 
-// developmentSyncFailureKey scopes a recorded failure to one tenant's project,
-// matching developmentSyncLock's key.
+// developmentSyncFailureKey scopes sync failures and worker tails to one
+// tenant's Project incarnation.
 func developmentSyncFailureKey(id identity, project *aiv1alpha1.Project) string {
 	if project == nil {
 		return id.orgUUID + "/" + id.workspaceUUID + "//"

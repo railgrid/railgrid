@@ -624,9 +624,9 @@ func writeProjectFileWriteError(w http.ResponseWriter, err error, conditional bo
 		}
 		switch mutationErr.Code {
 		case workspace.MutationErrorTargetExists, workspace.MutationErrorStale, workspace.MutationErrorTargetNotFound:
-			writeJSON(w, precondition, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": reason, "code": precondition, "message": mutationErr.Message, "conflict": mutationErr})
+			writeStatusWithConflict(w, precondition, reason, mutationErr.Message, mutationErr)
 		case workspace.MutationErrorConflict:
-			writeJSON(w, http.StatusConflict, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Conflict", "code": http.StatusConflict, "message": mutationErr.Message, "conflict": mutationErr})
+			writeStatusWithConflict(w, http.StatusConflict, "Conflict", mutationErr.Message, mutationErr)
 		default:
 			writeStatus(w, http.StatusBadRequest, "BadRequest", mutationErr.Message)
 		}
