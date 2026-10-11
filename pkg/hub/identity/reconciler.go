@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 // The GC pacing, stated plainly, because §10 asked for it to be stated:
@@ -63,17 +64,30 @@ const (
 // Reconciler materializes ScopedIdentity records and garbage-collects the ones
 // whose owner is gone.
 type Reconciler struct {
-	service  *Service
-	interval time.Duration
-	log      logr.Logger
-	now      func() time.Time
+	service        *Service
+	workloadScopes WorkloadScopeResolver
+	interval       time.Duration
+	log            logr.Logger
+	now            func() time.Time
+}
+
+// WorkloadScopeResolver re-reads the Project backing a recorded workload
+// identity and derives its current permission scope. It lets the normal hub
+// sweep apply Project integration grants and revocations to existing
+// identities without waiting for a workload to exchange its token again. It
+// must use a live Project read rather than an informer cache: the reconciler
+// captures the Project revision immediately before calling it and verifies
+// that revision again before persisting a revoked scope.
+type WorkloadScopeResolver interface {
+	ResolveRecord(context.Context, *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error)
 }
 
 // ReconcilerOptions configures a Reconciler.
 type ReconcilerOptions struct {
-	Service  *Service
-	Interval time.Duration
-	Logger   logr.Logger
+	Service        *Service
+	WorkloadScopes WorkloadScopeResolver
+	Interval       time.Duration
+	Logger         logr.Logger
 }
 
 // NewReconciler builds a Reconciler.
@@ -86,7 +100,10 @@ func NewReconciler(opts ReconcilerOptions) *Reconciler {
 	if opts.Service != nil && opts.Service.now != nil {
 		now = opts.Service.now
 	}
-	return &Reconciler{service: opts.Service, interval: interval, log: opts.Logger, now: now}
+	return &Reconciler{
+		service: opts.Service, workloadScopes: opts.WorkloadScopes,
+		interval: interval, log: opts.Logger, now: now,
+	}
 }
 
 // Start runs the sweep until ctx is done. It is safe to run on every hub
@@ -179,6 +196,23 @@ func (r *Reconciler) reconcileOne(ctx context.Context, record *tenancyv1alpha1.S
 		r.log.Info("collected scoped identity whose owner is gone",
 			"record", record.Name, "provider", owner.Provider, "kind", owner.Kind, "owner", owner.Name)
 		return
+	}
+
+	if record.Spec.Attestation.Mode == tenancyv1alpha1.ScopedIdentityAttestationWorkload && r.workloadScopes != nil {
+		updated, changed, err := r.service.reconcileWorkloadScope(ctx, record, r.workloadScopes)
+		if err != nil {
+			result.Failed++
+			r.log.Error(err, "reconciling workload identity permissions", "record", record.Name, "project", owner.Name)
+			return
+		}
+		if changed {
+			result.Rematerial++
+			r.log.Info("reconciled workload identity permissions from the current Project", "record", record.Name, "project", owner.Name)
+			return
+		}
+		if updated != nil {
+			record = updated
+		}
 	}
 
 	// The owner is alive. Re-materialize only when the record's rules have not

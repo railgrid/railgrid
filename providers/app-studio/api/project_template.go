@@ -346,6 +346,7 @@ func projectTemplateScopedInstanceName(p *aiv1alpha1.Project, scope string) stri
 }
 
 type projectTemplateBindingContext struct {
+	ClusterID          string
 	ActionsExchangeURL string
 	ActionsBaseURL     string
 	ActionsCABundle    string
@@ -387,6 +388,7 @@ func projectTemplateDevBindingWithContext(p *aiv1alpha1.Project, info projectTem
 		BaseURL:     context.ActionsBaseURL,
 		CABundle:    context.ActionsCABundle,
 		ActionsIdentity: bindings.ActionsIdentity{
+			ClusterID:   context.ClusterID,
 			TenantPath:  context.TenantPath,
 			Org:         context.Org,
 			Workspace:   context.Workspace,
@@ -477,6 +479,7 @@ func projectHasProviderActionGrant(p *aiv1alpha1.Project) bool {
 
 func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identity) (projectTemplateBindingContext, error) {
 	context := projectTemplateBindingContext{
+		ClusterID:   id.clusterID,
 		TenantPath:  id.workspacePath,
 		Org:         id.orgUUID,
 		Workspace:   id.workspaceUUID,
@@ -497,7 +500,7 @@ func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identit
 	if externalRaw == "" {
 		return projectTemplateBindingContext{}, fmt.Errorf("RAILGRID_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
 	}
-	transport, err := bindings.ActionsTransportForOrigin(externalRaw)
+	transport, err := bindings.ActionsTransportForProject(externalRaw, id.clusterID, strings.TrimSpace(p.Name))
 	if err != nil {
 		return projectTemplateBindingContext{}, err
 	}

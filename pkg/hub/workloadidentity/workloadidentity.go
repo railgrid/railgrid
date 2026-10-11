@@ -51,10 +51,11 @@ const (
 	// hardcoded in this package.
 	InfrastructureProviderName = "infrastructure"
 
-	workloadReviewPath   = "/workload-identities/review"
-	maxExchangeBody      = 64 << 10
-	maxReviewBody        = 64 << 10
-	defaultReviewTimeout = 10 * time.Second
+	workloadReviewPath       = "/workload-identities/review"
+	maxExchangeBody          = 64 << 10
+	maxReviewBody            = 64 << 10
+	defaultReviewTimeout     = 10 * time.Second
+	maxScopeExchangeAttempts = 3
 )
 
 // ExchangeRequest is the frozen v1 body accepted by POST PathExchange. The
@@ -175,17 +176,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scope, err := h.scopeResolver.Resolve(ctx, orgUUID, wsUUID, req)
-	if err != nil {
-		h.log.Error(err, "workload identity project scope verification failed", "tenantPath", req.TenantPath, "project", req.Project, "environment", req.Environment, "instance", req.Instance)
-		writeError(w, http.StatusForbidden, "scope_denied", "workload identity scope was not accepted")
-		return
-	}
-	token, err := h.issuer.EnsureWorkload(ctx, req.TenantPath, scope, review.Subject)
-	if err != nil {
-		h.log.Error(err, "workload identity token issuance failed", "tenantPath", req.TenantPath, "project", req.Project, "environment", req.Environment, "instance", req.Instance)
-		writeError(w, http.StatusBadGateway, "token_issue_failed", "workload identity could not be issued")
-		return
+	var token *identity.Token
+	for attempt := 0; attempt < maxScopeExchangeAttempts; attempt++ {
+		var scope serviceaccounts.WorkloadIdentityScope
+		scope, err = h.scopeResolver.Resolve(ctx, orgUUID, wsUUID, req)
+		if err != nil {
+			h.log.Error(err, "workload identity project scope verification failed", "tenantPath", req.TenantPath, "project", req.Project, "environment", req.Environment, "instance", req.Instance)
+			writeError(w, http.StatusForbidden, "scope_denied", "workload identity scope was not accepted")
+			return
+		}
+		token, err = h.issuer.EnsureWorkload(ctx, req.TenantPath, scope, review.Subject)
+		if err == nil {
+			break
+		}
+		var conflict identity.RevisionConflict
+		if !errors.As(err, &conflict) || attempt+1 == maxScopeExchangeAttempts {
+			h.log.Error(err, "workload identity token issuance failed", "tenantPath", req.TenantPath, "project", req.Project, "environment", req.Environment, "instance", req.Instance)
+			writeError(w, http.StatusBadGateway, "token_issue_failed", "workload identity could not be issued")
+			return
+		}
 	}
 	if token == nil || strings.TrimSpace(token.Token) == "" || token.ExpiresAt.IsZero() || token.ExpiresAt.Before(time.Now()) {
 		writeError(w, http.StatusBadGateway, "token_issue_failed", "workload identity provider returned an invalid token")

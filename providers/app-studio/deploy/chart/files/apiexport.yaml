@@ -268,7 +268,7 @@ spec:
           name: ai.railgrid.ai
   - group: ai.railgrid.ai
     name: projects/integration-actions
-    schema: v260924-87f1980f.integration-actions.ai.railgrid.ai
+    schema: v261011-edc62be4.integration-actions.ai.railgrid.ai
     storage:
       virtual:
         reference:

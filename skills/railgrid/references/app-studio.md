@@ -569,7 +569,7 @@ GET    $AS/projects/<p>/integrations                     → {items:[{environmen
 POST   $AS/projects/<p>/integrations                     {environment?,alias,provider,kind:"providerReference",resourceRef{apiVersion,kind,resource,name},allowedActions[{name,version,schemaDigest}] (alias: actions[]),consentAccepted?} → 201
 PATCH  $AS/projects/<p>/integrations/<alias>             {allowedActions[],consentAccepted?} → 200; 403 when you may not call an action you grant
 DELETE $AS/projects/<p>/integrations/<alias>             204
-POST   $AS/projects/<p>/integration-actions/<alias>[/<action>]   {action,actionVersion|version,input} → {requestID,provider,action,actionVersion,resourceRef,result|error{code,message,retryable}}; 403 not granted / revoked, 409 schema drift
+POST   /clusters/<cluster>/apis/ai.railgrid.ai/v1alpha1/projects/<p>/integration-actions/<alias>   {action,actionVersion,input} → {requestID,provider,action,actionVersion,resourceRef,result|error{code,message,retryable}}; 403 not granted / revoked, 409 schema drift
 ```
 
 Alias regex `^[A-Za-z_][A-Za-z0-9_-]{0,62}$`; default environment
@@ -584,11 +584,23 @@ identity** (not yours) with a two-minute budget and a 4 MiB response cap;
 forwarded. Only shipped action today: Databricks `query_table/v1` (sync,
 read-only, `columns` ≤ 64, `limit` 1..100).
 
-In-app SDK: `@railgrid/actions-node` (alias for `@crwilhit/railgrid-actions-node@0.1.0`).
-`createActionsClient({baseURL: RAILGRID_ACTIONS_BASE_URL, project: RAILGRID_PROJECT, tokenFile: RAILGRID_ACTIONS_TOKEN_FILE})`
+In-app SDK package: `@crwilhit/railgrid-actions-node@0.2.1`, imported as
+`@railgrid/actions-node`. Use the dependency alias
+`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"` in the
+server component's `package.json`. A package release does not update an
+already deployed application's manifest; each app applies its own dependency
+change through its normal manifest flow.
+App Studio injects `RAILGRID_ACTIONS_BASE_URL` with the trusted cluster and
+Project path. Use
+`createActionsClient({baseURL: RAILGRID_ACTIONS_BASE_URL, tokenFile: RAILGRID_ACTIONS_TOKEN_FILE})`
 then `railgrid.integration('<alias>').invoke('query_table/v1', {...})`.
-Server-side only; the runtime exchanges a projected bootstrap token for a
-10-minute workload token whose RBAC is exactly the materialized grants.
+The SDK body carries `action`, `actionVersion`, and `input`; the path carries
+only the saved alias. A successful invoke verifies route and authorization;
+token refresh readiness alone does not. Server-side only; the runtime exchanges
+a projected bootstrap token for a 10-minute workload token whose RBAC is
+exactly the materialized grants. A gateway `401` without a provider error
+envelope can trigger one forced credential refresh; an enveloped provider
+error, including a provider `401`, is returned without replaying the action.
 
 ### Skills
 

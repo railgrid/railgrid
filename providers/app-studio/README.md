@@ -563,55 +563,51 @@ allowedActions:
   schemaDigest: sha256:<catalog-digest>
 ```
 
-App Studio only GETs the referenced object while reconciling and never creates,
-updates, owns, or deletes it. Integrations are managed through
-`/api/projects/{project}/integrations` (GET/POST), removed with DELETE on the
-alias, and invoked with POST on `{alias}/invoke`. On create or reactivation,
-App Studio resolves the hub's `/api/providers` catalog (as the provider) and records a
-server-owned `schemaDigest`, `grantedBy`, and `grantedAt` for every exact
-action/resource grant. Revocation preserves that grant audit and records
+App Studio reads the referenced object while reconciling and never creates,
+updates, owns, or deletes it. Integrations are managed through the App Studio
+API; invocation is a kcp custom subresource at
+`/clusters/{cluster}/apis/ai.railgrid.ai/v1alpha1/projects/{project}/integration-actions/{alias}`.
+On create or reactivation, App Studio resolves the hub's provider catalog and
+records a server-owned `schemaDigest`, `grantedBy`, and `grantedAt` for every
+exact action/resource grant. Revocation preserves that grant audit and records
 `revokedBy`/`revokedAt`; reactivation requires fresh catalog verification and
 consent when declared.
 
-Invocation re-verifies the persisted grant digest against the live catalog
-(`409` on drift), then forwards `{"input": ...}` to the bound provider's action
-as **App Studio**, through App Studio's own APIExport virtual workspace, at the
-kube path of the custom subresource
-`/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/{action}` (the
-contract version is the serving provider's declaration, not a path segment).
-kcp authorizes the call against the claim App Studio's export carries on that
-coordinate, so an integration's action must be one App Studio has claimed
-(`manifest.yaml` `spec.requires[].resources[]`); the caller's identity
-travels as a label only. The route is composed from the coordinate the catalog
-publishes the action on — its parent `spec.export.resources[]` entry's
-`apiVersion`, `kind` and plural name;
-App Studio never learns a provider URL or embeds provider transport logic.
-Caller credentials, provider backend URLs, resource overrides, and raw SQL
-are rejected.
+At invocation, App Studio checks the saved grant and its digest against the
+live catalog (`409` on drift), then checks the initiating identity against the
+authorized action. It sends the action through the project's cluster-qualified
+kcp route using the Project workload identity; the hub proxy forwards that
+token and kcp enforces its RBAC. The original human caller's bearer does not cross to the provider.
+Callers cannot supply provider URLs, resource overrides, or credentials.
 
 Generated server applications install the public
-`@crwilhit/railgrid-actions-node@0.1.0` artifact under the stable consumer name
+`@crwilhit/railgrid-actions-node@0.2.1` artifact under the stable consumer name
 with this exact dependency alias in the server component's `package.json`:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.1.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
   }
 }
 ```
 
 Application code keeps the canonical import
 `import { createActionsClient } from '@railgrid/actions-node';` and can call
-`client.integration(alias).invoke(...)` or `invokeEnvelope(...)`. The SDK is
-server-only, requires an absolute HTTPS base URL (except an explicit loopback
-test override), reads the short-lived workload token from
-`RAILGRID_ACTIONS_TOKEN_FILE` on every request or from a refreshable credential
-provider, and retries once with `forceRefresh` after a `401`. The bootstrap
-token used by the workload exchange is never the app token; no development
-token fallback exists. Development sandboxes install this declared dependency
-through the component toolchain; `railgrid-dev-agent` does not project an SDK or
-mount `/node_modules`.
+`client.integration(alias).invoke(...)` or `invokeEnvelope(...)`. App Studio
+injects the trusted cluster-qualified route and a token file into the server
+runtime; the SDK reads the short-lived workload token for each request and
+refreshes it after a bare gateway `401`. It does not replay a provider action
+when the provider returned an error envelope. The bootstrap token used for the
+workload exchange is never the app token, and there is no development-token
+fallback. Development sandboxes install this declared dependency through the
+component toolchain; `railgrid-dev-agent` does not project an SDK or mount
+`/node_modules`.
+
+For an existing project with a customized `package.json`, the App Studio assistant
+prompt instructs the assistant to propose the SDK-only dependency patch and wait
+for the user's approval before applying it. This is prompt-level guidance; the
+backend file APIs do not enforce a package-specific approval gate.
 
 ## Running it yourself
 

@@ -87,6 +87,7 @@ func (s *Server) projectDevelopmentRuntimeBinding(binding aiv1alpha1.ProjectProv
 		BaseURL:     context.ActionsBaseURL,
 		CABundle:    context.ActionsCABundle,
 		ActionsIdentity: bindings.ActionsIdentity{
+			ClusterID:   context.ClusterID,
 			TenantPath:  context.TenantPath,
 			Org:         context.Org,
 			Workspace:   context.Workspace,

@@ -317,7 +317,7 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 		Rules:                rules,
 		TokenTTL:             serviceaccounts.ClampScopedIdentityTTL(time.Duration(req.TTLSeconds)*time.Second, DefaultProviderTTL),
 	}
-	record, err := s.upsertRecord(ctx, clusterID, owner, mode, subject, shape, revision)
+	record, err := s.upsertRecord(ctx, clusterID, owner, mode, subject, shape, revision, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +437,7 @@ const (
 	AnnotationOwnerUID  = "railgrid.ai/scoped-identity-owner-uid"
 )
 
-func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owner, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string, shape serviceaccounts.ScopedIdentityShape, revision *OwnerRevision) (*tenancyv1alpha1.ScopedIdentity, error) {
+func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owner, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string, shape serviceaccounts.ScopedIdentityShape, revision *OwnerRevision, expectedRecord *identityRecordRevision) (*tenancyv1alpha1.ScopedIdentity, error) {
 	name := RecordName(clusterID, shape.ServiceAccount)
 	spec := tenancyv1alpha1.ScopedIdentitySpec{
 		Owner: tenancyv1alpha1.ScopedIdentityOwner{
@@ -462,6 +462,9 @@ func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owne
 	for attempt := 0; attempt < maxIdentityRecordWriteAttempts; attempt++ {
 		existing, err := s.records.Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
+			if expectedRecord != nil {
+				return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the scoped identity record was removed during workload reconciliation"}
+			}
 			if err := s.verifyExpectedOwnerRevision(ctx, clusterID, owner, revision); err != nil {
 				return nil, err
 			}
@@ -473,6 +476,9 @@ func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owne
 				return created, nil
 			}
 			if apierrors.IsAlreadyExists(createErr) || apierrors.IsConflict(createErr) {
+				if mode == tenancyv1alpha1.ScopedIdentityAttestationWorkload && revision != nil {
+					return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the workload identity record changed during creation"}
+				}
 				continue
 			}
 			return nil, fmt.Errorf("recording scoped identity: %w", createErr)
@@ -487,6 +493,9 @@ func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owne
 			existing.Spec.Owner.Kind != owner.Kind || existing.Spec.ClusterID != clusterID ||
 			existing.Spec.ServiceAccountName != shape.ServiceAccount {
 			return nil, fmt.Errorf("scoped identity record %q belongs to another owner", name)
+		}
+		if expectedRecord != nil && !identityRecordRevisionMatches(existing, *expectedRecord) {
+			return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the scoped identity changed while its Project scope was being resolved"}
 		}
 
 		storedRevision, storedVersioned, err := recordOwnerRevision(existing)
@@ -523,6 +532,9 @@ func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owne
 			return written, nil
 		}
 		if apierrors.IsConflict(updateErr) {
+			if expectedRecord != nil || mode == tenancyv1alpha1.ScopedIdentityAttestationWorkload && revision != nil {
+				return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "the scoped identity changed during workload reconciliation"}
+			}
 			continue
 		}
 		return nil, fmt.Errorf("updating scoped identity record: %w", updateErr)
