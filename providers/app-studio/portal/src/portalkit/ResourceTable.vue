@@ -46,6 +46,13 @@ type ResourceTableColumn = {
 }
 
 const CLIENT_FILTER_DEBOUNCE_MS = 100
+/**
+ * A secondary cell whose disclosable text is at least this long is a tab stop,
+ * so a keyboard user can disclose it the way a mouse user hovers it. The cap
+ * is 32ch, so shorter text almost never truncates; a stop that turns out not
+ * to overflow simply shows no tooltip.
+ */
+const CELL_DISCLOSURE_FOCUS_CHARS = 24
 const MAX_SKELETON_COLUMNS = 6
 const PRIMARY_TOOLTIP_GAP = 6
 const PRIMARY_TOOLTIP_VIEWPORT_MARGIN = 8
@@ -325,6 +332,9 @@ const primaryValueStyle = computed(() => {
 })
 function cellValueStyle(column: ResourceTableColumn) {
   return column.maxWidth ? { '--k-table-cell-max-width': column.maxWidth } : undefined
+}
+function cellFocusable(row: Record<string, unknown>, column: ResourceTableColumn): 0 | undefined {
+  return cellValue(row, column).length >= CELL_DISCLOSURE_FOCUS_CHARS ? 0 : undefined
 }
 const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (selectionSurfaceVisible.value ? 1 : 0), 1))
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
@@ -816,7 +826,10 @@ async function showPrimaryTooltip(container: HTMLElement | null) {
     return
   }
 
-  const value = container.dataset.fullValue?.trim()
+  // A secondary cell whose slot renders something other than a scalar (a
+  // link, a badge with text) declares no full value; its rendered text is
+  // what truncated, so that is what it discloses.
+  const value = container.dataset.fullValue?.trim() || container.textContent?.trim() || ''
   if (!value) {
     hideTooltip()
     return
@@ -874,9 +887,17 @@ function syncPrimaryOverflow(event: MouseEvent) {
 
 function syncRowPrimaryOverflow(event: FocusEvent) {
   const row = event.currentTarget as HTMLElement | null
-  const container = row?.querySelector<HTMLElement>('.k-table__primary-content') ?? null
   const target = event.target as Node | null
   if (target instanceof Element && target.closest('.k-table__selection-help')) return
+  // Focus on a secondary cell, or on a control inside one, discloses that
+  // cell; focus on the row itself or inside the primary cell discloses the
+  // primary value.
+  const cell = target instanceof Element ? target.closest<HTMLElement>('.k-table__cell-value') : null
+  if (cell && row?.contains(cell)) {
+    void showPrimaryTooltip(cell)
+    return
+  }
+  const container = row?.querySelector<HTMLElement>('.k-table__primary-content') ?? null
   if (!row || !container || (target !== row && !container.contains(target))) {
     hideTooltip()
     return
@@ -1180,7 +1201,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                       <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                     </span>
                   </div>
-                  <div v-else class="k-table__cell-value" :style="cellValueStyle(col)" :data-full-value="cellValue(row, col)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
+                  <div v-else class="k-table__cell-value" :style="cellValueStyle(col)" :data-full-value="cellValue(row, col)" :tabindex="cellFocusable(row, col)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
                     <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                   </div>
                 </td>

@@ -63,9 +63,17 @@ test('a column can cap its value width so a long value truncates with disclosure
   assert.match(styles, /\.k-table__primary-value \{[\s\S]*?max-width: var\(--k-table-primary-max-width, none\);[\s\S]*?\}/)
 })
 
-test('secondary cells truncate at a default cap and disclose the full scalar on hover', () => {
-  assert.match(component, /<div v-else class="k-table__cell-value" :style="cellValueStyle\(col\)" :data-full-value="cellValue\(row, col\)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">/)
+test('secondary cells truncate at a default cap and disclose the full value on hover and on focus', () => {
+  assert.match(component, /<div v-else class="k-table__cell-value" :style="cellValueStyle\(col\)" :data-full-value="cellValue\(row, col\)" :tabindex="cellFocusable\(row, col\)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">/)
   assert.doesNotMatch(component, /<slot v-else :name="col\.key"/)
   assert.match(component, /\.k-table__primary-value'\) \?\? container/)
+  assert.match(component, /const CELL_DISCLOSURE_FOCUS_CHARS = 24/)
+  assert.match(component, /cellValue\(row, column\)\.length >= CELL_DISCLOSURE_FOCUS_CHARS \? 0 : undefined/)
+  // The row's focusin handler discloses a focused secondary cell, not only the primary value.
+  assert.match(component, /function syncRowPrimaryOverflow[\s\S]*?target\.closest<HTMLElement>\('\.k-table__cell-value'\)[\s\S]*?void showPrimaryTooltip\(cell\)/)
+  // A slot that renders no scalar discloses the text it rendered.
+  assert.match(component, /container\.dataset\.fullValue\?\.trim\(\) \|\| container\.textContent\?\.trim\(\) \|\| ''/)
+  assert.match(styles, /\.k-table__cell-value:focus-visible \{[\s\S]*?box-shadow: 0 0 0 2px var\(--color-accent[\s\S]*?\}/)
+  assert.match(styles, /\.k-table__cell-value:focus-within:not\(:focus\) \{\s*overflow: visible;\s*text-overflow: clip;\s*\}/)
   assert.match(styles, /\.k-table__cell-value \{\s*display: block;\s*max-width: var\(--k-table-cell-max-width, 32ch\);\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;\s*white-space: nowrap;\s*\}/)
 })

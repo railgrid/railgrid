@@ -2298,6 +2298,19 @@ railgrid-resource-table-filter { display: contents; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A long value is a tab stop so a keyboard user can disclose it; its own
+ * outline paints outside the box, which overflow: hidden does not clip. */
+.k-table__cell-value:focus { outline: 0; }
+.k-table__cell-value:focus-visible {
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--color-accent, #8b6bff);
+}
+/* A control focused inside the box (a link or button in a secondary column)
+ * draws its ring outside the box, so stop clipping while it has focus. */
+.k-table__cell-value:focus-within:not(:focus) {
+  overflow: visible;
+  text-overflow: clip;
+}
 /* Keep the selection checkbox anchored at one edge for eligible and explained
  * disabled rows. This override follows the generic cell padding intentionally. */
 .k-table.k-table--resource .k-table__selection-heading {
