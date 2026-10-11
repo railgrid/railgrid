@@ -1350,7 +1350,12 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
-	_ = s.saveRun(ctx, scope, stored)
+	if err := s.saveRun(ctx, scope, stored); err != nil {
+		return
+	}
+	// The runner slot this run held is free. Give it to the oldest run waiting
+	// in the queue rather than leaving it idle until that run's own wake-up.
+	s.wakeNextQueued(ctx, scope, stored.AgentName, end)
 }
 
 // closeParkedInboxItem closes the inbox item a run was parked on when the run

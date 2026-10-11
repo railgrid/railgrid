@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,5 +250,86 @@ func TestWithoutRunDropsOnlyThatRunsRows(t *testing.T) {
 	}
 	if got := withoutRun(history, ""); len(got) != len(history) {
 		t.Fatalf("withoutRun with no run id dropped rows: %d of %d", len(got), len(history))
+	}
+}
+
+// queuedSibling records another run of the same agent that is already waiting
+// in the queue for its wake-up time.
+func queuedSibling(t *testing.T, s *Server, run taskRun, id string, createdAt, retryAt time.Time) {
+	t.Helper()
+	if err := s.store.SaveRun(t.Context(), run.Scope, store.Run{
+		ID: id, AgentName: run.Agent.Name, SessionID: run.SessionID, Trigger: run.Trigger,
+		Phase: store.RunPhasePending, Input: "queued", Retries: 1, RetryAt: &retryAt, CreatedAt: createdAt, UpdatedAt: createdAt,
+		Message:  "attempt 1 of 24 refused: runner execution capacity is full; retrying at " + retryAt.UTC().Format(time.RFC3339),
+		Delivery: &store.RunDelivery{Kind: "trigger", SourceName: "pull-request"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Runs refused together must not wake together: the one-slot runner can take
+// one of them, and the rest would only be refused again. A run handed back
+// behind others already in the queue waits a stagger per run ahead of it.
+func TestARefusedRunIsStaggeredBehindTheQueue(t *testing.T) {
+	dispatcher := &busyDispatcher{}
+	s, run := newHarnessRunLifecycleFixture(t, dispatcher, 60)
+	run.DeliveryKind, run.SourceName = "trigger", "pull-request"
+	queuedRun(t, s, run, 0)
+	now := time.Now().UTC()
+	queuedSibling(t, s, run, "ahead-1", now.Add(-2*time.Minute), now.Add(time.Minute))
+	queuedSibling(t, s, run, "ahead-2", now.Add(-time.Minute), now.Add(time.Minute))
+
+	before := time.Now().UTC()
+	if _, err := s.runTurn(t.Context(), run, nil); err == nil {
+		t.Fatal("runTurn must report the re-queue")
+	}
+	stored, err := s.store.GetRun(t.Context(), run.Scope, run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	earliest := before.Add(runRetryBaseBackoff + 2*runRetryStagger)
+	if stored.RetryAt == nil || stored.RetryAt.Before(earliest) || stored.RetryAt.After(time.Now().Add(runRetryBaseBackoff+2*runRetryStagger+time.Minute)) {
+		t.Fatalf("retryAt = %v; want the backoff plus two staggers after %v", stored.RetryAt, before)
+	}
+}
+
+// When a run on the agent finishes, its runner slot is free, and the oldest run
+// waiting in the queue is woken to take it rather than left to its timer. One
+// run only: the rest keep their wake-ups, and a run that is due already is the
+// reconciler's business.
+func TestAFinishedRunWakesTheOldestQueuedRun(t *testing.T) {
+	s, run := newHarnessRunLifecycleFixture(t, &busyDispatcher{}, 60)
+	now := time.Now().UTC()
+	queuedSibling(t, s, run, "due-already", now.Add(-10*time.Minute), now.Add(-time.Minute))
+	queuedSibling(t, s, run, "oldest-waiting", now.Add(-5*time.Minute), now.Add(5*time.Minute))
+	queuedSibling(t, s, run, "newer-waiting", now.Add(-time.Minute), now.Add(5*time.Minute))
+	if err := s.store.SaveRun(t.Context(), run.Scope, store.Run{
+		ID: "finishing", AgentName: run.Agent.Name, SessionID: run.SessionID, Trigger: run.Trigger,
+		Phase: store.RunPhaseRunning, Input: "review", CreatedAt: now, UpdatedAt: now, StartedAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	end := now.Add(40 * time.Second)
+	s.finishRun(t.Context(), run.Scope, "finishing", runOutcome{Phase: store.RunPhaseSucceeded}, end)
+
+	woken, err := s.store.GetRun(t.Context(), run.Scope, "oldest-waiting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if woken.RetryAt == nil || !woken.RetryAt.Equal(end) || woken.Phase != store.RunPhasePending {
+		t.Fatalf("oldest waiting run = phase %q retryAt %v; want Pending, woken at %v", woken.Phase, woken.RetryAt, end)
+	}
+	if !strings.HasSuffix(woken.Message, "a run on this agent finished, retrying now") || strings.Contains(woken.Message, "retrying at") {
+		t.Fatalf("message = %q; want the wait's explanation replaced by the wake-up's", woken.Message)
+	}
+	for _, id := range []string{"due-already", "newer-waiting"} {
+		other, err := s.store.GetRun(t.Context(), run.Scope, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other.RetryAt == nil || other.RetryAt.Equal(end) || !strings.Contains(other.Message, "retrying at") {
+			t.Errorf("%s = retryAt %v message %q; must be left alone", id, other.RetryAt, other.Message)
+		}
 	}
 }
