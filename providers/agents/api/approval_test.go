@@ -366,6 +366,27 @@ func TestSafeTruncateDoesNotSplitRunes(t *testing.T) {
 	}
 }
 
+// The limit is a hard ceiling that includes the marker. spec.inputPreview and
+// status.message carry a CRD MaxLength, and a result of limit+len(marker)
+// bytes made every Run whose task exceeded the bound fail validation, which
+// took every webhook trigger down with it.
+func TestSafeTruncateNeverExceedsLimit(t *testing.T) {
+	for _, n := range []int{2048, 160, 51, len("…[truncated]"), 5, 1} {
+		for _, s := range []string{strings.Repeat("a", 5000), strings.Repeat("é", 3000)} {
+			got := safeTruncate(s, n)
+			if len(got) > n {
+				t.Errorf("safeTruncate(len %d, %d) = %d bytes, exceeds the limit", len(s), n, len(got))
+			}
+			if !utf8ValidString(got) {
+				t.Errorf("safeTruncate(…, %d) split a rune: %q", n, got)
+			}
+			if n > len("…[truncated]") && !strings.HasSuffix(got, "…[truncated]") {
+				t.Errorf("safeTruncate(…, %d) = %q, missing truncation marker", n, got)
+			}
+		}
+	}
+}
+
 func utf8ValidString(s string) bool {
 	for _, r := range s {
 		if r == 0xFFFD {
