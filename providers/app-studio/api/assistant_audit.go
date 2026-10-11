@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -34,7 +35,7 @@ import (
 )
 
 const (
-	projectAssistantAuditVersion        = 2
+	projectAssistantAuditVersion        = 3
 	projectAssistantAuditMaxTools       = 128
 	projectAssistantAuditMaxModelCalls  = 32
 	projectAssistantAuditMaxCompactions = 16
@@ -100,18 +101,21 @@ const (
 )
 
 type projectAssistantAuditTool struct {
-	ID            string `json:"id,omitempty"`
-	Name          string `json:"name"`
-	Path          string `json:"path,omitempty"`
-	Status        string `json:"status"`
-	Summary       string `json:"summary,omitempty"`
-	Additions     int    `json:"additions,omitempty"`
-	Deletions     int    `json:"deletions,omitempty"`
-	Replacements  int    `json:"replacements,omitempty"`
-	Diff          string `json:"diff,omitempty"`
-	DiffTruncated bool   `json:"diffTruncated,omitempty"`
-	RecoveryOf    string `json:"recoveryOf,omitempty"`
-	AtOffsetMS    int64  `json:"atOffsetMs"`
+	ID                string                            `json:"id,omitempty"`
+	Name              string                            `json:"name"`
+	Path              string                            `json:"path,omitempty"`
+	Status            string                            `json:"status"`
+	Summary           string                            `json:"summary,omitempty"`
+	Additions         int                               `json:"additions,omitempty"`
+	Deletions         int                               `json:"deletions,omitempty"`
+	Replacements      int                               `json:"replacements,omitempty"`
+	Diff              string                            `json:"diff,omitempty"`
+	DiffTruncated     bool                              `json:"diffTruncated,omitempty"`
+	RecoveryOf        string                            `json:"recoveryOf,omitempty"`
+	RecoveredByCallID string                            `json:"recoveredByCallID,omitempty"`
+	RecoveryStatus    string                            `json:"recoveryStatus,omitempty"`
+	Diagnostic        *projectAssistantActionDiagnostic `json:"diagnostic,omitempty"`
+	AtOffsetMS        int64                             `json:"atOffsetMs"`
 }
 
 type projectAssistantAuditModelCall struct {
@@ -368,6 +372,7 @@ func (r *projectAssistantRunAuditRecorder) recordToolAt(event projectToolCallStr
 		Summary:    projectAssistantAuditToolEventSummary(event),
 		AtOffsetMS: projectAssistantAuditOffsetMS(r.started, at),
 	}
+	entry.Diagnostic = projectAssistantAuditToolDiagnostic(event)
 	if event.Mutation != nil {
 		entry.Additions = event.Mutation.Additions
 		entry.Deletions = event.Mutation.Deletions
@@ -388,7 +393,13 @@ func (r *projectAssistantRunAuditRecorder) recordToolAt(event projectToolCallStr
 				if entry.Path == "" {
 					entry.Path = r.audit.Tools[i].Path
 				}
+				entry.RecoveredByCallID = r.audit.Tools[i].RecoveredByCallID
+				entry.RecoveryStatus = r.audit.Tools[i].RecoveryStatus
+				if entry.Diagnostic == nil {
+					entry.Diagnostic = r.audit.Tools[i].Diagnostic
+				}
 				r.audit.Tools[i] = entry
+				r.recordAuditRecoveryLinkLocked(entry)
 				r.updateRunLocked()
 				return
 			}
@@ -398,7 +409,118 @@ func (r *projectAssistantRunAuditRecorder) recordToolAt(event projectToolCallStr
 		return
 	}
 	r.audit.Tools = append(r.audit.Tools, entry)
+	r.recordAuditRecoveryLinkLocked(entry)
 	r.updateRunLocked()
+}
+
+func projectAssistantAuditInterruptedExecUpdate(raw []byte, event projectToolCallStreamEvent) ([]byte, bool) {
+	if projectToolBaseName(event.Name) != projectToolExecCommand || !projectAssistantToolCallCanSettleStopping(event.Status) ||
+		strings.TrimSpace(event.ID) == "" {
+		return nil, false
+	}
+	var audit projectAssistantRunAudit
+	if len(raw) == 0 {
+		audit.Version = projectAssistantAuditVersion
+	} else if json.Unmarshal(raw, &audit) != nil {
+		return nil, false
+	}
+	callID := projectAssistantAuditString(event.ID, projectAssistantAuditMaxSummaryLen)
+	found := false
+	for index := range audit.Tools {
+		entry := &audit.Tools[index]
+		if entry.ID != callID {
+			continue
+		}
+		if found || entry.Name != projectToolExecCommand {
+			return nil, false
+		}
+		if entry.Status != "running" && !projectAssistantAuditToolHasUnobservedExecResult(*entry) {
+			// Recovery can run after a prior snapshot committed but its canonical
+			// item projection failed. Accept only an identical terminal audit row
+			// so the same durable receipt can repair the remaining projections.
+			wantDiagnostic := projectAssistantAuditToolDiagnostic(event)
+			if entry.Status != event.Status || entry.Summary != projectAssistantAuditToolEventSummary(event) ||
+				!reflect.DeepEqual(entry.Diagnostic, wantDiagnostic) {
+				return nil, false
+			}
+			return append([]byte(nil), raw...), true
+		}
+		found = true
+		entry.Status = projectAssistantAuditString(event.Status, projectAssistantAuditMaxSummaryLen)
+		entry.Summary = projectAssistantAuditToolEventSummary(event)
+		entry.Diagnostic = projectAssistantAuditToolDiagnostic(event)
+	}
+	if !found {
+		if len(audit.Tools) >= projectAssistantAuditMaxTools {
+			// Audit history is deliberately bounded. A full audit must not block
+			// settlement of the exact command receipt already identified by the
+			// action feed; preserve the capped history byte-for-byte.
+			return append([]byte(nil), raw...), true
+		}
+		observedAtOffsetMS := int64(0)
+		if !audit.StartedAt.IsZero() && !event.ObservedAt.IsZero() {
+			observedAtOffsetMS = projectAssistantAuditOffsetMS(audit.StartedAt, event.ObservedAt)
+		}
+		entry := projectAssistantAuditTool{
+			ID:         callID,
+			Name:       projectAssistantAuditString(projectToolBaseName(event.Name), projectAssistantAuditMaxSummaryLen),
+			Path:       projectAssistantAuditToolPathForEvent(event),
+			Status:     projectAssistantAuditString(event.Status, projectAssistantAuditMaxSummaryLen),
+			Summary:    projectAssistantAuditToolEventSummary(event),
+			AtOffsetMS: observedAtOffsetMS,
+			Diagnostic: projectAssistantAuditToolDiagnostic(event),
+		}
+		audit.Tools = append(audit.Tools, entry)
+	}
+	updated, err := json.Marshal(audit)
+	if err != nil {
+		return nil, false
+	}
+	return updated, true
+}
+
+func projectAssistantAuditToolHasUnobservedExecResult(entry projectAssistantAuditTool) bool {
+	if entry.Name != projectToolExecCommand || entry.Diagnostic == nil || entry.Diagnostic.Code != "command_outcome_unobserved" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(entry.Status)) {
+	case "failed", "outcome_unknown", "unverifiable", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func projectAssistantAuditToolDiagnostic(event projectToolCallStreamEvent) *projectAssistantActionDiagnostic {
+	item := projectAssistantActionFeedItemFromToolCall(event)
+	if item.Status != projectAssistantActionFeedStatusFailed && item.Status != projectAssistantActionFeedStatusRejected {
+		return nil
+	}
+	if item.Diagnostic != nil {
+		return projectAssistantCloneActionDiagnostic(item.Diagnostic)
+	}
+	if strings.TrimSpace(event.Error) != "" {
+		return projectAssistantCloneActionDiagnostic(projectAssistantActionFeedDiagnosticForTool(event.ID, event.Name, event.Error))
+	}
+	return nil
+}
+
+func (r *projectAssistantRunAuditRecorder) recordAuditRecoveryLinkLocked(recovery projectAssistantAuditTool) {
+	if r == nil || recovery.Status != "succeeded" || strings.TrimSpace(recovery.RecoveryOf) == "" || strings.TrimSpace(recovery.ID) == "" {
+		return
+	}
+	for index := range r.audit.Tools {
+		prior := &r.audit.Tools[index]
+		if prior.ID == recovery.ID || projectAssistantActionPublicID(prior.ID) != recovery.RecoveryOf {
+			continue
+		}
+		if prior.Status != "failed" && prior.Status != "rejected" {
+			return
+		}
+		prior.RecoveredByCallID = projectAssistantAuditString(recovery.ID, projectAssistantAuditMaxSummaryLen)
+		prior.RecoveryStatus = "succeeded"
+		return
+	}
 }
 
 func (r *projectAssistantRunAuditRecorder) recordModelCall(

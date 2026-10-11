@@ -161,13 +161,13 @@ func TestProjectEinoAssistantSandboxExecFollowsSupervisorCancellation(t *testing
 
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
-	var canceledEvent *projectToolCallStreamEvent
+	var unknownEvent *projectToolCallStreamEvent
 	for index := range events {
-		if events[index].Name == projectToolExecCommand && events[index].Status == "canceled" {
-			canceledEvent = &events[index]
+		if events[index].Name == projectToolExecCommand && events[index].Status == "outcome_unknown" {
+			unknownEvent = &events[index]
 		}
 	}
-	if canceledEvent == nil || canceledEvent.Exec == nil || canceledEvent.Exec.Status != "canceled" {
-		t.Fatalf("tool events = %#v, want a terminal canceled exec event", events)
+	if unknownEvent == nil || unknownEvent.Exec == nil || unknownEvent.Exec.Status != "outcome_unknown" || unknownEvent.Exec.ExitCode != nil {
+		t.Fatalf("tool events = %#v, want cancellation intent with unknown outcome and no exit code", events)
 	}
 }

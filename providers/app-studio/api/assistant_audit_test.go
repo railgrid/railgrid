@@ -129,6 +129,135 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantRunAuditKeepsFailedAttemptAndLinksSuccessfulRecovery(t *testing.T) {
+	run := &store.AssistantRun{ID: "run-recovery-audit"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	const failedCallID = "call-edit-failed"
+	const retryCallID = "call-edit-retry"
+	diagnostic := &projectAssistantActionDiagnostic{
+		Category:    "validation",
+		Message:     "The source was stale when the edit was attempted.",
+		ReferenceID: projectAssistantActionPublicID(failedCallID),
+		Code:        "stale_source",
+	}
+	recorder.recordToolAt(projectToolCallStreamEvent{
+		ID:                failedCallID,
+		Name:              projectToolEditFile,
+		Status:            "failed",
+		FailureDiagnostic: diagnostic,
+	}, time.Now().UTC())
+	recorder.recordToolAt(projectToolCallStreamEvent{
+		ID:         retryCallID,
+		Name:       projectToolEditFile,
+		Status:     "succeeded",
+		RecoveryOf: projectAssistantActionPublicID(failedCallID),
+	}, time.Now().UTC())
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.Tools) != 2 {
+		t.Fatalf("audit tools = %#v, want failed attempt and retry", audit.Tools)
+	}
+	prior, retry := audit.Tools[0], audit.Tools[1]
+	if prior.ID != failedCallID || prior.Status != "failed" || prior.RecoveredByCallID != retryCallID || prior.RecoveryStatus != "succeeded" {
+		t.Fatalf("original attempt = %#v, want failed status preserved with successful recovery link", prior)
+	}
+	if prior.Diagnostic == nil || prior.Diagnostic.Code != "stale_source" {
+		t.Fatalf("original diagnostic = %#v, want structured failure retained", prior.Diagnostic)
+	}
+	if retry.ID != retryCallID || retry.Status != "succeeded" || retry.RecoveryOf != projectAssistantActionPublicID(failedCallID) {
+		t.Fatalf("retry entry = %#v, want successful linked retry", retry)
+	}
+}
+
+func TestProjectAssistantRunAuditClassifiesStaleCommandAsFailedApplicability(t *testing.T) {
+	const result = `{"status":"stale","sourceStale":true,"component":"backend","sourceRevision":19,"exitCode":0}`
+	exitCode := 0
+	run := &store.AssistantRun{ID: "run-stale-command-audit"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	recorder.recordToolAt(projectToolCallStreamEvent{
+		ID:     "call-stale-command",
+		Name:   projectToolExecCommand,
+		Status: "failed",
+		Exec: &projectAssistantExecMetadata{
+			Component:      "backend",
+			Status:         "stale",
+			SourceRevision: 19,
+			SourceStale:    true,
+			ExitCode:       &exitCode,
+		},
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult("call-stale-command", projectToolExecCommand, result),
+	}, time.Now().UTC())
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if len(audit.Tools) != 1 || audit.Tools[0].Status != "failed" || audit.Tools[0].Diagnostic == nil ||
+		audit.Tools[0].Diagnostic.Code != "source_revision_stale" || audit.Tools[0].Diagnostic.Category != "validation" {
+		t.Fatalf("stale command audit entry = %#v, want terminal failure plus applicability diagnostic", audit.Tools)
+	}
+}
+
+func TestProjectAssistantRunAuditAllowsObservedReceiptToReplaceUnknownOutcome(t *testing.T) {
+	t.Run("unknown result becomes observed terminal receipt", func(t *testing.T) {
+		startedAt := time.Now().UTC()
+		run := &store.AssistantRun{ID: "run-unknown-command-audit"}
+		recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, startedAt)
+		const callID = "call-unknown-command"
+		recorder.recordToolAt(projectToolCallStreamEvent{
+			ID: callID, Name: projectToolExecCommand, Status: "running",
+			Exec: &projectAssistantExecMetadata{Component: "web", Argv: []string{"go", "test"}, Status: "running"},
+		}, startedAt)
+		recorder.recordToolAt(projectToolCallStreamEvent{
+			ID: callID, Name: projectToolExecCommand, Status: "outcome_unknown",
+			Exec:              &projectAssistantExecMetadata{Component: "web", Argv: []string{"go", "test"}, Status: "outcome_unknown"},
+			FailureDiagnostic: projectAssistantInterruptedExecDiagnostic(callID),
+		}, startedAt.Add(time.Second))
+
+		exitCode := 0
+		observed := projectToolCallStreamEvent{
+			ID: callID, Name: projectToolExecCommand, Status: "succeeded", Summary: "Command completed",
+			ObservedAt: startedAt.Add(2 * time.Second),
+			Exec:       &projectAssistantExecMetadata{Component: "web", Argv: []string{"go", "test"}, Status: "succeeded", ExitCode: &exitCode},
+		}
+		updated, ok := projectAssistantAuditInterruptedExecUpdate(run.Audit, observed)
+		if !ok {
+			t.Fatal("observed terminal receipt could not replace synthetic unknown audit row")
+		}
+		var audit projectAssistantRunAudit
+		if err := json.Unmarshal(updated, &audit); err != nil {
+			t.Fatal(err)
+		}
+		if len(audit.Tools) != 1 || audit.Tools[0].Status != "succeeded" || audit.Tools[0].Diagnostic != nil {
+			t.Fatalf("settled audit row = %#v, want observed success replacing unknown", audit.Tools)
+		}
+	})
+
+	t.Run("genuine failure remains immutable", func(t *testing.T) {
+		startedAt := time.Now().UTC()
+		run := &store.AssistantRun{ID: "run-failed-command-audit"}
+		recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, startedAt)
+		const callID = "call-failed-command"
+		one := 1
+		recorder.recordToolAt(projectToolCallStreamEvent{
+			ID: callID, Name: projectToolExecCommand, Status: "failed", Summary: "Command failed",
+			Exec:              &projectAssistantExecMetadata{Component: "web", Argv: []string{"go", "test"}, Status: "failed", ExitCode: &one},
+			FailureDiagnostic: &projectAssistantActionDiagnostic{Category: "runtime", Message: "Command failed", Code: "command_failed"},
+		}, startedAt)
+		zero := 0
+		observed := projectToolCallStreamEvent{
+			ID: callID, Name: projectToolExecCommand, Status: "succeeded", Summary: "Command completed",
+			Exec: &projectAssistantExecMetadata{Component: "web", Argv: []string{"go", "test"}, Status: "succeeded", ExitCode: &zero},
+		}
+		if _, ok := projectAssistantAuditInterruptedExecUpdate(run.Audit, observed); ok {
+			t.Fatal("later success was permitted to overwrite an observed command failure")
+		}
+	})
+}
+
 func TestProjectAssistantAuditUsageDedupeIsBoundedWithTruthfulRollup(t *testing.T) {
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, &store.AssistantRun{}, time.Now().UTC())
 	stats := recorder.ensureModelCallStatsLocked()

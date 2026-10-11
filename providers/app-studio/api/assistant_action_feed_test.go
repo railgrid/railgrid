@@ -18,6 +18,7 @@ package api
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -47,6 +48,47 @@ func TestProjectAssistantActionFeedReadHidesExecutionMechanics(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedTreatsStaleCommandAsFailed(t *testing.T) {
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:     "exec-stale-status",
+		Name:   projectToolExecCommand,
+		Status: "stale",
+	})
+	if item.Status != projectAssistantActionFeedStatusFailed || item.Severity != projectAssistantActionFeedSeverityError {
+		t.Fatalf("stale command item = %#v, want failed applicability status", item)
+	}
+}
+
+func TestProjectAssistantActionFeedTreatsUnobservedExecAsFailed(t *testing.T) {
+	for _, status := range []string{"outcome_unknown", "unverifiable"} {
+		t.Run(status, func(t *testing.T) {
+			result := `{"status":"` + status + `","outcome":"unknown"}`
+			diagnostic := projectAssistantActionFeedDiagnosticFromTypedResult("exec-unknown", projectToolExecCommand, result)
+			item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+				ID: "exec-unknown", Name: projectToolExecCommand, Status: status,
+				Exec:              &projectAssistantExecMetadata{Status: status},
+				FailureDiagnostic: diagnostic,
+			})
+			if item.Status != projectAssistantActionFeedStatusFailed || item.Severity != projectAssistantActionFeedSeverityError {
+				t.Fatalf("unobserved exec item = %#v, want failed presentation", item)
+			}
+			if item.Diagnostic == nil || item.Diagnostic.Code != "command_outcome_unobserved" {
+				t.Fatalf("unobserved exec diagnostic = %#v, want command_outcome_unobserved", item.Diagnostic)
+			}
+			if !projectAssistantActionFeedHasUnobservedExecResult(item) {
+				t.Fatalf("unobserved exec item = %#v, want eligible synthetic interruption row", item)
+			}
+			if item.Exec == nil || item.Exec.Status != status || item.Exec.ExitCode != nil {
+				t.Fatalf("unobserved exec metadata = %#v, want outcome without invented exit code", item.Exec)
+			}
+			finalized := finalizeProjectAssistantActionFeed([]projectAssistantActionFeedItem{item}, store.AssistantRunStatusCompleted)
+			if len(finalized) != 1 || finalized[0].Exec == nil || finalized[0].Exec.Status != status {
+				t.Fatalf("finalized unobserved exec = %#v, want to preserve its unknown process outcome", finalized)
+			}
+		})
+	}
+}
+
 func TestProjectAssistantActionFeedCanceledNonExecIsNeutral(t *testing.T) {
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
 		ID:        "read-canceled",
@@ -56,6 +98,32 @@ func TestProjectAssistantActionFeedCanceledNonExecIsNeutral(t *testing.T) {
 	})
 	if item.Status != projectAssistantActionFeedStatusCanceled || item.Title != "Canceled" || item.Severity != projectAssistantActionFeedSeverityNormal {
 		t.Fatalf("canceled non-exec action = %#v, want neutral canceled terminal", item)
+	}
+}
+
+func TestProjectAssistantActionFeedDoesNotPresentUnstartedCommandAsSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   string
+	}{
+		{status: "blocked", want: projectAssistantActionFeedStatusFailed},
+		{status: "not_executed", want: projectAssistantActionFeedStatusFailed},
+		{status: "rejected", want: projectAssistantActionFeedStatusRejected},
+		{status: "skipped", want: projectAssistantActionFeedStatusSkipped},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+				ID: "exec-" + tc.status, Name: projectToolExecCommand, Status: tc.status,
+				Exec: &projectAssistantExecMetadata{Status: tc.status},
+			})
+			if item.Status != tc.want {
+				t.Fatalf("command with status %q = %#v, want action status %q", tc.status, item, tc.want)
+			}
+			finalized := finalizeProjectAssistantActionFeed([]projectAssistantActionFeedItem{item}, store.AssistantRunStatusCompleted)
+			if len(finalized) != 1 || finalized[0].Exec == nil || finalized[0].Exec.Status != tc.status {
+				t.Fatalf("finalized command with status %q = %#v, want to preserve its observed pre-start status", tc.status, finalized)
+			}
+		})
 	}
 }
 
@@ -199,6 +267,67 @@ func TestProjectAssistantActionFeedSuppressesTodosAndFailsClosed(t *testing.T) {
 	if strings.Contains(string(data), "secret") || strings.Contains(string(data), "internal_tool") ||
 		strings.Contains(string(data), "failing_tool") || strings.Contains(string(data), "write_todos") {
 		t.Fatalf("feed JSON leaked internal data: %s", data)
+	}
+}
+
+func TestProjectAssistantActionFeedClassifiesBlockedExecWorkdirFromTypedReceipt(t *testing.T) {
+	const privateDetail = `workdir "../outside" resolved from component "backend" under /srv/private/project`
+	item := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+		ID:     "exec-workdir-blocked",
+		Name:   projectToolExecCommand,
+		Status: "failed",
+		Result: json.RawMessage(`{"status":"blocked","code":"invalid_workdir","component":"backend","blockers":[` + strconv.Quote(privateDetail) + `],"sourceRevision":9,"exitCode":null}`),
+	})
+	if item.Kind != projectAssistantActionFeedItemRun || item.Status != projectAssistantActionFeedStatusFailed || item.Diagnostic == nil {
+		t.Fatalf("blocked command item = %#v, want a failed command with structured diagnostic", item)
+	}
+	if item.Diagnostic.Category != "validation" || item.Diagnostic.Code != "command_workdir_blocked" ||
+		item.Diagnostic.ReferenceID == "" || item.Diagnostic.Guidance == "" {
+		t.Fatalf("blocked command diagnostic = %#v, want a bounded validation receipt", item.Diagnostic)
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), privateDetail) || strings.Contains(string(encoded), "/srv/private/project") {
+		t.Fatalf("blocked command item leaked raw blocker details: %s", encoded)
+	}
+}
+
+func TestProjectAssistantActionFeedDoesNotInferWorkdirBlockFromProse(t *testing.T) {
+	item := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+		ID:     "exec-blocked-prose",
+		Name:   projectToolExecCommand,
+		Status: "failed",
+		Result: json.RawMessage(`{"status":"blocked","component":"backend","blockers":["workdir was mentioned in an unrelated policy failure"]}`),
+	})
+	if item.Diagnostic == nil || item.Diagnostic.Code == "command_workdir_blocked" || item.Diagnostic.Category == "validation" {
+		t.Fatalf("prose-only blocked command = %#v, want generic failure classification", item)
+	}
+}
+
+func TestProjectAssistantActionFeedClassifiesStaleExecReceiptWithoutErasingExitCode(t *testing.T) {
+	const result = `{"status":"stale","sourceStale":true,"component":"backend","sourceRevision":19,"exitCode":0}`
+	exitCode := 0
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:     "exec-stale-source",
+		Name:   projectToolExecCommand,
+		Status: "failed",
+		Exec: &projectAssistantExecMetadata{
+			Component:      "backend",
+			Status:         "stale",
+			SourceRevision: 19,
+			SourceStale:    true,
+			ExitCode:       &exitCode,
+		},
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult("exec-stale-source", projectToolExecCommand, result),
+	})
+	if item.Status != projectAssistantActionFeedStatusFailed || item.Exec == nil || item.Exec.Status != "stale" || item.Exec.ExitCode == nil || *item.Exec.ExitCode != 0 {
+		t.Fatalf("stale command item = %#v, want a failed applicability row retaining stale/exit-0 exec facts", item)
+	}
+	if item.Diagnostic == nil || item.Diagnostic.Category != "validation" || item.Diagnostic.Code != "source_revision_stale" ||
+		!strings.Contains(item.Diagnostic.Guidance, "current workspace revision") {
+		t.Fatalf("stale command diagnostic = %#v, want current-revision rerun guidance", item.Diagnostic)
 	}
 }
 
@@ -1067,6 +1196,16 @@ func TestProjectAssistantActionFeedAssistantToolCallUsesMutationOperationContext
 				t.Fatalf("diagnostic = %#v, want operation-specific cause and guidance", item.Diagnostic)
 			}
 		})
+	}
+}
+
+func TestProjectAssistantMutationFailureFromResultCarriesSanitizedChangedFiles(t *testing.T) {
+	failure := projectAssistantMutationFailureFromResult(projectToolEditFile, `{"status":"failed","error":{"code":"conflict","operation":"edit_file","path":"src/App.vue","changedFiles":["src/App.vue","../secret.txt","src/Other.vue","src/App.vue"]}}`)
+	if failure == nil {
+		t.Fatal("typed mutation failure was not parsed")
+	}
+	if got, want := strings.Join(failure.ChangedFiles, ","), "src/App.vue,src/Other.vue"; got != want {
+		t.Fatalf("changed files = %v, want sanitized unique paths %q", failure.ChangedFiles, want)
 	}
 }
 

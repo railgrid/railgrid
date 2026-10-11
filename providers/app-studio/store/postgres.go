@@ -38,7 +38,7 @@ const assistantConversationSequenceSchemaVersion = "assistant-conversation-seque
 const assistantThreadSchemaVersion = "assistant-thread-turn-item-v1"
 const assistantRunThreadSchemaVersion = "assistant-run-thread-scope-v1"
 const assistantRunThreadWriteFenceSchemaVersion = "assistant-run-thread-write-fence-v1"
-const assistantLookupIndexSchemaVersion = "assistant-point-lookups-online-v2"
+const assistantLookupIndexSchemaVersion = "assistant-point-lookups-online-v3"
 const assistantApprovalPolicySchemaVersion = "assistant-approval-policy-v2"
 const projectThumbnailSchemaVersion = "project-thumbnail-v1"
 const projectThumbnailEncryptionSchemaVersion = "project-thumbnail-encryption-v2"
@@ -435,6 +435,9 @@ func assistantLookupIndexSchemaStatements() []string {
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS app_studio_assistant_thread_events_turn_sequence_idx
 			ON app_studio_assistant_thread_events (org_uuid, workspace_uuid, project_name, project_uid, thread_id, sequence DESC)
 			WHERE turn_id <> ''`,
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS app_studio_assistant_thread_events_type_sequence_idx
+			ON app_studio_assistant_thread_events (org_uuid, workspace_uuid, project_name, project_uid, thread_id, event_type, sequence)
+			WHERE turn_id <> ''`,
 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS app_studio_assistant_run_events_lookup_idx
 			ON app_studio_assistant_run_events (org_uuid, workspace_uuid, project_name, project_uid, run_id, event_type, sequence DESC)`,
 	}
@@ -444,6 +447,7 @@ func assistantLookupIndexNames() []string {
 	return []string{
 		"app_studio_assistant_thread_events_turn_idx",
 		"app_studio_assistant_thread_events_turn_sequence_idx",
+		"app_studio_assistant_thread_events_type_sequence_idx",
 		"app_studio_assistant_run_events_lookup_idx",
 	}
 }

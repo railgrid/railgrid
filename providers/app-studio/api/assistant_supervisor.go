@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -1849,7 +1850,7 @@ func (s *projectAssistantSupervisor) sendCoalesced(ch chan projectAssistantRunSn
 }
 
 func (a *projectAssistantSnapshotAccumulator) UpdateText(ctx context.Context, content string, immediate bool) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { active.message.Content = content }, immediate, false)
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { active.message.Content = content }, immediate, false, nil)
 }
 
 func (a *projectAssistantSnapshotAccumulator) SetStatus(ctx context.Context, status store.AssistantRunStatus) error {
@@ -1875,25 +1876,96 @@ func (a *projectAssistantSnapshotAccumulator) SetStatus(ctx context.Context, sta
 // one revisioned persistence transition. Callers that publish metadata derived
 // from the run must use this rather than separate status and metadata updates.
 func (a *projectAssistantSnapshotAccumulator) UpdateSnapshot(ctx context.Context, mutate func(*store.AssistantRun, *store.Message)) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true, false)
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true, false, nil)
 }
 
 // UpdateStoppingToolSnapshot permits only an already-produced terminal tool
 // result to settle while Stop owns the run's stopping -> interrupted
 // transition. Callers must not use this for model text, plans, or new work.
-func (a *projectAssistantSnapshotAccumulator) UpdateStoppingToolSnapshot(ctx context.Context, mutate func(*store.AssistantRun, *store.Message)) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true, true)
+func (a *projectAssistantSnapshotAccumulator) UpdateStoppingToolSnapshot(ctx context.Context, event projectToolCallStreamEvent, mutate func(*store.AssistantRun, *store.Message)) error {
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true, true, &event)
 }
 
 func (a *projectAssistantSnapshotAccumulator) UpdateMessage(ctx context.Context, content string, metadata map[string]any) error {
 	return a.update(ctx, func(active *projectAssistantSupervisedRun) {
 		active.message.Content = content
 		active.message.Metadata = metadata
-	}, true, false)
+	}, true, false, nil)
 }
 
 func (a *projectAssistantSnapshotAccumulator) UpdateRun(ctx context.Context, mutate func(*store.AssistantRun)) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run) }, true, false)
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run) }, true, false, nil)
+}
+
+func projectAssistantInterruptedExecActionCanSettle(metadata map[string]any, audit []byte, event projectToolCallStreamEvent) bool {
+	if projectToolBaseName(event.Name) != projectToolExecCommand || !projectAssistantToolCallCanSettleStopping(event.Status) ||
+		strings.TrimSpace(event.ID) == "" || !projectAssistantExecCommandReceiptObserved(event.Exec) {
+		return false
+	}
+	if _, ok := projectAssistantAuditInterruptedExecUpdate(audit, event); !ok {
+		return false
+	}
+	publicID := projectAssistantActionPublicID(event.ID)
+	actions := finalizeProjectAssistantActionFeed(
+		projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed]),
+		store.AssistantRunStatusInterrupted,
+	)
+	for _, action := range actions {
+		if action.ID != publicID || action.Sequence < 1 || action.Exec == nil || !projectAssistantExecActionIdentityMatches(action.Exec, event.Exec) {
+			continue
+		}
+		if projectAssistantActionFeedHasUnobservedExecResult(action) {
+			return true
+		}
+		// A second ledger-backed pass may run after the action feed committed
+		// but the canonical thread item did not. Treat only the exact terminal
+		// projection as already settled; real failures remain immutable.
+		want := projectAssistantActionFeedItemFromToolCall(event)
+		want.Sequence = action.Sequence
+		if reflect.DeepEqual(action, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAssistantExecActionIdentityMatches(existing, terminal *projectAssistantExecMetadata) bool {
+	if existing == nil || terminal == nil || existing.Component != terminal.Component ||
+		existing.Workdir != terminal.Workdir || existing.TimeoutSeconds != terminal.TimeoutSeconds ||
+		len(existing.Argv) != len(terminal.Argv) {
+		return false
+	}
+	for index := range existing.Argv {
+		if existing.Argv[index] != terminal.Argv[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func projectAssistantApplyInterruptedExecAction(active *projectAssistantSupervisedRun, event projectToolCallStreamEvent) {
+	if active == nil {
+		return
+	}
+	updatedAudit, ok := projectAssistantAuditInterruptedExecUpdate(active.run.Audit, event)
+	if !ok {
+		return
+	}
+	metadata := make(map[string]any, len(active.message.Metadata)+1)
+	for key, value := range active.message.Metadata {
+		metadata[key] = value
+	}
+	actions := projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed])
+	next := projectAssistantActionFeedItemFromToolCall(event)
+	for _, current := range actions {
+		if current.ID == next.ID {
+			next.Sequence = current.Sequence
+			break
+		}
+	}
+	metadata[projectMessageMetadataAssistantActionFeed] = projectAssistantReplaceActionFeedItem(actions, next)
+	active.message.Metadata = projectAssistantDurableMetadataFromExisting(active.run, "Interrupted", false, metadata)
+	active.run.Audit = updatedAudit
 }
 
 // ClaimPending serializes the resume compare-and-swap with the rest of this
@@ -1963,7 +2035,13 @@ func (a *projectAssistantSnapshotAccumulator) ClaimPending(ctx context.Context, 
 	return run, nil
 }
 
-func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate func(*projectAssistantSupervisedRun), immediate, allowStoppingToolSettlement bool) error {
+func (a *projectAssistantSnapshotAccumulator) update(
+	ctx context.Context,
+	mutate func(*projectAssistantSupervisedRun),
+	immediate,
+	allowStoppingToolSettlement bool,
+	lateToolCall *projectToolCallStreamEvent,
+) error {
 	if a == nil || a.supervisor == nil {
 		return errors.New("assistant snapshot accumulator not configured")
 	}
@@ -1975,14 +2053,38 @@ func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate
 		return store.ErrAssistantRunNotFound
 	}
 	s.mu.Unlock()
-	active.transitionMu.Lock()
+	receiptBatch := false
+	if ctx != nil {
+		_, receiptBatch = ctx.Value(projectAssistantExecReceiptBatchDeadlineKey{}).(time.Time)
+	}
+	if receiptBatch && lateToolCall != nil && projectToolBaseName(lateToolCall.Name) == projectToolExecCommand {
+		// A late receipt is optional enrichment. Do not let it wait behind an
+		// in-flight run transition; a later recovery pass can retry the receipt.
+		if !active.transitionMu.TryLock() {
+			return store.ErrAssistantRunConflict
+		}
+	} else {
+		active.transitionMu.Lock()
+	}
 	defer active.transitionMu.Unlock()
 	s.mu.Lock()
 	if current := s.runs[a.key]; current != active || active.run.ID != a.runID {
 		s.mu.Unlock()
 		return store.ErrAssistantRunNotFound
 	}
+	settlingInterruptedTool := false
 	if assistantRunTerminal(active.run.Status) {
+		if lateToolCall == nil || active.run.Status != store.AssistantRunStatusInterrupted ||
+			!projectAssistantInterruptedExecActionCanSettle(active.message.Metadata, active.run.Audit, *lateToolCall) {
+			s.mu.Unlock()
+			return nil
+		}
+		settlingInterruptedTool = true
+	}
+	if active.run.Status == store.AssistantRunStatusStopping && lateToolCall != nil &&
+		projectToolBaseName(lateToolCall.Name) == projectToolExecCommand && !projectAssistantExecCommandReceiptObserved(lateToolCall.Exec) {
+		// A cancellation request is not a process receipt. Leave the pending
+		// command for interruption finalization to mark as outcome unknown.
 		s.mu.Unlock()
 		return nil
 	}
@@ -2007,7 +2109,11 @@ func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate
 		active.textFlush.Stop()
 		active.textFlush = nil
 	}
-	mutate(active)
+	if settlingInterruptedTool {
+		projectAssistantApplyInterruptedExecAction(active, *lateToolCall)
+	} else {
+		mutate(active)
+	}
 	active.run.Revision++
 	active.run.UpdatedAt = time.Now().UTC()
 	active.message.UpdatedAt = active.run.UpdatedAt
@@ -2016,10 +2122,25 @@ func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate
 	}
 	run, message, scope := active.run, active.message, active.scope
 	s.mu.Unlock()
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), projectMessagePersistTimeout)
+	persistCtx, cancel := projectAssistantExecReceiptPersistenceContext(ctx)
 	err := s.store.SaveAssistantRunSnapshot(persistCtx, scope, run, []store.Message{message}, run.Revision-1)
 	if err != nil {
 		cancel()
+		if settlingInterruptedTool {
+			// This receipt only settles a tool row on an already durable
+			// Interrupted run. If its optimistic snapshot fails, restore the last
+			// committed terminal projection so Stop/subscribers cannot observe an
+			// audit or action-feed value that the store rejected.
+			s.mu.Lock()
+			if current := s.runs[a.key]; current == active && current.run.ID == a.runID &&
+				current.run.Revision == run.Revision && current.committedRun.ID == a.runID &&
+				current.committedRun.Status == store.AssistantRunStatusInterrupted &&
+				current.committedRun.Revision == run.Revision-1 {
+				current.run = current.committedRun
+				current.message = current.committedMessage
+			}
+			s.mu.Unlock()
+		}
 		s.recordPersistenceFailure(a.key, a.runID, err, active)
 		return fmt.Errorf("persist assistant snapshot: %w", err)
 	}
@@ -2028,7 +2149,7 @@ func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate
 	// the same model-visible interruption boundary before subscribers observe
 	// the interrupted snapshot. The explicit Stop path does this in AbortWith;
 	// this covers the other durable status transition path.
-	if run.Status == store.AssistantRunStatusInterrupted {
+	if run.Status == store.AssistantRunStatusInterrupted && !settlingInterruptedTool {
 		if err := appendProjectAssistantInterruptedBoundary(persistCtx, s.store, scope, run); err != nil {
 			cancel()
 			s.recordPersistenceFailure(a.key, a.runID, err, active)
@@ -2066,7 +2187,7 @@ func (a *projectAssistantSnapshotAccumulator) flushText() {
 	// Do not capture content before releasing the lock: a chunk can arrive
 	// between this timer firing and the durable save. The transition below
 	// snapshots whatever text is current when it takes transition ownership.
-	_ = a.update(context.Background(), func(*projectAssistantSupervisedRun) {}, true, false)
+	_ = a.update(context.Background(), func(*projectAssistantSupervisedRun) {}, true, false, nil)
 }
 
 // recordPersistenceFailure makes a best effort to leave an explicit terminal

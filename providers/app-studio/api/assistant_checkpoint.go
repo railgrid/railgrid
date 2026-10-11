@@ -61,6 +61,7 @@ type projectAssistantCheckpointState struct {
 	ExecutionPlan                        *projectAssistantApprovedPlan                          `json:"executionPlan,omitempty"`
 	PlanProgress                         projectAssistantPlanSnapshot                           `json:"planProgress,omitempty"`
 	SourceMutationRevision               uint64                                                 `json:"sourceMutationRevision,omitempty"`
+	CommandReceipts                      []projectAssistantCommandReceipt                       `json:"commandReceipts,omitempty"`
 	VerifiedMutationRevision             uint64                                                 `json:"verifiedMutationRevision,omitempty"`
 	DevelopmentSyncRevision              uint64                                                 `json:"developmentSyncRevision,omitempty"`
 	DevelopmentSyncStatus                string                                                 `json:"developmentSyncStatus,omitempty"`

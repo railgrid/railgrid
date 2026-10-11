@@ -177,7 +177,13 @@ type projectToolCallStreamEvent struct {
 	// PreviewInspection carries bounded failure classification for truthful
 	// live and reload action-feed presentation. It never contains page output.
 	PreviewInspection *projectAssistantPreviewInspectionAction `json:"previewInspection,omitempty"`
-	Sequence          int                                      `json:"sequence,omitempty"`
+	// FailureDiagnostic carries a bounded server classification when a tool
+	// reports semantic failure in an otherwise successful transport response.
+	FailureDiagnostic *projectAssistantActionDiagnostic `json:"failureDiagnostic,omitempty"`
+	// ObservedAt is copied from the durable tool-result event for recovery and
+	// audit timing. It is never exposed in the public tool-call JSON.
+	ObservedAt time.Time `json:"-"`
+	Sequence   int       `json:"sequence,omitempty"`
 }
 
 type projectAssistantMutation struct {
@@ -198,11 +204,12 @@ type projectAssistantMutation struct {
 // contract for typed workspace mutations. Operation/path/guidance are
 // presentation metadata; recoveryOf is only a correlation to another action.
 type projectAssistantMutationFailure struct {
-	Code       string `json:"code"`
-	Operation  string `json:"operation"`
-	Path       string `json:"path,omitempty"`
-	Guidance   string `json:"guidance"`
-	RecoveryOf string `json:"recoveryOf,omitempty"`
+	ChangedFiles []string `json:"changedFiles,omitempty"`
+	Code         string   `json:"code"`
+	Operation    string   `json:"operation"`
+	Path         string   `json:"path,omitempty"`
+	Guidance     string   `json:"guidance"`
+	RecoveryOf   string   `json:"recoveryOf,omitempty"`
 }
 
 type projectAssistantMutationFailureResult struct {
@@ -1368,7 +1375,15 @@ func finalizeProjectAssistantActionFeed(actions []projectAssistantActionFeedItem
 		}
 		actions[i].Status = projectAssistantActionFeedStatusFailed
 		actions[i].Severity = projectAssistantActionFeedSeverityError
-		actions[i].Diagnostic = projectAssistantActionFeedDiagnostic(actions[i].ID, "")
+		if runStatus == store.AssistantRunStatusInterrupted && actions[i].Exec != nil {
+			// A stop may win the race with the command callback. Distinguish that
+			// synthetic closure from a command that actually returned a failure so
+			// a later terminal receipt can settle this row without rewriting real
+			// failure history.
+			actions[i].Diagnostic = projectAssistantInterruptedExecDiagnostic(actions[i].ID)
+		} else {
+			actions[i].Diagnostic = projectAssistantActionFeedDiagnostic(actions[i].ID, "")
+		}
 		actions[i].Title = projectAssistantActionFeedItemTitle(actions[i].Kind, actions[i].Status)
 	}
 	if assistantRunTerminal(runStatus) {
@@ -1395,7 +1410,7 @@ func finalizeProjectAssistantActionFeed(actions []projectAssistantActionFeedItem
 
 func projectAssistantExecStatusTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "succeeded", "failed", "timed_out", "canceled", "cancelled", "blocked", "error":
+	case "succeeded", "stale", "failed", "timed_out", "canceled", "cancelled", "blocked", "rejected", "not_executed", "skipped", "error", "outcome_unknown", "unverifiable":
 		return true
 	default:
 		return false
@@ -1477,6 +1492,12 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	}
 	if next.PreviewInspection == nil {
 		next.PreviewInspection = existing.PreviewInspection
+	}
+	if next.FailureDiagnostic == nil {
+		next.FailureDiagnostic = existing.FailureDiagnostic
+	}
+	if next.ObservedAt.IsZero() {
+		next.ObservedAt = existing.ObservedAt
 	}
 	return next
 }

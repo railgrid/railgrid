@@ -31,34 +31,76 @@ import (
 // lock additionally prevents two local projectors from independently deciding
 // that the same semantic terminal item is absent.
 type assistantThreadProjectionLockEntry struct {
-	mu   sync.Mutex
-	refs int
+	semaphore chan struct{}
+	refs      int
 }
 
 func (s *Server) acquireAssistantThreadProjectionLock(scope store.Scope, threadID, turnID string) func() {
-	key := fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s%d:%s%d:%s", len(scope.OrgUUID), scope.OrgUUID, len(scope.WorkspaceUUID), scope.WorkspaceUUID, len(scope.ProjectName), scope.ProjectName, len(scope.ProjectUID), scope.ProjectUID, len(threadID), threadID, len(turnID), turnID)
+	if s == nil {
+		return func() {}
+	}
+	release, err := s.acquireAssistantThreadProjectionLockContext(context.Background(), scope, threadID, turnID)
+	if err != nil {
+		return func() {}
+	}
+	return release
+}
+
+func assistantThreadProjectionLockKey(scope store.Scope, threadID, turnID string) string {
+	return fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s%d:%s%d:%s", len(scope.OrgUUID), scope.OrgUUID, len(scope.WorkspaceUUID), scope.WorkspaceUUID, len(scope.ProjectName), scope.ProjectName, len(scope.ProjectUID), scope.ProjectUID, len(threadID), threadID, len(turnID), turnID)
+}
+
+func (s *Server) acquireAssistantThreadProjectionLockContext(ctx context.Context, scope store.Scope, threadID, turnID string) (func(), error) {
+	if s == nil {
+		return nil, errors.New("assistant thread projection server is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := assistantThreadProjectionLockKey(scope, threadID, turnID)
 	s.mu.Lock()
 	if s.assistantProjectionLocks == nil {
 		s.assistantProjectionLocks = map[string]*assistantThreadProjectionLockEntry{}
 	}
 	entry := s.assistantProjectionLocks[key]
 	if entry == nil {
-		entry = &assistantThreadProjectionLockEntry{}
+		entry = &assistantThreadProjectionLockEntry{semaphore: make(chan struct{}, 1)}
+		entry.semaphore <- struct{}{}
 		s.assistantProjectionLocks[key] = entry
 	}
 	entry.refs++
 	s.mu.Unlock()
 
-	entry.mu.Lock()
-	return func() {
-		entry.mu.Unlock()
-		s.mu.Lock()
-		entry.refs--
-		if entry.refs == 0 && s.assistantProjectionLocks[key] == entry {
-			delete(s.assistantProjectionLocks, key)
+	select {
+	case <-ctx.Done():
+		s.releaseAssistantThreadProjectionLockRef(key, entry)
+		return nil, ctx.Err()
+	case <-entry.semaphore:
+		// Cancellation and acquisition can become ready together. Do not hand
+		// out the lock if the caller's deadline has already expired.
+		if err := ctx.Err(); err != nil {
+			entry.semaphore <- struct{}{}
+			s.releaseAssistantThreadProjectionLockRef(key, entry)
+			return nil, err
 		}
-		s.mu.Unlock()
 	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			entry.semaphore <- struct{}{}
+			s.releaseAssistantThreadProjectionLockRef(key, entry)
+		})
+	}, nil
+}
+
+func (s *Server) releaseAssistantThreadProjectionLockRef(key string, entry *assistantThreadProjectionLockEntry) {
+	s.mu.Lock()
+	entry.refs--
+	if entry.refs == 0 && s.assistantProjectionLocks[key] == entry {
+		delete(s.assistantProjectionLocks, key)
+	}
+	s.mu.Unlock()
 }
 
 // patchAssistantThreadWithEvent retries the complete field-level intent

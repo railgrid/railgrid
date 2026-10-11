@@ -192,6 +192,91 @@ func TestProjectAssistantRunStateEnsureSandboxRetriesTransientFailure(t *testing
 	}
 }
 
+func TestProjectAssistantCommandReceiptSurvivesCheckpointAndBecomesStaleAfterMutation(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.RecordSourceMutation()
+	exitCode := 7
+	state.RecordCommandReceipt("call-command-check", "failed", &projectAssistantExecMetadata{
+		Component:      "backend",
+		Status:         "failed",
+		SourceRevision: 19,
+		SyncStatus:     "synced",
+		ExitCode:       &exitCode,
+	})
+
+	exitCode = 99
+	if got := state.CompletionEvidence().CommandReceipts[0].ExitCode; got == nil || *got != 7 {
+		t.Fatalf("state receipt aliased caller exit code: %v", got)
+	}
+	checkpoint := state.CheckpointState()
+	if len(checkpoint.CommandReceipts) != 1 || checkpoint.CommandReceipts[0].ExitCode == nil || *checkpoint.CommandReceipts[0].ExitCode != 7 {
+		t.Fatalf("checkpoint command receipt = %#v, want independent exit-code copy", checkpoint.CommandReceipts)
+	}
+	restored := newProjectEinoAssistantRunState()
+	restored.RestoreCheckpointState(checkpoint)
+	*checkpoint.CommandReceipts[0].ExitCode = 88
+	evidence := restored.CompletionEvidence()
+	if len(evidence.CommandReceipts) != 1 {
+		t.Fatalf("restored command receipts = %#v, want one durable receipt", evidence.CommandReceipts)
+	}
+	receipt := evidence.CommandReceipts[0]
+	if receipt.ReferenceID != projectAssistantActionPublicID("call-command-check") || receipt.Status != "failed" ||
+		receipt.Component != "backend" || receipt.WorkspaceSourceRevision != 19 || receipt.MutationRevision != 1 ||
+		receipt.SourceRelation != "dispatch_revision_recorded" || receipt.ExitCode == nil || *receipt.ExitCode != 7 {
+		t.Fatalf("restored command receipt = %#v, want bounded failure provenance", receipt)
+	}
+
+	restored.RecordSourceMutation()
+	receipt = restored.CompletionEvidence().CommandReceipts[0]
+	if receipt.SourceRelation != "stale" {
+		t.Fatalf("command receipt relation after a newer source mutation = %q, want stale", receipt.SourceRelation)
+	}
+}
+
+func TestProjectAssistantCommandReceiptDoesNotInferFreshnessFromPrestartFailures(t *testing.T) {
+	for _, tc := range []struct {
+		id     string
+		status string
+	}{
+		{id: "call-blocked-before-start", status: "blocked"},
+		{id: "call-start-error-without-session", status: "error"},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			state := newProjectEinoAssistantRunState()
+			state.RecordCommandReceipt(tc.id, "failed", &projectAssistantExecMetadata{
+				Component:      "backend",
+				Status:         tc.status,
+				SourceRevision: 9,
+			})
+			receipts := state.CompletionEvidence().CommandReceipts
+			if len(receipts) != 1 || receipts[0].SourceRelation != "dispatch_revision_recorded" {
+				t.Fatalf("pre-start receipt = %#v, want dispatch revision only without a freshness claim", receipts)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantCommandReceiptPreservesStaleStatusAndSuccessfulExitCode(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	exitCode := 0
+	state.RecordCommandReceipt("call-stale-check", "failed", &projectAssistantExecMetadata{
+		Component:      "backend",
+		Status:         "stale",
+		SourceRevision: 19,
+		SourceStale:    true,
+		SyncStatus:     "stale",
+		ExitCode:       &exitCode,
+	})
+	evidence := state.CompletionEvidence()
+	if len(evidence.CommandReceipts) != 1 {
+		t.Fatalf("command receipts = %#v, want stale receipt", evidence.CommandReceipts)
+	}
+	receipt := evidence.CommandReceipts[0]
+	if receipt.Status != "stale" || receipt.ExitCode == nil || *receipt.ExitCode != 0 || receipt.SyncStatus != "stale" {
+		t.Fatalf("stale command receipt = %#v, want stale applicability with exit code 0 preserved", receipt)
+	}
+}
+
 func TestProjectAssistantRunStateUnknownBrowserReceiptCannotVerifyInteraction(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.RecordSourceMutation()

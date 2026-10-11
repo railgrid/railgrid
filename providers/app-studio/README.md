@@ -392,6 +392,36 @@ It is not an atomic transaction with external Kubernetes object edits. A target
 change stops retries, and an earlier unconfirmed START is canceled by its
 original request ID against the original target.
 
+Command outcomes are recorded in the durable run ledger before they are
+projected into conversation history. Stopping a turn does not establish that
+its command stopped: until a terminal result is known, history reports the
+outcome as unknown. A late result may settle only the matching dispatched
+command in an interrupted run; it does not reopen the turn or overwrite a
+confirmed failure. Recovery rechecks the ledger and repairs the audit, action
+feed, and canonical thread item with revision checks and bounded work.
+
+Late receipt events retain their original turn and item identity, even after
+newer turns have completed. History pagination overlays those receipts onto
+that original turn. Failure diagnostics and recovery links are bounded
+server-owned metadata; completion evidence retains a bounded list of command
+receipts with their dispatch revision, observed source relationship, and exit
+code when known. A successful command alone does not verify the current app.
+
+Receipt repair follows the existing PostgreSQL-backed run lifecycle: orphan
+recovery and bounded late callbacks attempt repair, and detail reads may retry
+it when the stored projections still need reconciliation. These are idempotent
+repairs from durable records, not an in-memory queue. Closing the interrupted
+turn takes priority over optional receipt enrichment. Repair failures and
+history-overlay limits leave the stored, truthful projection readable and are
+logged for diagnosis.
+
+The immediately preceding release already classifies `outcome_unknown` and
+`unverifiable` as unsuccessful tool results. The durable result envelope keeps
+its existing invocation-error and semantic-disposition meanings. During a
+rolling upgrade, an older reader may still display its legacy canceled label
+when reconstructing a cancellation-marked record; accurate unknown-outcome
+presentation and late-receipt repair require the updated reader.
+
 File API writes can run alongside assistant turns under the same project owner.
 Creating a file requires `If-None-Match: *`; replacing or deleting a file
 requires `If-Match` with its exact version. Missing preconditions are rejected,

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +65,151 @@ func TestAssistantRunEventLedgerPersistsCallBeforeResultInOrder(t *testing.T) {
 	}
 	if events[0].CallID != events[1].CallID || events[0].ArgsDigest != events[1].ArgsDigest {
 		t.Fatalf("call/result identity mismatch: %#v", events)
+	}
+}
+
+func TestAssistantRunEventLedgerRetainsDurableResultTime(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-result-time")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-result-time")
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRead}
+	args := map[string]any{"component": "workspace", "argv": []any{"go", "test"}}
+	decision, err := ledger.BeginToolCall(ctx, "call-result-time", spec, args)
+	if err != nil {
+		t.Fatalf("BeginToolCall: %v", err)
+	}
+	outcome, err := ledger.FinishToolCall(ctx, decision.Token, `{"status":"succeeded","exitCode":0}`, nil)
+	if err != nil {
+		t.Fatalf("FinishToolCall: %v", err)
+	}
+	if outcome.ObservedAt.IsZero() {
+		t.Fatal("settled outcome omitted its durable result timestamp")
+	}
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	known, found, err := ledger.ToolCallOutcome(canceledCtx, "call-result-time")
+	if err != nil || !found || !known.ObservedAt.Equal(outcome.ObservedAt) {
+		t.Fatalf("known outcome after cancellation = %#v, found=%t, err=%v", known, found, err)
+	}
+
+	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-result-time")
+	_, replay, found, err := restarted.SettledToolCall(ctx, "call-result-time", projectToolExecCommand)
+	if err != nil {
+		t.Fatalf("SettledToolCall after restart: %v", err)
+	}
+	if !found || !replay.ObservedAt.Equal(outcome.ObservedAt) {
+		t.Fatalf("replayed result timestamp = %v (found=%t), want durable timestamp %v", replay.ObservedAt, found, outcome.ObservedAt)
+	}
+}
+
+func TestAssistantRunEventLedgerToolCallOutcomeRespectsContextWhileWaiting(t *testing.T) {
+	ledger := newProjectAssistantRunEventLedger(nil, store.Scope{}, "run-lock-context")
+	ledger.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, found, err := ledger.ToolCallOutcome(ctx, "call-blocked")
+	ledger.mu.Unlock()
+	if found || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ToolCallOutcome while ledger lock is held = found %t, err=%v; want context deadline", found, err)
+	}
+}
+
+func TestAssistantRunEventLedgerDuplicateResultKeepsFirstObservedAt(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-duplicate-result-time")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-duplicate-result-time")
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRead}
+	decision, err := ledger.BeginToolCall(ctx, "call-duplicate-result-time", spec, map[string]any{
+		"component": "workspace",
+		"argv":      []any{"go", "test"},
+	})
+	if err != nil {
+		t.Fatalf("BeginToolCall: %v", err)
+	}
+	firstOutcome, err := ledger.FinishToolCall(ctx, decision.Token, `{"status":"succeeded","exitCode":0}`, nil)
+	if err != nil {
+		t.Fatalf("FinishToolCall: %v", err)
+	}
+	events := listAssistantRunEventLedgerEvents(t, messageStore, scope, "run-duplicate-result-time")
+	if len(events) != 2 || events[1].Type != projectAssistantRunToolResultEventType {
+		t.Fatalf("durable events = %#v, want call and result", events)
+	}
+	duplicate := events[1]
+	duplicate.Sequence = 0
+	duplicate.CreatedAt = duplicate.CreatedAt.Add(time.Minute)
+	if _, err := messageStore.AppendAssistantRunEvent(ctx, scope, duplicate, 2); err != nil {
+		t.Fatalf("append legacy duplicate result: %v", err)
+	}
+
+	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-duplicate-result-time")
+	outcome, found, err := restarted.ToolCallOutcome(ctx, "call-duplicate-result-time")
+	if err != nil {
+		t.Fatalf("ToolCallOutcome after duplicate result: %v", err)
+	}
+	if !found || outcome.Result != firstOutcome.Result || !outcome.ObservedAt.Equal(firstOutcome.ObservedAt) {
+		t.Fatalf("duplicate result outcome = %#v (found=%t), want original result timestamp %v", outcome, found, firstOutcome.ObservedAt)
+	}
+}
+
+func TestAssistantRunEventLedgerDispatchedReceiptUsesAdmittedArguments(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-dispatched-receipt")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-dispatched-receipt")
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRead}
+	requested := map[string]any{"component": "backend", "argv": []any{"go", "test"}}
+	admitted := map[string]any{"component": "backend", "argv": []any{"go", "test", "./..."}}
+	if _, err := ledger.RecordToolRequest(ctx, "call-normalized", spec, requested); err != nil {
+		t.Fatalf("RecordToolRequest: %v", err)
+	}
+	decision, err := ledger.BeginToolCall(ctx, "call-normalized", spec, admitted)
+	if err != nil {
+		t.Fatalf("BeginToolCall: %v", err)
+	}
+	wantResult := `{"status":"succeeded","exitCode":0}`
+	if _, err := ledger.FinishToolCall(ctx, decision.Token, wantResult, nil); err != nil {
+		t.Fatalf("FinishToolCall: %v", err)
+	}
+
+	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-dispatched-receipt")
+	args, outcome, found, err := restarted.DispatchedSettledToolCall(ctx, "call-normalized", projectToolExecCommand)
+	if err != nil || !found {
+		t.Fatalf("DispatchedSettledToolCall = found %t, err=%v; want validated receipt", found, err)
+	}
+	if !reflect.DeepEqual(args, admitted) || outcome.Result != wantResult || outcome.ObservedAt.IsZero() {
+		t.Fatalf("receipt args/outcome = %#v, %#v; want admitted args and durable result time", args, outcome)
+	}
+
+	legacyStore, legacyScope := newAssistantRunEventLedgerTestStore(t, "run-legacy-dispatched-receipt")
+	legacy := newProjectAssistantRunEventLedger(legacyStore, legacyScope, "run-legacy-dispatched-receipt")
+	legacyDecision, err := legacy.BeginToolCall(ctx, "call-legacy", spec, admitted)
+	if err != nil {
+		t.Fatalf("legacy BeginToolCall: %v", err)
+	}
+	if _, err := legacy.FinishToolCall(ctx, legacyDecision.Token, wantResult, nil); err != nil {
+		t.Fatalf("legacy FinishToolCall: %v", err)
+	}
+	legacyRestarted := newProjectAssistantRunEventLedger(legacyStore, legacyScope, "run-legacy-dispatched-receipt")
+	legacyArgs, _, legacyFound, err := legacyRestarted.DispatchedSettledToolCall(ctx, "call-legacy", projectToolExecCommand)
+	if err != nil || !legacyFound || !reflect.DeepEqual(legacyArgs, admitted) {
+		t.Fatalf("legacy receipt = %#v, found=%t, err=%v; want validated tool_call-only receipt", legacyArgs, legacyFound, err)
+	}
+}
+
+func TestAssistantRunEventLedgerDispatchedReceiptRequiresDispatch(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-request-only-result")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-request-only-result")
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRead}
+	args := map[string]any{"component": "workspace", "argv": []any{"go", "test"}}
+	request, err := ledger.RecordToolRequest(ctx, "call-not-dispatched", spec, args)
+	if err != nil {
+		t.Fatalf("RecordToolRequest: %v", err)
+	}
+	if _, err := ledger.FinishToolCall(ctx, request.Token, `{"status":"canceled"}`, context.Canceled); err != nil {
+		t.Fatalf("FinishToolCall before dispatch: %v", err)
+	}
+	if _, _, found, err := ledger.DispatchedSettledToolCall(ctx, "call-not-dispatched", projectToolExecCommand); err != nil || found {
+		t.Fatalf("dispatched receipt lookup = found %t, err=%v; want no dispatch proof", found, err)
 	}
 }
 
@@ -472,8 +618,8 @@ func TestAssistantRunEventLedgerNormalizesCanceledExecResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(outcome.Result), &result); err != nil {
 		t.Fatalf("canceled result is not valid JSON: %v\n%s", err, outcome.Result)
 	}
-	if result.Status != "canceled" || result.Component != "workspace" {
-		t.Fatalf("canceled result = %#v, want workspace canceled", result)
+	if result.Status != "outcome_unknown" || result.Component != "workspace" {
+		t.Fatalf("canceled result = %#v, want unresolved workspace outcome", result)
 	}
 
 	events := listAssistantRunEventLedgerEvents(t, messageStore, scope, "run-canceled-exec")
@@ -628,4 +774,78 @@ func (s *failingConversationItemStore) AppendAssistantConversationItem(
 	}
 	s.mu.Unlock()
 	return s.Store.AppendAssistantConversationItem(ctx, scope, item)
+}
+
+func TestAssistantRunLedgerSemanticFailureTelemetryPreservesInvocationReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name, result string
+		invokeErr    error
+		failed       bool
+	}{
+		{name: "successful", result: `{"status":"succeeded","exitCode":0}`},
+		{name: "nonzero", result: `{"status":"failed","exitCode":7}`, failed: true},
+		{name: "stale-zero", result: `{"status":"stale","sourceStale":true,"sourceRevision":19,"exitCode":0}`, failed: true},
+		{name: "blocked", result: `{"status":"blocked","blockers":["invalid workdir"]}`, failed: true},
+		{name: "uncertain", result: `{"status":"outcome_unknown"}`, failed: true},
+		{name: "transport", result: "Tool call failed", invokeErr: errors.New("connection lost"), failed: true},
+		{name: "empty-error", invokeErr: errors.New(""), failed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			run := "semantic-" + tc.name
+			messages, scope := newAssistantRunEventLedgerTestStore(t, run)
+			ledger := newProjectAssistantRunEventLedger(messages, scope, run)
+			spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime}
+			args := map[string]any{"component": "api", "argv": []string{"node", "--version"}}
+			decision, err := ledger.BeginToolCall(ctx, "call-1", spec, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ledger.FinishToolCall(ctx, decision.Token, tc.result, tc.invokeErr); err != nil {
+				t.Fatal(err)
+			}
+			events := listAssistantRunEventLedgerEvents(t, messages, scope, run)
+			var payload projectAssistantRunToolResultPayload
+			for _, event := range events {
+				if event.Type == projectAssistantRunToolResultEventType {
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if payload.Failed != (tc.invokeErr != nil) || (payload.Disposition == projectAssistantToolDispositionFailed) != tc.failed {
+				t.Fatalf("invocation/semantic failure dimensions = %+v", payload)
+			}
+			// A fresh process reads the persisted event. Typed failures must still
+			// return their exact JSON without becoming a transport exception.
+			restarted := newProjectAssistantRunEventLedger(messages, scope, run)
+			replayed, err := restarted.BeginToolCall(ctx, "call-1", spec, args)
+			if err != nil || replayed.Replay == nil {
+				t.Fatalf("replay = %+v, %v", replayed, err)
+			}
+			result, invokeErr := replayed.Replay.InvokeResult()
+			if result != tc.result || (invokeErr != nil) != (tc.invokeErr != nil) {
+				t.Fatalf("replayed invocation = %q, %v", result, invokeErr)
+			}
+			if invokeErr != nil && invokeErr.Error() != tc.invokeErr.Error() {
+				t.Fatal("invocation error changed")
+			}
+		})
+	}
+}
+
+func TestAssistantRunToolResultPayloadLegacyFailureMeaning(t *testing.T) {
+	for _, legacy := range []string{
+		`{"result":"{\"status\":\"blocked\"}","failed":false,"disposition":"failed"}`,
+		`{"result":"failure","error":"","failed":true,"disposition":"failed"}`,
+	} {
+		var payload projectAssistantRunToolResultPayload
+		if err := json.Unmarshal([]byte(legacy), &payload); err != nil {
+			t.Fatal(err)
+		}
+		result, err := payload.outcome().InvokeResult()
+		if result != payload.Result || (err != nil) != payload.Failed {
+			t.Fatalf("legacy replay changed: %q, %v", result, err)
+		}
+	}
 }

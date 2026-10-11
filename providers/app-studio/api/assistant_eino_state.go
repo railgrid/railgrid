@@ -106,6 +106,7 @@ type projectEinoAssistantRunState struct {
 	verificationSummary                  string
 	verificationBlockers                 []string
 	previewEvidence                      projectAssistantPreviewEvidence
+	commandReceipts                      []projectAssistantCommandReceipt
 	nativeBrowserInteractionPending      bool
 	developmentSyncRevision              uint64
 	developmentSyncStatus                string
@@ -1277,6 +1278,12 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.executionPlan = cloneProjectAssistantApprovedPlan(state.ExecutionPlan)
 	s.planProgress = cloneProjectAssistantPlanSnapshot(state.PlanProgress)
 	s.sourceMutationRevision = state.SourceMutationRevision
+	s.commandReceipts = cloneProjectAssistantCommandReceipts(state.CommandReceipts)
+	for index := range s.commandReceipts {
+		if s.commandReceipts[index].MutationRevision < s.sourceMutationRevision {
+			s.commandReceipts[index].SourceRelation = "stale"
+		}
+	}
 	s.checkedMutationRevision = state.CheckedMutationRevision
 	s.verifiedMutationRevision = state.VerifiedMutationRevision
 	s.developmentSyncRevision = state.DevelopmentSyncRevision
@@ -1506,6 +1513,11 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sourceMutationRevision++
+	for index := range s.commandReceipts {
+		if s.commandReceipts[index].MutationRevision < s.sourceMutationRevision {
+			s.commandReceipts[index].SourceRelation = "stale"
+		}
+	}
 	// A successful source mutation establishes progress for every prior
 	// recovery target. Keep no stale same-revision failure budget after the
 	// revision advances.
@@ -1528,6 +1540,119 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.verifiedWorkspaceDigest = ""
 	s.completedReadCalls = map[string]uint64{}
 	s.readFileCoverage = map[string][]projectEinoAssistantLineRange{}
+}
+
+func (s *projectEinoAssistantRunState) RecordCommandReceipt(callID, eventStatus string, exec *projectAssistantExecMetadata) {
+	if s == nil || exec == nil || strings.TrimSpace(callID) == "" {
+		return
+	}
+	referenceID := projectAssistantActionPublicID(callID)
+	if referenceID == "" {
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(exec.Status))
+	if status == "" {
+		status = strings.ToLower(strings.TrimSpace(eventStatus))
+	}
+	status = projectAssistantCommandReceiptStatus(status)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	relation := "unknown"
+	if exec.SourceRevision > 0 {
+		relation = "dispatch_revision_recorded"
+	}
+	if exec.SourceStale {
+		relation = "stale"
+	}
+	receipt := projectAssistantCommandReceipt{
+		ReferenceID:             referenceID,
+		Component:               projectAssistantCommandReceiptComponent(exec.Component),
+		Status:                  status,
+		WorkspaceSourceRevision: exec.SourceRevision,
+		MutationRevision:        s.sourceMutationRevision,
+		SourceRelation:          relation,
+		SyncStatus:              projectAssistantCommandReceiptSyncStatus(exec.SyncStatus),
+	}
+	if exec.ExitCode != nil {
+		exitCode := *exec.ExitCode
+		receipt.ExitCode = &exitCode
+	}
+	for index := range s.commandReceipts {
+		if s.commandReceipts[index].ReferenceID == referenceID {
+			s.commandReceipts[index] = receipt
+			return
+		}
+	}
+	if len(s.commandReceipts) >= projectAssistantCommandReceiptMaxCount {
+		s.commandReceipts = append([]projectAssistantCommandReceipt(nil), s.commandReceipts[1:]...)
+	}
+	s.commandReceipts = append(s.commandReceipts, receipt)
+}
+
+func cloneProjectAssistantCommandReceipts(receipts []projectAssistantCommandReceipt) []projectAssistantCommandReceipt {
+	if len(receipts) == 0 {
+		return nil
+	}
+	start := max(len(receipts)-projectAssistantCommandReceiptMaxCount, 0)
+	cloned := make([]projectAssistantCommandReceipt, 0, len(receipts)-start)
+	for _, receipt := range receipts[start:] {
+		if !projectAssistantCommandReceiptReferenceValid(receipt.ReferenceID) {
+			continue
+		}
+		copy := receipt
+		copy.Component = projectAssistantCommandReceiptComponent(copy.Component)
+		copy.Status = projectAssistantCommandReceiptStatus(copy.Status)
+		copy.SyncStatus = projectAssistantCommandReceiptSyncStatus(copy.SyncStatus)
+		switch copy.SourceRelation {
+		case "dispatch_revision_recorded", "stale", "unknown":
+		default:
+			copy.SourceRelation = "unknown"
+		}
+		if copy.ExitCode != nil {
+			exitCode := *copy.ExitCode
+			copy.ExitCode = &exitCode
+		}
+		cloned = append(cloned, copy)
+	}
+	return cloned
+}
+
+func projectAssistantCommandReceiptReferenceValid(value string) bool {
+	if !strings.HasPrefix(value, "feed-") || len(value) != len("feed-")+24 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "feed-"))
+	return err == nil
+}
+
+func projectAssistantCommandReceiptStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "succeeded", "failed", "blocked", "rejected", "canceled", "timed_out", "not_executed", "outcome_unknown", "unverifiable", "skipped", "stale":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "error":
+		return "failed"
+	case "cancelled":
+		return "canceled"
+	default:
+		return "unknown"
+	}
+}
+
+func projectAssistantCommandReceiptComponent(value string) string {
+	component := projectAssistantSafeDiagnosticCode(value)
+	if component == "" {
+		return ""
+	}
+	return component
+}
+
+func projectAssistantCommandReceiptSyncStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "succeeded", "failed", "unknown", "syncing", "pending", "stale", "blocked", "not_ready", "not_started":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "unknown"
+	}
 }
 
 func (s *projectEinoAssistantRunState) BeginDevelopmentSyncForNextMutation() uint64 {
@@ -1796,6 +1921,7 @@ func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantComp
 		PlanDefined:                  planDefined,
 		PlanComplete:                 planComplete,
 		SourceMutationRevision:       s.sourceMutationRevision,
+		CheckedMutationRevision:      s.checkedMutationRevision,
 		VerifiedMutationRevision:     s.verifiedMutationRevision,
 		LatestMutationVerified:       latestVerified,
 		CommitRequired:               s.commitRequired,
@@ -1813,6 +1939,7 @@ func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantComp
 		PreviewAssertionsPassed:      s.previewEvidence.AssertionsPassed,
 		PreviewAssertionCount:        s.previewEvidence.AssertionCount,
 		PreviewFailedAssertionCount:  s.previewEvidence.FailedAssertionCount,
+		CommandReceipts:              cloneProjectAssistantCommandReceipts(s.commandReceipts),
 	}
 	if outcome == "provisioning" {
 		evidence.Blockers = append(evidence.Blockers, "runtime provisioning")
@@ -3032,6 +3159,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		ExecutionPlan:                    cloneProjectAssistantApprovedPlan(s.executionPlan),
 		PlanProgress:                     cloneProjectAssistantPlanSnapshot(s.planProgress),
 		SourceMutationRevision:           s.sourceMutationRevision,
+		CommandReceipts:                  cloneProjectAssistantCommandReceipts(s.commandReceipts),
 		VerifiedMutationRevision:         s.verifiedMutationRevision,
 		DevelopmentSyncRevision:          s.developmentSyncRevision,
 		DevelopmentSyncStatus:            strings.TrimSpace(s.developmentSyncStatus),

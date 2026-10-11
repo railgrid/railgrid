@@ -395,6 +395,8 @@ func TestAssistantPointLookupIndexesHaveIndependentMigration(t *testing.T) {
 	for _, want := range []string{
 		"app_studio_assistant_thread_events_turn_idx",
 		"app_studio_assistant_thread_events_turn_sequence_idx",
+		"app_studio_assistant_thread_events_type_sequence_idx",
+		"thread_id, event_type, sequence",
 		"WHERE turn_id <> ''",
 		"app_studio_assistant_run_events_lookup_idx",
 		"run_id, event_type, sequence DESC",
@@ -408,7 +410,7 @@ func TestAssistantPointLookupIndexesHaveIndependentMigration(t *testing.T) {
 			t.Fatalf("assistant lookup index is not online-safe: %s", statement)
 		}
 	}
-	if assistantLookupIndexSchemaVersion != "assistant-point-lookups-online-v2" {
+	if assistantLookupIndexSchemaVersion != "assistant-point-lookups-online-v3" {
 		t.Fatalf("assistant point lookup schema version = %q", assistantLookupIndexSchemaVersion)
 	}
 	if strings.Contains(tryLockAssistantLookupIndexes, "xact") || !strings.Contains(tryLockAssistantLookupIndexes, "pg_try_advisory_lock") {
@@ -777,6 +779,111 @@ func TestPostgresStorePointLookupsExternalDSN(t *testing.T) {
 	var payload map[string]string
 	if err := json.Unmarshal(events[0].Payload, &payload); err != nil || len(payload) != 1 || payload["scope"] != scope.ProjectUID {
 		t.Fatalf("postgres scoped run event payload = %s, error = %v", events[0].Payload, err)
+	}
+}
+
+func TestPostgresAssistantThreadTurnEventsAfterExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	schemaName := fmt.Sprintf("app_studio_receipt_turn_events_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatalf("create postgres test schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer func() { _ = cleanupDB.Close() }()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+
+	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatalf("OpenPostgres: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-a"}
+	otherScope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-b"}
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	threadID := "thread-receipt-events"
+	for _, candidate := range []struct {
+		scope  Scope
+		events []AssistantThreadEvent
+	}{
+		{scope: scope, events: []AssistantThreadEvent{
+			{Type: "thread.created", CreatedAt: now},
+			{TurnID: "turn-old", Type: "turn.started", CreatedAt: now},
+			{TurnID: "turn-old", Type: "item.completed", ItemID: "tool-first", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"tool-first"}}`), CreatedAt: now},
+			{TurnID: "turn-old", Type: "item.completed", ItemID: "tool-second", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"tool-second"}}`), CreatedAt: now},
+			{TurnID: "turn-old", Type: "item.started", ItemID: "tool-running", Payload: json.RawMessage(`{"item":{"id":"tool-running"}}`), CreatedAt: now},
+			{TurnID: "turn-new", Type: "item.completed", ItemID: "new-turn-tool", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"new-turn-tool"}}`), CreatedAt: now},
+		}},
+		{scope: otherScope, events: []AssistantThreadEvent{
+			{Type: "thread.created", CreatedAt: now},
+			{TurnID: "turn-old", Type: "item.completed", ItemID: "other-project-tool", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"other-project-tool"}}`), CreatedAt: now},
+		}},
+	} {
+		if _, err := s.CreateAssistantThread(ctx, candidate.scope, AssistantThread{ID: threadID, ActorID: "alice", CreatedAt: now, UpdatedAt: now}, candidate.events); err != nil {
+			t.Fatalf("CreateAssistantThread(%s): %v", candidate.scope.ProjectUID, err)
+		}
+	}
+
+	first, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, "turn-old", "item.completed", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].Sequence != 3 || first[0].TurnID != "turn-old" || first[0].ItemID != "tool-first" {
+		t.Fatalf("first scoped page = %#v, want sequence 3 for tool-first", first)
+	}
+	second, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, "turn-old", "item.completed", first[0].Sequence, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].Sequence != 4 || second[0].ItemID != "tool-second" {
+		t.Fatalf("second scoped page = %#v, want sequence 4 for tool-second", second)
+	}
+	if payload := string(second[0].Payload); !strings.Contains(payload, "receiptSettlement") {
+		t.Fatalf("receipt payload = %s, want recovered JSON payload", payload)
+	}
+	other, err := s.ListAssistantThreadTurnEventsAfter(ctx, otherScope, threadID, "turn-old", "item.completed", 0, 10)
+	if err != nil || len(other) != 1 || other[0].ItemID != "other-project-tool" {
+		t.Fatalf("other project result = %#v, %v; want only its own event", other, err)
+	}
+	byType, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, "turn-old", "item.started", 0, 10)
+	if err != nil || len(byType) != 1 || byType[0].ItemID != "tool-running" {
+		t.Fatalf("exact event-type query = %#v, %v; want item.started only", byType, err)
+	}
+	batchFirst, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, "item.completed", 2, 2)
+	if err != nil || len(batchFirst) != 2 || batchFirst[0].Sequence != 3 || batchFirst[0].TurnID != "turn-old" || batchFirst[1].Sequence != 4 {
+		t.Fatalf("batch event-type first page = %#v, %v; want scoped sequences 3 and 4", batchFirst, err)
+	}
+	batchSecond, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, "item.completed", batchFirst[1].Sequence, 2)
+	if err != nil || len(batchSecond) != 1 || batchSecond[0].Sequence != 6 || batchSecond[0].TurnID != "turn-new" {
+		t.Fatalf("batch event-type second page = %#v, %v; want sequence 6 from turn-new", batchSecond, err)
+	}
+	otherBatch, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, otherScope, threadID, "item.completed", 0, 10)
+	if err != nil || len(otherBatch) != 1 || otherBatch[0].ItemID != "other-project-tool" {
+		t.Fatalf("other project batch = %#v, %v; want only its own event", otherBatch, err)
+	}
+	empty, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, "turn-old", "item.completed", second[0].Sequence, 10)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("exhausted page = %#v, %v; want empty", empty, err)
+	}
+	if _, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, " ", "item.completed", 0, 10); err == nil {
+		t.Fatal("empty turn ID unexpectedly accepted")
+	}
+	if _, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, "missing-thread", "turn-old", "item.completed", 0, 10); !errors.Is(err, ErrAssistantThreadNotFound) {
+		t.Fatalf("missing thread query error = %v, want ErrAssistantThreadNotFound", err)
 	}
 }
 

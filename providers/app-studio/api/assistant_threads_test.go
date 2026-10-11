@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -32,9 +33,22 @@ import (
 
 type assistantThreadWindowCountingStore struct {
 	store.Store
-	beforeCalls    int
-	forwardCalls   int
-	turnStartCalls int
+	beforeCalls        int
+	forwardCalls       int
+	turnStartCalls     int
+	receiptBatchCalls  int
+	receiptBatchLimits []int
+}
+
+type assistantThreadReceiptOverlayStore struct {
+	store.Store
+	batchCalls  int
+	batchLimits []int
+	batchErr    error
+	fillBatches bool
+	exactCalls  int
+	exactErr    error
+	exactPages  [][]store.AssistantThreadEvent
 }
 
 type assistantThreadEnrichmentCountingStore struct {
@@ -90,6 +104,42 @@ func (s *assistantThreadWindowCountingStore) ListAssistantThreadTurnEventsBefore
 func (s *assistantThreadWindowCountingStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope store.Scope, threadID, turnID string) (int64, error) {
 	s.turnStartCalls++
 	return s.Store.GetAssistantThreadTurnStartSequence(ctx, scope, threadID, turnID)
+}
+
+func (s *assistantThreadWindowCountingStore) ListAssistantThreadTurnEventsByTypeAfter(ctx context.Context, scope store.Scope, threadID, eventType string, afterSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.receiptBatchCalls++
+	s.receiptBatchLimits = append(s.receiptBatchLimits, limit)
+	return s.Store.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, eventType, afterSequence, limit)
+}
+
+func (s *assistantThreadReceiptOverlayStore) ListAssistantThreadTurnEventsByTypeAfter(ctx context.Context, scope store.Scope, threadID, eventType string, afterSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.batchCalls++
+	s.batchLimits = append(s.batchLimits, limit)
+	if s.batchErr != nil {
+		return nil, s.batchErr
+	}
+	if s.fillBatches {
+		page := make([]store.AssistantThreadEvent, limit)
+		for index := range page {
+			page[index] = store.AssistantThreadEvent{
+				ThreadID: threadID, TurnID: "unselected-turn", Sequence: afterSequence + int64(index) + 1,
+				Type: eventType, ItemID: fmt.Sprintf("unselected-item-%d", index),
+			}
+		}
+		return page, nil
+	}
+	return s.Store.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, eventType, afterSequence, limit)
+}
+
+func (s *assistantThreadReceiptOverlayStore) ListAssistantThreadTurnEventsAfter(ctx context.Context, scope store.Scope, threadID, turnID, eventType string, afterSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.exactCalls++
+	if s.exactCalls <= len(s.exactPages) {
+		return append([]store.AssistantThreadEvent(nil), s.exactPages[s.exactCalls-1]...), nil
+	}
+	if s.exactErr != nil {
+		return nil, s.exactErr
+	}
+	return s.Store.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, turnID, eventType, afterSequence, limit)
 }
 
 func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
@@ -890,30 +940,50 @@ func TestAssistantThreadTerminalEventDoesNotEndStreamForNewerTurn(t *testing.T) 
 	if _, err := memoryStore.CreateAssistantThread(context.Background(), scope, thread, nil); err != nil {
 		t.Fatal(err)
 	}
-	first := store.AssistantTurn{ID: "turn-old", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-old", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
-	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, first, nil); err != nil {
-		t.Fatal(err)
-	}
-	first.Status = store.AssistantTurnStatusCompleted
-	first.UpdatedAt = now.Add(time.Second)
-	if err := memoryStore.SaveAssistantTurnWithEvent(context.Background(), scope, first, store.AssistantThreadEvent{Type: assistantThreadEventTurnCompleted}, 0); err != nil {
+	first := store.AssistantTurn{ID: "turn-old", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-old", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now.Add(time.Second)}
+	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, first, []store.AssistantThreadEvent{
+		{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{Type: assistantThreadEventTurnInterrupted, CreatedAt: now.Add(time.Second)},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	second := store.AssistantTurn{ID: "turn-new", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-new", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantTurnStatusInProgress, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)}
-	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, second, nil); err != nil {
+	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, second, []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, CreatedAt: second.CreatedAt}}); err != nil {
 		t.Fatal(err)
 	}
-	oldTerminal := store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: first.ID, Type: assistantThreadEventTurnCompleted}
+	oldTerminal := store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: first.ID, Type: assistantThreadEventTurnInterrupted, Sequence: 2}
 	if server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, oldTerminal) {
 		t.Fatal("older turn terminal event ended stream while newer turn was active")
 	}
 	second.Status = store.AssistantTurnStatusCompleted
 	second.UpdatedAt = now.Add(3 * time.Second)
-	if err := memoryStore.SaveAssistantTurnWithEvent(context.Background(), scope, second, store.AssistantThreadEvent{Type: assistantThreadEventTurnCompleted}, 1); err != nil {
+	if err := memoryStore.SaveAssistantTurnWithEvent(context.Background(), scope, second, store.AssistantThreadEvent{Type: assistantThreadEventTurnCompleted}, 3); err != nil {
 		t.Fatal(err)
 	}
-	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: second.ID, Type: assistantThreadEventTurnCompleted}) {
+	events, err := memoryStore.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newTerminal := events[len(events)-1]
+	if server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, oldTerminal) {
+		t.Fatal("historical turn terminal replay ended stream after newer turn completed")
+	}
+	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, newTerminal) {
 		t.Fatal("current turn terminal event did not end stream")
+	}
+
+	settlement, err := memoryStore.AppendAssistantThreadEvent(context.Background(), scope, store.AssistantThreadEvent{
+		ThreadID: thread.ID, TurnID: first.ID, Type: assistantThreadEventItemCompleted, ItemID: "late-tool-item",
+		Payload: json.RawMessage(`{"receiptSettlement":true}`), CreatedAt: now.Add(4 * time.Second),
+	}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, newTerminal) {
+		t.Fatal("newer terminal event ended stream before the later persisted receipt settlement")
+	}
+	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, settlement) {
+		t.Fatal("tail receipt settlement did not end stream after it was delivered")
 	}
 }
 
@@ -970,5 +1040,483 @@ func TestTerminalizeProjectAssistantTurnStartFailureClosesCanonicalTurn(t *testi
 	}
 	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventTurnFailed, ""); got != 1 {
 		t.Fatalf("failed turn events = %d, want one: %#v", got, events)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowKeepsLateSettlementWithOriginalTurn(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		settlementBeforeBEnd bool
+	}{
+		{name: "settlement after newer turn completes"},
+		{name: "settlement before newer turn completes", settlementBeforeBEnd: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			messages := store.NewMemoryStore()
+			server := NewWithWorkspace(nil, messages, nil, "", false)
+			scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+			now := time.Now().UTC()
+			thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+				ID: "thread-late-settlement", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+			}, []store.AssistantThreadEvent{{Type: assistantThreadEventThreadCreated, CreatedAt: now}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			toolCall := projectToolCallStreamEvent{
+				ID: "call-a", Name: projectToolExecCommand, Status: "running",
+				Arguments: `{"component":"workspace","argv":["go","test"],"timeoutSeconds":90}`,
+				Exec: &projectAssistantExecMetadata{
+					Component: "workspace", Argv: []string{"go", "test"}, TimeoutSeconds: 90, Status: "running",
+				},
+			}
+			action := projectAssistantActionFeedItemFromToolCall(toolCall)
+			action.Sequence = 7
+			actionPayload, err := json.Marshal(action)
+			if err != nil {
+				t.Fatal(err)
+			}
+			itemID := assistantThreadDynamicToolItemID("assistant-a", action.ID)
+			item := assistantThreadItem{
+				ID: itemID, TurnID: "turn-a", Type: assistantThreadEventDynamicToolCall,
+				Status: "in_progress", Content: action.Title, Data: actionPayload,
+				AssistantMessageID: "assistant-a", Sequence: int64(action.Sequence), CreatedAt: now,
+			}
+			itemPayload, err := json.Marshal(map[string]any{"item": item})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+				ID: "turn-a", ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-a",
+				Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+				Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now,
+			}, []store.AssistantThreadEvent{
+				{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+				{Type: assistantThreadEventItemStarted, ItemID: itemID, Payload: itemPayload, CreatedAt: now},
+				{Type: assistantThreadEventTurnInterrupted, CreatedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			bEvents := []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, CreatedAt: now.Add(time.Second)}}
+			if test.settlementBeforeBEnd {
+				bEvents = append(bEvents, store.AssistantThreadEvent{Type: assistantThreadEventItemStarted, ItemID: "assistant-b", Payload: json.RawMessage(`{"item":{"id":"assistant-b","turnID":"turn-b","type":"agentMessage","status":"in_progress"}}`), CreatedAt: now.Add(time.Second)})
+			}
+			bTurn, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+				ID: "turn-b", ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-b",
+				Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+				Status: store.AssistantTurnStatusInProgress, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+			}, bEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			settledCall := toolCall
+			settledCall.Status = "succeeded"
+			settledCall.Summary = "Command completed"
+			settledCall.Exec = cloneProjectAssistantExecMetadata(toolCall.Exec)
+			settledCall.Exec.Status = "succeeded"
+			settledCall.Exec.ExitCode = intPointer(0)
+			settledAction := projectAssistantActionFeedItemFromToolCall(settledCall)
+			settledAction.Sequence = action.Sequence
+			settledData, err := json.Marshal(settledAction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settledItem := item
+			settledItem.Status = "completed"
+			settledItem.Content = settledAction.Title
+			settledItem.Data = settledData
+			settledPayload, err := json.Marshal(map[string]any{"item": settledItem, "receiptSettlement": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendSettlement := func() (store.AssistantThreadEvent, error) {
+				allEvents, err := messages.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 100)
+				if err != nil {
+					return store.AssistantThreadEvent{}, err
+				}
+				return messages.AppendAssistantThreadEvent(ctx, scope, store.AssistantThreadEvent{
+					ThreadID: thread.ID, TurnID: "turn-a", Type: assistantThreadEventItemCompleted,
+					ItemID: itemID, Payload: settledPayload, CreatedAt: now.Add(3 * time.Second),
+				}, int64(len(allEvents)))
+			}
+			completeBTurn := func() error {
+				allEvents, err := messages.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 100)
+				if err != nil {
+					return err
+				}
+				bTurn.Status = store.AssistantTurnStatusCompleted
+				bTurn.UpdatedAt = now.Add(4 * time.Second)
+				return messages.SaveAssistantTurnWithEvent(ctx, scope, bTurn, store.AssistantThreadEvent{
+					Type: assistantThreadEventTurnCompleted, CreatedAt: bTurn.UpdatedAt,
+				}, int64(len(allEvents)))
+			}
+			var settlement store.AssistantThreadEvent
+			if test.settlementBeforeBEnd {
+				settlement, err = appendSettlement()
+				if err == nil {
+					err = completeBTurn()
+				}
+			} else {
+				err = completeBTurn()
+				if err == nil {
+					settlement, err = appendSettlement()
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if test.settlementBeforeBEnd {
+				window, cursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cursor != 0 || len(window) < 2 || window[0].Type != assistantThreadEventTurnStarted || window[len(window)-1].TurnID != "turn-b" {
+					t.Fatalf("A/B history window = %#v cursor=%d; want both complete turns in original sequence order", window, cursor)
+				}
+				for index := 1; index < len(window); index++ {
+					if window[index].Sequence <= window[index-1].Sequence {
+						t.Fatalf("merged history sequences are not increasing: %#v", window)
+					}
+				}
+				if window[len(window)-2].Sequence != settlement.Sequence || window[len(window)-1].Type != assistantThreadEventTurnCompleted {
+					t.Fatalf("late settlement ordering = %#v; want receipt before newer turn terminal", window)
+				}
+				return
+			}
+
+			recent, nextCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if nextCursor == 0 || len(recent) != 2 || recent[0].TurnID != "turn-b" || recent[1].TurnID != "turn-b" {
+				t.Fatalf("newest page = %#v cursor=%d; want only newer B and a cursor at B's start", recent, nextCursor)
+			}
+			if recent[0].Sequence != nextCursor || recent[0].Type != assistantThreadEventTurnStarted {
+				t.Fatalf("newest page cursor boundary = %#v cursor=%d; want B's original turn.started", recent, nextCursor)
+			}
+			older, olderCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, nextCursor, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if olderCursor != 0 || len(older) != 4 || older[len(older)-1].Sequence != settlement.Sequence ||
+				!assistantThreadReceiptSettlementEvent(older[len(older)-1]) {
+				t.Fatalf("older A page = %#v cursor=%d; want A plus its receipt despite receipt being after B's cursor", older, olderCursor)
+			}
+			items := materializeAssistantThreadItems(older)
+			if len(items) != 1 || items[0].ID != itemID || items[0].Status != "completed" {
+				t.Fatalf("materialized older A items = %#v; want repaired settled item", items)
+			}
+		})
+	}
+}
+
+func TestLoadAssistantThreadEventWindowBatchesLateSettlementsAcrossInterruptedTurns(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	counting := &assistantThreadWindowCountingStore{Store: inner}
+	server := NewWithWorkspace(nil, counting, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-batch", WorkspaceUUID: "workspace-batch", ProjectName: "demo", ProjectUID: "uid-batch"}
+	now := time.Now().UTC()
+	thread, err := inner.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-batched-receipts", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type receiptFixture struct {
+		turnID string
+		itemID string
+		item   assistantThreadItem
+	}
+	fixtures := make([]receiptFixture, 0, 2)
+	for index, turnID := range []string{"turn-batch-a", "turn-batch-b"} {
+		assistantID := "assistant-" + turnID
+		call := projectToolCallStreamEvent{
+			ID: "call-" + turnID, Name: projectToolExecCommand, Status: "running",
+			Arguments: `{"component":"workspace","argv":["go","test"]}`,
+			Exec:      &projectAssistantExecMetadata{Component: "workspace", Argv: []string{"go", "test"}, TimeoutSeconds: 90, Status: "running"},
+		}
+		action := projectAssistantActionFeedItemFromToolCall(call)
+		action.Sequence = index + 1
+		data, err := json.Marshal(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		itemID := assistantThreadDynamicToolItemID(assistantID, action.ID)
+		item := assistantThreadItem{
+			ID: itemID, TurnID: turnID, Type: assistantThreadEventDynamicToolCall, Status: "in_progress",
+			Content: action.Title, Data: data, AssistantMessageID: assistantID, Sequence: int64(action.Sequence), CreatedAt: now,
+		}
+		payload, err := json.Marshal(map[string]any{"item": item})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := inner.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+			ID: turnID, ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-" + turnID,
+			Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+			Status: store.AssistantTurnStatusInterrupted, CreatedAt: now.Add(time.Duration(index) * time.Second), UpdatedAt: now,
+		}, []store.AssistantThreadEvent{
+			{Type: assistantThreadEventTurnStarted, CreatedAt: now.Add(time.Duration(index) * time.Second)},
+			{Type: assistantThreadEventItemStarted, ItemID: itemID, Payload: payload, CreatedAt: now.Add(time.Duration(index) * time.Second)},
+			{Type: assistantThreadEventTurnInterrupted, CreatedAt: now.Add(time.Duration(index) * time.Second)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		fixtures = append(fixtures, receiptFixture{turnID: turnID, itemID: itemID, item: item})
+	}
+
+	for index, fixture := range fixtures {
+		call := projectToolCallStreamEvent{
+			ID: "call-" + fixture.turnID, Name: projectToolExecCommand, Status: "succeeded", Summary: "Command completed",
+			Exec: &projectAssistantExecMetadata{Component: "workspace", Argv: []string{"go", "test"}, TimeoutSeconds: 90, Status: "succeeded", ExitCode: intPointer(0)},
+		}
+		action := projectAssistantActionFeedItemFromToolCall(call)
+		action.Sequence = index + 1
+		data, err := json.Marshal(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := fixture.item
+		item.Status = "completed"
+		item.Content = action.Title
+		item.Data = data
+		payload, err := json.Marshal(map[string]any{"item": item, "receiptSettlement": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		baseEvents, err := inner.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := inner.AppendAssistantThreadEvent(ctx, scope, store.AssistantThreadEvent{
+			ThreadID: thread.ID, TurnID: fixture.turnID, Type: assistantThreadEventItemCompleted,
+			ItemID: fixture.itemID, Payload: payload, CreatedAt: now.Add(10 * time.Second),
+		}, int64(len(baseEvents))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	window, cursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 0 || counting.receiptBatchCalls != 1 || !reflect.DeepEqual(counting.receiptBatchLimits, []int{assistantThreadEventWindowPageSize}) {
+		t.Fatalf("batch lookup calls=%d limits=%v cursor=%d; want one bounded query and unchanged pagination", counting.receiptBatchCalls, counting.receiptBatchLimits, cursor)
+	}
+	settlements := 0
+	for _, event := range window {
+		if assistantThreadReceiptSettlementEvent(event) {
+			settlements++
+		}
+	}
+	if settlements != 2 {
+		t.Fatalf("window contains %d settlement events, want one for each interrupted turn: %#v", settlements, window)
+	}
+	items := materializeAssistantThreadItems(window)
+	if len(items) != 2 {
+		t.Fatalf("materialized items = %#v, want both interrupted turn items", items)
+	}
+	for _, item := range items {
+		if item.Status != "completed" {
+			t.Fatalf("materialized item %q status=%q, want completed", item.ID, item.Status)
+		}
+	}
+}
+
+func TestLoadAssistantThreadEventWindowReturnsBaseHistoryWhenReceiptOverlayFails(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		readErr     error
+		fillBatches bool
+		wantCalls   int
+	}{
+		{name: "read failure", readErr: errors.New("receipt index unavailable"), wantCalls: 1},
+		{name: "shared budget exhausted", fillBatches: true, wantCalls: assistantThreadEventWindowMaxPages},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			inner := store.NewMemoryStore()
+			scope := store.Scope{OrgUUID: "org-overlay", WorkspaceUUID: "workspace-overlay", ProjectName: "demo", ProjectUID: "uid-overlay"}
+			now := time.Now().UTC()
+			thread, err := inner.CreateAssistantThread(ctx, scope, store.AssistantThread{
+				ID: "thread-overlay-fallback", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := inner.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+				ID: "turn-overlay-fallback", ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-overlay-fallback",
+				Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+				Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now,
+			}, []store.AssistantThreadEvent{
+				{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+				{Type: assistantThreadEventTurnInterrupted, CreatedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			baseServer := NewWithWorkspace(nil, inner, nil, "", false)
+			want, wantCursor, err := baseServer.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			overlayStore := &assistantThreadReceiptOverlayStore{Store: inner, batchErr: test.readErr, fillBatches: test.fillBatches}
+			overlayServer := NewWithWorkspace(nil, overlayStore, nil, "", false)
+			got, gotCursor, err := overlayServer.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+			if err != nil {
+				t.Fatalf("optional receipt overlay error escaped: %v", err)
+			}
+			if !reflect.DeepEqual(got, want) || gotCursor != wantCursor {
+				t.Fatalf("fallback history=%#v cursor=%d; want exact base history %#v cursor=%d", got, gotCursor, want, wantCursor)
+			}
+			if overlayStore.batchCalls != test.wantCalls {
+				t.Fatalf("batch lookup calls=%d, want %d", overlayStore.batchCalls, test.wantCalls)
+			}
+			if test.fillBatches {
+				for _, limit := range overlayStore.batchLimits {
+					if limit != assistantThreadEventWindowPageSize {
+						t.Fatalf("budget query limit=%d, want %d", limit, assistantThreadEventWindowPageSize)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLoadAssistantThreadTurnToolItemsReturnsBaseProjectionAfterPartialOverlayFailure(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-turn-overlay", WorkspaceUUID: "workspace-turn-overlay", ProjectName: "demo", ProjectUID: "uid-turn-overlay"}
+	now := time.Now().UTC()
+	thread, err := inner.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: "thread-turn-overlay", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := projectToolCallStreamEvent{
+		ID: "call-turn-overlay", Name: projectToolExecCommand, Status: "running",
+		Exec: &projectAssistantExecMetadata{Component: "workspace", Argv: []string{"go"}, TimeoutSeconds: 90, Status: "running"},
+	}
+	action := projectAssistantActionFeedItemFromToolCall(call)
+	action.Sequence = 1
+	data, err := json.Marshal(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID := assistantThreadDynamicToolItemID("assistant-turn-overlay", action.ID)
+	baseItem := assistantThreadItem{
+		ID: itemID, TurnID: "turn-overlay", Type: assistantThreadEventDynamicToolCall, Status: "in_progress",
+		Content: action.Title, Data: data, AssistantMessageID: "assistant-turn-overlay", Sequence: 1, CreatedAt: now,
+	}
+	basePayload, _ := json.Marshal(map[string]any{"item": baseItem})
+	if _, err := inner.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+		ID: "turn-overlay", ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-turn-overlay",
+		Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now,
+	}, []store.AssistantThreadEvent{
+		{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{Type: assistantThreadEventItemStarted, ItemID: itemID, Payload: basePayload, CreatedAt: now},
+		{Type: assistantThreadEventTurnInterrupted, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settledCall := call
+	settledCall.Status = "succeeded"
+	settledCall.Exec = cloneProjectAssistantExecMetadata(call.Exec)
+	settledCall.Exec.Status = "succeeded"
+	settledCall.Exec.ExitCode = intPointer(0)
+	settledAction := projectAssistantActionFeedItemFromToolCall(settledCall)
+	settledAction.Sequence = action.Sequence
+	settledData, _ := json.Marshal(settledAction)
+	settledItem := baseItem
+	settledItem.Status = "completed"
+	settledItem.Content = settledAction.Title
+	settledItem.Data = settledData
+	settledPayload, _ := json.Marshal(map[string]any{"item": settledItem, "receiptSettlement": true})
+	baseEvents, err := inner.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalSequence := baseEvents[len(baseEvents)-1].Sequence
+	page := make([]store.AssistantThreadEvent, assistantThreadEventWindowPageSize)
+	page[0] = store.AssistantThreadEvent{
+		ThreadID: thread.ID, TurnID: "turn-overlay", Type: assistantThreadEventItemCompleted,
+		ItemID: itemID, Payload: settledPayload, Sequence: terminalSequence + 1,
+	}
+	for index := 1; index < len(page); index++ {
+		page[index] = store.AssistantThreadEvent{
+			ThreadID: thread.ID, TurnID: "turn-overlay", Type: assistantThreadEventItemCompleted,
+			ItemID: fmt.Sprintf("invalid-settlement-%d", index), Sequence: terminalSequence + int64(index) + 1,
+		}
+	}
+	overlayStore := &assistantThreadReceiptOverlayStore{
+		Store: inner, exactPages: [][]store.AssistantThreadEvent{page}, exactErr: errors.New("receipt page two unavailable"),
+	}
+	server := NewWithWorkspace(nil, overlayStore, nil, "", false)
+	toolItems, err := server.loadAssistantThreadTurnToolItems(ctx, scope, thread.ID, "turn-overlay")
+	if err != nil {
+		t.Fatalf("optional settlement overlay error escaped: %v", err)
+	}
+	if overlayStore.exactCalls != 2 {
+		t.Fatalf("exact settlement lookup calls=%d, want one staged page and one failing page", overlayStore.exactCalls)
+	}
+	got, ok := toolItems.items[itemID]
+	if !ok || got.Status != baseItem.Status || !reflect.DeepEqual(got.Data, baseItem.Data) {
+		t.Fatalf("partial settlement leaked into base tool items: got=%#v present=%t want %#v", got, ok, baseItem)
+	}
+}
+
+func TestInterruptedExecReceiptRepairGuardSkipsCanonicalAndFindsMissingProjection(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-repair-guard", WorkspaceUUID: "workspace-repair-guard", ProjectName: "demo", ProjectUID: "uid-repair-guard"}
+	now := time.Now().UTC()
+	call := projectToolCallStreamEvent{
+		ID: "call-repair-guard", Name: projectToolExecCommand, Status: "succeeded", Summary: "Command completed",
+		Exec: &projectAssistantExecMetadata{Component: "workspace", Argv: []string{"go"}, TimeoutSeconds: 90, Status: "succeeded", ExitCode: intPointer(0)},
+	}
+	action := projectAssistantActionFeedItemFromToolCall(call)
+	action.Sequence = 7
+	run := store.AssistantRun{
+		ID: "turn-repair-guard", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		Status: store.AssistantRunStatusInterrupted, ClientRequestID: "client-repair-guard",
+		UserMessageID: "user-repair-guard", ActiveMessageID: "assistant-repair-guard",
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	_, err := messages.CreateAssistantRun(ctx, scope,
+		store.Message{ID: run.UserMessageID, Role: "user", ActorID: "actor-a", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: run.ActiveMessageID, Role: "assistant", ActorID: "actor-a", Metadata: map[string]any{projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{action}}, CreatedAt: now, UpdatedAt: now}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	missing, err := server.interruptedProjectAssistantExecReceiptRepairNeeded(ctx, scope, run, &assistantThreadTurnToolItems{items: map[string]assistantThreadItem{}})
+	if err != nil || !missing {
+		t.Fatalf("settled snapshot without canonical item needs repair = %t, err=%v; want true", missing, err)
+	}
+
+	itemID := assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID)
+	canonical := assistantThreadItem{
+		ID: itemID, TurnID: run.ID, Type: assistantThreadEventDynamicToolCall,
+		Status: projectAssistantThreadToolItemStatus(action.Status), Content: action.Title,
+		AssistantMessageID: run.ActiveMessageID, Sequence: int64(action.Sequence), CreatedAt: now,
+	}
+	canonical.Data, _ = json.Marshal(action)
+	settled := &assistantThreadTurnToolItems{items: map[string]assistantThreadItem{itemID: canonical}}
+	needed, err := server.interruptedProjectAssistantExecReceiptRepairNeeded(ctx, scope, run, settled)
+	if err != nil || needed {
+		t.Fatalf("already matching canonical item needs repair = %t, err=%v; want false", needed, err)
+	}
+	canonical.Sequence++
+	settled.items[itemID] = canonical
+	needed, err = server.interruptedProjectAssistantExecReceiptRepairNeeded(ctx, scope, run, settled)
+	if err != nil || !needed {
+		t.Fatalf("canonical item with mismatched sequence needs repair = %t, err=%v; want true", needed, err)
 	}
 }

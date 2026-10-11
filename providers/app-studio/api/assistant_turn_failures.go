@@ -18,7 +18,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
+
+	"k8s.io/klog/v2"
 
 	"github.com/railgrid/provider-app-studio/store"
 )
@@ -173,10 +176,10 @@ func newAssistantThreadTurnView(turn store.AssistantTurn, toolItems *assistantTh
 
 // loadAssistantThreadTurnToolItems reads one turn's tool items from the
 // durable event stream. It starts at the turn's turn.started event (an
-// indexed lookup) and stops at the turn's terminal event or the next turn,
-// because turns in one thread are serialized. The read is bounded like the
-// history window; a turn without a turn.started event (older repair paths) is
-// scanned from the beginning of the thread.
+// indexed lookup), stops the chronological scan at the next turn, then uses a
+// bounded exact-turn lookup for any post-terminal receipt settlements. A turn
+// without a turn.started event (older repair paths) is scanned from the
+// beginning of the thread.
 func (s *Server) loadAssistantThreadTurnToolItems(ctx context.Context, scope store.Scope, threadID, turnID string) (*assistantThreadTurnToolItems, error) {
 	toolItems := &assistantThreadTurnToolItems{}
 	after := int64(0)
@@ -186,6 +189,9 @@ func (s *Server) loadAssistantThreadTurnToolItems(ctx context.Context, scope sto
 		return nil, err
 	}
 	seen := false
+	terminalSeen := false
+	terminalSequence := int64(0)
+	stoppedAtNextTurn := false
 	for page := 0; page < assistantThreadEventWindowMaxPages; page++ {
 		events, err := s.store.ListAssistantThreadEvents(ctx, scope, threadID, after, assistantThreadEventWindowPageSize)
 		if err != nil {
@@ -194,21 +200,177 @@ func (s *Server) loadAssistantThreadTurnToolItems(ctx context.Context, scope sto
 		for _, event := range events {
 			if event.TurnID != turnID {
 				if seen && event.TurnID != "" && event.Type == assistantThreadEventTurnStarted {
-					return toolItems, nil
+					stoppedAtNextTurn = true
+					break
 				}
 				continue
 			}
 			seen = true
 			switch event.Type {
 			case assistantThreadEventTurnCompleted, assistantThreadEventTurnFailed, assistantThreadEventTurnInterrupted:
-				return toolItems, nil
+				terminalSeen = true
+				if terminalSequence == 0 {
+					terminalSequence = event.Sequence
+				}
+				continue
+			}
+			if terminalSeen && (event.Type != assistantThreadEventItemCompleted || event.ItemID == "" || !assistantThreadReceiptSettlementEvent(event)) {
+				continue
+			}
+			if terminalSeen {
+				prior, existed := toolItems.items[event.ItemID]
+				if !assistantThreadReceiptSettlementCanProjectToolItem(event, turnID, prior, existed) {
+					continue
+				}
+			}
+			toolItems.observeEvent(event)
+		}
+		if stoppedAtNextTurn {
+			break
+		}
+		if len(events) < assistantThreadEventWindowPageSize {
+			break
+		}
+		after = events[len(events)-1].Sequence
+	}
+	if terminalSequence > 0 {
+		candidate := cloneAssistantThreadTurnToolItems(toolItems)
+		if err := s.loadAssistantThreadTurnReceiptSettlements(ctx, scope, threadID, turnID, terminalSequence, candidate); err != nil {
+			klog.FromContext(ctx).Error(err, "assistant turn receipt settlement overlay unavailable; returning base projection", "threadID", threadID, "turnID", turnID)
+		} else {
+			toolItems = candidate
+		}
+	}
+	return toolItems, nil
+}
+
+func cloneAssistantThreadTurnToolItems(source *assistantThreadTurnToolItems) *assistantThreadTurnToolItems {
+	clone := &assistantThreadTurnToolItems{items: make(map[string]assistantThreadItem)}
+	if source == nil {
+		return clone
+	}
+	clone.order = append(clone.order, source.order...)
+	for id, item := range source.items {
+		clone.items[id] = item
+	}
+	return clone
+}
+
+func (s *Server) loadAssistantThreadTurnReceiptSettlements(ctx context.Context, scope store.Scope, threadID, turnID string, afterSequence int64, toolItems *assistantThreadTurnToolItems) error {
+	for page := 0; page < assistantThreadEventWindowMaxPages; page++ {
+		events, err := s.store.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, turnID, assistantThreadEventItemCompleted, afterSequence, assistantThreadEventWindowPageSize)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if event.Sequence <= afterSequence || event.Type != assistantThreadEventItemCompleted || event.TurnID != turnID {
+				return errors.New("assistant turn receipt settlement lookup returned an out-of-order event")
+			}
+			afterSequence = event.Sequence
+			if !assistantThreadReceiptSettlementEvent(event) {
+				continue
+			}
+			prior, exists := toolItems.items[event.ItemID]
+			if !assistantThreadReceiptSettlementCanProjectToolItem(event, turnID, prior, exists) {
+				continue
 			}
 			toolItems.observeEvent(event)
 		}
 		if len(events) < assistantThreadEventWindowPageSize {
-			return toolItems, nil
+			return nil
 		}
-		after = events[len(events)-1].Sequence
 	}
-	return toolItems, nil
+	return errors.New("assistant turn receipt settlement history exceeded its bounded page window")
+}
+
+// assistantThreadReceiptSettlementItem accepts only a canonical, sequence-bearing
+// exec receipt projection. Such events are written after the server validates
+// the exact dispatched call and its durable terminal result.
+func assistantThreadReceiptSettlementItem(event store.AssistantThreadEvent, turnID string) (assistantThreadItem, projectAssistantActionFeedItem, bool) {
+	if !assistantThreadReceiptSettlementEvent(event) || event.TurnID != turnID || event.ItemID == "" {
+		return assistantThreadItem{}, projectAssistantActionFeedItem{}, false
+	}
+	var envelope struct {
+		Item assistantThreadItem `json:"item"`
+	}
+	if json.Unmarshal(event.Payload, &envelope) != nil {
+		return assistantThreadItem{}, projectAssistantActionFeedItem{}, false
+	}
+	item := envelope.Item
+	if item.ID != event.ItemID || item.TurnID != turnID || item.Type != assistantThreadEventDynamicToolCall ||
+		item.AssistantMessageID == "" || item.Sequence < 1 {
+		return assistantThreadItem{}, projectAssistantActionFeedItem{}, false
+	}
+	var action projectAssistantActionFeedItem
+	if json.Unmarshal(item.Data, &action) != nil || action.ID == "" || action.Exec == nil ||
+		int64(action.Sequence) != item.Sequence || !projectAssistantToolCallCanSettleStopping(action.Exec.Status) ||
+		!projectAssistantExecCommandReceiptObserved(action.Exec) ||
+		item.ID != assistantThreadDynamicToolItemID(item.AssistantMessageID, action.ID) ||
+		item.Content != action.Title || item.Status != projectAssistantThreadToolItemStatus(action.Status) {
+		return assistantThreadItem{}, projectAssistantActionFeedItem{}, false
+	}
+	return item, action, true
+}
+
+func assistantThreadReceiptSettlementCanCreateToolItem(event store.AssistantThreadEvent, turnID string) bool {
+	_, _, ok := assistantThreadReceiptSettlementItem(event, turnID)
+	return ok
+}
+
+func assistantThreadReceiptSettlementCanProjectToolItem(event store.AssistantThreadEvent, turnID string, prior assistantThreadItem, exists bool) bool {
+	settled, settledAction, ok := assistantThreadReceiptSettlementItem(event, turnID)
+	if !ok {
+		return false
+	}
+	if !exists {
+		return true
+	}
+	if prior.ID != settled.ID || prior.TurnID != turnID || prior.Type != assistantThreadEventDynamicToolCall ||
+		prior.AssistantMessageID != settled.AssistantMessageID || prior.Sequence != settled.Sequence {
+		return false
+	}
+	var priorAction projectAssistantActionFeedItem
+	if json.Unmarshal(prior.Data, &priorAction) != nil {
+		return false
+	}
+	expectedPriorStatus := projectAssistantThreadToolItemStatus(priorAction.Status)
+	if priorAction.Status == projectAssistantActionFeedStatusRunning {
+		expectedPriorStatus = "in_progress"
+	}
+	if priorAction.ID == "" || priorAction.ID != settledAction.ID ||
+		priorAction.Exec == nil || int64(priorAction.Sequence) != prior.Sequence || prior.Content != priorAction.Title ||
+		prior.Status != expectedPriorStatus ||
+		!projectAssistantExecActionIdentityMatches(priorAction.Exec, settledAction.Exec) {
+		return false
+	}
+	if reflect.DeepEqual(priorAction, settledAction) && prior.Status == settled.Status && prior.Content == settled.Content {
+		return true
+	}
+	if prior.Status == "in_progress" && priorAction.Status == projectAssistantActionFeedStatusRunning &&
+		!projectAssistantExecStatusTerminal(priorAction.Exec.Status) {
+		return true
+	}
+	return prior.Status == "failed" && projectAssistantActionFeedHasUnobservedExecResult(priorAction)
+}
+
+func projectAssistantInterruptedExecActionAlreadySettled(metadata map[string]any, event projectToolCallStreamEvent) bool {
+	_, settled := projectAssistantInterruptedExecSettledAction(metadata, event)
+	return settled
+}
+
+func projectAssistantInterruptedExecSettledAction(metadata map[string]any, event projectToolCallStreamEvent) (projectAssistantActionFeedItem, bool) {
+	want := projectAssistantActionFeedItemFromToolCall(event)
+	if want.Exec == nil || want.ID == "" {
+		return projectAssistantActionFeedItem{}, false
+	}
+	for _, action := range projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed]) {
+		if action.ID != want.ID || action.Sequence < 1 {
+			continue
+		}
+		want.Sequence = action.Sequence
+		if reflect.DeepEqual(action, want) {
+			return action, true
+		}
+	}
+	return projectAssistantActionFeedItem{}, false
 }

@@ -270,6 +270,9 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		item.Exec = nil
 		item.RecoveryOf = ""
 		item.Sequence = toolCall.Sequence
+		if item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected {
+			item.Diagnostic = projectAssistantMergeActionDiagnostics(item.Diagnostic, toolCall.FailureDiagnostic)
+		}
 		return item
 	}
 	if toolCall.Mutation != nil {
@@ -287,6 +290,9 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 	}
 	if base := projectToolBaseName(toolCall.Name); base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview {
 		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, toolCall.PreviewInspection)
+	}
+	if item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected {
+		item.Diagnostic = projectAssistantMergeActionDiagnostics(item.Diagnostic, toolCall.FailureDiagnostic)
 	}
 	if toolCall.Mutation != nil && projectAssistantWorkspaceMutationTool(toolCall.Name) && !projectAssistantToolDisclosureMinimal {
 		item.Target = projectAssistantActionSafeTarget(projectAssistantMutationTargetFromResult(toolCall.Mutation, projectToolBaseName(toolCall.Name)))
@@ -310,6 +316,10 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 		// Browser receipts are application-controlled and are intentionally not
 		// an exec disclosure. Keep only the bounded lifecycle row.
 		item.Exec = nil
+		if item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected {
+			parsed := projectAssistantActionFeedDiagnosticFromTypedResult(toolCall.ID, toolCall.Name, string(toolCall.Result))
+			item.Diagnostic = projectAssistantMergeActionDiagnostics(toolCall.FailureDiagnostic, parsed)
+		}
 		return item
 	}
 	item.RecoveryOf = projectAssistantBoundedMutationField(toolCall.RecoveryOf, 120)
@@ -322,6 +332,11 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 	}
 	if base := projectToolBaseName(toolCall.Name); base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview {
 		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, projectAssistantPreviewInspectionActionFromToolResult(toolCall.Name, string(toolCall.Result)))
+	}
+	if item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected {
+		parsed := projectAssistantActionFeedDiagnosticFromTypedResult(toolCall.ID, toolCall.Name, string(toolCall.Result))
+		item.Diagnostic = projectAssistantMergeActionDiagnostics(item.Diagnostic, toolCall.FailureDiagnostic)
+		item.Diagnostic = projectAssistantMergeActionDiagnostics(item.Diagnostic, parsed)
 	}
 	return item
 }
@@ -582,19 +597,50 @@ func projectAssistantMutationFailureFromError(name string, args map[string]any, 
 	code := "mutation_failed"
 	path := projectAssistantMutationFailurePath(operation, args)
 	var mutationErr *workspace.MutationError
+	var changedFiles []string
 	if errors.As(invokeErr, &mutationErr) && mutationErr != nil {
+		changedFiles = projectAssistantSanitizedMutationChangedFiles(mutationErr.ChangedFiles)
 		code = string(mutationErr.Code)
 		if clean, err := workspace.CleanProjectPath(mutationErr.Path); err == nil {
 			path = projectAssistantActionSafeTarget(clean)
 		}
 	}
 	return projectAssistantMutationFailure{
-		Code:       projectAssistantBoundedMutationField(code, 64),
-		Operation:  projectAssistantBoundedMutationField(operation, 64),
-		Path:       projectAssistantBoundedMutationField(path, 240),
-		Guidance:   projectAssistantBoundedMutationField(projectAssistantMutationRecoveryGuidance(operation, code), 320),
-		RecoveryOf: projectAssistantBoundedMutationField(recoveryOf, 120),
+		ChangedFiles: changedFiles,
+		Code:         projectAssistantBoundedMutationField(code, 64),
+		Operation:    projectAssistantBoundedMutationField(operation, 64),
+		Path:         projectAssistantBoundedMutationField(path, 240),
+		Guidance:     projectAssistantBoundedMutationField(projectAssistantMutationRecoveryGuidance(operation, code), 320),
+		RecoveryOf:   projectAssistantBoundedMutationField(recoveryOf, 120),
 	}
+}
+
+func projectAssistantSanitizedMutationChangedFiles(paths []string) []string {
+	const maxChangedFiles = 32
+	if len(paths) == 0 {
+		return nil
+	}
+	changedFiles := make([]string, 0, min(len(paths), maxChangedFiles))
+	seen := make(map[string]struct{}, min(len(paths), maxChangedFiles))
+	for _, path := range paths {
+		clean, err := workspace.CleanProjectPath(path)
+		if err != nil {
+			continue
+		}
+		safe := projectAssistantActionSafeTarget(clean)
+		if safe == "" {
+			continue
+		}
+		if _, exists := seen[safe]; exists {
+			continue
+		}
+		seen[safe] = struct{}{}
+		changedFiles = append(changedFiles, safe)
+		if len(changedFiles) == maxChangedFiles {
+			break
+		}
+	}
+	return changedFiles
 }
 
 func projectAssistantMutationFailurePath(operation string, args map[string]any) string {
@@ -809,7 +855,7 @@ func projectAssistantActionFeedItemStatus(status string) string {
 		return projectAssistantActionFeedStatusWaiting
 	case "failed":
 		return projectAssistantActionFeedStatusFailed
-	case "error", "timed_out":
+	case "error", "timed_out", "stale", "outcome_unknown", "unverifiable", "blocked", "not_executed":
 		return projectAssistantActionFeedStatusFailed
 	case "canceled", "cancelled":
 		// Cancellation is a truthful terminal process outcome, but it is not a
@@ -990,6 +1036,27 @@ func projectAssistantActionFeedDiagnostic(id, rawError string) *projectAssistant
 	}
 }
 
+func projectAssistantInterruptedExecDiagnostic(id string) *projectAssistantActionDiagnostic {
+	sum := sha256.Sum256([]byte(id))
+	return &projectAssistantActionDiagnostic{
+		Category:    "runtime",
+		Message:     "The run was interrupted before a terminal command result was recorded; the process outcome is unknown.",
+		ReferenceID: "action-" + hex.EncodeToString(sum[:6]),
+		Code:        "command_outcome_unobserved",
+		Operation:   projectToolExecCommand,
+		Guidance:    "Inspect the process and current workspace state before retrying.",
+	}
+}
+
+func projectAssistantActionFeedHasUnobservedExecResult(action projectAssistantActionFeedItem) bool {
+	if action.Status != projectAssistantActionFeedStatusFailed || action.Diagnostic == nil ||
+		action.Diagnostic.Code != "command_outcome_unobserved" || action.Exec == nil || action.Exec.ExitCode != nil {
+		return false
+	}
+	status := projectAssistantExecCommandReceiptStatus(action.Exec)
+	return status == "outcome_unknown" || status == "unverifiable"
+}
+
 // projectAssistantActionFeedDiagnosticForTool adds trusted tool-contract
 // context to a bounded diagnostic without exposing the tool name or raw
 // provider payload. Provider MCP reads can return terse errors such as
@@ -1005,6 +1072,253 @@ func projectAssistantActionFeedDiagnosticForTool(id, name, rawError string) *pro
 		diagnostic.Message = projectAssistantActionDiagnosticMessage("provider", rawError)
 	}
 	return diagnostic
+}
+
+func projectAssistantActionFeedDiagnosticFromTypedResult(id, name, result string) *projectAssistantActionDiagnostic {
+	var payload struct {
+		Status      string          `json:"status"`
+		Phase       string          `json:"phase"`
+		Outcome     string          `json:"outcome"`
+		Code        string          `json:"code"`
+		Error       json.RawMessage `json:"error"`
+		IsError     bool            `json:"isError"`
+		Successful  bool            `json:"successful"`
+		SourceStale bool            `json:"sourceStale"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &payload); err != nil {
+		return nil
+	}
+	status := ""
+	for _, candidate := range []string{payload.Status, payload.Phase, payload.Outcome} {
+		if strings.TrimSpace(candidate) != "" {
+			status = strings.ToLower(strings.TrimSpace(candidate))
+			break
+		}
+	}
+	if payload.Successful && !payload.SourceStale || !projectAssistantTypedFailureStatus(status) && !payload.IsError && !payload.SourceStale {
+		return nil
+	}
+	category := "runtime"
+	code := projectAssistantSafeDiagnosticCode(payload.Code)
+	message := "The action could not be completed."
+	guidance := "Review the current state and retry only when the blocker is resolved."
+	base := projectToolBaseName(name)
+	switch {
+	case base == projectToolExecCommand && (status == "stale" || payload.SourceStale):
+		category = "validation"
+		code = "source_revision_stale"
+		message = "The command ran against an older source revision; its result does not verify the current workspace."
+		guidance = "Rerun the check against the current workspace revision before reporting its result."
+	case base == projectToolExecCommand && (status == "outcome_unknown" || status == "unverifiable"):
+		category = "runtime"
+		code = "command_outcome_unobserved"
+		message = "The command outcome could not be confirmed; inspect the process and current workspace state before retrying."
+		guidance = "Inspect the process and current workspace state before retrying."
+	case base == projectToolExecCommand && status == "blocked" && code == "invalid_workdir":
+		category = "validation"
+		code = "command_workdir_blocked"
+		message = "Command execution was blocked by its working-directory boundary."
+		guidance = "Use a relative directory inside the selected component root, or omit workdir."
+	case status == "timed_out":
+		category = "timeout"
+		code = projectAssistantDefaultDiagnosticCode(code, "action_timed_out")
+		message = "The action did not finish before its time limit."
+	case status == "denied" || status == "rejected":
+		category = "permission"
+		code = projectAssistantDefaultDiagnosticCode(code, "action_rejected")
+		message = "App Studio did not permit this action to run."
+	case projectAssistantWorkspaceMutationTool(name):
+		category = "validation"
+		failure := projectAssistantMutationFailureFromResult(name, result)
+		if failure != nil {
+			code = projectAssistantDefaultDiagnosticCode(code, failure.Code)
+			guidance = failure.Guidance
+		}
+		message = "The file mutation could not be completed."
+	case projectAssistantProviderReadTool(name):
+		category = "provider"
+		code = projectAssistantDefaultDiagnosticCode(code, "provider_action_failed")
+		message = "A connected provider could not complete this action."
+	case status == "outcome_unknown" || status == "unverifiable":
+		code = projectAssistantDefaultDiagnosticCode(code, "action_outcome_unverified")
+		message = "The action outcome could not be confirmed; inspect the current state before retrying."
+	case status == "not_executed":
+		code = projectAssistantDefaultDiagnosticCode(code, "action_not_executed")
+		message = "The action did not start."
+	case status == "partial_failure":
+		code = projectAssistantDefaultDiagnosticCode(code, "action_partially_failed")
+		message = "The action stopped after making partial progress."
+	default:
+		code = projectAssistantDefaultDiagnosticCode(code, "action_failed")
+		if base == projectToolExecCommand || base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview {
+			category = "runtime"
+		}
+	}
+	sum := sha256.Sum256([]byte(id))
+	return &projectAssistantActionDiagnostic{
+		Category:    category,
+		Message:     message,
+		ReferenceID: "action-" + hex.EncodeToString(sum[:6]),
+		Code:        code,
+		Operation:   projectAssistantBoundedMutationField(base, 64),
+		Guidance:    projectAssistantBoundedMutationField(guidance, 320),
+	}
+}
+
+func projectAssistantTypedFailureStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "failure", "error", "partial_failure", "timed_out", "not_executed", "outcome_unknown", "unverifiable", "blocked", "denied", "not_configured", "not_ready", "rejected", "unavailable", "canceled", "cancelled", "stale":
+		return true
+	default:
+		return false
+	}
+}
+
+func projectAssistantSafeDiagnosticCode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 0 || len(value) > 64 {
+		return ""
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+			return ""
+		}
+	}
+	return value
+}
+
+func projectAssistantMutationFailureFromResult(name, result string) *projectAssistantMutationFailure {
+	if !projectAssistantWorkspaceMutationTool(name) {
+		return nil
+	}
+	var payload struct {
+		Status       string          `json:"status"`
+		Code         string          `json:"code"`
+		Operation    string          `json:"operation"`
+		Path         string          `json:"path"`
+		ChangedFiles []string        `json:"changedFiles"`
+		RecoveryOf   string          `json:"recoveryOf"`
+		Guidance     string          `json:"guidance"`
+		Error        json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &payload); err != nil || !projectAssistantTypedFailureStatus(payload.Status) {
+		return nil
+	}
+	var nested projectAssistantMutationFailure
+	if len(payload.Error) > 0 && json.Unmarshal(payload.Error, &nested) == nil {
+		if len(payload.ChangedFiles) == 0 {
+			payload.ChangedFiles = nested.ChangedFiles
+		}
+		if payload.Code == "" {
+			payload.Code = nested.Code
+		}
+		if payload.Operation == "" {
+			payload.Operation = nested.Operation
+		}
+		if payload.Path == "" {
+			payload.Path = nested.Path
+		}
+		if payload.RecoveryOf == "" {
+			payload.RecoveryOf = nested.RecoveryOf
+		}
+		if payload.Guidance == "" {
+			payload.Guidance = nested.Guidance
+		}
+	} else if len(payload.Error) > 0 {
+		var errorText string
+		if json.Unmarshal(payload.Error, &errorText) == nil && payload.Code == "" {
+			payload.Code = projectAssistantMutationErrorCode(errorText)
+		}
+	}
+	code := projectAssistantSafeDiagnosticCode(payload.Code)
+	if code == "" {
+		code = "mutation_failed"
+	}
+	operation := projectToolBaseName(name)
+	if candidate := projectToolBaseName(payload.Operation); candidate != "" && projectAssistantWorkspaceMutationTool(candidate) {
+		operation = candidate
+	}
+	path := ""
+	if strings.TrimSpace(payload.Path) != "" {
+		if clean, err := workspace.CleanProjectPath(payload.Path); err == nil {
+			path = projectAssistantActionSafeTarget(clean)
+		}
+	}
+	return &projectAssistantMutationFailure{
+		ChangedFiles: projectAssistantSanitizedMutationChangedFiles(payload.ChangedFiles),
+		Code:         projectAssistantBoundedMutationField(code, 64),
+		Operation:    projectAssistantBoundedMutationField(operation, 64),
+		Path:         path,
+		Guidance:     projectAssistantBoundedMutationField(projectAssistantMutationRecoveryGuidance(operation, code), 320),
+		RecoveryOf:   projectAssistantBoundedMutationField(payload.RecoveryOf, 120),
+	}
+}
+
+func projectAssistantDefaultDiagnosticCode(value, fallback string) string {
+	if safe := projectAssistantSafeDiagnosticCode(value); safe != "" {
+		return safe
+	}
+	return fallback
+}
+
+func projectAssistantCloneActionDiagnostic(diagnostic *projectAssistantActionDiagnostic) *projectAssistantActionDiagnostic {
+	if diagnostic == nil {
+		return nil
+	}
+	category := strings.TrimSpace(diagnostic.Category)
+	switch category {
+	case "configuration", "permission", "timeout", "validation", "runtime", "provider", "unknown":
+	default:
+		category = "unknown"
+	}
+	message := projectAssistantBoundedMutationField(projectEinoAssistantSafeText(diagnostic.Message), 240)
+	if message == "" {
+		message = "App Studio could not complete this action."
+	}
+	return &projectAssistantActionDiagnostic{
+		Category:    category,
+		Message:     message,
+		ReferenceID: projectAssistantBoundedMutationField(diagnostic.ReferenceID, 48),
+		Code:        projectAssistantSafeDiagnosticCode(diagnostic.Code),
+		Operation:   projectAssistantBoundedMutationField(diagnostic.Operation, 64),
+		Path:        projectAssistantBoundedMutationField(diagnostic.Path, 240),
+		Guidance:    projectAssistantBoundedMutationField(projectEinoAssistantSafeText(diagnostic.Guidance), 320),
+	}
+}
+
+func projectAssistantMergeActionDiagnostics(existing, next *projectAssistantActionDiagnostic) *projectAssistantActionDiagnostic {
+	if existing == nil {
+		return projectAssistantCloneActionDiagnostic(next)
+	}
+	if next == nil {
+		return existing
+	}
+	merged := projectAssistantCloneActionDiagnostic(next)
+	if merged == nil {
+		return existing
+	}
+	if existing.Category == "unknown" && merged.Category != "unknown" {
+		if merged.Operation == "" {
+			merged.Operation = existing.Operation
+		}
+		if merged.Path == "" {
+			merged.Path = existing.Path
+		}
+		if merged.Guidance == "" {
+			merged.Guidance = existing.Guidance
+		}
+		return merged
+	}
+	if merged.Operation != "" && existing.Operation == "" {
+		existing.Operation = merged.Operation
+	}
+	if merged.Path != "" && existing.Path == "" {
+		existing.Path = merged.Path
+	}
+	if merged.Guidance != "" && existing.Guidance == "" {
+		existing.Guidance = merged.Guidance
+	}
+	return existing
 }
 
 func projectAssistantProviderReadTool(name string) bool {
@@ -1228,12 +1542,13 @@ func projectAssistantActionDiagnosticMessage(category, raw string) string {
 		return "Private preview inspection is unavailable: this App Studio deployment has no usable RAILGRID_HUB_PUBLIC_URL (Helm chart value hub.publicURL). Ask the platform operator to set it."
 	}
 	return map[string]string{
-		"timeout":    "The action did not finish before its time limit.",
-		"permission": "App Studio did not have permission to complete this action.",
-		"validation": "The action could not run because its input was not valid.",
-		"runtime":    "The development runtime could not complete this action.",
-		"provider":   "A connected provider could not complete this action.",
-		"unknown":    "App Studio could not complete this action.",
+		"configuration": "The action was blocked by its configuration or workspace boundary.",
+		"timeout":       "The action did not finish before its time limit.",
+		"permission":    "App Studio did not have permission to complete this action.",
+		"validation":    "The action could not run because its input was not valid.",
+		"runtime":       "The development runtime could not complete this action.",
+		"provider":      "A connected provider could not complete this action.",
+		"unknown":       "App Studio could not complete this action.",
 	}[category]
 }
 

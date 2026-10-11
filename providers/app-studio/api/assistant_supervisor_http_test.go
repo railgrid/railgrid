@@ -82,12 +82,12 @@ func TestTerminalToolResultSettlesWhileRunIsStopping(t *testing.T) {
 	}
 	canceled := running
 	canceled.Status = "canceled"
-	canceled.Exec = &projectAssistantExecMetadata{Argv: []string{"sleep", "45"}, Status: "canceled", Component: "workspace"}
+	canceled.Exec = &projectAssistantExecMetadata{Argv: []string{"sleep", "45"}, Status: "canceled", Component: "workspace", ExitCode: intPointer(130)}
 	state := &projectAssistantDurableMetadataState{status: "Working", toolCalls: []projectToolCallStreamEvent{canceled}}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
 	server.tenantWorkspaces = defaultTestWorkspaces.lookup
 	server.tenantActors = defaultTestActors.lookup
-	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state); err != nil {
+	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state, canceled); err != nil {
 		t.Fatal(err)
 	}
 	aborted, err := supervisor.AbortWith(scope, run.ID, nil, run.ThreadID)
@@ -1195,5 +1195,306 @@ func TestProjectAssistantVerificationViewCarriesFailureReasons(t *testing.T) {
 	verified, ok := projectAssistantVerificationFromMetadata(map[string]any{"outcome": "runtime_verified", "summary": "stale text", "blockers": []any{"old"}})
 	if !ok || verified.Summary != "" || len(verified.Blockers) != 0 {
 		t.Errorf("positive receipt kept stale detail: %#v", verified)
+	}
+}
+
+func TestTerminalExecResultSettlesAfterRunIsInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "project-uid-1"}
+	run := store.AssistantRun{ID: "run-late-exec", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	startedAt := now.Add(-time.Second)
+	run.Audit, _ = json.Marshal(projectAssistantRunAudit{Version: projectAssistantAuditVersion, StartedAt: startedAt, DurationMS: 10})
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "run it", CreatedAt: now, UpdatedAt: now}
+	running := projectToolCallStreamEvent{
+		ID:        "call-late-exec",
+		Name:      projectToolExecCommand,
+		Status:    "running",
+		Sequence:  1,
+		Arguments: `{"component":"workspace","argv":["node","-e","task"],"timeoutSeconds":120}`,
+		Exec:      &projectAssistantExecMetadata{Argv: []string{"node", "-e", "task"}, Status: "running", Component: "workspace", TimeoutSeconds: 120},
+	}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, []projectToolCallStreamEvent{running}, nil), CreatedAt: now.Add(time.Microsecond), UpdatedAt: now.Add(time.Microsecond)}
+	msgStore := store.NewMemoryStore()
+	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := newProjectAssistantSupervisor(ctx, msgStore)
+	accumulator, err := supervisor.Attach(scope, run, assistant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseWorker := make(chan struct{})
+	defer close(releaseWorker)
+	if err := supervisor.Start(ctx, scope, run, assistant, func(context.Context, *projectAssistantSnapshotAccumulator) { <-releaseWorker }); err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.SetStatus(ctx, store.AssistantRunStatusStopping); err != nil {
+		t.Fatal(err)
+	}
+	aborted, err := supervisor.AbortWith(scope, run.ID, nil, run.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !aborted {
+		t.Fatal("stopping run was not interrupted")
+	}
+
+	code := intPointer(130)
+	canceled := projectToolCallStreamEvent{
+		ID:         running.ID,
+		Name:       running.Name,
+		Status:     "canceled",
+		ObservedAt: now.Add(2 * time.Second),
+		Exec: &projectAssistantExecMetadata{
+			Argv: []string{"node", "-e", "task"}, Status: "canceled", Component: "workspace", TimeoutSeconds: 120, ExitCode: code,
+		},
+	}
+	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	state := &projectAssistantDurableMetadataState{status: "Interrupted", toolCalls: []projectToolCallStreamEvent{running, canceled}}
+	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state, canceled); err != nil {
+		t.Fatalf("persist late terminal result: %v", err)
+	}
+
+	settledRun, err := msgStore.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settledRun.Status != store.AssistantRunStatusInterrupted {
+		t.Fatalf("late terminal result changed run status to %q", settledRun.Status)
+	}
+	page, err := msgStore.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settled *projectAssistantActionFeedItem
+	for _, message := range page.Items {
+		if message.ID != assistant.ID {
+			continue
+		}
+		for _, action := range projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed]) {
+			if action.ID == projectAssistantActionPublicID(running.ID) {
+				settled = &action
+			}
+		}
+	}
+	if settled == nil || settled.Status != projectAssistantActionFeedStatusCanceled || settled.Exec == nil || settled.Exec.Status != "canceled" {
+		t.Fatalf("late canceled exec action = %#v, want canceled terminal receipt", settled)
+	}
+	if settled.Exec.ExitCode == nil || *settled.Exec.ExitCode != 130 {
+		t.Fatalf("late canceled exec lost its observed exit code: %#v", settled.Exec)
+	}
+	var settledAudit projectAssistantRunAudit
+	if err := json.Unmarshal(settledRun.Audit, &settledAudit); err != nil {
+		t.Fatalf("decode persisted late audit: %v", err)
+	}
+	if len(settledAudit.Tools) != 1 || settledAudit.Tools[0].ID != running.ID || settledAudit.Tools[0].Status != "canceled" || settledAudit.Tools[0].AtOffsetMS < 1000 {
+		t.Fatalf("persisted late audit = %#v, want the matching command call canceled", settledAudit.Tools)
+	}
+
+	beforeUnknown, err := msgStore.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := canceled
+	unknown.ID = "unknown-late-call"
+	unknown.Exec = cloneProjectAssistantExecMetadata(canceled.Exec)
+	unknownState := &projectAssistantDurableMetadataState{status: "Interrupted", toolCalls: []projectToolCallStreamEvent{unknown}}
+	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, unknownState, unknown); err != nil {
+		t.Fatalf("reject unknown late call: %v", err)
+	}
+	afterUnknown, err := msgStore.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterUnknown.Revision != beforeUnknown.Revision || afterUnknown.Status != store.AssistantRunStatusInterrupted {
+		t.Fatalf("unknown late call changed interrupted run: before=%#v after=%#v", beforeUnknown, afterUnknown)
+	}
+	var unknownAudit projectAssistantRunAudit
+	if err := json.Unmarshal(afterUnknown.Audit, &unknownAudit); err != nil {
+		t.Fatalf("decode audit after unknown call: %v", err)
+	}
+	if len(unknownAudit.Tools) != 1 || unknownAudit.Tools[0].Status != "canceled" {
+		t.Fatalf("unknown late call changed audit: %#v", unknownAudit.Tools)
+	}
+}
+
+func TestInterruptedExecSettlementRequiresSyntheticUnknownOutcome(t *testing.T) {
+	running := projectToolCallStreamEvent{
+		ID:        "call-late-exec",
+		Name:      projectToolExecCommand,
+		Status:    "running",
+		Sequence:  1,
+		Arguments: `{"component":"workspace","argv":["node","task"]}`,
+		Exec:      &projectAssistantExecMetadata{Argv: []string{"node", "task"}, Status: "running", Component: "workspace"},
+	}
+	terminal := running
+	terminal.Status = "canceled"
+	terminal.Exec = cloneProjectAssistantExecMetadata(running.Exec)
+	terminal.Exec.Status = "canceled"
+	terminal.Exec.ExitCode = intPointer(130)
+	audit, err := json.Marshal(projectAssistantRunAudit{Version: projectAssistantAuditVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rawAction := projectAssistantActionFeedItemFromToolCall(running)
+	metadata := map[string]any{projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{rawAction}}
+	missingSequence := rawAction
+	missingSequence.Sequence = 0
+	metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{missingSequence}
+	if projectAssistantInterruptedExecActionCanSettle(metadata, audit, terminal) {
+		t.Fatal("late terminal result was allowed to settle an action without dispatch sequence evidence")
+	}
+	metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{rawAction}
+	if !projectAssistantInterruptedExecActionCanSettle(metadata, audit, terminal) {
+		t.Fatal("synthetic interrupted command failure did not accept its matching terminal result")
+	}
+	unconfirmed := terminal
+	unconfirmed.Exec = cloneProjectAssistantExecMetadata(terminal.Exec)
+	unconfirmed.Exec.ExitCode = nil
+	if projectAssistantInterruptedExecActionCanSettle(metadata, audit, unconfirmed) {
+		t.Fatal("a cancellation request without a terminal receipt settled an interrupted command")
+	}
+
+	actualFailure := rawAction
+	actualFailure.Status = projectAssistantActionFeedStatusFailed
+	actualFailure.Exec.Status = "failed"
+	actualFailure.Diagnostic = projectAssistantActionFeedDiagnostic(actualFailure.ID, "")
+	metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{actualFailure}
+	if projectAssistantInterruptedExecActionCanSettle(metadata, audit, terminal) {
+		t.Fatal("late terminal result was allowed to overwrite a genuine command failure")
+	}
+
+	auditWithFailure, err := json.Marshal(projectAssistantRunAudit{Version: projectAssistantAuditVersion, Tools: []projectAssistantAuditTool{{
+		ID: running.ID, Name: projectToolExecCommand, Status: "failed",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{rawAction}
+	if projectAssistantInterruptedExecActionCanSettle(metadata, auditWithFailure, terminal) {
+		t.Fatal("late terminal result was allowed to rewrite a terminal audit failure")
+	}
+
+	fullAuditValue := projectAssistantRunAudit{Version: projectAssistantAuditVersion}
+	for index := 0; index < projectAssistantAuditMaxTools; index++ {
+		fullAuditValue.Tools = append(fullAuditValue.Tools, projectAssistantAuditTool{
+			ID: fmt.Sprintf("history-%d", index), Name: "read_file", Status: "succeeded",
+		})
+	}
+	fullAudit, err := json.Marshal(fullAuditValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settledAudit, ok := projectAssistantAuditInterruptedExecUpdate(fullAudit, terminal)
+	if !ok {
+		t.Fatal("full capped audit blocked a known interrupted command receipt")
+	}
+	if !reflect.DeepEqual(settledAudit, fullAudit) {
+		t.Fatalf("full audit changed during feed-only settlement: before=%s after=%s", fullAudit, settledAudit)
+	}
+	metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{rawAction}
+	if !projectAssistantInterruptedExecActionCanSettle(metadata, fullAudit, terminal) {
+		t.Fatal("full capped audit blocked an otherwise valid interrupted command settlement")
+	}
+}
+
+func TestInterruptedExecSnapshotFailureRestoresCommittedTerminalProjection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "project-uid-1"}
+	run := store.AssistantRun{ID: "run-late-exec-save-failure", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run.Audit, _ = json.Marshal(projectAssistantRunAudit{Version: projectAssistantAuditVersion, StartedAt: now})
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "run it", CreatedAt: now, UpdatedAt: now}
+	running := projectToolCallStreamEvent{
+		ID:        "call-late-exec",
+		Name:      projectToolExecCommand,
+		Status:    "running",
+		Sequence:  1,
+		Arguments: `{"component":"workspace","argv":["node","task"]}`,
+		Exec:      &projectAssistantExecMetadata{Argv: []string{"node", "task"}, Status: "running", Component: "workspace"},
+	}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, []projectToolCallStreamEvent{running}, nil), CreatedAt: now.Add(time.Microsecond), UpdatedAt: now.Add(time.Microsecond)}
+	inner := store.NewMemoryStore()
+	if _, err := inner.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+	failing := &failAssistantSnapshotSavesStore{Store: inner}
+	supervisor := newProjectAssistantSupervisor(ctx, failing)
+	accumulator, err := supervisor.Attach(scope, run, assistant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseWorker := make(chan struct{})
+	defer close(releaseWorker)
+	if err := supervisor.Start(ctx, scope, run, assistant, func(context.Context, *projectAssistantSnapshotAccumulator) { <-releaseWorker }); err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.SetStatus(ctx, store.AssistantRunStatusStopping); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := supervisor.AbortWith(scope, run.ID, nil, run.ThreadID); err != nil || !stopped {
+		t.Fatalf("interrupt stopping run: stopped=%t err=%v", stopped, err)
+	}
+	committed, err := inner.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing.failures = failing.calls + 1
+
+	canceled := projectToolCallStreamEvent{
+		ID: running.ID, Name: running.Name, Status: "canceled",
+		Exec: &projectAssistantExecMetadata{Argv: []string{"node", "task"}, Status: "canceled", Component: "workspace", ExitCode: intPointer(130)},
+	}
+	server := NewWithWorkspace(nil, failing, nil, "", false)
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+	state := &projectAssistantDurableMetadataState{status: "Interrupted", toolCalls: []projectToolCallStreamEvent{running, canceled}}
+	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state, canceled); err == nil {
+		t.Fatal("late interrupted receipt snapshot unexpectedly succeeded")
+	}
+
+	persisted, err := inner.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != store.AssistantRunStatusInterrupted || persisted.Revision != committed.Revision || !reflect.DeepEqual(persisted.Audit, committed.Audit) {
+		t.Fatalf("failed late receipt changed durable interrupted run: before=%#v after=%#v", committed, persisted)
+	}
+
+	supervisor.mu.Lock()
+	key := projectAssistantRunKey{
+		OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID,
+	}
+	active := supervisor.runs[key]
+	if active == nil || active.run.Status != store.AssistantRunStatusInterrupted || active.run.Revision != committed.Revision ||
+		!reflect.DeepEqual(active.run, active.committedRun) || !reflect.DeepEqual(active.message, active.committedMessage) {
+		supervisor.mu.Unlock()
+		t.Fatalf("failed late receipt left uncommitted in-memory state: active=%#v", active)
+	}
+	activeMessage := active.message
+	supervisor.mu.Unlock()
+	actions := projectAssistantActionFeedFromMetadata(activeMessage.Metadata[projectMessageMetadataAssistantActionFeed])
+	if len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusFailed || actions[0].Diagnostic == nil ||
+		actions[0].Diagnostic.Code != "command_outcome_unobserved" || actions[0].Exec == nil || actions[0].Exec.Status != "failed" {
+		t.Fatalf("failed late receipt did not restore the committed synthetic interrupted action: %#v", actions)
+	}
+}
+
+func TestProjectAssistantStoppingSettlementAcceptsOnlyObservedTerminalStates(t *testing.T) {
+	for _, status := range []string{"succeeded", "failed", "canceled", "cancelled", "timed_out", "blocked", "rejected", "stale", "not_executed", "skipped"} {
+		if !projectAssistantToolCallCanSettleStopping(status) {
+			t.Errorf("terminal status %q cannot settle", status)
+		}
+	}
+	for _, status := range []string{"", "running", "outcome_unknown", "unverifiable"} {
+		if projectAssistantToolCallCanSettleStopping(status) {
+			t.Errorf("unobserved status %q can settle", status)
+		}
 	}
 }

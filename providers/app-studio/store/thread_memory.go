@@ -270,6 +270,7 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 	delete(s.assistantTurns[scope], threadID)
 	delete(s.threadEvents[scope], threadID)
 	delete(s.threadTurnEvents[scope], threadID)
+	delete(s.threadTurnEventIndex[scope], threadID)
 	delete(s.threadTurnStarts[scope], threadID)
 	delete(s.assistantThreads[scope], threadID)
 	if len(s.assistantThreads[scope]) == 0 {
@@ -283,6 +284,9 @@ func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, thre
 	}
 	if len(s.threadTurnEvents[scope]) == 0 {
 		delete(s.threadTurnEvents, scope)
+	}
+	if len(s.threadTurnEventIndex[scope]) == 0 {
+		delete(s.threadTurnEventIndex, scope)
 	}
 	if len(s.threadTurnStarts[scope]) == 0 {
 		delete(s.threadTurnStarts, scope)
@@ -551,6 +555,14 @@ func (s *MemoryStore) appendAssistantThreadTurnEventsLocked(scope Scope, threadI
 			s.threadTurnEvents[scope] = map[string][]AssistantThreadEvent{}
 		}
 		s.threadTurnEvents[scope][threadID] = append(s.threadTurnEvents[scope][threadID], cloneAssistantThreadEvent(event))
+		if s.threadTurnEventIndex[scope] == nil {
+			s.threadTurnEventIndex[scope] = map[string]map[assistantThreadTurnEventLookupKey][]AssistantThreadEvent{}
+		}
+		if s.threadTurnEventIndex[scope][threadID] == nil {
+			s.threadTurnEventIndex[scope][threadID] = map[assistantThreadTurnEventLookupKey][]AssistantThreadEvent{}
+		}
+		lookupKey := assistantThreadTurnEventLookupKey{turnID: strings.TrimSpace(event.TurnID), eventType: strings.TrimSpace(event.Type)}
+		s.threadTurnEventIndex[scope][threadID][lookupKey] = append(s.threadTurnEventIndex[scope][threadID][lookupKey], cloneAssistantThreadEvent(event))
 		if event.Type == "turn.started" {
 			if s.threadTurnStarts[scope] == nil {
 				s.threadTurnStarts[scope] = map[string]map[string]int64{}
@@ -645,6 +657,62 @@ func (s *MemoryStore) ListAssistantThreadTurnEventsBefore(_ context.Context, sco
 	out := make([]AssistantThreadEvent, 0, end-start)
 	for index := start; index < end; index++ {
 		out = append(out, cloneAssistantThreadEvent(events[index]))
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListAssistantThreadTurnEventsAfter(_ context.Context, scope Scope, threadID, turnID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	eventType = strings.TrimSpace(eventType)
+	if turnID == "" || eventType == "" {
+		return nil, errors.New("assistant turn id and event type are required")
+	}
+	limit = normalizeLimit(limit)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.assistantThreads[scope][threadID]; !ok {
+		return nil, ErrAssistantThreadNotFound
+	}
+	events := s.threadTurnEventIndex[scope][threadID][assistantThreadTurnEventLookupKey{turnID: turnID, eventType: eventType}]
+	start := sort.Search(len(events), func(index int) bool {
+		return events[index].Sequence > afterSequence
+	})
+	end := min(start+limit, len(events))
+	out := make([]AssistantThreadEvent, 0, end-start)
+	for index := start; index < end; index++ {
+		out = append(out, cloneAssistantThreadEvent(events[index]))
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListAssistantThreadTurnEventsByTypeAfter(_ context.Context, scope Scope, threadID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return nil, errors.New("assistant thread event type is required")
+	}
+	limit = normalizeLimit(limit)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.assistantThreads[scope][threadID]; !ok {
+		return nil, ErrAssistantThreadNotFound
+	}
+	events := s.threadTurnEvents[scope][threadID]
+	start := sort.Search(len(events), func(index int) bool {
+		return events[index].Sequence > afterSequence
+	})
+	out := make([]AssistantThreadEvent, 0, min(limit, len(events)-start))
+	for index := start; index < len(events) && len(out) < limit; index++ {
+		if events[index].Type == eventType {
+			out = append(out, cloneAssistantThreadEvent(events[index]))
+		}
 	}
 	return out, nil
 }
