@@ -389,7 +389,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			effectiveBinding := binding
 			if isProjectDevelopmentBinding(env.spec.Name, binding) {
 				if actionsTenantPath != "" {
-					effectiveBinding, err = r.overlayDevelopmentBinding(&p, binding, actionsTenantPath)
+					effectiveBinding, err = r.overlayDevelopmentBinding(&p, binding, actionsTenantPath, clusterName)
 				}
 				// Preview visibility is Project policy, not binding data, so it
 				// is overlaid here on every pass. Applied outside the actions
@@ -665,7 +665,7 @@ func resolveLogicalClusterPath(ctx context.Context, c client.Client, clusterName
 	return path, nil
 }
 
-func (r *Reconciler) overlayDevelopmentBinding(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, tenantPath string) (aiv1alpha1.ProjectProviderBindingSpec, error) {
+func (r *Reconciler) overlayDevelopmentBinding(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, tenantPath, clusterID string) (aiv1alpha1.ProjectProviderBindingSpec, error) {
 	values, err := bindings.Values(binding)
 	if err != nil {
 		return binding, err
@@ -675,6 +675,7 @@ func (r *Reconciler) overlayDevelopmentBinding(p *aiv1alpha1.Project, binding ai
 		return binding, err
 	}
 	overlay, err := bindings.NewActionsOverlay(bindings.ActionsIdentity{
+		ClusterID:   clusterID,
 		TenantPath:  tenantPath,
 		Org:         org,
 		Workspace:   workspace,

@@ -34,9 +34,11 @@ import (
 
 type fakeIssuer struct {
 	called    bool
+	calls     int
 	clusterID string
 	subject   string
 	scope     serviceaccounts.WorkloadIdentityScope
+	errors    []error
 }
 
 type fakeScopeResolver struct{}
@@ -50,8 +52,26 @@ func (fakeScopeResolver) Resolve(_ context.Context, _, _ string, req ExchangeReq
 
 func (f *fakeIssuer) EnsureWorkload(_ context.Context, clusterID string, scope serviceaccounts.WorkloadIdentityScope, subject string) (*identity.Token, error) {
 	f.called = true
+	f.calls++
 	f.clusterID, f.subject, f.scope = clusterID, subject, scope
+	if f.calls <= len(f.errors) && f.errors[f.calls-1] != nil {
+		return nil, f.errors[f.calls-1]
+	}
 	return &identity.Token{Token: "railgrid-token", TokenType: "Bearer", ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
+}
+
+type sequenceScopeResolver struct {
+	scopes []serviceaccounts.WorkloadIdentityScope
+	calls  int
+}
+
+func (r *sequenceScopeResolver) Resolve(_ context.Context, _, _ string, _ ExchangeRequest) (serviceaccounts.WorkloadIdentityScope, error) {
+	index := r.calls
+	r.calls++
+	if index >= len(r.scopes) {
+		index = len(r.scopes) - 1
+	}
+	return r.scopes[index], nil
 }
 
 func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
@@ -94,6 +114,30 @@ func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
 	}
 	if issuer.subject != "runtime" {
 		t.Fatalf("attested subject recorded as %q, want %q", issuer.subject, "runtime")
+	}
+}
+
+func TestHandlerReResolvesProjectAfterWorkloadRevisionConflict(t *testing.T) {
+	issuer := &fakeIssuer{errors: []error{identity.RevisionConflict{Code: identity.CodeStaleOwner, Reason: "Project changed"}}}
+	firstScope := serviceaccounts.WorkloadIdentityScope{ProjectGeneration: 1, ProjectResourceVersion: "project-rv-old"}
+	currentScope := serviceaccounts.WorkloadIdentityScope{ProjectGeneration: 2, ProjectResourceVersion: "project-rv-current"}
+	resolver := &sequenceScopeResolver{scopes: []serviceaccounts.WorkloadIdentityScope{firstScope, currentScope}}
+	h := New(Options{
+		Attestor: AttestorFunc(func(context.Context, string, ExchangeRequest) (Review, error) {
+			return Review{Authenticated: true, Subject: "runtime", Namespace: "runtime", ServiceAccount: "bootstrap"}, nil
+		}),
+		Issuer: issuer, ScopeResolver: resolver,
+	})
+	body := `{"tenantPath":"root:railgrid:tenants:org:workspace","project":"project","projectUID":"uid-1","environment":"development","instance":"project-dev"}`
+	req := httptest.NewRequest(http.MethodPost, PathExchange, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer bootstrap-token")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if resolver.calls != 2 || issuer.calls != 2 || issuer.scope.ProjectResourceVersion != "project-rv-current" {
+		t.Fatalf("retry did not use a freshly resolved Project scope: resolves=%d issues=%d finalScope=%#v", resolver.calls, issuer.calls, issuer.scope)
 	}
 }
 

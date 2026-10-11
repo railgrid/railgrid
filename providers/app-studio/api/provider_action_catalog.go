@@ -115,7 +115,7 @@ type providerCatalogAssistantResource struct {
 // providerCatalogAction is one versioned action. Name and Version are two
 // fields, not one id: the coordinate kcp routes on is the name alone, and the
 // "<name>/<version>" string a grant and a consent record key on is derived
-// from the pair (providerCatalogActionID). The hub also publishes the derived
+// from the pair. The hub also publishes the derived
 // id, which is deliberately not decoded here — one source beats two.
 type providerCatalogAction struct {
 	ID            string                       `json:"id"`
@@ -133,14 +133,6 @@ type providerCatalogAction struct {
 	Limits        providerCatalogActionLimits  `json:"limits"`
 	Consent       providerCatalogActionConsent `json:"consent"`
 	Deprecation   *providerCatalogDeprecation  `json:"deprecation,omitempty"`
-}
-
-// providerCatalogActionID renders the action's catalogued identity, the
-// "<name>/<version>" string grants, consent records and the assistant catalog
-// key on. It is derived from the two declared fields, so a stored grant's value
-// is unchanged by the catalog's shape.
-func providerCatalogActionID(action providerCatalogAction) string {
-	return strings.TrimSpace(action.Name) + "/" + strings.TrimSpace(action.Version)
 }
 
 // providerCatalogBoundAction is one action paired with the exported resource it

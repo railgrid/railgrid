@@ -271,7 +271,8 @@ export function requiredGroups(provider) {
  */
 export function generate(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? REPO_ROOT)
-  const externalDir = options.externalDir ? path.resolve(options.externalDir) : null
+  // discoverProviders resolves each checkout after splitting the list.
+  const externalDir = options.externalDir || null
   const providers = discoverProviders({ repoRoot, externalDir })
 
   const claimerGroups = new Set()

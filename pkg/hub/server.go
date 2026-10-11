@@ -940,11 +940,15 @@ func (s *Server) Run(ctx context.Context) error {
 				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
 				Owners:  identityOwners,
 			})
+			projectScopeResolver := workloadidentity.NewKCPProjectScopeResolver(bootstrapper)
 			// The sweep is what collects an identity whose holder stopped
-			// refreshing. Every replica runs one; each action is idempotent.
+			// refreshing, and it also re-derives workload grants from the current
+			// Project so revoked integrations lose RBAC without waiting for a pod
+			// token refresh. Every replica runs one; each action is idempotent.
 			go identity.NewReconciler(identity.ReconcilerOptions{
-				Service: identityService,
-				Logger:  logger.WithName("scoped-identity"),
+				Service:        identityService,
+				WorkloadScopes: projectScopeResolver,
+				Logger:         logger.WithName("scoped-identity"),
 			}).Start(ctx)
 			// Provider-asserted identities authenticate exactly as heartbeats
 			// do, with the same authenticator instance and therefore the same
@@ -958,7 +962,7 @@ func (s *Server) Run(ctx context.Context) error {
 			workloadHandler := workloadidentity.New(workloadidentity.Options{
 				Attestor:      workloadAttestor,
 				Issuer:        identityService,
-				ScopeResolver: workloadidentity.NewKCPProjectScopeResolver(bootstrapper),
+				ScopeResolver: projectScopeResolver,
 				Logger:        logger,
 			})
 			router.Handle(workloadidentity.PathExchange, workloadHandler).Methods(http.MethodPost)

@@ -18,9 +18,12 @@ package serviceaccounts
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+	sdkworkloadidentity "github.com/railgrid/provider-sdk/workloadidentity"
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,16 +35,18 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 	defer resetTestClientset()
 
 	scope := WorkloadIdentityScope{
-		TenantPath:  "root:railgrid:tenants:org:workspace",
-		Project:     "project",
-		ProjectUID:  "project-uid",
-		Environment: "development",
-		Instance:    "project-dev",
+		TenantPath:         "root:railgrid:tenants:org:workspace",
+		Project:            "project",
+		ProjectUID:         "project-uid",
+		Environment:        "development",
+		Instance:           "project-dev",
+		IntegrationActions: true,
 		ProviderResources: []ProviderResourceScope{{
 			APIVersion: "example.railgrid.ai/v1alpha1",
 			Kind:       "Example",
 			Resource:   "examples",
 			Name:       "example",
+			Actions:    []string{"query_example"},
 		}},
 	}
 	var gotAudience []string
@@ -81,18 +86,35 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 	if err != nil {
 		t.Fatalf("get workload ClusterRole: %v", err)
 	}
-	if len(role.Rules) != 2 {
-		t.Fatalf("workload ClusterRole rules = %d, want 2", len(role.Rules))
+	if len(role.Rules) != 4 {
+		t.Fatalf("workload ClusterRole rules = %#v, want exact Project read/gateway and provider read/action", role.Rules)
 	}
+	projectRead := false
+	projectGateway := false
+	providerRead := false
+	providerAction := false
 	for _, rule := range role.Rules {
-		if len(rule.Verbs) != 1 || rule.Verbs[0] != "get" || len(rule.ResourceNames) != 1 {
-			t.Fatalf("workload ClusterRole rule is broader than GET one-name: %#v", rule)
+		if len(rule.ResourceNames) != 1 || rule.ResourceNames[0] == "*" {
+			t.Fatalf("workload ClusterRole rule is not scoped to one exact object: %#v", rule)
 		}
 		for _, resource := range rule.Resources {
 			if resource == "*" {
 				t.Fatal("workload ClusterRole must not contain wildcard resources")
 			}
 		}
+		switch {
+		case rule.APIGroups[0] == "ai.railgrid.ai" && len(rule.Resources) == 1 && rule.Resources[0] == "projects" && rule.ResourceNames[0] == "project":
+			projectRead = len(rule.Verbs) == 1 && rule.Verbs[0] == "get"
+		case rule.APIGroups[0] == "ai.railgrid.ai" && len(rule.Resources) == 1 && rule.Resources[0] == "projects/integration-actions" && rule.ResourceNames[0] == "project":
+			projectGateway = len(rule.Verbs) == 1 && rule.Verbs[0] == "create"
+		case rule.APIGroups[0] == "example.railgrid.ai" && len(rule.Resources) == 1 && rule.Resources[0] == "examples" && rule.ResourceNames[0] == "example":
+			providerRead = len(rule.Verbs) == 1 && rule.Verbs[0] == "get"
+		case rule.APIGroups[0] == "example.railgrid.ai" && len(rule.Resources) == 1 && rule.Resources[0] == "examples/query_example" && rule.ResourceNames[0] == "example":
+			providerAction = reflect.DeepEqual(rule.Verbs, dataplane.SubresourceVerbs)
+		}
+	}
+	if !projectRead || !projectGateway || !providerRead || !providerAction {
+		t.Fatalf("workload rules lack expected narrow grants: Project get=%v gateway create=%v provider get=%v provider action=%v; rules=%#v", projectRead, projectGateway, providerRead, providerAction, role.Rules)
 	}
 	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), WorkloadIdentityRoleName(first.ServiceAccountName), metav1.GetOptions{}); err != nil {
 		t.Fatalf("get workload ClusterRoleBinding: %v", err)
@@ -122,6 +144,30 @@ func TestWorkloadServiceAccountNameChangesWhenProjectUIDChanges(t *testing.T) {
 	other.ProjectUID = "uid-b"
 	if WorkloadServiceAccountName(scope) == WorkloadServiceAccountName(other) {
 		t.Fatal("project UID must participate in workload identity name")
+	}
+	if got, want := WorkloadServiceAccountName(scope), sdkworkloadidentity.ServiceAccountName(sdkworkloadidentity.Scope{
+		TenantPath: scope.TenantPath, Project: scope.Project, ProjectUID: scope.ProjectUID,
+		Environment: scope.Environment, Instance: scope.Instance,
+	}); got != want {
+		t.Fatalf("hub workload identity name = %q, shared name = %q", got, want)
+	}
+}
+
+func TestWorkloadIdentityOmitsUnusedProjectGatewayPermissions(t *testing.T) {
+	scope := WorkloadIdentityScope{
+		TenantPath: "root:railgrid:tenants:o:w", Project: "project", ProjectUID: "project-uid",
+		Environment: "development", Instance: "project-dev",
+		ProviderResources: []ProviderResourceScope{{
+			APIVersion: "infrastructure.railgrid.ai/v1alpha1", Resource: "applications", Name: "project-dev",
+		}},
+	}
+	for _, rule := range workloadIdentityRules(scope) {
+		if rule.APIGroups[0] == workloadProjectGroup {
+			t.Fatalf("unused integration gateway kept a Project permission: %#v", rule)
+		}
+	}
+	if len(workloadIdentityRules(scope)) != 1 || workloadIdentityRules(scope)[0].Resources[0] != "applications" {
+		t.Fatalf("without active integrations only the runtime instance should remain: %#v", workloadIdentityRules(scope))
 	}
 }
 

@@ -149,9 +149,13 @@ func injectRailgridActions(spec *apiextensionsv1.JSONSchemaProps, enabled bool) 
 		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
 	}
 	for _, f := range fields {
+		description := "Platform-reserved Provider Actions context; values are supplied by App Studio."
+		if f == infrav1alpha1.RailgridActionsBaseURLField {
+			description = "Trusted, cluster-qualified App Studio Project integration-actions endpoint; the server SDK appends only the saved integration alias."
+		}
 		spec.Properties[f] = apiextensionsv1.JSONSchemaProps{
 			Type:        "string",
-			Description: "Platform-reserved Provider Actions context; values are supplied by App Studio.",
+			Description: description,
 			Default:     &apiextensionsv1.JSON{Raw: []byte(`""`)},
 		}
 	}

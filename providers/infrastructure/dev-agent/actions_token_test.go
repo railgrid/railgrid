@@ -45,7 +45,27 @@ func (actionsStatusRuntime) Status(context.Context) (processStatusResponse, erro
 
 func actionsTestURLs(origin string) (exchangeURL, baseURL string) {
 	origin = strings.TrimRight(origin, "/")
-	return origin + actionsExchangePath, origin + actionsBasePath
+	return origin + actionsExchangePath, origin + "/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/demo/integration-actions"
+}
+
+func TestValidateActionsExchangeEndpointRequiresProjectClusterRoute(t *testing.T) {
+	exchangeURL, baseURL := actionsTestURLs("https://actions.test")
+	if _, err := validateActionsExchangeEndpoint(exchangeURL, baseURL, "demo"); err != nil {
+		t.Fatalf("valid endpoints: %v", err)
+	}
+	for _, tc := range []struct {
+		name, baseURL, project string
+	}{
+		{name: "provider backend route", baseURL: "https://actions.test/services/providers/app-studio", project: "demo"},
+		{name: "wrong project", baseURL: baseURL, project: "other"},
+		{name: "workspace path cluster", baseURL: "https://actions.test/clusters/root:tenant/apis/ai.railgrid.ai/v1alpha1/projects/demo/integration-actions", project: "demo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := validateActionsExchangeEndpoint(exchangeURL, tc.baseURL, tc.project); err == nil {
+				t.Fatal("invalid integration route was accepted")
+			}
+		})
+	}
 }
 
 func actionsExchangeClientForResponse(status int, body string) *http.Client {
@@ -99,14 +119,17 @@ func assertActionsReadiness(t *testing.T, server http.Handler, wantCode int, wan
 		t.Fatalf("readyz status = %d body=%s, want %d", response.Code, response.Body.String(), wantCode)
 	}
 	var got struct {
-		ActionsEnabled bool `json:"actionsEnabled"`
-		ActionsReady   bool `json:"actionsReady"`
+		ActionsEnabled               bool `json:"actionsEnabled"`
+		ActionsReady                 bool `json:"actionsReady"`
+		ActionsCredentialsConfigured bool `json:"actionsCredentialsConfigured"`
+		ActionsCredentialsReady      bool `json:"actionsCredentialsReady"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode readyz: %v", err)
 	}
-	if got.ActionsEnabled != wantEnabled || got.ActionsReady != wantReady {
-		t.Fatalf("readyz actions = enabled:%v ready:%v, want enabled:%v ready:%v", got.ActionsEnabled, got.ActionsReady, wantEnabled, wantReady)
+	if got.ActionsEnabled != wantEnabled || got.ActionsReady != wantReady ||
+		got.ActionsCredentialsConfigured != wantEnabled || got.ActionsCredentialsReady != (wantEnabled && wantReady) {
+		t.Fatalf("readyz actions = enabled:%v ready:%v credentials-configured:%v credentials-ready:%v, want enabled:%v ready:%v", got.ActionsEnabled, got.ActionsReady, got.ActionsCredentialsConfigured, got.ActionsCredentialsReady, wantEnabled, wantReady)
 	}
 }
 
@@ -292,7 +315,7 @@ func TestActionsReadinessSuccessfulExchangePublishesStatus(t *testing.T) {
 	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
 		t.Fatalf("decode status: %v", err)
 	}
-	if !status.ActionsEnabled || !status.ActionsReady || status.ActionsTokenExpiresAt == 0 {
+	if !status.ActionsEnabled || !status.ActionsReady || !status.ActionsCredentialsConfigured || !status.ActionsCredentialsReady || status.ActionsTokenExpiresAt == 0 {
 		t.Fatalf("status action readiness = %+v", status)
 	}
 }

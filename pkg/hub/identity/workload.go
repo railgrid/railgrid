@@ -18,8 +18,12 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
@@ -47,6 +51,13 @@ const (
 	workloadOwnerResource = "projects"
 )
 
+// ErrWorkloadScopeRevoked marks a recorded Project environment identity whose
+// current Project state can no longer authorize the recorded environment and
+// runtime. A sweep must remove the identity instead of retaining its last
+// known-good permissions. Resolver transport and client errors must not wrap
+// this sentinel, so transient reads leave the identity intact.
+var ErrWorkloadScopeRevoked = errors.New("workload identity scope revoked")
+
 // EnsureWorkload records and mints a pod-attested workload identity for a
 // verified Project scope. clusterID is the tenant workspace (the workload
 // exchange addresses it by path, which is a valid /clusters/{…} segment).
@@ -62,6 +73,10 @@ func (s *Service) EnsureWorkload(ctx context.Context, clusterID string, scope se
 	if err := serviceaccounts.ValidateWorkloadScope(scope); err != nil {
 		return nil, Refusal{Code: CodeInvalidRequest, Reason: err.Error()}
 	}
+	revision, err := workloadOwnerRevision(scope)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(clusterID) == "" {
 		return nil, Refusal{Code: CodeInvalidRequest, Reason: "clusterID is required"}
 	}
@@ -72,14 +87,136 @@ func (s *Service) EnsureWorkload(ctx context.Context, clusterID string, scope se
 		Resource: workloadOwnerResource, Name: scope.Project, UID: scope.ProjectUID,
 		ClusterID: clusterID,
 	}
-	record, err := s.upsertRecord(ctx, clusterID, owner, tenancyv1alpha1.ScopedIdentityAttestationWorkload, subject, shape, nil)
+	record, err := s.upsertRecord(ctx, clusterID, owner, tenancyv1alpha1.ScopedIdentityAttestationWorkload, subject, shape, revision, nil)
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.materialize(ctx, record)
+	token, err := s.materializeForRevision(ctx, record, revision)
 	if err != nil {
 		s.markFailed(ctx, record, err)
 		return nil, err
 	}
 	return token, nil
+}
+
+// reconcileWorkloadScope updates a recorded workload identity when the
+// Project's current environment grants have changed. It is called by the
+// ordinary identity sweep after the owner UID is verified. Updating the
+// record and ClusterRole removes revoked permissions while existing tokens
+// continue to use the same ServiceAccount; it does not issue a new token.
+func (s *Service) reconcileWorkloadScope(
+	ctx context.Context,
+	record *tenancyv1alpha1.ScopedIdentity,
+	resolver WorkloadScopeResolver,
+) (*tenancyv1alpha1.ScopedIdentity, bool, error) {
+	if s == nil || s.records == nil || s.clients == nil || resolver == nil || record == nil {
+		return nil, false, fmt.Errorf("workload identity reconciliation is unavailable")
+	}
+	if record.Spec.Attestation.Mode != tenancyv1alpha1.ScopedIdentityAttestationWorkload {
+		return record, false, nil
+	}
+	var lastConflict error
+	for attempt := 0; attempt < maxWorkloadReconcileAttempts; attempt++ {
+		current, err := s.records.Get(ctx, record.Name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil, false, RevisionConflict{Code: CodeVersionConflict, Reason: "the workload identity was removed during reconciliation"}
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("reading workload identity before reconciliation: %w", err)
+		}
+		if record.UID != "" && current.UID != record.UID {
+			return nil, false, RevisionConflict{Code: CodeVersionConflict, Reason: "the workload identity was replaced during reconciliation"}
+		}
+		if current.Spec.Attestation.Mode != tenancyv1alpha1.ScopedIdentityAttestationWorkload {
+			return current, false, nil
+		}
+		observedRevision, err := identityRecordRevisionOf(current)
+		if err != nil {
+			return nil, false, err
+		}
+
+		// Resolve against the latest record tuple on every retry. A scope from a
+		// prior read is never reused after either the record or Project revision
+		// has moved.
+		scope, err := resolver.ResolveRecord(ctx, current)
+		if err != nil {
+			return nil, false, fmt.Errorf("resolving current workload scope: %w", err)
+		}
+		if err := serviceaccounts.ValidateWorkloadScope(scope); err != nil {
+			return nil, false, fmt.Errorf("%w: current workload scope is invalid: %v", ErrWorkloadScopeRevoked, err)
+		}
+		if scope.Project != current.Spec.Owner.Name || scope.ProjectUID != current.Spec.Owner.UID ||
+			scope.TenantPath != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityTenantPath] ||
+			scope.Environment != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityEnvironment] ||
+			scope.Instance != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityInstance] {
+			return nil, false, fmt.Errorf("%w: current workload scope does not match the recorded Project identity", ErrWorkloadScopeRevoked)
+		}
+		projectRevision, err := workloadOwnerRevision(scope)
+		if err != nil {
+			return nil, false, err
+		}
+
+		owner := Owner{
+			Provider: workloadOwnerProvider, Kind: workloadOwnerKind, Group: workloadOwnerGroup,
+			Version: workloadOwnerVersion, Resource: workloadOwnerResource,
+			Name: scope.Project, UID: scope.ProjectUID, ClusterID: current.Spec.ClusterID,
+		}
+		shape := serviceaccounts.WorkloadIdentityShape(scope)
+		updated, err := s.upsertRecord(ctx, current.Spec.ClusterID, owner,
+			tenancyv1alpha1.ScopedIdentityAttestationWorkload, current.Spec.Attestation.Subject,
+			shape, projectRevision, &observedRevision)
+		if err != nil {
+			if isRevisionConflict(err) {
+				lastConflict = err
+				continue
+			}
+			return nil, false, err
+		}
+		changed := updated.Generation != current.Generation
+		if changed {
+			if _, err := s.materializeForRevision(ctx, updated, projectRevision); err != nil {
+				if isRevisionConflict(err) {
+					lastConflict = err
+					continue
+				}
+				s.markFailed(ctx, updated, err)
+				return updated, true, err
+			}
+		}
+		return updated, changed, nil
+	}
+	if lastConflict == nil {
+		lastConflict = RevisionConflict{Code: CodeVersionConflict, Reason: "the workload identity changed during every reconciliation attempt"}
+	}
+	return nil, false, lastConflict
+}
+
+const maxWorkloadReconcileAttempts = 3
+
+// identityRecordRevision is the record snapshot on which a resolved workload
+// scope was based. ResourceVersion is compared only for equality, like the
+// Project revision it accompanies.
+type identityRecordRevision struct {
+	UID             string
+	Generation      int64
+	ResourceVersion string
+}
+
+func identityRecordRevisionOf(record *tenancyv1alpha1.ScopedIdentity) (identityRecordRevision, error) {
+	if record == nil || record.UID == "" || record.Generation < 1 || strings.TrimSpace(record.ResourceVersion) == "" {
+		return identityRecordRevision{}, RevisionConflict{Code: CodeVersionConflict, Reason: "the workload identity record has no complete revision"}
+	}
+	return identityRecordRevision{
+		UID: string(record.UID), Generation: record.Generation, ResourceVersion: record.ResourceVersion,
+	}, nil
+}
+
+func identityRecordRevisionMatches(record *tenancyv1alpha1.ScopedIdentity, expected identityRecordRevision) bool {
+	actual, err := identityRecordRevisionOf(record)
+	return err == nil && actual == expected
+}
+
+func isRevisionConflict(err error) bool {
+	var conflict RevisionConflict
+	return errors.As(err, &conflict)
 }

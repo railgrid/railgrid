@@ -27,8 +27,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // ProjectLabel attributes an instance back to its Project.
@@ -74,6 +76,7 @@ const tenantPathPrefix = "root:railgrid:tenants:"
 // instance. It is separate from ActionsTransport so action grants can be
 // revoked without losing the instance's non-authorizing identity metadata.
 type ActionsIdentity struct {
+	ClusterID   string
 	TenantPath  string
 	Org         string
 	Workspace   string
@@ -121,17 +124,26 @@ func ValidateActionsExternalURL(raw string) (string, error) {
 	return origin, nil
 }
 
-// ActionsTransportForOrigin derives the only two Provider Actions URLs that
-// development workloads may use. Callers must not accept user-provided paths
-// for either endpoint.
-func ActionsTransportForOrigin(raw string) (ActionsOverlay, error) {
+// ActionsTransportForProject derives the workload exchange URL and the
+// project-scoped custom-subresource base URL. Callers must not accept
+// user-provided paths or cluster/project segments for either endpoint.
+func ActionsTransportForProject(raw, clusterID, project string) (ActionsOverlay, error) {
 	origin, err := ValidateActionsExternalURL(raw)
 	if err != nil {
 		return ActionsOverlay{}, err
 	}
+	clusterID = strings.TrimSpace(clusterID)
+	if !dataplane.IsClusterID(clusterID) {
+		return ActionsOverlay{}, fmt.Errorf("provider actions require a valid kcp cluster ID")
+	}
+	project = strings.TrimSpace(project)
+	if len(validation.IsDNS1123Subdomain(project)) > 0 {
+		return ActionsOverlay{}, fmt.Errorf("provider actions require a valid Project name")
+	}
 	return ActionsOverlay{
 		ExchangeURL: origin + "/api/provider-actions/workload/exchange",
-		BaseURL:     origin + "/services/providers/app-studio",
+		BaseURL: origin + "/clusters/" + clusterID + "/apis/ai.railgrid.ai/v1alpha1/projects/" +
+			url.PathEscape(project) + "/integration-actions",
 	}, nil
 }
 
@@ -226,7 +238,7 @@ func NewActionsOverlay(identity ActionsIdentity, config ActionsRuntimeConfig, ac
 	if !activeGrant {
 		return overlay, nil
 	}
-	transport, err := ActionsTransportForOrigin(config.ExternalURL)
+	transport, err := ActionsTransportForProject(config.ExternalURL, identity.ClusterID, identity.Project)
 	if err != nil {
 		return ActionsOverlay{}, err
 	}

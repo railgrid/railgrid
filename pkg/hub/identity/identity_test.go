@@ -13,7 +13,9 @@ package identity
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +43,7 @@ type memoryRecords struct {
 	items map[string]*tenancyv1alpha1.ScopedIdentity
 	// creates counts Create calls so idempotence is observable, not inferred.
 	creates, updates int
+	resourceVersion  int64
 }
 
 func newMemoryRecords() *memoryRecords {
@@ -93,14 +96,25 @@ func (m *memoryRecords) Create(_ context.Context, obj *tenancyv1alpha1.ScopedIde
 	copied := obj.DeepCopy()
 	copied.UID = types.UID("record-" + obj.Name)
 	copied.Generation = 1
+	copied.ResourceVersion = m.nextResourceVersion()
 	m.items[obj.Name] = copied
 	return copied.DeepCopy(), nil
 }
 
 func (m *memoryRecords) Update(_ context.Context, obj *tenancyv1alpha1.ScopedIdentity, _ metav1.UpdateOptions) (*tenancyv1alpha1.ScopedIdentity, error) {
+	existing, ok := m.items[obj.Name]
+	if !ok {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "scopedidentities"}, obj.Name)
+	}
+	if obj.ResourceVersion != existing.ResourceVersion {
+		return nil, apierrors.NewConflict(schema.GroupResource{Resource: "scopedidentities"}, obj.Name, errors.New("resourceVersion changed"))
+	}
 	m.updates++
 	copied := obj.DeepCopy()
-	copied.Generation++
+	if !reflect.DeepEqual(existing.Spec, copied.Spec) {
+		copied.Generation = existing.Generation + 1
+	}
+	copied.ResourceVersion = m.nextResourceVersion()
 	m.items[obj.Name] = copied
 	return copied.DeepCopy(), nil
 }
@@ -110,8 +124,17 @@ func (m *memoryRecords) UpdateStatus(_ context.Context, obj *tenancyv1alpha1.Sco
 	if !ok {
 		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "scopedidentities"}, obj.Name)
 	}
+	if obj.ResourceVersion != existing.ResourceVersion {
+		return nil, apierrors.NewConflict(schema.GroupResource{Resource: "scopedidentities"}, obj.Name, errors.New("resourceVersion changed"))
+	}
 	existing.Status = *obj.Status.DeepCopy()
+	existing.ResourceVersion = m.nextResourceVersion()
 	return existing.DeepCopy(), nil
+}
+
+func (m *memoryRecords) nextResourceVersion() string {
+	m.resourceVersion++
+	return strconv.FormatInt(m.resourceVersion, 10)
 }
 
 func (m *memoryRecords) Delete(_ context.Context, name string, _ metav1.DeleteOptions) error {
@@ -124,8 +147,10 @@ func (m *memoryRecords) Delete(_ context.Context, name string, _ metav1.DeleteOp
 
 // fakeOwners is a settable owner probe.
 type fakeOwners struct {
-	present map[string]string // "<kind>/<name>" -> uid
-	err     error
+	present         map[string]string // "<kind>/<name>" -> uid
+	generation      int64
+	resourceVersion string
+	err             error
 }
 
 type fakeRevisionOwners struct {
@@ -166,6 +191,21 @@ func (f *fakeOwners) Exists(_ context.Context, _ string, owner Owner) (bool, str
 	return true, uid, nil
 }
 
+func (f *fakeOwners) Observe(_ context.Context, _ string, owner Owner) (bool, OwnerObservation, error) {
+	if f.err != nil {
+		return false, OwnerObservation{}, f.err
+	}
+	uid, ok := f.present[owner.Kind+"/"+owner.Name]
+	if !ok {
+		return false, OwnerObservation{}, nil
+	}
+	observation := OwnerObservation{UID: uid, Generation: f.generation, ResourceVersion: f.resourceVersion}
+	if owner.UID != "" && owner.UID != uid {
+		return false, observation, nil
+	}
+	return true, observation, nil
+}
+
 func testService(t *testing.T) (*Service, *memoryRecords, *fake.Clientset, *fakeOwners) {
 	t.Helper()
 	records := newMemoryRecords()
@@ -177,7 +217,10 @@ func testService(t *testing.T) (*Service, *memoryRecords, *fake.Clientset, *fake
 			ExpirationTimestamp: metav1.NewTime(time.Now().Add(time.Duration(*request.Spec.ExpirationSeconds) * time.Second)),
 		}}, nil
 	})
-	owners := &fakeOwners{present: map[string]string{"Agent/scheduler": "agent-uid-1"}}
+	owners := &fakeOwners{
+		present:    map[string]string{"Agent/scheduler": "agent-uid-1"},
+		generation: 1, resourceVersion: "owner-rv-1",
+	}
 	service := New(Options{
 		Records: records,
 		Clients: func(string) (kubernetes.Interface, error) { return cs, nil },

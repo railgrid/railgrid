@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,13 @@ const (
 	actionsExchangeTimeout          = 30 * time.Second
 	actionsResponseLimit            = 1 << 20
 	actionsExchangePath             = "/api/provider-actions/workload/exchange"
-	actionsBasePath                 = "/services/providers/app-studio"
+	actionsClusterIDPattern         = `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	actionsDNS1123LabelPattern      = `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+)
+
+var (
+	actionsClusterIDRegexp    = regexp.MustCompile(actionsClusterIDPattern)
+	actionsDNS1123LabelRegexp = regexp.MustCompile(actionsDNS1123LabelPattern)
 )
 
 type actionsExchangeRequest struct {
@@ -110,7 +117,7 @@ func exchangeActionsToken(ctx context.Context, cfg *agentConfig) (time.Time, err
 	if cfg == nil {
 		return time.Time{}, errors.New("actions configuration is nil")
 	}
-	exchangeURL, err := validateActionsExchangeEndpoint(cfg.ActionsExchangeURL, cfg.ActionsBaseURL)
+	exchangeURL, err := validateActionsExchangeEndpoint(cfg.ActionsExchangeURL, cfg.ActionsBaseURL, cfg.ActionsProject)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -212,7 +219,7 @@ func exchangeActionsToken(ctx context.Context, cfg *agentConfig) (time.Time, err
 // validateActionsExchangeEndpoint accepts only the fixed HTTPS exchange path
 // on the same host as the fixed SDK base URL. Both values are operator/platform
 // inputs; binding values never participate in this validation.
-func validateActionsExchangeEndpoint(exchangeRaw, baseRaw string) (string, error) {
+func validateActionsExchangeEndpoint(exchangeRaw, baseRaw, project string) (string, error) {
 	exchangeRaw = strings.TrimSpace(exchangeRaw)
 	if exchangeRaw == "" {
 		return "", errors.New("RAILGRID_ACTIONS_EXCHANGE_URL is required")
@@ -239,13 +246,32 @@ func validateActionsExchangeEndpoint(exchangeRaw, baseRaw string) (string, error
 	if !strings.EqualFold(base.Scheme, "https") {
 		return "", errors.New("RAILGRID_ACTIONS_BASE_URL must use HTTPS")
 	}
-	if base.Path != actionsBasePath {
-		return "", fmt.Errorf("RAILGRID_ACTIONS_BASE_URL must use path %q", actionsBasePath)
+	project = strings.TrimSpace(project)
+	if !isActionsDNS1123Subdomain(project) {
+		return "", errors.New("RAILGRID_ACTIONS_PROJECT must be a valid Project name when Provider Actions are enabled")
+	}
+	segments := strings.Split(strings.Trim(base.EscapedPath(), "/"), "/")
+	if len(segments) != 8 || segments[0] != "clusters" || !actionsClusterIDRegexp.MatchString(segments[1]) ||
+		segments[2] != "apis" || segments[3] != "ai.railgrid.ai" || segments[4] != "v1alpha1" ||
+		segments[5] != "projects" || segments[6] != url.PathEscape(project) || segments[7] != "integration-actions" {
+		return "", errors.New("RAILGRID_ACTIONS_BASE_URL must be the cluster-qualified integration-actions endpoint for RAILGRID_ACTIONS_PROJECT")
 	}
 	if !strings.EqualFold(exchange.Host, base.Host) {
 		return "", errors.New("RAILGRID_ACTIONS_EXCHANGE_URL host must match RAILGRID_ACTIONS_BASE_URL")
 	}
 	return exchange.String(), nil
+}
+
+func isActionsDNS1123Subdomain(value string) bool {
+	if len(value) == 0 || len(value) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) > 63 || !actionsDNS1123LabelRegexp.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseActionsExpiry(raw string) (time.Time, error) {

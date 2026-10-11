@@ -23,6 +23,35 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 )
 
+func TestActionsTransportForProjectBuildsClusterQualifiedKCPRoute(t *testing.T) {
+	transport, err := ActionsTransportForProject("https://actions.example", "cluster-a", "demo-project")
+	if err != nil {
+		t.Fatalf("ActionsTransportForProject: %v", err)
+	}
+	if got, want := transport.ExchangeURL, "https://actions.example/api/provider-actions/workload/exchange"; got != want {
+		t.Errorf("ExchangeURL = %q, want %q", got, want)
+	}
+	if got, want := transport.BaseURL, "https://actions.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/demo-project/integration-actions"; got != want {
+		t.Errorf("BaseURL = %q, want %q", got, want)
+	}
+}
+
+func TestActionsTransportForProjectRejectsUntrustedCoordinates(t *testing.T) {
+	for _, tc := range []struct {
+		name, origin, clusterID, project string
+	}{
+		{name: "workspace path in cluster", origin: "https://actions.example", clusterID: "root:tenant:workspace", project: "demo"},
+		{name: "invalid project", origin: "https://actions.example", clusterID: "cluster-a", project: "../other"},
+		{name: "origin path", origin: "https://actions.example/untrusted", clusterID: "cluster-a", project: "demo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ActionsTransportForProject(tc.origin, tc.clusterID, tc.project); err == nil {
+				t.Fatal("ActionsTransportForProject unexpectedly accepted untrusted coordinates")
+			}
+		})
+	}
+}
+
 func testProject() *aiv1alpha1.Project {
 	return &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")},
@@ -146,7 +175,7 @@ func TestApplyActionsOverlayReplacesReservedValuesAndClearsTransport(t *testing.
 			Instance:    "demo-dev",
 		},
 		ExchangeURL: "https://actions.example/api/provider-actions/workload/exchange",
-		BaseURL:     "https://actions.example/services/providers/app-studio",
+		BaseURL:     "https://actions.example/clusters/cluster-a/apis/ai.railgrid.ai/v1alpha1/projects/demo/integration-actions",
 		CABundle:    "public-ca",
 	}
 

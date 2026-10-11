@@ -108,7 +108,7 @@ var projectVerbs = []verbRoute{
 		http.MethodPatch:  func(s *Server) http.HandlerFunc { return s.patchProjectIntegration },
 		http.MethodDelete: func(s *Server) http.HandlerFunc { return s.removeProjectIntegration },
 	}},
-	{verb: "integration-actions", tailVars: []string{"integration", "action"}, handlers: post(func(s *Server) http.HandlerFunc { return s.invokeProjectIntegration })},
+	{verb: "integration-actions", tailVars: []string{"integration"}, handlers: post(func(s *Server) http.HandlerFunc { return s.invokeProjectIntegration })},
 
 	// Assistant surface that is about the project rather than one thread.
 	{verb: "approval-mode", handlers: map[string]func(*Server) http.HandlerFunc{

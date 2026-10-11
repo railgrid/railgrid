@@ -18,6 +18,7 @@ package instancespec
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -154,6 +155,9 @@ func TestProviderActionsFieldsInjectedForDevelopmentOnly(t *testing.T) {
 		if prop.Type != "string" || prop.Default == nil || json.Unmarshal(prop.Default.Raw, &def) != nil || def != "" {
 			t.Errorf("field %q = type=%q default=%v, want string default empty", f, prop.Type, prop.Default)
 		}
+	}
+	if got := dev.Properties[infrav1alpha1.RailgridActionsBaseURLField].Description; !strings.Contains(got, "cluster-qualified") || !strings.Contains(got, "integration-actions") {
+		t.Errorf("Actions base URL description = %q, want the trusted cluster-qualified integration-actions route", got)
 	}
 
 	prod, err := EffectiveSchema(testTemplate(t, simpleSchema()))

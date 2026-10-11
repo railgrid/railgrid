@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package api
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,6 +76,19 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 	sort.Strings(served)
 	if !reflect.DeepEqual(declared, served) {
 		t.Fatalf("manifest and served verbs differ:\n declared %v\n served   %v", missing(served, declared), missing(declared, served))
+	}
+}
+
+func TestIntegrationActionsPathCarriesOnlyTheSavedAlias(t *testing.T) {
+	route, found := lookupVerb("projects", "integration-actions")
+	if !found {
+		t.Fatal("projects/integration-actions is not served")
+	}
+	if !reflect.DeepEqual(route.tailVars, []string{"integration"}) {
+		t.Fatalf("integration-actions tail variables = %v, want only the saved integration alias", route.tailVars)
+	}
+	if len(route.handlers) != 1 || route.handlers[http.MethodPost] == nil {
+		t.Fatalf("integration-actions methods = %v, want POST only", route.handlers)
 	}
 }
 

@@ -919,9 +919,11 @@ func (s *agentServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 func (s *agentServer) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	status := s.actionsState.snapshot(time.Now())
 	response := map[string]any{
-		"status":         "ok",
-		"actionsEnabled": status.Enabled,
-		"actionsReady":   status.Ready,
+		"status":                       "ok",
+		"actionsEnabled":               status.Enabled,
+		"actionsReady":                 status.Ready,
+		"actionsCredentialsConfigured": status.Enabled,
+		"actionsCredentialsReady":      status.Enabled && status.Ready,
 	}
 	if !status.Ready {
 		response["status"] = "not_ready"
@@ -1797,17 +1799,19 @@ func (s *agentServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 type processStatusResponse struct {
-	AttemptID               uint64 `json:"attemptID"`
-	AttemptStartedUnixMilli int64  `json:"attemptStartedUnixMilli,omitempty"`
-	Configured              bool   `json:"configured"`
-	Running                 bool   `json:"running"`
-	Port                    string `json:"port,omitempty"`
-	PortReachable           bool   `json:"portReachable,omitempty"`
-	ActionsEnabled          bool   `json:"actionsEnabled"`
-	ActionsReady            bool   `json:"actionsReady"`
-	ActionsTokenExpiresAt   int64  `json:"actionsTokenExpiresAtUnixMilli,omitempty"`
-	SourceRevision          uint64 `json:"sourceRevision,omitempty"`
-	SourceDigest            string `json:"sourceDigest,omitempty"`
+	AttemptID                    uint64 `json:"attemptID"`
+	AttemptStartedUnixMilli      int64  `json:"attemptStartedUnixMilli,omitempty"`
+	Configured                   bool   `json:"configured"`
+	Running                      bool   `json:"running"`
+	Port                         string `json:"port,omitempty"`
+	PortReachable                bool   `json:"portReachable,omitempty"`
+	ActionsEnabled               bool   `json:"actionsEnabled"`
+	ActionsReady                 bool   `json:"actionsReady"`
+	ActionsCredentialsConfigured bool   `json:"actionsCredentialsConfigured"`
+	ActionsCredentialsReady      bool   `json:"actionsCredentialsReady"`
+	ActionsTokenExpiresAt        int64  `json:"actionsTokenExpiresAtUnixMilli,omitempty"`
+	SourceRevision               uint64 `json:"sourceRevision,omitempty"`
+	SourceDigest                 string `json:"sourceDigest,omitempty"`
 	// SyncEncodings lists the /sync file encodings this agent decodes. A
 	// sender must not send base64 entries unless "base64" is listed.
 	SyncEncodings []string `json:"syncEncodings,omitempty"`
@@ -2068,6 +2072,8 @@ func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	actions := s.actionsState.snapshot(time.Now())
 	status.ActionsEnabled = actions.Enabled
 	status.ActionsReady = actions.Ready
+	status.ActionsCredentialsConfigured = actions.Enabled
+	status.ActionsCredentialsReady = actions.Enabled && actions.Ready
 	if !actions.ExpiresAt.IsZero() {
 		status.ActionsTokenExpiresAt = actions.ExpiresAt.UnixMilli()
 	}
