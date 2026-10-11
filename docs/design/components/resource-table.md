@@ -138,15 +138,25 @@ indicator uses accent-subtle background and accent text; avoid number soup.
 
 The primary column takes remaining width, with compact row actions at its right
 edge so operations remain reachable without horizontal scrolling. Narrow facets
-stack full-width. For wide tables only the table canvas scrolls; controls and
-footer remain pinned to the card width. Streams prefer Load more or infinite
-scroll instead of forced page navigation.
+stack full-width. Streams prefer Load more or infinite scroll instead of forced
+page navigation.
 
-When columns overflow horizontally, show a visible continuation hint tied to
-the named, keyboard-focusable scroll region with `aria-describedby`. Observe
-resize and content changes so the hint disappears when all columns fit; at the
-right edge, explain how to return to earlier columns. The viewport itself must
-not overflow the page.
+Long content truncates; it does not widen the table. The primary cell removes
+its content from the table's intrinsic width (`width: 100%; max-width: 0`) and
+ellipsizes at whatever width the other columns leave it, never less than its
+`min-width: 14rem` floor. A secondary cell's
+value sits in `.k-table__cell-value`, which ellipsizes at
+`--k-table-cell-max-width` (32ch unless the column sets `maxWidth`). A table
+therefore fits its card at desktop widths however long a name, message or
+identifier is.
+
+Horizontal scrolling is the fallback for when the capped columns alone no
+longer fit, typically many columns on a phone. Then only the table canvas
+scrolls; controls and footer remain pinned to the card width, and a visible
+continuation hint is tied to the named, keyboard-focusable scroll region with
+`aria-describedby`. Observe resize and content changes so the hint disappears
+when all columns fit; at the right edge, explain how to return to earlier
+columns. The viewport itself must not overflow the page.
 
 ## Accessibility
 
@@ -154,10 +164,17 @@ The table retains native `<table>` and `<tr>` semantics. Interactive rows use
 `tabindex="0"` and Enter/Space emits `rowClick`; nested links, buttons, inputs,
 selects, summaries, and other explicit controls remain independent. Resource
 names disclose full values in a viewport overlay only when actually truncated,
-using `fullValue(row)` when a slot label differs. A primary column may set `maxWidth`
-(a CSS length) to cap its value: table auto-layout otherwise widens the column
-to fit a long nowrap label and pushes the other columns out of view, whereas a
-capped value truncates at that width with the same disclosure. Shared icon-only action buttons
+using `fullValue(row)` when a slot label differs. A truncated secondary cell
+discloses the same way: the column's `fullValue`, else the row's scalar, else
+the text its slot rendered. Cells are never tab stops: a focused row steps
+the disclosure through its truncated cells with the Left and Right arrow keys
+(the keys keep their default behaviour when nothing is truncated), so a long
+table gains no stops and a click or Enter on a cell still opens the row. A
+control focused inside a secondary cell discloses the cell and keeps its
+focus ring unclipped. Any column
+may set `maxWidth` (a CSS length) to move its cap: tighter than the remaining
+width for the primary column, or wider or narrower than 32ch for a secondary
+one whose values deserve it. Shared icon-only action buttons
 use `ResourceTableActionTooltip` on hover and focus: a body-teleported,
 viewport-clamped visual tooltip, with the button's full accessible label retained.
 They never add a duplicate native title or clipped `data-k-tip`. Empty/error

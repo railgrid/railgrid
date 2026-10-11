@@ -417,7 +417,7 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(table, /<slot :name="actionsColumn\.key"/)
   assert.doesNotMatch(table, /v-for="col in columns"/)
   assert.match(css, /\.k-table__heading--primary\s*\{\s*width:\s*100%;\s*\}/)
-  assert.match(css, /\.k-table__cell--primary\s*\{\s*width:\s*100%;\s*\}/)
+  assert.match(css, /\.k-table__cell--primary\s*\{\s*max-width:\s*0;\s*min-width:\s*14rem;\s*width:\s*100%;\s*\}/)
   assert.match(css, /\.k-table__row:hover \.k-table__primary-actions,[\s\S]*\.k-table__row:focus-within \.k-table__primary-actions/)
   assert.match(css, /@media \(hover: none\)[\s\S]*\.k-table__primary-actions,[\s\S]*\.k-table__primary-actions \.k-table-action\s*\{[^}]*opacity:\s*1;/)
   assert.match(css, /--k-table-readable-muted:\s*color-mix\(in srgb, var\(--color-text-secondary, #8a8ca6\) 90%, var\(--color-surface-raised, #111320\)\);/)
