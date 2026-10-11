@@ -771,13 +771,14 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 	}
 	prompt := projectSystemPromptForMode(project, nil, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
-		`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"`,
+		`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"`,
 		"For this existing project, if package.json lacks or pins another version of this dependency",
 		".railgrid/proposals/provider-actions-sdk.patch",
 		"Apply it to package.json only after the user explicitly approves that proposed change",
 		"import { createActionsClient } from '@railgrid/actions-node';",
 		"RAILGRID_ACTIONS_BASE_URL",
 		"RAILGRID_ACTIONS_TOKEN_FILE",
+		"an enveloped provider error, including a provider-originated 401, is returned without replaying the action",
 		"invokes `POST <RAILGRID_ACTIONS_BASE_URL>/<alias>` with `{ action, actionVersion, input }`",
 		"treat a successful invoke as integration access verification",
 		"component automatically installs and reloads dependencies after the manifest synchronizes",

@@ -613,26 +613,30 @@ current environment and its saved resource references. Caller credentials,
 provider backend URLs, resource overrides, and raw SQL are rejected.
 
 Generated server applications install
-`@crwilhit/railgrid-actions-node@0.2.0` under the stable consumer name after
-its public npm release. Publication is pending; Atlas currently uses the
-reviewed local tarball with a `file:` dependency. After release, use this
-dependency alias in the server component's `package.json`:
+`@crwilhit/railgrid-actions-node@0.2.1` under the stable consumer name through
+this dependency alias in the server component's `package.json`:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
   }
 }
 ```
+
+This repository's package release and scaffold pin do not update already
+deployed applications; each application applies its dependency change through
+its own manifest flow.
 
 Application code keeps the canonical import
 `import { createActionsClient } from '@railgrid/actions-node';` and can call
 `client.integration(alias).invoke(...)` or `invokeEnvelope(...)`. The SDK is
 server-only. App Studio injects its trusted cluster-qualified base URL and the
 runtime reads the short-lived workload token from `RAILGRID_ACTIONS_TOKEN_FILE`
-on every request or from a refreshable credential provider; one `401` triggers
-one `forceRefresh` retry. Credential refresh readiness does not prove that the
+on every request or from a refreshable credential provider; a gateway `401`
+without a provider error envelope triggers one `forceRefresh` retry. An
+enveloped provider error, including a provider `401`, passes through without
+replaying the action. Credential refresh readiness does not prove that the
 saved integration is reachable or authorized. A successful invocation verifies
 access; typed failures distinguish route, authentication, authorization,
 contract, network, and upstream errors. The bootstrap token used by the
