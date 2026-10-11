@@ -40,6 +40,9 @@ const (
 	execSessionRetention = 10 * time.Minute
 	execSessionCapacity  = 128
 	execDispatchMaxTries = 9
+	// Bound every operation that happens before the executor confirms a launch.
+	// The budget is total across admission, retries, and helper startup.
+	execStartTimeout = 35 * time.Second
 	// Keep the number of simultaneously running command trees small even when
 	// many sessions are accepted into the durable queue.
 	execMaxConcurrentCommands = 4
@@ -98,20 +101,89 @@ func (e completedExecExecution) Wait(context.Context) (execResponse, error) {
 }
 
 type httpExecDispatcher struct {
-	url    string
-	client *http.Client
+	url          string
+	client       *http.Client
+	startTimeout time.Duration
 }
 
 func (d *httpExecDispatcher) Start(ctx context.Context, req persistentExecRequest) (execExecution, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startTimeout := d.startTimeout
+	if startTimeout <= 0 {
+		startTimeout = execStartTimeout
+	}
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	deadline := time.Now().Add(startTimeout)
+	var startMu sync.Mutex
+	startComplete := false
+	startTimedOut := false
+	startTimer := time.AfterFunc(startTimeout, func() {
+		startMu.Lock()
+		cancel := !startComplete
+		if cancel {
+			startTimedOut = true
+		}
+		startMu.Unlock()
+		if cancel {
+			cancelRequest()
+		}
+	})
+	transferred := false
+	defer func() {
+		startTimer.Stop()
+		if !transferred {
+			cancelRequest()
+		}
+	}()
+
+	startError := func(err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		startMu.Lock()
+		if !startComplete && !startTimedOut && !time.Now().Before(deadline) {
+			startTimedOut = true
+		}
+		timedOut := startTimedOut
+		startMu.Unlock()
+		if timedOut {
+			cancelRequest()
+			return fmt.Errorf("stateless executor start exceeded %s budget: %w", startTimeout, context.DeadlineExceeded)
+		}
+		return err
+	}
+	finishStart := func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		startMu.Lock()
+		if !startTimedOut && !startComplete && !time.Now().Before(deadline) {
+			startTimedOut = true
+		}
+		timedOut := startTimedOut
+		if !timedOut {
+			startComplete = true
+			startTimer.Stop()
+		}
+		startMu.Unlock()
+		if timedOut {
+			cancelRequest()
+			return fmt.Errorf("stateless executor start exceeded %s budget: %w", startTimeout, context.DeadlineExceeded)
+		}
+		return nil
+	}
+
 	raw, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, startError(err)
 	}
 	var resp *http.Response
 	for attempt := 1; attempt <= execDispatchMaxTries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(raw))
+		httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodPost, d.url, bytes.NewReader(raw))
 		if err != nil {
-			return nil, err
+			return nil, startError(err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		resp, err = d.client.Do(httpReq)
@@ -119,33 +191,44 @@ func (d *httpExecDispatcher) Start(ctx context.Context, req persistentExecReques
 			break
 		}
 		if !isExecDialRefused(err) || attempt == execDispatchMaxTries {
-			return nil, fmt.Errorf("dispatch stateless execution: %w", err)
+			return nil, startError(fmt.Errorf("dispatch stateless execution: %w", err))
 		}
-		if err := waitExecDispatchRetry(ctx, attempt); err != nil {
-			return nil, fmt.Errorf("dispatch stateless execution: %w", err)
+		if err := waitExecDispatchRetry(requestCtx, attempt); err != nil {
+			return nil, startError(fmt.Errorf("dispatch stateless execution: %w", err))
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
 		if err != nil {
-			return nil, err
+			return nil, startError(err)
 		}
-		return nil, fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body)))
+		return nil, startError(fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body))))
 	}
 	if resp.Header.Get(execStartedHeader) == "true" {
-		return &httpExecExecution{response: resp}, nil
+		if err := finishStart(); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		transferred = true
+		return &httpExecExecution{response: resp, cancel: cancelRequest}, nil
 	}
 	// Older executor instances return only after completion. Keep that response
 	// shape working during a rolling update; new instances stream a start ack.
+	// The startup budget remains active until this body is completely read and
+	// validated, so a flushed header without an acknowledgement cannot hold the
+	// workspace mutation lock indefinitely.
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, execResponseMaxBytes))
 	if err != nil {
-		return nil, err
+		return nil, startError(err)
 	}
 	result, err := decodeExecResponse(body)
 	if err != nil {
-		return nil, fmt.Errorf("decode stateless executor response: %w", err)
+		return nil, startError(fmt.Errorf("decode stateless executor response: %w", err))
+	}
+	if err := finishStart(); err != nil {
+		return nil, err
 	}
 	return completedExecExecution{response: result}, nil
 }
@@ -161,10 +244,16 @@ func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequ
 
 type httpExecExecution struct {
 	response *http.Response
+	cancel   context.CancelFunc
 }
 
 func (e *httpExecExecution) Wait(ctx context.Context) (execResponse, error) {
-	defer func() { _ = e.response.Body.Close() }()
+	defer func() {
+		_ = e.response.Body.Close()
+		if e.cancel != nil {
+			e.cancel()
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(e.response.Body, execResponseMaxBytes))
 	if err != nil {
 		if ctx.Err() != nil {

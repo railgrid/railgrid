@@ -260,7 +260,11 @@ must provide immutable universal and dev-agent image references.
 The dev-agent admits up to four command trees at a time in a development
 component. Commands share the existing workspace and runtime. The coordinator
 holds the workspace mutation lock through revision/digest validation and process
-start, then releases it while waiting for the command result. Source syncs and
+start, then releases it while waiting for the command result. The startup phase
+has a 35-second budget that includes executor admission, connection retries, and
+acknowledgement; timing out cancels the request and releases the lock without
+redispatching an ambiguous command. A successful start acknowledgement ends this
+budget without cancelling the running command. Source syncs and
 other commands can proceed during execution; a launch revision does not certify
 that the shared files stayed unchanged throughout the command.
 
@@ -278,7 +282,9 @@ acknowledges cancellation intent; it does not certify that cleanup has finished.
 Roll out the updated dev-agent image and restart development components to
 activate parallel execution. During a mixed-version rollout, the new coordinator
 also accepts the older executor's synchronous response, which keeps the mutation
-lock until that command completes.
+lock until that command completes. Because older executors do not acknowledge
+startup separately, their complete response must arrive within the 35-second
+startup budget; upgrade the executor before relying on longer commands.
 
 ### Exec cancellation after a lost START response
 

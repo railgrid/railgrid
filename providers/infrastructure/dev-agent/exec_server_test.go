@@ -567,8 +567,8 @@ func TestPersistentExecVerifiesAppliedRevisionDigestAndSanitizesEnvironment(t *t
 	req = httptest.NewRequest(http.MethodPost, "/internal/exec", bytes.NewReader([]byte(`{"argv":["/bin/true"],"sourceRevision":7,"sourceDigest":"sha256:bad"}`)))
 	res = httptest.NewRecorder()
 	executor.ServeHTTP(res, req)
-	if res.Code != http.StatusConflict {
-		t.Fatalf("digest mismatch status = %d body=%s, want 409", res.Code, res.Body.String())
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("invalid digest status = %d body=%s, want 400", res.Code, res.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/internal/exec", bytes.NewReader([]byte(`{"argv":["/bin/true"],"sourceRevision":8,"sourceDigest":"`+digest+`"}`)))

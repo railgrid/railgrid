@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,194 @@ func TestHTTPExecDispatcherDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
 	}
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("executor requests = %d, want no replay after ambiguous response failure", got)
+	}
+}
+
+func TestCoordinatorStartTimeoutBoundsMutationLock(t *testing.T) {
+	var requests atomic.Int32
+	requestSeen := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(requestSeen)
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+		select {
+		case <-requestCanceled:
+		default:
+			close(requestCanceled)
+		}
+	}))
+	t.Cleanup(server.Close)
+	dispatcher := &httpExecDispatcher{
+		url: server.URL + "/internal/exec", client: server.Client(), startTimeout: 400 * time.Millisecond,
+	}
+	defer dispatcher.client.CloseIdleConnections()
+
+	mutationMu := &sync.Mutex{}
+	coordinator, err := newExecCoordinator(t.TempDir(), t.TempDir(), "token", dispatcher, mutationMu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testWorkerRequest()
+	if _, err := coordinator.start(req); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-requestSeen:
+	case <-time.After(time.Second):
+		t.Fatal("dispatcher did not reach the stalled executor")
+	}
+
+	lockAcquired := make(chan struct{})
+	go func() {
+		mutationMu.Lock()
+		close(lockAcquired)
+		mutationMu.Unlock()
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stalled executor kept the workspace mutation lock past the startup budget")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("executor request context was not canceled at the startup deadline")
+	}
+
+	poll := req
+	poll.Action = "poll"
+	deadline := time.Now().Add(2 * time.Second)
+	var result workerExecResult
+	for time.Now().Before(deadline) {
+		result, err = coordinator.poll(poll)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if workerTerminal(result.State) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if result.State != "failed" || result.ExitCode != nil || !strings.Contains(result.Stderr, context.DeadlineExceeded.Error()) {
+		t.Fatalf("stalled startup result = %+v, want failed with no exit code and startup timeout", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("executor requests = %d, want one request with no ambiguous replay", got)
+	}
+}
+
+func TestHTTPExecDispatcherBoundsUnacknowledgedResponseBodies(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+	}{
+		{name: "missing started acknowledgement", status: http.StatusOK},
+		{name: "error response body", status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests atomic.Int32
+			bodyStalled := make(chan struct{})
+			requestCanceled := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(tt.status)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				close(bodyStalled)
+				<-r.Context().Done()
+				close(requestCanceled)
+			}))
+			t.Cleanup(server.Close)
+			dispatcher := &httpExecDispatcher{
+				url: server.URL + "/internal/exec", client: server.Client(), startTimeout: 100 * time.Millisecond,
+			}
+			defer dispatcher.client.CloseIdleConnections()
+
+			started := time.Now()
+			_, err := dispatcher.Start(context.Background(), persistentExecRequest{Argv: []string{"/bin/true"}})
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Start error = %v, want startup deadline exceeded", err)
+			}
+			if time.Since(started) > time.Second {
+				t.Fatalf("Start took %s to time out an unacknowledged body", time.Since(started))
+			}
+			select {
+			case <-bodyStalled:
+			case <-time.After(time.Second):
+				t.Fatal("executor did not flush its response headers")
+			}
+			select {
+			case <-requestCanceled:
+			case <-time.After(time.Second):
+				t.Fatal("executor request context was not canceled at the startup deadline")
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("executor requests = %d, want one request with no ambiguous replay", got)
+			}
+		})
+	}
+}
+
+func TestHTTPExecDispatcherStartBudgetDoesNotCancelAcknowledgedExecution(t *testing.T) {
+	const startTimeout = 100 * time.Millisecond
+	acknowledged := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCommand := func() { releaseOnce.Do(func() { close(release) }) }
+	requestCanceled := make(chan struct{})
+	handlerDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(execStartedHeader, "true")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(acknowledged)
+		select {
+		case <-release:
+			_, _ = w.Write([]byte(`{"phase":"completed","exitCode":0}`))
+		case <-r.Context().Done():
+			close(requestCanceled)
+		}
+	}))
+	t.Cleanup(server.Close)
+	defer releaseCommand()
+	dispatcher := &httpExecDispatcher{
+		url: server.URL + "/internal/exec", client: server.Client(), startTimeout: startTimeout,
+	}
+	defer dispatcher.client.CloseIdleConnections()
+
+	execution, err := dispatcher.Start(context.Background(), persistentExecRequest{Argv: []string{"/bin/true"}})
+	if err != nil {
+		t.Fatalf("Start failed after explicit acknowledgement: %v", err)
+	}
+	select {
+	case <-acknowledged:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not send the explicit start acknowledgement")
+	}
+	select {
+	case <-requestCanceled:
+		t.Fatal("startup timer canceled an acknowledged running command")
+	case <-time.After(3 * startTimeout):
+	}
+	releaseCommand()
+	response, err := execution.Wait(context.Background())
+	if err != nil || response.ExitCode != 0 || response.Phase != "completed" {
+		t.Fatalf("Wait = %+v, %v; want completed exit code 0", response, err)
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("executor handler did not finish after response body was read")
 	}
 }
 

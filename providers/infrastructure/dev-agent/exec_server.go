@@ -53,12 +53,19 @@ const (
 	execStartedHeader      = "X-Railgrid-Exec-Started"
 	execWorkerArg          = "--exec-worker"
 	execHelperStartTimeout = 30 * time.Second
-	execHelperStopTimeout  = 6 * time.Second
+	// A canceled helper may need WaitDelay to reap its child, then the bounded
+	// process-tree cleanup pass. Keep slack in one shared grace period for both
+	// post-start cancellation and pre-start helper shutdown.
+	execCommandWaitDelay      = 2 * time.Second
+	execProcessCleanupTimeout = 2 * time.Second
+	execHelperCancelSlack     = 4 * time.Second
+	execHelperCancelGrace     = execCommandWaitDelay + execProcessCleanupTimeout + execHelperCancelSlack
 )
 
 var (
-	errExecPathEscape = errors.New("path escapes execution workspace")
-	errExecSymlink    = errors.New("symbolic links are not allowed in execution workspace paths")
+	errExecPathEscape     = errors.New("path escapes execution workspace")
+	errExecSourceConflict = errors.New("source revision conflict")
+	errExecSymlink        = errors.New("symbolic links are not allowed in execution workspace paths")
 )
 
 type execResponse struct {
@@ -278,6 +285,7 @@ func runExecWorker() error {
 	if err != nil {
 		_ = writeMessage(execWorkerMessage{
 			Phase: "error", Error: err.Error(), CleanupUnproven: errors.Is(err, errExecCleanupUnproven),
+			SourceConflict: errors.Is(err, errExecSourceConflict),
 		})
 		return nil
 	}
@@ -286,6 +294,7 @@ func runExecWorker() error {
 	if runErr != nil {
 		message.Error = runErr.Error()
 		message.CleanupUnproven = errors.Is(runErr, errExecCleanupUnproven)
+		message.SourceConflict = errors.Is(runErr, errExecSourceConflict)
 		response.Error = runErr.Error()
 		response.CleanupUnproven = message.CleanupUnproven
 		message.Response = &response
@@ -303,13 +312,10 @@ func (s *statelessExecutor) writeExecStartError(w http.ResponseWriter, err error
 		status := http.StatusBadRequest
 		if errors.Is(err, errExecCleanupUnproven) {
 			status = http.StatusInternalServerError
-		} else if strings.Contains(err.Error(), "source revision") || strings.Contains(err.Error(), "source digest") || strings.Contains(err.Error(), "workspace manifest") {
+		} else if errors.Is(err, errExecSourceConflict) {
 			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)
-		if errors.Is(err, errExecCleanupUnproven) {
-			s.failStop()
-		}
 	}
 }
 
@@ -390,22 +396,22 @@ func startPersistentExecWithContext(parent context.Context, workspace string, ex
 	}
 	manifest, found, err := readWorkspaceManifest(root)
 	if err != nil {
-		return nil, fmt.Errorf("read workspace manifest: %w", err)
+		return nil, fmt.Errorf("%w: read workspace manifest: %w", errExecSourceConflict, err)
 	}
 	if !found {
-		return nil, errors.New("source revision is not synchronized: workspace manifest is missing")
+		return nil, fmt.Errorf("%w: source revision is not synchronized: workspace manifest is missing", errExecSourceConflict)
 	}
 	if manifest.SourceRevision != req.SourceRevision {
-		return nil, fmt.Errorf("source revision %d is not the applied source revision %d", req.SourceRevision, manifest.SourceRevision)
+		return nil, fmt.Errorf("%w: source revision %d is not the applied source revision %d", errExecSourceConflict, req.SourceRevision, manifest.SourceRevision)
 	}
 	if normalizeSourceDigest(manifest.SourceDigest) != normalizeSourceDigest(req.SourceDigest) {
-		return nil, errors.New("source digest does not match the applied workspace manifest")
+		return nil, fmt.Errorf("%w: source digest does not match the applied workspace manifest", errExecSourceConflict)
 	}
 	if len(manifest.PendingReloadCommands) > 0 {
-		return nil, errors.New("source revision dependency reload is still pending")
+		return nil, fmt.Errorf("%w: source revision dependency reload is still pending", errExecSourceConflict)
 	}
 	if err := verifyWorkspaceManifest(root, manifest); err != nil {
-		return nil, fmt.Errorf("workspace manifest verification failed: %w", err)
+		return nil, fmt.Errorf("%w: workspace manifest verification failed: %w", errExecSourceConflict, err)
 	}
 	if err := parent.Err(); err != nil {
 		return nil, err
@@ -429,7 +435,7 @@ func startPersistentExecWithContext(parent context.Context, workspace string, ex
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = execCommandWaitDelay
 	if err := enableChildSubreaper(); err != nil {
 		return nil, fmt.Errorf("enable child subreaper: %w", err)
 	}
@@ -459,7 +465,7 @@ func startPersistentExecWithContext(parent context.Context, workspace string, ex
 				return nil, fmt.Errorf("%w: terminate command after start acknowledgement failure: %v", errExecCleanupUnproven, killErr)
 			}
 			<-waitCh
-			if cleanupErr := cleanupExecProcesses(execMarker, processBaseline, 2*time.Second); cleanupErr != nil {
+			if cleanupErr := cleanupExecProcesses(execMarker, processBaseline, execProcessCleanupTimeout); cleanupErr != nil {
 				return nil, cleanupErr
 			}
 			return nil, fmt.Errorf("write execution start acknowledgement: %w", err)
@@ -493,7 +499,7 @@ func (p *persistentExecProcess) wait(parent context.Context) (execResponse, erro
 		}
 		waitErr = <-p.waitCh
 	}
-	if err := cleanupExecProcesses(p.marker, p.processBaseline, 2*time.Second); err != nil {
+	if err := cleanupExecProcesses(p.marker, p.processBaseline, execProcessCleanupTimeout); err != nil {
 		return execResponse{}, err
 	}
 	reapExitedChildren()
@@ -525,6 +531,7 @@ type execWorkerMessage struct {
 	Response        *execResponse `json:"response,omitempty"`
 	Error           string        `json:"error,omitempty"`
 	CleanupUnproven bool          `json:"cleanupUnproven,omitempty"`
+	SourceConflict  bool          `json:"sourceConflict,omitempty"`
 }
 
 type execWorkerStartResult struct {
@@ -599,6 +606,9 @@ func startPersistentExecHelper(ctx context.Context, workspace string, execEnv ex
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if message.SourceConflict {
+			return nil, fmt.Errorf("%w: %s", errExecSourceConflict, message.Error)
+		}
 		return nil, errors.New(message.Error)
 	}
 	return &execWorkerExecution{cmd: cmd, reader: reader, stderr: stderr}, nil
@@ -639,7 +649,7 @@ func stopExecHelper(cmd *exec.Cmd, reader *bufio.Reader, started <-chan execWork
 		_, _ = io.Copy(io.Discard, reader)
 		done <- cmd.Wait()
 	}()
-	timer := time.NewTimer(execHelperStopTimeout)
+	timer := time.NewTimer(execHelperCancelGrace)
 	defer timer.Stop()
 	select {
 	case waitErr := <-done:
@@ -692,6 +702,8 @@ func (e *execWorkerExecution) Wait(ctx context.Context) (execResponse, error) {
 			if message.Error != "" {
 				if message.CleanupUnproven {
 					result.err = fmt.Errorf("%w: %s", errExecCleanupUnproven, message.Error)
+				} else if message.SourceConflict {
+					result.err = fmt.Errorf("%w: %s", errExecSourceConflict, message.Error)
 				} else {
 					result.err = errors.New(message.Error)
 				}
@@ -710,7 +722,7 @@ func (e *execWorkerExecution) Wait(ctx context.Context) (execResponse, error) {
 			// Let the helper handle SIGTERM, cancel its command, and prove its
 			// descendant cleanup before the executor considers it finished.
 			_ = e.cmd.Process.Signal(syscall.SIGTERM)
-			timer := time.NewTimer(3 * time.Second)
+			timer := time.NewTimer(execHelperCancelGrace)
 			defer timer.Stop()
 			select {
 			case e.result = <-done:
