@@ -350,6 +350,15 @@ type taskRun struct {
 	// can be reported in the chat rather than to the agent's notify channel.
 	DeliveryKind string
 
+	// Retries is how many times this run was already handed back to the queue
+	// after a transient refusal (store.Run.Retries), carried because the
+	// lifecycle rewrites the run record from scratch when the turn starts.
+	// MaxAttempts bounds the total tries; zero means the provider default. Both
+	// are set by the background handler and are meaningless on an attended run,
+	// which is never retried (see api/retry.go).
+	Retries     int
+	MaxAttempts int32
+
 	// Callback, when set, is POSTed the run's outcome once it finishes. Delivery,
 	// not execution — consumed by the detached-start helper. See api/callback.go.
 	Callback *runCallback
@@ -715,7 +724,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			Backend: agent.Spec.BackendType(), AttemptID: harnessAttemptID(harnessT, runID),
 			// What a repository run ran against, minus the credential.
 			Repository: run.Repository.persisted(),
-			Phase:      store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
+			// How many times this run was already handed back to the queue; the
+			// bound on retrying it again is counted from here.
+			Retries: run.Retries,
+			Phase:   store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
 		}
 		if agent.Spec.HarnessBacked() {
 			checkpoint, err := initialHarnessCheckpoint(run, harnessT)
@@ -791,6 +803,17 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
+		if phase == store.RunPhaseFailed {
+			// A refusal that left nothing running on an unattended run is not
+			// an outcome: the run goes back to the queue with a wake-up time and
+			// the reconciler claims it again (api/retry.go). The transcript gets
+			// a marker so a reader sees why the task appears a second time.
+			if requeued, ok := s.retryRun(ctx, scope, run, cause, end); ok {
+				s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePending), "", requeued.Error())
+				s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePending})
+				return runResult{RunID: runID, Phase: store.RunPhasePending, StartedAt: &startedAt}, requeued
+			}
+		}
 		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
 		s.finishRun(persistCtx, scope, runID, runOutcome{
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
@@ -1557,7 +1580,10 @@ func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mc
 		}
 		msgs = append(msgs, summaryMessage(*sc.Summary))
 	}
-	history := sc.Messages
+	// A retried run's own earlier attempt — the task row it persisted and the
+	// re-queued marker that closed it — is not history. Left in, the model
+	// would read the task twice and a harness would replay it.
+	history := withoutRun(sc.Messages, run.RunID)
 	msgs = append(msgs, engineMessagesFromHistory(history)...)
 	// Background sessions (schedule/heartbeat/wakeup) accumulate the agent's
 	// own prior replies turn after turn — kept deliberately, so e.g. a news
