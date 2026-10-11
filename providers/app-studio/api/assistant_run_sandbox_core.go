@@ -820,12 +820,29 @@ func (s *Server) checkpointProjectAssistantRunSandboxIfDirty(ctx context.Context
 // waiting for synchronization. It remains immutable through every observation:
 // rereading mutable sandbox metadata later must not certify a newer snapshot.
 type projectAssistantPreviewSourceFence struct {
-	server   *Server
-	sandbox  *projectAssistantRunSandbox
-	runState *projectEinoAssistantRunState
-	scope    workspace.Scope
-	revision uint64
-	digest   string
+	server                          *Server
+	sandbox                         *projectAssistantRunSandbox
+	runState                        *projectEinoAssistantRunState
+	scope                           workspace.Scope
+	revision                        uint64
+	digest                          string
+	requiresSharedPreviewCheckpoint bool
+}
+
+type projectAssistantSharedPreviewSourceStaleError struct {
+	workspaceRevision uint64
+	previewRevision   uint64
+}
+
+func (e *projectAssistantSharedPreviewSourceStaleError) Error() string {
+	if e == nil {
+		return "shared preview has not applied the current workspace source"
+	}
+	return fmt.Sprintf("shared preview has not applied the current workspace source (workspace revision %d, last applied revision %d)", e.workspaceRevision, e.previewRevision)
+}
+
+func (*projectAssistantSharedPreviewSourceStaleError) Unwrap() error {
+	return errProjectAssistantRunSandboxConflict
 }
 
 func projectAssistantPreviewWorkspaceScope(req projectAssistantToolCallRequest) workspace.Scope {
@@ -852,7 +869,10 @@ func (s *Server) captureProjectAssistantPreviewSourceFence(ctx context.Context, 
 		}
 	}
 	// Read-only and lazily initialized runs still observe the shared preview.
-	// Pin their FileStore revision even when they have no private sandbox.
+	// A FileStore revision alone only proves which files are on disk; the
+	// durable preview checkpoint proves that the shared runtime applied them.
+	// Requiring both prevents an inspection started while an async sync is
+	// queued from certifying the previous preview.
 	if s.workspaces == nil {
 		return nil, nil
 	}
@@ -860,7 +880,24 @@ func (s *Server) captureProjectAssistantPreviewSourceFence(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	return &projectAssistantPreviewSourceFence{server: s, scope: scope, runState: runState, revision: revision}, nil
+	checkpoint, err := s.workspaces.LastPreviewCheckpoint(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	previewRevision := uint64(0)
+	if checkpoint != nil {
+		previewRevision = checkpoint.SourceRevision
+	}
+	if revision == 0 || previewRevision == 0 || previewRevision != revision {
+		return nil, &projectAssistantSharedPreviewSourceStaleError{
+			workspaceRevision: revision,
+			previewRevision:   previewRevision,
+		}
+	}
+	return &projectAssistantPreviewSourceFence{
+		server: s, scope: scope, runState: runState, revision: revision,
+		requiresSharedPreviewCheckpoint: true,
+	}, nil
 }
 
 func (f *projectAssistantPreviewSourceFence) validate(ctx context.Context) error {
@@ -877,6 +914,22 @@ func (f *projectAssistantPreviewSourceFence) validate(ctx context.Context) error
 		}
 		if current != f.revision {
 			return fmt.Errorf("%w: shared source changed during preview verification", errProjectAssistantRunSandboxConflict)
+		}
+		if f.requiresSharedPreviewCheckpoint {
+			checkpoint, err := f.server.workspaces.LastPreviewCheckpoint(ctx, f.scope)
+			if err != nil {
+				return err
+			}
+			previewRevision := uint64(0)
+			if checkpoint != nil {
+				previewRevision = checkpoint.SourceRevision
+			}
+			if previewRevision != f.revision {
+				return &projectAssistantSharedPreviewSourceStaleError{
+					workspaceRevision: f.revision,
+					previewRevision:   previewRevision,
+				}
+			}
 		}
 	}
 	sandbox := f.sandbox
@@ -904,6 +957,10 @@ func (f *projectAssistantPreviewSourceFence) validate(ctx context.Context) error
 func projectAssistantRunSandboxCheckpointFailure(err error) string {
 	if err == nil {
 		return "the current workspace mutation could not be checkpointed into the run sandbox"
+	}
+	var stalePreview *projectAssistantSharedPreviewSourceStaleError
+	if errors.As(err, &stalePreview) {
+		return stalePreview.Error()
 	}
 	reason := strings.TrimSpace(err.Error())
 	if errors.Is(err, errProjectAssistantRunSandboxConflict) {

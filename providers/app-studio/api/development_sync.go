@@ -33,6 +33,7 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -1313,17 +1314,48 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 			}
 			s.mu.Unlock()
 		}()
-		var err error
-		if hook != nil {
-			err = hook(id, project, name)
-		} else {
-			err = s.syncDevelopmentAfterMutation(id, project, name)
-		}
+		err := s.syncDevelopmentAfterMutationWithReservationRetry(id, project, name, hook)
 		if complete != nil {
 			complete(err)
 		}
 	}()
 	return true
+}
+
+// syncDevelopmentAfterMutationWithReservationRetry retries only workspace
+// owner contention. Restore, hydrate, and template selection schedule this
+// sync before their exclusive request lease is released. The worker must wait
+// for that lease to finish and acquire a fresh mutation reservation on every
+// attempt; carrying the request's owner marker into this background context
+// would let it bypass a lease that may have expired or been taken over.
+func (s *Server) syncDevelopmentAfterMutationWithReservationRetry(
+	id identity,
+	p *aiv1alpha1.Project,
+	name string,
+	hook func(identity, *aiv1alpha1.Project, string) error,
+) error {
+	timeout, backoff, maxBackoff := s.developmentSyncReadiness()
+	deadline := time.Now().Add(timeout)
+	for attempt := 1; ; attempt++ {
+		var err error
+		if hook != nil {
+			err = hook(id, p, name)
+		} else {
+			err = s.syncDevelopmentAfterMutation(id, p, name)
+		}
+		if err == nil || !errors.Is(err, store.ErrAssistantRunConflict) {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("project workspace remained reserved for %s after %s: %w", timeout, projectToolBaseName(name), err)
+		}
+		wait := min(backoff, remaining)
+		klog.V(2).Infof("development sync after %s for project %s is waiting for a workspace operation (attempt %d, retrying in %s): %v", projectToolBaseName(name), p.Name, attempt, wait, err)
+		timer := time.NewTimer(wait)
+		<-timer.C
+		backoff = min(backoff*2, maxBackoff)
+	}
 }
 
 func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) error {

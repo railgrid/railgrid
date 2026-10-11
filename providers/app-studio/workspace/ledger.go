@@ -61,6 +61,14 @@ type PendingCommit struct {
 	// they become the settlement receipt once the commit succeeds.
 	WorkspaceDigest string
 	Paths           []string
+	// SourceRevision is the durable source revision whose bytes and owners
+	// were captured for this request. Later mutations are fenced from this
+	// immutable commit snapshot.
+	SourceRevision uint64
+	// Attributions snapshots the source turns that produced the committed
+	// paths. It travels with the pending RepositoryCommit so later source
+	// changes cannot steal the commit event.
+	Attributions []SourceAttribution
 }
 
 // CommitSettlement is the local cleanup a landed commit still owes the ledger.
@@ -77,6 +85,10 @@ type LedgerRecord struct {
 	SourceRevision        uint64
 	LastSourceChange      *SourceChange
 	LastPreviewCheckpoint *SourceChange
+	// SourcePathAttributions retains one unambiguous owner per source path
+	// since that path last reached git. An empty owner records a path whose
+	// provenance is unknown or mixed, which must stay unattributed.
+	SourcePathAttributions []SourcePathAttribution
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
@@ -97,12 +109,16 @@ func (r LedgerRecord) DeepCopy() LedgerRecord {
 		change := *r.LastPreviewCheckpoint
 		out.LastPreviewCheckpoint = &change
 	}
+	if r.SourcePathAttributions != nil {
+		out.SourcePathAttributions = append([]SourcePathAttribution(nil), r.SourcePathAttributions...)
+	}
 	if r.UncommittedPaths != nil {
 		out.UncommittedPaths = append([]string(nil), r.UncommittedPaths...)
 	}
 	if r.PendingCommit != nil {
 		pending := *r.PendingCommit
 		pending.Paths = append([]string(nil), r.PendingCommit.Paths...)
+		pending.Attributions = cloneSourceAttributions(r.PendingCommit.Attributions)
 		out.PendingCommit = &pending
 	}
 	if r.Settlement != nil {
@@ -240,9 +256,11 @@ func NormalizeLedgerRecord(record *LedgerRecord) {
 		return
 	}
 	record.UncommittedPaths = normalizeLedgerPaths(record.UncommittedPaths)
+	record.SourcePathAttributions = normalizeSourcePathAttributions(record.SourcePathAttributions)
 	if record.PendingCommit != nil {
 		record.PendingCommit.Name = strings.TrimSpace(record.PendingCommit.Name)
 		record.PendingCommit.Paths = normalizeLedgerPaths(record.PendingCommit.Paths)
+		record.PendingCommit.Attributions = NormalizeSourceAttributions(record.PendingCommit.Attributions, record.PendingCommit.Paths)
 		if record.PendingCommit.Name == "" || record.PendingCommit.WorkspaceDigest == "" || len(record.PendingCommit.Paths) == 0 {
 			record.PendingCommit = nil
 		}
@@ -253,6 +271,147 @@ func NormalizeLedgerRecord(record *LedgerRecord) {
 			record.Settlement = nil
 		}
 	}
+}
+
+// SourcePathAttribution records the owner of a path's current uncommitted
+// source state. Empty ThreadID and RunID mean the path is deliberately
+// unattributed because it is legacy, system-authored, or mixed across turns.
+type SourcePathAttribution struct {
+	Path           string `json:"path"`
+	ThreadID       string `json:"threadID,omitempty"`
+	RunID          string `json:"runID,omitempty"`
+	SourceRevision uint64 `json:"sourceRevision,omitempty"`
+}
+
+// SourceAttribution groups the exact paths in a pending commit that one
+// assistant turn produced. A commit can carry paths from several turns.
+type SourceAttribution struct {
+	ThreadID string   `json:"threadID"`
+	RunID    string   `json:"runID"`
+	Paths    []string `json:"paths"`
+}
+
+func cloneSourceAttributions(values []SourceAttribution) []SourceAttribution {
+	if values == nil {
+		return nil
+	}
+	out := make([]SourceAttribution, len(values))
+	for index, value := range values {
+		out[index] = value
+		out[index].Paths = append([]string(nil), value.Paths...)
+	}
+	return out
+}
+
+func normalizeSourcePathAttributions(values []SourcePathAttribution) []SourcePathAttribution {
+	if len(values) == 0 {
+		return nil
+	}
+	byPath := make(map[string]SourcePathAttribution, len(values))
+	ambiguous := make(map[string]struct{})
+	for _, value := range values {
+		path, err := cleanProjectPath(value.Path)
+		if err != nil {
+			continue
+		}
+		value.Path = path
+		value.ThreadID = strings.TrimSpace(value.ThreadID)
+		value.RunID = strings.TrimSpace(value.RunID)
+		if value.ThreadID == "" || value.RunID == "" {
+			value.ThreadID, value.RunID = "", ""
+		}
+		if _, alreadyAmbiguous := ambiguous[path]; alreadyAmbiguous {
+			continue
+		}
+		if existing, ok := byPath[path]; ok {
+			if existing.ThreadID != value.ThreadID || existing.RunID != value.RunID {
+				delete(byPath, path)
+				ambiguous[path] = struct{}{}
+			}
+			continue
+		}
+		byPath[path] = value
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	out := make([]SourcePathAttribution, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, byPath[path])
+	}
+	return out
+}
+
+// NormalizeSourceAttributions bounds attribution groups to committedPaths,
+// sorts their paths, and drops any path claimed by conflicting owners.
+func NormalizeSourceAttributions(values []SourceAttribution, committedPaths []string) []SourceAttribution {
+	if len(values) == 0 || len(committedPaths) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(committedPaths))
+	for _, rawPath := range committedPaths {
+		path, err := cleanProjectPath(rawPath)
+		if err == nil {
+			allowed[path] = struct{}{}
+		}
+	}
+	type owner struct{ threadID, runID string }
+	byOwner := make(map[owner]map[string]struct{}, len(values))
+	ownerByPath := make(map[string]owner)
+	ambiguous := make(map[string]struct{})
+	for _, value := range values {
+		key := owner{threadID: strings.TrimSpace(value.ThreadID), runID: strings.TrimSpace(value.RunID)}
+		if key.threadID == "" || key.runID == "" {
+			continue
+		}
+		for _, rawPath := range value.Paths {
+			path, err := cleanProjectPath(rawPath)
+			if err != nil {
+				continue
+			}
+			if _, ok := allowed[path]; !ok {
+				continue
+			}
+			if _, conflicted := ambiguous[path]; conflicted {
+				continue
+			}
+			if existing, ok := ownerByPath[path]; ok && existing != key {
+				delete(byOwner[existing], path)
+				delete(ownerByPath, path)
+				ambiguous[path] = struct{}{}
+				continue
+			}
+			ownerByPath[path] = key
+			if byOwner[key] == nil {
+				byOwner[key] = map[string]struct{}{}
+			}
+			byOwner[key][path] = struct{}{}
+		}
+	}
+	owners := make([]owner, 0, len(byOwner))
+	for key := range byOwner {
+		if len(byOwner[key]) > 0 {
+			owners = append(owners, key)
+		}
+	}
+	sort.Slice(owners, func(i, j int) bool {
+		if owners[i].threadID != owners[j].threadID {
+			return owners[i].threadID < owners[j].threadID
+		}
+		return owners[i].runID < owners[j].runID
+	})
+	out := make([]SourceAttribution, 0, len(owners))
+	for _, key := range owners {
+		paths := make([]string, 0, len(byOwner[key]))
+		for path := range byOwner[key] {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		out = append(out, SourceAttribution{ThreadID: key.threadID, RunID: key.runID, Paths: paths})
+	}
+	return out
 }
 
 // removeLedgerPaths returns current without any path in remove.

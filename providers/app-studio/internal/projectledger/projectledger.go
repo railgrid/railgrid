@@ -137,6 +137,11 @@ func (l *Ledger) Update(ctx context.Context, scope workspace.Scope, mutate func(
 				"project %s has %d uncommitted paths, more than the %d the ledger can record",
 				scope.ProjectName, len(next.UncommittedPaths), MaxUncommittedPaths)
 		}
+		if len(next.SourcePathAttributions) > MaxUncommittedPaths {
+			return workspace.LedgerRecord{}, fmt.Errorf(
+				"project %s has %d source path attributions, more than the %d the ledger can record",
+				scope.ProjectName, len(next.SourcePathAttributions), MaxUncommittedPaths)
+		}
 		patch, err := statusPatch(project.ResourceVersion, statusFrom(next, project.Status.Workspace, l.clock()))
 		if err != nil {
 			return workspace.LedgerRecord{}, err
@@ -204,12 +209,31 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 	if len(status.UncommittedPaths) > 0 {
 		record.UncommittedPaths = append([]string(nil), status.UncommittedPaths...)
 	}
+	if len(status.SourcePathAttributions) > 0 {
+		record.SourcePathAttributions = make([]workspace.SourcePathAttribution, 0, len(status.SourcePathAttributions))
+		for _, attribution := range status.SourcePathAttributions {
+			record.SourcePathAttributions = append(record.SourcePathAttributions, workspace.SourcePathAttribution{
+				Path:           attribution.Path,
+				ThreadID:       attribution.ThreadID,
+				RunID:          attribution.RunID,
+				SourceRevision: uint64(attribution.SourceRevision),
+			})
+		}
+	}
 	if pending := status.PendingCommit; pending != nil {
 		record.PendingCommit = &workspace.PendingCommit{
 			Name:            pending.Name,
 			RepositoryRef:   pending.RepositoryRef,
 			WorkspaceDigest: pending.WorkspaceDigest,
 			Paths:           append([]string(nil), pending.Paths...),
+			SourceRevision:  uint64(pending.SourceRevision),
+		}
+		for _, attribution := range pending.Attributions {
+			record.PendingCommit.Attributions = append(record.PendingCommit.Attributions, workspace.SourceAttribution{
+				ThreadID: attribution.ThreadID,
+				RunID:    attribution.RunID,
+				Paths:    append([]string(nil), attribution.Paths...),
+			})
 		}
 	}
 	if settlement := status.Settlement; settlement != nil {
@@ -226,8 +250,17 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 // moment it was actually requested.
 func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorkspaceStatus, now time.Time) *aiv1alpha1.ProjectWorkspaceStatus {
 	status := &aiv1alpha1.ProjectWorkspaceStatus{
-		SourceRevision:   int64(record.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
-		UncommittedPaths: record.UncommittedPaths,
+		SourceRevision:         int64(record.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
+		UncommittedPaths:       record.UncommittedPaths,
+		SourcePathAttributions: make([]aiv1alpha1.ProjectSourcePathAttribution, 0, len(record.SourcePathAttributions)),
+	}
+	for _, attribution := range record.SourcePathAttributions {
+		status.SourcePathAttributions = append(status.SourcePathAttributions, aiv1alpha1.ProjectSourcePathAttribution{
+			Path:           attribution.Path,
+			ThreadID:       attribution.ThreadID,
+			RunID:          attribution.RunID,
+			SourceRevision: int64(attribution.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
+		})
 	}
 	if source := record.LastSourceChange; source != nil {
 		status.LastSourceChange = &aiv1alpha1.ProjectSourceChange{ThreadID: source.ThreadID, RunID: source.RunID, SourceRevision: int64(source.SourceRevision)}
@@ -246,7 +279,15 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 			RepositoryRef:   pending.RepositoryRef,
 			WorkspaceDigest: pending.WorkspaceDigest,
 			Paths:           pending.Paths,
+			SourceRevision:  int64(pending.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
 			RequestedAt:     requestedAt,
+		}
+		for _, attribution := range pending.Attributions {
+			status.PendingCommit.Attributions = append(status.PendingCommit.Attributions, aiv1alpha1.ProjectCommitAttribution{
+				ThreadID: attribution.ThreadID,
+				RunID:    attribution.RunID,
+				Paths:    append([]string(nil), attribution.Paths...),
+			})
 		}
 	}
 	if settlement := record.Settlement; settlement != nil {
@@ -261,8 +302,8 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 			RecordedAt:      recordedAt,
 		}
 	}
-	if status.SourceRevision == 0 && len(status.UncommittedPaths) == 0 &&
-		status.PendingCommit == nil && status.Settlement == nil {
+	if status.SourceRevision == 0 && len(status.UncommittedPaths) == 0 && len(status.SourcePathAttributions) == 0 &&
+		status.LastSourceChange == nil && status.LastPreviewCheckpoint == nil && status.PendingCommit == nil && status.Settlement == nil {
 		return nil
 	}
 	return status
@@ -277,12 +318,13 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 		body = nil
 	} else {
 		ledger := map[string]any{
-			"sourceRevision":        status.SourceRevision,
-			"lastSourceChange":      sourceChangePatch(status.LastSourceChange),
-			"lastPreviewCheckpoint": sourceChangePatch(status.LastPreviewCheckpoint),
-			"uncommittedPaths":      nullIfEmpty(status.UncommittedPaths),
-			"pendingCommit":         nil,
-			"settlement":            nil,
+			"sourceRevision":         status.SourceRevision,
+			"lastSourceChange":       sourceChangePatch(status.LastSourceChange),
+			"lastPreviewCheckpoint":  sourceChangePatch(status.LastPreviewCheckpoint),
+			"uncommittedPaths":       nullIfEmpty(status.UncommittedPaths),
+			"sourcePathAttributions": nullIfEmpty(status.SourcePathAttributions),
+			"pendingCommit":          nil,
+			"settlement":             nil,
 		}
 		if status.PendingCommit != nil {
 			ledger["pendingCommit"] = map[string]any{
@@ -290,6 +332,8 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 				"repositoryRef":   status.PendingCommit.RepositoryRef,
 				"workspaceDigest": status.PendingCommit.WorkspaceDigest,
 				"paths":           nullIfEmpty(status.PendingCommit.Paths),
+				"sourceRevision":  status.PendingCommit.SourceRevision,
+				"attributions":    nullIfEmpty(status.PendingCommit.Attributions),
 				"requestedAt":     status.PendingCommit.RequestedAt,
 			}
 		}
@@ -321,11 +365,11 @@ func sourceChangePatch(source *aiv1alpha1.ProjectSourceChange) any {
 	}
 }
 
-func nullIfEmpty(paths []string) any {
-	if len(paths) == 0 {
+func nullIfEmpty[T any](values []T) any {
+	if len(values) == 0 {
 		return nil
 	}
-	return paths
+	return values
 }
 
 func nullableString(value string) any {

@@ -462,6 +462,9 @@ function assistantComposerDraftScope(
     project: projectName,
     projectUID,
     thread: threadID,
+    projectCreatedAt: selected.value?.name === projectName && selected.value?.uid === projectUID
+      ? selected.value?.createdAt
+      : undefined,
   }
 }
 

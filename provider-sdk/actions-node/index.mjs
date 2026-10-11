@@ -309,7 +309,9 @@ function errorFromEnvelope(envelope, status, body) {
     actionVersion: envelope.actionVersion,
     resourceRef: envelope.resourceRef,
     retryable: envelope.error.retryable,
-    failureKind: failureKindForStatus(status) ?? 'upstream',
+    // A validated action envelope came from the provider. Its domain status
+    // cannot identify a failure in the gateway route or saved action contract.
+    failureKind: 'upstream',
     body,
   });
 }
@@ -440,8 +442,8 @@ export class ActionsClient {
           throw new ActionsClientError('provider action request failed', { code: 'network_error', retryable: true, cause: error });
         }
 
-        if (response.status === 401 && attempt === 0 && hasRefreshableCredential(options)) continue;
         const envelope = stableEnvelope(body);
+        if (!envelope && response.status === 401 && attempt === 0 && hasRefreshableCredential(options)) continue;
         if (!envelope) {
           if (!response.ok) throw httpError(response.status, body);
           throw new ActionsClientError('provider action response did not match the stable envelope', {

@@ -143,6 +143,12 @@ func (s *FileStore) ApplyManagedTransaction(ctx context.Context, scope Scope, ch
 	}
 
 	revisionBumped := false
+	changedPaths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.changed {
+			changedPaths = append(changedPaths, entry.clean)
+		}
+	}
 	for index, entry := range entries {
 		if !entry.changed {
 			continue
@@ -162,7 +168,7 @@ func (s *FileStore) ApplyManagedTransaction(ctx context.Context, scope Scope, ch
 			}
 		}
 		if !revisionBumped {
-			if err := s.bumpSourceRevision(ctx, scope); err != nil {
+			if err := s.bumpSourceRevisionForPaths(ctx, scope, changedPaths); err != nil {
 				return nil, s.rollbackManagedTransaction(entries, err)
 			}
 			revisionBumped = true

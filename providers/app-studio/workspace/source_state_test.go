@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -60,6 +61,70 @@ func TestFileStoreTurnAttributionPersistsSeparatelyFromPreview(t *testing.T) {
 	manual, _ := peer.LastSourceChange(ctx, scope)
 	if manual.ThreadID != "" || manual.RunID != "" {
 		t.Fatal("manual edit retained another thread's attribution")
+	}
+}
+
+func TestFileStoreSourceAttributionsGroupPathsAndOmitMixedOrSystemSource(t *testing.T) {
+	ctx := context.Background()
+	files := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, []File{
+		{Path: "a-only.go", Content: "A"},
+		{Path: "shared.go", Content: "A"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"a-only.go", "shared.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-b", "run-b"), scope, []File{
+		{Path: "b-only.go", Content: "B"},
+		{Path: "shared.go", Content: "B"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"b-only.go", "shared.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ctx, scope, []File{{Path: "manual.txt", Content: "manual"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.AddUncommittedPaths(ctx, scope, []string{"manual.txt"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := files.SourceAttributions(ctx, scope, []string{"a-only.go", "b-only.go", "shared.go", "manual.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SourceAttribution{
+		{ThreadID: "thread-a", RunID: "run-a", Paths: []string{"a-only.go"}},
+		{ThreadID: "thread-b", RunID: "run-b", Paths: []string{"b-only.go"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("source attributions = %+v, want %+v", got, want)
+	}
+}
+
+func TestFileStoreCommitSnapshotRevisionFenceRejectsInterleavedMutation(t *testing.T) {
+	ctx := context.Background()
+	files := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-a", "run-a"), scope, []File{{Path: "app.go", Content: "A"}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshotRevision, err := files.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.ReadFileBytes(ctx, scope, "app.go", 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.ApplyFiles(ContextWithMutationOrigin(ctx, "thread-b", "run-b"), scope, []File{{Path: "app.go", Content: "B"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.VerifySourceRevision(ctx, scope, snapshotRevision); !errors.Is(err, ErrSourceRevisionConflict) {
+		t.Fatalf("verify source revision error = %v, want ErrSourceRevisionConflict", err)
 	}
 }
 

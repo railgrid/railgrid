@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
 
 const (
@@ -48,6 +49,16 @@ func requestOwnerRevision(req Request) (*OwnerRevision, error) {
 	return &OwnerRevision{
 		Generation:      req.ExpectedOwnerGeneration,
 		ResourceVersion: req.ExpectedOwnerResourceVersion,
+	}, nil
+}
+
+func workloadOwnerRevision(scope serviceaccounts.WorkloadIdentityScope) (*OwnerRevision, error) {
+	if scope.ProjectGeneration < 1 || strings.TrimSpace(scope.ProjectResourceVersion) == "" {
+		return nil, RevisionConflict{Code: CodeVersionConflict, Reason: "workload scope is missing its Project revision"}
+	}
+	return &OwnerRevision{
+		Generation:      scope.ProjectGeneration,
+		ResourceVersion: scope.ProjectResourceVersion,
 	}, nil
 }
 

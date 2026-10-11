@@ -475,6 +475,16 @@ type ProjectWorkspaceStatus struct {
 	// +optional
 	LastPreviewCheckpoint *ProjectSourceChange `json:"lastPreviewCheckpoint,omitempty"`
 
+	// SourcePathAttributions retains the last unambiguous assistant turn that
+	// changed each uncommitted path. Entries with no thread/run identify paths
+	// whose source is legacy, system-authored, or mixed and must not be guessed
+	// onto a conversation turn.
+	// +optional
+	// +listType=map
+	// +listMapKey=path
+	// +kubebuilder:validation:MaxItems=1024
+	SourcePathAttributions []ProjectSourcePathAttribution `json:"sourcePathAttributions,omitempty"`
+
 	// UncommittedPaths are the working-copy paths that differ from the last
 	// commit, sorted. A path that no longer exists in the tree is a deletion
 	// and is committed as one.
@@ -518,6 +528,31 @@ type ProjectSourceChange struct {
 	SourceRevision int64 `json:"sourceRevision"`
 }
 
+// ProjectSourcePathAttribution records the producing turn for one path in
+// the durable working copy. An empty ThreadID and RunID deliberately mean
+// that the path has no unambiguous assistant owner.
+type ProjectSourcePathAttribution struct {
+	// Path is a normalized project-relative source path.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1024
+	Path string `json:"path"`
+
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ThreadID string `json:"threadID,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runID,omitempty"`
+
+	// SourceRevision is the revision at which this path's current bytes were
+	// last changed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	SourceRevision int64 `json:"sourceRevision,omitempty"`
+}
+
 // ProjectPendingCommit names an in-flight RepositoryCommit and the working-copy
 // content it carried.
 type ProjectPendingCommit struct {
@@ -546,9 +581,42 @@ type ProjectPendingCommit struct {
 	// +kubebuilder:validation:items:MaxLength=1024
 	Paths []string `json:"paths,omitempty"`
 
+	// SourceRevision is the source revision at which the pending commit's
+	// bytes and attributions were captured.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	SourceRevision int64 `json:"sourceRevision,omitempty"`
+
+	// Attributions is the immutable grouping of committed paths by the
+	// assistant turn that produced them. Paths omitted here are deliberately
+	// unattributed (legacy, system-authored, or mixed source).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1024
+	Attributions []ProjectCommitAttribution `json:"attributions,omitempty"`
+
 	// RequestedAt is when the commit action was called.
 	// +optional
 	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
+}
+
+// ProjectCommitAttribution groups the paths in a pending commit that one
+// assistant turn produced.
+type ProjectCommitAttribution struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ThreadID string `json:"threadID"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runID"`
+
+	// Paths are the exact subset of the pending commit produced by this turn.
+	// +kubebuilder:validation:MaxItems=1024
+	// +kubebuilder:validation:items:MaxLength=1024
+	Paths []string `json:"paths"`
 }
 
 // ProjectCommitSettlement is the receipt a landed commit leaves behind.

@@ -962,6 +962,76 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 	t.Fatal("assistant message not found")
 }
 
+func TestReconcileOrphanedRunUsesExactThreadTurnWhenClientRequestIDIsDuplicated(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "thread-scoped run"
+		if legacy {
+			name = "legacy run without thread ID"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().UTC()
+			scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
+			messages := store.NewMemoryStore()
+			server := NewWithWorkspace(nil, messages, nil, "", false)
+			server.tenantWorkspaces = defaultTestWorkspaces.lookup
+			server.tenantActors = defaultTestActors.lookup
+			defer server.projectAssistantSupervisor().Shutdown(context.Background())
+
+			createAssistantThreadForHTTPTest(t, messages, scope, "thread-a", "test-user")
+			createAssistantThreadForHTTPTest(t, messages, scope, "thread-b", "test-user")
+			run := store.AssistantRun{
+				ID:              "run-a",
+				ThreadID:        "thread-a",
+				Mode:            store.AssistantRunModeDefault,
+				ApprovalMode:    store.AssistantApprovalModeOnRequest,
+				Status:          store.AssistantRunStatusRunning,
+				ClientRequestID: "same-client-request",
+				UserMessageID:   "user-a",
+				ActiveMessageID: "assistant-a",
+				Revision:        1,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			if legacy {
+				run.ThreadID = ""
+			}
+			user := store.Message{ID: run.UserMessageID, ActorID: "test-user", Role: "user", Content: "build", CreatedAt: now, UpdatedAt: now}
+			assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Content: "working", CreatedAt: now, UpdatedAt: now}
+			if _, err := messages.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+				t.Fatalf("CreateAssistantRun: %v", err)
+			}
+			createAssistantTurnForHTTPTest(t, messages, scope, "thread-a", run)
+			newer := run
+			newer.ID = "run-b"
+			newer.ThreadID = "thread-b"
+			newer.UserMessageID = "user-b"
+			newer.ActiveMessageID = "assistant-b"
+			newer.CreatedAt = now.Add(time.Second)
+			newer.UpdatedAt = now.Add(time.Second)
+			createAssistantTurnForHTTPTest(t, messages, scope, "thread-b", newer)
+
+			if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID); err != nil {
+				t.Fatalf("reconcile orphaned run: %v", err)
+			}
+			turnA, err := messages.GetAssistantTurn(ctx, scope, "thread-a", "run-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if turnA.Status != store.AssistantTurnStatusInterrupted {
+				t.Fatalf("turn A status = %q, want interrupted", turnA.Status)
+			}
+			turnB, err := messages.GetAssistantTurn(ctx, scope, "thread-b", "run-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if turnB.Status != store.AssistantTurnStatusInProgress {
+				t.Fatalf("turn B status = %q, want in_progress", turnB.Status)
+			}
+		})
+	}
+}
+
 // A failed verification receipt used to carry only its outcome, so the portal
 // could not tell the user why and the model's prose was the only account of
 // the runtime. The receipt now carries the provider's own summary and a

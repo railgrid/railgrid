@@ -903,6 +903,10 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		seen[clean] = struct{}{}
 		cleanPaths = append(cleanPaths, clean)
 	}
+	snapshotRevision, err := s.workspaces.SourceRevision(ctx, scope)
+	if err != nil {
+		return "", fmt.Errorf("read workspace source revision before commit snapshot: %w", err)
+	}
 	files := make([]codecommit.File, 0, len(cleanPaths))
 	writtenPaths := make([]string, 0, len(cleanPaths))
 	deletePaths := make([]string, 0)
@@ -945,6 +949,13 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		expectedDigest != workspaceDigest {
 		return "", errors.New("workspace content changed after commit approval; request approval again for the current content")
 	}
+	attributions, err := s.workspaces.SourceAttributions(ctx, scope, cleanPaths)
+	if err != nil {
+		return "", fmt.Errorf("capture workspace commit attributions: %w", err)
+	}
+	if err := s.workspaces.VerifySourceRevision(ctx, scope, snapshotRevision); err != nil {
+		return "", fmt.Errorf("verify workspace source revision after commit snapshot; retry the commit: %w", err)
+	}
 
 	// The action is addressed at the Repository by name and PINNED by UID: the
 	// provider refuses a UID that does not match what its own read returns, so
@@ -983,6 +994,8 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 			RepositoryRef:   projectRepositoryRef,
 			WorkspaceDigest: workspaceDigest,
 			Paths:           cleanPaths,
+			SourceRevision:  snapshotRevision,
+			Attributions:    attributions,
 		}); err != nil {
 			klog.V(2).Infof("record pending RepositoryCommit %s for project %s: %v", created.Name, scope.ProjectName, err)
 		}

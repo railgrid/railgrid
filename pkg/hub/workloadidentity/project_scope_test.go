@@ -200,7 +200,7 @@ func TestProjectScopeResolverKeepsTransientReadErrorsDistinctFromRevocation(t *t
 func TestProjectScopeResolverRebuildsLegacyRecordFromCurrentProject(t *testing.T) {
 	project := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project",
-		"metadata": map[string]any{"name": "project", "uid": "project-uid"},
+		"metadata": map[string]any{"name": "project", "uid": "project-uid", "generation": int64(7), "resourceVersion": "project-rv-current"},
 		"spec": map[string]any{"environments": []any{map[string]any{
 			"name": "development", "bindings": []any{
 				map[string]any{
@@ -236,6 +236,9 @@ func TestProjectScopeResolverRebuildsLegacyRecordFromCurrentProject(t *testing.T
 	}
 	if !scope.IntegrationActions || len(scope.ProviderResources) != 2 {
 		t.Fatalf("rebuilt scope = %#v, want active gateway and two current references", scope)
+	}
+	if scope.ProjectGeneration != 7 || scope.ProjectResourceVersion != "project-rv-current" {
+		t.Fatalf("scope Project revision = %d/%q, want 7/project-rv-current", scope.ProjectGeneration, scope.ProjectResourceVersion)
 	}
 }
 

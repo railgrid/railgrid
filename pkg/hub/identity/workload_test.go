@@ -29,6 +29,7 @@ const workloadTenantPath = "root:railgrid:tenants:org:workspace"
 func workloadScope() serviceaccounts.WorkloadIdentityScope {
 	return serviceaccounts.WorkloadIdentityScope{
 		TenantPath: workloadTenantPath, Project: "shop", ProjectUID: "project-uid-1",
+		ProjectGeneration: 1, ProjectResourceVersion: "owner-rv-1",
 		Environment: "production", Instance: "shop-prod", IntegrationActions: true,
 		ProviderResources: []serviceaccounts.ProviderResourceScope{{
 			APIVersion: "databricks.railgrid.ai/v1alpha1", Kind: "Table",
@@ -256,6 +257,7 @@ func TestSweepRemovesRevokedWorkloadActionAndUnusedGateway(t *testing.T) {
 
 	noIntegrations := serviceaccounts.WorkloadIdentityScope{
 		TenantPath: workloadTenantPath, Project: "shop", ProjectUID: "project-uid-1",
+		ProjectGeneration: 1, ProjectResourceVersion: "owner-rv-1",
 		Environment: "production", Instance: "shop-prod",
 		ProviderResources: []serviceaccounts.ProviderResourceScope{{
 			APIVersion: "infrastructure.railgrid.ai/v1alpha1", Kind: "Application",
@@ -275,6 +277,91 @@ func TestSweepRemovesRevokedWorkloadActionAndUnusedGateway(t *testing.T) {
 	}
 	if len(role.Rules) != 1 || role.Rules[0].Resources[0] != "applications" || role.Rules[0].ResourceNames[0] != "shop-prod" {
 		t.Fatalf("fully revoked integrations left gateway or foreign-resource access: %#v", role.Rules)
+	}
+}
+
+type narrowDuringScopeResolution struct {
+	service      *Service
+	owners       *fakeOwners
+	staleScope   serviceaccounts.WorkloadIdentityScope
+	currentScope serviceaccounts.WorkloadIdentityScope
+	firstResolve bool
+}
+
+func (r *narrowDuringScopeResolution) ResolveRecord(ctx context.Context, _ *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error) {
+	if r.firstResolve {
+		r.firstResolve = false
+		r.owners.generation = 2
+		r.owners.resourceVersion = "owner-rv-2"
+		if _, err := r.service.EnsureWorkload(ctx, workloadTenantPath, r.currentScope, "runtime"); err != nil {
+			return serviceaccounts.WorkloadIdentityScope{}, err
+		}
+		// Return the Project snapshot the sweep started with. The identity write
+		// fence must reject it, and the retry must ask this resolver again.
+		return r.staleScope, nil
+	}
+	return r.currentScope, nil
+}
+
+func TestSweepDoesNotRestoreRulesFromStaleProjectOrIdentityRevision(t *testing.T) {
+	service, _, cs, owners := testService(t)
+	owners.present["Project/shop"] = "project-uid-1"
+	ctx := context.Background()
+	active := workloadScope()
+	token, err := service.EnsureWorkload(ctx, workloadTenantPath, active, "runtime")
+	if err != nil {
+		t.Fatalf("EnsureWorkload(active): %v", err)
+	}
+
+	revoked := active
+	revoked.ProjectGeneration = 2
+	revoked.ProjectResourceVersion = "owner-rv-2"
+	revoked.IntegrationActions = false
+	revoked.ProviderResources = append([]serviceaccounts.ProviderResourceScope(nil), active.ProviderResources...)
+	revoked.ProviderResources[0].Actions = nil
+	resolver := &narrowDuringScopeResolution{
+		service: service, owners: owners, staleScope: active, currentScope: revoked, firstResolve: true,
+	}
+	result, err := NewReconciler(ReconcilerOptions{
+		Service: service, WorkloadScopes: resolver, Logger: logr.Discard(),
+	}).Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if result.Failed != 0 {
+		t.Fatalf("Sweep had failures while retrying from current Project scope: %+v", result)
+	}
+
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, serviceaccounts.WorkloadIdentityRoleName(token.ServiceAccount), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get final workload ClusterRole: %v", err)
+	}
+	if hasRule(role.Rules, "ai.railgrid.ai", "projects/integration-actions", "shop", "create") {
+		t.Fatalf("stale sweep restored the revoked Project gateway permission: %#v", role.Rules)
+	}
+	if hasRule(role.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("stale sweep restored the revoked provider action permission: %#v", role.Rules)
+	}
+}
+
+func TestEnsureWorkloadRejectsScopeFromOlderProjectRevision(t *testing.T) {
+	service, records, cs, owners := testService(t)
+	owners.present["Project/shop"] = "project-uid-1"
+	owners.generation = 2
+	owners.resourceVersion = "owner-rv-2"
+	ctx := context.Background()
+
+	_, err := service.EnsureWorkload(ctx, workloadTenantPath, workloadScope(), "runtime")
+	var conflict RevisionConflict
+	if !errors.As(err, &conflict) || conflict.Code != CodeStaleOwner {
+		t.Fatalf("EnsureWorkload error = %v, want a stale Project revision conflict", err)
+	}
+	if len(records.items) != 0 {
+		t.Fatalf("stale scope wrote workload identity records: %d", len(records.items))
+	}
+	name := serviceaccounts.WorkloadServiceAccountName(workloadScope())
+	if _, err := cs.CoreV1().ServiceAccounts("default").Get(ctx, name, metav1.GetOptions{}); err == nil {
+		t.Fatal("stale Project scope materialized a ServiceAccount")
 	}
 }
 

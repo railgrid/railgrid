@@ -97,11 +97,16 @@ const (
 // ServiceAccount name, so a deleted-and-recreated project cannot inherit an
 // old runtime identity when its UID changes.
 type WorkloadIdentityScope struct {
-	TenantPath  string
-	Project     string
-	ProjectUID  string
-	Environment string
-	Instance    string
+	TenantPath string
+	Project    string
+	ProjectUID string
+	// ProjectGeneration and ProjectResourceVersion identify the exact Project
+	// snapshot from which the scope was derived. Callers that persist or mint
+	// workload permissions must fence writes against both values.
+	ProjectGeneration      int64
+	ProjectResourceVersion string
+	Environment            string
+	Instance               string
 	// IntegrationActions grants this Project's workload the App Studio
 	// integration gateway. It is true only while the selected environment has
 	// at least one active provider action grant.
