@@ -56,15 +56,18 @@ const (
 	// A canceled helper may need WaitDelay to reap its child, then the bounded
 	// process-tree cleanup pass. Keep slack in one shared grace period for both
 	// post-start cancellation and pre-start helper shutdown.
-	execCommandWaitDelay      = 2 * time.Second
-	execProcessCleanupTimeout = 2 * time.Second
-	execHelperCancelSlack     = 4 * time.Second
-	execHelperCancelGrace     = execCommandWaitDelay + execProcessCleanupTimeout + execHelperCancelSlack
+	execCommandWaitDelay        = 2 * time.Second
+	execProcessCleanupTimeout   = 2 * time.Second
+	execHelperCancelSlack       = 4 * time.Second
+	execHelperCancelGrace       = execCommandWaitDelay + execProcessCleanupTimeout + execHelperCancelSlack
+	execRejectionInvalidWorkdir = "invalid_workdir"
 )
 
 var (
 	errExecPathEscape     = errors.New("path escapes execution workspace")
 	errExecSourceConflict = errors.New("source revision conflict")
+	errExecInvalidWorkdir = errors.New("invalid execution workdir")
+	errExecNotDirectory   = errors.New("workdir is not a directory")
 	errExecSymlink        = errors.New("symbolic links are not allowed in execution workspace paths")
 )
 
@@ -285,7 +288,7 @@ func runExecWorker() error {
 	if err != nil {
 		_ = writeMessage(execWorkerMessage{
 			Phase: "error", Error: err.Error(), CleanupUnproven: errors.Is(err, errExecCleanupUnproven),
-			SourceConflict: errors.Is(err, errExecSourceConflict),
+			SourceConflict: errors.Is(err, errExecSourceConflict), RejectionCode: execStartRejectionCode(err),
 		})
 		return nil
 	}
@@ -307,6 +310,12 @@ func runExecWorker() error {
 
 func (s *statelessExecutor) writeExecStartError(w http.ResponseWriter, err error) {
 	if err != nil {
+		if errors.Is(err, errExecInvalidWorkdir) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(execStartRejection{RejectionCode: execRejectionInvalidWorkdir, Error: err.Error()})
+			return
+		}
 		// Revision/digest mismatch is a conflict: the caller must wait for the
 		// authoritative sync evidence rather than retrying the same command.
 		status := http.StatusBadRequest
@@ -317,6 +326,11 @@ func (s *statelessExecutor) writeExecStartError(w http.ResponseWriter, err error
 		}
 		http.Error(w, err.Error(), status)
 	}
+}
+
+type execStartRejection struct {
+	RejectionCode string `json:"rejectionCode"`
+	Error         string `json:"error"`
 }
 
 // failStop makes cleanup uncertainty terminal for this executor. Continuing to
@@ -389,9 +403,12 @@ func startPersistentExecWithContext(parent context.Context, workspace string, ex
 	defer func() { _ = root.Close() }()
 	workDir, err := cleanExecWorkDir(req.WorkDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errExecInvalidWorkdir, err)
 	}
 	if err := ensureExecDirectory(root, workDir); err != nil {
+		if errors.Is(err, errExecSymlink) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExecNotDirectory) {
+			return nil, fmt.Errorf("%w: %w", errExecInvalidWorkdir, err)
+		}
 		return nil, err
 	}
 	manifest, found, err := readWorkspaceManifest(root)
@@ -530,8 +547,16 @@ type execWorkerMessage struct {
 	Phase           string        `json:"phase"`
 	Response        *execResponse `json:"response,omitempty"`
 	Error           string        `json:"error,omitempty"`
+	RejectionCode   string        `json:"rejectionCode,omitempty"`
 	CleanupUnproven bool          `json:"cleanupUnproven,omitempty"`
 	SourceConflict  bool          `json:"sourceConflict,omitempty"`
+}
+
+func execStartRejectionCode(err error) string {
+	if errors.Is(err, errExecInvalidWorkdir) {
+		return execRejectionInvalidWorkdir
+	}
+	return ""
 }
 
 type execWorkerStartResult struct {
@@ -608,6 +633,9 @@ func startPersistentExecHelper(ctx context.Context, workspace string, execEnv ex
 		}
 		if message.SourceConflict {
 			return nil, fmt.Errorf("%w: %s", errExecSourceConflict, message.Error)
+		}
+		if message.RejectionCode == execRejectionInvalidWorkdir {
+			return nil, fmt.Errorf("%w: %s", errExecInvalidWorkdir, message.Error)
 		}
 		return nil, errors.New(message.Error)
 	}
@@ -827,7 +855,7 @@ func ensureExecDirectory(root *os.Root, clean string) error {
 		return fmt.Errorf("workdir %q: %w", clean, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("workdir %q is not a directory", clean)
+		return fmt.Errorf("%w: workdir %q", errExecNotDirectory, clean)
 	}
 	return nil
 }

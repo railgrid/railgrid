@@ -51,10 +51,10 @@ func contextWithProjectRuntimeOwner(ctx context.Context, scope workspace.Scope) 
 	return context.WithValue(ctx, projectRuntimeOwnerContextKey{}, scope)
 }
 
-// refreshProjectRuntimeOperationProject reads the current Project after a
-// runtime-operation lease is acquired. The UID check fences a deleted and
-// recreated Project with the same name, and the current object carries the
-// binding and repository settings the operation must use.
+// refreshProjectRuntimeOperationProject reads the current Project and checks
+// its immutable UID to fence a deleted and recreated Project with the same
+// name. The current object carries the binding and repository settings the
+// operation must use; callers coordinate with runtime mutations separately.
 func refreshProjectRuntimeOperationProject(ctx context.Context, c *asclient.Client, expected *aiv1alpha1.Project) (*aiv1alpha1.Project, error) {
 	if expected == nil || expected.Name == "" || expected.UID == "" {
 		return nil, fmt.Errorf("%w: project name and UID are required", errProjectRuntimeOperationTargetChanged)

@@ -377,6 +377,21 @@ and are marked stale when source changes or its revision cannot be checked, so
 success cannot certify the current source. Cancellation addresses the command's session, leaving sibling
 commands running; a cancellation request alone is not proof of process cleanup.
 
+A confirmed workdir rejection is reported as a pre-start blocker using the
+Infrastructure exec contract's `rejectionCode: invalid_workdir`. Error prose and
+process stderr never establish that execution did not start. Upgrade the
+Infrastructure provider and development agents to receive this classification;
+older runtimes remain compatible but return generic command errors. Pre-start
+blockers and unconfirmed starts do not receive stale-output annotations.
+
+Command dispatch keeps the original Project identity and runtime target across
+retries. Each START attempt revalidates them under the existing runtime-operation
+lease; the lease covers that request, not polling or process execution. This
+serializes launch with cooperating runtime operations on the same API instance.
+It is not an atomic transaction with external Kubernetes object edits. A target
+change stops retries, and an earlier unconfirmed START is canceled by its
+original request ID against the original target.
+
 File API writes can run alongside assistant turns under the same project owner.
 Creating a file requires `If-None-Match: *`; replacing or deleting a file
 requires `If-Match` with its exact version. Missing preconditions are rejected,

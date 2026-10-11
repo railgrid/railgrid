@@ -316,6 +316,53 @@ func TestHandlerExecPollAndCancelDispatch(t *testing.T) {
 	}
 }
 
+func TestHandlerExecReturnsTypedSynchronousInvalidWorkdir(t *testing.T) {
+	for _, workdir := range []string{"../escape", "bad\x00path", strings.Repeat("x", execMaxWorkdirBytes+1)} {
+		t.Run(workdir, func(t *testing.T) {
+			executor := &fakeExecutor{}
+			h := newExecHandler(t, executor, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+			body, err := json.Marshal(ExecRequest{
+				Action: ExecActionStart, RequestID: "run-1", SourceRevision: 1,
+				SourceDigest: testSourceDigest, Argv: []string{"true"}, Workdir: workdir,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := postExec(t, h, string(body), "run-1")
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%q", rec.Code, rec.Body.String())
+			}
+			var rejection execRejectionResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &rejection); err != nil {
+				t.Fatalf("decode typed rejection %q: %v", rec.Body.String(), err)
+			}
+			if rejection.RejectionCode != ExecRejectionInvalidWorkdir || !strings.Contains(rejection.Error, "workdir") {
+				t.Fatalf("rejection = %+v, want typed code and diagnostic", rejection)
+			}
+			if executor.startCall.Request.Action != "" {
+				t.Fatalf("executor received a rejected workdir request: %+v", executor.startCall)
+			}
+		})
+	}
+}
+
+func TestHandlerExecPassesThroughPersistedWorkdirRejectionReceipt(t *testing.T) {
+	executor := &fakeExecutor{result: ExecResult{
+		SessionID: "session-1", RequestID: "run-1", State: "failed",
+		RejectionCode: ExecRejectionInvalidWorkdir, Stderr: "invalid execution workdir: missing directory",
+	}}
+	h := newExecHandler(t, executor, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionPoll))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 terminal receipt; body=%q", rec.Code, rec.Body.String())
+	}
+	result := decodeExecResult(t, rec)
+	if result.State != "failed" || result.RejectionCode != ExecRejectionInvalidWorkdir || result.ExitCode != nil {
+		t.Fatalf("result = %+v, want failed typed pre-start receipt without exit code", result)
+	}
+}
+
 func TestHandlerExecRejectsMissingIdempotencyAndTail(t *testing.T) {
 	h := newExecHandler(t, &fakeExecutor{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
 	r := execRequest(t, ExecActionStart)

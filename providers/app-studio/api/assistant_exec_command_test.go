@@ -158,7 +158,7 @@ func newAppStudioSharedExecTestContext(t *testing.T, state *projectEinoAssistant
 	instance := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Instance",
-		"metadata":   map[string]any{"name": projectTemplateInstanceName(project)},
+		"metadata":   map[string]any{"name": projectTemplateInstanceName(project), "uid": "instance-uid"},
 	}}
 	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		asclient.ProjectGVR:  "ProjectList",
@@ -447,14 +447,14 @@ func TestProjectAssistantExecClassifiesWorkdirRejectionAsPreStartBlocker(t *test
 	args := &projectAssistantExecCommandInput{Component: "backend", Workdir: "missing", Argv: []string{"go", "test"}}
 	component := projectTemplateComponent{WorkspacePath: "api"}
 	result, ok := projectAssistantExecWorkdirRejection(
-		&projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "workdir missing: no such directory"},
+		&projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "workdir missing: no such directory", rejectionCode: "invalid_workdir"},
 		args, "backend", component, 8, "source-digest", "succeeded",
 	)
 	if !ok || result.Status != "blocked" || !strings.Contains(result.Blockers[0], "project/api/") || !strings.Contains(result.Blockers[0], "The command did not start") {
 		t.Fatalf("workdir HTTP rejection = %#v, classified=%t", result, ok)
 	}
 	result, ok = projectAssistantExecWorkdirExecutionFailure(
-		projectSandboxExecResponse{State: "failed", Stderr: "stateless executor rejected request: workdir missing: no such directory"},
+		projectSandboxExecResponse{State: "failed", RejectionCode: "invalid_workdir", Stderr: "selected directory is unavailable"},
 		args, "backend", component, 8, "source-digest", "succeeded",
 	)
 	if !ok || result.Status != "blocked" || result.ExitCode != nil {

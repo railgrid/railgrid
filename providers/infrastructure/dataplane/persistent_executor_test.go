@@ -35,6 +35,7 @@ type persistentRuntimeRoundTripper struct {
 	lastRequest       execCoordinatorRequest
 	records           map[string]execCoordinatorRequest
 	lostFirstResponse bool
+	terminalResult    *ExecResult
 	calls             int
 }
 
@@ -67,6 +68,9 @@ func (t *persistentRuntimeRoundTripper) RoundTrip(r *http.Request) (*http.Respon
 	}
 	exit := int32(0)
 	result := ExecResult{SessionID: request.SessionID, RequestID: request.RequestID, State: "succeeded", ExitCode: &exit, Stdout: "ok\n"}
+	if t.terminalResult != nil {
+		result = *t.terminalResult
+	}
 	body, _ := json.Marshal(result)
 	return workerResponse(r, http.StatusOK, string(body)), nil
 }
@@ -142,6 +146,27 @@ func TestPersistentExecutorIsReplicaSafeAndRetriesLostStartResponse(t *testing.T
 	}
 	if got := transport.request.Header.Get(controlTokenHeader); got != "control-token" {
 		t.Fatalf("worker control token = %q", got)
+	}
+}
+
+func TestPersistentExecutorPassesThroughWorkdirRejectionCode(t *testing.T) {
+	terminal := &ExecResult{
+		SessionID: "session-1", RequestID: "request-1", State: "failed",
+		RejectionCode: ExecRejectionInvalidWorkdir, Stderr: "invalid execution workdir: missing directory",
+	}
+	transport := &persistentRuntimeRoundTripper{terminalResult: terminal}
+	executor, err := NewPersistentExecutor(&persistentTestRuntime{transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := persistentTestCall()
+	call.Request = ExecRequest{Action: ExecActionPoll, SessionID: "session-1", RequestID: "request-1"}
+	result, err := executor.Poll(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "failed" || result.RejectionCode != ExecRejectionInvalidWorkdir || result.ExitCode != nil {
+		t.Fatalf("persistent executor result = %+v, want typed failed receipt without exit code", result)
 	}
 }
 

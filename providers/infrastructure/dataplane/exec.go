@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,7 +62,12 @@ const (
 	execMaxWorkdirBytes    = 256
 	execMaxDigestBytes     = 128
 	execMaxIdentifierBytes = 128
+	// ExecRejectionInvalidWorkdir identifies a pre-start working-directory
+	// rejection. A result carrying it has no process exit code.
+	ExecRejectionInvalidWorkdir = "invalid_workdir"
 )
+
+var errExecInvalidWorkdir = errors.New("invalid execution workdir")
 
 // ExecRequest is the JSON body accepted by the component /exec route. Start
 // and run carry the durable source revision/digest applied by /sync; the
@@ -88,10 +94,12 @@ type ExecRequest struct {
 // responses so callers know which applied workspace revision the command runs
 // against (explicitly supplied or resolved from the component status).
 type ExecResult struct {
-	SessionID      string `json:"sessionID,omitempty"`
-	RequestID      string `json:"requestID,omitempty"`
-	State          string `json:"state"`
-	ExitCode       *int32 `json:"exitCode,omitempty"`
+	SessionID string `json:"sessionID,omitempty"`
+	RequestID string `json:"requestID,omitempty"`
+	State     string `json:"state"`
+	ExitCode  *int32 `json:"exitCode,omitempty"`
+	// RejectionCode identifies a pre-start rejection, not a terminal process status.
+	RejectionCode  string `json:"rejectionCode,omitempty"`
 	Stdout         string `json:"stdout,omitempty"`
 	Stderr         string `json:"stderr,omitempty"`
 	Truncated      bool   `json:"truncated,omitempty"`
@@ -208,11 +216,11 @@ func decodeExecRequest(w http.ResponseWriter, r *http.Request, capability *infra
 		return ExecRequest{}, "", fmt.Errorf("sessionID and requestID must not contain NUL")
 	}
 	if len(req.Workdir) > execMaxWorkdirBytes {
-		return ExecRequest{}, "", fmt.Errorf("workdir must be at most %d bytes", execMaxWorkdirBytes)
+		return ExecRequest{}, "", fmt.Errorf("%w: workdir must be at most %d bytes", errExecInvalidWorkdir, execMaxWorkdirBytes)
 	}
 	if req.Workdir != "" {
 		if _, err := normalizeExecWorkdir(req.Workdir); err != nil {
-			return ExecRequest{}, "", fmt.Errorf("workdir: %w", err)
+			return ExecRequest{}, "", fmt.Errorf("%w: workdir: %w", errExecInvalidWorkdir, err)
 		}
 	}
 	if len(req.SourceDigest) > execMaxDigestBytes || strings.IndexByte(req.SourceDigest, 0) >= 0 {
@@ -301,7 +309,7 @@ func normalizeExecPath(value string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("must not be empty")
 	}
-	if strings.Contains(value, "\\") || strings.HasPrefix(value, "/") {
+	if strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || strings.ContainsRune(value, '\x00') {
 		return "", fmt.Errorf("must be workspace-relative")
 	}
 	clean := path.Clean(value)

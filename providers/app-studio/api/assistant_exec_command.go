@@ -103,13 +103,14 @@ type projectSandboxExecRequest struct {
 }
 
 type projectSandboxExecResponse struct {
-	SessionID string `json:"sessionID,omitempty"`
-	RequestID string `json:"requestID,omitempty"`
-	State     string `json:"state"`
-	ExitCode  *int   `json:"exitCode,omitempty"`
-	Stdout    string `json:"stdout,omitempty"`
-	Stderr    string `json:"stderr,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	RejectionCode string `json:"rejectionCode,omitempty"`
+	SessionID     string `json:"sessionID,omitempty"`
+	RequestID     string `json:"requestID,omitempty"`
+	State         string `json:"state"`
+	ExitCode      *int   `json:"exitCode,omitempty"`
+	Stdout        string `json:"stdout,omitempty"`
+	Stderr        string `json:"stderr,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
 }
 
 type projectAssistantExecCommandResult struct {
@@ -697,15 +698,39 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 	}
 }
 
-func execProjectAssistantSharedRuntimeCommand(ctx context.Context, current projectAssistantWorkflowRunContext, args *projectAssistantExecCommandInput) (*projectAssistantExecCommandResult, error) {
-	server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, current)
+func execProjectAssistantSharedRuntimeCommand(ctx context.Context, runCtx projectAssistantWorkflowRunContext, args *projectAssistantExecCommandInput) (*projectAssistantExecCommandResult, error) {
+	current := runCtx.current()
+	expected := current
+	if expected.Project != nil {
+		expected.Project = expected.Project.DeepCopy()
+	}
+	current, server, id, target, blocked, refreshErr := projectAssistantRuntimeValidatedCallContext(ctx, current, expected)
 	if blocked != nil {
-		return &projectAssistantExecCommandResult{Status: blocked.Status, Summary: blocked.Summary, Blockers: blocked.Blockers}, nil
+		status, summary := blocked.Status, blocked.Summary
+		if errors.Is(refreshErr, errProjectRuntimeOperationTargetChanged) {
+			status = "blocked"
+			summary = "Command execution was blocked because its project context changed before launch. Reload the project and retry."
+		}
+		return &projectAssistantExecCommandResult{Status: status, Summary: summary, Blockers: blocked.Blockers}, nil
+	}
+	expectedInstanceUID, err := projectAssistantRuntimeTargetInstanceUID(ctx, current, target)
+	if err != nil {
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked because its development instance could not be identified.", Blockers: []string{err.Error()}}, nil
 	}
 	component, componentInfo, err := projectAssistantExecComponent(target, args.Component)
 	if err != nil {
 		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: []string{err.Error()}}, nil
 	}
+	// Keep the initial target as the immutable dispatch expectation. Sync,
+	// snapshot reads, and the binary capability probe can take long enough for
+	// the Project or hosted Template to be replaced before START.
+	expectedTarget := target
+	expectedTarget.Components = make(map[string]projectTemplateComponent, len(target.Components))
+	for name, info := range target.Components {
+		expectedTarget.Components[name] = info
+	}
+	expectedTarget.PreviewAccessModes = append([]string(nil), target.PreviewAccessModes...)
+
 	var (
 		revision                uint64
 		syncStatus, syncFailure string
@@ -718,14 +743,20 @@ func execProjectAssistantSharedRuntimeCommand(ctx context.Context, current proje
 		if syncStatus != "succeeded" {
 			break
 		}
-		refreshed, freshServer, freshID, freshTarget, freshBlocked := projectAssistantRuntimeMutationCallContext(ctx, current, current)
+		refreshed, freshServer, freshID, freshTarget, freshBlocked, _ := projectAssistantRuntimeValidatedCallContext(ctx, current, expected)
 		if freshBlocked != nil {
 			targetChanged = freshBlocked.Summary
 			break
 		}
+		freshInstanceUID, uidErr := projectAssistantRuntimeTargetInstanceUID(ctx, refreshed, freshTarget)
 		freshComponent, freshInfo, targetErr := projectAssistantExecComponent(freshTarget, args.Component)
-		if targetErr != nil || !projectAssistantExecTargetMatches(target, freshTarget, component) {
+		if uidErr != nil || freshInstanceUID != expectedInstanceUID || targetErr != nil || !projectAssistantExecTargetMatches(expectedTarget, freshTarget, component) {
 			targetChanged = "the selected component or development instance changed while the command waited for synchronization"
+			if uidErr != nil {
+				targetChanged += ": " + uidErr.Error()
+			} else if freshInstanceUID != expectedInstanceUID {
+				targetChanged += ": the development instance was replaced"
+			}
 			if targetErr != nil {
 				targetChanged += ": " + targetErr.Error()
 			}
@@ -762,21 +793,112 @@ func execProjectAssistantSharedRuntimeCommand(ctx context.Context, current proje
 		return projectAssistantExecMarkSourceStale(ctx, current, result), nil
 	}
 	requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
-	// The agent fences exec on its own applied revision, which plain
-	// syncs may have renumbered ahead of the FileStore's.
+	// The agent fences exec on its own applied revision, which plain syncs may
+	// have renumbered ahead of the FileStore's.
 	agentRevision := server.developmentSyncRevision(id, target.dataPlaneRefFor(component), sourceRevision)
 	start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: agentRevision, SourceDigest: digest}
-	started, err := retryProjectAssistantExecStart(ctx, start, func(startCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
-		return projectAssistantExecCall(startCtx, server, id, target.dataPlaneRefFor(component), request)
-	})
+	var (
+		startBlocked             *projectAssistantRuntimeWorkflowResult
+		startMayHaveBeenAccepted bool
+	)
+	startAttempt := func(startCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+		startBlocked = nil
+		// This lease is deliberately limited to one final target check and one
+		// START request. Retry backoff and the command's lifetime stay unlocked.
+		release, leaseErr := server.acquireProjectRuntimeOperation(startCtx, current.WorkspaceScope)
+		if leaseErr != nil {
+			startBlocked = &projectAssistantRuntimeWorkflowResult{
+				Status:   "unavailable",
+				Summary:  "The project runtime could not be reserved for command startup: " + leaseErr.Error(),
+				Blockers: []string{leaseErr.Error()},
+			}
+			return projectSandboxExecResponse{}, projectAssistantExecStartNotDispatched(leaseErr)
+		}
+		defer release()
+
+		refreshed, freshServer, freshID, freshTarget, freshBlocked, refreshErr := projectAssistantRuntimeValidatedCallContext(startCtx, current, expected)
+		if freshBlocked != nil {
+			if errors.Is(refreshErr, errProjectRuntimeOperationTargetChanged) {
+				startBlocked = &projectAssistantRuntimeWorkflowResult{
+					Status:   "blocked",
+					Summary:  "Command execution was blocked because its project context changed before START.",
+					Blockers: freshBlocked.Blockers,
+				}
+			} else {
+				startBlocked = freshBlocked
+			}
+			return projectSandboxExecResponse{}, projectAssistantExecStartNotDispatched(errors.New(freshBlocked.Summary))
+		}
+		freshInstanceUID, uidErr := projectAssistantRuntimeTargetInstanceUID(startCtx, refreshed, freshTarget)
+		if uidErr != nil || freshInstanceUID != expectedInstanceUID {
+			summary := "the development instance changed before command startup"
+			if uidErr != nil {
+				summary += ": " + uidErr.Error()
+			}
+			startBlocked = &projectAssistantRuntimeWorkflowResult{
+				Status:   "blocked",
+				Summary:  "Command execution was blocked because its development target changed before START.",
+				Blockers: []string{summary},
+			}
+			return projectSandboxExecResponse{}, projectAssistantExecStartNotDispatched(errors.New(summary))
+		}
+		_, _, targetErr := projectAssistantExecComponent(freshTarget, args.Component)
+		if targetErr != nil || !projectAssistantExecTargetMatches(expectedTarget, freshTarget, component) {
+			summary := "the selected component or development instance changed before command startup"
+			if targetErr != nil {
+				summary += ": " + targetErr.Error()
+			}
+			startBlocked = &projectAssistantRuntimeWorkflowResult{
+				Status:   "blocked",
+				Summary:  "Command execution was blocked because its development target changed before START.",
+				Blockers: []string{summary},
+			}
+			return projectSandboxExecResponse{}, projectAssistantExecStartNotDispatched(errors.New(summary))
+		}
+		if err := startCtx.Err(); err != nil {
+			return projectSandboxExecResponse{}, projectAssistantExecStartNotDispatched(err)
+		}
+
+		response, startErr := projectAssistantExecCall(startCtx, freshServer, freshID, freshTarget.dataPlaneRefFor(component), request)
+		if startErr != nil && projectAssistantExecStartMayHaveBeenAccepted(startErr) {
+			startMayHaveBeenAccepted = true
+		}
+		return response, startErr
+	}
+	started, err := retryProjectAssistantExecStart(ctx, start, startAttempt)
 	if err != nil {
-		if rejected, ok := projectAssistantExecWorkdirRejection(err, args, component, componentInfo, sourceRevision, digest, syncStatus); ok {
+		mayHaveStarted := startMayHaveBeenAccepted || projectAssistantExecStartMayHaveBeenAccepted(err)
+		if rejected, ok := projectAssistantExecWorkdirRejection(err, args, component, componentInfo, sourceRevision, digest, syncStatus); ok && !mayHaveStarted {
 			return finalize(rejected)
 		}
-		if projectAssistantExecStartMayHaveBeenAccepted(err) {
+		if mayHaveStarted {
+			// A previous retry may already have persisted START. Keep cleanup
+			// scoped to the original target and deterministic request ID even if
+			// a later retry was blocked by a changed Project or returned 400.
 			projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 				return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
 			})
+		}
+		if startBlocked != nil {
+			if mayHaveStarted {
+				return finalize(&projectAssistantExecCommandResult{
+					Status:         "error",
+					Summary:        "Command start could not be confirmed because startup could not be revalidated; cancellation was requested by request ID.",
+					Component:      component,
+					SourceRevision: sourceRevision,
+					SourceDigest:   digest,
+					SyncStatus:     syncStatus,
+				})
+			}
+			return &projectAssistantExecCommandResult{
+				Status:         "blocked",
+				Summary:        startBlocked.Summary,
+				Component:      component,
+				SourceRevision: sourceRevision,
+				SourceDigest:   digest,
+				SyncStatus:     syncStatus,
+				Blockers:       startBlocked.Blockers,
+			}, nil
 		}
 		return finalize(&projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
 	}
@@ -861,7 +983,7 @@ func projectAssistantExecTargetMatches(before, after projectDevelopmentSyncTarge
 // shared-tree change may be visible to the process; this receipt does not claim
 // snapshot isolation or certify the tree observed by the command.
 func projectAssistantExecMarkSourceStale(ctx context.Context, runCtx projectAssistantWorkflowRunContext, result *projectAssistantExecCommandResult) *projectAssistantExecCommandResult {
-	if result == nil || result.SourceRevision == 0 {
+	if result == nil || result.SourceRevision == 0 || result.Status == "blocked" || strings.TrimSpace(result.SessionID) == "" {
 		return result
 	}
 	if ctx == nil {
@@ -1047,8 +1169,9 @@ func boundedProjectAssistantExecOutput(raw string) ([]string, bool) {
 }
 
 type projectAssistantExecHTTPError struct {
-	status int
-	detail string
+	status        int
+	detail        string
+	rejectionCode string
 }
 
 // projectAssistantExecWorkdirRejection maps a definitive HTTP validation
@@ -1064,7 +1187,7 @@ func projectAssistantExecWorkdirRejection(
 	syncStatus string,
 ) (*projectAssistantExecCommandResult, bool) {
 	var responseErr *projectAssistantExecHTTPError
-	if !errors.As(err, &responseErr) || responseErr.status != http.StatusBadRequest || !strings.Contains(strings.ToLower(responseErr.detail), "workdir") {
+	if !errors.As(err, &responseErr) || responseErr.status != http.StatusBadRequest || responseErr.rejectionCode != "invalid_workdir" {
 		return nil, false
 	}
 	return projectAssistantExecBlockedWorkdirResult(responseErr.detail, args, component, componentInfo, sourceRevision, sourceDigest, syncStatus), true
@@ -1083,20 +1206,10 @@ func projectAssistantExecWorkdirExecutionFailure(
 	if (state != "failed" && state != "error") || raw.ExitCode != nil {
 		return nil, false
 	}
-	const rejectionPrefix = "stateless executor rejected request:"
-	for _, line := range strings.Split(raw.Stderr, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) < len(rejectionPrefix) || !strings.EqualFold(line[:len(rejectionPrefix)], rejectionPrefix) {
-			continue
-		}
-		detail := strings.TrimSpace(line[len(rejectionPrefix):])
-		lowerDetail := strings.ToLower(detail)
-		if !strings.Contains(lowerDetail, "workdir") && !strings.Contains(lowerDetail, "working directory") {
-			continue
-		}
-		return projectAssistantExecBlockedWorkdirResult(detail, args, component, componentInfo, sourceRevision, sourceDigest, syncStatus), true
+	if raw.RejectionCode != "invalid_workdir" {
+		return nil, false
 	}
-	return nil, false
+	return projectAssistantExecBlockedWorkdirResult(raw.Stderr, args, component, componentInfo, sourceRevision, sourceDigest, syncStatus), true
 }
 
 func projectAssistantExecBlockedWorkdirResult(
@@ -1314,7 +1427,21 @@ func projectAssistantExecCall(ctx context.Context, server *Server, id identity, 
 		return projectSandboxExecResponse{}, err
 	}
 	if status < 200 || status >= 300 {
-		return projectSandboxExecResponse{}, &projectAssistantExecHTTPError{status: status, detail: truncateProjectToolInfo(string(body))}
+		// Rejection codes are protocol data. Older executors without this
+		// field retain their generic error; prose and process output cannot
+		// establish that a command never started.
+		var rejection struct {
+			Code  string `json:"rejectionCode"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(body, &rejection); err != nil {
+			rejection.Code, rejection.Error = "", ""
+		}
+		detail := string(body)
+		if rejection.Error != "" {
+			detail = rejection.Error
+		}
+		return projectSandboxExecResponse{}, &projectAssistantExecHTTPError{status: status, detail: truncateProjectToolInfo(detail), rejectionCode: rejection.Code}
 	}
 	var response projectSandboxExecResponse
 	if err := json.Unmarshal(body, &response); err != nil {

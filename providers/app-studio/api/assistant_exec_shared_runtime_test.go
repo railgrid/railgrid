@@ -92,7 +92,7 @@ func newSharedRuntimeExecFixtureWithPersistedProjectUID(t *testing.T, roundTrip 
 	instance := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Instance",
-		"metadata":   map[string]any{"name": projectTemplateInstanceName(project)},
+		"metadata":   map[string]any{"name": projectTemplateInstanceName(project), "uid": "instance-uid"},
 	}}
 	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		asclient.ProjectGVR:                        "ProjectList",
@@ -149,9 +149,10 @@ func decodeSharedRuntimeExecRequest(request *http.Request) (projectSandboxExecRe
 
 func TestSharedRuntimeExecAllowsConcurrentCommandsForOneProject(t *testing.T) {
 	starts := make(chan projectSandboxExecRequest, 2)
-	releaseStarts := make(chan struct{})
+	polls := make(chan projectSandboxExecRequest, 2)
+	releasePolls := make(chan struct{})
 	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseStarts) }) }
+	release := func() { releaseOnce.Do(func() { close(releasePolls) }) }
 	defer release()
 	fixture := newSharedRuntimeExecFixture(t, func(request *http.Request) (*http.Response, error) {
 		if request.Method == http.MethodGet {
@@ -164,9 +165,10 @@ func TestSharedRuntimeExecAllowsConcurrentCommandsForOneProject(t *testing.T) {
 		switch decoded.Action {
 		case "start":
 			starts <- decoded
-			<-releaseStarts
 			return sharedRuntimeExecHTTPResponse(request, http.StatusOK, projectSandboxExecResponse{RequestID: decoded.RequestID, SessionID: "session-" + decoded.RequestID, State: "running"})
 		case "poll":
+			polls <- decoded
+			<-releasePolls
 			return sharedRuntimeExecHTTPResponse(request, http.StatusOK, projectSandboxExecResponse{RequestID: decoded.RequestID, SessionID: decoded.SessionID, State: "succeeded", ExitCode: intPointer(0)})
 		default:
 			return sharedRuntimeExecHTTPResponse(request, http.StatusBadRequest, map[string]string{"error": "unexpected action"})
@@ -196,7 +198,18 @@ func TestSharedRuntimeExecAllowsConcurrentCommandsForOneProject(t *testing.T) {
 				second = request
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("both same-project commands did not reach START concurrently")
+			t.Fatal("both same-project commands did not start")
+		}
+	}
+	// START is serialized only through its final target check and HTTP request.
+	// Both processes should still be active together while their polls wait.
+	polled := make(map[string]bool, 2)
+	for i := 0; i < 2; i++ {
+		select {
+		case request := <-polls:
+			polled[request.RequestID] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("both command lifetimes did not overlap in POLL")
 		}
 	}
 	if first.RequestID == "" || second.RequestID == "" || first.RequestID == second.RequestID {
@@ -204,6 +217,9 @@ func TestSharedRuntimeExecAllowsConcurrentCommandsForOneProject(t *testing.T) {
 	}
 	if first.SourceRevision == 0 || first.SourceRevision != second.SourceRevision || first.SourceDigest == "" || first.SourceDigest != second.SourceDigest {
 		t.Fatalf("concurrent launch fences = (%d, %q), (%d, %q), want the same non-empty captured source", first.SourceRevision, first.SourceDigest, second.SourceRevision, second.SourceDigest)
+	}
+	if !polled[first.RequestID] || !polled[second.RequestID] {
+		t.Fatalf("overlapping polls = %v, want both START request IDs", polled)
 	}
 	release()
 	for i := 0; i < 2; i++ {
