@@ -187,6 +187,54 @@ func TestProjectFilePutReadRawAndDelete(t *testing.T) {
 	}
 }
 
+func TestProjectFilePutRejectsEmptyIfMatchVersion(t *testing.T) {
+	f := newProjectFilesFixture(t)
+	ctx := context.Background()
+	target := "/api/projects/shop/files/content?path=existing.txt"
+	created := f.request(http.MethodPut, target, strings.NewReader("original content\n"), map[string]string{"If-None-Match": "*"})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create existing target = %d %s", created.Code, created.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name   string
+		path   string
+		tag    string
+		exists bool
+	}{
+		{name: "quoted empty existing target", path: "existing.txt", tag: `""`, exists: true},
+		{name: "quoted whitespace missing target", path: "missing.txt", tag: `"   "`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := f.request(
+				http.MethodPut,
+				"/api/projects/shop/files/content?path="+tc.path,
+				strings.NewReader("unconditional replacement\n"),
+				map[string]string{"If-Match": tc.tag},
+			)
+			if response.Code != http.StatusPreconditionRequired {
+				t.Fatalf("PUT with If-Match %q = %d %s, want 428", tc.tag, response.Code, response.Body.String())
+			}
+			exists, err := f.workspaces.FileExists(ctx, f.scope, tc.path)
+			if err != nil {
+				t.Fatalf("FileExists: %v", err)
+			}
+			if exists != tc.exists {
+				t.Fatalf("target exists = %t, want %t", exists, tc.exists)
+			}
+			if tc.exists {
+				file, err := f.workspaces.ReadFile(ctx, f.scope, workspace.ReadOptions{Path: tc.path})
+				if err != nil {
+					t.Fatalf("ReadFile: %v", err)
+				}
+				if string(file.Content) != "original content\n" {
+					t.Fatalf("existing file content = %q, want original content", file.Content)
+				}
+			}
+		})
+	}
+}
+
 func TestProjectFilePutBoundsAndPathValidation(t *testing.T) {
 	f := newProjectFilesFixture(t)
 	tooBig := f.request(http.MethodPut, "/api/projects/shop/files/content?path=big.bin", bytes.NewReader(testPNG(workspace.MaxBinaryWriteBytes+1)), map[string]string{"If-None-Match": "*"})

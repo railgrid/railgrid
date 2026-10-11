@@ -1389,6 +1389,11 @@ func TestProjectAssistantRunSandboxCheckpointPersistsWithoutPreviewTemplate(t *t
 		},
 	}
 	fake := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{
+		SourceRevision: revision + 1,
+		SourceDigest: projectSandboxSyncDigest([]projectSandboxSyncFile{
+			{Path: "go.mod", Content: current.Content},
+			{Path: "main.go", Content: "package main\n"},
+		}),
 		Changes: []projectAssistantSandboxWorkspaceChange{{
 			Path: "main.go", Operation: string(workspace.ManagedFileCreate), Content: "package main\n",
 		}},
@@ -1403,7 +1408,7 @@ func TestProjectAssistantRunSandboxCheckpointPersistsWithoutPreviewTemplate(t *t
 		}},
 		metadata: projectAssistantRunSandboxMetadata{
 			Status: "active", Template: projectAssistantRunSandboxDefaultTemplate,
-			SourceRevision: revision, SourceDigest: oldDigest, RemoteRevision: revision + 1, RemoteDigest: "changed",
+			SourceRevision: revision, SourceDigest: oldDigest, RemoteRevision: revision + 1, RemoteDigest: fake.response.SourceDigest,
 			RemoteCheckpointID: "baseline", RunID: "run", HardExpiresAt: time.Now().Add(time.Hour),
 			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
 				"main.go": {Version: projectAssistantSandboxContentVersion("package main\n")},

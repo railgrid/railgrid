@@ -1,13 +1,64 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import ts from 'typescript'
 import { createServer } from 'vite'
 
 const source = await readFile(new URL('./CodeExplorer.vue', import.meta.url), 'utf8')
 const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 const { codeExplorerTreeState } = await vite.ssrLoadModule('/src/CodeExplorer.vue')
+const {
+  selectedProjectFileDeleteVersion,
+} = await vite.ssrLoadModule('/src/projectFileControls.ts')
 test.after(async () => vite.close())
+
+const setupScript = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)?.[1]
+const setupAST = ts.createSourceFile('CodeExplorer.ts', setupScript ?? '', ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+let uploadFunction
+for (const statement of setupAST.statements) {
+  if (ts.isFunctionDeclaration(statement) && statement.name?.text === 'uploadFiles') uploadFunction = statement
+}
+if (!uploadFunction) throw new Error('CodeExplorer uploadFiles function was not found')
+const uploadFunctionJS = ts.transpile(uploadFunction.getText(setupAST), {
+  target: ts.ScriptTarget.ES2020,
+  module: ts.ModuleKind.None,
+})
+
+function uploadHarness({ uploadProjectFiles, readProjectFile, current = () => true }) {
+  const projectContext = {}
+  const notifications = []
+  const refreshed = []
+  const writeBusy = { value: false }
+  const writeStatus = { value: '' }
+  const dependencies = {
+    props: { projectName: 'shop', ctx: projectContext },
+    writeBusy,
+    writeStatus,
+    acceptUploadCandidates: (files) => files,
+    isCurrentProject: (projectName, ctx) => projectName === 'shop' && ctx === projectContext && current(),
+    api: { uploadProjectFiles, readProjectFile },
+    joinProjectFilePath: (dir, name) => dir ? `${dir}/${name}` : name,
+    isProjectFileRequestError: (error) => typeof error?.reason === 'string',
+    errorMessage: (error, fallback) => error instanceof Error && error.message ? error.message : fallback,
+    confirmDialog: async () => { throw new Error('baseline read failure should not ask for confirmation') },
+    toast: (...args) => notifications.push(args),
+    dirLabel: (dir) => dir || 'project root',
+    refreshAndSelect: async (...args) => refreshed.push(args),
+  }
+  const uploadFiles = new Function(...Object.keys(dependencies), `${uploadFunctionJS}\nreturn uploadFiles`)(...Object.values(dependencies))
+  return { uploadFiles, notifications, refreshed, writeBusy, writeStatus, projectContext }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 test('distinguishes initial tree hydration from refresh and does not show a false empty state', () => {
   assert.match(source, /class="shimmer h-4 rounded bg-surface-overlay"/)
@@ -61,6 +112,100 @@ test('refreshes the tree and selected file after a workspace revision changes', 
   assert.match(source, /async function refreshWorkspaceSnapshot\(\)[\s\S]*const path = selectedPath\.value[\s\S]*await loadTree\(\)[\s\S]*await openFile\(path, projectName, requestContext\)/)
   assert.match(source, /\(\) => props\.refreshRevision[\s\S]*void refreshWorkspaceSnapshot\(\)/)
   assert.match(source, /@click="refreshWorkspaceSnapshot"/)
+})
+
+test('offers delete only for a loaded selected file and cancels if its version changes during confirmation', async () => {
+  const selection = {
+    selectedPath: 'src/main.ts',
+    content: null,
+    loading: true,
+    error: null,
+  }
+  const read = deferred()
+  const opening = read.promise.then((content) => {
+    selection.content = content
+    selection.loading = false
+  })
+
+  assert.equal(selectedProjectFileDeleteVersion(selection), undefined)
+  read.resolve({ path: 'src/main.ts', version: 'v1' })
+  await opening
+  const decisionVersion = selectedProjectFileDeleteVersion(selection)
+  assert.equal(decisionVersion, 'v1')
+
+  const confirmation = deferred()
+  const deletion = confirmation.promise.then((confirmed) => confirmed
+    && selection.selectedPath === 'src/main.ts'
+    && selectedProjectFileDeleteVersion(selection) === decisionVersion
+      ? decisionVersion
+      : undefined)
+  selection.content = { path: 'src/main.ts', version: 'v2' }
+  confirmation.resolve(true)
+  assert.equal(await deletion, undefined)
+
+  selection.error = 'temporary read failure'
+  assert.equal(selectedProjectFileDeleteVersion(selection), undefined)
+  assert.notEqual(selectedProjectFileDeleteVersion(selection), decisionVersion)
+  selection.error = null
+  selection.selectedPath = 'README.md'
+  selection.content = { path: 'README.md', version: 'v1' }
+  assert.equal(selectedProjectFileDeleteVersion(selection), 'v1')
+  assert.match(source, /:disabled="writesDisabled \|\| !selectedDeleteVersion"/)
+  assert.match(source, /const version = selectedDeleteVersion\.value[\s\S]*selectedPath\.value !== path \|\| selectedDeleteVersion\.value !== version[\s\S]*ifMatch: version/)
+})
+
+test('continues independent uploads after an existing file baseline read fails', async () => {
+  const attempts = []
+  const harness = uploadHarness({
+    async uploadProjectFiles(_ctx, _project, files, options) {
+      const file = files[0]
+      attempts.push({ name: file.name, dir: options.dir, overwrite: !!options.overwrite })
+      if (file.name === 'existing.txt') throw { reason: 'exists', message: 'File already exists.' }
+      return [{ path: `docs/${file.name}` }]
+    },
+    async readProjectFile(_ctx, _project, path) {
+      attempts.push({ read: path })
+      throw new Error('temporary read failure')
+    },
+  })
+  await harness.uploadFiles([{ name: 'existing.txt' }, { name: 'later.txt' }], 'docs')
+
+  assert.deepEqual(attempts, [
+    { name: 'existing.txt', dir: 'docs', overwrite: false },
+    { read: 'docs/existing.txt' },
+    { name: 'later.txt', dir: 'docs', overwrite: false },
+  ])
+  assert.deepEqual(harness.notifications, [
+    ['ok', 'Uploaded docs/later.txt.'],
+    ['error', 'docs/existing.txt: temporary read failure'],
+  ])
+  assert.equal(harness.refreshed.length, 1)
+  assert.deepEqual(harness.refreshed[0].slice(0, 2), ['docs/later.txt', 'shop'])
+  assert.equal(harness.refreshed[0][2], harness.projectContext)
+  assert.equal(harness.writeBusy.value, false)
+  assert.equal(harness.writeStatus.value, '')
+  assert.match(source, /if \(failures\.length === 1\) toast\('error', failures\[0\]\)/)
+})
+
+test('stops the upload batch when navigation changes during a failed baseline read', async () => {
+  const attempted = []
+  let current = true
+  const harness = uploadHarness({
+    current: () => current,
+    async uploadProjectFiles(_ctx, _project, files) {
+      attempted.push(files[0].name)
+      throw { reason: 'exists', message: 'File already exists.' }
+    },
+    async readProjectFile() {
+      current = false
+      throw new Error('read failed during navigation')
+    },
+  })
+  await harness.uploadFiles([{ name: 'existing.txt' }, { name: 'other-project.txt' }], '')
+
+  assert.deepEqual(attempted, ['existing.txt'])
+  assert.deepEqual(harness.notifications, [])
+  assert.deepEqual(harness.refreshed, [])
 })
 
 test('advances the explorer revision only for an accepted terminal workspace mutation', () => {

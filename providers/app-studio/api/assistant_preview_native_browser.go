@@ -1247,6 +1247,9 @@ func (s *Server) callProjectAssistantNativeBrowserTool(ctx context.Context, req 
 	result, err := s.callProjectAssistantNativeBrowserToolRaw(ctx, req, name, risk)
 	var preflightErr *projectAssistantNativeBrowserPreflightError
 	if errors.As(err, &preflightErr) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", projectAssistantRedactNativeBrowserAuthError(err)
+		}
 		result, err = projectAssistantNativeBrowserOutcomeNotExecuted(err), nil
 	}
 	return projectAssistantRedactNativeBrowserAuthURLs(result), projectAssistantRedactNativeBrowserAuthError(err)
@@ -1304,7 +1307,8 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, err)
 	}
 	defer unlockBrowser()
-	if err := s.ensureProjectAssistantPreviewCurrent(ctx, req); err != nil {
+	sourceFence, err := s.prepareProjectAssistantPreviewCurrent(ctx, req)
+	if err != nil {
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, err)
 	}
 	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, req.Identity, req.Project)
@@ -1331,12 +1335,27 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 	if !manager.begin(entry) {
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, errors.New("browser session owner is no longer active"))
 	}
+	if err := sourceFence.validate(ctx); err != nil {
+		manager.end(entry)
+		manager.remove(owner, entry, "source_changed")
+		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, err)
+	}
 	result, callErr := s.callProjectAssistantNativeBrowserSession(ctx, req, entry, ref, name, args, private, preview.PreviewURL, false)
 	manager.end(entry)
 	var preflightErr *projectAssistantNativeBrowserPreflightError
 	if errors.As(callErr, &preflightErr) {
 		manager.remove(owner, entry, "preflight_failed")
+		if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
+			return "", callErr
+		}
 		return projectAssistantNativeBrowserOutcomeNotExecuted(callErr), nil
+	}
+	if err := sourceFence.validate(ctx); err != nil {
+		manager.remove(owner, entry, "source_changed")
+		if projectAssistantNativeBrowserChangesPageState(name) || risk != projectAssistantToolRiskRead {
+			return projectAssistantNativeBrowserOutcomeUnknown(err), nil
+		}
+		return "", err
 	}
 	var safetyErr *projectAssistantNativeBrowserSafetyError
 	if errors.As(callErr, &safetyErr) {
@@ -1375,11 +1394,23 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 	if entry == nil || !manager.begin(entry) {
 		return "", errors.New("browser session manager is not configured")
 	}
+	if err := sourceFence.validate(ctx); err != nil {
+		manager.end(entry)
+		manager.remove(owner, entry, "retry_source_changed")
+		return "", err
+	}
 	result, callErr = s.callProjectAssistantNativeBrowserSession(ctx, req, entry, ref, name, args, private, preview.PreviewURL, true)
 	manager.end(entry)
 	if errors.As(callErr, &preflightErr) {
 		manager.remove(owner, entry, "retry_preflight_failed")
+		if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
+			return "", callErr
+		}
 		return projectAssistantNativeBrowserOutcomeNotExecuted(callErr), nil
+	}
+	if err := sourceFence.validate(ctx); err != nil {
+		manager.remove(owner, entry, "retry_source_changed")
+		return "", err
 	}
 	if errors.As(callErr, &safetyErr) {
 		manager.remove(owner, entry, "retry_safety_observation_failed")
@@ -1672,28 +1703,44 @@ func projectAssistantRunSuspendedForBrowser(runErr error) bool {
 }
 
 func (s *Server) ensureProjectAssistantPreviewCurrent(ctx context.Context, req projectAssistantToolCallRequest) error {
+	_, err := s.prepareProjectAssistantPreviewCurrent(ctx, req)
+	return err
+}
+
+func (s *Server) prepareProjectAssistantPreviewCurrent(ctx context.Context, req projectAssistantToolCallRequest) (*projectAssistantPreviewSourceFence, error) {
 	if req.RunState == nil {
-		return nil
+		fence, err := s.captureProjectAssistantPreviewSourceFence(ctx, nil, projectAssistantPreviewWorkspaceScope(req))
+		if err != nil {
+			return nil, err
+		}
+		return fence, fence.validate(ctx)
 	}
 	checkpointed, checkpointErr := s.checkpointProjectAssistantRunSandboxIfDirty(ctx, req.RunState)
 	if checkpointErr != nil {
-		return fmt.Errorf("current workspace mutation is not synchronized: %w", checkpointErr)
+		return nil, fmt.Errorf("current workspace mutation is not synchronized: %w", checkpointErr)
+	}
+	sourceFence, err := s.captureProjectAssistantPreviewSourceFence(ctx, req.RunState, projectAssistantPreviewWorkspaceScope(req))
+	if err != nil {
+		return nil, err
 	}
 	revision, _ := req.RunState.SourceMutationRevisions()
 	if revision == 0 {
-		return nil
+		return sourceFence, sourceFence.validate(ctx)
 	}
 	status, failure := req.RunState.DevelopmentSyncEvidence(revision)
 	if checkpointed {
 		status, failure = req.RunState.WaitForDevelopmentSync(ctx, revision, projectSandboxSyncTimeout+time.Second)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if status != "succeeded" {
 		if failure == "" {
 			failure = "the current workspace mutation has not completed development synchronization"
 		}
-		return errors.New(failure)
+		return nil, errors.New(failure)
 	}
-	return nil
+	return sourceFence, sourceFence.validate(ctx)
 }
 
 func validateProjectAssistantNativeBrowserArguments(name string, args map[string]any, baseURL string) error {

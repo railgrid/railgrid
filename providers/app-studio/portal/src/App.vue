@@ -147,6 +147,10 @@ import {
   type AssistantComposerDraft,
   type AssistantComposerDraftScope,
 } from './assistantComposerDraft'
+import {
+  assistantComposerDraftMatches,
+  shouldHydrateAssistantComposerDraftForThread,
+} from './assistantComposerDraftPolicy'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import { isValidTimestamp } from './agentkit/timestamp'
@@ -5824,7 +5828,7 @@ async function recoverUnavailableAssistantAttachmentSend(
   if (recovery.stale || !isCurrent()) return recovery.stale ? recovery : { ...recovery, stale: true }
   if (recovery.candidateCount === 0) return recovery
   pendingMessageSubmission = null
-  prompt.value = content
+  if (!prompt.value) prompt.value = content
   if (recovery.recovered > 0 && recovery.removed === 0 && recovery.unresolved === 0) {
     error.value = recovery.recovered === 1
       ? 'The attached file was refreshed. Review it and send again.'
@@ -5851,6 +5855,11 @@ const activeAssistantComposerDraftScopeKey = computed(() => assistantComposerDra
 
 watch(activeAssistantComposerDraftScopeKey, (current, previous) => {
   if (current === previous) return
+  if (!shouldHydrateAssistantComposerDraftForThread(
+    activeAssistantThreadID.value,
+    assistantComposerSubmitting.value,
+    activeAssistantSubmissionOwner,
+  )) return
   if (current) {
     hydrateCurrentAssistantComposerDraft()
     return
@@ -7599,7 +7608,9 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
   const turnSkills = steeringActiveRun ? [] : [...selectedTurnSkills.value]
   const turnResources = steeringActiveRun ? [] : [...selectedTurnResources.value]
   const turnContentParts = steeringActiveRun ? [] : [...assistantComposerParts.value]
-  const turnResponseMode = assistantIntent.value
+  const capturedComposerDraft = currentAssistantComposerDraft()
+  capturedComposerDraft.content = content
+  const submittingComposerDraft: AssistantComposerDraft = { ...capturedComposerDraft, content: '' }
   const turnContext = {
     ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
     ...(turnResources.length ? { contextResources: turnResources } : {}),
@@ -7645,6 +7656,27 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     selected.value?.name === submissionOwner.projectName &&
     (selected.value?.uid ?? '') === submissionOwner.projectUID &&
     activeAssistantThreadID.value === submissionOwner.threadID
+  const restoreCapturedComposerDraft = (selectionsOnly = false) => {
+    const currentDraft = currentAssistantComposerDraft()
+    if (
+      !submissionIsCurrent() ||
+      (selectionsOnly && currentDraft.content !== '' && currentDraft.content !== capturedComposerDraft.content) ||
+      !assistantComposerDraftMatches(currentDraft, submittingComposerDraft, selectionsOnly)
+    ) return false
+    if (!currentDraft.content) prompt.value = capturedComposerDraft.content
+    if (!selectionsOnly) {
+      assistantComposerParts.value = [...capturedComposerDraft.contentParts]
+      assistantComposerAttachmentsPending.value = false
+    }
+    selectedTurnSkills.value = turnSkills
+    selectedTurnResources.value = turnResources
+    assistantIntent.value = capturedComposerDraft.responseMode
+    writeAssistantComposerDraft(
+      assistantComposerDraftScope(projectName, submissionOwner.threadID, sendContext, projectUID),
+      selectionsOnly ? currentAssistantComposerDraft() : capturedComposerDraft,
+    )
+    return true
+  }
   const clearOwnedPendingSubmission = () => {
     if (pendingMessageSubmission === ownedPendingSubmission) pendingMessageSubmission = null
   }
@@ -7736,13 +7768,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         // submission still survives refresh.
         writeAssistantComposerDraft(
           assistantComposerDraftScope(projectName, thread.id, sendContext, projectUID),
-          {
-            content,
-            contentParts: turnContentParts,
-            skillIDs: turnSkills.map((skill) => skill.id),
-            resources: turnResources,
-            responseMode: turnResponseMode,
-          },
+          capturedComposerDraft,
         )
       }
       const canonical = startOperation.collaborationMode === 'review'
@@ -7906,7 +7932,10 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         // A receipt rejection is a pre-acceptance failure, not an active-run
         // conflict. Reconcile it before attempting normal conflict recovery.
         const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, submissionIsCurrent)
-        if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) return false
+        if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) {
+          if (!attachmentRecovery.stale) restoreCapturedComposerDraft(true)
+          return false
+        }
       }
       let recoveredSameRequest = false
       try {
@@ -7926,17 +7955,13 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
           clearOwnedPendingSubmission()
-          prompt.value = content
-          assistantComposerParts.value = turnContentParts
-          persistCurrentAssistantComposerDraft(turnContentParts)
+          restoreCapturedComposerDraft()
         }
         if (!recovered?.current) messageStreaming.value = false
       } catch (recoveryError) {
         if (!submissionIsCurrent()) return false
         messageStreaming.value = false
-        prompt.value = content
-        assistantComposerParts.value = turnContentParts
-        persistCurrentAssistantComposerDraft(turnContentParts)
+        restoreCapturedComposerDraft()
         const detail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         error.value = detail ? `Could not recover the active assistant run: ${detail}` : 'Could not recover the active assistant run. Your prompt is preserved.'
       }
@@ -7947,17 +7972,19 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       // receipts into the composer while preserving the authored prompt; do
       // not replay this request with a changed payload or risk two turns.
       const attachmentRecovery = await recoverUnavailableAssistantAttachmentSend(projectName, content, turnContentParts, submissionIsCurrent)
-      if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) return false
+      if (attachmentRecovery.stale || attachmentRecovery.candidateCount > 0) {
+        if (!attachmentRecovery.stale) restoreCapturedComposerDraft(true)
+        return false
+      }
     }
     error.value = e instanceof Error ? e.message : String(e)
-    prompt.value = content
-    assistantComposerParts.value = turnContentParts
-    persistCurrentAssistantComposerDraft(turnContentParts)
+    restoreCapturedComposerDraft()
     messageStreaming.value = false
     return false
   } finally {
     if (submissionIsCurrent()) {
       assistantComposerSubmitting.value = false
+      if (!startPostAccepted) persistCurrentAssistantComposerDraft()
       releaseBusyOperation(submissionOwner.busyOwner)
       if (!messageStreaming.value) {
         assistantPendingStartStopRequested.value = false

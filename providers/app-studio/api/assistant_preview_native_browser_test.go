@@ -2051,6 +2051,7 @@ type nativeBrowserOriginGuardTestState struct {
 	escapeAfterNavigate     bool
 	unsafeNavigationReceipt bool
 	failNextSnapshotCall    bool
+	cancelNextSnapshot      context.CancelFunc
 	sessionLossOnTool       string
 }
 
@@ -2109,6 +2110,11 @@ func newNativeBrowserOriginGuardTestServer(t *testing.T, state *nativeBrowserOri
 					state.pageURL = "https://attacker.example/after-navigate"
 				}
 			case browserMCPToolSnapshot:
+				if state.cancelNextSnapshot != nil {
+					state.cancelNextSnapshot()
+					state.cancelNextSnapshot = nil
+					return nil, context.Canceled
+				}
 				if state.failNextSnapshotCall {
 					state.failNextSnapshotCall = false
 					recorder.WriteHeader(http.StatusGone)
