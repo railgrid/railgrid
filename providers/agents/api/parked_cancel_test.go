@@ -106,6 +106,9 @@ type parkedCancelFixture struct {
 	run          store.Run
 	initialAgent *agentsv1alpha1.Agent
 	secretGets   *atomic.Int32
+	// inboxID, when set, is written into the parked checkpoint as the item the
+	// run is waiting on, the way a real park records it.
+	inboxID string
 }
 
 type parkedCancelDial struct {
@@ -218,7 +221,7 @@ func (f *parkedCancelFixture) parkWithIdentity(t *testing.T, saveRunnerTarget bo
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkpoint := runCheckpoint{Backend: agentsv1alpha1.AgentBackendHarness, Harness: stateJSON}
+	checkpoint := runCheckpoint{Backend: agentsv1alpha1.AgentBackendHarness, Harness: stateJSON, InboxID: f.inboxID}
 	if saveRunnerTarget {
 		checkpoint.HarnessRunner = &harnessCancelTarget{
 			ClusterID: "cluster-test", EdgeKind: edgeref.KindLinuxServer, EdgeName: "edge-test",
@@ -379,6 +382,74 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 	case <-f.dispatcher.calls:
 		t.Fatal("late approval dispatched another remote cancellation/resume call")
 	default:
+	}
+}
+
+func TestCancelParkedRunClosesTheQuestionItWasWaitingOn(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	f := newParkedCancelFixture(t, agent, nil)
+	f.inboxID = "inbox-parked-question"
+	run := f.park(t, true)
+	workspaceScope := store.Scope{OrgUUID: f.scope.OrgUUID, WorkspaceUUID: f.scope.WorkspaceUUID}
+	now := time.Now().UTC()
+	for _, item := range []store.InboxItem{
+		{
+			ID: f.inboxID, AgentName: run.AgentName, RunID: run.ID, Kind: store.InboxKindQuestion,
+			State: store.InboxStatePending, Prompt: "Which pull request should I review?",
+			CreatedAt: now, UpdatedAt: now,
+		},
+		// A pending item of another run must not be touched by this cancel.
+		{
+			ID: "inbox-other-run", AgentName: run.AgentName, RunID: "run-other", Kind: store.InboxKindQuestion,
+			State: store.InboxStatePending, Prompt: "unrelated", CreatedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := f.server.store.AddInboxItem(context.Background(), workspaceScope, item); err != nil {
+			t.Fatalf("add inbox item %s: %v", item.ID, err)
+		}
+	}
+	events, unsubscribe := f.server.events.subscribe(workspaceScope)
+	defer unsubscribe()
+
+	f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
+	w := f.cancel(t)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("cancel status = %d: %s", w.Code, w.Body.String())
+	}
+	stored, err := f.server.store.GetRun(context.Background(), f.scope, run.ID)
+	if err != nil || stored.Phase != store.RunPhaseAborted {
+		t.Fatalf("run after cancel = %+v, %v; want Aborted", stored, err)
+	}
+	item, err := f.server.store.GetInboxItem(context.Background(), workspaceScope, f.inboxID)
+	if err != nil {
+		t.Fatalf("read the run's inbox item: %v", err)
+	}
+	if item.State != store.InboxStateAnswered || !strings.Contains(item.Response, "cancelled") {
+		t.Fatalf("inbox item after cancel = state %q response %q; want it answered with the cancellation", item.State, item.Response)
+	}
+	other, err := f.server.store.GetInboxItem(context.Background(), workspaceScope, "inbox-other-run")
+	if err != nil || other.State != store.InboxStatePending {
+		t.Fatalf("unrelated inbox item = %+v, %v; want it left pending", other, err)
+	}
+	pending, err := f.server.store.ListInbox(context.Background(), workspaceScope, store.InboxStatePending)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending inbox after cancel = %+v, %v; want only the unrelated item", pending, err)
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type != "inbox" {
+				continue
+			}
+			data, _ := ev.Data.(map[string]any)
+			if data["id"] == f.inboxID && data["state"] == string(store.InboxStateAnswered) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("closing the inbox item published no inbox event; the portal would keep showing it")
+		}
 	}
 }
 

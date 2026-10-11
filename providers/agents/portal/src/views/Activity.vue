@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
@@ -26,6 +26,7 @@ const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
+type InboxDecision = 'approve' | 'deny' | 'answer'
 type PhaseMeta = { label: string; cls: string; tone: 'success' | 'warning' | 'danger' }
 const PHASE_META: Record<RunPhase, PhaseMeta> = {
   Pending: { label: 'Pending', cls: 'pending', tone: 'warning' },
@@ -49,7 +50,10 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const loaded = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
-const resolvingInbox = ref(new Map<string, 'approve' | 'deny'>())
+const resolvingInbox = ref(new Map<string, InboxDecision>())
+// answerDrafts holds the reply typed for each pending question, by item id, so
+// a draft survives the list re-rendering around it.
+const answerDrafts = reactive<Record<string, string>>({})
 const tablePage = ref(1)
 const tablePageSize = ref(PAGE)
 const tableCursor = ref<string | null>(null)
@@ -177,14 +181,21 @@ function onTableChange(change: ResourceTableChange): void {
   void reload('foreground')
 }
 
-async function resolve(item: InboxItem, decision: 'approve' | 'deny'): Promise<void> {
+// resolve records the user's decision on a pending item. An approval takes a
+// verdict; a question takes an answer in words, which resumes the run, or a
+// dismissal (`deny`), which closes the item without resuming — the run, if it
+// is still paused, is ended from its own page.
+async function resolve(item: InboxItem, decision: InboxDecision, response?: string): Promise<void> {
   if (resolvingInbox.value.has(item.id)) return
+  const answer = (response ?? '').trim()
+  if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
   resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
   try {
-    await authority.api.resolveInbox(item.id, decision)
+    await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
     if (!authorityIsCurrent(authority)) return
-    toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
+    if (decision === 'answer') delete answerDrafts[item.id]
+    toast('ok', resolutionToast(item, decision))
     await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
     if (authorityIsCurrent(authority)) {
@@ -200,6 +211,15 @@ async function resolve(item: InboxItem, decision: 'approve' | 'deny'): Promise<v
       resolvingInbox.value = next
     }
   }
+}
+
+function resolutionToast(item: InboxItem, decision: InboxDecision): string {
+  if (decision === 'approve') return 'Approved — the run is resuming.'
+  if (decision === 'answer') return 'Answered — the run is resuming.'
+  if (item.kind === 'question') {
+    return item.runID ? 'Dismissed. The run stays paused until you answer or cancel it from its page.' : 'Dismissed.'
+  }
+  return 'Denied.'
 }
 
 function onServerEvent(event: Event): void {
@@ -298,7 +318,24 @@ onBeforeUnmount(() => {
               <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
               <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
             </template>
-            <span v-else class="agents-hint">Answer from the agent's channel or chat.</span>
+            <!--
+              A question is answered in words, not with a verdict, and a
+              trigger-fired run has no channel or chat to answer from — so the
+              reply box lives here. Dismiss closes the item without resuming.
+            -->
+            <template v-else>
+              <input
+                v-model="answerDrafts[item.id]"
+                class="k-input agents-approval-answer"
+                type="text"
+                :disabled="resolvingInbox.has(item.id)"
+                placeholder="Your answer…"
+                :aria-label="item.prompt || 'Your answer'"
+                @keydown.enter.prevent="resolve(item, 'answer', answerDrafts[item.id])"
+              />
+              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !(answerDrafts[item.id] || '').trim()" :aria-busy="resolvingInbox.get(item.id) === 'answer' || undefined" @click="resolve(item, 'answer', answerDrafts[item.id])"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'answer' ? 'Sending…' : 'Send answer' }}</button>
+              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Dismissing…' : 'Dismiss' }}</button>
+            </template>
           </div>
         </div>
       </section>

@@ -350,6 +350,15 @@ type taskRun struct {
 	// can be reported in the chat rather than to the agent's notify channel.
 	DeliveryKind string
 
+	// Retries is how many times this run was already handed back to the queue
+	// after a transient refusal (store.Run.Retries), carried because the
+	// lifecycle rewrites the run record from scratch when the turn starts.
+	// MaxAttempts bounds the total tries; zero means the provider default. Both
+	// are set by the background handler and are meaningless on an attended run,
+	// which is never retried (see api/retry.go).
+	Retries     int
+	MaxAttempts int32
+
 	// Callback, when set, is POSTed the run's outcome once it finishes. Delivery,
 	// not execution — consumed by the detached-start helper. See api/callback.go.
 	Callback *runCallback
@@ -715,7 +724,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			Backend: agent.Spec.BackendType(), AttemptID: harnessAttemptID(harnessT, runID),
 			// What a repository run ran against, minus the credential.
 			Repository: run.Repository.persisted(),
-			Phase:      store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
+			// How many times this run was already handed back to the queue; the
+			// bound on retrying it again is counted from here.
+			Retries: run.Retries,
+			Phase:   store.RunPhaseRunning, Input: run.Task, CreatedAt: startedAt, UpdatedAt: startedAt, StartedAt: &startedAt,
 		}
 		if agent.Spec.HarnessBacked() {
 			checkpoint, err := initialHarnessCheckpoint(run, harnessT)
@@ -791,6 +803,17 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
+		if phase == store.RunPhaseFailed {
+			// A refusal that left nothing running on an unattended run is not
+			// an outcome: the run goes back to the queue with a wake-up time and
+			// the reconciler claims it again (api/retry.go). The transcript gets
+			// a marker so a reader sees why the task appears a second time.
+			if requeued, ok := s.retryRun(ctx, scope, run, cause, end); ok {
+				s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(store.RunPhasePending), "", requeued.Error())
+				s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePending})
+				return runResult{RunID: runID, Phase: store.RunPhasePending, StartedAt: &startedAt}, requeued
+			}
+		}
 		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
 		s.finishRun(persistCtx, scope, runID, runOutcome{
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
@@ -1299,6 +1322,7 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	stored.Phase = out.Phase
 	stored.Message = out.Message
+	s.closeParkedInboxItem(ctx, scope, stored, out.Phase, end)
 	stored.Checkpoint = nil
 	if out.Output != "" {
 		stored.Output = safeTruncate(out.Output, maxStoredOutput)
@@ -1327,6 +1351,48 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
 	_ = s.saveRun(ctx, scope, stored)
+}
+
+// closeParkedInboxItem closes the inbox item a run was parked on when the run
+// ends without it being resolved. A cancel, a deadline or a recovery close all
+// finish the run through finishRun and drop its checkpoint, and the checkpoint
+// is the only thing that names the item — leaving it pending put a card in the
+// portal's "Needs your attention" list with no run left to resume and, for a
+// question, nothing that could ever clear it. Approvals close as denied and
+// questions as answered, the same convention failPark uses, so no resolution
+// path mistakes the closing for a verdict that resumes anything.
+func (s *Server) closeParkedInboxItem(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, now time.Time) {
+	if len(run.Checkpoint) == 0 || !runSettled(phase) {
+		return
+	}
+	var ck runCheckpoint
+	if json.Unmarshal(run.Checkpoint, &ck) != nil || ck.InboxID == "" {
+		return
+	}
+	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	item, err := s.store.GetInboxItem(ctx, wsScope, ck.InboxID)
+	if err != nil {
+		log.Printf("run %s: reading inbox item %s to close it: %v", run.ID, ck.InboxID, err)
+		return
+	}
+	if item.State != store.InboxStatePending || item.RunID != run.ID || item.AgentName != run.AgentName {
+		return
+	}
+	state := store.InboxStateDenied
+	if item.Kind == store.InboxKindQuestion {
+		state = store.InboxStateAnswered
+	}
+	response := "The run ended before this was resolved."
+	if phase == store.RunPhaseAborted {
+		response = "The run was cancelled before this was resolved."
+	}
+	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now); err != nil {
+		log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
+		return
+	}
+	s.events.publish(wsScope, "inbox", map[string]any{
+		"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
+	})
 }
 
 // repositoryDeadlineMargin is how much longer than its own maxDurationSeconds
@@ -1514,7 +1580,10 @@ func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mc
 		}
 		msgs = append(msgs, summaryMessage(*sc.Summary))
 	}
-	history := sc.Messages
+	// A retried run's own earlier attempt — the task row it persisted and the
+	// re-queued marker that closed it — is not history. Left in, the model
+	// would read the task twice and a harness would replay it.
+	history := withoutRun(sc.Messages, run.RunID)
 	msgs = append(msgs, engineMessagesFromHistory(history)...)
 	// Background sessions (schedule/heartbeat/wakeup) accumulate the agent's
 	// own prior replies turn after turn — kept deliberately, so e.g. a news

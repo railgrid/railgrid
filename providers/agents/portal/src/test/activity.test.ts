@@ -382,6 +382,63 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
   })
 
+  it('lets a pending question be answered from the feed', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const store = makeStore(api)
+    const item: InboxItem = {
+      id: 'i3', agentName: 'github-reviewer', runID: 'r11', kind: 'question', state: 'pending',
+      prompt: 'Which pull request should I review?', payload: { harness: true }, createdAt: new Date().toISOString(),
+    }
+    store.inbox.data = [item]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+
+    expect(text(view.element.querySelector('.agents-approval-prompt'))).toBe('Which pull request should I review?')
+    expect(text(view.element)).not.toContain('Approve & resume')
+    expect(text(view.element)).not.toContain("Answer from the agent's channel")
+    const actions = view.element.querySelector('.agents-approval-actions')!
+    const send = buttonWithText(actions, 'Send answer')
+    expect(send.disabled).toBe(true)
+    send.click()
+    expect(resolveInbox).not.toHaveBeenCalled()
+
+    const answer = actions.querySelector<HTMLInputElement>('input.agents-approval-answer')!
+    setValue(answer, ' railgrid/railgrid#839 ')
+    await settleVue()
+    expect(send.disabled).toBe(false)
+    send.click()
+    await settleVue(2)
+    expect(resolveInbox).toHaveBeenCalledWith('i3', 'answer', 'railgrid/railgrid#839')
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+    expect(text(document.querySelector('.k-toast--ok'))).toContain('Answered')
+  })
+
+  it('lets a pending question be dismissed without an answer', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const listInbox = vi.fn().mockResolvedValue([])
+    const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const store = makeStore(api)
+    const item: InboxItem = {
+      id: 'i4', agentName: 'github-reviewer', runID: 'r12', kind: 'question', state: 'pending',
+      prompt: 'The review inputs still have not arrived.', createdAt: new Date().toISOString(),
+    }
+    store.inbox.data = [item]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+
+    const actions = view.element.querySelector('.agents-approval-actions')!
+    const dismiss = buttonWithText(actions, 'Dismiss')
+    dismiss.click()
+    await settleVue(3)
+    expect(resolveInbox).toHaveBeenCalledWith('i4', 'deny')
+    expect(listInbox).toHaveBeenCalled()
+    expect(text(document.querySelector('.k-toast--ok'))).toContain('Dismissed')
+    expect(view.element.querySelector('.agents-approvals')).toBeNull()
+  })
+
   it('refreshes pending approvals after a denied or uncertain resolution without exposing backend text', async () => {
     const item: InboxItem = {
       id: 'i2', agentName: 'scout', runID: 'r10', kind: 'approval', state: 'pending',
