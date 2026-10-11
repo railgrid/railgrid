@@ -58,6 +58,7 @@ func (s *FileStore) RecordPendingCommit(ctx context.Context, scope Scope, pendin
 		return errors.New("pending commit paths are required")
 	}
 	pending.Paths = sortedWorkspaceSourcePaths(pathSet)
+	pending.Attributions = NormalizeSourceAttributions(pending.Attributions, pending.Paths)
 	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		recorded := pending
 		record.PendingCommit = &recorded
@@ -100,6 +101,7 @@ func (s *FileStore) PendingCommit(ctx context.Context, scope Scope) (PendingComm
 		return PendingCommit{}, false, errors.New("invalid workspace pending commit")
 	}
 	pending.Paths = sortedWorkspaceSourcePaths(pathSet)
+	pending.Attributions = NormalizeSourceAttributions(pending.Attributions, pending.Paths)
 	return pending, true, nil
 }
 
@@ -123,6 +125,57 @@ func (s *FileStore) ClearPendingCommit(ctx context.Context, scope Scope) error {
 		return true, nil
 	}); err != nil {
 		return fmt.Errorf("clear workspace pending commit: %w", err)
+	}
+	return nil
+}
+
+// FailPendingCommit clears a commit that did not land. If a path changed after
+// its pending snapshot, its current bytes now combine with source that was not
+// committed; discard that path's newer owner so a retry cannot falsely credit
+// the later turn for the failed commit's content.
+func (s *FileStore) FailPendingCommit(ctx context.Context, scope Scope) error {
+	if s == nil {
+		return errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		if record.PendingCommit == nil {
+			return false, nil
+		}
+		pending := record.PendingCommit
+		captured := map[string]SourceAttribution{}
+		for _, attribution := range pending.Attributions {
+			for _, path := range attribution.Paths {
+				if _, exists := captured[path]; exists {
+					delete(captured, path)
+					continue
+				}
+				captured[path] = attribution
+			}
+		}
+		paths := make(map[string]struct{}, len(pending.Paths))
+		for _, path := range pending.Paths {
+			paths[path] = struct{}{}
+		}
+		for index := range record.SourcePathAttributions {
+			current := &record.SourcePathAttributions[index]
+			if _, ok := paths[current.Path]; !ok {
+				continue
+			}
+			owner, wasCaptured := captured[current.Path]
+			if !wasCaptured || owner.ThreadID != current.ThreadID || owner.RunID != current.RunID {
+				current.ThreadID, current.RunID = "", ""
+			}
+		}
+		record.PendingCommit = nil
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("fail workspace pending commit: %w", err)
 	}
 	return nil
 }

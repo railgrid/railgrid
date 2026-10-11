@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,9 @@ func newSourceFencePreviewFixture(t *testing.T) (*Server, projectAssistantToolCa
 	}
 	revision, err := files.SourceRevision(ctx, scope)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: revision}); err != nil {
 		t.Fatal(err)
 	}
 	oldDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "old\n"}})
@@ -191,6 +195,30 @@ func TestPreviewInspectionFencesSourceWithoutPrivateSandbox(t *testing.T) {
 			}
 			if result.Status != "failed" || result.FailureKind != "not_current" || inspector.calls != 1 {
 				t.Fatalf("uninitialized sandbox bypassed source validation: %#v, calls=%d", result, inspector.calls)
+			}
+		})
+	}
+}
+
+func TestPreviewInspectionRejectsStaleSharedPreviewWithoutPrivateSandbox(t *testing.T) {
+	for _, withState := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no-run-state", true: "lazy-run-state"}[withState], func(t *testing.T) {
+			server, request, inspector, mutate := newSourceFencePreviewFixture(t)
+			request.RunState = nil
+			if withState {
+				request.RunState = newProjectEinoAssistantRunState()
+			}
+			mutate()
+
+			result, err := server.inspectProjectDevelopmentPreviewResult(context.Background(), request, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != "failed" || result.FailureKind != "not_current" || inspector.calls != 0 || result.Screenshot != nil {
+				t.Fatalf("stale shared preview produced positive inspection evidence: %#v, calls=%d", result, inspector.calls)
+			}
+			if !strings.Contains(result.Summary, "shared preview has not applied the current workspace source") {
+				t.Fatalf("stale shared preview failure is not actionable: %q", result.Summary)
 			}
 		})
 	}

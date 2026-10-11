@@ -13,9 +13,11 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -254,6 +256,24 @@ func (env *commitTestEnv) write(path, content string) {
 		env.t.Fatal(err)
 	}
 	if _, err := env.files.AddUncommittedPaths(env.ctx, env.scope, []string{path}); err != nil {
+		env.t.Fatal(err)
+	}
+}
+
+func (env *commitTestEnv) writeFromTurn(path, content, threadID, runID string) {
+	env.t.Helper()
+	ctx := workspace.ContextWithMutationOrigin(env.ctx, threadID, runID)
+	if _, err := env.files.WriteFile(ctx, env.scope, workspace.WriteOptions{Path: path, Content: content}); err != nil {
+		env.t.Fatal(err)
+	}
+	if _, err := env.files.AddUncommittedPaths(ctx, env.scope, []string{path}); err != nil {
+		env.t.Fatal(err)
+	}
+}
+
+func (env *commitTestEnv) clearInitialUncommittedPaths() {
+	env.t.Helper()
+	if err := env.files.ClearUncommittedPaths(env.ctx, env.scope); err != nil {
 		env.t.Fatal(err)
 	}
 }
@@ -519,5 +539,206 @@ func TestCommitWorkspaceStagesPayloadsOverTheCatalogueCeiling(t *testing.T) {
 	}
 	if _, hasFiles := commit["files"]; hasFiles {
 		t.Fatalf("a staged commit still carried inline files: %+v", commit)
+	}
+}
+
+func TestCommitWorkspaceSettlementUsesCapturedTurnOwnersAfterLaterEdit(t *testing.T) {
+	env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
+	env.clearInitialUncommittedPaths()
+	env.writeFromTurn("app.go", "version A\n", "thread-a", "run-a")
+
+	snapshotRevision, err := env.files.SourceRevision(env.ctx, env.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotDigest, err := env.files.WorkspaceDigest(env.ctx, env.scope, []string{"app.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotOwners, err := env.files.SourceAttributions(env.ctx, env.scope, []string{"app.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if dirty, err := env.commit(); err != nil || !dirty {
+		t.Fatalf("initial commit = dirty %t, err %v; want a pending commit", dirty, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok {
+		t.Fatalf("pending commit: ok %t, err %v", ok, err)
+	}
+	if pending.SourceRevision != snapshotRevision || pending.WorkspaceDigest != snapshotDigest ||
+		!reflect.DeepEqual(pending.Attributions, snapshotOwners) {
+		t.Fatalf("pending snapshot = %+v; want revision %d, digest %q, owners %+v", pending, snapshotRevision, snapshotDigest, snapshotOwners)
+	}
+
+	// A later turn changes the same path while the RepositoryCommit is still
+	// running. The mutable source ledger now attributes the dirty bytes to B,
+	// but the pending commit must continue to describe the bytes and owner A.
+	env.writeFromTurn("app.go", "version B\n", "thread-b", "run-b")
+	currentRevision, err := env.files.SourceRevision(env.ctx, env.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentDigest, err := env.files.WorkspaceDigest(env.ctx, env.scope, []string{"app.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentOwners, err := env.files.SourceAttributions(env.ctx, env.scope, []string{"app.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentRevision <= pending.SourceRevision || currentDigest == pending.WorkspaceDigest ||
+		!reflect.DeepEqual(currentOwners, []workspace.SourceAttribution{{ThreadID: "thread-b", RunID: "run-b", Paths: []string{"app.go"}}}) {
+		t.Fatalf("later source state = revision %d, digest %q, owners %+v; want a newer B-owned revision", currentRevision, currentDigest, currentOwners)
+	}
+	stillPending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok {
+		t.Fatalf("pending commit after later edit: ok %t, err %v", ok, err)
+	}
+	if stillPending.SourceRevision != snapshotRevision || stillPending.WorkspaceDigest != snapshotDigest ||
+		!reflect.DeepEqual(stillPending.Attributions, snapshotOwners) {
+		t.Fatalf("later edit rewrote pending snapshot: got %+v, original %+v", stillPending, pending)
+	}
+
+	env.setRepositoryCommit("commit-1", "Succeeded", "feedface11")
+	if dirty, err := env.commit(); err != nil || !dirty {
+		t.Fatalf("settling pass = dirty %t, err %v; want a new commit for B's edit", dirty, err)
+	}
+	if len(env.notified) != 1 {
+		t.Fatalf("settlement notifications = %+v, want only the landed commit", env.notified)
+	}
+	settled := env.notified[0]
+	if settled.CommitSHA != "feedface11" || !reflect.DeepEqual(settled.Files, []string{"app.go"}) ||
+		!reflect.DeepEqual(settled.Attributions, snapshotOwners) {
+		t.Fatalf("settlement = %+v; want commit A's immutable files and owner snapshot %+v", settled, snapshotOwners)
+	}
+	if env.commits() != 2 {
+		t.Fatalf("commit actions = %d, want the original A commit and one fresh B commit", env.commits())
+	}
+	next, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok {
+		t.Fatalf("follow-up pending commit: ok %t, err %v", ok, err)
+	}
+	if next.Name != "commit-2" || !reflect.DeepEqual(next.Attributions, currentOwners) {
+		t.Fatalf("follow-up pending snapshot = %+v; want B owner %+v", next, currentOwners)
+	}
+}
+
+func TestCommitWorkspaceSettlementGroupsMixedBatchByTurn(t *testing.T) {
+	env := newCommitTestEnv(t, nil, repositoryCommitObject("commit-1", "Running", ""))
+	env.clearInitialUncommittedPaths()
+	env.writeFromTurn("a.go", "A\n", "thread-a", "run-a")
+	env.writeFromTurn("b.go", "B\n", "thread-b", "run-b")
+	env.writeFromTurn("shared.go", "A\n", "thread-a", "run-a")
+	env.writeFromTurn("shared.go", "B\n", "thread-b", "run-b")
+
+	wantOwners := []workspace.SourceAttribution{
+		{ThreadID: "thread-a", RunID: "run-a", Paths: []string{"a.go"}},
+		{ThreadID: "thread-b", RunID: "run-b", Paths: []string{"b.go"}},
+	}
+	if dirty, err := env.commit(); err != nil || !dirty {
+		t.Fatalf("commit = dirty %t, err %v; want a pending mixed-source commit", dirty, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok {
+		t.Fatalf("pending commit: ok %t, err %v", ok, err)
+	}
+	if !reflect.DeepEqual(pending.Attributions, wantOwners) {
+		t.Fatalf("pending attributions = %+v, want exact per-turn groups %+v", pending.Attributions, wantOwners)
+	}
+	if !reflect.DeepEqual(pending.Paths, []string{"a.go", "b.go", "shared.go"}) {
+		t.Fatalf("pending paths = %v, want all three mixed-batch paths", pending.Paths)
+	}
+
+	env.setRepositoryCommit("commit-1", "Succeeded", "feedface22")
+	if dirty, err := env.commit(); err != nil || dirty {
+		t.Fatalf("settling pass = dirty %t, err %v; want a clean workspace", dirty, err)
+	}
+	if len(env.notified) != 1 || !reflect.DeepEqual(env.notified[0].Attributions, wantOwners) ||
+		!reflect.DeepEqual(env.notified[0].Files, pending.Paths) {
+		t.Fatalf("settlement notifications = %+v; want paths %v grouped by owners %+v", env.notified, pending.Paths, wantOwners)
+	}
+	if env.commits() != 1 {
+		t.Fatalf("commit actions = %d, want one action for the mixed batch", env.commits())
+	}
+}
+
+type revisionChangingLedger struct {
+	workspace.Ledger
+	readCount       int
+	changeOnRead    int
+	changed         bool
+	changedPath     string
+	changedThreadID string
+	changedRunID    string
+}
+
+func (ledger *revisionChangingLedger) Read(ctx context.Context, scope workspace.Scope) (workspace.LedgerRecord, error) {
+	record, err := ledger.Ledger.Read(ctx, scope)
+	if err != nil {
+		return workspace.LedgerRecord{}, err
+	}
+	ledger.readCount++
+	if ledger.changed || ledger.readCount != ledger.changeOnRead {
+		return record, nil
+	}
+	ledger.changed = true
+	_, err = ledger.Update(ctx, scope, func(current *workspace.LedgerRecord) (bool, error) {
+		current.SourceRevision++
+		current.LastSourceChange = &workspace.SourceChange{
+			ThreadID: ledger.changedThreadID, RunID: ledger.changedRunID, SourceRevision: current.SourceRevision,
+		}
+		for index := range current.SourcePathAttributions {
+			if current.SourcePathAttributions[index].Path == ledger.changedPath {
+				current.SourcePathAttributions[index].ThreadID = ledger.changedThreadID
+				current.SourcePathAttributions[index].RunID = ledger.changedRunID
+				current.SourcePathAttributions[index].SourceRevision = current.SourceRevision
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return workspace.LedgerRecord{}, fmt.Errorf("inject concurrent source revision: %w", err)
+	}
+	return record, nil
+}
+
+func TestCommitWorkspaceAbortsWhenSourceRevisionChangesDuringOwnerCapture(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	env.clearInitialUncommittedPaths()
+	env.writeFromTurn("app.go", "version A\n", "thread-a", "run-a")
+	base, ok := workspace.LedgerFromContext(env.ctx)
+	if !ok {
+		t.Fatal("test environment has no project ledger")
+	}
+	// The first four reads are settlement reconciliation, pending lookup,
+	// uncommitted paths, and the revision snapshot. The fifth read captures
+	// owners after the bundle and digest were read; advancing the revision
+	// there models another source mutation landing in that snapshot window.
+	interleaved := &revisionChangingLedger{
+		Ledger: base, changeOnRead: 5, changedPath: "app.go",
+		changedThreadID: "thread-b", changedRunID: "run-b",
+	}
+	env.ctx = workspace.ContextWithLedger(env.ctx, interleaved)
+
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if !errors.Is(err, workspace.ErrSourceRevisionConflict) {
+		t.Fatalf("commit error = %v, want source revision conflict", err)
+	}
+	if !outcome.dirty || !outcome.retry {
+		t.Fatalf("commit outcome = %+v; want dirty work queued for retry", outcome)
+	}
+	if !interleaved.changed {
+		t.Fatalf("revision mutation did not run at the owner-capture read; reads=%d", interleaved.readCount)
+	}
+	if env.commits() != 0 {
+		t.Fatalf("Code commit actions = %d, want none for an inconsistent source snapshot", env.commits())
+	}
+	if _, ok := env.pendingCommit(); ok {
+		t.Fatal("inconsistent source snapshot was recorded as a pending commit")
+	}
+	if got := env.pending(); !reflect.DeepEqual(got, []string{"app.go"}) {
+		t.Fatalf("dirty paths after rejected snapshot = %v, want app.go retained", got)
 	}
 }

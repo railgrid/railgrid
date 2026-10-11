@@ -54,6 +54,10 @@ whole route; an `ActionsClientError.failureKind` distinguishes `route`,
 `authentication`, `authorization`, `contract`, `upstream`, `network`,
 `credentials`, and local `configuration` failures.
 
+Validated provider error envelopes have `failureKind: 'upstream'` and retain
+their domain error code and HTTP status. For example, a provider's
+`identity_conflict` with HTTP 409 is distinct from a gateway contract failure.
+
 Never import the module into browser code, expose its token through
 client-side configuration, or pass provider URLs, credentials, resource
 references, or other topology in action input. The SDK throws when `window` or
@@ -64,7 +68,8 @@ references, or other topology in action input. The SDK throws when `window` or
 Use an atomically refreshed token file, a static workload token, or a
 refreshable credential provider. A provider is called with
 `{ forceRefresh, signal }` and is called again with `forceRefresh: true` after
-one HTTP 401:
+one gateway HTTP 401 without a provider envelope. A provider's own 401 error
+is returned without replaying the action:
 
 ```js
 const railgrid = createActionsClient({

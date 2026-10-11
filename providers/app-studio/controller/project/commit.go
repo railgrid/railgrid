@@ -196,6 +196,10 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	// blocks text commits nor spins the reconciler. Files past the bundle
 	// bound are committed on an immediate requeue.
 	sort.Strings(paths)
+	snapshotRevision, err := r.Workspace.SourceRevision(ctx, scope)
+	if err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("read workspace source revision before commit snapshot: %w", err)
+	}
 	bundle, err := r.buildCommitBundle(ctx, scope, paths)
 	if err != nil {
 		return commitOutcome{dirty: true}, err
@@ -203,6 +207,17 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	r.noteSkippedPaths(p.Name, scope, bundle.skipped)
 	if len(bundle.files) == 0 && len(bundle.deletePaths) == 0 {
 		return commitOutcome{dirty: bundle.deferred, retry: bundle.deferred}, nil
+	}
+	digest, err := r.Workspace.WorkspaceDigest(ctx, scope, bundle.committed)
+	if err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("workspace digest for pending commit: %w", err)
+	}
+	attributions, err := r.Workspace.SourceAttributions(ctx, scope, bundle.committed)
+	if err != nil {
+		return commitOutcome{dirty: true}, fmt.Errorf("capture workspace commit attributions: %w", err)
+	}
+	if err := r.Workspace.VerifySourceRevision(ctx, scope, snapshotRevision); err != nil {
+		return commitOutcome{dirty: true, retry: true}, fmt.Errorf("verify workspace source revision after commit snapshot: %w", err)
 	}
 
 	writtenPaths := make([]string, 0, len(bundle.files))
@@ -220,15 +235,13 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	// converge it (resolvePendingCommit). The rate-limited case and the
 	// ordinary case are the same code, which is the point of moving off the
 	// tool: nothing parses a prose error for a name any more.
-	digest, err := r.Workspace.WorkspaceDigest(ctx, scope, bundle.committed)
-	if err != nil {
-		return commitOutcome{dirty: true}, fmt.Errorf("workspace digest for pending commit: %w", err)
-	}
 	if err := r.Workspace.RecordPendingCommit(ctx, scope, workspace.PendingCommit{
 		Name:            created.Name,
 		RepositoryRef:   b.RepositoryRef,
 		WorkspaceDigest: digest,
 		Paths:           bundle.committed,
+		SourceRevision:  snapshotRevision,
+		Attributions:    attributions,
 	}); err != nil {
 		return commitOutcome{dirty: true}, fmt.Errorf("record pending commit: %w", err)
 	}
@@ -440,6 +453,13 @@ func (r *Reconciler) clearPendingCommit(ctx context.Context, scope workspace.Sco
 	return r.Workspace.ClearPendingCommit(ctx, scope)
 }
 
+// failPendingCommit preserves the current source owners only where they still
+// describe one producer. Edits that overlapped the failed commit snapshot are
+// made unattributed before a retry can capture them.
+func (r *Reconciler) failPendingCommit(ctx context.Context, scope workspace.Scope) error {
+	return r.Workspace.FailPendingCommit(ctx, scope)
+}
+
 // resolvePendingCommit reads a pending RepositoryCommit and reports whether
 // it is resolved: Succeeded (settled and announced) or Failed/gone (cleared,
 // so a fresh commit may be sent). A still-running commit stays recorded and
@@ -465,7 +485,7 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Printf("app-studio project %s: pending RepositoryCommit %s is gone; a fresh commit will be sent", scope.ProjectName, pending.Name)
-			return true, r.clearPendingCommit(ctx, scope)
+			return true, r.failPendingCommit(ctx, scope)
 		}
 		return false, fmt.Errorf("read pending RepositoryCommit %q: %w", pending.Name, err)
 	}
@@ -488,11 +508,12 @@ func (r *Reconciler) resolvePendingCommit(ctx context.Context, c client.Client, 
 			CommitURL:     commitURL,
 			Branch:        branch,
 			Files:         pending.Paths,
+			Attributions:  pending.Attributions,
 		})
 		return true, nil
 	case phase == commitPhaseFailed:
 		log.Printf("app-studio project %s: pending RepositoryCommit %s failed; a fresh commit will be sent", scope.ProjectName, pending.Name)
-		return true, r.clearPendingCommit(ctx, scope)
+		return true, r.failPendingCommit(ctx, scope)
 	default:
 		// Still running: the record is already on the project, so there is
 		// nothing to mirror. Wait for the watch.
@@ -509,6 +530,9 @@ type CommitResult struct {
 	Branch        string
 	// Files are the workspace paths the commit settled, deletions included.
 	Files []string
+	// Attributions is the immutable per-turn path grouping captured with the
+	// pending commit before it was sent to the Code provider.
+	Attributions []workspace.SourceAttribution
 }
 
 // RepositoryCommit phases the reconciler acts on.

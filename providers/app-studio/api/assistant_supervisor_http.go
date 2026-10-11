@@ -1491,18 +1491,84 @@ func (s *Server) reconcileOrphanedProjectAssistantCanonicalTurn(ctx context.Cont
 	if strings.TrimSpace(user.ActorID) == "" {
 		return nil
 	}
-	thread, turn, err := s.findProjectAssistantTurnAcrossThreads(ctx, scope, user.ActorID, run.ClientRequestID, "")
-	if errors.Is(err, store.ErrAssistantTurnNotFound) {
-		return nil
-	}
+	thread, turn, ok, err := s.findOrphanedProjectAssistantCanonicalTurn(ctx, scope, user.ActorID, run)
 	if err != nil {
 		return fmt.Errorf("find orphaned assistant canonical turn: %w", err)
 	}
-	if turn.ID != run.ID || turn.Status != store.AssistantTurnStatusInProgress {
+	if !ok || turn.Status != store.AssistantTurnStatusInProgress {
 		return nil
 	}
 	if err := s.reconcileProjectAssistantThreadTurn(ctx, scope, turn); err != nil {
 		return fmt.Errorf("reconcile orphaned assistant canonical turn %q: %w", thread.ID, err)
 	}
 	return nil
+}
+
+// findOrphanedProjectAssistantCanonicalTurn resolves a generic run to its
+// canonical thread turn. New runs carry both identities, so their pair is the
+// authority: a client request ID may be reused in another thread. Legacy runs
+// without a ThreadID still need a cross-thread lookup, but the run ID must
+// identify the matching turn before it can be repaired.
+func (s *Server) findOrphanedProjectAssistantCanonicalTurn(ctx context.Context, scope store.Scope, actorID string, run store.AssistantRun) (store.AssistantThread, store.AssistantTurn, bool, error) {
+	threadID := strings.TrimSpace(run.ThreadID)
+	if threadID != "" {
+		turn, err := s.store.GetAssistantTurn(ctx, scope, threadID, run.ID)
+		if errors.Is(err, store.ErrAssistantTurnNotFound) {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, err
+		}
+		if turn.ID != run.ID || turn.ThreadID != threadID || turn.ActorID != actorID {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		thread, err := s.store.GetAssistantThread(ctx, scope, threadID)
+		if errors.Is(err, store.ErrAssistantThreadNotFound) {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, err
+		}
+		if thread.ID != threadID || thread.ActorID != actorID {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		return thread, turn, true, nil
+	}
+
+	clientRequestID := strings.TrimSpace(run.ClientRequestID)
+	if strings.TrimSpace(actorID) == "" || clientRequestID == "" {
+		return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+	}
+	var matchedThread store.AssistantThread
+	var matchedTurn store.AssistantTurn
+	cursor := ""
+	for {
+		page, err := s.store.ListAssistantThreads(ctx, scope, actorID, true, 100, cursor)
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, err
+		}
+		for _, candidate := range page.Items {
+			turn, err := s.store.FindAssistantTurnByClientUserMessageID(ctx, scope, candidate.ID, clientRequestID)
+			if errors.Is(err, store.ErrAssistantTurnNotFound) {
+				continue
+			}
+			if err != nil {
+				return store.AssistantThread{}, store.AssistantTurn{}, false, err
+			}
+			if turn.ID != run.ID || turn.ThreadID != candidate.ID || turn.ActorID != actorID || turn.ClientUserMessageID != clientRequestID {
+				continue
+			}
+			if matchedTurn.ID != "" {
+				// A legacy run with no thread key cannot safely select between
+				// multiple canonical turns that claim the same run identity.
+				return store.AssistantThread{}, store.AssistantTurn{}, false, store.ErrAssistantTurnConflict
+			}
+			matchedThread, matchedTurn = candidate, turn
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return matchedThread, matchedTurn, matchedTurn.ID != "", nil
 }

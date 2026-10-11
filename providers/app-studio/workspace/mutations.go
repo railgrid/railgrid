@@ -541,7 +541,7 @@ func (s *FileStore) DeleteFile(ctx context.Context, scope Scope, opts DeleteOpti
 	if err := ctx.Err(); err != nil {
 		return MutationResult{}, err
 	}
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	if err := s.bumpSourceRevisionForPaths(ctx, scope, []string{clean}); err != nil {
 		return MutationResult{}, err
 	}
 	if err := os.Remove(target); err != nil {
@@ -619,7 +619,7 @@ func (s *FileStore) MoveFile(ctx context.Context, scope Scope, opts MoveOptions)
 	if err := ctx.Err(); err != nil {
 		return MutationResult{}, err
 	}
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	if err := s.bumpSourceRevisionForPaths(ctx, scope, []string{source, destination}); err != nil {
 		return MutationResult{}, err
 	}
 	if err := linkAndRemoveSource(sourceTarget, destinationTarget); err != nil {
@@ -660,7 +660,7 @@ func linkAndRemoveSource(source, destination string) error {
 }
 
 func (s *FileStore) writeMutationLocked(ctx context.Context, scope Scope, clean string, content []byte, createOnly bool) error {
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	if err := s.bumpSourceRevisionForPaths(ctx, scope, []string{clean}); err != nil {
 		return err
 	}
 	return s.writeMutationFile(ctx, scope, clean, content, 0, createOnly)

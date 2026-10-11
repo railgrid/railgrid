@@ -195,6 +195,7 @@ func projectCommitNotifier(notify func(context.Context, workspace.Scope, api.Pro
 			CommitURL:     commit.CommitURL,
 			Branch:        commit.Branch,
 			Files:         commit.Files,
+			Attributions:  commit.Attributions,
 		})
 	}
 }

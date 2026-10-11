@@ -218,7 +218,13 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 		// Reserve the revision before restoring any file. If an individual
 		// restore fails, rollback (even when incomplete) cannot leave bytes
 		// associated with the previous source authority.
-		if err := s.bumpSourceRevision(ctx, scope); err != nil {
+		changedPaths := make([]string, 0, len(plans))
+		for _, plan := range plans {
+			if !plan.restored {
+				changedPaths = append(changedPaths, plan.path)
+			}
+		}
+		if err := s.bumpSourceRevisionForPaths(ctx, scope, changedPaths); err != nil {
 			return SnapshotRestoreResult{}, err
 		}
 	}

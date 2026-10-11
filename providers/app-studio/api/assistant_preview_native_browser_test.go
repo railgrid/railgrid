@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 type projectAssistantNativeBrowserTestRoundTripper func(*http.Request) (*http.Response, error)
@@ -439,6 +440,14 @@ func TestProjectAssistantNativeBrowserAuthErrorsAreRedactedBeforeModelAndDurabil
 	ctx := context.Background()
 	h := newProjectAssistantV2ToolHarness(t, "native-browser-error-auth-redaction")
 	server := h.server
+	previewScope := h.req.WorkspaceScope
+	previewRevision, err := h.workspaces.SourceRevision(ctx, previewScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.workspaces.RecordPreviewCheckpoint(ctx, previewScope, workspace.SourceChange{SourceRevision: previewRevision}); err != nil {
+		t.Fatal(err)
+	}
 	server.hubBase = "https://hub.example"
 	server.callers = newTestCallers(nil, "")
 	server.browserSessions = newProjectAssistantBrowserSessionManager()

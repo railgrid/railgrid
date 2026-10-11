@@ -10,6 +10,8 @@ export interface AssistantComposerDraftScope {
   project: string
   projectUID: string
   thread: string
+  /** Live Project creation time, required to recover drafts that predate UID scoping. */
+  projectCreatedAt?: string
 }
 
 export interface AssistantComposerDraft {
@@ -27,9 +29,14 @@ export interface AssistantComposerDraftStorage {
 }
 
 const STORAGE_PREFIX = 'railgrid:app-studio:assistant-composer-draft:v1'
+const LEGACY_STORAGE_PREFIXES = [
+  'railgrid:app-studio:assistant-annotation-draft:v1',
+  'faros:app-studio:assistant-annotation-draft:v1',
+]
 const STORAGE_VERSION = 1
 const MAX_SCOPE_PART_LENGTH = 512
 const MAX_DRAFT_BYTES = 1_100_000
+const LEGACY_MAX_DRAFT_BYTES = 64 * 16_384 + 4_096
 export const ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1_000
 
 export function emptyAssistantComposerDraft(responseMode: AssistantResponseMode = 'default'): AssistantComposerDraft {
@@ -119,6 +126,79 @@ export function assistantComposerDraftStorageKey(scope: AssistantComposerDraftSc
   ].map(encodeURIComponent).join(':')}`
 }
 
+function legacyScopeParts(scope: AssistantComposerDraftScope): string[] {
+  return [scope.tenant, scope.orgUUID, scope.workspaceUUID, scope.user, scope.project, scope.thread]
+}
+
+function legacyAnnotationDraftStorageKeys(scope: AssistantComposerDraftScope): string[] {
+  const suffix = legacyScopeParts(scope).map(encodeURIComponent).join(':')
+  return LEGACY_STORAGE_PREFIXES.map((prefix) => `${prefix}:${suffix}`)
+}
+
+function removeLegacyAnnotationDraft(scope: AssistantComposerDraftScope, storage: AssistantComposerDraftStorage): void {
+  for (const key of legacyAnnotationDraftStorageKeys(scope)) {
+    try { storage.removeItem(key) } catch {}
+  }
+}
+
+function readLegacyAnnotationDraft(
+  key: string,
+  scope: AssistantComposerDraftScope,
+  storage: AssistantComposerDraftStorage,
+  now: number,
+  createdAt: number,
+): { draft: AssistantComposerDraft, savedAt: number } | null {
+  const discard = () => {
+    try { storage.removeItem(key) } catch {}
+    return null
+  }
+  try {
+    const raw = storage.getItem(key)
+    if (!raw) return null
+    if (new TextEncoder().encode(raw).byteLength > LEGACY_MAX_DRAFT_BYTES) return discard()
+    const envelope = JSON.parse(raw) as Record<string, unknown>
+    if (
+      envelope.version !== STORAGE_VERSION ||
+      envelope.scope !== JSON.stringify(legacyScopeParts(scope)) ||
+      typeof envelope.savedAt !== 'number' ||
+      !Number.isFinite(envelope.savedAt) ||
+      envelope.savedAt < createdAt ||
+      envelope.savedAt > now + 60_000 ||
+      now - envelope.savedAt > ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS ||
+      !Array.isArray(envelope.annotations) ||
+      envelope.annotations.length === 0
+    ) return discard()
+    const parts = projectAssistantComposerParts(envelope.annotations)
+    if (parts.length !== envelope.annotations.length || parts.some((part) => part.type !== 'annotation')) return discard()
+    const ids = parts.map((part) => part.type === 'annotation' ? part.annotation.id : '')
+    if (new Set(ids).size !== ids.length) return discard()
+    return { draft: { ...emptyAssistantComposerDraft(), contentParts: parts }, savedAt: envelope.savedAt }
+  } catch {
+    return discard()
+  }
+}
+
+function recoverLegacyAnnotationDraft(
+  scope: AssistantComposerDraftScope,
+  storage: AssistantComposerDraftStorage,
+  now: number,
+  projectCreatedAt: string | undefined,
+): AssistantComposerDraft {
+  // The old keys have no Project UID. A draft older than the current Project
+  // must never be adopted by a recreated Project with the same name.
+  const createdAt = typeof projectCreatedAt === 'string' ? Date.parse(projectCreatedAt) : NaN
+  if (!Number.isFinite(createdAt)) return emptyAssistantComposerDraft()
+  let latest: { draft: AssistantComposerDraft, savedAt: number } | null = null
+  for (const key of legacyAnnotationDraftStorageKeys(scope)) {
+    const candidate = readLegacyAnnotationDraft(key, scope, storage, now, createdAt)
+    if (candidate && (!latest || candidate.savedAt > latest.savedAt)) latest = candidate
+  }
+  if (!latest) return emptyAssistantComposerDraft()
+  // Preserve the original expiry and retain the old records if saving fails.
+  writeAssistantComposerDraft(scope, latest.draft, storage, latest.savedAt)
+  return latest.draft
+}
+
 export function readAssistantComposerDraft(
   scope: AssistantComposerDraftScope,
   storage: AssistantComposerDraftStorage | null | undefined = defaultStorage(),
@@ -127,12 +207,13 @@ export function readAssistantComposerDraft(
   const normalized = normalizedScope(scope)
   const key = normalized ? assistantComposerDraftStorageKey(normalized) : ''
   if (!normalized || !key || !storage) return emptyAssistantComposerDraft()
+  const recoverLegacy = () => recoverLegacyAnnotationDraft(normalized, storage, now, scope.projectCreatedAt)
   try {
     const raw = storage.getItem(key)
-    if (!raw) return emptyAssistantComposerDraft()
+    if (!raw) return recoverLegacy()
     const discard = () => {
       try { storage.removeItem(key) } catch {}
-      return emptyAssistantComposerDraft()
+      return recoverLegacy()
     }
     if (raw.length > MAX_DRAFT_BYTES / 2) return discard()
     const envelope = JSON.parse(raw) as Record<string, unknown>
@@ -146,10 +227,11 @@ export function readAssistantComposerDraft(
       return discard()
     }
     const draft = normalizeDraft(envelope.draft)
+    if (draft) removeLegacyAnnotationDraft(normalized, storage)
     return draft || discard()
   } catch {
     try { storage.removeItem(key) } catch {}
-    return emptyAssistantComposerDraft()
+    return recoverLegacy()
   }
 }
 
@@ -173,6 +255,7 @@ export function writeAssistantComposerDraft(
       projected.responseMode === 'default'
     ) {
       storage.removeItem(key)
+      removeLegacyAnnotationDraft(normalized, storage)
       return true
     }
     const raw = JSON.stringify({
@@ -182,6 +265,7 @@ export function writeAssistantComposerDraft(
     })
     if (raw.length > MAX_DRAFT_BYTES / 2) return false
     storage.setItem(key, raw)
+    removeLegacyAnnotationDraft(normalized, storage)
     return true
   } catch {
     return false
@@ -195,4 +279,6 @@ export function clearAssistantComposerDraft(
   const key = assistantComposerDraftStorageKey(scope)
   if (!key || !storage) return
   try { storage.removeItem(key) } catch {}
+  const normalized = normalizedScope(scope)
+  if (normalized) removeLegacyAnnotationDraft(normalized, storage)
 }

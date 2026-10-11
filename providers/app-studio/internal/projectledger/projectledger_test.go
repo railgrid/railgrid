@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,8 +174,13 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7}
 		record.LastPreviewCheckpoint = &workspace.SourceChange{ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: 6}
 		record.UncommittedPaths = []string{"src/b.ts", "src/a.ts"}
+		record.SourcePathAttributions = []workspace.SourcePathAttribution{
+			{Path: "src/a.ts", ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7},
+			{Path: "src/b.ts", SourceRevision: 5},
+		}
 		record.PendingCommit = &workspace.PendingCommit{
 			Name: "commit-1", RepositoryRef: "demo-repo", WorkspaceDigest: "sha256:abc", Paths: []string{"src/a.ts"},
+			SourceRevision: 7, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
 		}
 		record.Settlement = &workspace.CommitSettlement{WorkspaceDigest: "sha256:def", Paths: []string{"src/b.ts"}}
 		return true, nil
@@ -200,8 +206,16 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if strings.Join(record.UncommittedPaths, ",") != "src/a.ts,src/b.ts" {
 		t.Fatalf("uncommitted paths = %v, want sorted", record.UncommittedPaths)
 	}
+	if len(record.SourcePathAttributions) != 2 || record.SourcePathAttributions[0].Path != "src/a.ts" ||
+		record.SourcePathAttributions[0].ThreadID != "thread-source" || record.SourcePathAttributions[1].Path != "src/b.ts" ||
+		record.SourcePathAttributions[1].ThreadID != "" {
+		t.Fatalf("source path attributions = %+v", record.SourcePathAttributions)
+	}
 	if record.PendingCommit == nil || record.PendingCommit.Name != "commit-1" ||
-		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" {
+		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" ||
+		record.PendingCommit.SourceRevision != 7 || len(record.PendingCommit.Attributions) != 1 ||
+		record.PendingCommit.Attributions[0].ThreadID != "thread-source" ||
+		!reflect.DeepEqual(record.PendingCommit.Attributions[0].Paths, []string{"src/a.ts"}) {
 		t.Fatalf("pending commit = %#v", record.PendingCommit)
 	}
 	if record.Settlement == nil || record.Settlement.WorkspaceDigest != "sha256:def" {
@@ -217,6 +231,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.PendingCommit = nil
 		record.Settlement = nil
 		record.UncommittedPaths = nil
+		record.SourcePathAttributions = nil
 		return true, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -225,11 +240,68 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 {
+	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 || len(record.SourcePathAttributions) != 0 {
 		t.Fatalf("cleared ledger = %#v", record)
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("clearing the dirty set moved the revision to %d", record.SourceRevision)
+	}
+}
+
+func TestPreviewCheckpointPersistsAtInitialSourceRevision(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+
+	writer := workspace.NewFileStore(t.TempDir())
+	writer.SetLedger(ledger)
+	revision, err := writer.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision != 1 {
+		t.Fatalf("initial source revision = %d, want 1", revision)
+	}
+	if err := writer.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{
+		ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: revision,
+	}); err != nil {
+		t.Fatalf("record initial preview checkpoint: %v", err)
+	}
+
+	// A separate ledger and FileStore must read the checkpoint from the Project
+	// status written by the first replica, even though no source mutation has
+	// materialized SourceRevision in the ledger yet.
+	freshLedger := New(projects)
+	reader := workspace.NewFileStore(t.TempDir())
+	reader.SetLedger(freshLedger)
+	checkpoint, err := reader.LastPreviewCheckpoint(ctx, scope)
+	if err != nil {
+		t.Fatalf("read checkpoint from a fresh store: %v", err)
+	}
+	if checkpoint == nil || checkpoint.ThreadID != "thread-preview" || checkpoint.RunID != "run-preview" || checkpoint.SourceRevision != 1 {
+		t.Fatalf("fresh store checkpoint = %#v, want preview turn at initial revision 1", checkpoint)
+	}
+	if projects.project.Status.Workspace == nil || projects.project.Status.Workspace.LastPreviewCheckpoint == nil {
+		t.Fatal("initial preview checkpoint was not persisted in Project status")
+	}
+
+	if _, err := freshLedger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.LastPreviewCheckpoint = nil
+		return true, nil
+	}); err != nil {
+		t.Fatalf("clear preview checkpoint: %v", err)
+	}
+	if projects.project.Status.Workspace != nil {
+		t.Fatalf("cleared empty ledger status = %#v, want nil", projects.project.Status.Workspace)
+	}
+	cleared, err := New(projects).Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read cleared empty ledger: %v", err)
+	}
+	if cleared.SourceRevision != 0 || cleared.LastPreviewCheckpoint != nil || cleared.LastSourceChange != nil ||
+		len(cleared.UncommittedPaths) != 0 || len(cleared.SourcePathAttributions) != 0 || cleared.PendingCommit != nil || cleared.Settlement != nil {
+		t.Fatalf("cleared ledger = %#v, want zero value", cleared)
 	}
 }
 

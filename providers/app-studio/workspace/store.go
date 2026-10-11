@@ -296,7 +296,11 @@ func (s *FileStore) applyFiles(ctx context.Context, scope Scope, files []File) e
 	// fails (or the process stops mid-batch), the revision gap is safe: the
 	// next sync/exec must reconcile the current live workspace rather than
 	// trusting a stale revision.
-	if err := s.bumpSourceRevision(ctx, scope); err != nil {
+	changedPaths := make([]string, 0, len(planned))
+	for _, file := range planned {
+		changedPaths = append(changedPaths, file.Path)
+	}
+	if err := s.bumpSourceRevisionForPaths(ctx, scope, changedPaths); err != nil {
 		return err
 	}
 	for _, f := range planned {

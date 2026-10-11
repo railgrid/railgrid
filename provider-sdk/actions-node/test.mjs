@@ -285,9 +285,72 @@ test('exposes stable provider errors as typed errors', async () => {
       && error.requestID === 'request-2'
       && error.provider === 'databricks'
       && error.retryable === false
-      && error.failureKind === 'authorization'
+      && error.failureKind === 'upstream'
       && error.message === 'table access denied',
   );
+});
+
+test('keeps provider domain errors distinct from gateway status failures', async () => {
+  for (const { status, code } of [
+    { status: 409, code: 'identity_conflict' },
+    { status: 404, code: 'resource_not_found' },
+    { status: 401, code: 'provider_authentication_failed' },
+    { status: 403, code: 'provider_denied' },
+  ]) {
+    const client = createActionsClient({
+      baseURL: actionsBaseURL,
+      token: 'token',
+      fetch: async () => new Response(JSON.stringify({
+        requestID: 'provider-domain-error',
+        provider: 'code',
+        action: 'commit',
+        actionVersion: 'v1',
+        resourceRef,
+        error: { code, message: 'Provider operation failed', retryable: false },
+      }), { status }),
+    });
+    await assert.rejects(
+      () => client.integration('repository').invoke('commit/v1'),
+      (error) => error instanceof ProviderActionError
+        && error.code === code
+        && error.status === status
+        && error.requestID === 'provider-domain-error'
+        && error.failureKind === 'upstream'
+        && error.retryable === false,
+    );
+  }
+});
+
+test('does not refresh or replay a provider action for an enveloped provider 401', async () => {
+  const credentials = [];
+  let calls = 0;
+  const client = createActionsClient({
+    baseURL: actionsBaseURL,
+    getToken: async ({ forceRefresh }) => {
+      credentials.push(forceRefresh);
+      return 'token';
+    },
+    fetch: async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        requestID: 'provider-401',
+        provider: 'code',
+        action: 'commit',
+        actionVersion: 'v1',
+        resourceRef,
+        error: { code: 'provider_authentication_failed', message: 'Provider credential expired', retryable: false },
+      }), { status: 401 });
+    },
+  });
+  await assert.rejects(
+    () => client.integration('repository').invoke('commit/v1'),
+    (error) => error instanceof ProviderActionError
+      && error.code === 'provider_authentication_failed'
+      && error.status === 401
+      && error.failureKind === 'upstream',
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(credentials, [false]);
 });
 
 test('rejects malformed success envelopes and non-envelope HTTP errors', async () => {
@@ -319,6 +382,7 @@ test('classifies route, authentication, authorization, and upstream failures sep
     { status: 404, code: 'route_not_found', kind: 'route' },
     { status: 401, code: 'authentication_failed', kind: 'authentication' },
     { status: 403, code: 'authorization_failed', kind: 'authorization' },
+    { status: 409, code: 'action_contract_changed', kind: 'contract' },
     { status: 502, code: 'upstream_failed', kind: 'upstream' },
   ];
   for (const expected of cases) {

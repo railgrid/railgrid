@@ -79,11 +79,11 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// Thread-scoped composer drafts (including ready attachment receipts and
-// selected skills/resources/mode), async run ownership, and source provenance
-// measure 1,232,119 raw / 343,181 gzip on the page path. Keep the allowance
-// under 0.5% over the previous cap and under 1 KB beyond the measured output.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_233_000, gzipBytes: 343_500 })
-// These features also enter the total-assets path; keep its allowance under
-// 0.5% over the previous cap and under 1 KB beyond the measured output.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_307_700, gzipBytes: 368_900 })
+// Thread-scoped drafts, run ownership, source provenance, and validated legacy
+// annotation recovery measure 1,234,077 raw / 343,803 gzip on the page path.
+// Recovery adds 1,958 raw / 622 gzip bytes. Keep the allowance under 0.5% over
+// the previous cap and under 1 KB beyond the measured output.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_234_500, gzipBytes: 344_000 })
+// The total path measures 1,309,090 raw / 369,113 gzip bytes; retain the same
+// tight allowance for the recovery code without changing the eager budgets.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_309_500, gzipBytes: 369_300 })

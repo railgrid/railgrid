@@ -44,7 +44,7 @@ export type ProviderActionEnvelope<TResult = unknown> =
   | ProviderActionFailureEnvelope;
 
 export interface CredentialContext {
-  /** True when the previous request received 401 and a fresh token is needed. */
+  /** True after a gateway 401 without a provider envelope requires a fresh token. */
   forceRefresh: boolean;
   signal?: AbortSignal;
 }

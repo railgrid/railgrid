@@ -35,6 +35,9 @@ type ProjectCommit struct {
 	Branch        string
 	// Files are the committed workspace paths, deletions included.
 	Files []string
+	// Attributions is the immutable set of producing turns captured when the
+	// pending commit was created. Paths omitted from it have no provable owner.
+	Attributions []workspace.SourceAttribution
 }
 
 type projectCommittedEventPayload struct {
@@ -45,13 +48,12 @@ type projectCommittedEventPayload struct {
 	Files         []string `json:"files"`
 }
 
-// ProjectCommitted records a reconciler auto-commit as a project.committed
-// event on the turn of the project's latest assistant run, so the
-// conversation shows that its edits reached git. Projects without an
-// assistant thread are skipped silently; failures are logged and never block
-// commit convergence.
+// ProjectCommitted records a reconciler commit on each producing assistant
+// turn captured with the pending commit. Unattributed paths and commits with
+// no known assistant owner are skipped; failures never block commit
+// convergence.
 func (s *Server) ProjectCommitted(ctx context.Context, scope workspace.Scope, commit ProjectCommit) {
-	if s == nil || s.store == nil || strings.TrimSpace(commit.CommitSHA) == "" {
+	if s == nil || s.store == nil || strings.TrimSpace(commit.CommitSHA) == "" || len(commit.Attributions) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, projectCommitEventTimeout)
@@ -63,77 +65,37 @@ func (s *Server) ProjectCommitted(ctx context.Context, scope workspace.Scope, co
 		ProjectUID:    scope.ProjectUID,
 	}
 	logger := klog.FromContext(ctx).WithValues("org", scope.OrgUUID, "workspace", scope.WorkspaceUUID, "project", scope.ProjectName, "commit", commit.CommitSHA)
-	turn, ok, err := s.latestProjectAssistantThreadTurn(ctx, storeScope)
-	if err != nil {
-		logger.Error(err, "resolving assistant thread for project commit event")
-		return
-	}
-	if !ok {
-		return
-	}
-	files := commit.Files
-	if files == nil {
-		files = []string{}
-	}
-	payload, err := json.Marshal(projectCommittedEventPayload{
-		CommitSHA:     commit.CommitSHA,
-		CommitURL:     commit.CommitURL,
-		Branch:        commit.Branch,
-		RepositoryRef: commit.RepositoryRef,
-		Files:         files,
-	})
-	if err != nil {
-		logger.Error(err, "encoding project commit event")
-		return
-	}
-	if _, err := s.appendAssistantThreadEvent(ctx, storeScope, store.AssistantThreadEvent{
-		ThreadID: turn.ThreadID,
-		TurnID:   turn.ID,
-		Type:     assistantThreadEventProjectCommitted,
-		Payload:  payload,
-	}); err != nil {
-		logger.Error(err, "appending project commit event", "thread", turn.ThreadID, "turn", turn.ID)
-	}
-}
-
-// latestProjectAssistantThreadTurn resolves the thread turn of the project's
-// latest assistant run. ok is false when the project has no run, or the run
-// has no thread turn (legacy runs).
-func (s *Server) latestProjectAssistantThreadTurn(ctx context.Context, scope store.Scope) (store.AssistantTurn, bool, error) {
-	run, err := s.store.LatestAssistantRun(ctx, scope)
-	if errors.Is(err, store.ErrAssistantRunNotFound) {
-		return store.AssistantTurn{}, false, nil
-	}
-	if err != nil {
-		return store.AssistantTurn{}, false, err
-	}
-	if run.UserMessageID == "" || run.ClientRequestID == "" {
-		return store.AssistantTurn{}, false, nil
-	}
-	// Threads are listed per actor; the run's user message names its actor.
-	messages, err := s.store.GetMessagesByIDs(ctx, scope, []string{run.UserMessageID})
-	if err != nil {
-		return store.AssistantTurn{}, false, err
-	}
-	actor := ""
-	for _, message := range messages {
-		if message.ID == run.UserMessageID {
-			actor = message.ActorID
+	for _, attribution := range workspace.NormalizeSourceAttributions(commit.Attributions, commit.Files) {
+		turn, err := s.store.GetAssistantTurn(ctx, storeScope, attribution.ThreadID, attribution.RunID)
+		if errors.Is(err, store.ErrAssistantTurnNotFound) {
+			continue
+		}
+		if err != nil {
+			logger.Error(err, "resolving assistant turn for project commit event", "thread", attribution.ThreadID, "turn", attribution.RunID)
+			continue
+		}
+		files := attribution.Paths
+		if files == nil {
+			files = []string{}
+		}
+		payload, err := json.Marshal(projectCommittedEventPayload{
+			CommitSHA:     commit.CommitSHA,
+			CommitURL:     commit.CommitURL,
+			Branch:        commit.Branch,
+			RepositoryRef: commit.RepositoryRef,
+			Files:         files,
+		})
+		if err != nil {
+			logger.Error(err, "encoding project commit event", "thread", turn.ThreadID, "turn", turn.ID)
+			continue
+		}
+		if _, err := s.appendAssistantThreadEvent(ctx, storeScope, store.AssistantThreadEvent{
+			ThreadID: turn.ThreadID,
+			TurnID:   turn.ID,
+			Type:     assistantThreadEventProjectCommitted,
+			Payload:  payload,
+		}); err != nil {
+			logger.Error(err, "appending project commit event", "thread", turn.ThreadID, "turn", turn.ID)
 		}
 	}
-	if actor == "" {
-		return store.AssistantTurn{}, false, nil
-	}
-	_, turn, err := s.findProjectAssistantTurnAcrossThreads(ctx, scope, actor, run.ClientRequestID, "")
-	if errors.Is(err, store.ErrAssistantTurnNotFound) {
-		return store.AssistantTurn{}, false, nil
-	}
-	if err != nil {
-		return store.AssistantTurn{}, false, err
-	}
-	// A thread turn shares its run's ID; anything else is not this run.
-	if turn.ID != run.ID {
-		return store.AssistantTurn{}, false, nil
-	}
-	return turn, true, nil
 }

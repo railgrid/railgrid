@@ -212,6 +212,7 @@ func (r *KCPProjectScopeResolver) Resolve(ctx context.Context, orgUUID, wsUUID s
 	providerResources = dedupeProviderResources(providerResources)
 	return serviceaccounts.WorkloadIdentityScope{
 		TenantPath: req.TenantPath, Project: req.Project, ProjectUID: req.ProjectUID,
+		ProjectGeneration: project.GetGeneration(), ProjectResourceVersion: project.GetResourceVersion(),
 		Environment: req.Environment, Instance: req.Instance, IntegrationActions: integrationActions,
 		ProviderResources: providerResources,
 	}, nil
