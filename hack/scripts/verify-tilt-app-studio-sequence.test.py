@@ -52,6 +52,8 @@ class AppStudioSequence(unittest.TestCase):
         deps = ast.literal_eval(fields['deps'])
         self.assertIn('providers/app-studio/portal/dist', deps)
         self.assertNotIn('providers/app-studio/portal/src', deps)
+        self.assertIn('providers/app-studio/controller', deps)
+        self.assertIn('providers/app-studio/internal', deps)
         self.assertEqual(ast.literal_eval(fields['ignore']),
                          ['providers/app-studio/**/*_test.go'])
 
