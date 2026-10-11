@@ -282,3 +282,48 @@ export function clearAssistantComposerDraft(
   const normalized = normalizedScope(scope)
   if (normalized) removeLegacyAnnotationDraft(normalized, storage)
 }
+
+/** Remove one receipt from a captured owner draft without touching the current thread's draft. */
+export function removeAssistantComposerDraftAttachment(
+  storageKey: string,
+  attachmentID: string,
+  storage: AssistantComposerDraftStorage | null | undefined = defaultStorage(),
+  now = Date.now(),
+): boolean {
+  const id = attachmentID.trim()
+  if (!storageKey.startsWith(`${STORAGE_PREFIX}:`) || !id || !storage) return false
+  try {
+    const raw = storage.getItem(storageKey)
+    if (raw === null) return true
+    if (raw.length > MAX_DRAFT_BYTES / 2) return false
+    const envelope = JSON.parse(raw) as Record<string, unknown>
+    if (
+      envelope.version !== STORAGE_VERSION ||
+      typeof envelope.savedAt !== 'number' ||
+      !Number.isFinite(envelope.savedAt)
+    ) return false
+    const draft = normalizeDraft(envelope.draft)
+    if (!draft) return false
+    const contentParts = draft.contentParts.filter((part) =>
+      part.type !== 'attachment' || part.attachment.id !== id,
+    )
+    if (contentParts.length === draft.contentParts.length) return true
+    const nextDraft = { ...draft, contentParts }
+    if (
+      !nextDraft.content &&
+      nextDraft.contentParts.length === 0 &&
+      nextDraft.skillIDs.length === 0 &&
+      nextDraft.resources.length === 0 &&
+      nextDraft.responseMode === 'default'
+    ) {
+      storage.removeItem(storageKey)
+      return true
+    }
+    const nextRaw = JSON.stringify({ version: STORAGE_VERSION, savedAt: now, draft: nextDraft })
+    if (nextRaw.length > MAX_DRAFT_BYTES / 2) return false
+    storage.setItem(storageKey, nextRaw)
+    return true
+  } catch {
+    return false
+  }
+}

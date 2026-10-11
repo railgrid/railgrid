@@ -30,6 +30,8 @@ import {
 import { dragCarriesFiles, droppedFiles } from './projectFiles'
 import { useDismissibleAddMenu } from './useDismissibleAddMenu'
 import { useAssistantFilePickerFocus } from './useAssistantFilePickerFocus'
+import { reconcileAssistantAttachmentChips, removeScopedAssistantAttachment, shouldCleanupAssistantAttachmentOnScopeSwitch } from './assistantAttachmentDeletion'
+import { removeAssistantComposerDraftAttachment } from './assistantComposerDraft'
 import type {
   RailgridContext,
   ProjectAssistantAttachmentReceipt,
@@ -231,10 +233,7 @@ function reconcileAttachmentChips(parts: readonly ProjectAssistantContentPart[])
       void bestEffortDeleteAttachment(chip, chip.projectName || props.projectName)
     }
   }
-  const retained = attachmentChips.value.filter((chip) => {
-    if (chip.draftScopeKey !== scopeKey) return chip.status === 'ready' && Boolean(chip.receipt)
-    return chip.status !== 'ready' || Boolean(chip.receipt && receiptIDs.has(chip.receipt.id))
-  })
+  const retained = reconcileAssistantAttachmentChips(attachmentChips.value, scopeKey, receiptIDs)
   const knownIDs = new Set(retained.flatMap((chip) => chip.receipt ? [chip.receipt.id] : []))
   for (const receipt of receipts) {
     if (knownIDs.has(receipt.id)) continue
@@ -870,6 +869,7 @@ function retryAttachment(chip: AssistantAttachmentChip) {
 
 async function removeAttachment(chip: AssistantAttachmentChip) {
   const projectName = chip.projectName || props.projectName
+  const draftScopeKey = chip.draftScopeKey
   if (chip.status === 'uploading') {
     chip.controller?.abort()
     void bestEffortDeleteAttachment(chip, projectName)
@@ -880,27 +880,33 @@ async function removeAttachment(chip: AssistantAttachmentChip) {
   if (chip.status === 'deleting') return
   if (!chip.receipt) void bestEffortDeleteAttachment(chip, projectName)
   if (chip.receipt) {
+    const receipt = chip.receipt
+    const receiptID = receipt.id
     chip.status = 'deleting'
     chip.error = undefined
     chip.retryAction = undefined
     emitAttachmentPending()
-    try {
-      await api.deleteAssistantAttachment(chip.context ?? props.ctx, projectName, chip.receipt.id)
-    } catch (error) {
-      if (isProjectAPINotFoundError(error)) {
-        // DELETE is idempotent from the composer perspective: an expired or
-        // already-removed draft is no longer present and can leave the UI.
-      } else {
+    await removeScopedAssistantAttachment({
+      deleteAttachment: () => api.deleteAssistantAttachment(chip.context ?? props.ctx, projectName, receiptID),
+      isNotFoundError: isProjectAPINotFoundError,
+      isOwnerScopeCurrent: () => props.projectName === projectName && props.draftScopeKey === draftScopeKey,
+      removeCurrentReceipt: () => {
+        localParts.value = localParts.value.filter((part) => part.type !== 'attachment' || part.attachment.id !== receiptID)
+      },
+      removeOwnerDraftReceipt: () => removeAssistantComposerDraftAttachment(draftScopeKey, receiptID),
+      onFailure: (error) => {
         chip.status = 'error'
         chip.error = error instanceof Error ? error.message : 'Attachment removal failed.'
         chip.retryAction = 'delete'
         emitAttachmentPending()
-        return
-      }
-    }
-  }
-  if (chip.receipt) {
-    localParts.value = localParts.value.filter((part) => part.type !== 'attachment' || part.attachment.id !== chip.receipt?.id)
+      },
+      onSuccess: (ownerScopeIsCurrent) => {
+        attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+        if (ownerScopeIsCurrent) emitState()
+        else emitAttachmentPending()
+      },
+    })
+    return
   }
   attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
   emitState()
@@ -1127,7 +1133,8 @@ watch(() => [props.modelValue, partSignature(props.contentParts), props.selected
 watch(() => [props.projectName, props.draftScopeKey] as const, ([currentProject, currentScope], [previousProject, previousScope]) => {
   if (currentProject === previousProject && currentScope === previousScope) return
   const pendingFromPreviousScope = attachmentChips.value.filter((chip) =>
-    chip.draftScopeKey === previousScope && chip.projectName === previousProject && chip.status !== 'ready',
+    chip.draftScopeKey === previousScope && chip.projectName === previousProject &&
+    shouldCleanupAssistantAttachmentOnScopeSwitch(chip.status, chip.retryAction),
   )
   cleanupAttachmentChips(pendingFromPreviousScope, previousProject)
   const pendingIDs = new Set(pendingFromPreviousScope.map((chip) => chip.clientID))
