@@ -1108,14 +1108,20 @@ func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Inter
 // triggerFilterAllows evaluates a Trigger's filter against an inbound webhook
 // delivery. Supported keys:
 //
-//	eventType      — exact match on the platform's event header
-//	                 (X-GitHub-Event / X-Event-Type) or a top-level "type"/
+//	eventType      — the platform's event header (X-GitHub-Event /
+//	                 X-Event-Type / X-Event-Key) or a top-level "type"/
 //	                 "action" field in the JSON body
+//	action         — the top-level "action" field in the JSON body (GitHub's
+//	                 opened / synchronize / closed / …)
+//	repository     — the "repository.full_name" field in the JSON body
+//	                 (owner/repo, as GitHub sends it)
 //	match          — substring that must appear in the raw payload
 //	header.<name>  — exact match on a request header
 //
-// Unknown keys are ignored rather than failing closed, so a filter written for
-// a future source never silently blocks every event.
+// eventType, action and repository take a comma-separated list and pass when
+// any entry matches, case-insensitively, so one trigger can listen to several
+// events. Unknown keys are ignored rather than failing closed, so a filter
+// written for a future source never silently blocks every event.
 func triggerFilterAllows(filter map[string]string, r *http.Request, body []byte) (string, bool) {
 	if len(filter) == 0 {
 		return "", true
@@ -1127,8 +1133,16 @@ func triggerFilterAllows(filter map[string]string, r *http.Request, body []byte)
 		}
 		switch {
 		case key == "eventType":
-			if !strings.EqualFold(want, webhookEventType(r, body)) {
+			if !anyOf(want, webhookEventType(r, body)) {
 				return "eventType does not match " + want, false
+			}
+		case key == "action":
+			if !anyOf(want, webhookBodyField(body, "action")) {
+				return "action does not match " + want, false
+			}
+		case key == "repository":
+			if !anyOf(want, webhookBodyField(body, "repository", "full_name")) {
+				return "repository does not match " + want, false
 			}
 		case key == "match":
 			if !strings.Contains(string(body), want) {
@@ -1143,6 +1157,19 @@ func triggerFilterAllows(filter map[string]string, r *http.Request, body []byte)
 	return "", true
 }
 
+// anyOf reports whether got equals any comma-separated entry of want,
+// ignoring case and surrounding whitespace. Blank entries never match, so a
+// trailing comma does not turn the filter into a wildcard.
+func anyOf(want, got string) bool {
+	for _, entry := range strings.Split(want, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry != "" && strings.EqualFold(entry, got) {
+			return true
+		}
+	}
+	return false
+}
+
 // webhookEventType resolves the delivery's event type from the conventional
 // platform headers, falling back to a "type"/"action" field in the JSON body.
 func webhookEventType(r *http.Request, body []byte) string {
@@ -1151,17 +1178,29 @@ func webhookEventType(r *http.Request, body []byte) string {
 			return v
 		}
 	}
-	var probe struct {
-		Type   string `json:"type"`
-		Action string `json:"action"`
+	if v := webhookBodyField(body, "type"); v != "" {
+		return v
 	}
-	if json.Unmarshal(body, &probe) == nil {
-		if probe.Type != "" {
-			return probe.Type
+	return webhookBodyField(body, "action")
+}
+
+// webhookBodyField reads one string at the given path of the JSON payload;
+// a missing field, a non-string or a non-JSON body all read as "".
+func webhookBodyField(body []byte, path ...string) string {
+	var doc map[string]any
+	if json.Unmarshal(body, &doc) != nil {
+		return ""
+	}
+	var cur any = doc
+	for _, key := range path {
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return ""
 		}
-		return probe.Action
+		cur = obj[key]
 	}
-	return ""
+	s, _ := cur.(string)
+	return strings.TrimSpace(s)
 }
 
 // ---- inbound webhooks --------------------------------------------------------

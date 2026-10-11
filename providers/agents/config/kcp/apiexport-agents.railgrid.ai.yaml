@@ -108,7 +108,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: triggers
-    schema: v260919-b1e9b5e6.triggers.agents.railgrid.ai
+    schema: v261011-078db7f4.triggers.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai

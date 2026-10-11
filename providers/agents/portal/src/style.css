@@ -180,6 +180,12 @@ railgrid-provider-agents .agents-check-copy { display: flex; min-width: 0; flex-
 railgrid-provider-agents .agents-check:has(.agents-check-copy) { align-items: flex-start; }
 railgrid-provider-agents .agents-check:has(.agents-check-copy) > input { flex: none; margin-top: 3px; }
 railgrid-provider-agents .agents-checkrow { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+/* A catalog of labelled checkboxes: equal tracks so every box and its copy
+   line up column by column, instead of drifting with each label's width. */
+railgrid-provider-agents .agents-checkgrid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: 8px 16px; align-items: start;
+}
+railgrid-provider-agents .agents-checkgrid > .agents-check { min-width: 0; }
 railgrid-provider-agents .agents-form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 railgrid-provider-agents .agents-hint { font-size: 12px; color: var(--color-text-muted, inherit); font-weight: 400; }
 railgrid-provider-agents .agents-fielderr { font-size: 12px; color: var(--color-danger, #ff5d5d); font-weight: 500; }

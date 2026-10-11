@@ -131,7 +131,7 @@ type createTriggerInput struct {
 	AgentRef      string            `json:"agentRef" jsonschema:"Name of the agent this trigger runs (see list_agents)"`
 	Source        string            `json:"source" jsonschema:"webhook (any HTTP POST) or github (GitHub webhook deliveries)"`
 	ConnectionRef string            `json:"connectionRef,omitempty" jsonschema:"Connection this trigger is wired to, for sources that need one"`
-	Filter        map[string]string `json:"filter,omitempty" jsonschema:"Key/value conditions the event payload must match, e.g. {\"action\":\"opened\"}"`
+	Filter        map[string]string `json:"filter,omitempty" jsonschema:"Conditions every delivery must pass: eventType (event header or body type/action), action (body action), repository (body repository.full_name owner/repo), match (payload substring), header.<name>. eventType/action/repository take a comma-separated any-of list, e.g. {\"eventType\":\"pull_request\",\"action\":\"opened,synchronize\"}"`
 	Task          string            `json:"task,omitempty" jsonschema:"The prompt the agent runs when the trigger fires; the event payload is appended"`
 	Suspend       bool              `json:"suspend,omitempty" jsonschema:"Create the trigger paused"`
 	ChannelRef    string            `json:"channelRef,omitempty" jsonschema:"Agent channel this trigger's output goes to; empty means the primary channel"`
@@ -142,7 +142,7 @@ type updateTriggerInput struct {
 	Task          *string            `json:"task,omitempty" jsonschema:"New prompt to run when the trigger fires"`
 	Source        *string            `json:"source,omitempty" jsonschema:"New source: webhook or github"`
 	ConnectionRef *string            `json:"connectionRef,omitempty" jsonschema:"Rewire the trigger to another connection; empty string unwires it"`
-	Filter        *map[string]string `json:"filter,omitempty" jsonschema:"Replacement filter map; replaces the whole map"`
+	Filter        *map[string]string `json:"filter,omitempty" jsonschema:"Replacement filter map (same keys as create_trigger); replaces the whole map"`
 	Suspend       *bool              `json:"suspend,omitempty" jsonschema:"true pauses the trigger without deleting it, false resumes it"`
 	ChannelRef    *string            `json:"channelRef,omitempty" jsonschema:"Agent channel for this trigger's output; empty string means the primary channel"`
 }
@@ -344,7 +344,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "create_trigger",
 		Title: "Create a trigger",
-		Description: "Create an event trigger that runs an agent when something arrives: source \"webhook\" for any HTTP POST, \"github\" for GitHub webhook deliveries. " +
+		Description: "Create an event trigger that runs an agent when something arrives: source \"webhook\" for any HTTP POST, \"github\" for GitHub webhook deliveries (same endpoint; filter on eventType such as pull_request or issues, plus action and repository). " +
 			"The response carries the inbound webhookPath to register with the sender — it embeds a secret, so share it carefully.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createTriggerInput) (*mcp.CallToolResult, triggerSummary, error) {

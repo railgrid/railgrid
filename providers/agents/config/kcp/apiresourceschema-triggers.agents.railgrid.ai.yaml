@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-b1e9b5e6.triggers.agents.railgrid.ai
+  name: v261011-078db7f4.triggers.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -68,22 +68,29 @@ spec:
               type: string
             connectionRef:
               description: |-
-                ConnectionRef names the Connection backing non-webhook sources (channel,
-                github, connection). Empty for webhook sources.
+                ConnectionRef is reserved for sources that subscribe to a Connection's
+                event stream. Neither webhook nor github reads it: both are inbound
+                HTTP deliveries authenticated by the token in status.webhookPath.
               maxLength: 253
               type: string
             filter:
               additionalProperties:
                 type: string
               description: |-
-                Filter narrows which events fire the trigger. Keys are source-specific:
-                e.g. "eventType" and "labels" for github, "match" (regex) for channel,
-                "path" or "header.<name>" for webhook.
+                Filter narrows which deliveries fire the trigger; every key must pass.
+                "eventType" matches the event header (X-GitHub-Event, X-Event-Type) or
+                the body's top-level type/action, "action" the body's top-level action
+                (GitHub's opened/synchronize/…), "repository" the body's
+                repository.full_name (owner/repo), "match" a substring of the raw
+                payload and "header.<name>" a request header. eventType, action and
+                repository take a comma-separated any-of list.
               type: object
             source:
               description: |-
                 Source is where events come from: webhook or github. Both provision a
-                hub-routed webhook endpoint and fire on inbound delivery.
+                hub-routed webhook endpoint and fire on inbound delivery; github only
+                records that the sender is GitHub so the portal can offer its event
+                catalog, the delivery path is the same.
               enum:
               - webhook
               - github

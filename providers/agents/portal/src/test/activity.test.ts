@@ -65,6 +65,17 @@ function setValue(element: HTMLInputElement | HTMLTextAreaElement, value: string
   element.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+/** selectOption opens a portalled FormSelect and clicks the option that matches. */
+async function selectOption(root: ParentNode, labelledby: string, match: string): Promise<void> {
+  const select = [...root.querySelectorAll<HTMLElement>('[data-form-select]')]
+    .find(c => c.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes(labelledby))!
+  select.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+  await settleVue()
+  ;[...document.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(o => (o.textContent || '').includes(match))!.click()
+  await settleVue()
+}
+
 function buttonWithText(root: ParentNode, value: string): HTMLButtonElement {
   const button = [...root.querySelectorAll<HTMLButtonElement>('button')].find(candidate => text(candidate).includes(value))
   if (!button) throw new Error(`button containing ${value} not found`)
@@ -1216,8 +1227,11 @@ describe('Automation.vue', () => {
     await settleVue()
 
     expect(patchTrigger).toHaveBeenCalledWith('on-issue', {
-      source: 'github', connectionRef: 'github-main', task: 'new task', suspend: false, channelRef: '',
+      source: 'github', task: 'new task', suspend: false, channelRef: '',
     })
+    // A trigger's connectionRef is dead for both flavours, so the form neither
+    // shows nor rewrites it.
+    expect(view.element.querySelector('[aria-labelledby="automation-trigger-connection-label"]')).toBeNull()
     expect(view.element.querySelector('form')).not.toBeNull()
     expect(view.element.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!.value).toBe('new task')
   })
@@ -1257,11 +1271,11 @@ describe('Automation.vue', () => {
     expect(writeText).toHaveBeenCalledTimes(2)
   })
 
-  it('edits spec.filter as key=value lines and sends only the changed keys as a merge-patch fragment', async () => {
-    const patchTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'github' } })
+  it('edits a generic webhook filter as key=value lines and sends only the changed keys as a merge-patch fragment', async () => {
+    const patchTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'webhook' } })
     const api = stubApi({ patchTrigger })
     const store = storeWithAgent(api)
-    store.triggers.data = [{ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'github', filter: { eventType: 'issues', match: 'bug' }, task: 'triage' } }]
+    store.triggers.data = [{ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'webhook', filter: { eventType: 'issues', match: 'bug' }, task: 'triage' } }]
     store.triggers.hasSnapshot = true
     const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'on-issue' })
     await settleVue()
@@ -1285,6 +1299,102 @@ describe('Automation.vue', () => {
     expect(patchTrigger).toHaveBeenCalledWith('on-issue', expect.objectContaining({
       filter: { eventType: 'pull_request', match: null },
     }))
+  })
+
+  it('edits a GitHub trigger through the event catalog, actions and repositories, writing the list keys comma-separated', async () => {
+    const patchTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'on-issue' }, spec: { agentRef: 'scout', source: 'github' } })
+    const api = stubApi({ patchTrigger })
+    const store = storeWithAgent(api)
+    store.triggers.data = [{
+      metadata: { name: 'on-issue' },
+      spec: { agentRef: 'scout', source: 'github', filter: { eventType: 'issues,deployment_status', action: 'opened', match: 'bug' }, task: 'triage' },
+    }]
+    store.triggers.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', editName: 'on-issue' })
+    await settleVue()
+
+    // Known events hydrate the checkboxes, unknown ones the free-text field,
+    // and only the keys the structured fields do not own stay as lines.
+    const checked = [...view.element.querySelectorAll<HTMLInputElement>('input[name="ghEvents"]:checked')].map(input => input.value)
+    expect(checked).toEqual(['issues'])
+    expect(view.element.querySelector<HTMLInputElement>('input[name="ghOtherEvents"]')!.value).toBe('deployment_status')
+    expect(view.element.querySelector<HTMLInputElement>('input[name="ghActions"]')!.value).toBe('opened')
+    expect(view.element.querySelector<HTMLInputElement>('input[name="ghRepos"]')!.value).toBe('')
+    const more = view.element.querySelector<HTMLTextAreaElement>('textarea[name="filter"]')!
+    expect(more.value).toBe('match=bug')
+    expect(text(view.element)).toContain('Pull requests')
+
+    const form = view.element.querySelector<HTMLFormElement>('form')!
+    // A line restating a structured key is refused rather than silently
+    // overriding the fields above it.
+    setValue(more, 'eventType=push')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(patchTrigger).not.toHaveBeenCalled()
+    expect(more.getAttribute('aria-invalid')).toBe('true')
+    expect(text(view.element.querySelector('#automation-trigger-filter-error'))).toContain('eventType is set by the fields above')
+
+    const pullRequest = view.element.querySelector<HTMLInputElement>('input[name="ghEvents"][value="pull_request"]')!
+    pullRequest.click()
+    await settleVue()
+    setValue(view.element.querySelector<HTMLInputElement>('input[name="ghRepos"]')!, ' railgrid/railgrid , railgrid/providers ')
+    setValue(more, '')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(patchTrigger).toHaveBeenCalledWith('on-issue', expect.objectContaining({
+      source: 'github',
+      filter: { eventType: 'pull_request,issues,deployment_status', repository: 'railgrid/railgrid,railgrid/providers', match: null },
+    }))
+  })
+
+  it('switches a new trigger to the GitHub flavour with pull requests preselected and carries the filter across', async () => {
+    const createTrigger = vi.fn().mockResolvedValue({ metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', source: 'github' } })
+    const api = stubApi({ createTrigger })
+    const store = storeWithAgent(api)
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout', createRoute: true })
+    await settleVue()
+    expect(view.element.querySelector('input[name="ghEvents"]')).toBeNull()
+
+    await selectOption(view.element, 'automation-trigger-source-label', 'GitHub webhook')
+    const checked = () => [...view.element.querySelectorAll<HTMLInputElement>('input[name="ghEvents"]:checked')].map(input => input.value)
+    expect(checked()).toEqual(['pull_request'])
+    expect(text(view.element)).toContain('ping on setup is acknowledged')
+
+    // Going back folds the structured fields into key=value lines, and
+    // returning lifts them out again — nothing typed is lost either way.
+    setValue(view.element.querySelector<HTMLInputElement>('input[name="ghActions"]')!, 'opened, synchronize')
+    await selectOption(view.element, 'automation-trigger-source-label', 'Generic webhook')
+    const lines = view.element.querySelector<HTMLTextAreaElement>('textarea[name="filter"]')!
+    expect(lines.value).toBe('eventType=pull_request\naction=opened,synchronize')
+    setValue(lines, 'eventType=pull_request,issues\naction=opened,synchronize\nmatch=needs-review')
+    await selectOption(view.element, 'automation-trigger-source-label', 'GitHub webhook')
+    expect(checked()).toEqual(['pull_request', 'issues'])
+    expect(view.element.querySelector<HTMLInputElement>('input[name="ghActions"]')!.value).toBe('opened, synchronize')
+    expect(view.element.querySelector<HTMLTextAreaElement>('textarea[name="filter"]')!.value).toBe('match=needs-review')
+
+    setValue(view.element.querySelector<HTMLInputElement>('input[placeholder="on-issue"]')!, 'pr-review')
+    view.element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(createTrigger).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'pr-review', agentRef: 'scout', source: 'github',
+      filter: { eventType: 'pull_request,issues', action: 'opened,synchronize', match: 'needs-review' },
+    }))
+  })
+
+  it('names the flavour on the trigger row instead of the raw source value', async () => {
+    const api = stubApi()
+    const store = storeWithAgent(api)
+    store.triggers.data = [
+      { metadata: { name: 'pr-review' }, spec: { agentRef: 'scout', source: 'github', connectionRef: 'legacy' } },
+      { metadata: { name: 'deploys' }, spec: { agentRef: 'scout', source: 'webhook' } },
+    ]
+    store.triggers.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'trigger', agent: 'scout' })
+    await settleVue()
+    const body = text(view.element)
+    expect(body).toContain('GitHub webhook')
+    expect(body).toContain('Generic webhook')
+    expect(body).not.toContain('legacy')
   })
 
   it('creates a trigger with the parsed filter and leaves it out when the editor is empty', async () => {

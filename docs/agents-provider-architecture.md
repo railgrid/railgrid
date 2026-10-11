@@ -157,8 +157,13 @@ and tools are edited inside the agent, next to a live chat playground.
   system context (bounded by `spec.memory.maxNotes`), so recall no longer
   depends on the model choosing to call `memory_list`.
 - **Trigger filters** — `spec.filter` gates webhook deliveries on `eventType`
-  (platform header or body `type`/`action`), `match` (payload substring), and
-  `header.<name>`; filtered deliveries are acked, not run.
+  (platform header or body `type`/`action`), `action` (body `action`),
+  `repository` (body `repository.full_name`), `match` (payload substring), and
+  `header.<name>`; the first three take a comma-separated any-of list.
+  Filtered deliveries are acked, not run. The portal offers two flavours of
+  the same webhook trigger: a generic one edited as `key=value` lines, and a
+  GitHub one with an event catalog, action and repository fields that write
+  those keys.
 - **Sub-agent delegation** — the `delegate` tool: agents listed in
   `spec.delegates` can be handed a scoped task; the child runs through the
   same execution path with `parentRunID` lineage, its usage rolls into the
