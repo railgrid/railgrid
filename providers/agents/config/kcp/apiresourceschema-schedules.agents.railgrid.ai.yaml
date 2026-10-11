@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-b1e9b5e6.schedules.agents.railgrid.ai
+  name: v261011-a0e9493b.schedules.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -80,8 +80,11 @@ spec:
               properties:
                 maxAttempts:
                   description: |-
-                    MaxAttempts is the number of tries for a transient failure before the run
-                    is marked failed. Zero uses the provider default (3).
+                    MaxAttempts is the number of tries a run gets before a transient refusal
+                    (a runner at capacity, a runner not yet ready) marks it failed. Only a
+                    refusal that left nothing running is retried; a turn that ran and failed
+                    is not. Zero uses the provider default (24 attempts, backing off from one
+                    minute to five between them). One disables retries for this schedule.
                   format: int32
                   minimum: 0
                   type: integer

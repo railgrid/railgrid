@@ -209,7 +209,9 @@ func (s *Server) writeRunObject(ctx context.Context, dyn dynamic.Interface, run 
 		if finalRunPhase(currentPhase) && !finalRunPhase(desired.Phase) {
 			return nil
 		}
-		if desired.Phase == agentsv1alpha1.RunPhasePending && currentPhase != "" && currentPhase != agentsv1alpha1.RunPhasePending {
+		// Pending is otherwise a one-way door — except for a run its executor
+		// handed back to the queue, which says so with a RetryAt.
+		if desired.Phase == agentsv1alpha1.RunPhasePending && currentPhase != "" && currentPhase != agentsv1alpha1.RunPhasePending && desired.RetryAt == nil {
 			return nil
 		}
 		current, _, _ := unstructured.NestedMap(existing.Object, "status")
@@ -339,6 +341,14 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 	status := agentsv1alpha1.RunStatus{
 		Phase:   string(run.Phase),
 		Message: safeTruncate(run.Message, 2048),
+		Retries: int32(run.Retries),
+	}
+	if run.RetryAt != nil && run.Phase == store.RunPhasePending {
+		// Only a queued run has a wake-up time; the reconciler clears it on the
+		// object when it claims the retry, and the row drops it when the turn
+		// starts, so the two agree without either carrying the other's copy.
+		at := metav1.NewTime(*run.RetryAt)
+		status.RetryAt = &at
 	}
 	if run.StartedAt != nil {
 		at := metav1.NewTime(*run.StartedAt)

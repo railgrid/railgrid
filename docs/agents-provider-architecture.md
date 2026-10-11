@@ -245,9 +245,16 @@ those outranks new features.**
 
 8. **At-rest encryption.** Message/memory content is plaintext in Postgres (the
    columns exist; the app-studio-style key wiring isn't ported).
-9. **Retry backoff.** Failed schedules count failures and disable at 5; the
-   designed 30s/60s/5m escalating retry isn't implemented
-   (`schedule.spec.retry.maxAttempts` is still unread).
+9. **Retry backoff.** An unattended run (schedule, trigger, channel) refused
+   before anything ran — the runner at capacity or not ready — is handed back
+   to the queue instead of failed: the Run row and object go `Pending` with a
+   `retryAt` (1m doubling to 5m) and a `retries` count, the Run reconciler
+   wakes at `retryAt` and re-claims it, and the schedule's failure counter is
+   left alone until an attempt settles. `schedule.spec.retry.maxAttempts`
+   bounds it (default 24; triggers and channels use the default). Only a
+   runner refusal flagged retryable with no receipt qualifies (`api/retry.go`);
+   a turn that ran and failed, a transport error on Start, and LLM 429/5xx are
+   still terminal, and a run-now from the portal (attended) is never retried.
 10. **Inbound hardening leftovers.** Slack signature verification, Telegram
     secret tokens, per-event de-duplication, and payload quarantine are built
     (see [`agents-multi-channel.md`](./agents-multi-channel.md#inbound-verification-de-duplication-and-quarantine)).

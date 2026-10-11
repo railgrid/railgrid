@@ -1051,6 +1051,10 @@ func (in *RunStatus) DeepCopyInto(out *RunStatus) {
 		in, out := &in.ClaimedAt, &out.ClaimedAt
 		*out = (*in).DeepCopy()
 	}
+	if in.RetryAt != nil {
+		in, out := &in.RetryAt, &out.RetryAt
+		*out = (*in).DeepCopy()
+	}
 	if in.StartedAt != nil {
 		in, out := &in.StartedAt, &out.StartedAt
 		*out = (*in).DeepCopy()

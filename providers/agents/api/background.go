@@ -837,7 +837,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	}
 	au, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, job.AgentRef, metav1.GetOptions{})
 	if err != nil {
-		b.recordOutcome(ctx, job, "", fmt.Errorf("agent %q: %w", job.AgentRef, err))
+		b.recordOutcome(ctx, job, "", fmt.Errorf("agent %q: %w", job.AgentRef, err), true)
 		return fmt.Errorf("agent %q: %w", job.AgentRef, err)
 	}
 	agent, err := fromU[agentsv1alpha1.Agent](au)
@@ -850,6 +850,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// recovery sweep) while it sat in the queue; starting it now would
 	// resurrect a run the user already saw end.
 	var repository *repositoryAttempt
+	var retries int
 	if job.RunID != "" {
 		if stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID); gerr == nil {
 			if stored.CancelRequested || stored.Phase != store.RunPhasePending {
@@ -861,6 +862,9 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 			// dispatch of one fails with the retry message rather than
 			// starting a workspace turn in its place.
 			repository = repositoryAttemptFromStored(stored.Repository)
+			// A run picked up for the second time carries how many times it
+			// was handed back, which is what bounds handing it back again.
+			retries = stored.Retries
 		}
 	}
 	tr := taskRun{
@@ -873,13 +877,29 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		ReplyTarget:  job.ReplyTarget,
 		DeliveryKind: string(job.Kind),
 		Repository:   repository,
+		Retries:      retries,
+		MaxAttempts:  b.maxAttemptsFor(ctx, dyn, job),
 	}
 	// There is no user to act as here, so the run acts as the AGENT's own
 	// ServiceAccount through the virtual workspace.
 	b.agentAccess(ctx, dyn, job.ClusterID, agent.Name).applyTo(&tr)
 	res, runErr := b.server.executeTask(ctx, tr)
 
-	b.recordOutcome(ctx, job, res.RunID, runErr)
+	var requeued *runRequeued
+	if errors.As(runErr, &requeued) {
+		// Not an outcome. The run is back in the queue with a wake-up time and
+		// the Run reconciler brings it round; the schedule's failure counter
+		// and the agent's channel wait for the attempt that settles it.
+		log.Printf("background: job %s %s/%s: run %s %v", job.Kind, job.ClusterID, job.SourceName, res.RunID, requeued)
+		b.recordOutcome(ctx, job, res.RunID, nil, false)
+		b.server.events.publish(store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID},
+			string(job.Kind), map[string]any{
+				"name": job.SourceName, "agent": agent.Name, "runID": res.RunID, "requeued": true,
+			})
+		return nil
+	}
+
+	b.recordOutcome(ctx, job, res.RunID, runErr, true)
 
 	// Tell the portal the source's status moved (nextRun/lastFired/lastRunID)
 	// so schedule and trigger rows refresh without waiting for a poll.
@@ -971,7 +991,12 @@ func (b *background) PurgeRunData(ctx context.Context, clusterID, agentName, run
 
 // recordOutcome updates the firing schedule's status counters (lastRunID,
 // consecutiveFailures, disable-after-N). Triggers record lastFired instead.
-func (b *background) recordOutcome(ctx context.Context, job executor.Job, runID string, runErr error) {
+//
+// settled is false for a run handed back to the queue for a retry: the source
+// still learns which run it fired, but the failure counter is neither bumped —
+// a busy runner must not disable a schedule — nor reset, because nothing has
+// succeeded yet either.
+func (b *background) recordOutcome(ctx context.Context, job executor.Job, runID string, runErr error, settled bool) {
 	dyn, err := b.scoped(ctx, job.ClusterID)
 	if err != nil {
 		return
@@ -994,21 +1019,43 @@ func (b *background) recordOutcome(ctx context.Context, job executor.Job, runID 
 	if runID != "" {
 		status["lastRunID"] = runID
 	}
-	failures := int64(0)
-	if f, ok := status["consecutiveFailures"].(int64); ok {
-		failures = f
-	}
-	if runErr != nil {
-		failures++
-		status["consecutiveFailures"] = failures
-		if failures >= maxConsecutiveFailures {
-			status["disabledReason"] = fmt.Sprintf("disabled after %d consecutive failures: %v", failures, runErr)
+	if settled {
+		failures := int64(0)
+		if f, ok := status["consecutiveFailures"].(int64); ok {
+			failures = f
 		}
-	} else {
-		status["consecutiveFailures"] = int64(0)
+		if runErr != nil {
+			failures++
+			status["consecutiveFailures"] = failures
+			if failures >= maxConsecutiveFailures {
+				status["disabledReason"] = fmt.Sprintf("disabled after %d consecutive failures: %v", failures, runErr)
+			}
+		} else {
+			status["consecutiveFailures"] = int64(0)
+		}
 	}
 	_ = unstructured.SetNestedMap(u.Object, status, "status")
 	_, _ = dyn.Resource(gvr).UpdateStatus(ctx, u, metav1.UpdateOptions{})
+}
+
+// maxAttemptsFor is the retry bound for a job: a schedule's
+// spec.retry.maxAttempts when it names one, otherwise zero for the provider
+// default (api/retry.go). Triggers and channel messages carry no policy. The
+// read is best-effort — a schedule that cannot be read gets the default rather
+// than no run.
+func (b *background) maxAttemptsFor(ctx context.Context, dyn dynamic.Interface, job executor.Job) int32 {
+	if job.Kind != executor.KindSchedule || job.SourceName == "" {
+		return 0
+	}
+	u, err := dyn.Resource(agentsclient.ScheduleGVR).Get(ctx, job.SourceName, metav1.GetOptions{})
+	if err != nil {
+		return 0
+	}
+	value, found, err := unstructured.NestedInt64(u.Object, "spec", "retry", "maxAttempts")
+	if err != nil || !found || value <= 0 {
+		return 0
+	}
+	return int32(min(value, int64(1<<30)))
 }
 
 // notify delivers text to one of the agent's channels: the named role
