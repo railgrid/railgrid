@@ -53,9 +53,9 @@ const (
 
 // ErrWorkloadScopeRevoked marks a recorded Project environment identity whose
 // current Project state can no longer authorize the recorded environment and
-// runtime. A sweep must remove the identity instead of retaining its last
-// known-good permissions. Resolver transport and client errors must not wrap
-// this sentinel, so transient reads leave the identity intact.
+// runtime. A sweep narrows the recorded identity to no permissions, preserving
+// the record as a durable retry point. Resolver transport and client errors
+// must not wrap this sentinel, so transient reads leave the identity intact.
 var ErrWorkloadScopeRevoked = errors.New("workload identity scope revoked")
 
 // EnsureWorkload records and mints a pod-attested workload identity for a
@@ -134,34 +134,55 @@ func (s *Service) reconcileWorkloadScope(
 		if err != nil {
 			return nil, false, err
 		}
+		owner := workloadOwnerFromRecord(current)
+		// A revoked result carries no scope revision. Bracket its live Project
+		// read with this observation and upsertRecord's exact revision check;
+		// never attach a revision observed after resolution to an old decision.
+		ownerObservation, found, err := s.observeOwner(ctx, current.Spec.ClusterID, owner, true)
+		if err != nil {
+			return nil, false, fmt.Errorf("observing Project before workload scope reconciliation: %w", err)
+		}
+		if !found || owner.UID != "" && ownerObservation.UID != owner.UID {
+			return nil, false, RevisionConflict{Code: CodeStaleOwner, Reason: "the recorded Project no longer exists"}
+		}
+		if ownerObservation.Generation < 1 || strings.TrimSpace(ownerObservation.ResourceVersion) == "" {
+			return nil, false, RevisionConflict{Code: CodeVersionConflict, Reason: "the Project probe returned no complete revision"}
+		}
+		preObservedOwnerRevision := &OwnerRevision{
+			Generation: ownerObservation.Generation, ResourceVersion: ownerObservation.ResourceVersion,
+		}
 
 		// Resolve against the latest record tuple on every retry. A scope from a
 		// prior read is never reused after either the record or Project revision
 		// has moved.
 		scope, err := resolver.ResolveRecord(ctx, current)
-		if err != nil {
+		revoked := errors.Is(err, ErrWorkloadScopeRevoked)
+		if err != nil && !revoked {
 			return nil, false, fmt.Errorf("resolving current workload scope: %w", err)
 		}
-		if err := serviceaccounts.ValidateWorkloadScope(scope); err != nil {
-			return nil, false, fmt.Errorf("%w: current workload scope is invalid: %v", ErrWorkloadScopeRevoked, err)
-		}
-		if scope.Project != current.Spec.Owner.Name || scope.ProjectUID != current.Spec.Owner.UID ||
-			scope.TenantPath != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityTenantPath] ||
-			scope.Environment != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityEnvironment] ||
-			scope.Instance != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityInstance] {
-			return nil, false, fmt.Errorf("%w: current workload scope does not match the recorded Project identity", ErrWorkloadScopeRevoked)
-		}
-		projectRevision, err := workloadOwnerRevision(scope)
-		if err != nil {
-			return nil, false, err
+		if !revoked {
+			revoked = serviceaccounts.ValidateWorkloadScope(scope) != nil ||
+				scope.Project != current.Spec.Owner.Name || scope.ProjectUID != current.Spec.Owner.UID ||
+				scope.TenantPath != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityTenantPath] ||
+				scope.Environment != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityEnvironment] ||
+				scope.Instance != current.Spec.Annotations[serviceaccounts.AnnotationWorkloadIdentityInstance]
 		}
 
-		owner := Owner{
-			Provider: workloadOwnerProvider, Kind: workloadOwnerKind, Group: workloadOwnerGroup,
-			Version: workloadOwnerVersion, Resource: workloadOwnerResource,
-			Name: scope.Project, UID: scope.ProjectUID, ClusterID: current.Spec.ClusterID,
+		var shape serviceaccounts.ScopedIdentityShape
+		projectRevision := preObservedOwnerRevision
+		if revoked {
+			// Keep the deterministic account and audit record, but persist an
+			// explicit no-permissions shape. The record and Project revisions
+			// fence this write against a concurrent refresh or regrant.
+			shape = Shape(current)
+			shape.Rules = nil
+		} else {
+			shape = serviceaccounts.WorkloadIdentityShape(scope)
+			projectRevision, err = workloadOwnerRevision(scope)
+			if err != nil {
+				return nil, false, err
+			}
 		}
-		shape := serviceaccounts.WorkloadIdentityShape(scope)
 		updated, err := s.upsertRecord(ctx, current.Spec.ClusterID, owner,
 			tenancyv1alpha1.ScopedIdentityAttestationWorkload, current.Spec.Attestation.Subject,
 			shape, projectRevision, &observedRevision)
@@ -189,6 +210,15 @@ func (s *Service) reconcileWorkloadScope(
 		lastConflict = RevisionConflict{Code: CodeVersionConflict, Reason: "the workload identity changed during every reconciliation attempt"}
 	}
 	return nil, false, lastConflict
+}
+
+func workloadOwnerFromRecord(record *tenancyv1alpha1.ScopedIdentity) Owner {
+	return Owner{
+		Provider: record.Spec.Owner.Provider, Kind: record.Spec.Owner.Kind,
+		Group: record.Spec.Owner.Group, Version: record.Spec.Owner.Version,
+		Resource: record.Spec.Owner.Resource, Name: record.Spec.Owner.Name,
+		UID: record.Spec.Owner.UID, ClusterID: record.Spec.ClusterID,
+	}
 }
 
 const maxWorkloadReconcileAttempts = 3

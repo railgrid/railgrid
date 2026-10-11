@@ -19,6 +19,9 @@ import (
 	"github.com/go-logr/logr"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	clienttesting "k8s.io/client-go/testing"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
@@ -365,7 +368,7 @@ func TestEnsureWorkloadRejectsScopeFromOlderProjectRevision(t *testing.T) {
 	}
 }
 
-func TestSweepCollectsWorkloadIdentityWhenProjectEnvironmentOrRuntimeIsRemoved(t *testing.T) {
+func TestSweepRevokesWorkloadIdentityWhenProjectEnvironmentOrRuntimeIsRemoved(t *testing.T) {
 	service, records, cs, owners := testService(t)
 	owners.present["Project/shop"] = "project-uid-1"
 	ctx := context.Background()
@@ -381,13 +384,276 @@ func TestSweepCollectsWorkloadIdentityWhenProjectEnvironmentOrRuntimeIsRemoved(t
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if result.Collected != 1 || result.Failed != 0 {
-		t.Fatalf("revoked environment/runtime was not collected: %+v", result)
+	if result.Rematerial != 1 || result.Collected != 0 || result.Failed != 0 {
+		t.Fatalf("revoked environment/runtime was not narrowed: %+v", result)
 	}
-	if _, ok := records.items[token.Name]; ok {
-		t.Fatal("revoked workload identity record survived")
+	record, ok := records.items[token.Name]
+	if !ok {
+		t.Fatal("revoked workload identity record was not retained as the retry source of truth")
 	}
-	assertIdentityGone(t, ctx, cs, token.ServiceAccount)
+	if len(record.Spec.Rules) != 0 || record.Status.Phase != tenancyv1alpha1.ScopedIdentityReady {
+		t.Fatalf("revoked workload identity record was not materialized with no rules: spec=%#v status=%#v", record.Spec.Rules, record.Status)
+	}
+	if _, err := cs.CoreV1().ServiceAccounts("default").Get(ctx, token.ServiceAccount, metav1.GetOptions{}); err != nil {
+		t.Fatalf("revoked workload ServiceAccount was deleted: %v", err)
+	}
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, serviceaccounts.WorkloadIdentityRoleName(token.ServiceAccount), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get revoked workload ClusterRole: %v", err)
+	}
+	if len(role.Rules) != 0 {
+		t.Fatalf("revoked workload ClusterRole retained permissions: %#v", role.Rules)
+	}
+}
+
+type regrantBeforeRevocation struct {
+	service *Service
+	owners  *fakeOwners
+	scope   serviceaccounts.WorkloadIdentityScope
+	called  bool
+}
+
+func (r *regrantBeforeRevocation) ResolveRecord(ctx context.Context, _ *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error) {
+	if r.called {
+		return r.scope, nil
+	}
+	r.called = true
+	r.owners.generation = 2
+	r.owners.resourceVersion = "owner-rv-2"
+	scope := r.scope
+	scope.ProjectGeneration = 2
+	scope.ProjectResourceVersion = "owner-rv-2"
+	r.scope = scope
+	if _, err := r.service.EnsureWorkload(ctx, workloadTenantPath, scope, "runtime"); err != nil {
+		return serviceaccounts.WorkloadIdentityScope{}, err
+	}
+	// This is the resolver result from the stale revoked Project snapshot that
+	// raced with the successful refresh above.
+	return serviceaccounts.WorkloadIdentityScope{}, ErrWorkloadScopeRevoked
+}
+
+func TestSweepDoesNotDeleteConcurrentWorkloadRegrant(t *testing.T) {
+	service, records, cs, owners := testService(t)
+	owners.present["Project/shop"] = "project-uid-1"
+	ctx := context.Background()
+	initial, err := service.EnsureWorkload(ctx, workloadTenantPath, workloadScope(), "runtime")
+	if err != nil {
+		t.Fatalf("initial EnsureWorkload: %v", err)
+	}
+	resolver := &regrantBeforeRevocation{service: service, owners: owners, scope: workloadScope()}
+	result, err := NewReconciler(ReconcilerOptions{
+		Service: service, WorkloadScopes: resolver, Logger: logr.Discard(),
+	}).Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if !resolver.called {
+		t.Fatal("resolver did not establish the concurrent regrant")
+	}
+	if result.Collected != 0 || result.Failed != 0 {
+		t.Fatalf("stale revocation was not retried against the concurrent regrant: %+v", result)
+	}
+	record, ok := records.items[initial.Name]
+	if !ok {
+		t.Fatalf("concurrent regrant record %q was deleted: %+v", initial.Name, result)
+	}
+	if !hasRule(record.Spec.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("concurrent regrant rules were cleared: %#v", record.Spec.Rules)
+	}
+	if _, err := cs.CoreV1().ServiceAccounts("default").Get(ctx, initial.ServiceAccount, metav1.GetOptions{}); err != nil {
+		t.Fatalf("concurrent regrant ServiceAccount was deleted: %v", err)
+	}
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, serviceaccounts.WorkloadIdentityRoleName(initial.ServiceAccount), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get concurrent regrant ClusterRole: %v", err)
+	}
+	if !hasRule(role.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("concurrent regrant ClusterRole was cleared: %#v", role.Rules)
+	}
+}
+
+type regrantProjectDuringResolution struct {
+	owners *fakeOwners
+	scope  serviceaccounts.WorkloadIdentityScope
+	calls  int
+}
+
+func (r *regrantProjectDuringResolution) ResolveRecord(context.Context, *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error) {
+	r.calls++
+	if r.calls == 1 {
+		r.owners.generation = 2
+		r.owners.resourceVersion = "owner-rv-2"
+		return serviceaccounts.WorkloadIdentityScope{}, ErrWorkloadScopeRevoked
+	}
+	return r.scope, nil
+}
+
+func TestSweepDoesNotRevokeWhenProjectRevisionChangesWithoutRecordRefresh(t *testing.T) {
+	service, records, cs, owners := testService(t)
+	owners.present["Project/shop"] = "project-uid-1"
+	ctx := context.Background()
+	initial, err := service.EnsureWorkload(ctx, workloadTenantPath, workloadScope(), "runtime")
+	if err != nil {
+		t.Fatalf("initial EnsureWorkload: %v", err)
+	}
+	currentScope := workloadScope()
+	currentScope.ProjectGeneration = 2
+	currentScope.ProjectResourceVersion = "owner-rv-2"
+	resolver := &regrantProjectDuringResolution{owners: owners, scope: currentScope}
+	result, err := NewReconciler(ReconcilerOptions{
+		Service: service, WorkloadScopes: resolver, Logger: logr.Discard(),
+	}).Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if resolver.calls < 2 {
+		t.Fatalf("Project revision conflict was not resolved from a fresh read: calls=%d", resolver.calls)
+	}
+	if result.Collected != 0 || result.Failed != 0 {
+		t.Fatalf("revocation from the older Project revision was not retried: %+v", result)
+	}
+	record, ok := records.items[initial.Name]
+	if !ok {
+		t.Fatal("Project revision race deleted the workload identity record")
+	}
+	if !hasRule(record.Spec.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("Project revision race cleared the workload record rules: %#v", record.Spec.Rules)
+	}
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, serviceaccounts.WorkloadIdentityRoleName(initial.ServiceAccount), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get workload ClusterRole after Project revision race: %v", err)
+	}
+	if !hasRule(role.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("Project revision race cleared the workload ClusterRole: %#v", role.Rules)
+	}
+}
+
+func TestSweepDoesNotClearRegrantDuringRevocationMaterialization(t *testing.T) {
+	service, records, cs, owners := testService(t)
+	owners.present["Project/shop"] = "project-uid-1"
+	ctx := context.Background()
+	initial, err := service.EnsureWorkload(ctx, workloadTenantPath, workloadScope(), "runtime")
+	if err != nil {
+		t.Fatalf("initial EnsureWorkload: %v", err)
+	}
+
+	baseClients := service.clients
+	refreshed := false
+	var fresh *Token
+	var refreshErr error
+	service.clients = func(clusterID string) (kubernetes.Interface, error) {
+		if !refreshed {
+			refreshed = true
+			service.clients = baseClients
+			owners.generation = 2
+			owners.resourceVersion = "owner-rv-2"
+			scope := workloadScope()
+			scope.ProjectGeneration = 2
+			scope.ProjectResourceVersion = "owner-rv-2"
+			fresh, refreshErr = service.EnsureWorkload(ctx, workloadTenantPath, scope, "runtime")
+			if refreshErr != nil {
+				return nil, refreshErr
+			}
+		}
+		return baseClients(clusterID)
+	}
+
+	currentScope := workloadScope()
+	currentScope.ProjectGeneration = 2
+	currentScope.ProjectResourceVersion = "owner-rv-2"
+	resolver := &regrantAfterFirstRevocation{scope: currentScope}
+	result, err := NewReconciler(ReconcilerOptions{
+		Service: service, WorkloadScopes: resolver, Logger: logr.Discard(),
+	}).Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if !refreshed || refreshErr != nil || fresh == nil {
+		t.Fatalf("concurrent refresh did not complete during revocation materialization: refreshed=%v err=%v", refreshed, refreshErr)
+	}
+	if result.Collected != 0 || result.Failed != 0 {
+		t.Fatalf("stale revocation was not retried against the regrant during materialization: %+v", result)
+	}
+	record, ok := records.items[initial.Name]
+	if !ok {
+		t.Fatal("concurrent regrant record was deleted")
+	}
+	if !hasRule(record.Spec.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("concurrent regrant record was narrowed: %#v", record.Spec.Rules)
+	}
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, serviceaccounts.WorkloadIdentityRoleName(fresh.ServiceAccount), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get regranted ClusterRole: %v", err)
+	}
+	if !hasRule(role.Rules, "databricks.railgrid.ai", "tables/query_table", "sales", "create") {
+		t.Fatalf("concurrent regrant ClusterRole was cleared: %#v", role.Rules)
+	}
+}
+
+type regrantAfterFirstRevocation struct {
+	scope serviceaccounts.WorkloadIdentityScope
+	calls int
+}
+
+func (r *regrantAfterFirstRevocation) ResolveRecord(context.Context, *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error) {
+	r.calls++
+	if r.calls == 1 {
+		return serviceaccounts.WorkloadIdentityScope{}, ErrWorkloadScopeRevoked
+	}
+	return r.scope, nil
+}
+
+func TestSweepRetriesFailedWorkloadRevocationMaterialization(t *testing.T) {
+	service, records, cs, owners := testService(t)
+	owners.present["Project/shop"] = "project-uid-1"
+	ctx := context.Background()
+	token, err := service.EnsureWorkload(ctx, workloadTenantPath, workloadScope(), "runtime")
+	if err != nil {
+		t.Fatalf("EnsureWorkload: %v", err)
+	}
+	failEmptyRoleUpdate := true
+	cs.PrependReactor("update", "clusterroles", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		updated := action.(clienttesting.UpdateAction).GetObject().(*rbacv1.ClusterRole)
+		if failEmptyRoleUpdate && len(updated.Rules) == 0 {
+			failEmptyRoleUpdate = false
+			return true, nil, errors.New("temporary ClusterRole update failure")
+		}
+		return false, nil, nil
+	})
+	reconciler := NewReconciler(ReconcilerOptions{
+		Service: service, WorkloadScopes: fakeWorkloadScopeResolver{err: ErrWorkloadScopeRevoked}, Logger: logr.Discard(),
+	})
+
+	first, err := reconciler.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("first Sweep: %v", err)
+	}
+	if first.Failed != 1 {
+		t.Fatalf("first revoked-role write failure was not recorded: %+v", first)
+	}
+	record := records.items[token.Name]
+	if record == nil || len(record.Spec.Rules) != 0 || record.Status.Phase != tenancyv1alpha1.ScopedIdentityFailed {
+		t.Fatalf("failed revocation was not persisted as an empty, retryable record: %#v", record)
+	}
+
+	second, err := reconciler.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("second Sweep: %v", err)
+	}
+	if second.Failed != 0 || second.Rematerial != 1 {
+		t.Fatalf("failed revocation was not retried: %+v", second)
+	}
+	record = records.items[token.Name]
+	if record == nil || record.Status.Phase != tenancyv1alpha1.ScopedIdentityReady {
+		t.Fatalf("retried revocation did not become ready: %#v", record)
+	}
+	role, err := cs.RbacV1().ClusterRoles().Get(ctx, serviceaccounts.WorkloadIdentityRoleName(token.ServiceAccount), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get revoked ClusterRole after retry: %v", err)
+	}
+	if len(role.Rules) != 0 {
+		t.Fatalf("retry left permissions on revoked ClusterRole: %#v", role.Rules)
+	}
 }
 
 func TestSweepPreservesWorkloadIdentityOnTransientProjectReadFailure(t *testing.T) {

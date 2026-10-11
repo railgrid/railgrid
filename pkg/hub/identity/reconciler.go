@@ -18,7 +18,6 @@ package identity
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -75,7 +74,10 @@ type Reconciler struct {
 // WorkloadScopeResolver re-reads the Project backing a recorded workload
 // identity and derives its current permission scope. It lets the normal hub
 // sweep apply Project integration grants and revocations to existing
-// identities without waiting for a workload to exchange its token again.
+// identities without waiting for a workload to exchange its token again. It
+// must use a live Project read rather than an informer cache: the reconciler
+// captures the Project revision immediately before calling it and verifies
+// that revision again before persisting a revoked scope.
 type WorkloadScopeResolver interface {
 	ResolveRecord(context.Context, *tenancyv1alpha1.ScopedIdentity) (serviceaccounts.WorkloadIdentityScope, error)
 }
@@ -199,17 +201,6 @@ func (r *Reconciler) reconcileOne(ctx context.Context, record *tenancyv1alpha1.S
 	if record.Spec.Attestation.Mode == tenancyv1alpha1.ScopedIdentityAttestationWorkload && r.workloadScopes != nil {
 		updated, changed, err := r.service.reconcileWorkloadScope(ctx, record, r.workloadScopes)
 		if err != nil {
-			if errors.Is(err, ErrWorkloadScopeRevoked) {
-				if deleteErr := r.service.deleteRecord(ctx, record); deleteErr != nil {
-					result.Failed++
-					r.log.Error(deleteErr, "revoking workload identity for removed Project environment or runtime", "record", record.Name, "project", owner.Name)
-					return
-				}
-				result.Collected++
-				r.log.Info("revoked workload identity whose Project environment or runtime is no longer present",
-					"record", record.Name, "project", owner.Name)
-				return
-			}
 			result.Failed++
 			r.log.Error(err, "reconciling workload identity permissions", "record", record.Name, "project", owner.Name)
 			return
