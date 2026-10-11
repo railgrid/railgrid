@@ -108,6 +108,44 @@ jobs:
           go test ${{ matrix.race }} -count=1 ./...
         fi
 
+  # The ordinary App Studio module matrix runs its complete API/store suite
+  # under -race. This scoped job reruns the store suite against real PostgreSQL
+  # so its migration and concurrency tests do not skip their external-DSN paths.
+  test-app-studio-postgres:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
+    name: Test (app-studio PostgreSQL store)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_studio_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_studio_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_STUDIO_TEST_POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/app_studio_test?sslmode=disable
+    defaults:
+      run:
+        working-directory: providers/app-studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/free-disk-space
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: providers/app-studio/go.mod
+          cache-dependency-path: '**/go.sum'
+      - name: Test PostgreSQL store under the race detector
+        run: go test -race -count=1 ./store
+
   # govulncheck per module, blocking. hack/govulncheck.sh fails the job only on
   # vulnerabilities govulncheck traced to a *called* symbol and that are not
   # listed in hack/govulncheck-allow.yaml; module- and package-level findings
@@ -311,7 +349,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [changes, build, govulncheck, lint, portal, provider-portals, test-modules, verify-boilerplate, verify-ci-selection, verify-codegen, verify-design-docs, verify-portalkit, verify-tilt-browser-deployment, verify-ui-conformance]
+    needs: [changes, build, govulncheck, lint, portal, provider-portals, test-modules, test-app-studio-postgres, verify-boilerplate, verify-ci-selection, verify-codegen, verify-design-docs, verify-portalkit, verify-tilt-browser-deployment, verify-ui-conformance]
     runs-on: ubuntu-latest
     permissions:
       contents: read

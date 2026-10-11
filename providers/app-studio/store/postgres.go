@@ -37,6 +37,7 @@ const assistantConversationSchemaVersion = "assistant-conversation-items-v1"
 const assistantConversationSequenceSchemaVersion = "assistant-conversation-sequence-v1"
 const assistantThreadSchemaVersion = "assistant-thread-turn-item-v1"
 const assistantRunThreadSchemaVersion = "assistant-run-thread-scope-v1"
+const assistantRunThreadWriteFenceSchemaVersion = "assistant-run-thread-write-fence-v1"
 const assistantLookupIndexSchemaVersion = "assistant-point-lookups-online-v2"
 const assistantApprovalPolicySchemaVersion = "assistant-approval-policy-v2"
 const projectThumbnailSchemaVersion = "project-thumbnail-v1"
@@ -53,6 +54,7 @@ const attachmentFileKindSchemaVersion = "project-attachments-file-kind-v1"
 const lockMessageSchemaMigrations = `SELECT pg_advisory_xact_lock(870408091945886937)`
 const tryLockAssistantLookupIndexes = `SELECT pg_try_advisory_lock(870408091945886938)`
 const unlockAssistantLookupIndexes = `SELECT pg_advisory_unlock(870408091945886938)`
+const assistantRunThreadMigrationLockTimeout = "5s"
 
 const createMessageSchemaMigrationsTable = `CREATE TABLE IF NOT EXISTS app_studio_message_schema_migrations (
 	version text PRIMARY KEY,
@@ -206,7 +208,10 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, assistantThreadSchemaVersion, assistantThreadSchemaStatements()...); err != nil {
 		return err
 	}
-	if err := ensureSchemaVersion(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadSchemaStatements()...); err != nil {
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadSchemaStatements()...); err != nil {
+		return err
+	}
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadWriteFenceSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadWriteFenceSchemaStatements()...); err != nil {
 		return err
 	}
 	if err := ensureSchemaVersion(ctx, tx, assistantApprovalPolicySchemaVersion, assistantApprovalPolicySchemaStatements()...); err != nil {
@@ -561,7 +566,7 @@ func assistantSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS app_studio_messages_created_idx ON app_studio_messages (created_at)`,
 		`CREATE TABLE IF NOT EXISTS app_studio_assistant_runs (
 			org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
-			run_id text NOT NULL, thread_id text NOT NULL DEFAULT '', mode text NOT NULL CHECK (mode IN ('default', 'plan', 'review')),
+			run_id text NOT NULL, thread_id text NOT NULL, mode text NOT NULL CHECK (mode IN ('default', 'plan', 'review')),
 			approval_mode text NOT NULL DEFAULT 'auto_approve' CHECK (approval_mode IN ('always_ask', 'auto_approve')),
 			status text NOT NULL, client_request_id text NOT NULL DEFAULT '', user_message_id text NOT NULL DEFAULT '',
 			active_message_id text NOT NULL DEFAULT '', revision bigint NOT NULL DEFAULT 0, request_id text NOT NULL DEFAULT '',
@@ -603,6 +608,7 @@ func assistantRunThreadSchemaStatements() []string {
 		  AND matched.project_name = run.project_name
 		  AND matched.project_uid = run.project_uid
 		  AND matched.turn_id = run.run_id`,
+		`ALTER TABLE app_studio_assistant_runs ALTER COLUMN thread_id DROP DEFAULT`,
 		`DROP INDEX IF EXISTS app_studio_assistant_runs_scope_client_request_idx`,
 		`CREATE UNIQUE INDEX app_studio_assistant_runs_scope_client_request_idx
 			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, project_uid, thread_id, client_request_id)
@@ -612,6 +618,14 @@ func assistantRunThreadSchemaStatements() []string {
 			ON app_studio_assistant_runs (org_uuid, workspace_uuid, project_name, project_uid, thread_id)
 			WHERE status NOT IN ('completed','failed','interrupted','aborted')`,
 	}
+}
+
+// assistantRunThreadWriteFenceSchemaStatements also runs for databases that
+// already recorded assistantRunThreadSchemaVersion before the write fence was
+// added. New binaries always provide thread_id; dropping its default makes an
+// old insert fail instead of silently entering the legacy lane.
+func assistantRunThreadWriteFenceSchemaStatements() []string {
+	return []string{`ALTER TABLE app_studio_assistant_runs ALTER COLUMN thread_id DROP DEFAULT`}
 }
 
 func bootstrapPermitSchemaStatements() []string {
@@ -676,6 +690,29 @@ func ensureSchemaVersion(ctx context.Context, tx *sql.Tx, version string, stmts 
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO app_studio_message_schema_migrations(version) VALUES ($1) ON CONFLICT DO NOTHING`, version); err != nil {
 		return fmt.Errorf("record schema migration %s: %w", version, err)
+	}
+	return nil
+}
+
+// ensureSchemaVersionWithLockTimeout bounds waits to acquire table locks for a
+// migration without changing the lock_timeout used by later schema phases in
+// the same transaction.
+func ensureSchemaVersionWithLockTimeout(ctx context.Context, tx *sql.Tx, version, lockTimeout string, stmts ...string) error {
+	var previousLockTimeout string
+	if err := tx.QueryRowContext(ctx, `SELECT current_setting('lock_timeout')`).Scan(&previousLockTimeout); err != nil {
+		return fmt.Errorf("read lock_timeout before schema migration %s: %w", version, err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('lock_timeout', $1, true)`, lockTimeout); err != nil {
+		return fmt.Errorf("set lock_timeout for schema migration %s: %w", version, err)
+	}
+	if err := ensureSchemaVersion(ctx, tx, version, stmts...); err != nil {
+		// The caller rolls back this transaction. Do not issue another statement
+		// on an aborted PostgreSQL transaction, which would hide the migration
+		// error behind a transaction-aborted error.
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('lock_timeout', $1, true)`, previousLockTimeout); err != nil {
+		return fmt.Errorf("restore lock_timeout after schema migration %s: %w", version, err)
 	}
 	return nil
 }

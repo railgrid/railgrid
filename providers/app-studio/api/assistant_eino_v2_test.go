@@ -1463,7 +1463,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 		t.Fatalf("checkpoint selected tools = %#v, want searched runtime capability", checkpoint.SelectedDynamicToolNames)
 	}
 
-	accumulator := h.server.projectAssistantSupervisor().accumulatorFor(h.scope, pending.ID)
+	accumulator := h.server.projectAssistantSupervisor().accumulatorFor(h.scope, pending.ID, pending.ThreadID)
 	if accumulator == nil {
 		t.Fatal("assistant run accumulator missing")
 	}

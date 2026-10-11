@@ -139,11 +139,11 @@ func TestProjectAssistantSupervisorAdmitMutationRequiresBoundActor(t *testing.T)
 	if _, err := supervisor.Attach(scope, created, assistant); err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.AdmitMutation(ctx, scope, created.ID, "owner"); err != nil {
+	if err := supervisor.AdmitMutation(ctx, scope, created.ID, "owner", created.ThreadID); err != nil {
 		t.Fatalf("owner admission: %v", err)
 	}
 	for _, actor := range []string{"", "other"} {
-		if err := supervisor.AdmitMutation(ctx, scope, created.ID, actor); !errors.Is(err, store.ErrAssistantRunConflict) {
+		if err := supervisor.AdmitMutation(ctx, scope, created.ID, actor, created.ThreadID); !errors.Is(err, store.ErrAssistantRunConflict) {
 			t.Fatalf("actor %q admission = %v, want conflict", actor, err)
 		}
 	}

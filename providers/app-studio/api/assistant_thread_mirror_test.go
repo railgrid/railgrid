@@ -882,7 +882,7 @@ func TestAssistantThreadMirrorReattachesAfterRestartAndCompletesWaitingExec(t *t
 		return countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, dynamicItemID) == 1
 	})
 
-	accumulator := server.projectAssistantSupervisor().accumulatorFor(scope, runID)
+	accumulator := server.projectAssistantSupervisor().accumulatorFor(scope, runID, threadID)
 	if accumulator == nil {
 		t.Fatal("restarted run has no supervisor accumulator")
 	}

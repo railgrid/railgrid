@@ -690,7 +690,7 @@ func TestReserveProjectExternalOperationRejectsActiveAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { server.projectAssistantSupervisor().Abort(scope, started.Run.ID) })
+	t.Cleanup(func() { server.projectAssistantSupervisor().Abort(scope, started.Run.ID, started.Run.ThreadID) })
 
 	recorder := httptest.NewRecorder()
 	release, ok := server.reserveProjectExternalOperation(

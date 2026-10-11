@@ -231,6 +231,9 @@ type Store interface {
 	SaveAssistantRunSnapshot(ctx context.Context, scope Scope, run AssistantRun, messages []Message, expectedRevision int64) error
 	ClaimAssistantRun(ctx context.Context, scope Scope, id string, requestID string, now time.Time) (AssistantRun, error)
 	GetAssistantRun(ctx context.Context, scope Scope, id string) (AssistantRun, error)
+	// FindAssistantRunByClientRequestID resolves idempotency only for the
+	// legacy lane whose ThreadID is empty. Use
+	// FindAssistantRunByThreadClientRequestID for thread-owned runs.
 	FindAssistantRunByClientRequestID(ctx context.Context, scope Scope, clientRequestID string) (AssistantRun, error)
 	// FindAssistantRunByThreadClientRequestID resolves submission idempotency
 	// within one canonical assistant thread. Client request IDs may be reused

@@ -317,7 +317,7 @@ func TestProjectAssistantSupervisorStopDeletesSuspendedSandboxAndAllowsFreshRun(
 	}
 	stopCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	stopped, ok, err := server.projectAssistantSupervisor().StopWithIdentity(stopCtx, id, scope, run.ID)
+	stopped, ok, err := server.projectAssistantSupervisor().StopWithIdentity(stopCtx, id, scope, run.ID, run.ThreadID)
 	if err != nil || !ok || stopped.Status != store.AssistantRunStatusInterrupted {
 		t.Fatalf("StopWithIdentity = run=%#v stopped=%t err=%v", stopped, ok, err)
 	}

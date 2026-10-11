@@ -1397,16 +1397,14 @@ func (s *Server) acquireProjectAssistantOrphanRecoveryFence(ctx context.Context,
 	}
 
 	threadID := strings.TrimSpace(run.ThreadID)
-	if threadID != "" {
-		held, err := claim(store.AssistantThreadClaimKey(scope, threadID), "thread-reservation")
-		if err != nil {
-			release()
-			return nil, false, fmt.Errorf("claim assistant thread for orphan recovery: %w", err)
-		}
-		if !held {
-			release()
-			return nil, false, nil
-		}
+	held, err := claim(store.AssistantThreadClaimKey(scope, threadID), "thread-reservation")
+	if err != nil {
+		release()
+		return nil, false, fmt.Errorf("claim assistant thread for orphan recovery: %w", err)
+	}
+	if !held {
+		release()
+		return nil, false, nil
 	}
 	if held, err := claim(store.AssistantRunClaimKey(scope, threadID, run.ID), run.ID); err != nil {
 		release()
@@ -1425,16 +1423,14 @@ func (s *Server) acquireProjectAssistantOrphanRecoveryFence(ctx context.Context,
 		}
 		return ok && current.OwnerReplica == ownerReplica && current.Detail == detail && current.Live(time.Now().UTC(), assistantActivityClaimTTL), nil
 	}
-	if threadID != "" {
-		held, err := verify(store.AssistantThreadClaimKey(scope, threadID), "thread-reservation")
-		if err != nil {
-			release()
-			return nil, false, fmt.Errorf("verify assistant thread recovery claim: %w", err)
-		}
-		if !held {
-			release()
-			return nil, false, nil
-		}
+	held, err = verify(store.AssistantThreadClaimKey(scope, threadID), "thread-reservation")
+	if err != nil {
+		release()
+		return nil, false, fmt.Errorf("verify assistant thread recovery claim: %w", err)
+	}
+	if !held {
+		release()
+		return nil, false, nil
 	}
 	if held, err := verify(store.AssistantRunClaimKey(scope, threadID, run.ID), run.ID); err != nil {
 		release()

@@ -13,7 +13,8 @@ POLICIES = {
         "always": {"govulncheck", "verify-boilerplate", "verify-portalkit",
                    "verify-ui-conformance", "verify-design-docs",
                    "verify-tilt-browser-deployment", "provider-portals", "verify-ci-selection"},
-        "full": {"build", "test-modules", "lint", "verify-codegen", "portal"},
+        "full": {"build", "test-modules", "test-app-studio-postgres",
+                 "lint", "verify-codegen", "portal"},
     },
     "e2e": {
         "always": set(),

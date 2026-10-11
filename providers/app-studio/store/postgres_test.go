@@ -118,17 +118,55 @@ func TestAssistantRunThreadMigrationExternalDSN(t *testing.T) {
 			t.Fatalf("seed legacy run schema: %v", err)
 		}
 	}
+	for _, statement := range []string{
+		`INSERT INTO app_studio_assistant_runs
+			(org_uuid,workspace_uuid,project_name,project_uid,run_id,mode,approval_mode,status,client_request_id,created_at,updated_at)
+			SELECT 'org-a','ws-a','project','uid-a','run-scale-' || run_number::text,'default','on_request','completed',
+				'request-scale-' || run_number::text,now(),now()
+			FROM generate_series(1,10000) AS series(run_number)`,
+		`INSERT INTO app_studio_assistant_turns
+			(org_uuid,workspace_uuid,project_name,project_uid,thread_id,turn_id)
+			SELECT 'org-a','ws-a','project','uid-a','thread-scale-' || turn_number::text,
+				'run-scale-' || turn_number::text
+			FROM generate_series(1,8000) AS series(turn_number)`,
+		`INSERT INTO app_studio_assistant_turns
+			(org_uuid,workspace_uuid,project_name,project_uid,thread_id,turn_id)
+			SELECT 'org-a','ws-a','project','uid-a','thread-scale-a-' || turn_number::text,
+				'run-scale-' || turn_number::text
+			FROM generate_series(8001,9000) AS series(turn_number)
+			UNION ALL
+			SELECT 'org-a','ws-a','project','uid-a','thread-scale-b-' || turn_number::text,
+				'run-scale-' || turn_number::text
+			FROM generate_series(8001,9000) AS series(turn_number)`,
+	} {
+		if _, err := schemaDB.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("seed scaled run-thread migration fixture: %v", err)
+		}
+	}
+	var runFixtureRows, turnFixtureRows int
+	if err := schemaDB.QueryRowContext(ctx, `SELECT count(*) FROM app_studio_assistant_runs`).Scan(&runFixtureRows); err != nil {
+		t.Fatalf("count fixture runs: %v", err)
+	}
+	if err := schemaDB.QueryRowContext(ctx, `SELECT count(*) FROM app_studio_assistant_turns`).Scan(&turnFixtureRows); err != nil {
+		t.Fatalf("count fixture turns: %v", err)
+	}
+	migrationStarted := time.Now()
 	tx, err := schemaDB.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin run thread migration: %v", err)
 	}
-	if err := ensureSchemaVersion(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadSchemaStatements()...); err != nil {
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadSchemaStatements()...); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("apply run thread migration: %v", err)
+	}
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadWriteFenceSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadWriteFenceSchemaStatements()...); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("apply run thread write fence: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit run thread migration: %v", err)
 	}
+	t.Logf("run-thread migration fixture: %d runs, %d turns; migration transaction %s", runFixtureRows, turnFixtureRows, time.Since(migrationStarted))
 
 	for runID, wantThread := range map[string]string{
 		"run-unique":    "thread-unique",
@@ -141,6 +179,32 @@ func TestAssistantRunThreadMigrationExternalDSN(t *testing.T) {
 		}
 		if got != wantThread {
 			t.Fatalf("migrated thread for %s = %q, want %q", runID, got, wantThread)
+		}
+	}
+	var scaledThreaded, scaledLegacy int
+	if err := schemaDB.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE thread_id <> ''), count(*) FILTER (WHERE thread_id = '')
+		FROM app_studio_assistant_runs WHERE run_id LIKE 'run-scale-%'`).Scan(&scaledThreaded, &scaledLegacy); err != nil {
+		t.Fatalf("count scaled migrated runs: %v", err)
+	}
+	if scaledThreaded != 8000 || scaledLegacy != 2000 {
+		t.Fatalf("scaled run mappings = threaded:%d legacy:%d, want threaded:8000 legacy:2000", scaledThreaded, scaledLegacy)
+	}
+	var threadIDDefault sql.NullString
+	if err := schemaDB.QueryRowContext(ctx, `SELECT column_default FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'app_studio_assistant_runs' AND column_name = 'thread_id'`).Scan(&threadIDDefault); err != nil {
+		t.Fatalf("inspect thread_id default after fresh migration: %v", err)
+	}
+	if threadIDDefault.Valid {
+		t.Fatalf("thread_id retained default %q after migration", threadIDDefault.String)
+	}
+	if _, err := schemaDB.ExecContext(ctx, `INSERT INTO app_studio_assistant_runs
+		(org_uuid,workspace_uuid,project_name,project_uid,run_id,mode,approval_mode,status,created_at,updated_at)
+		VALUES ('org-a','ws-a','project','uid-a','old-writer-insert','default','on_request','completed',now(),now())`); err == nil {
+		t.Fatal("old insert that omits thread_id succeeded after migration")
+	} else {
+		var postgresErr *pq.Error
+		if !errors.As(err, &postgresErr) || postgresErr.Code != "23502" || postgresErr.Column != "thread_id" {
+			t.Fatalf("old insert error = %v, want thread_id not-null violation", err)
 		}
 	}
 
@@ -158,6 +222,119 @@ func TestAssistantRunThreadMigrationExternalDSN(t *testing.T) {
 	}
 	if err := insertActive("run-thread-a-2", "thread-a"); err == nil {
 		t.Fatal("migration allowed a second active run in one thread")
+	}
+}
+
+func TestAssistantRunThreadWriteFenceMigrationForRecordedV1ExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx := context.Background()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	schemaName := fmt.Sprintf("app_studio_run_thread_fence_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer func() { _ = cleanupDB.Close() }()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+
+	schemaDB, err := sql.Open("postgres", postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatalf("open migration schema: %v", err)
+	}
+	defer func() { _ = schemaDB.Close() }()
+	for _, statement := range []string{
+		createMessageSchemaMigrationsTable,
+		`CREATE TABLE app_studio_assistant_runs (
+			org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
+			run_id text NOT NULL, thread_id text NOT NULL DEFAULT '', mode text NOT NULL, approval_mode text NOT NULL,
+			status text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+			PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, run_id)
+		)`,
+		`INSERT INTO app_studio_assistant_runs
+			(org_uuid,workspace_uuid,project_name,project_uid,run_id,mode,approval_mode,status,created_at,updated_at)
+			VALUES ('org-a','ws-a','project','uid-a','existing-v1-run','default','on_request','completed',now(),now())`,
+		`INSERT INTO app_studio_message_schema_migrations(version) VALUES ('assistant-run-thread-scope-v1')`,
+	} {
+		if _, err := schemaDB.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("seed v1 run-thread schema: %v", err)
+		}
+	}
+
+	tx, err := schemaDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin write-fence migration: %v", err)
+	}
+	var priorLockTimeout string
+	if err := tx.QueryRowContext(ctx, `SELECT set_config('lock_timeout', '1700ms', true)`).Scan(&priorLockTimeout); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("set prior lock_timeout: %v", err)
+	}
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadSchemaStatements()...); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("rerun recorded run-thread v1: %v", err)
+	}
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadWriteFenceSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadWriteFenceSchemaStatements()...); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("apply write-fence migration: %v", err)
+	}
+	var restoredLockTimeout string
+	if err := tx.QueryRowContext(ctx, `SELECT current_setting('lock_timeout')`).Scan(&restoredLockTimeout); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("read restored lock_timeout: %v", err)
+	}
+	if restoredLockTimeout != priorLockTimeout {
+		_ = tx.Rollback()
+		t.Fatalf("lock_timeout after migration = %q, want prior value %q", restoredLockTimeout, priorLockTimeout)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit write-fence migration: %v", err)
+	}
+
+	var existingThreadID string
+	if err := schemaDB.QueryRowContext(ctx, `SELECT thread_id FROM app_studio_assistant_runs WHERE run_id='existing-v1-run'`).Scan(&existingThreadID); err != nil {
+		t.Fatalf("read existing v1 run: %v", err)
+	}
+	if existingThreadID != "" {
+		t.Fatalf("write fence changed existing thread_id = %q, want legacy lane", existingThreadID)
+	}
+	var threadIDDefault sql.NullString
+	if err := schemaDB.QueryRowContext(ctx, `SELECT column_default FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'app_studio_assistant_runs' AND column_name = 'thread_id'`).Scan(&threadIDDefault); err != nil {
+		t.Fatalf("inspect thread_id default after v1 forward migration: %v", err)
+	}
+	if threadIDDefault.Valid {
+		t.Fatalf("thread_id retained default %q after v1 forward migration", threadIDDefault.String)
+	}
+	if _, err := schemaDB.ExecContext(ctx, `INSERT INTO app_studio_assistant_runs
+		(org_uuid,workspace_uuid,project_name,project_uid,run_id,mode,approval_mode,status,created_at,updated_at)
+		VALUES ('org-a','ws-a','project','uid-a','old-writer-insert','default','on_request','completed',now(),now())`); err == nil {
+		t.Fatal("old insert that omits thread_id succeeded after v1 forward migration")
+	} else {
+		var postgresErr *pq.Error
+		if !errors.As(err, &postgresErr) || postgresErr.Code != "23502" || postgresErr.Column != "thread_id" {
+			t.Fatalf("old insert error = %v, want thread_id not-null violation", err)
+		}
+	}
+
+	var writeFenceMarkers int
+	if err := schemaDB.QueryRowContext(ctx, `SELECT count(*) FROM app_studio_message_schema_migrations WHERE version=$1`, assistantRunThreadWriteFenceSchemaVersion).Scan(&writeFenceMarkers); err != nil {
+		t.Fatalf("inspect write-fence marker: %v", err)
+	}
+	if writeFenceMarkers != 1 {
+		t.Fatalf("write-fence markers = %d, want 1", writeFenceMarkers)
 	}
 }
 

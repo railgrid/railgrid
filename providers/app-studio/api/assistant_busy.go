@@ -46,7 +46,7 @@ func (s *Server) AssistantBusy(scope workspace.Scope) bool {
 	if s.assistantRunManager != nil && s.assistantRunManager.busy(key) {
 		return true
 	}
-	if s.assistantSupervisor != nil && s.assistantSupervisor.reserved(storeScope) {
+	if s.assistantSupervisor != nil && s.assistantSupervisor.anyReserved(storeScope) {
 		return true
 	}
 	if s.store == nil {

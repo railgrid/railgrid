@@ -39,6 +39,22 @@ import (
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
+type assistantClaimRenewRecordingStore struct {
+	store.Store
+	mu         sync.Mutex
+	renewedKey map[string]int
+}
+
+func (s *assistantClaimRenewRecordingStore) RenewReplicaClaim(ctx context.Context, key, ownerReplica string) (bool, error) {
+	s.mu.Lock()
+	if s.renewedKey == nil {
+		s.renewedKey = make(map[string]int)
+	}
+	s.renewedKey[key]++
+	s.mu.Unlock()
+	return s.Store.RenewReplicaClaim(ctx, key, ownerReplica)
+}
+
 func TestProjectAssistantSupervisorOwnsExecutionAfterStarterCancellation(t *testing.T) {
 	supervisor := newProjectAssistantSupervisor(context.Background(), store.NewMemoryStore())
 	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
@@ -68,7 +84,7 @@ func TestProjectAssistantSupervisorOwnsExecutionAfterStarterCancellation(t *test
 		t.Fatal("starter cancellation canceled server-owned execution")
 	case <-time.After(25 * time.Millisecond):
 	}
-	if !supervisor.Abort(scope, created.ID) {
+	if !supervisor.Abort(scope, created.ID, created.ThreadID) {
 		t.Fatal("Abort did not find active worker")
 	}
 	select {
@@ -303,8 +319,8 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 		t.Fatal(err)
 	}
 	<-started
-	defer supervisor.Abort(scope, run.ID)
-	accumulator := supervisor.accumulatorFor(scope, run.ID)
+	defer supervisor.Abort(scope, run.ID, run.ThreadID)
+	accumulator := supervisor.accumulatorFor(scope, run.ID, run.ThreadID)
 	if err := accumulator.UpdateMessage(context.Background(), "first partial", projectAssistantDurableMetadataForTransition(run, "Working", true, false, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +336,7 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 	}
 
 	updated, steeringMessage, _, handled, err := supervisor.EnqueueSteering(
-		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault,
+		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault, run.ThreadID,
 	)
 	if err != nil || !handled {
 		t.Fatalf("EnqueueSteering handled=%v err=%v", handled, err)
@@ -360,7 +376,7 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 	}
 	var steeringInput projectAssistantSteeringInput
 	select {
-	case input := <-supervisor.Steering(scope, run.ID):
+	case input := <-supervisor.Steering(scope, run.ID, run.ThreadID):
 		if input.MessageID != steeringMessage.ID || input.Content != steeringMessage.Content {
 			t.Fatalf("steering input = %#v", input)
 		}
@@ -368,7 +384,7 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 	default:
 		t.Fatal("steering input was not queued")
 	}
-	if err := supervisor.ActivateSteering(context.Background(), scope, run.ID, []projectAssistantSteeringInput{steeringInput}); err != nil {
+	if err := supervisor.ActivateSteering(context.Background(), scope, run.ID, []projectAssistantSteeringInput{steeringInput}, run.ThreadID); err != nil {
 		t.Fatalf("ActivateSteering: %v", err)
 	}
 	updated, err = memoryStore.GetAssistantRun(context.Background(), scope, run.ID)
@@ -390,18 +406,18 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 	}
 
 	replayed, replayedMessage, _, handled, err := supervisor.EnqueueSteering(
-		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault,
+		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault, run.ThreadID,
 	)
 	if err != nil || !handled || replayed.Revision != updated.Revision || replayedMessage.ID != steeringMessage.ID {
 		t.Fatalf("idempotent replay run=%#v message=%#v handled=%v err=%v", replayed, replayedMessage, handled, err)
 	}
 	if _, _, _, handled, err := supervisor.EnqueueSteering(
-		context.Background(), scope, run.ID, "other-user", "inject", "steer-other", store.AssistantRunModeDefault,
+		context.Background(), scope, run.ID, "other-user", "inject", "steer-other", store.AssistantRunModeDefault, run.ThreadID,
 	); !handled || !errors.Is(err, store.ErrAssistantRunConflict) {
 		t.Fatalf("cross-actor steering handled=%v err=%v, want conflict", handled, err)
 	}
 	if _, _, _, handled, err := supervisor.EnqueueSteering(
-		context.Background(), scope, "run-other", "test-user", "misdirected", "steer-other-run", store.AssistantRunModeDefault,
+		context.Background(), scope, "run-other", "test-user", "misdirected", "steer-other-run", store.AssistantRunModeDefault, run.ThreadID,
 	); handled || err != nil {
 		t.Fatalf("wrong-run steering handled=%v err=%v, want unhandled", handled, err)
 	}
@@ -410,7 +426,7 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 	supervisor.runs[key].steeringReceipts = map[string]store.Message{}
 	supervisor.mu.Unlock()
 	replayed, replayedMessage, _, handled, err = supervisor.EnqueueSteering(
-		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault,
+		context.Background(), scope, run.ID, "test-user", "also add tests", "steer-1", store.AssistantRunModeDefault, run.ThreadID,
 	)
 	if err != nil || !handled || replayed.Revision != updated.Revision || replayedMessage.ID != steeringMessage.ID {
 		t.Fatalf("reattached durable replay run=%#v message=%#v handled=%v err=%v", replayed, replayedMessage, handled, err)
@@ -419,11 +435,11 @@ func TestProjectAssistantSupervisorPersistsAndQueuesSteeringOnActiveRun(t *testi
 	if err != nil || len(persistedMessages.Items) != 4 {
 		t.Fatalf("durable replay duplicated messages: count=%d err=%v", len(persistedMessages.Items), err)
 	}
-	if !supervisor.SealSteering(scope, run.ID) {
+	if !supervisor.SealSteering(scope, run.ID, run.ThreadID) {
 		t.Fatal("SealSteering did not close an empty steering boundary")
 	}
 	_, _, _, handled, err = supervisor.EnqueueSteering(
-		context.Background(), scope, run.ID, "test-user", "too late", "steer-2", store.AssistantRunModeDefault,
+		context.Background(), scope, run.ID, "test-user", "too late", "steer-2", store.AssistantRunModeDefault, run.ThreadID,
 	)
 	if !handled || !errors.Is(err, store.ErrAssistantRunConflict) {
 		t.Fatalf("post-seal steering handled=%v err=%v, want conflict", handled, err)
@@ -496,6 +512,75 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 	}
 	if _, err := supervisor.Attach(scope, persisted, assistant); err != nil {
 		t.Fatalf("Attach: %v", err)
+	}
+}
+
+func TestProjectAssistantSupervisorLegacyReservationFencesCreateBeforeAttachAcrossReplicas(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	messageStore := &assistantClaimRenewRecordingStore{Store: inner}
+	starter := newProjectAssistantSupervisor(ctx, messageStore)
+	peer := newProjectAssistantSupervisor(ctx, messageStore)
+	starter.mu.Lock()
+	starter.replicaID = "starter-replica"
+	starter.mu.Unlock()
+	peer.mu.Lock()
+	peer.replicaID = "peer-replica"
+	peer.mu.Unlock()
+	t.Cleanup(func() {
+		for _, supervisor := range []*projectAssistantSupervisor{peer, starter} {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			supervisor.Shutdown(shutdownCtx)
+			cancel()
+		}
+	})
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	releaseReservation, err := starter.ReserveThread(scope, "")
+	if err != nil {
+		t.Fatalf("ReserveThread legacy lane: %v", err)
+	}
+	defer releaseReservation()
+	legacyThreadClaimKey := store.AssistantThreadClaimKey(scope, "")
+	if claim, ok, err := inner.GetReplicaClaim(ctx, legacyThreadClaimKey); err != nil || !ok || claim.Detail != "thread-reservation" {
+		t.Fatalf("legacy thread reservation = %#v, found=%v, err=%v", claim, ok, err)
+	}
+
+	// Exercise one heartbeat directly so the empty thread key must be renewed
+	// while the create-to-Attach reservation is live.
+	starter.renewActivityClaimsOnce()
+	messageStore.mu.Lock()
+	renewed := messageStore.renewedKey[legacyThreadClaimKey]
+	messageStore.mu.Unlock()
+	if renewed < 1 {
+		t.Fatalf("legacy thread reservation renewals = %d, want at least one", renewed)
+	}
+
+	now := time.Now().UTC()
+	run := store.AssistantRun{ID: "run-legacy-gap", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-legacy-gap", UserMessageID: "user-legacy-gap", ActiveMessageID: "assistant-legacy-gap", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "hello", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
+	created, err := inner.CreateAssistantRun(ctx, scope, user, assistant, run)
+	if err != nil {
+		t.Fatalf("CreateAssistantRun in legacy reservation window: %v", err)
+	}
+	server := NewWithWorkspace(nil, messageStore, nil, "", false)
+	server.assistantSupervisor = peer
+	if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope, created.ID); err != nil {
+		t.Fatalf("peer reconciliation during create-to-Attach window: %v", err)
+	}
+	persisted, err := inner.GetAssistantRun(ctx, scope, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != store.AssistantRunStatusRunning {
+		t.Fatalf("legacy run was interrupted before Attach: status=%q", persisted.Status)
+	}
+	if _, err := starter.Attach(scope, persisted, assistant); err != nil {
+		t.Fatalf("Attach legacy run: %v", err)
+	}
+	releaseReservation()
+	if claim, ok, err := inner.GetReplicaClaim(ctx, legacyThreadClaimKey); err != nil || ok {
+		t.Fatalf("legacy thread reservation after release = %#v, found=%v, err=%v; want released", claim, ok, err)
 	}
 }
 
@@ -718,7 +803,7 @@ func TestProjectAssistantSupervisorScopesLiveSnapshotMessages(t *testing.T) {
 	if _, err := supervisor.Attach(scope, run, message); err != nil {
 		t.Fatal(err)
 	}
-	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0)
+	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,7 +828,7 @@ func TestProjectAssistantSupervisorCoalescesSlowSubscriberSnapshots(t *testing.T
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	updates, unsubscribe, err := supervisor.Subscribe(scope, created.ID, 0)
+	updates, unsubscribe, err := supervisor.Subscribe(scope, created.ID, 0, created.ThreadID)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -830,7 +915,7 @@ func TestProjectAssistantSupervisorCursorAtTerminalRevisionCloses(t *testing.T) 
 		t.Fatalf("SetStatus: %v", err)
 	}
 
-	updates, unsubscribe, err := supervisor.Subscribe(scope, created.ID, created.Revision+1)
+	updates, unsubscribe, err := supervisor.Subscribe(scope, created.ID, created.Revision+1, created.ThreadID)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -895,7 +980,7 @@ func TestProjectAssistantSupervisorAbortCannotBeOverwrittenByLateCompletion(t *t
 		t.Fatalf("Start: %v", err)
 	}
 	acc := <-started
-	if !supervisor.Abort(scope, created.ID) {
+	if !supervisor.Abort(scope, created.ID, created.ThreadID) {
 		t.Fatal("Abort = false")
 	}
 	if err := acc.SetStatus(context.Background(), store.AssistantRunStatusCompleted); err != nil {
@@ -936,7 +1021,7 @@ func TestProjectAssistantSupervisorAbortPersistsAuditAndClearsPendingInterrupt(t
 		*current = updated
 		projectAssistantClearPendingInterruptMetadata(message, current.ID)
 		return nil
-	})
+	}, created.ThreadID)
 	if err != nil || !aborted {
 		t.Fatalf("AbortWith = (%v, %v), want (true, nil)", aborted, err)
 	}
@@ -1148,7 +1233,7 @@ func TestProjectAssistantSupervisorQueuesSteeringWhilePermissionIsPending(t *tes
 		t.Fatal(err)
 	}
 	queued, receipt, currentAssistant, handled, err := supervisor.EnqueueSteering(
-		context.Background(), scope, run.ID, "test-user", "also inspect tests", "steer-pending", store.AssistantRunModePlan,
+		context.Background(), scope, run.ID, "test-user", "also inspect tests", "steer-pending", store.AssistantRunModePlan, run.ThreadID,
 	)
 	if err != nil || !handled {
 		t.Fatalf("pending EnqueueSteering handled=%v err=%v", handled, err)
@@ -1157,7 +1242,7 @@ func TestProjectAssistantSupervisorQueuesSteeringWhilePermissionIsPending(t *tes
 		t.Fatalf("pending steering rotated output before resume: run=%#v assistant=%#v", queued, currentAssistant)
 	}
 	select {
-	case input := <-supervisor.Steering(scope, run.ID):
+	case input := <-supervisor.Steering(scope, run.ID, run.ThreadID):
 		if input.MessageID != receipt.ID || input.Content != "also inspect tests" {
 			t.Fatalf("queued pending steering = %#v", input)
 		}
@@ -1238,7 +1323,7 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updates, unsubscribe, err := supervisor.Subscribe(scope, created.ID, 0)
+	updates, unsubscribe, err := supervisor.Subscribe(scope, created.ID, 0, created.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1325,7 +1410,7 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0)
+	updates, unsubscribe, err := supervisor.Subscribe(scope, run.ID, 0, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1477,7 +1562,7 @@ func TestDoubleSnapshotPersistenceFailureDetachesRunForRecoveryAndUnblocksProjec
 		t.Fatalf("Start: %v", err)
 	}
 	<-workerStarted
-	accumulator := supervisor.accumulatorFor(scope, run.ID)
+	accumulator := supervisor.accumulatorFor(scope, run.ID, run.ThreadID)
 	if accumulator == nil {
 		t.Fatal("worker accumulator was not attached")
 	}
@@ -1859,7 +1944,7 @@ func TestProjectAssistantThreadMirrorPublishesPendingApproval(t *testing.T) {
 					}
 					if item.Status == "in_progress" && !approvalPublished {
 						approvalPublished = true
-						if _, stopped, stopErr := server.projectAssistantSupervisor().Stop(scope, run.ID); stopErr != nil || !stopped {
+						if _, stopped, stopErr := server.projectAssistantSupervisor().Stop(scope, run.ID, run.ThreadID); stopErr != nil || !stopped {
 							t.Fatalf("stop pending approval: stopped=%v err=%v", stopped, stopErr)
 						}
 					}
@@ -1919,7 +2004,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&started); err != nil {
 		t.Fatal(err)
 	}
-	updates, unsubscribe, err := server.projectAssistantSupervisor().Subscribe(scope, started.Turn.ID, 0)
+	updates, unsubscribe, err := server.projectAssistantSupervisor().Subscribe(scope, started.Turn.ID, 0, started.Turn.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2100,7 +2185,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	case <-time.After(time.Second):
 		t.Fatal("resumed worker did not publish plans")
 	}
-	updates, unsubscribe, err := server.projectAssistantSupervisor().Subscribe(scope, run.ID, 0)
+	updates, unsubscribe, err := server.projectAssistantSupervisor().Subscribe(scope, run.ID, 0, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2171,7 +2256,7 @@ type reservationObservingStore struct {
 
 func (s *reservationObservingStore) ListMessages(ctx context.Context, scope store.Scope, limit int, cursor string) (store.Page, error) {
 	if scope == s.scope {
-		if s.supervisor == nil || !s.supervisor.reserved(scope) {
+		if s.supervisor == nil || !s.supervisor.anyReserved(scope) {
 			return store.Page{}, errors.New("transcript read occurred before project reservation")
 		}
 		s.observedReservation = true

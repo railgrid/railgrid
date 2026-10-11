@@ -90,7 +90,7 @@ func TestTerminalToolResultSettlesWhileRunIsStopping(t *testing.T) {
 	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state); err != nil {
 		t.Fatal(err)
 	}
-	aborted, err := supervisor.AbortWith(scope, run.ID, nil)
+	aborted, err := supervisor.AbortWith(scope, run.ID, nil, run.ThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestProjectAssistantAbortPreservesComputedPreviewVerification(t *testing.T)
 		}
 		message.Metadata = projectAssistantMergeTerminalVerification(message.Metadata, verification)
 		return nil
-	}); err != nil {
+	}, run.ThreadID); err != nil {
 		t.Fatalf("AbortWith: %v", err)
 	}
 

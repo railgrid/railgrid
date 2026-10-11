@@ -329,9 +329,32 @@ unrelated conversation. PostgreSQL upgrades backfill a run's thread only when
 its canonical turn identifies exactly one thread; ambiguous historical mappings
 remain unresolved. Existing history can still be read, but thread-scoped controls
 refuse a run whose durable ownership does not match the requested thread.
-Drain and stop older App Studio writers before deploying this migration: old
-binaries assume project-wide run uniqueness and cannot safely share the upgraded
-run store with this release.
+Drain and stop every older App Studio writer before deploying this migration.
+Older binaries still update runs and apply controls using project-wide
+assumptions, so they cannot safely share the upgraded run store. New binaries
+always write `thread_id`, including an explicit empty string for legacy-lane
+runs. The migration removes the column default; an old insert that omits the
+field then fails with a not-null error instead of silently creating a run in
+the legacy lane.
+
+The run-thread v1 migration is atomic and blocking. It scans all canonical turn
+rows, backfills only uniquely mapped runs, and replaces the run uniqueness
+indexes in one schema transaction. PostgreSQL holds an exclusive lock on
+`app_studio_assistant_runs` until that transaction commits, blocking reads and
+writes to that table for the backfill and index rebuild. The migration limits
+each required table-lock wait to five seconds; if a lock cannot be acquired,
+startup fails and should be retried after draining writers. Once acquired, the
+lock remains held for the full migration, so there is no fixed duration
+guarantee. Before scheduling the upgrade, measure the target database with
+`SELECT count(*) FROM app_studio_assistant_runs` and
+`SELECT count(*) FROM app_studio_assistant_turns`, then size the maintenance
+window from a staging run with comparable counts. The real-PostgreSQL migration
+test exercises 10,003 run rows and 10,003 turn rows across unique, ambiguous,
+and unmatched mappings. The local disposable PostgreSQL run measured 343 ms
+for that transaction; this fixture is evidence for the migration path, not a
+production timing estimate. Databases that already recorded run-thread v1
+receive the forward write-fence migration, which drops the default without
+repeating the backfill or index swap.
 
 All threads retain one fenced project workspace owner. Stopping one turn does
 not stop its siblings, while deleting the project stops every active run.
