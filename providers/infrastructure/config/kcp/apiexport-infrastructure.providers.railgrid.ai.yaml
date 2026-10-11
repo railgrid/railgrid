@@ -48,7 +48,7 @@ spec:
       crd: {}
   - group: infrastructure.railgrid.ai
     name: templates
-    schema: v260925-87f1980f.templates.infrastructure.railgrid.ai
+    schema: v261011-10f49162.templates.infrastructure.railgrid.ai
     storage:
       crd: {}
   - group: infrastructure.railgrid.ai

@@ -247,21 +247,45 @@ schemas directly to the model. Arbitrary-code tools such as
 `browser_evaluate`/`browser_run_code` and the old aggregate inspection or
 interaction wrappers are not model-facing capabilities.
 
-App Studio requires the managed browser's verified isolation contract before
-opening a page: the pinned image and exact isolated configuration must match,
-and the running Deployment must report that configuration fully observed and
-ready through `status.mcpIsolationReady`. Template version alone is insufficient.
-The Infrastructure `browser` seed is version 0.2.0; existing installations must
-reconcile that template and its runtime before browser tools become available.
-Custom or stale backends without this proof fail closed. A process-local lock
-cannot safely separate shared browser state across App Studio replicas.
+App Studio requires Infrastructure's controller-published
+`Template.status.capabilities` entry `{name: "mcp.browser-session-isolation",
+version: "v1"}` before opening a page. It checks current Template and Instance
+readiness, object incarnations, matching template versions, and the Instance's
+runtime-derived `status.mcpIsolationReady`. Infrastructure owns validation of
+its image, deployment settings, and runtime proof; App Studio does not inspect
+the backend graph. Compatible template patch releases retain the same capability
+contract. Missing, stale, revoked, or deleting resources fail closed.
+
+Roll out the Infrastructure controller/schema and reconcile the Browser seed
+(version 0.2.0 or a compatible capability-bearing release) and its runtime before
+expecting browser tools to become available. Older Infrastructure installations
+do not publish the capability and therefore cannot enable these tools. The
+backend must provide context isolation itself; process-local locks cannot make
+an unverified backend safe across replicas.
 
 Browser contexts belong to the authenticated tenant/user, immutable Project
 UID, and thread, and survive successive turns in that thread. Backend instance
 replacement or template contract changes invalidate cached contexts and catalogs.
-Each provider process bounds contexts to eight per backend and closes idle
-contexts after five minutes. The managed browser has one replica with Recreate
-updates because an MCP session belongs to the process that created it.
+Managed browser admission uses a configurable per-backend deployment budget
+(`browser.sessionBudget`, default 8; `APP_STUDIO_BROWSER_SESSION_BUDGET`). Each
+replica admits `floor(budget / replicaCapacity)` contexts and closes idle contexts
+after five minutes. The chart sets `APP_STUDIO_REPLICA_COUNT` and
+`APP_STUDIO_BROWSER_REPLICA_CAPACITY`; `browser.replicaCapacity: 0` uses the
+rendered replica count. For external autoscaling, set the capacity to the maximum
+pod count before scaling. Invalid, undersized, or nonpositive allocations reject
+startup. For example, a budget of 8 with three replicas allows two contexts per
+replica, reserving the remainder. Recreate prevents old and new allocations from
+overlapping during chart updates.
+
+This is conservative allocation within one declared deployment, not a global
+browser-enforced quota. Additional deployments or processes must share the same
+budget allocation; scaling beyond the configured capacity is unsupported. A
+crashed process may leave remote sessions until backend cleanup. Temporary
+discovery MCP sessions are outside this long-lived managed-context allocation.
+The limit does
+not guarantee Chromium memory use: size the runtime for workload and budget,
+and lower the budget for heavy pages. The managed browser has one replica with
+Recreate updates because an MCP session belongs to the process that created it.
 
 The shared browser uses MCP initialize/initialized, a persistent GET event
 stream, POST tool calls, and DELETE session close. Interrupted GET streams are
@@ -271,8 +295,8 @@ handled separately from a transient event-stream disconnect. App Studio owns
 the preview-origin and private-preview handoff checks and captures immutable
 source evidence before and after browser observations. Evidence from a changed
 source revision cannot certify the newer project state. Interactions and history
-navigation get a trusted preflight plus post-call snapshot/tab safety checks. A failed preflight returns
-a typed `not_executed` receipt. If a page-changing action may have run but its
+navigation get a trusted preflight plus post-call snapshot/tab safety checks. A
+failed preflight returns a typed `not_executed` receipt. If a page-changing action may have run but its
 post-call safety check cannot verify the page, App Studio returns
 `outcome_unknown`; it never replays interactions or history navigation. Safe
 reads and validated explicit navigation within the preview may be retried once

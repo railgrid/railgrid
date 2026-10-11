@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260925-87f1980f.templates.infrastructure.railgrid.ai
+  name: v261011-10f49162.templates.infrastructure.railgrid.ai
 spec:
   group: infrastructure.railgrid.ai
   names:
@@ -703,6 +703,39 @@ spec:
                     from the Go interface.
                   type: boolean
               type: object
+            capabilities:
+              description: |-
+                Capabilities are contracts the Infrastructure controller has validated
+                against this Template's current desired state. Consumers may rely on a
+                capability only while ObservedGeneration and the Ready condition are
+                current for metadata.generation. A Template manifest cannot assert these
+                values; only the controller writes them.
+              items:
+                description: |-
+                  TemplateCapability is a versioned contract the Infrastructure controller
+                  proved for a Template. The capability is absent when its desired contract is
+                  invalid or its status is stale.
+                properties:
+                  name:
+                    description: Name identifies the behavior contract.
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  version:
+                    description: |-
+                      Version identifies the compatible semantics of the contract, independent
+                      of the Template's own release version.
+                    maxLength: 32
+                    pattern: ^v[1-9][0-9]*$
+                    type: string
+                required:
+                - name
+                - version
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - name
+              x-kubernetes-list-type: map
             conditions:
               description: |-
                 Conditions follows the standard Kubernetes conditions pattern.

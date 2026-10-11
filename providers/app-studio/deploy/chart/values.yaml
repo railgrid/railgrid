@@ -13,19 +13,11 @@ fullnameOverride: ""
 # the ledger's revision, rebuilds it from the last commit rather than serving
 # an empty workspace.
 #
-# Two things are still serialized only within one process, and both are
-# unchanged by Cut D.3:
-#
-#   1. The workspace's shared single-session Playwright Browser. One browser
-#      per WORKSPACE, owned and serialized inside one App Studio process, while
-#      project affinity can place two projects of the same workspace on
-#      different replicas. This is why replicaCount defaults to 1 and why the
-#      Deployment keeps `strategy: Recreate` (deployment.yaml) — an upgrade
-#      must not transiently run two pods against that browser. It is a default
-#      and a rollout strategy, not a guard: the chart renders more replicas.
-#   2. Coding-sandbox claims with assistant.runSandbox.mode=force. Those have
-#      no distributed CAS, so two replicas can both believe they own a sandbox.
-#      That one combination the chart still refuses outright.
+# Browser sessions are isolated per thread. The shared backend's managed-session
+# budget is divided by browser.replicaCapacity (defaults to replicaCount).
+# Recreate avoids overlapping old/new allocations during deployment changes.
+# Coding-sandbox claims with assistant.runSandbox.mode=force still require one
+# replica until they have distributed CAS.
 #
 # See docs/app-studio-replica-awareness.md.
 replicaCount: 1
@@ -42,7 +34,16 @@ image:
 # Preview inspection no longer runs a browser sidecar here. The assistant drives
 # the workspace's shared headless browser — the infrastructure provider's
 # Playwright MCP "browser" template, provisioned once per workspace by the Studio
-# reconciler — over the infrastructure data plane. Nothing to configure.
+# reconciler — over the infrastructure data plane.
+browser:
+  # Total managed contexts per shared browser across this deployment. Each
+  # replica receives floor(sessionBudget / replicaCapacity); unused remainder
+  # is reserved. Size the browser runtime for the chosen budget.
+  sessionBudget: 8
+  # 0 uses replicaCount. For external autoscaling, set this to the maximum pod
+  # count before scaling; values below replicaCount are rejected. This is
+  # deployment allocation, not a browser-enforced distributed quota.
+  replicaCapacity: 0
 
 serviceAccount:
   create: true

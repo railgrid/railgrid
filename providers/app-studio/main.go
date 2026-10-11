@@ -155,6 +155,9 @@ func runMainWith(args []string, initCmd func(context.Context) error, serve func(
 
 func runServe() {
 	port := envOr("PORT", "8081")
+	if _, err := api.ParseBrowserSessionCapacity(os.Getenv); err != nil {
+		log.Fatalf("browser session capacity: %v", err)
+	}
 	sandboxConfig, sandboxWarnings, err := api.ParseCodingSandboxConfig(os.Getenv)
 	if err != nil {
 		log.Fatalf("coding sandbox configuration: %v", err)

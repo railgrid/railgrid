@@ -75,6 +75,21 @@ var errBrowserMCPSessionGone = errors.New("preview browser MCP session was not f
 
 var errProjectAssistantBrowserIsolationUnverified = errors.New("preview browser session isolation is unverified; reconcile the managed isolated browser before use")
 
+type browserMCPResponseTooLargeError struct {
+	method string
+	limit  int64
+}
+
+func (err *browserMCPResponseTooLargeError) Error() string {
+	if err == nil {
+		return "preview browser response exceeded its size limit"
+	}
+	if err.method == "tools/call" {
+		return fmt.Sprintf("preview browser tools/call: response exceeded the %d-byte limit; the browser action may have been applied and its outcome is unverified", err.limit)
+	}
+	return fmt.Sprintf("preview browser %s: response exceeded the %d-byte limit", err.method, err.limit)
+}
+
 type browserMCPHTTPStatusError struct {
 	operation string
 	status    int
@@ -1283,7 +1298,8 @@ func (session *browserMCPSession) rpc(ctx context.Context, method string, params
 		SessionHeaderAfterHash:    projectAssistantBrowserTraceHash(session.currentSessionID()),
 		CallSite:                  "browserMCPSession.rpc",
 	})
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, projectAssistantPreviewInspectionMaxResponse))
+	const responseLimit = int64(projectAssistantPreviewInspectionMaxResponse)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 	if err != nil {
 		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
 			Event:       "rpc_error",
@@ -1296,6 +1312,19 @@ func (session *browserMCPSession) rpc(ctx context.Context, method string, params
 			CallSite:    "browserMCPSession.rpc",
 		})
 		return nil, err
+	}
+	if int64(len(raw)) > responseLimit {
+		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+			Event:       "rpc_error",
+			Role:        session.role,
+			SessionHash: session.traceSessionHash(),
+			RefHash:     projectAssistantBrowserTraceRef(session.ref),
+			Method:      method,
+			Status:      resp.StatusCode,
+			Reason:      "response_too_large",
+			CallSite:    "browserMCPSession.rpc",
+		})
+		return nil, &browserMCPResponseTooLargeError{method: method, limit: responseLimit}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("preview browser %s: status %d: %s", method, resp.StatusCode, browserMCPFirstLine(string(raw), ""))

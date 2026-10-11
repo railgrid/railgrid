@@ -38,25 +38,10 @@ var (
 )
 
 const (
-	managedBrowserTemplateName    = "browser"
-	managedBrowserTemplateVersion = "0.2.0"
-	managedBrowserImage           = "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804"
+	managedBrowserTemplateName            = "browser"
+	managedBrowserIsolationCapabilityName = "mcp.browser-session-isolation"
+	managedBrowserIsolationCapabilityV1   = "v1"
 )
-
-var managedBrowserArgs = []string{
-	"--port", "8931",
-	"--host", "0.0.0.0",
-	"--allowed-hosts", "*",
-	"--ignore-https-errors",
-	"--isolated",
-}
-
-// Keep these CEL expressions in lockstep with the browser Template's RGD.
-// The second is projected into each Instance only after kro observes the live
-// Deployment with its complete isolated-context contract and current replica.
-const managedBrowserDeploymentReadyExpression = `${deployment.status.observedGeneration == deployment.metadata.generation && deployment.spec.replicas == 1 && deployment.spec.strategy.type == "Recreate" && deployment.status.updatedReplicas == 1 && deployment.status.readyReplicas == 1 && deployment.status.availableReplicas == 1}`
-
-const managedBrowserIsolationStatusExpression = `${deployment.metadata.generation == deployment.status.observedGeneration && deployment.spec.replicas == 1 && deployment.spec.strategy.type == "Recreate" && deployment.status.updatedReplicas == 1 && deployment.status.readyReplicas == 1 && deployment.status.availableReplicas == 1 && deployment.spec.template.spec.containers.size() == 1 && !has(deployment.spec.template.spec.initContainers) && deployment.spec.template.spec.containers[0].image == "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804" && deployment.spec.template.spec.containers[0].args == ["--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"] && deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--isolated") && !deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--shared-browser-context") && !has(deployment.spec.template.spec.containers[0].command) && !has(deployment.spec.template.spec.containers[0].env) && !has(deployment.spec.template.spec.containers[0].envFrom) && !has(deployment.spec.template.spec.containers[0].lifecycle) && deployment.spec.template.spec.containers[0].readinessProbe.tcpSocket.port == 8931 && !has(deployment.spec.template.spec.containers[0].readinessProbe.exec) && !has(deployment.spec.template.spec.containers[0].readinessProbe.httpGet) && !has(deployment.spec.template.spec.containers[0].readinessProbe.grpc) && !has(deployment.spec.template.spec.containers[0].livenessProbe) && !has(deployment.spec.template.spec.containers[0].startupProbe) && deployment.spec.template.spec.containers[0].volumeMounts.size() == 1 && deployment.spec.template.spec.containers[0].volumeMounts[0].name == "dshm" && deployment.spec.template.spec.containers[0].volumeMounts[0].mountPath == "/dev/shm" && deployment.spec.template.spec.volumes.size() == 1 && deployment.spec.template.spec.volumes[0].name == "dshm" && deployment.spec.template.spec.volumes[0].emptyDir.medium == "Memory"}`
 
 // ensureSessionCR projects a freshly-created thread into a Session CR. The
 // Session reconciler mirrors status and purges the store on CR delete; the
@@ -291,7 +276,7 @@ func (s *Server) browserBackendRef(ctx context.Context, c *asclient.Client) (dat
 		return dataPlaneRef{}, false
 	}
 	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
-	if err != nil {
+	if err != nil || !st.GetDeletionTimestamp().IsZero() {
 		return dataPlaneRef{}, false
 	}
 	resource, name := studioBackendFromObject(st, "browser")
@@ -303,7 +288,7 @@ func (s *Server) browserBackendRef(ctx context.Context, c *asclient.Client) (dat
 		return ref, false
 	}
 	instance, err := c.Resource(tenant.InfrastructureInstancesResource, "").Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+	if err != nil || !instance.GetDeletionTimestamp().IsZero() {
 		return ref, false
 	}
 	ref.InstanceUID = string(instance.GetUID())
@@ -312,28 +297,36 @@ func (s *Server) browserBackendRef(ctx context.Context, c *asclient.Client) (dat
 		return ref, false
 	}
 	template, err := c.Resource(templateResource, "").Get(ctx, templateName, metav1.GetOptions{})
-	if err != nil {
+	if err != nil || !template.GetDeletionTimestamp().IsZero() {
 		return ref, false
 	}
 	ref.TemplateVersion, _, _ = unstructured.NestedString(template.Object, "spec", "version")
 	ref.TemplateGeneration = template.GetGeneration()
+	ref.TemplateUID = string(template.GetUID())
 	ref.IsolatedMCPContexts = browserMCPContextsAreIsolated(instance, template, st, ref)
 	return ref, ref.IsolatedMCPContexts
 }
 
 // browserMCPContextsAreIsolated requires fresh status at every layer. The
-// template check pins the desired contract as observed through the tenant
-// CachedResource; Instance status proves the controller observed this
-// Instance generation; and mcpIsolationReady is projected from Deployment
-// status. CachedResource replication is eventually consistent, so this is a
-// proof of the objects this request observed, not a synchronous read of the
-// provider workspace's latest Template edit.
+// Infrastructure controller owns the Template capability proof; Instance
+// status proves the current Template version and instance generation reached
+// Ready, while mcpIsolationReady remains the runtime-projected Deployment
+// proof. CachedResource replication is eventually consistent, so this checks
+// the exact object incarnations observed by this request.
 func browserMCPContextsAreIsolated(instance, template, studio *unstructured.Unstructured, ref dataPlaneRef) bool {
-	if instance == nil || template == nil || studio == nil || ref.Resource != "instances" || ref.Name != studioBrowserInstanceName || ref.InstanceUID == "" || ref.InstanceUID != string(instance.GetUID()) {
+	if instance == nil || template == nil || studio == nil || ref.Resource != "instances" || ref.Name != studioBrowserInstanceName || ref.InstanceUID == "" || ref.InstanceUID != string(instance.GetUID()) || ref.TemplateUID == "" || ref.TemplateUID != string(template.GetUID()) {
+		return false
+	}
+	if !instance.GetDeletionTimestamp().IsZero() || !template.GetDeletionTimestamp().IsZero() || !studio.GetDeletionTimestamp().IsZero() {
 		return false
 	}
 	version, found, err := unstructured.NestedString(template.Object, "spec", "version")
-	if err != nil || !found || ref.TemplateVersion != version || ref.TemplateGeneration != template.GetGeneration() {
+	if err != nil || !found || version == "" || ref.TemplateVersion != version || ref.TemplateGeneration <= 0 || ref.TemplateGeneration != template.GetGeneration() {
+		return false
+	}
+	templateGeneration := template.GetGeneration()
+	templateObservedGeneration, found, err := unstructured.NestedInt64(template.Object, "status", "observedGeneration")
+	if err != nil || !found || templateGeneration <= 0 || templateObservedGeneration != templateGeneration || !browserReadyConditionCurrent(template, templateGeneration) || !browserTemplateHasIsolationCapability(template) {
 		return false
 	}
 	browserRef, found, err := unstructured.NestedMap(studio.Object, "spec", "browser", "resourceRef")
@@ -356,7 +349,7 @@ func browserMCPContextsAreIsolated(instance, template, studio *unstructured.Unst
 		return false
 	}
 	templateVersion, found, err := unstructured.NestedString(instance.Object, "status", "templateVersion")
-	if err != nil || !found || templateVersion != managedBrowserTemplateVersion {
+	if err != nil || !found || templateVersion == "" || templateVersion != version {
 		return false
 	}
 	generation := instance.GetGeneration()
@@ -372,7 +365,24 @@ func browserMCPContextsAreIsolated(instance, template, studio *unstructured.Unst
 	if err != nil || !found || !isolationReady {
 		return false
 	}
-	return managedBrowserTemplateHasIsolatedContract(template)
+	return true
+}
+
+func browserTemplateHasIsolationCapability(template *unstructured.Unstructured) bool {
+	capabilities, found, err := unstructured.NestedSlice(template.Object, "status", "capabilities")
+	if err != nil || !found {
+		return false
+	}
+	for _, raw := range capabilities {
+		capability, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if capability["name"] == managedBrowserIsolationCapabilityName && capability["version"] == managedBrowserIsolationCapabilityV1 {
+			return true
+		}
+	}
+	return false
 }
 
 func browserReadyConditionCurrent(object *unstructured.Unstructured, generation int64) bool {
@@ -387,134 +397,6 @@ func browserReadyConditionCurrent(object *unstructured.Unstructured, generation 
 		}
 		observed, ok := condition["observedGeneration"].(int64)
 		return ok && observed == generation
-	}
-	return false
-}
-
-func managedBrowserTemplateHasIsolatedContract(template *unstructured.Unstructured) bool {
-	if template == nil || template.GetName() != managedBrowserTemplateName {
-		return false
-	}
-	generation := template.GetGeneration()
-	observedGeneration, found, err := unstructured.NestedInt64(template.Object, "status", "observedGeneration")
-	if err != nil || !found || generation <= 0 || observedGeneration != generation || !browserReadyConditionCurrent(template, generation) {
-		return false
-	}
-	backendName, found, err := unstructured.NestedString(template.Object, "status", "backend", "name")
-	if err != nil || !found || backendName != "kro" {
-		return false
-	}
-	backendReady, found, err := unstructured.NestedBool(template.Object, "status", "backend", "ready")
-	if err != nil || !found || !backendReady {
-		return false
-	}
-	version, found, err := unstructured.NestedString(template.Object, "spec", "version")
-	if err != nil || !found || version != managedBrowserTemplateVersion {
-		return false
-	}
-	backend, found, err := unstructured.NestedString(template.Object, "spec", "backend")
-	if err != nil || !found || backend != "kro" {
-		return false
-	}
-	resources, found, err := unstructured.NestedSlice(template.Object, "spec", "backendConfig", "resources")
-	if err != nil || !found {
-		return false
-	}
-	deploymentCount := 0
-	for _, raw := range resources {
-		resource, ok := raw.(map[string]any)
-		if ok && resource["id"] == "deployment" {
-			deploymentCount++
-		}
-	}
-	if deploymentCount != 1 {
-		return false
-	}
-	for _, raw := range resources {
-		resource, ok := raw.(map[string]any)
-		if !ok || resource["id"] != "deployment" {
-			continue
-		}
-		deploymentTemplate, found, err := unstructured.NestedMap(resource, "template")
-		if err != nil || !found || deploymentTemplate["apiVersion"] != "apps/v1" || deploymentTemplate["kind"] != "Deployment" {
-			return false
-		}
-		replicas, found, err := unstructured.NestedInt64(resource, "template", "spec", "replicas")
-		if err != nil || !found || replicas != 1 {
-			return false
-		}
-		strategy, found, err := unstructured.NestedString(resource, "template", "spec", "strategy", "type")
-		if err != nil || !found || strategy != "Recreate" {
-			return false
-		}
-		containers, found, err := unstructured.NestedSlice(resource, "template", "spec", "template", "spec", "containers")
-		if err != nil || !found || len(containers) != 1 {
-			return false
-		}
-		if _, found, _ := unstructured.NestedFieldNoCopy(resource, "template", "spec", "template", "spec", "initContainers"); found {
-			return false
-		}
-		container, ok := containers[0].(map[string]any)
-		if !ok {
-			return false
-		}
-		image, found, err := unstructured.NestedString(container, "image")
-		if err != nil || !found || image != managedBrowserImage {
-			return false
-		}
-		for _, override := range []string{"command", "env", "envFrom", "lifecycle", "livenessProbe", "startupProbe"} {
-			if _, found, _ := unstructured.NestedFieldNoCopy(container, override); found {
-				return false
-			}
-		}
-		readinessProbe, found, err := unstructured.NestedMap(container, "readinessProbe")
-		if err != nil || !found {
-			return false
-		}
-		readinessPort, found, err := unstructured.NestedInt64(readinessProbe, "tcpSocket", "port")
-		if err != nil || !found || readinessPort != 8931 {
-			return false
-		}
-		for _, override := range []string{"exec", "httpGet", "grpc"} {
-			if _, found, _ := unstructured.NestedFieldNoCopy(readinessProbe, override); found {
-				return false
-			}
-		}
-		mounts, found, err := unstructured.NestedSlice(container, "volumeMounts")
-		if err != nil || !found || len(mounts) != 1 {
-			return false
-		}
-		mount, ok := mounts[0].(map[string]any)
-		if !ok || mount["name"] != "dshm" || mount["mountPath"] != "/dev/shm" {
-			return false
-		}
-		volumes, found, err := unstructured.NestedSlice(resource, "template", "spec", "template", "spec", "volumes")
-		if err != nil || !found || len(volumes) != 1 {
-			return false
-		}
-		volume, ok := volumes[0].(map[string]any)
-		if !ok || volume["name"] != "dshm" {
-			return false
-		}
-		medium, found, err := unstructured.NestedString(volume, "emptyDir", "medium")
-		if err != nil || !found || medium != "Memory" {
-			return false
-		}
-		args, found, err := unstructured.NestedStringSlice(container, "args")
-		if err != nil || !found || len(args) != len(managedBrowserArgs) {
-			return false
-		}
-		for index := range args {
-			if args[index] != managedBrowserArgs[index] {
-				return false
-			}
-		}
-		readyWhen, found, err := unstructured.NestedStringSlice(resource, "readyWhen")
-		if err != nil || !found || len(readyWhen) != 1 || readyWhen[0] != managedBrowserDeploymentReadyExpression {
-			return false
-		}
-		isolationStatus, found, err := unstructured.NestedString(template.Object, "spec", "backendConfig", "status", "mcpIsolationReady")
-		return err == nil && found && isolationStatus == managedBrowserIsolationStatusExpression
 	}
 	return false
 }

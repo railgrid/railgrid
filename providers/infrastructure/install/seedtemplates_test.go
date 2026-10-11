@@ -33,6 +33,7 @@ import (
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/instancespec"
+	"github.com/railgrid/provider-infrastructure/internal/browsercontract"
 )
 
 var viteShimPattern = regexp.MustCompile(`printf '%s' '([^']+)' \| base64 -d`)
@@ -110,8 +111,8 @@ func TestBrowserTemplatePinsVerifiedPlaywrightImage(t *testing.T) {
 	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
 		t.Fatalf("decode browser template: %v", err)
 	}
-	if tmpl.Spec.Version != "0.2.0" {
-		t.Fatalf("browser template version = %q, want 0.2.0 for the isolated-context contract", tmpl.Spec.Version)
+	if tmpl.Spec.Version == "" {
+		t.Fatal("browser Template version is empty")
 	}
 
 	var backend map[string]any
@@ -229,6 +230,9 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 	if !ok {
 		t.Fatalf("browser deployment readyWhen = %#v, want string expression", readyWhen[0])
 	}
+	if got := normalizeBrowserCEL(unwrappedBrowserCEL(readyExpression)); got != normalizeBrowserCEL(browsercontract.BrowserDeploymentReadyCEL) {
+		t.Fatalf("browser Deployment readiness CEL = %q, want Infrastructure-owned proof %q", got, normalizeBrowserCEL(browsercontract.BrowserDeploymentReadyCEL))
+	}
 	for _, expected := range []string{
 		"deployment.status.observedGeneration == deployment.metadata.generation",
 		"deployment.spec.replicas == 1",
@@ -250,6 +254,12 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 	if !ok || isolationExpression == "" {
 		t.Fatalf("browser mcpIsolationReady mapping = %#v, want expression", status["mcpIsolationReady"])
 	}
+	if got := normalizeBrowserCEL(unwrappedBrowserCEL(isolationExpression)); got != normalizeBrowserCEL(browsercontract.BrowserMCPIsolationReadyCEL) {
+		t.Fatalf("browser runtime isolation CEL = %q, want Infrastructure-owned proof %q", got, normalizeBrowserCEL(browsercontract.BrowserMCPIsolationReadyCEL))
+	}
+	if !browsercontract.SupportsBrowserSessionIsolation(&tmpl) {
+		t.Fatal("seeded Browser Template did not pass the Infrastructure-owned capability validator")
+	}
 	for _, expected := range []string{
 		"deployment.metadata.generation == deployment.status.observedGeneration",
 		"deployment.spec.replicas == 1",
@@ -257,6 +267,15 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 		"deployment.status.updatedReplicas == 1",
 		"deployment.status.readyReplicas == 1",
 		"deployment.status.availableReplicas == 1",
+		"service.metadata.name == deployment.metadata.name",
+		"service.metadata.namespace == deployment.metadata.namespace",
+		"service.spec.type == \"ClusterIP\"",
+		"service.spec.selector == deployment.spec.selector.matchLabels",
+		"service.spec.selector == deployment.spec.template.metadata.labels",
+		"service.spec.ports.size() == 1",
+		"service.spec.ports[0].name == \"http\"",
+		"service.spec.ports[0].port == 8931",
+		"service.spec.ports[0].targetPort == 8931",
 		"deployment.spec.template.spec.containers.size() == 1",
 		"deployment.spec.template.spec.containers[0].image == \"mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804\"",
 		`deployment.spec.template.spec.containers[0].args == ["--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"]`,
@@ -281,7 +300,7 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 		}
 	}
 
-	environment, err := cel.NewEnv(cel.Variable("deployment", cel.DynType))
+	environment, err := cel.NewEnv(cel.Variable("deployment", cel.DynType), cel.Variable("service", cel.DynType))
 	if err != nil {
 		t.Fatalf("create CEL environment: %v", err)
 	}
@@ -294,9 +313,10 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 		t.Fatalf("create mcpIsolationReady program: %v", err)
 	}
 	for _, tc := range []struct {
-		name   string
-		mutate func(map[string]any)
-		want   bool
+		name          string
+		mutate        func(map[string]any)
+		mutateService func(map[string]any)
+		want          bool
 	}{
 		{name: "current isolated Deployment", want: true},
 		{name: "controller has not observed the current generation", mutate: func(deployment map[string]any) {
@@ -338,13 +358,26 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 		{name: "not fully available", mutate: func(deployment map[string]any) {
 			deployment["status"].(map[string]any)["availableReplicas"] = int64(0)
 		}},
+		{name: "Service selector no longer matches isolated Deployment", mutateService: func(service map[string]any) {
+			service["spec"].(map[string]any)["selector"].(map[string]any)["app"] = "other"
+		}},
+		{name: "Service port drift", mutateService: func(service map[string]any) {
+			service["spec"].(map[string]any)["ports"].([]any)[0].(map[string]any)["port"] = int64(8932)
+		}},
+		{name: "Service target port drift", mutateService: func(service map[string]any) {
+			service["spec"].(map[string]any)["ports"].([]any)[0].(map[string]any)["targetPort"] = int64(8932)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			deployment := browserIsolationDeployment(7, 7)
+			service := browserIsolationService()
 			if tc.mutate != nil {
 				tc.mutate(deployment)
 			}
-			result, _, err := program.Eval(map[string]any{"deployment": deployment})
+			if tc.mutateService != nil {
+				tc.mutateService(service)
+			}
+			result, _, err := program.Eval(map[string]any{"deployment": deployment, "service": service})
 			if err != nil {
 				t.Fatalf("evaluate mcpIsolationReady expression: %v", err)
 			}
@@ -356,9 +389,144 @@ func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
 	}
 }
 
+func TestBrowserIsolationCapabilityValidatorFailsClosedOnProofDrift(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/browser.yaml")
+	if err != nil {
+		t.Fatalf("read browser template: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		mutateSpec func(*infrav1alpha1.Template, map[string]any)
+		want       bool
+	}{
+		{name: "compatible patch release", mutateSpec: func(tmpl *infrav1alpha1.Template, _ map[string]any) {
+			tmpl.Spec.Version = "0.2.1"
+		}, want: true},
+		{name: "mutable image", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			browserIsolationContainer(browserIsolationTemplateDeployment(t, backend))["image"] = "mcr.microsoft.com/playwright/mcp:latest"
+		}},
+		{name: "shared context argument", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			browserIsolationContainer(browserIsolationTemplateDeployment(t, backend))["args"] = []any{"--isolated", "--shared-browser-context"}
+		}},
+		{name: "changed deployment readiness proof", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			resource := browserIsolationTemplateResource(t, backend)
+			resource["readyWhen"] = []any{"${true}"}
+		}},
+		{name: "changed runtime isolation proof", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			backend["status"].(map[string]any)["mcpIsolationReady"] = "${true}"
+		}},
+		{name: "proxy uses alternate Service status path", mutateSpec: func(tmpl *infrav1alpha1.Template, _ map[string]any) {
+			endpoint := tmpl.Spec.DataPlane.Endpoints["proxy"]
+			endpoint.ServicePath = "status.otherServiceRef"
+			tmpl.Spec.DataPlane.Endpoints["proxy"] = endpoint
+		}},
+		{name: "proxy status points at alternate Service", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			backend["status"].(map[string]any)["serviceRef"].(map[string]any)["name"] = "${otherService.metadata.name}"
+		}},
+		{name: "Service selector drift", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			service := browserIsolationTemplateResourceByID(t, backend, "service")
+			service["template"].(map[string]any)["spec"].(map[string]any)["selector"].(map[string]any)["app"] = "other"
+		}},
+		{name: "additional Deployment matches browser Service", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			deployment := browserIsolationTemplateResourceByID(t, backend, "oauthDeployment")
+			podTemplate := deployment["template"].(map[string]any)["spec"].(map[string]any)["template"].(map[string]any)
+			podTemplate["metadata"].(map[string]any)["labels"].(map[string]any)["app"] = "${schema.spec.name}"
+		}},
+		{name: "whitespace CEL expression could match browser Service", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			deployment := browserIsolationTemplateResourceByID(t, backend, "oauthDeployment")
+			podTemplate := deployment["template"].(map[string]any)["spec"].(map[string]any)["template"].(map[string]any)
+			podTemplate["metadata"].(map[string]any)["labels"].(map[string]any)["app"] = "${ schema.spec.name }"
+		}},
+		{name: "additional shared-context Deployment", mutateSpec: func(_ *infrav1alpha1.Template, backend map[string]any) {
+			deployment := browserIsolationTemplateResourceByID(t, backend, "deployment")
+			duplicate := jsonValueCopy(t, deployment)
+			duplicate["id"] = "sharedContextDeployment"
+			backend["resources"] = append(backend["resources"].([]any), duplicate)
+		}},
+		{name: "wrong backend", mutateSpec: func(tmpl *infrav1alpha1.Template, _ map[string]any) {
+			tmpl.Spec.Backend = "stub"
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var tmpl infrav1alpha1.Template
+			if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+				t.Fatalf("decode browser template: %v", err)
+			}
+			var backend map[string]any
+			if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+				t.Fatalf("decode browser backendConfig: %v", err)
+			}
+			tc.mutateSpec(&tmpl, backend)
+			tmpl.Spec.BackendConfig.Raw, err = json.Marshal(backend)
+			if err != nil {
+				t.Fatalf("encode mutated browser backendConfig: %v", err)
+			}
+			if got := browsercontract.SupportsBrowserSessionIsolation(&tmpl); got != tc.want {
+				t.Fatalf("Infrastructure browser isolation capability = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func browserIsolationTemplateDeployment(t *testing.T, backend map[string]any) map[string]any {
+	t.Helper()
+	resource := browserIsolationTemplateResource(t, backend)
+	deployment, ok := resource["template"].(map[string]any)
+	if !ok {
+		t.Fatalf("browser Deployment template = %#v", resource["template"])
+	}
+	return deployment
+}
+
+func browserIsolationTemplateResource(t *testing.T, backend map[string]any) map[string]any {
+	return browserIsolationTemplateResourceByID(t, backend, "deployment")
+}
+
+func browserIsolationTemplateResourceByID(t *testing.T, backend map[string]any, id string) map[string]any {
+	t.Helper()
+	resources, ok := backend["resources"].([]any)
+	if !ok {
+		t.Fatalf("browser backend resources = %#v", backend["resources"])
+	}
+	for _, raw := range resources {
+		resource, ok := raw.(map[string]any)
+		if !ok || resource["id"] != id {
+			continue
+		}
+		return resource
+	}
+	t.Fatalf("browser resource %q is missing", id)
+	return nil
+}
+
+func jsonValueCopy(t *testing.T, value map[string]any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal fixture copy: %v", err)
+	}
+	var copied map[string]any
+	if err := json.Unmarshal(encoded, &copied); err != nil {
+		t.Fatalf("unmarshal fixture copy: %v", err)
+	}
+	return copied
+}
+
+func unwrappedBrowserCEL(expression string) string {
+	expression = strings.TrimSpace(expression)
+	return strings.TrimSuffix(strings.TrimPrefix(expression, "${"), "}")
+}
+
+func normalizeBrowserCEL(expression string) string {
+	return strings.Join(strings.Fields(expression), " ")
+}
+
 func browserIsolationDeployment(generation, observedGeneration int64) map[string]any {
 	return map[string]any{
-		"metadata": map[string]any{"generation": generation},
+		"metadata": map[string]any{"name": "browser", "namespace": "tenant-runtime", "generation": generation},
 		"status": map[string]any{
 			"observedGeneration": observedGeneration,
 			"updatedReplicas":    int64(1),
@@ -368,14 +536,31 @@ func browserIsolationDeployment(generation, observedGeneration int64) map[string
 		"spec": map[string]any{
 			"replicas": int64(1),
 			"strategy": map[string]any{"type": "Recreate"},
-			"template": map[string]any{"spec": map[string]any{
-				"containers": []any{map[string]any{
-					"image":          "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804",
-					"args":           []any{"--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"},
-					"readinessProbe": map[string]any{"tcpSocket": map[string]any{"port": int64(8931)}},
-					"volumeMounts":   []any{map[string]any{"name": "dshm", "mountPath": "/dev/shm"}},
-				}},
-				"volumes": []any{map[string]any{"name": "dshm", "emptyDir": map[string]any{"medium": "Memory"}}},
+			"selector": map[string]any{"matchLabels": map[string]any{"app": "${schema.spec.name}"}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": map[string]any{"app": "${schema.spec.name}"}},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{
+						"image":          "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804",
+						"args":           []any{"--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"},
+						"readinessProbe": map[string]any{"tcpSocket": map[string]any{"port": int64(8931)}},
+						"volumeMounts":   []any{map[string]any{"name": "dshm", "mountPath": "/dev/shm"}},
+					}},
+					"volumes": []any{map[string]any{"name": "dshm", "emptyDir": map[string]any{"medium": "Memory"}}},
+				},
+			},
+		},
+	}
+}
+
+func browserIsolationService() map[string]any {
+	return map[string]any{
+		"metadata": map[string]any{"name": "browser", "namespace": "tenant-runtime"},
+		"spec": map[string]any{
+			"type":     "ClusterIP",
+			"selector": map[string]any{"app": "${schema.spec.name}"},
+			"ports": []any{map[string]any{
+				"name": "http", "port": int64(8931), "targetPort": int64(8931),
 			}},
 		},
 	}

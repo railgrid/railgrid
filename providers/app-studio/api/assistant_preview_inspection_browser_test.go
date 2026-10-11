@@ -290,6 +290,94 @@ func TestBrowserMCPSessionRejectsInvalidNegotiatedProtocolVersion(t *testing.T) 
 	}
 }
 
+func TestBrowserMCPSessionDetectsOversizedRPCResponses(t *testing.T) {
+	responseWithSize := func(size int) []byte {
+		raw := []byte(`{"jsonrpc":"2.0","id":2,"result":null}`)
+		if len(raw) > size {
+			t.Fatalf("test response base length %d exceeds requested size %d", len(raw), size)
+		}
+		return append(raw, []byte(strings.Repeat(" ", size-len(raw)))...)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		method       string
+		responseSize int
+		wantOverflow bool
+	}{
+		{name: "exact limit is accepted", method: "tools/list", responseSize: projectAssistantPreviewInspectionMaxResponse},
+		{name: "over limit is explicit and dispatched once", method: "tools/call", responseSize: projectAssistantPreviewInspectionMaxResponse + 1, wantOverflow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+			dispatchedCalls := 0
+			response := responseWithSize(tc.responseSize)
+			server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+				return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodGet {
+						return browserMCPTestEventStreamResponse(request), nil
+					}
+					if request.Method == http.MethodDelete {
+						recorder := httptest.NewRecorder()
+						recorder.WriteHeader(http.StatusNoContent)
+						return recorder.Result(), nil
+					}
+					var envelope struct {
+						Method string `json:"method"`
+					}
+					if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+						return nil, err
+					}
+					recorder := httptest.NewRecorder()
+					recorder.Header().Set("Content-Type", "application/json")
+					switch envelope.Method {
+					case "initialize":
+						recorder.Header().Set("Mcp-Session-Id", "response-size-session")
+						_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+					case "notifications/initialized":
+						recorder.WriteHeader(http.StatusAccepted)
+					case tc.method:
+						if envelope.Method == "tools/call" {
+							dispatchedCalls++
+						}
+						_, _ = recorder.Write(response)
+					default:
+						return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+					}
+					return recorder.Result(), nil
+				})}
+			}
+
+			session, err := server.newBrowserMCPSession(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"})
+			if err != nil {
+				t.Fatalf("new browser MCP session: %v", err)
+			}
+			t.Cleanup(session.close)
+
+			_, err = session.rpc(context.Background(), tc.method, map[string]any{"name": "browser_click"})
+			if !tc.wantOverflow {
+				if err != nil {
+					t.Fatalf("RPC at response limit failed: %v", err)
+				}
+				return
+			}
+			var overflowErr *browserMCPResponseTooLargeError
+			if !errors.As(err, &overflowErr) {
+				t.Fatalf("over-limit RPC error = %v, want typed response overflow", err)
+			}
+			if overflowErr.method != "tools/call" || overflowErr.limit != int64(projectAssistantPreviewInspectionMaxResponse) {
+				t.Fatalf("response overflow details = %#v", overflowErr)
+			}
+			if !strings.Contains(err.Error(), "may have been applied") || !strings.Contains(err.Error(), "outcome is unverified") {
+				t.Fatalf("response overflow error = %q, want explicit uncertain-action guidance", err)
+			}
+			if dispatchedCalls != 1 {
+				t.Fatalf("tools/call dispatches = %d, want exactly one", dispatchedCalls)
+			}
+		})
+	}
+}
+
 type testBrowserEventStreamBody struct {
 	payload   []byte
 	closed    chan struct{}

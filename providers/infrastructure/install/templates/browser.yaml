@@ -350,7 +350,13 @@ spec:
         # rollout before kro reports this resource ready. This closes the gap
         # where an old Ready condition could describe a pre-isolation pod.
         readyWhen:
-          - '${deployment.status.observedGeneration == deployment.metadata.generation && deployment.spec.replicas == 1 && deployment.spec.strategy.type == "Recreate" && deployment.status.updatedReplicas == 1 && deployment.status.readyReplicas == 1 && deployment.status.availableReplicas == 1}'
+          - >-
+            ${deployment.status.observedGeneration == deployment.metadata.generation &&
+            deployment.spec.replicas == 1 &&
+            deployment.spec.strategy.type == "Recreate" &&
+            deployment.status.updatedReplicas == 1 &&
+            deployment.status.readyReplicas == 1 &&
+            deployment.status.availableReplicas == 1}
 
       # The port is NAMED because the data-plane contract addresses it by name
       # (services/proxy takes <service>:<port-name>), not by number.
@@ -563,7 +569,7 @@ spec:
     # The data plane resolves its target through these paths, so they are part
     # of the contract, not decoration.
     #
-    # runtimeNamespace cannot be computed: ${schema.*} is forbidden in status by
+      # runtimeNamespace cannot be computed: ${schema.*} is forbidden in status by
     # this kro fork, and the namespace every resource declares ("default") is
     # remapped to the per-tenant runtime namespace by the backend anyway. So it
     # is read back off a resource that landed there — the same trick the
@@ -580,7 +586,44 @@ spec:
       # Template generations are current. Missing or stale Deployment fields
       # make it false or unavailable, so native browser use stays unavailable
       # until the proof reconciles.
-      mcpIsolationReady: ${deployment.metadata.generation == deployment.status.observedGeneration && deployment.spec.replicas == 1 && deployment.spec.strategy.type == "Recreate" && deployment.status.updatedReplicas == 1 && deployment.status.readyReplicas == 1 && deployment.status.availableReplicas == 1 && deployment.spec.template.spec.containers.size() == 1 && !has(deployment.spec.template.spec.initContainers) && deployment.spec.template.spec.containers[0].image == "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804" && deployment.spec.template.spec.containers[0].args == ["--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"] && deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--isolated") && !deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--shared-browser-context") && !has(deployment.spec.template.spec.containers[0].command) && !has(deployment.spec.template.spec.containers[0].env) && !has(deployment.spec.template.spec.containers[0].envFrom) && !has(deployment.spec.template.spec.containers[0].lifecycle) && deployment.spec.template.spec.containers[0].readinessProbe.tcpSocket.port == 8931 && !has(deployment.spec.template.spec.containers[0].readinessProbe.exec) && !has(deployment.spec.template.spec.containers[0].readinessProbe.httpGet) && !has(deployment.spec.template.spec.containers[0].readinessProbe.grpc) && !has(deployment.spec.template.spec.containers[0].livenessProbe) && !has(deployment.spec.template.spec.containers[0].startupProbe) && deployment.spec.template.spec.containers[0].volumeMounts.size() == 1 && deployment.spec.template.spec.containers[0].volumeMounts[0].name == "dshm" && deployment.spec.template.spec.containers[0].volumeMounts[0].mountPath == "/dev/shm" && deployment.spec.template.spec.volumes.size() == 1 && deployment.spec.template.spec.volumes[0].name == "dshm" && deployment.spec.template.spec.volumes[0].emptyDir.medium == "Memory"}
+      mcpIsolationReady: >-
+        ${deployment.metadata.generation == deployment.status.observedGeneration &&
+        deployment.spec.replicas == 1 &&
+        deployment.spec.strategy.type == "Recreate" &&
+        deployment.status.updatedReplicas == 1 &&
+        deployment.status.readyReplicas == 1 &&
+        deployment.status.availableReplicas == 1 &&
+        service.metadata.name == deployment.metadata.name &&
+        service.metadata.namespace == deployment.metadata.namespace &&
+        service.spec.type == "ClusterIP" &&
+        service.spec.selector == deployment.spec.selector.matchLabels &&
+        service.spec.selector == deployment.spec.template.metadata.labels &&
+        service.spec.ports.size() == 1 &&
+        service.spec.ports[0].name == "http" &&
+        service.spec.ports[0].port == 8931 &&
+        service.spec.ports[0].targetPort == 8931 &&
+        deployment.spec.template.spec.containers.size() == 1 &&
+        !has(deployment.spec.template.spec.initContainers) &&
+        deployment.spec.template.spec.containers[0].image == "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804" &&
+        deployment.spec.template.spec.containers[0].args == ["--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"] &&
+        deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--isolated") &&
+        !deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--shared-browser-context") &&
+        !has(deployment.spec.template.spec.containers[0].command) &&
+        !has(deployment.spec.template.spec.containers[0].env) &&
+        !has(deployment.spec.template.spec.containers[0].envFrom) &&
+        !has(deployment.spec.template.spec.containers[0].lifecycle) &&
+        deployment.spec.template.spec.containers[0].readinessProbe.tcpSocket.port == 8931 &&
+        !has(deployment.spec.template.spec.containers[0].readinessProbe.exec) &&
+        !has(deployment.spec.template.spec.containers[0].readinessProbe.httpGet) &&
+        !has(deployment.spec.template.spec.containers[0].readinessProbe.grpc) &&
+        !has(deployment.spec.template.spec.containers[0].livenessProbe) &&
+        !has(deployment.spec.template.spec.containers[0].startupProbe) &&
+        deployment.spec.template.spec.containers[0].volumeMounts.size() == 1 &&
+        deployment.spec.template.spec.containers[0].volumeMounts[0].name == "dshm" &&
+        deployment.spec.template.spec.containers[0].volumeMounts[0].mountPath == "/dev/shm" &&
+        deployment.spec.template.spec.volumes.size() == 1 &&
+        deployment.spec.template.spec.volumes[0].name == "dshm" &&
+        deployment.spec.template.spec.volumes[0].emptyDir.medium == "Memory"}
       # Read off the HTTPRoute, never off spec: ${schema.*} is forbidden in
       # status by this kro fork (the RGD is rejected outright), and the route
       # is includeWhen-gated — so this resolves only for an instance that

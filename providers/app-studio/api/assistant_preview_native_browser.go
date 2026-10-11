@@ -891,12 +891,21 @@ type projectAssistantBrowserSessionEntry struct {
 
 const projectAssistantBrowserSessionIdleTimeout = 5 * time.Minute
 
+type projectAssistantBrowserOwnerGate struct {
+	gate chan struct{}
+	refs int
+}
+
 type projectAssistantBrowserSessionManager struct {
-	mu          sync.Mutex
-	sessions    map[string]*projectAssistantBrowserSessionEntry
-	ownersByRef map[string]map[string]struct{}
-	handoffNow  func() time.Time
-	closed      bool
+	mu               sync.Mutex
+	sessions         map[string]*projectAssistantBrowserSessionEntry
+	ownersByRef      map[string]map[string]struct{}
+	handoffNow       func() time.Time
+	closed           bool
+	sessionLimit     int
+	limitErr         error
+	ownerGates       map[string]*projectAssistantBrowserOwnerGate
+	ownerGatesClosed chan struct{}
 	// catalogs is process-local schema metadata, not browser state. Keeping the
 	// successful tools/list result with the manager prevents a later discovery
 	// request from opening a second MCP session and deleting the active run's
@@ -909,8 +918,92 @@ const projectAssistantBrowserSessionLimitPerRef = 8
 // errProjectAssistantBrowserSessionBusy is returned when an exclusive browser
 // handoff would interrupt a call already using the current owner session.
 var errProjectAssistantBrowserSessionBusy = errors.New("shared browser is busy with an active managed browser session")
-var errProjectAssistantBrowserSessionLimit = errors.New("shared browser reached its per-workspace session limit")
+var errProjectAssistantBrowserSessionLimit = errors.New("shared browser reached this replica's allocated session limit")
 var errProjectAssistantBrowserSessionManagerClosed = errors.New("browser session manager is shut down")
+
+// lockOwnerContext serializes native calls that share one managed browser
+// owner. Verified isolated Browser contexts belong to independent MCP sessions,
+// so owners do not need to take turns on the whole endpoint. The owner key is
+// stable across Browser incarnation changes: a replacement cannot race a call
+// that is still using the prior incarnation.
+func (m *projectAssistantBrowserSessionManager) lockOwnerContext(ctx context.Context, owner browserSessionOwner) (func(), error) {
+	if m == nil {
+		return nil, errors.New("browser session manager is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key := owner.key()
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, errProjectAssistantBrowserSessionManagerClosed
+	}
+	if m.ownerGates == nil {
+		m.ownerGates = map[string]*projectAssistantBrowserOwnerGate{}
+	}
+	if m.ownerGatesClosed == nil {
+		m.ownerGatesClosed = make(chan struct{})
+	}
+	gate := m.ownerGates[key]
+	if gate == nil {
+		gate = &projectAssistantBrowserOwnerGate{gate: make(chan struct{}, 1)}
+		m.ownerGates[key] = gate
+	}
+	gate.refs++
+	shutdown := m.ownerGatesClosed
+	m.mu.Unlock()
+
+	releaseRef := func() {
+		m.mu.Lock()
+		if m.ownerGates[key] == gate {
+			gate.refs--
+			if gate.refs == 0 {
+				delete(m.ownerGates, key)
+			}
+		}
+		m.mu.Unlock()
+	}
+	contextErr := func() error {
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
+		return ctx.Err()
+	}
+	if err := contextErr(); err != nil {
+		releaseRef()
+		return nil, err
+	}
+	select {
+	case gate.gate <- struct{}{}:
+		if err := contextErr(); err != nil {
+			<-gate.gate
+			releaseRef()
+			return nil, err
+		}
+		m.mu.Lock()
+		closed := m.closed
+		m.mu.Unlock()
+		if closed {
+			<-gate.gate
+			releaseRef()
+			return nil, errProjectAssistantBrowserSessionManagerClosed
+		}
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-gate.gate
+				releaseRef()
+			})
+		}, nil
+	case <-ctx.Done():
+		releaseRef()
+		return nil, contextErr()
+	case <-shutdown:
+		releaseRef()
+		return nil, errProjectAssistantBrowserSessionManagerClosed
+	}
+}
 
 func (s *Server) rejectUnmanagedBrowserSession(id identity, ref dataPlaneRef) error {
 	if s == nil {
@@ -924,10 +1017,11 @@ func (s *Server) rejectUnmanagedBrowserSession(id identity, ref dataPlaneRef) er
 
 func newProjectAssistantBrowserSessionManager() *projectAssistantBrowserSessionManager {
 	manager := &projectAssistantBrowserSessionManager{
-		sessions:    map[string]*projectAssistantBrowserSessionEntry{},
-		ownersByRef: map[string]map[string]struct{}{},
-		handoffNow:  time.Now,
-		catalogs:    map[string][]projectMCPTool{},
+		sessions:     map[string]*projectAssistantBrowserSessionEntry{},
+		ownersByRef:  map[string]map[string]struct{}{},
+		handoffNow:   time.Now,
+		sessionLimit: projectAssistantBrowserSessionLimitPerRef,
+		catalogs:     map[string][]projectMCPTool{},
 	}
 	projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
 		Event:    "manager_create",
@@ -952,6 +1046,7 @@ func projectAssistantBrowserSessionCatalogKey(id identity, ref dataPlaneRef) str
 	parts := []string{
 		projectAssistantBrowserSessionScopeKey(id, ref),
 		ref.InstanceUID,
+		ref.TemplateUID,
 		ref.TemplateVersion,
 		fmt.Sprintf("%d", ref.TemplateGeneration),
 		fmt.Sprintf("isolated:%t", ref.IsolatedMCPContexts),
@@ -1152,6 +1247,10 @@ func (m *projectAssistantBrowserSessionManager) entryWithPolicy(owner browserSes
 		m.mu.Unlock()
 		return nil, errProjectAssistantBrowserSessionManagerClosed
 	}
+	if m.limitErr != nil {
+		m.mu.Unlock()
+		return nil, m.limitErr
+	}
 	if m.sessions == nil {
 		m.sessions = map[string]*projectAssistantBrowserSessionEntry{}
 	}
@@ -1212,7 +1311,7 @@ func (m *projectAssistantBrowserSessionManager) entryWithPolicy(owner browserSes
 		entryReason = "owner_handoff"
 	}
 	if entry == nil {
-		if ref.IsolatedMCPContexts && len(owners) >= projectAssistantBrowserSessionLimitPerRef {
+		if ref.IsolatedMCPContexts && len(owners) >= m.sessionLimit {
 			m.mu.Unlock()
 			for _, old := range stale {
 				closeProjectAssistantBrowserSessionEntry(old, entryReason, "projectAssistantBrowserSessionManager.entryWithPolicy")
@@ -1442,7 +1541,13 @@ func (m *projectAssistantBrowserSessionManager) closeAll() {
 		return
 	}
 	m.mu.Lock()
-	m.closed = true
+	if !m.closed {
+		m.closed = true
+		if m.ownerGatesClosed == nil {
+			m.ownerGatesClosed = make(chan struct{})
+		}
+		close(m.ownerGatesClosed)
+	}
 	entries := make([]*projectAssistantBrowserSessionEntry, 0, len(m.sessions))
 	for key, entry := range m.sessions {
 		m.detachLocked(key, entry)
@@ -1550,14 +1655,19 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 	if !ref.IsolatedMCPContexts {
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, errProjectAssistantBrowserIsolationUnverified)
 	}
-	// Each verified isolated context still runs one call at a time. The
-	// process-local lock also coordinates setup with discovery and compatibility
-	// browser flows in this provider replica.
-	unlockBrowser, err := lockBrowserInstanceContext(ctx, req.Identity.clusterID, ref)
+	manager := s.browserSessionManager()
+	if manager == nil {
+		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, errors.New("browser session manager is not configured"))
+	}
+	owner := s.nativeBrowserOwner(req)
+	// Calls for one owner share a tab context and must remain sequential. The
+	// manager gate is context-aware and lets other verified isolated owners
+	// use their independent contexts at the same time.
+	unlockOwner, err := manager.lockOwnerContext(ctx, owner)
 	if err != nil {
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, err)
 	}
-	defer unlockBrowser()
+	defer unlockOwner()
 	sourceFence, err := s.prepareProjectAssistantPreviewCurrent(ctx, req)
 	if err != nil {
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, err)
@@ -1574,11 +1684,18 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 	if err := validateProjectAssistantNativeBrowserArguments(name, args, preview.PreviewURL); err != nil {
 		return "", err
 	}
-	owner := s.nativeBrowserOwner(req)
-	manager := s.browserSessionManager()
-	if manager == nil {
-		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, errors.New("browser session manager is not configured"))
+	// Preview and workspace preparation can wait on builds, synchronization,
+	// or provider APIs. Refresh the verified Browser ref after that work, then
+	// take the endpoint lock only while registering the active manager entry.
+	ref, ok = s.resolveBrowserDataPlaneRef(ctx, req.Identity)
+	if !ok || !ref.IsolatedMCPContexts {
+		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, errProjectAssistantBrowserIsolationUnverified)
 	}
+	unlockBrowser, err := lockBrowserInstanceContext(ctx, req.Identity.clusterID, ref)
+	if err != nil {
+		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, err)
+	}
+	defer unlockBrowser()
 	entry, entryErr := manager.entryWithPolicy(owner, ref)
 	if entryErr != nil {
 		if errors.Is(entryErr, errProjectAssistantBrowserSessionLimit) || errors.Is(entryErr, errProjectAssistantBrowserSessionBusy) {
@@ -1592,6 +1709,10 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 	if !manager.begin(entry) {
 		return "", projectAssistantNativeBrowserPreflightFailureForAction(name, errors.New("browser session owner is no longer active"))
 	}
+	// The active manager entry now fences discovery and compatibility handoffs.
+	// Release the endpoint-wide route lock before any MCP work so other owners
+	// can use their verified isolated contexts concurrently.
+	unlockBrowser()
 	if err := sourceFence.validate(ctx); err != nil {
 		manager.end(entry)
 		manager.remove(owner, entry, "source_changed")
@@ -1606,6 +1727,10 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 			return "", callErr
 		}
 		return projectAssistantNativeBrowserOutcomeNotExecutedForCall(name, callErr, entry, "discarded"), nil
+	}
+	var responseTooLarge *browserMCPResponseTooLargeError
+	if errors.As(callErr, &responseTooLarge) {
+		return projectAssistantNativeBrowserOutcomeUnknownForCall(name, callErr, entry, "uncertain", "active"), nil
 	}
 	if errors.Is(callErr, errBrowserMCPSessionGone) {
 		// An authoritative event-stream 404/410 means the MCP server has already
@@ -1673,6 +1798,9 @@ func (s *Server) callProjectAssistantNativeBrowserToolRaw(ctx context.Context, r
 			return "", callErr
 		}
 		return projectAssistantNativeBrowserOutcomeNotExecutedForCall(name, callErr, entry, "discarded"), nil
+	}
+	if errors.As(callErr, &responseTooLarge) {
+		return projectAssistantNativeBrowserOutcomeUnknownForCall(name, callErr, entry, "uncertain", "active"), nil
 	}
 	if errors.Is(callErr, errBrowserMCPSessionGone) {
 		manager.invalidateSession(entry, "retry_event_stream_session_gone")

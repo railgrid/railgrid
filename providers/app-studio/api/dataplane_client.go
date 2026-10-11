@@ -76,6 +76,7 @@ type dataPlaneRef struct {
 	IsolatedMCPContexts bool
 	// Browser incarnation metadata prevents cached contexts crossing replacement or contract changes.
 	InstanceUID        string
+	TemplateUID        string
 	TemplateVersion    string
 	TemplateGeneration int64
 }

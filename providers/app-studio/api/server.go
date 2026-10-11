@@ -300,6 +300,11 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	s.browserSessions = newProjectAssistantBrowserSessionManager()
+	if capacity, err := ParseBrowserSessionCapacity(getenv); err != nil {
+		s.browserSessions.limitErr = err
+	} else {
+		s.browserSessions.sessionLimit = capacity.PerReplica
+	}
 	s.assistantSupervisor = newProjectAssistantSupervisor(parent, msgStore)
 	s.assistantSupervisor.server = s
 	s.runSandboxManager = newProjectAssistantSandboxManager()
