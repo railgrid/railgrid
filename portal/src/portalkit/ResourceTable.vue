@@ -36,10 +36,11 @@ type ResourceTableColumn = {
   /** Receives the table's remaining width and hosts row actions. */
   primary?: boolean
   /**
-   * Caps the primary value's width (a CSS length). Table auto-layout otherwise
-   * widens the column to fit a long nowrap label, pushing the other columns out
-   * of view; with a cap the value truncates at that width and discloses in full
-   * on hover or focus like any truncated name.
+   * Caps the rendered value's width (a CSS length). Every cell truncates with
+   * an ellipsis instead of widening the table: the primary column at whatever
+   * width the other columns leave it, a secondary column at
+   * `--k-table-cell-max-width` (32ch) by default. Set this to move either cap.
+   * A truncated value discloses in full on hover or focus.
    */
   maxWidth?: string
 }
@@ -322,6 +323,9 @@ const primaryValueStyle = computed(() => {
   const maxWidth = visibleColumns.value.find(column => column.key === primaryColumnKey.value)?.maxWidth
   return maxWidth ? { '--k-table-primary-max-width': maxWidth } : undefined
 })
+function cellValueStyle(column: ResourceTableColumn) {
+  return column.maxWidth ? { '--k-table-cell-max-width': column.maxWidth } : undefined
+}
 const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (selectionSurfaceVisible.value ? 1 : 0), 1))
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
 const staleMessageLive = computed(() => props.refreshMode === 'background' ? 'polite' : 'assertive')
@@ -732,10 +736,23 @@ function primaryValue(row: Record<string, unknown>): string {
   return value === null || value === undefined ? '' : String(value)
 }
 
+/**
+ * cellValue is the text a truncated secondary cell discloses: the column's
+ * fullValue when it has one, else the row's own scalar. A slot that renders
+ * something other than a scalar discloses nothing unless it names a fullValue.
+ */
+function cellValue(row: Record<string, unknown>, column: ResourceTableColumn): string {
+  const renderedValue = column.fullValue?.(row)
+  if (renderedValue !== null && renderedValue !== undefined) return String(renderedValue)
+  const value = row[column.key]
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
 function updatePrimaryOverflow(container: HTMLElement | null) {
   if (!container) return false
-  const value = container.querySelector<HTMLElement>('.k-table__primary-value')
-  if (!value) return false
+  // A primary cell truncates its value element; a secondary cell is itself
+  // the truncating box.
+  const value = container.querySelector<HTMLElement>('.k-table__primary-value') ?? container
   const overflows = value.scrollWidth > value.clientWidth + 1
   container.dataset.overflow = String(overflows)
   return overflows
@@ -1163,7 +1180,9 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                       <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                     </span>
                   </div>
-                  <slot v-else :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
+                  <div v-else class="k-table__cell-value" :style="cellValueStyle(col)" :data-full-value="cellValue(row, col)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
+                    <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
+                  </div>
                 </td>
               </tr>
               <slot name="after-row" :row="row" :column-count="renderedColumnCount" />

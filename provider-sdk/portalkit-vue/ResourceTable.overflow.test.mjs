@@ -50,9 +50,22 @@ test('current-page text remains readable on the accent tint in both themes', () 
   assert.match(styles, /\.k-table__page-indicator \{\s*background: var\(--color-accent-subtle[\s\S]*?color: var\(--color-accent-hover/)
 })
 
-test('a primary column can cap its width so a long value truncates with disclosure instead of widening the table', () => {
+test('the primary column fills the remaining width and truncates instead of widening the table', () => {
+  assert.match(styles, /\.k-table__cell--primary \{\s*max-width: 0;\s*min-width: 14rem;\s*width: 100%;\s*\}/)
+  assert.match(styles, /\.k-table__primary-value \{[\s\S]*?overflow: hidden;[\s\S]*?text-overflow: ellipsis;[\s\S]*?white-space: nowrap;[\s\S]*?\}/)
+})
+
+test('a column can cap its value width so a long value truncates with disclosure instead of widening the table', () => {
   assert.match(component, /maxWidth\?: string/)
   assert.equal((component.match(/class="k-table__primary-value" :style="primaryValueStyle"/g) ?? []).length, 2)
   assert.match(component, /'--k-table-primary-max-width': maxWidth/)
+  assert.match(component, /'--k-table-cell-max-width': column\.maxWidth/)
   assert.match(styles, /\.k-table__primary-value \{[\s\S]*?max-width: var\(--k-table-primary-max-width, none\);[\s\S]*?\}/)
+})
+
+test('secondary cells truncate at a default cap and disclose the full scalar on hover', () => {
+  assert.match(component, /<div v-else class="k-table__cell-value" :style="cellValueStyle\(col\)" :data-full-value="cellValue\(row, col\)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">/)
+  assert.doesNotMatch(component, /<slot v-else :name="col\.key"/)
+  assert.match(component, /\.k-table__primary-value'\) \?\? container/)
+  assert.match(styles, /\.k-table__cell-value \{\s*display: block;\s*max-width: var\(--k-table-cell-max-width, 32ch\);\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;\s*white-space: nowrap;\s*\}/)
 })
