@@ -166,10 +166,12 @@ selects, summaries, and other explicit controls remain independent. Resource
 names disclose full values in a viewport overlay only when actually truncated,
 using `fullValue(row)` when a slot label differs. A truncated secondary cell
 discloses the same way: the column's `fullValue`, else the row's scalar, else
-the text its slot rendered. A cell whose disclosable text is 24 characters or
-longer is a tab stop, so keyboard users disclose it on focus as mouse users
-do on hover; a control focused inside a secondary cell discloses the cell and
-keeps its focus ring unclipped. Any column
+the text its slot rendered. Cells are never tab stops: a focused row steps
+the disclosure through its truncated cells with the Left and Right arrow keys
+(the keys keep their default behaviour when nothing is truncated), so a long
+table gains no stops and a click or Enter on a cell still opens the row. A
+control focused inside a secondary cell discloses the cell and keeps its
+focus ring unclipped. Any column
 may set `maxWidth` (a CSS length) to move its cap: tighter than the remaining
 width for the primary column, or wider or narrower than 32ch for a secondary
 one whose values deserve it. Shared icon-only action buttons

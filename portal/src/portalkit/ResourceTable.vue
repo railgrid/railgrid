@@ -46,13 +46,6 @@ type ResourceTableColumn = {
 }
 
 const CLIENT_FILTER_DEBOUNCE_MS = 100
-/**
- * A secondary cell whose disclosable text is at least this long is a tab stop,
- * so a keyboard user can disclose it the way a mouse user hovers it. The cap
- * is 32ch, so shorter text almost never truncates; a stop that turns out not
- * to overflow simply shows no tooltip.
- */
-const CELL_DISCLOSURE_FOCUS_CHARS = 24
 const MAX_SKELETON_COLUMNS = 6
 const PRIMARY_TOOLTIP_GAP = 6
 const PRIMARY_TOOLTIP_VIEWPORT_MARGIN = 8
@@ -332,9 +325,6 @@ const primaryValueStyle = computed(() => {
 })
 function cellValueStyle(column: ResourceTableColumn) {
   return column.maxWidth ? { '--k-table-cell-max-width': column.maxWidth } : undefined
-}
-function cellFocusable(row: Record<string, unknown>, column: ResourceTableColumn): 0 | undefined {
-  return cellValue(row, column).length >= CELL_DISCLOSURE_FOCUS_CHARS ? 0 : undefined
 }
 const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length + (selectionSurfaceVisible.value ? 1 : 0), 1))
 const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
@@ -885,13 +875,33 @@ function syncPrimaryOverflow(event: MouseEvent) {
   void showPrimaryTooltip(event.currentTarget as HTMLElement | null)
 }
 
+/**
+ * stepRowDisclosure moves the disclosure tooltip to the next (or previous)
+ * truncated cell of a focused row: the keyboard counterpart of hovering a
+ * cell. The row stays the only tab stop, so a long table does not grow a
+ * stop per long cell, and a click or Enter on a cell still opens the row.
+ * Returns false when nothing in the row is truncated, so the key keeps its
+ * default behaviour.
+ */
+function stepRowDisclosure(row: HTMLElement, direction: 1 | -1): boolean {
+  const candidates = [
+    ...row.querySelectorAll<HTMLElement>('.k-table__primary-content, .k-table__cell-value'),
+  ].filter(container => updatePrimaryOverflow(container))
+  if (candidates.length === 0) return false
+  const current = activeTooltipAnchor ? candidates.indexOf(activeTooltipAnchor) : -1
+  const next = current < 0
+    ? (direction === 1 ? 0 : candidates.length - 1)
+    : (current + direction + candidates.length) % candidates.length
+  void showPrimaryTooltip(candidates[next]!)
+  return true
+}
+
 function syncRowPrimaryOverflow(event: FocusEvent) {
   const row = event.currentTarget as HTMLElement | null
   const target = event.target as Node | null
   if (target instanceof Element && target.closest('.k-table__selection-help')) return
-  // Focus on a secondary cell, or on a control inside one, discloses that
-  // cell; focus on the row itself or inside the primary cell discloses the
-  // primary value.
+  // A control focused inside a secondary cell discloses that cell; focus on
+  // the row itself or inside the primary cell discloses the primary value.
   const cell = target instanceof Element ? target.closest<HTMLElement>('.k-table__cell-value') : null
   if (cell && row?.contains(cell)) {
     void showPrimaryTooltip(cell)
@@ -975,6 +985,10 @@ function onRowClick(row: Record<string, unknown>, event?: MouseEvent | KeyboardE
 }
 
 function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
+  if ((event.key === 'ArrowRight' || event.key === 'ArrowLeft') && event.target === event.currentTarget) {
+    if (stepRowDisclosure(event.currentTarget as HTMLElement, event.key === 'ArrowRight' ? 1 : -1)) event.preventDefault()
+    return
+  }
   if (!props.interactive || event.repeat || isExplicitControlTarget(event)) return
   if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
   event.preventDefault()
@@ -1201,7 +1215,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                       <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                     </span>
                   </div>
-                  <div v-else class="k-table__cell-value" :style="cellValueStyle(col)" :data-full-value="cellValue(row, col)" :tabindex="cellFocusable(row, col)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
+                  <div v-else class="k-table__cell-value" :style="cellValueStyle(col)" :data-full-value="cellValue(row, col)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
                     <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                   </div>
                 </td>
