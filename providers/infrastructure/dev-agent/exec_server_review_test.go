@@ -288,6 +288,25 @@ func TestWriteExecStartErrorUsesTypedSourceConflict(t *testing.T) {
 	}
 }
 
+func TestWriteExecStartErrorEncodesTypedInvalidWorkdir(t *testing.T) {
+	err := fmt.Errorf("%w: workdir %q does not exist", errExecInvalidWorkdir, "generated")
+	response := httptest.NewRecorder()
+	(&statelessExecutor{}).writeExecStartError(response, err)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("content type = %q, want JSON", got)
+	}
+	var rejection execStartRejection
+	if err := json.Unmarshal(response.Body.Bytes(), &rejection); err != nil {
+		t.Fatalf("decode rejection %q: %v", response.Body.String(), err)
+	}
+	if rejection.RejectionCode != execRejectionInvalidWorkdir || !strings.Contains(rejection.Error, "does not exist") {
+		t.Fatalf("rejection = %+v, want typed code and diagnostic", rejection)
+	}
+}
+
 func TestStatelessExecutorClassifiesSourceFencesAcrossHelperProtocol(t *testing.T) {
 	validDigest, err := digestSyncFiles(nil)
 	if err != nil {

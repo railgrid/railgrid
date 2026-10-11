@@ -359,8 +359,38 @@ repeating the backfill or index swap.
 All threads retain one fenced project workspace owner. Stopping one turn does
 not stop its siblings, while deleting the project stops every active run.
 Project-wide external operations wait for all active threads and reserve the
-workspace before proceeding. Command execution changes and independent
-composer state are delivered in subsequent slices.
+workspace before proceeding. Independent composer state is delivered separately.
+
+Assistant commands use the selected Template's shared development component by
+default. Different threads can run commands concurrently within Infrastructure's
+bounded capacity; they share runtime files and installed dependencies. The
+component selects the working root, and `workdir` is relative to that root.
+Source changes belong in the versioned App Studio file tools; shared-runtime
+command changes remain runtime-local and are not written back to App Studio
+source.
+An explicitly enabled private coding sandbox retains its separate opt-in path.
+
+Each shared-runtime command carries the synchronized source revision and digest
+checked at launch. This is not filesystem snapshot isolation: another thread's
+sync may change files during execution. Results retain their dispatch revision
+and are marked stale when source changes or its revision cannot be checked, so
+success cannot certify the current source. Cancellation addresses the command's session, leaving sibling
+commands running; a cancellation request alone is not proof of process cleanup.
+
+A confirmed workdir rejection is reported as a pre-start blocker using the
+Infrastructure exec contract's `rejectionCode: invalid_workdir`. Error prose and
+process stderr never establish that execution did not start. Upgrade the
+Infrastructure provider and development agents to receive this classification;
+older runtimes remain compatible but return generic command errors. Pre-start
+blockers and unconfirmed starts do not receive stale-output annotations.
+
+Command dispatch keeps the original Project identity and runtime target across
+retries. Each START attempt revalidates them under the existing runtime-operation
+lease; the lease covers that request, not polling or process execution. This
+serializes launch with cooperating runtime operations on the same API instance.
+It is not an atomic transaction with external Kubernetes object edits. A target
+change stops retries, and an earlier unconfirmed START is canceled by its
+original request ID against the original target.
 
 File API writes can run alongside assistant turns under the same project owner.
 Creating a file requires `If-None-Match: *`; replacing or deleting a file

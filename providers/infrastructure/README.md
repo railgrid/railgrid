@@ -288,6 +288,14 @@ startup budget; upgrade the executor before relying on longer commands.
 
 ### Exec cancellation after a lost START response
 
+The exec contract reports a verified pre-start directory rejection with
+`rejectionCode: invalid_workdir`. Synchronous rejection uses HTTP 400 JSON with
+`error` and `rejectionCode`; an already accepted session retains HTTP 200 and
+its terminal `failed` result, session identity, and rejection code, with no
+`exitCode`. The coordinator persists the code for later polls. Clients must not
+infer this code from stderr or human-readable errors. Missing codes from older
+agents remain generic failures during a mixed-version rollout.
+
 App Studio can cancel an exec by its request ID when START fails ambiguously or
 returns no session ID. The infrastructure provider derives the same session ID
 as START from the authenticated caller, workspace, resource, instance,

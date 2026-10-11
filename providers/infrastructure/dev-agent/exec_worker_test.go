@@ -730,6 +730,93 @@ func TestCoordinatorStartRejectionOmitsExitCodeFromDurableResult(t *testing.T) {
 	}
 }
 
+func TestHTTPExecDispatcherUsesOnlyExplicitInvalidWorkdirCode(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantTyped bool
+	}{
+		{
+			name:      "explicit code",
+			body:      `{"rejectionCode":"invalid_workdir","error":"workdir does not exist"}`,
+			wantTyped: true,
+		},
+		{
+			name: "stderr-like text only",
+			body: `invalid_workdir: workdir does not exist`,
+		},
+		{
+			name: "error field text only",
+			body: `{"error":"invalid_workdir: workdir does not exist"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			dispatcher := &httpExecDispatcher{url: server.URL + "/internal/exec", client: server.Client()}
+			_, err := dispatcher.Start(context.Background(), persistentExecRequest{Argv: []string{"true"}})
+			if err == nil {
+				t.Fatal("dispatcher accepted a pre-start rejection")
+			}
+			if got := errors.Is(err, errExecInvalidWorkdir); got != tt.wantTyped {
+				t.Fatalf("typed invalid workdir = %v, want %v; error=%v", got, tt.wantTyped, err)
+			}
+		})
+	}
+}
+
+func TestCoordinatorPersistsInvalidWorkdirRejectionWithoutExitCode(t *testing.T) {
+	workspace := t.TempDir()
+	digest, err := digestSyncFiles(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecTestManifest(t, workspace, workspaceManifest{SourceRevision: 1, SourceDigest: digest})
+	executor := httptest.NewServer(&statelessExecutor{workspace: workspace, startExec: startPersistentExecHelper})
+	defer executor.Close()
+	coordinator, err := newExecCoordinator(workspace, t.TempDir(), "token", &httpExecDispatcher{
+		url: executor.URL + "/internal/exec", client: executor.Client(),
+	}, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testWorkerRequest()
+	req.WorkDir = "missing-workdir"
+	req.SourceDigest = digest
+	if result, err := coordinator.start(req); err != nil || result.State != "queued" {
+		t.Fatalf("start = %+v, %v; want queued", result, err)
+	}
+	poll := req
+	poll.Action = "poll"
+	result := waitForExecTestState(t, coordinator, poll, "failed")
+	waitForExecCoordinatorInactive(t, coordinator, req.SessionID)
+	if result.RejectionCode != execRejectionInvalidWorkdir {
+		t.Fatalf("terminal rejection code = %q, want %q; result=%+v", result.RejectionCode, execRejectionInvalidWorkdir, result)
+	}
+	if result.ExitCode != nil {
+		t.Fatalf("pre-start workdir rejection has exit code %d", *result.ExitCode)
+	}
+	if !strings.Contains(result.Stderr, "workdir") {
+		t.Fatalf("diagnostic = %q, want workdir detail", result.Stderr)
+	}
+
+	raw, err := os.ReadFile(coordinator.recordPath(req.SessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted execSessionRecord
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("decode durable session result: %v", err)
+	}
+	if persisted.Result.RejectionCode != execRejectionInvalidWorkdir || persisted.Result.ExitCode != nil {
+		t.Fatalf("durable result = %+v, want typed rejection without exit code", persisted.Result)
+	}
+}
+
 func waitForExecCoordinatorInactive(t *testing.T, coordinator *execCoordinator, sessionID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

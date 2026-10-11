@@ -1477,7 +1477,7 @@ func TestFormatProjectAssistantRuntimeVerificationSeparatesRepositoryHandoffFrom
 		RequireProcessEvidence:  true,
 		Readiness: &projectAssistantReadinessWorkflowResult{
 			Status:     "needs_repository",
-			Summary:    "Project Demo is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring and coding-environment execution remain available.",
+			Summary:    "Project Demo is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring remains available, and runtime commands use the shared development component when configured.",
 			Repository: &projectAssistantWorkflowRepo{Status: projectRepositoryStatusProvisioning},
 		},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -1616,7 +1616,7 @@ func TestFormatProjectAssistantReadinessUsesConversationalRepositorySummary(t *t
 		t.Fatalf("format readiness returned error: %v", err)
 	}
 	if result.Status != "needs_repository" ||
-		result.Summary != "Project Six String Shop is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring and coding-environment execution remain available." {
+		result.Summary != "Project Six String Shop is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring remains available, and runtime commands use the shared development component when configured." {
 		t.Fatalf("result = %#v, want conversational provisioning summary", result)
 	}
 }

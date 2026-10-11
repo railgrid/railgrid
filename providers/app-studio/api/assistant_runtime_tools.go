@@ -123,28 +123,28 @@ func projectAssistantRuntimeCallContext(ctx context.Context, runCtx projectAssis
 	return runCtx.Server, runCtx.Identity, target, nil
 }
 
-// projectAssistantRuntimeMutationCallContext refreshes the Project and its
-// development target after the caller owns the runtime operation lock. A
-// queued mutation uses the current component map and refuses a Project that
-// was deleted or recreated while it waited.
-func projectAssistantRuntimeMutationCallContext(
+// projectAssistantRuntimeValidatedCallContext refreshes the Project and
+// resolves its current development target against an immutable expected run
+// context. It does not acquire a runtime-operation lease; callers that need to
+// serialize this check with a local runtime mutation must hold that lease.
+func projectAssistantRuntimeValidatedCallContext(
 	ctx context.Context,
 	runCtx projectAssistantWorkflowRunContext,
 	expected projectAssistantWorkflowRunContext,
-) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
+) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult, error) {
 	current := runCtx.current()
-	unavailable := func(summary string) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
+	unavailable := func(summary string) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult, error) {
 		return current, nil, identity{}, projectDevelopmentSyncTargetInfo{}, &projectAssistantRuntimeWorkflowResult{
 			Status:    "unavailable",
 			Summary:   summary,
 			Runtime:   &projectAssistantDeploymentRuntime{Status: "unavailable", Message: summary},
 			Blockers:  []string{summary},
 			NextSteps: []string{"Reload the project and retry the runtime action."},
-		}
+		}, nil
 	}
 	if current.Server == nil || current.Client == nil || current.Project == nil {
 		result, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because no runtime client is configured for this run.")
-		return current, nil, identity{}, projectDevelopmentSyncTargetInfo{}, result
+		return current, nil, identity{}, projectDevelopmentSyncTargetInfo{}, result, nil
 	}
 	if expected.Project == nil || expected.Project.UID == "" ||
 		current.Server != expected.Server || current.Client != expected.Client ||
@@ -154,19 +154,59 @@ func projectAssistantRuntimeMutationCallContext(
 		current.Identity.orgUUID != expected.Identity.orgUUID ||
 		current.Identity.workspaceUUID != expected.Identity.workspaceUUID ||
 		current.Identity.user != expected.Identity.user {
-		return unavailable("The project context changed while the runtime action was waiting. Reload the project and retry.")
+		current, server, id, target, blocked, _ := unavailable("The project context changed while the runtime action was waiting. Reload the project and retry.")
+		return current, server, id, target, blocked, errProjectRuntimeOperationTargetChanged
 	}
 
 	project, err := refreshProjectRuntimeOperationProject(ctx, current.Client, expected.Project)
 	if err != nil {
-		return unavailable("Runtime action is unavailable because the current project could not be refreshed: " + err.Error())
+		current, server, id, target, blocked, _ := unavailable("Runtime action is unavailable because the current project could not be refreshed: " + err.Error())
+		return current, server, id, target, blocked, err
 	}
 	current.Project = project
-	// The current Project above was read after the lock was acquired. Keep
-	// projectAssistantRuntimeCallContext from replacing it with the older
-	// execution-context snapshot.
+	// Keep projectAssistantRuntimeCallContext from replacing the refreshed
+	// Project with an older execution-context snapshot.
 	current.ExecutionContext = nil
 	server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, current)
+	return current, server, id, target, blocked, nil
+}
+
+// projectAssistantRuntimeTargetInstanceUID returns the immutable instance
+// identity addressed by a runtime target. The resource name alone is not
+// sufficient: a same-name replacement can otherwise receive a delayed START.
+func projectAssistantRuntimeTargetInstanceUID(
+	ctx context.Context,
+	runCtx projectAssistantWorkflowRunContext,
+	target projectDevelopmentSyncTargetInfo,
+) (string, error) {
+	if runCtx.Client == nil {
+		return "", errors.New("project client is not configured")
+	}
+	resource, err := target.instanceResource()
+	if err != nil {
+		return "", err
+	}
+	instance, err := runCtx.Client.Resource(resource, "").Get(ctx, target.ResourceName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	uid := strings.TrimSpace(string(instance.GetUID()))
+	if uid == "" {
+		return "", errors.New("development instance UID is missing")
+	}
+	return uid, nil
+}
+
+// projectAssistantRuntimeMutationCallContext refreshes a runtime target while
+// the caller owns the project runtime-operation lease. Keep this wrapper for
+// mutations that serialize with template/runtime changes; command dispatch
+// revalidates under only its short START lease.
+func projectAssistantRuntimeMutationCallContext(
+	ctx context.Context,
+	runCtx projectAssistantWorkflowRunContext,
+	expected projectAssistantWorkflowRunContext,
+) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
+	current, server, id, target, blocked, _ := projectAssistantRuntimeValidatedCallContext(ctx, runCtx, expected)
 	return current, server, id, target, blocked
 }
 

@@ -58,13 +58,14 @@ type workerExecRequest struct {
 }
 
 type workerExecResult struct {
-	SessionID string `json:"sessionID,omitempty"`
-	RequestID string `json:"requestID,omitempty"`
-	State     string `json:"state"`
-	ExitCode  *int32 `json:"exitCode,omitempty"`
-	Stdout    string `json:"stdout,omitempty"`
-	Stderr    string `json:"stderr,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	SessionID     string `json:"sessionID,omitempty"`
+	RequestID     string `json:"requestID,omitempty"`
+	State         string `json:"state"`
+	ExitCode      *int32 `json:"exitCode,omitempty"`
+	Stdout        string `json:"stdout,omitempty"`
+	Stderr        string `json:"stderr,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+	RejectionCode string `json:"rejectionCode,omitempty"`
 }
 
 var errExecMissingTerminalReceipt = errors.New("stateless executor response is missing a terminal execution receipt")
@@ -202,6 +203,16 @@ func (d *httpExecDispatcher) Start(ctx context.Context, req persistentExecReques
 		body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
 		if err != nil {
 			return nil, startError(err)
+		}
+		if resp.StatusCode == http.StatusBadRequest {
+			var rejection execStartRejection
+			if json.Unmarshal(body, &rejection) == nil && rejection.RejectionCode == execRejectionInvalidWorkdir {
+				detail := strings.TrimSpace(rejection.Error)
+				if detail == "" {
+					detail = "workdir was rejected before process start"
+				}
+				return nil, startError(fmt.Errorf("%w: %s", errExecInvalidWorkdir, detail))
+			}
 		}
 		return nil, startError(fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body))))
 	}
@@ -645,10 +656,7 @@ func (w *execCoordinator) run(ctx context.Context, req workerExecRequest) {
 	execution, err := w.dispatcher.Start(ctx, req.persistentExecRequest)
 	w.mutationMu.Unlock()
 	if err != nil {
-		result := workerExecResult{State: "failed"}
-		if errors.Is(err, context.Canceled) {
-			result.State = "canceled"
-		}
+		result := workerResultFromStartError(err)
 		w.finish(req.SessionID, result, err)
 		return
 	}
@@ -753,6 +761,20 @@ func workerResultFromExec(response execResponse, err error) workerExecResult {
 		result.Stderr = errExecCleanupUnproven.Error()
 	} else if !hasTerminalReceipt && result.Stderr == "" {
 		result.Stderr = errExecMissingTerminalReceipt.Error()
+	}
+	return result
+}
+
+func workerResultFromStartError(err error) workerExecResult {
+	result := workerExecResult{State: "failed"}
+	if errors.Is(err, context.Canceled) {
+		result.State = "canceled"
+	}
+	if err != nil {
+		result.Stderr = err.Error()
+	}
+	if result.State == "failed" && errors.Is(err, errExecInvalidWorkdir) {
+		result.RejectionCode = execRejectionInvalidWorkdir
 	}
 	return result
 }

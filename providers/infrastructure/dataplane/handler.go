@@ -263,6 +263,10 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, caller sdk.P
 	}
 	reqBody, idempotencyKey, err := decodeExecRequest(w, r, component.Exec)
 	if err != nil {
+		if errors.Is(err, errExecInvalidWorkdir) {
+			writeExecRejection(w, http.StatusBadRequest, ExecRejectionInvalidWorkdir, err.Error())
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -285,7 +289,11 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, caller sdk.P
 	}
 	workingDir = path.Clean(workingDir)
 	if resolved, err := resolveExecWorkdir(reqBody.Workdir, workingDir); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, errExecInvalidWorkdir) {
+			writeExecRejection(w, http.StatusBadRequest, ExecRejectionInvalidWorkdir, err.Error())
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
 		return
 	} else {
 		// The executor receives the component-relative workdir. WorkingDir on
@@ -495,6 +503,17 @@ func writeExecError(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusBadGateway)
 }
 
+type execRejectionResponse struct {
+	RejectionCode string `json:"rejectionCode"`
+	Error         string `json:"error"`
+}
+
+func writeExecRejection(w http.ResponseWriter, status int, code, detail string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(execRejectionResponse{RejectionCode: code, Error: detail})
+}
+
 // resolveExecWorkdir keeps caller-selected directories beneath the
 // platform-owned development component directory. An empty or "." request
 // resolves to that directory; absolute paths are never accepted from callers.
@@ -509,7 +528,7 @@ func resolveExecWorkdir(requested, base string) (string, error) {
 	}
 	relative, err := normalizeExecPath(requested)
 	if err != nil {
-		return "", fmt.Errorf("workdir: %w", err)
+		return "", fmt.Errorf("%w: workdir: %w", errExecInvalidWorkdir, err)
 	}
 	return relative, nil
 }
