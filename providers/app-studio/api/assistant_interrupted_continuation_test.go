@@ -31,6 +31,7 @@ func TestProjectAssistantThreadContinueInterruptedTurnCreatesLinkedTurn(t *testi
 	now := time.Now().UTC()
 	run := store.AssistantRun{
 		ID:              "run-interrupted",
+		ThreadID:        "thread-review",
 		Mode:            store.AssistantRunModeDefault,
 		ApprovalMode:    store.AssistantApprovalModeOnRequest,
 		Status:          store.AssistantRunStatusInterrupted,

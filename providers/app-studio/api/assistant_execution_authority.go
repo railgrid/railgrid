@@ -66,7 +66,7 @@ func (a projectAssistantServerExecutionAuthority) supervisedRun() (store.Assista
 		return store.AssistantRun{}, store.ErrAssistantRunConflict
 	}
 	runID := a.req.AssistantRun.ID
-	if a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, runID) == nil {
+	if a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, runID, a.req.ThreadID) == nil {
 		return store.AssistantRun{}, store.ErrAssistantRunConflict
 	}
 	// Only the immutable identity is needed by this authority boundary. Copying
@@ -80,10 +80,10 @@ func (a projectAssistantServerExecutionAuthority) AdmitMutation(ctx context.Cont
 	if err != nil {
 		return err
 	}
-	if a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, run.ID) == nil {
+	if a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, run.ID, a.req.ThreadID) == nil {
 		return store.ErrAssistantRunConflict
 	}
-	if err := a.server.projectAssistantSupervisor().AdmitMutation(ctx, a.req.MessageScope, run.ID, a.req.Identity.user); err != nil {
+	if err := a.server.projectAssistantSupervisor().AdmitMutation(ctx, a.req.MessageScope, run.ID, a.req.Identity.user, a.req.ThreadID); err != nil {
 		return err
 	}
 	return nil
@@ -94,7 +94,7 @@ func (a projectAssistantServerExecutionAuthority) PersistRun(ctx context.Context
 	if err != nil || strings.TrimSpace(run.ID) == "" || run.ID != bound.ID {
 		return store.ErrAssistantRunConflict
 	}
-	accumulator := a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, bound.ID)
+	accumulator := a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, bound.ID, a.req.ThreadID)
 	if accumulator == nil {
 		return store.ErrAssistantRunConflict
 	}
@@ -111,7 +111,7 @@ func (a projectAssistantServerExecutionAuthority) PersistAudit(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	accumulator := a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, run.ID)
+	accumulator := a.server.projectAssistantSupervisor().accumulatorFor(a.req.MessageScope, run.ID, a.req.ThreadID)
 	if accumulator == nil {
 		return store.ErrAssistantRunConflict
 	}

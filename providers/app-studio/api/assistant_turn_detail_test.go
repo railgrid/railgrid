@@ -42,7 +42,7 @@ func TestGetProjectAssistantThreadTurnReturnsTerminalSettingsWithoutAudit(t *tes
 
 	now := time.Now().UTC()
 	run := store.AssistantRun{
-		ID: "turn-detail", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		ID: "turn-detail", ThreadID: "thread-detail", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
 		Status: store.AssistantRunStatusCompleted, ClientRequestID: "client-detail", UserMessageID: "user-detail",
 		ActiveMessageID: "assistant-detail", Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}

@@ -41,6 +41,7 @@ import (
 // must remain server-side.
 type projectAssistantRunView struct {
 	ID              string                        `json:"id"`
+	ThreadID        string                        `json:"threadID,omitempty"`
 	Mode            store.AssistantRunMode        `json:"mode,omitempty"`
 	ApprovalMode    store.AssistantApprovalMode   `json:"approvalMode,omitempty"`
 	Status          store.AssistantRunStatus      `json:"status"`
@@ -75,6 +76,7 @@ func projectAssistantRunToAPI(run store.AssistantRun) projectAssistantRunView {
 	}
 	return projectAssistantRunView{
 		ID:              run.ID,
+		ThreadID:        run.ThreadID,
 		Mode:            run.Mode,
 		ApprovalMode:    run.ApprovalMode,
 		Status:          run.Status,
@@ -158,6 +160,11 @@ func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, sc
 }
 
 func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Context, scope store.Scope, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
+	return s.startProjectAssistantRunDurablyForThread(ctx, scope, "", actor, content, clientRequestID, mode, selection, start)
+}
+
+func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, scope store.Scope, threadID, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
+	threadID = strings.TrimSpace(threadID)
 	skills := selection.IDs
 	resources := projectAssistantContextResourceIdentities(selection.ContextResources)
 	parts, partsErr := projectAssistantCanonicalContentPartsForIdentityChecked(selection.ContentParts, skills, selection.ContextResources)
@@ -173,14 +180,26 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	if mode != store.AssistantRunModeDefault && mode != store.AssistantRunModePlan && mode != store.AssistantRunModeReview {
 		return projectAssistantDurableStartResult{}, newValidationError("collaborationMode must be default, plan, or review")
 	}
-	if latest, err := s.store.LatestAssistantRun(ctx, scope); err == nil {
+	latestForThread := func() (store.AssistantRun, error) {
+		if threadID != "" {
+			return s.store.LatestAssistantRunForThread(ctx, scope, threadID)
+		}
+		return s.store.LatestAssistantRun(ctx, scope)
+	}
+	if latest, err := latestForThread(); err == nil {
 		if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, latest.ID); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 	} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
 		return projectAssistantDurableStartResult{}, err
 	}
-	if prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID); err == nil {
+	findPrior := func() (store.AssistantRun, error) {
+		if threadID != "" {
+			return s.store.FindAssistantRunByThreadClientRequestID(ctx, scope, threadID, clientRequestID)
+		}
+		return s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
+	}
+	if prior, err := findPrior(); err == nil {
 		if err := validateProjectAssistantStartReplayWithSelectionsAndParts(prior, actor, content, mode, skills, resources, parts); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
@@ -192,7 +211,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 		return projectAssistantDurableStartResult{}, err
 	}
 	supervisor := s.projectAssistantSupervisor()
-	releaseReservation, err := supervisor.Reserve(scope)
+	releaseReservation, err := supervisor.ReserveThread(scope, threadID)
 	if err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
@@ -206,7 +225,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	assistantAt := now.Add(time.Microsecond)
 	user := store.Message{ID: newMessageID(), Role: aiv1alpha1.ProjectMessageRoleUser, ActorID: actor, Content: content, CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: newMessageID(), Role: aiv1alpha1.ProjectMessageRoleAssistant, CreatedAt: assistantAt, UpdatedAt: assistantAt}
-	run := store.AssistantRun{ID: "run-" + uuid.NewString(), Mode: mode, Status: store.AssistantRunStatusRunning, ClientRequestID: clientRequestID, UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-" + uuid.NewString(), ThreadID: threadID, Mode: mode, Status: store.AssistantRunStatusRunning, ClientRequestID: clientRequestID, UserMessageID: user.ID, ActiveMessageID: assistant.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err := s.captureProjectAssistantApprovalMode(ctx, scope, actor, &run); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
@@ -228,7 +247,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	assistant.Metadata = projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil)
 	created, err := s.store.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
-		if prior, ok := s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, err, clientRequestID, actor, content, mode, skills, resources, parts); ok {
+		if prior, ok := s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, err, clientRequestID, actor, content, mode, skills, resources, parts, threadID); ok {
 			if modelErr := validateProjectAssistantStartModelSelection(prior, selection.ModelID); modelErr != nil {
 				return projectAssistantDurableStartResult{}, modelErr
 			}
@@ -1152,7 +1171,7 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			}
 			message.Metadata = projectAssistantMergeTerminalVerification(message.Metadata, state.verification)
 			return nil
-		})
+		}, run.ThreadID)
 		recordSnapshotErr(transitionErr)
 		if transitionErr == nil {
 			recordSnapshotErr(appendProjectAssistantInterruptedBoundary(context.Background(), s.store, projectMessageScope(id.orgUUID, id.workspaceUUID, project), run))
@@ -1337,6 +1356,131 @@ func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope
 	return s.reconcileOrphanedProjectAssistantRunWithProjection(ctx, scope, runID, true)
 }
 
+// acquireProjectAssistantOrphanRecoveryFence serializes orphan recovery with
+// both the normal thread-start handoff and an attached run worker. A unique
+// holder identity matters here: using the replica identity would let a stale
+// local claim be renewed reentrantly while another supervisor still owns it.
+func (s *Server) acquireProjectAssistantOrphanRecoveryFence(ctx context.Context, scope store.Scope, run store.AssistantRun) (func(), bool, error) {
+	if s == nil || s.store == nil {
+		return nil, false, errors.New("assistant supervisor store not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	claimCtx, cancelClaims := context.WithTimeout(ctx, projectMessagePersistTimeout)
+	defer cancelClaims()
+	ownerReplica := "assistant-recovery-" + uuid.NewString()
+	ownedKeys := make([]string, 0, 3)
+	release := func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
+		defer cancel()
+		for index := len(ownedKeys) - 1; index >= 0; index-- {
+			_ = s.store.ReleaseReplicaClaim(releaseCtx, ownedKeys[index], ownerReplica)
+		}
+	}
+
+	claim := func(key, detail string) (bool, error) {
+		// Add the key before the attempt so an ambiguous storage error can still
+		// be cleaned up if the upsert committed before the connection failed.
+		ownedKeys = append(ownedKeys, key)
+		_, held, err := s.store.TryClaimReplica(claimCtx, store.ReplicaClaim{
+			Key:          key,
+			Kind:         store.ReplicaClaimKindActivity,
+			ScopeKey:     store.ReplicaClaimScopeKey(scope),
+			OwnerReplica: ownerReplica,
+			Detail:       detail,
+		}, assistantActivityClaimTTL)
+		if err != nil {
+			return false, err
+		}
+		return held, nil
+	}
+
+	threadID := strings.TrimSpace(run.ThreadID)
+	if threadID != "" {
+		held, err := claim(store.AssistantThreadClaimKey(scope, threadID), "thread-reservation")
+		if err != nil {
+			release()
+			return nil, false, fmt.Errorf("claim assistant thread for orphan recovery: %w", err)
+		}
+		if !held {
+			release()
+			return nil, false, nil
+		}
+	}
+	if held, err := claim(store.AssistantRunClaimKey(scope, threadID, run.ID), run.ID); err != nil {
+		release()
+		return nil, false, fmt.Errorf("claim assistant run for orphan recovery: %w", err)
+	} else if !held {
+		release()
+		return nil, false, nil
+	}
+
+	// Verify ownership from storage after the atomic acquisitions. This also
+	// detects a lease lost between the first acquisition and the second.
+	verify := func(key, detail string) (bool, error) {
+		current, ok, err := s.store.GetReplicaClaim(claimCtx, key)
+		if err != nil {
+			return false, err
+		}
+		return ok && current.OwnerReplica == ownerReplica && current.Detail == detail && current.Live(time.Now().UTC(), assistantActivityClaimTTL), nil
+	}
+	if threadID != "" {
+		held, err := verify(store.AssistantThreadClaimKey(scope, threadID), "thread-reservation")
+		if err != nil {
+			release()
+			return nil, false, fmt.Errorf("verify assistant thread recovery claim: %w", err)
+		}
+		if !held {
+			release()
+			return nil, false, nil
+		}
+	}
+	if held, err := verify(store.AssistantRunClaimKey(scope, threadID, run.ID), run.ID); err != nil {
+		release()
+		return nil, false, fmt.Errorf("verify assistant run recovery claim: %w", err)
+	} else if !held {
+		release()
+		return nil, false, nil
+	}
+
+	// Older workers used only the project activity claim, with the run ID in
+	// Detail. Preserve that protection during mixed-version recovery. A stale
+	// matching claim is also adopted atomically, so its former owner cannot
+	// refresh the same lease after this check.
+	legacyClaim, legacyOK, err := s.store.GetReplicaClaim(claimCtx, store.ActivityClaimKey(scope))
+	if err != nil {
+		release()
+		return nil, false, fmt.Errorf("read legacy assistant activity claim: %w", err)
+	}
+	if legacyOK && legacyClaim.Detail == run.ID {
+		if legacyClaim.Live(time.Now().UTC(), assistantActivityClaimTTL) {
+			release()
+			return nil, false, nil
+		}
+		held, claimErr := claim(store.ActivityClaimKey(scope), "orphan-recovery")
+		if claimErr != nil {
+			release()
+			return nil, false, fmt.Errorf("claim legacy assistant activity for orphan recovery: %w", claimErr)
+		}
+		if !held {
+			release()
+			return nil, false, nil
+		}
+		current, ok, readErr := s.store.GetReplicaClaim(claimCtx, store.ActivityClaimKey(scope))
+		if readErr != nil {
+			release()
+			return nil, false, fmt.Errorf("verify legacy assistant activity recovery claim: %w", readErr)
+		}
+		if !ok || current.OwnerReplica != ownerReplica || current.Detail != "orphan-recovery" || !current.Live(time.Now().UTC(), assistantActivityClaimTTL) {
+			release()
+			return nil, false, nil
+		}
+	}
+
+	return release, true, nil
+}
+
 // reconcileOrphanedProjectAssistantRunForProjection repairs the generic run
 // while reconcileProjectAssistantThreadTurn already owns the per-turn
 // projection lock. That caller finishes the canonical projection itself;
@@ -1374,32 +1518,59 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 		// Current v2 permission/input checkpoints remain intentionally resumable.
 		return nil
 	}
-	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	key := projectAssistantThreadKey(scope, run.ThreadID)
 	supervisor := s.projectAssistantSupervisor()
-	if supervisor.reserved(scope) {
+	if supervisor.reserved(scope, run.ThreadID) {
 		return nil
 	}
 	supervisor.mu.Lock()
 	active := supervisor.runs[key]
-	selfReplica := supervisor.replicaID
+	activeMatch := active != nil && active.run.ID == run.ID
 	supervisor.mu.Unlock()
-	if active != nil && active.run.ID == run.ID {
+	if activeMatch {
 		return nil
 	}
-	// The run is not on THIS replica — but that no longer means orphaned:
-	// with multiple replicas the worker is usually elsewhere. Only a run
-	// whose durable activity claim is missing, expired (its replica died
-	// without a clean shutdown), or owned by THIS replica (Attach registers
-	// locally before claiming, so a self-owned claim without a local run is
-	// a detach leftover whose async release hasn't landed) is truly
-	// orphaned; a fresh FOREIGN claim naming this run means a worker is
-	// heartbeating it on a peer.
-	claim, ok, err := s.store.GetReplicaClaim(ctx, store.ActivityClaimKey(scope))
+	// A read-only lease check leaves a gap in which a starter can reserve the
+	// thread or the run owner can renew its lease before this recovery writes.
+	// Take both claims with a per-attempt identity so TryClaimReplica cannot
+	// treat a fresh claim from this process as a reentrant acquisition.
+	releaseFence, fenced, err := s.acquireProjectAssistantOrphanRecoveryFence(ctx, scope, run)
+	if err != nil || !fenced {
+		return err
+	}
+	defer releaseFence()
+
+	// Re-read the durable run after acquiring the fence. A concurrent owner may
+	// have completed it while this recovery was waiting on storage.
+	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	defer cancel()
+	run, err = s.store.GetAssistantRun(persistCtx, scope, runID)
+	if errors.Is(err, store.ErrAssistantRunNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	if ok && claim.Detail == run.ID && claim.OwnerReplica != selfReplica &&
-		claim.Live(time.Now().UTC(), assistantActivityClaimTTL) {
+	if strings.TrimSpace(run.ThreadID) != strings.TrimSpace(key.ThreadID) {
+		return nil
+	}
+	if assistantRunTerminal(run.Status) {
+		if reconcileCanonicalProjection {
+			return s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run)
+		}
+		return nil
+	}
+	if run.Status != store.AssistantRunStatusRunning && run.Status != store.AssistantRunStatusStopping {
+		return nil
+	}
+	if supervisor.reserved(scope, run.ThreadID) {
+		return nil
+	}
+	supervisor.mu.Lock()
+	active = supervisor.runs[key]
+	activeMatch = active != nil && active.run.ID == run.ID
+	supervisor.mu.Unlock()
+	if activeMatch {
 		return nil
 	}
 	run.Status = store.AssistantRunStatusInterrupted
@@ -1409,8 +1580,6 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 	// The transition is the recovery boundary: once the run is known to be an
 	// orphan, request cancellation must not leave either durable projection
 	// active. Keep the reads and writes in one detached, bounded context.
-	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
-	defer cancel()
 	message, err := s.findProjectMessage(persistCtx, scope, run.ActiveMessageID)
 	if err != nil {
 		return err
@@ -1452,18 +1621,80 @@ func (s *Server) reconcileOrphanedProjectAssistantCanonicalTurn(ctx context.Cont
 	if strings.TrimSpace(user.ActorID) == "" {
 		return nil
 	}
-	thread, turn, err := s.findProjectAssistantTurnAcrossThreads(ctx, scope, user.ActorID, run.ClientRequestID, "")
-	if errors.Is(err, store.ErrAssistantTurnNotFound) {
-		return nil
-	}
+	thread, turn, ok, err := s.findOrphanedProjectAssistantCanonicalTurn(ctx, scope, user.ActorID, run)
 	if err != nil {
 		return fmt.Errorf("find orphaned assistant canonical turn: %w", err)
 	}
-	if turn.ID != run.ID || turn.Status != store.AssistantTurnStatusInProgress {
+	if !ok || turn.Status != store.AssistantTurnStatusInProgress {
 		return nil
 	}
 	if err := s.reconcileProjectAssistantThreadTurn(ctx, scope, turn); err != nil {
 		return fmt.Errorf("reconcile orphaned assistant canonical turn %q: %w", thread.ID, err)
 	}
 	return nil
+}
+
+// findOrphanedProjectAssistantCanonicalTurn resolves a run to its canonical
+// thread turn. A keyed run is authoritative, since client request IDs may be
+// reused in different threads. Legacy runs still need a bounded-by-page scan
+// across the actor's threads, and must match the run ID before repair.
+func (s *Server) findOrphanedProjectAssistantCanonicalTurn(ctx context.Context, scope store.Scope, actorID string, run store.AssistantRun) (store.AssistantThread, store.AssistantTurn, bool, error) {
+	threadID := strings.TrimSpace(run.ThreadID)
+	if threadID != "" {
+		turn, err := s.store.GetAssistantTurn(ctx, scope, threadID, run.ID)
+		if errors.Is(err, store.ErrAssistantTurnNotFound) {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, err
+		}
+		if turn.ID != run.ID || turn.ThreadID != threadID || turn.ActorID != actorID {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		thread, err := s.store.GetAssistantThread(ctx, scope, threadID)
+		if errors.Is(err, store.ErrAssistantThreadNotFound) {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, err
+		}
+		if thread.ID != threadID || thread.ActorID != actorID {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+		}
+		return thread, turn, true, nil
+	}
+	clientRequestID := strings.TrimSpace(run.ClientRequestID)
+	if strings.TrimSpace(actorID) == "" || clientRequestID == "" {
+		return store.AssistantThread{}, store.AssistantTurn{}, false, nil
+	}
+	var matchedThread store.AssistantThread
+	var matchedTurn store.AssistantTurn
+	cursor := ""
+	for {
+		page, err := s.store.ListAssistantThreads(ctx, scope, actorID, true, 100, cursor)
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantTurn{}, false, err
+		}
+		for _, candidate := range page.Items {
+			turn, err := s.store.FindAssistantTurnByClientUserMessageID(ctx, scope, candidate.ID, clientRequestID)
+			if errors.Is(err, store.ErrAssistantTurnNotFound) {
+				continue
+			}
+			if err != nil {
+				return store.AssistantThread{}, store.AssistantTurn{}, false, err
+			}
+			if turn.ID != run.ID || turn.ThreadID != candidate.ID || turn.ActorID != actorID || turn.ClientUserMessageID != clientRequestID {
+				continue
+			}
+			if matchedTurn.ID != "" {
+				return store.AssistantThread{}, store.AssistantTurn{}, false, store.ErrAssistantTurnConflict
+			}
+			matchedThread, matchedTurn = candidate, turn
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return matchedThread, matchedTurn, matchedTurn.ID != "", nil
 }

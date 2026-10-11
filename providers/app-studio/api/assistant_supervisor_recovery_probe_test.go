@@ -44,7 +44,15 @@ func TestProbeOldSubscriberCleanupCannotTouchReplacementOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	supervisor.mu.Lock()
+	lease := supervisor.runs[projectAssistantThreadKey(scope, run.ThreadID)].runClaimLease
+	supervisor.mu.Unlock()
 	accumulator.FailPersistence(errors.New("snapshot unavailable"))
+	select {
+	case <-lease.done:
+	case <-time.After(time.Second):
+		t.Fatal("old run lease was not released")
+	}
 	if _, err := supervisor.Attach(scope, run, assistant); err != nil {
 		t.Fatalf("replacement Attach: %v", err)
 	}

@@ -12,7 +12,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -64,9 +63,9 @@ func (s *Server) AssistantBusy(scope workspace.Scope) bool {
 	return ok && claim.Live(time.Now().UTC(), assistantActivityClaimTTL)
 }
 
-// StopAssistantForDeletedProject interrupts whatever assistant run is still
-// active for a project whose CR is being deleted, and reconciles a run this
-// replica no longer owns.
+// StopAssistantForDeletedProject interrupts every active thread run for a
+// project whose CR is being deleted, and reconciles runs this replica no
+// longer owns.
 //
 // It exists because Cut D.4 turned deletion into a plain CR delete. The old
 // `projects/{p}/delete` verb answered 409 while a turn was running and asked
@@ -76,9 +75,8 @@ func (s *Server) AssistantBusy(scope workspace.Scope) bool {
 // for AssistantBusy to go false before purging anything the turn might still
 // be writing to (controller/project/teardown.go).
 //
-// It is a no-op on a replica that does not own the run: the durable run claim
-// is what the orphan reconciler works from, and the owner's own next poll
-// stops it there.
+// Each run is stopped independently so one thread cannot keep a sibling
+// thread's controller state or cancellation boundary hidden from deletion.
 func (s *Server) StopAssistantForDeletedProject(ctx context.Context, scope workspace.Scope) error {
 	if s == nil || s.store == nil {
 		return nil
@@ -89,25 +87,33 @@ func (s *Server) StopAssistantForDeletedProject(ctx context.Context, scope works
 		ProjectName:   scope.ProjectName,
 		ProjectUID:    scope.ProjectUID,
 	}
-	run, err := s.store.LatestAssistantRun(ctx, storeScope)
-	if errors.Is(err, store.ErrAssistantRunNotFound) {
-		return nil
-	}
+	runs, err := s.store.ListActiveAssistantRuns(ctx, storeScope)
 	if err != nil {
-		return fmt.Errorf("read the project's latest assistant run: %w", err)
+		return fmt.Errorf("read the project's active assistant runs: %w", err)
 	}
-	if assistantRunTerminal(run.Status) {
-		s.forgetProjectDeletedCaches(storeScope)
+	for _, run := range runs {
+		_, stoppedLocally, err := s.projectAssistantSupervisor().Stop(storeScope, run.ID, run.ThreadID)
+		if err != nil {
+			return fmt.Errorf("stop assistant run %s on thread %s: %w", run.ID, run.ThreadID, err)
+		}
+		if !stoppedLocally {
+			// A run owned by another replica (or by a previous incarnation of this
+			// one) is not in the local map, so Stop does nothing. The per-run claim
+			// lets recovery settle only this run; a live sibling thread is ignored.
+			if err := s.reconcileOrphanedProjectAssistantRun(ctx, storeScope, run.ID); err != nil {
+				return err
+			}
+		}
+	}
+	remaining, err := s.store.ListActiveAssistantRuns(ctx, storeScope)
+	if err != nil {
+		return fmt.Errorf("verify project assistant runs stopped: %w", err)
+	}
+	if len(remaining) > 0 {
+		// Stop publishes cancellation before the worker reaches its terminal
+		// checkpoint. The project finalizer's Busy gate waits for that last
+		// write to settle before it purges the workspace and durable transcript.
 		return nil
-	}
-	if _, _, err := s.projectAssistantSupervisor().Stop(storeScope, run.ID); err != nil {
-		return fmt.Errorf("stop assistant run %s: %w", run.ID, err)
-	}
-	// A run owned by another replica (or by a previous incarnation of this
-	// one) is not in the local map, so Stop did nothing. The orphan
-	// reconciler is what settles that case, on the durable claim.
-	if err := s.reconcileOrphanedProjectAssistantRun(ctx, storeScope, run.ID); err != nil {
-		return err
 	}
 	s.forgetProjectDeletedCaches(storeScope)
 	return nil

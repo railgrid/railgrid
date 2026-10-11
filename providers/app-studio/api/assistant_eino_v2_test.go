@@ -74,6 +74,10 @@ func newProjectAssistantV2ToolHarness(t *testing.T, requestID string) projectAss
 }
 
 func newProjectAssistantV2ToolHarnessWithApprovalMode(t *testing.T, requestID string, approvalMode store.AssistantApprovalMode) projectAssistantV2ToolHarness {
+	return newProjectAssistantV2ToolHarnessWithThreadAndApprovalMode(t, requestID, "", approvalMode)
+}
+
+func newProjectAssistantV2ToolHarnessWithThreadAndApprovalMode(t *testing.T, requestID, threadID string, approvalMode store.AssistantApprovalMode) projectAssistantV2ToolHarness {
 	t.Helper()
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
@@ -89,13 +93,15 @@ func newProjectAssistantV2ToolHarnessWithApprovalMode(t *testing.T, requestID st
 			t.Fatal(err)
 		}
 	}
-	started, err := server.startProjectAssistantRunDurablyWithMode(
+	started, err := server.startProjectAssistantRunDurablyForThread(
 		ctx,
 		scope,
+		threadID,
 		id.user,
 		"update the app",
 		requestID,
 		store.AssistantRunModeDefault,
+		projectAssistantDurableSkillSelection{},
 		func(store.AssistantRun, store.Message, bool) error { return nil },
 	)
 	if err != nil {
@@ -108,7 +114,7 @@ func newProjectAssistantV2ToolHarnessWithApprovalMode(t *testing.T, requestID st
 	return projectAssistantV2ToolHarness{
 		server: server, messages: messages, workspaces: workspaces, project: project, scope: scope,
 		req: projectAssistantRunRequest{
-			Identity: id, Project: project, Workspace: workspaces,
+			Identity: id, Project: project, Workspace: workspaces, ThreadID: threadID,
 			WorkspaceScope: projectWorkspaceScope(id, project), MessageScope: scope,
 			ToolPort: projectAssistantV2DirectToolPort{}, AssistantRun: &run,
 			ApprovalMode: run.ApprovalMode, CollaborationMode: projectAssistantCollaborationModeDefault,
@@ -1300,8 +1306,7 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(projectEinoAssistantOptimizationEnv, projectEinoAssistantOptimizationCodexPOC)
-	h := newProjectAssistantV2ToolHarnessWithApprovalMode(t, "v2-resume-run-local-grant", store.AssistantApprovalModeAlwaysAsk)
-	h.req.ThreadID = "thread-resume"
+	h := newProjectAssistantV2ToolHarnessWithThreadAndApprovalMode(t, "v2-resume-run-local-grant", "thread-resume", store.AssistantApprovalModeAlwaysAsk)
 	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeBYOOnly, ReplicaCount: 1})
 	type resolverCall struct {
 		id    identity

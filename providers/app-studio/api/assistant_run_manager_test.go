@@ -148,6 +148,42 @@ func TestProjectAssistantRunManagerScopesActiveTurnsByTenantProject(t *testing.T
 	}
 }
 
+func TestProjectAssistantRunManagerAllowsDifferentThreadsInOneProject(t *testing.T) {
+	manager := newProjectAssistantRunManager()
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
+	first := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo", "thread-a")
+	first.ProjectUID = "project-uid"
+	firstCtx, firstDone := manager.Begin(context.Background(), first)
+	defer firstDone()
+	second := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, "demo", "thread-b")
+	second.ProjectUID = "project-uid"
+	secondCtx, secondDone := manager.Begin(context.Background(), second)
+	defer secondDone()
+
+	if err := firstCtx.Err(); err != nil {
+		t.Fatalf("thread-a context error = %v, want active", err)
+	}
+	if err := secondCtx.Err(); err != nil {
+		t.Fatalf("thread-b context error = %v, want active", err)
+	}
+	if got := manager.activeCount(); got != 2 {
+		t.Fatalf("active thread turns = %d, want two", got)
+	}
+	projectKey := projectAssistantRunKey{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, ProjectName: "demo", ProjectUID: "project-uid"}
+	if !manager.busy(projectKey) {
+		t.Fatal("project-wide busy check missed active thread turns")
+	}
+	threadKey := projectKey
+	threadKey.ThreadID = "thread-a"
+	if !manager.busy(threadKey) {
+		t.Fatal("thread-specific busy check missed thread-a")
+	}
+	threadKey.ThreadID = "thread-c"
+	if manager.busy(threadKey) {
+		t.Fatal("thread-specific busy check reported unrelated thread-c active")
+	}
+}
+
 func TestProjectAssistantRunManagerIgnoresUnscopedTurns(t *testing.T) {
 	manager := newProjectAssistantRunManager()
 	ctx, done := manager.Begin(context.Background(), projectAssistantTurnItem{Kind: projectAssistantTurnMessage})

@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -707,6 +708,69 @@ func TestReserveProjectExternalOperationRejectsActiveAssistant(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "active assistant run") {
 		t.Fatalf("conflict body = %q, want active assistant run guidance", recorder.Body.String())
+	}
+}
+
+func TestReserveProjectExternalOperationChecksActiveSiblingAfterAnotherThreadStops(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid-demo"}}
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	supervisor := server.projectAssistantSupervisor()
+	t.Cleanup(func() { supervisor.Shutdown(context.Background()) })
+	var runs []store.AssistantRun
+	for _, threadID := range []string{"thread-a", "thread-b"} {
+		started, err := server.startProjectAssistantRunDurablyForThread(ctx, scope, threadID, id.user,
+			"fix the app", "same-client-request", store.AssistantRunModeDefault, projectAssistantDurableSkillSelection{},
+			func(run store.AssistantRun, assistant store.Message, _ bool) error {
+				return supervisor.Start(ctx, scope, run, assistant, func(workerCtx context.Context, _ *projectAssistantSnapshotAccumulator) {
+					<-workerCtx.Done()
+				})
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, started.Run)
+	}
+	supervisor.Abort(scope, runs[1].ID, runs[1].ThreadID)
+	recorder := httptest.NewRecorder()
+	release, ok := server.reserveProjectExternalOperation(recorder, ctx, id, project, "restoring the workspace")
+	if release != nil {
+		release()
+	}
+	if ok || recorder.Code != http.StatusConflict {
+		t.Fatalf("reservation with active sibling = %t, %d: %s", ok, recorder.Code, recorder.Body.String())
+	}
+	remaining, err := messages.GetAssistantRun(ctx, scope, runs[0].ID)
+	if err != nil || remaining.Status != store.AssistantRunStatusRunning {
+		t.Fatalf("active sibling changed: %+v, %v", remaining, err)
+	}
+	supervisor.Abort(scope, runs[0].ID, runs[0].ThreadID)
+	// Owner release follows worker cleanup asynchronously. Wait for that
+	// boundary before checking that a new exclusive operation is admitted.
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, held, err := messages.GetReplicaClaim(ctx, store.ActivityClaimKey(scope))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("project owner was not released after all threads stopped")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	recorder = httptest.NewRecorder()
+	release, ok = server.reserveProjectExternalOperation(recorder, ctx, id, project, "restoring the workspace")
+	if release != nil {
+		release()
+	}
+	if !ok || release == nil {
+		t.Fatalf("reservation after all threads stop = %t, %d: %s", ok, recorder.Code, recorder.Body.String())
 	}
 }
 

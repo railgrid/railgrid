@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -960,6 +961,185 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 		return
 	}
 	t.Fatal("assistant message not found")
+}
+
+func TestReconcileOrphanedRunUsesExactThreadTurnWhenClientRequestIDIsDuplicated(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "thread-scoped run"
+		if legacy {
+			name = "legacy run without thread ID"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().UTC()
+			scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
+			messages := store.NewMemoryStore()
+			server := NewWithWorkspace(nil, messages, nil, "", false)
+			server.tenantWorkspaces = defaultTestWorkspaces.lookup
+			server.tenantActors = defaultTestActors.lookup
+			defer server.projectAssistantSupervisor().Shutdown(context.Background())
+
+			createAssistantThreadForHTTPTest(t, messages, scope, "thread-a", "test-user")
+			createAssistantThreadForHTTPTest(t, messages, scope, "thread-b", "test-user")
+			run := store.AssistantRun{
+				ID:              "run-a",
+				ThreadID:        "thread-a",
+				Mode:            store.AssistantRunModeDefault,
+				ApprovalMode:    store.AssistantApprovalModeOnRequest,
+				Status:          store.AssistantRunStatusRunning,
+				ClientRequestID: "same-client-request",
+				UserMessageID:   "user-a",
+				ActiveMessageID: "assistant-a",
+				Revision:        1,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			if legacy {
+				run.ThreadID = ""
+			}
+			user := store.Message{ID: run.UserMessageID, ActorID: "test-user", Role: "user", Content: "build", CreatedAt: now, UpdatedAt: now}
+			assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Content: "working", CreatedAt: now, UpdatedAt: now}
+			if _, err := messages.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+				t.Fatalf("CreateAssistantRun: %v", err)
+			}
+			createAssistantTurnForHTTPTest(t, messages, scope, "thread-a", run)
+			newer := run
+			newer.ID = "run-b"
+			newer.ThreadID = "thread-b"
+			newer.UserMessageID = "user-b"
+			newer.ActiveMessageID = "assistant-b"
+			newer.CreatedAt = now.Add(time.Second)
+			newer.UpdatedAt = now.Add(time.Second)
+			createAssistantTurnForHTTPTest(t, messages, scope, "thread-b", newer)
+
+			if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID); err != nil {
+				t.Fatalf("reconcile orphaned run: %v", err)
+			}
+			turnA, err := messages.GetAssistantTurn(ctx, scope, "thread-a", "run-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if turnA.Status != store.AssistantTurnStatusInterrupted {
+				t.Fatalf("turn A status = %q, want interrupted", turnA.Status)
+			}
+			turnB, err := messages.GetAssistantTurn(ctx, scope, "thread-b", "run-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if turnB.Status != store.AssistantTurnStatusInProgress {
+				t.Fatalf("turn B status = %q, want in_progress", turnB.Status)
+			}
+		})
+	}
+}
+
+type blockingAssistantRunSnapshotStore struct {
+	store.Store
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	block   bool
+}
+
+func (s *blockingAssistantRunSnapshotStore) SaveAssistantRunSnapshot(ctx context.Context, scope store.Scope, run store.AssistantRun, messages []store.Message, expectedRevision int64) error {
+	s.mu.Lock()
+	block := s.block
+	s.block = false
+	s.mu.Unlock()
+	if block {
+		close(s.entered)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.SaveAssistantRunSnapshot(ctx, scope, run, messages, expectedRevision)
+}
+
+func TestConcurrentOrphanRecoveryFencesThreadAndRunUntilProjectionCompletes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
+	messages := store.NewMemoryStore()
+	createAssistantThreadForHTTPTest(t, messages, scope, "thread-recovery-fence", "test-user")
+	run := store.AssistantRun{
+		ID: "run-recovery-fence", ThreadID: "thread-recovery-fence", Mode: store.AssistantRunModeDefault,
+		ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantRunStatusRunning,
+		ClientRequestID: "client-recovery-fence", UserMessageID: "user-recovery-fence", ActiveMessageID: "assistant-recovery-fence",
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	user := store.Message{ID: run.UserMessageID, ActorID: "test-user", Role: "user", Content: "build", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Content: "working", CreatedAt: now, UpdatedAt: now}
+	if _, err := messages.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	createAssistantTurnForHTTPTest(t, messages, scope, run.ThreadID, run)
+
+	blocked := &blockingAssistantRunSnapshotStore{
+		Store: messages, entered: make(chan struct{}), release: make(chan struct{}), block: true,
+	}
+	server := NewWithWorkspace(nil, blocked, nil, "", false)
+	defer server.projectAssistantSupervisor().Shutdown(context.Background())
+	server.tenantWorkspaces = defaultTestWorkspaces.lookup
+	server.tenantActors = defaultTestActors.lookup
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID) }()
+	select {
+	case <-blocked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first recovery did not reach its fenced snapshot write")
+	}
+
+	// A second recovery must observe the temporary run lease and leave the
+	// first writer as the only process that can commit this interruption.
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID) }()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("concurrent recovery: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent recovery did not yield to the held run lease")
+	}
+	stillRunning, err := messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillRunning.Status != store.AssistantRunStatusRunning {
+		t.Fatalf("run status during first blocked write = %q, want running", stillRunning.Status)
+	}
+
+	if _, err := server.projectAssistantSupervisor().ReserveThread(scope, run.ThreadID); !errors.Is(err, store.ErrAssistantRunConflict) {
+		t.Fatalf("new thread start while recovery holds fence = %v, want conflict", err)
+	}
+	if _, err := server.projectAssistantSupervisor().Attach(scope, run, assistant); !errors.Is(err, store.ErrAssistantRunConflict) {
+		t.Fatalf("new worker attach while recovery holds run lease = %v, want conflict", err)
+	}
+
+	close(blocked.release)
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first recovery: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first recovery did not finish after releasing the snapshot write")
+	}
+	releaseThread, err := server.projectAssistantSupervisor().ReserveThread(scope, run.ThreadID)
+	if err != nil {
+		t.Fatalf("thread reservation after recovery released its fence: %v", err)
+	}
+	releaseThread()
+	recovered, err := messages.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != store.AssistantRunStatusInterrupted {
+		t.Fatalf("recovered run status = %q, want interrupted", recovered.Status)
+	}
 }
 
 // A failed verification receipt used to carry only its outcome, so the portal

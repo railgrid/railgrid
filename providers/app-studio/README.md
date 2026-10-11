@@ -320,6 +320,25 @@ message, referenceID}` taken from each item's diagnostic. All four are omitted
 when zero. The summary is derived from the turn's durable items, so the turn
 detail route also reports it for turns that completed before it existed.
 
+Assistant runs carry a durable thread ID. Each thread admits one active turn,
+while sibling threads in the same project may run together. Submission retries
+are idempotent within their thread; steering, approvals, cancellation, events,
+and recovery must match both the thread and its run. Legacy runs without a
+thread ID share a separate compatibility lane rather than being assigned to an
+unrelated conversation. PostgreSQL upgrades backfill a run's thread only when
+its canonical turn identifies exactly one thread; ambiguous historical mappings
+remain unresolved. Existing history can still be read, but thread-scoped controls
+refuse a run whose durable ownership does not match the requested thread.
+Drain and stop older App Studio writers before deploying this migration: old
+binaries assume project-wide run uniqueness and cannot safely share the upgraded
+run store with this release.
+
+All threads retain one fenced project workspace owner. Stopping one turn does
+not stop its siblings, while deleting the project stops every active run.
+Project-wide external operations wait for all active threads and reserve the
+workspace before proceeding. Source API version checks, command execution
+changes, and independent composer state are delivered in subsequent slices.
+
 A message submitted while the current run is working is durable steering for
 that same run, not a replacement run. The request names the expected run and is
 accepted only for the actor who started it. The supervisor persists an
