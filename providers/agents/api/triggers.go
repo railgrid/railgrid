@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -212,7 +213,7 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	admission, err := s.startDetachedRun(r, c, id, agent, taskRun{
-		SessionID: "trigger:" + name, Task: task, Trigger: agentsv1alpha1.RunTriggerEvent, SourceName: name,
+		SessionID: triggerSessionID(name, ""), Task: task, Trigger: agentsv1alpha1.RunTriggerEvent, SourceName: name,
 		NotifyChannel: trig.Spec.ChannelRef,
 	})
 	if err != nil {
@@ -220,4 +221,61 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"runID": admission.ID})
+}
+
+// triggerSessionID names the transcript session for one firing of a trigger.
+//
+// One session per delivery, not per trigger. Every event is an independent
+// piece of work — a pull request to review, a deploy to look at — and the runs
+// have nothing to say to each other. Sharing a session made each firing
+// replay every earlier one: the transcript grew by a full event payload per
+// run and the harness prompt was assembled from the lot, until a trigger that
+// had fired a few dozen times could not fit a request under the runner's 2MiB
+// limit and disabled itself on the failures. A shared session also let two
+// deliveries dispatched together collide on one harness session.
+//
+// deliveryID is the platform's own id for the event (GitHub's
+// X-GitHub-Delivery) when the sender gave one, so a redelivery of the same
+// event lands in the same session; otherwise the firing gets a fresh id.
+func triggerSessionID(name, deliveryID string) string {
+	deliveryID = strings.TrimSpace(deliveryID)
+	if deliveryID == "" {
+		deliveryID = uuid.NewString()
+	}
+	return "trigger:" + name + "/" + deliveryID
+}
+
+// enableTrigger clears the disabling the provider applied after repeated
+// failures — status.disabledReason and the consecutive-failure count — so the
+// trigger fires again. It is the recovery path for a trigger whose runs failed
+// for a reason that has since been fixed; a trigger disabled on a permanent
+// error will be disabled again by whatever disabled it. spec.suspend is a
+// separate, user-authored switch and is left alone.
+func (s *Server) enableTrigger(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	trig, err := c.Triggers().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	if trig.Status.DisabledReason == "" && trig.Status.ConsecutiveFailures == 0 {
+		writeJSON(w, http.StatusOK, trig)
+		return
+	}
+	// Cleared by patching the fields to null: a status update built from the
+	// typed object omits zero values and would leave the stored ones in place.
+	if err := c.Triggers().ClearStatusFields(r.Context(), name, "disabledReason", "consecutiveFailures"); err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	out, err := c.Triggers().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

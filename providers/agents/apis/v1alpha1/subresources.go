@@ -229,6 +229,25 @@ type MessagesRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// EnableRequest is the payload of the "enable" custom subresource on schedules, triggers.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=enable,scope=Cluster
+type EnableRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // RunRequest is the payload of the "run" custom subresource on agents, schedules, triggers.
 //
 // +kubebuilder:object:root=true

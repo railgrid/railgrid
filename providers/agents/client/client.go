@@ -275,6 +275,28 @@ func (r *TypedResource[T, L]) PatchStatus(ctx context.Context, name string, stat
 	return r.scope.ApplyStatus(ctx, u)
 }
 
+// ClearStatusFields removes the named top-level status fields from the object.
+//
+// UpdateStatus and PatchStatus cannot do this: both merge-patch the status
+// with the typed object's JSON, and a field at its zero value is omitted from
+// that JSON (omitempty), so the merge leaves the stored value in place. A
+// field is cleared by patching it to null, which is what this sends.
+func (r *TypedResource[T, L]) ClearStatusFields(ctx context.Context, name string, fields ...string) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	status := map[string]any{}
+	for _, field := range fields {
+		status[field] = nil
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{}}
+	u.SetAPIVersion(r.gvk.GroupVersion().String())
+	u.SetKind(r.gvk.Kind)
+	u.SetName(name)
+	u.Object["status"] = status
+	return r.scope.ApplyStatus(ctx, u)
+}
+
 func (r *TypedResource[T, L]) Delete(ctx context.Context, name string, _ metav1.DeleteOptions) error {
 	return r.scope.Delete(ctx, r.res, "", name)
 }

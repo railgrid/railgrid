@@ -42,7 +42,9 @@ describe('verbs are kube paths', () => {
     await api.discoverCredential('openai')
     await api.testConnection('slack')
     await api.runSchedule('daily')
+    await api.enableSchedule('daily')
     await api.runTrigger('deploys')
+    await api.enableTrigger('deploys')
     await api.cancelRun('r1')
     await api.waitRun('r1', 5)
 
@@ -57,7 +59,9 @@ describe('verbs are kube paths', () => {
       `POST ${KUBE}/modelcredentials/openai/discover`,
       `POST ${KUBE}/connections/slack/test`,
       `POST ${KUBE}/schedules/daily/run`,
+      `POST ${KUBE}/schedules/daily/enable`,
       `POST ${KUBE}/triggers/deploys/run`,
+      `POST ${KUBE}/triggers/deploys/enable`,
       `POST ${KUBE}/runs/r1/cancel`,
       `GET ${KUBE}/runs/r1/wait?timeoutSeconds=5`,
     ])

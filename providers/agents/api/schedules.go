@@ -174,3 +174,37 @@ func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"runID": admission.ID})
 }
+
+// enableSchedule clears the disabling the provider applied after repeated
+// failures — status.disabledReason and the consecutive-failure count — so the
+// schedule fires again. Mirrors enableTrigger: a schedule disabled on a
+// permanent error (no task, a deleted agent) is disabled again by its
+// reconciler; spec.suspend is the user's own switch and is left alone.
+func (s *Server) enableSchedule(w http.ResponseWriter, r *http.Request) {
+	c, _, ok := s.requireClient(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	sched, err := c.Schedules().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	if sched.Status.DisabledReason == "" && sched.Status.ConsecutiveFailures == 0 {
+		writeJSON(w, http.StatusOK, sched)
+		return
+	}
+	// Cleared by patching the fields to null, for the same reason as
+	// enableTrigger: a status update from the typed object omits zero values.
+	if err := c.Schedules().ClearStatusFields(r.Context(), name, "disabledReason", "consecutiveFailures"); err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	out, err := c.Schedules().Get(r.Context(), name, metav1.GetOptions{})
+	if err != nil {
+		writeResourceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}

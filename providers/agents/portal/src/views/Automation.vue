@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Check, Copy, Pause, Play, Plus } from 'lucide-vue-next'
+import { Check, Copy, Pause, Play, Plus, Power } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { hashFor, type Route } from '../router'
@@ -467,6 +467,33 @@ async function toggleSuspend(row: Automation): Promise<void> {
   }
 }
 
+// The provider disables a schedule or trigger after repeated run failures and
+// says why in status.disabledReason. Once the cause is fixed, this clears the
+// disabling and the failure count so it fires again; spec.suspend (the user's
+// own pause) is a different switch and is not touched.
+async function enable(row: Automation): Promise<void> {
+  if (actionBusy.value) return
+  const authority = captureAuthority()
+  const kind = props.kind
+  const name = row.metadata.name
+  const previous = row.status?.disabledReason
+  actionBusy.value = `enable:${name}`
+  try {
+    await mutate(authority.store, {
+      run: (): Promise<Automation> => kind === 'schedule'
+        ? authority.api.enableSchedule(name)
+        : authority.api.enableTrigger(name),
+      success: `${cap(META[kind].one)} enabled.`,
+      failure: 'Enable failed',
+      optimistic: () => { if (row.status) row.status.disabledReason = undefined },
+      rollback: () => { if (row.status) row.status.disabledReason = previous },
+      reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
+    })
+  } finally {
+    actionBusy.value = ''
+  }
+}
+
 async function del(name: string): Promise<void> {
   if (actionBusy.value) return
   const authority = captureAuthority()
@@ -572,6 +599,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </template>
         <template #actions="{ row }">
           <ResourceTableActionButton v-if="webhookURLFor(row.resource as Automation)" :icon="Copy" :label="`Copy webhook URL for ${row.name}`" :disabled="!!actionBusy" @click="copyWebhookURL(webhookURLFor(row.resource as Automation))" />
+          <ResourceTableActionButton v-if="automationStatus(row.resource as Automation)?.disabledReason" :icon="Power" tone="accent" :label="`Enable ${row.name}`" :busy-label="`Enabling ${row.name}…`" :busy="actionBusy === `enable:${row.name}`" :disabled="!!actionBusy" @click="enable(row.resource as Automation)" />
           <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
           <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
           <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />

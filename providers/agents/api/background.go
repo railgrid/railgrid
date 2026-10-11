@@ -1264,7 +1264,7 @@ func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
 		AgentRef:      trig.Spec.AgentRef,
 		Task:          task,
 		Trigger:       agentsv1alpha1.RunTriggerEvent,
-		SessionID:     "trigger:" + name,
+		SessionID:     triggerSessionID(name, r.Header.Get("X-GitHub-Delivery")),
 		NotifyChannel: trig.Spec.ChannelRef,
 	}); err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", err.Error())
