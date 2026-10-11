@@ -737,6 +737,16 @@ type TemplateStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// Capabilities are contracts the Infrastructure controller has validated
+	// against this Template's current desired state. Consumers may rely on a
+	// capability only while ObservedGeneration and the Ready condition are
+	// current for metadata.generation. A Template manifest cannot assert these
+	// values; only the controller writes them.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Capabilities []TemplateCapability `json:"capabilities,omitempty"`
+
 	// Backend reflects what the backend reported from its
 	// SetupTemplate call. Empty until first reconcile.
 	// +optional
@@ -750,6 +760,30 @@ type TemplateStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// TemplateCapability is a versioned contract the Infrastructure controller
+// proved for a Template. The capability is absent when its desired contract is
+// invalid or its status is stale.
+type TemplateCapability struct {
+	// Name identifies the behavior contract.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	Name string `json:"name"`
+
+	// Version identifies the compatible semantics of the contract, independent
+	// of the Template's own release version.
+	// +required
+	// +kubebuilder:validation:Pattern=`^v[1-9][0-9]*$`
+	// +kubebuilder:validation:MaxLength=32
+	Version string `json:"version"`
+}
+
+// Stable wire identifiers for capabilities written to Template.status.
+const (
+	CapabilityMCPBrowserSessionIsolation   = "mcp.browser-session-isolation"
+	CapabilityMCPBrowserSessionIsolationV1 = "v1"
+)
 
 // TemplateBackendStatus is what the named backend reported. The
 // platform mirrors the returned struct here verbatim — no

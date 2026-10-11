@@ -70,9 +70,15 @@ var infrastructureGroupVersion = schema.GroupVersion{Group: crossprovider.Infras
 // optionally scoped to one of its components. An empty Component addresses
 // instance-level verbs.
 type dataPlaneRef struct {
-	Resource  string
-	Name      string
-	Component string
+	Resource            string
+	Name                string
+	Component           string
+	IsolatedMCPContexts bool
+	// Browser incarnation metadata prevents cached contexts crossing replacement or contract changes.
+	InstanceUID        string
+	TemplateUID        string
+	TemplateVersion    string
+	TemplateGeneration int64
 }
 
 // dataPlaneURL composes the URL of a data-plane verb on the infrastructure

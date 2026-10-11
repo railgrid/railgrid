@@ -62,16 +62,19 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 	}
 	// Interacting with a page whose latest edit has not synced is misleading —
 	// same freshness guard inspection uses.
+	var sourceFence *projectAssistantPreviewSourceFence
 	if req.RunState != nil {
 		checkpointed, checkpointErr := s.checkpointProjectAssistantRunSandboxIfDirty(ctx, req.RunState)
 		if checkpointErr != nil {
+			failure, err := projectAssistantPreviewNotCurrent(checkpointErr, includeScreenshot)
 			return projectAssistantPreviewInteractionResult{
-				projectAssistantPreviewInspectionResult: projectAssistantPreviewInspectionResult{
-					Status: "failed", FailureKind: "not_current",
-					Summary:          projectAssistantRunSandboxCheckpointFailure(checkpointErr),
-					ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
-				},
-			}, nil
+				projectAssistantPreviewInspectionResult: failure,
+			}, err
+		}
+		sourceFence, checkpointErr = s.captureProjectAssistantPreviewSourceFence(ctx, req.RunState, projectAssistantPreviewWorkspaceScope(req))
+		if checkpointErr != nil {
+			failure, err := projectAssistantPreviewNotCurrent(checkpointErr, includeScreenshot)
+			return projectAssistantPreviewInteractionResult{projectAssistantPreviewInspectionResult: failure}, err
 		}
 		if revision, _ := req.RunState.SourceMutationRevisions(); revision > 0 {
 			status, failure := req.RunState.DevelopmentSyncEvidence(revision)
@@ -79,6 +82,9 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 				status, failure = req.RunState.WaitForDevelopmentSync(ctx, revision, projectSandboxSyncTimeout+time.Second)
 			}
 			if status != "succeeded" {
+				if err := ctx.Err(); err != nil {
+					return projectAssistantPreviewInteractionResult{}, err
+				}
 				if failure == "" {
 					failure = "the current workspace mutation has not completed development synchronization"
 				}
@@ -89,6 +95,14 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 					},
 				}, nil
 			}
+		}
+	}
+	if req.RunState == nil {
+		var err error
+		sourceFence, err = s.captureProjectAssistantPreviewSourceFence(ctx, nil, projectAssistantPreviewWorkspaceScope(req))
+		if err != nil {
+			failure, err := projectAssistantPreviewNotCurrent(err, includeScreenshot)
+			return projectAssistantPreviewInteractionResult{projectAssistantPreviewInspectionResult: failure}, err
 		}
 	}
 	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, req.Identity, req.Project)
@@ -107,6 +121,12 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 	if err != nil {
 		return projectAssistantPreviewInteractionResult{}, err
 	}
+	if err := sourceFence.validate(ctx); err != nil {
+		failure, err := projectAssistantPreviewNotCurrent(err, includeScreenshot)
+		return projectAssistantPreviewInteractionResult{
+			projectAssistantPreviewInspectionResult: failure,
+		}, err
+	}
 	result, err := s.interactPreviewViaBrowserMCP(ctx, req.Identity, ref, projectAssistantPreviewInteractionRequest{
 		Project:            req.Project,
 		URL:                targetURL,
@@ -117,6 +137,11 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 	})
 	if err != nil {
 		return projectAssistantPreviewInteractionResult{}, err
+	}
+	if err := sourceFence.validate(ctx); err != nil {
+		result.projectAssistantPreviewInspectionResult, err = projectAssistantPreviewNotCurrent(err, includeScreenshot)
+		result.Limitations = []string{"The listed actions may have been applied, but source changed during verification. Their outcome is not verified; do not automatically replay them."}
+		return result, err
 	}
 	projectAssistantFinalizePreviewScreenshotStatus(&result.projectAssistantPreviewInspectionResult, includeScreenshot)
 	result.EvidenceScope = "post_interaction_state"
@@ -220,7 +245,7 @@ func lockBrowserInstanceContext(ctx context.Context, clusterID string, ref dataP
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	key := clusterID + "|" + ref.Resource + "|" + ref.Name
+	key := projectAssistantBrowserSessionScopeKey(identity{clusterID: clusterID}, ref)
 	actual, _ := browserInstanceLocks.LoadOrStore(key, &projectAssistantBrowserInstanceLock{gate: make(chan struct{}, 1)})
 	lock := actual.(*projectAssistantBrowserInstanceLock)
 	if cause := context.Cause(ctx); cause != nil {
@@ -287,6 +312,9 @@ type projectAssistantPreviewInteractionResult struct {
 // steps in order (stopping at the first that cannot be applied), and observes
 // the resulting page. It holds the per-instance lock for the whole sequence.
 func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, ref dataPlaneRef, req projectAssistantPreviewInteractionRequest) (projectAssistantPreviewInteractionResult, error) {
+	if !ref.IsolatedMCPContexts {
+		return projectAssistantPreviewInteractionResult{}, errProjectAssistantBrowserIsolationUnverified
+	}
 	unlock, err := lockBrowserInstanceContext(ctx, id.clusterID, ref)
 	if err != nil {
 		return projectAssistantPreviewInteractionResult{}, err

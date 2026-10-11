@@ -9,9 +9,9 @@ Postgres LISTEN/NOTIFY and conversation retention onto a per-`Session`
 deadline, and **Cut D.3 (20 September 2026) moved the working-copy ledger off
 the volume and onto `Project.status.workspace`.** What is left on a pod is a
 cache of the working tree, which is rebuilt when it is absent or behind, and
-one genuinely process-local resource: the workspace's shared Playwright
-Browser. That browser is now the only reason `replicaCount` defaults to 1 and
-the Deployment keeps `strategy: Recreate`. ·
+process-local browser context reuse. Verified Browser backends isolate contexts
+per thread, while Recreate preserves the deployment's per-replica capacity
+allocation during updates. ·
 Date: 2026-08-17, revised for Cut A, Cut D.2 and Cut D.3 · Author: design note
 Related: [`provider-horizontal-scaling.md`](./provider-horizontal-scaling.md)
 (the cross-provider plan this details), the kuery per-edge claims
@@ -54,14 +54,19 @@ CRs; committed source of truth is git via the code provider.
    gone at its root: a replica with no tree now reads a revision and a dirty
    set that say so, instead of reading silence as cleanliness.
 
-There is also one cross-project resource: each workspace has one shared,
-single-session Playwright Browser. The browser session manager serializes that
-resource only within one App Studio process. Project pinning can place projects
-from the same workspace on different replicas, so two processes could invalidate
-or concurrently drive the same browser. The chart keeps a Recreate strategy so
-an upgrade does not transiently run two pods against that browser
-(`deploy/chart/templates/deployment.yaml`), and `replicaCount` still defaults
-to 1 — but it is a default now, not a guard.
+There is also one cross-project resource: each workspace has one shared
+Playwright Browser. Verified managed backends isolate MCP contexts per thread;
+separate threads can use distinct contexts concurrently, including across App
+Studio replicas. Context ownership and reuse remain process-local, so failover
+creates a fresh context and cannot preserve an in-memory browser history.
+
+Admission is a conservative deployment allocation: `browser.sessionBudget`
+(default 8) is divided by `browser.replicaCapacity` (defaults to `replicaCount`),
+rounding down. Recreate prevents old/new allocations overlapping on deployment
+updates. Set replica capacity to the autoscaling maximum before scaling. This is
+not a browser-enforced global quota: independent deployments must allocate from
+the same budget, crashed clients can leave sessions until backend cleanup, and
+page memory depends on the workload. See the provider README for configuration.
 
 ## Design verdict
 
@@ -74,10 +79,10 @@ mechanisms:
 - **A controller Lease** keeps CR writes single-writer (mechanism 3 below).
 
 These make project state, run state and CR reconciliation replica-aware. They
-do not make the workspace-wide Browser replica-safe, so one replica stays the
-recommended deployment until browser ownership and serialization become
-durable or distributed — but it is now a recommendation the operator can weigh,
-not something the chart refuses to render.
+support concurrent isolated Browser contexts across replicas while retaining
+process-local context reuse and deployment-scoped admission. They do not provide
+a browser-enforced global resource quota or recover browser history after pod
+failure.
 
 The hub keeps its "no request pinned to a pod" model: the Service still
 round-robins, and the *provider* forwards internally exactly like edges does

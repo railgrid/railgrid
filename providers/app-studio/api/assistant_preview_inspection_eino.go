@@ -35,6 +35,19 @@ type projectEinoAssistantEnhancedPreviewTool struct {
 	visionEnabled bool
 }
 
+func projectAssistantEnhancedPreviewToolCallRequest(req projectAssistantRunRequest, runState *projectEinoAssistantRunState, args map[string]any) projectAssistantToolCallRequest {
+	return projectAssistantToolCallRequest{
+		Identity:          req.Identity,
+		Project:           req.Project,
+		WorkspaceScope:    req.WorkspaceScope,
+		AssistantThreadID: strings.TrimSpace(req.ThreadID),
+		AssistantRunID:    projectAssistantRunID(req),
+		InitialBuild:      projectAssistantInitialBuildActive(req, runState),
+		RunState:          runState,
+		Arguments:         args,
+	}
+}
+
 func newProjectEinoAssistantEnhancedPreviewTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
 	return &projectEinoAssistantEnhancedPreviewTool{
 		server:        server,
@@ -137,15 +150,7 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 	})
 	requestScreenshot := projectToolBool(args["includeScreenshot"])
 	captureScreenshot := requestScreenshot && t.visionEnabled
-	toolReq := projectAssistantToolCallRequest{
-		Identity:       t.req.Identity,
-		Project:        t.req.Project,
-		WorkspaceScope: t.req.WorkspaceScope,
-		AssistantRunID: projectAssistantRunID(t.req),
-		InitialBuild:   projectAssistantInitialBuildActive(t.req, t.runState),
-		RunState:       t.runState,
-		Arguments:      args,
-	}
+	toolReq := projectAssistantEnhancedPreviewToolCallRequest(t.req, t.runState, args)
 	var result projectAssistantPreviewInspectionResult
 	var textResult string
 	switch projectToolBaseName(spec.Name) {

@@ -10,6 +10,18 @@
 {{- if and (eq (default "off" .Values.assistant.runSandbox.mode) "force") (gt (int .Values.replicaCount) 1) -}}
 {{- fail "assistant.runSandbox.mode=force requires replicaCount=1 until coding sandbox claims have distributed CAS" -}}
 {{- end -}}
+{{- if or (not (regexMatch "^[0-9]+$" (toString .Values.browser.sessionBudget))) (not (regexMatch "^[0-9]+$" (toString .Values.browser.replicaCapacity))) (not (regexMatch "^[0-9]+$" (toString .Values.replicaCount))) -}}
+{{- fail "browser.sessionBudget must cover browser.replicaCapacity, and browser.replicaCapacity must cover replicaCount (integer values required)" -}}
+{{- end -}}
+{{- $browserBudget := int .Values.browser.sessionBudget -}}
+{{- $browserReplicas := int .Values.replicaCount -}}
+{{- $browserCapacity := int .Values.browser.replicaCapacity -}}
+{{- if eq $browserCapacity 0 -}}
+{{- $browserCapacity = $browserReplicas -}}
+{{- end -}}
+{{- if or (lt $browserReplicas 1) (lt $browserCapacity $browserReplicas) (lt $browserBudget $browserCapacity) -}}
+{{- fail "browser.sessionBudget must cover browser.replicaCapacity, and browser.replicaCapacity must cover replicaCount (all positive)" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,13 +30,8 @@ metadata:
     {{- include "appstudio.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # Recreate is here for ONE reason now: the workspace's shared Playwright
-  # Browser is single-session and its ownership is process-local, so a rolling
-  # update must not briefly run two provider pods against it. The controllers
-  # are leader-elected and safe either way, and since §9 Cut D.3 the working-copy
-  # ledger is on the Project rather than on this pod's volume, so neither the
-  # reconcilers nor the file tree need this any more. It goes when browser
-  # ownership becomes durable or distributed (replica-awareness note, Phase D).
+  # Avoid overlapping old/new per-replica browser budget allocations while
+  # changing the deployment's replica count or session budget.
   strategy:
     type: Recreate
   selector:
@@ -198,6 +205,10 @@ spec:
             - name: APP_STUDIO_ORG_MONTHLY_USD_CAP
               value: {{ include "appstudio.numeric" . | quote }}
             {{- end }}
+            - name: APP_STUDIO_BROWSER_SESSION_BUDGET
+              value: {{ $browserBudget | quote }}
+            - name: APP_STUDIO_BROWSER_REPLICA_CAPACITY
+              value: {{ $browserCapacity | quote }}
             - name: APP_STUDIO_REPLICA_COUNT
               value: {{ .Values.replicaCount | quote }}
             {{- if ne .Values.assistant.runSandbox.enabled nil }}

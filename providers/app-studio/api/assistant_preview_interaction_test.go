@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic/fake"
 
@@ -297,19 +296,7 @@ func TestBrowserInstanceLockWaitHonorsContextCancellation(t *testing.T) {
 
 func configurePreviewInteractionBrowserTestServer(t *testing.T, server *Server, observe func(method, tool string)) {
 	t.Helper()
-	studio := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": aiv1alpha1.SchemeGroupVersion.String(),
-		"kind":       "Studio",
-		"metadata":   map[string]any{"name": aiv1alpha1.StudioName},
-		"status": map[string]any{
-			"browser": map[string]any{
-				"phase":    aiv1alpha1.StudioServiceReady,
-				"resource": "instances",
-				"instance": "browser",
-			},
-		},
-	}}
-	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), studio)
+	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), managedBrowserIsolationTestObjects(t)...)
 	server.projectClientFor = func(identity) (*asclient.Client, error) {
 		return asclient.NewFromDynamic(dynamicClient), nil
 	}
@@ -360,5 +347,13 @@ func configurePreviewInteractionBrowserTestServer(t *testing.T, server *Server, 
 			}
 			return recorder.Result(), nil
 		})}
+	}
+}
+
+func TestPreviewInteractionRejectsUnverifiedBrowserIsolation(t *testing.T) {
+	server := &Server{}
+	_, err := server.interactPreviewViaBrowserMCP(context.Background(), identity{}, dataPlaneRef{Resource: "instances", Name: "custom-browser"}, projectAssistantPreviewInteractionRequest{})
+	if err == nil || !strings.Contains(err.Error(), "isolation is unverified") {
+		t.Fatalf("unverified browser isolation was not blocked: %v", err)
 	}
 }

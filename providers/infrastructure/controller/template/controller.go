@@ -39,6 +39,7 @@ import (
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/backend"
 	"github.com/railgrid/provider-infrastructure/instancespec"
+	"github.com/railgrid/provider-infrastructure/internal/browsercontract"
 )
 
 // Reconciler reconciles Template objects.
@@ -96,8 +97,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Snapshot for the status patch base.
 	patchBase := tmpl.DeepCopy()
+	// Capabilities are assertions derived by this controller. Clear them before
+	// every path so a failed or invalid reconcile cannot leave an older proof
+	// looking current after a spec change.
+	tmpl.Status.Capabilities = nil
 
 	if !tmpl.DeletionTimestamp.IsZero() {
+		if len(patchBase.Status.Capabilities) != 0 {
+			if _, err := r.writeStatus(ctx, &tmpl, patchBase); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Status may persist after the finalizer update or while another
+			// finalizer holds deletion. Reconcile again after revocation before
+			// starting teardown.
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return r.finalize(ctx, &tmpl, patchBase)
 	}
 
@@ -198,6 +212,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// All sub-conditions True → Ready=True.
 	setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionTrue,
 		infrav1alpha1.ReasonReady, "")
+	if browsercontract.SupportsBrowserSessionIsolation(&tmpl) {
+		tmpl.Status.Capabilities = []infrav1alpha1.TemplateCapability{{
+			Name:    infrav1alpha1.CapabilityMCPBrowserSessionIsolation,
+			Version: infrav1alpha1.CapabilityMCPBrowserSessionIsolationV1,
+		}}
+	}
 	tmpl.Status.ObservedGeneration = tmpl.Generation
 	logger.V(1).Info("template ready", "backend", b.Name())
 	return r.writeStatus(ctx, &tmpl, patchBase)
@@ -250,8 +270,12 @@ func setCondition(tmpl *infrav1alpha1.Template, condType string, status metav1.C
 				conds[i].Reason = reason
 				conds[i].Message = message
 				conds[i].LastTransitionTime = now
-				conds[i].ObservedGeneration = tmpl.Generation
 			}
+			// A condition describes the latest reconcile even when its semantic
+			// value stayed the same across a generation change. Keep the transition
+			// timestamp stable, but don't leave consumers believing the Ready
+			// result describes an older spec.
+			conds[i].ObservedGeneration = tmpl.Generation
 			tmpl.Status.Conditions = conds
 			return
 		}

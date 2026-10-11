@@ -24,11 +24,13 @@ package template
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -217,6 +219,9 @@ func TestReconcileInvalidSchema(t *testing.T) {
 func TestReconcileBackendNotFound(t *testing.T) {
 	tmpl := newTestTemplate(t, "missing")
 	tmpl.Spec.Backend = "does-not-exist"
+	tmpl.Status.Capabilities = []infrav1alpha1.TemplateCapability{{
+		Name: infrav1alpha1.CapabilityMCPBrowserSessionIsolation, Version: infrav1alpha1.CapabilityMCPBrowserSessionIsolationV1,
+	}}
 	r, stb := newTestReconciler(t, tmpl)
 
 	reconcileUntilSettled(t, r, "missing")
@@ -229,8 +234,122 @@ func TestReconcileBackendNotFound(t *testing.T) {
 	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != infrav1alpha1.ReasonBackendNotFound {
 		t.Fatalf("expected Ready=False/BackendNotFound; got %+v", cond)
 	}
+	if len(got.Status.Capabilities) != 0 {
+		t.Fatalf("failed Template retained stale capabilities: %+v", got.Status.Capabilities)
+	}
 	if len(stb.SeenSetups) != 0 {
 		t.Fatalf("stub backend must not see setups for an unknown backend name; got %v", stb.SeenSetups)
+	}
+}
+
+type kroNamedStub struct{ *stub.Backend }
+
+func (*kroNamedStub) Name() string { return "kro" }
+
+func TestReconcilePublishesBrowserCapabilityAfterCurrentBackendReady(t *testing.T) {
+	raw, err := os.ReadFile("../../install/templates/browser.yaml")
+	if err != nil {
+		t.Fatalf("read browser seed: %v", err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatalf("decode browser seed: %v", err)
+	}
+	tmpl.Generation = 1
+	r, stb := newTestReconciler(t, &tmpl)
+	registry := backend.NewRegistry()
+	if err := registry.Register(&kroNamedStub{Backend: stb}); err != nil {
+		t.Fatalf("register kro test backend: %v", err)
+	}
+	r.Backends = registry
+
+	reconcileUntilSettled(t, r, tmpl.Name)
+
+	var got infrav1alpha1.Template
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: tmpl.Name}, &got); err != nil {
+		t.Fatalf("get browser Template: %v", err)
+	}
+	if got.Status.ObservedGeneration != got.Generation {
+		t.Fatalf("browser observed generation = %d, want current %d", got.Status.ObservedGeneration, got.Generation)
+	}
+	if ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != got.Generation {
+		t.Fatalf("browser Ready condition = %+v, want current Ready=True", ready)
+	}
+	want := []infrav1alpha1.TemplateCapability{{
+		Name: infrav1alpha1.CapabilityMCPBrowserSessionIsolation, Version: infrav1alpha1.CapabilityMCPBrowserSessionIsolationV1,
+	}}
+	if len(got.Status.Capabilities) != len(want) || got.Status.Capabilities[0] != want[0] {
+		t.Fatalf("browser capabilities = %+v, want %+v", got.Status.Capabilities, want)
+	}
+	readyBeforePatch := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady)
+	if readyBeforePatch == nil {
+		t.Fatal("browser Ready condition is missing before compatible patch")
+	}
+	transitionTime := readyBeforePatch.LastTransitionTime
+
+	// A compatible Template patch advances generation without changing the
+	// Ready condition's semantic value. The reconciler must still mark that
+	// condition current while leaving its transition time unchanged.
+	got.Spec.Version = "0.2.1"
+	got.Generation++
+	if err := r.Client.Update(context.Background(), &got); err != nil {
+		t.Fatalf("update browser Template patch version: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: got.Name}}); err != nil {
+		t.Fatalf("reconcile compatible browser Template patch: %v", err)
+	}
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: got.Name}, &got); err != nil {
+		t.Fatalf("get patched browser Template: %v", err)
+	}
+	readyAfterPatch := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady)
+	if readyAfterPatch == nil || readyAfterPatch.Status != metav1.ConditionTrue || readyAfterPatch.ObservedGeneration != got.Generation {
+		t.Fatalf("patched browser Ready condition = %+v, want current Ready=True", readyAfterPatch)
+	}
+	if !readyAfterPatch.LastTransitionTime.Equal(&transitionTime) {
+		t.Fatalf("compatible patch changed Ready transition time from %v to %v", transitionTime, readyAfterPatch.LastTransitionTime)
+	}
+	if got.Status.ObservedGeneration != got.Generation || len(got.Status.Capabilities) != 1 || got.Status.Capabilities[0] != want[0] {
+		t.Fatalf("compatible patch status = observed generation %d, capabilities %+v; want generation %d and %+v", got.Status.ObservedGeneration, got.Status.Capabilities, got.Generation, want)
+	}
+}
+
+func TestReconcileRevokesBrowserCapabilityBeforeDeletionFinalization(t *testing.T) {
+	tmpl := newTestTemplate(t, "browser")
+	tmpl.Status.Capabilities = []infrav1alpha1.TemplateCapability{{
+		Name: infrav1alpha1.CapabilityMCPBrowserSessionIsolation, Version: infrav1alpha1.CapabilityMCPBrowserSessionIsolationV1,
+	}}
+	tmpl.Finalizers = []string{infrav1alpha1.FinalizerTemplateReconcile, "external.example/finalizer"}
+	r, stb := newTestReconciler(t, tmpl)
+	if err := r.Client.Delete(context.Background(), tmpl); err != nil {
+		t.Fatalf("delete browser Template: %v", err)
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: tmpl.Name}})
+	if err != nil {
+		t.Fatalf("reconcile capability revocation: %v", err)
+	}
+	if result != (ctrl.Result{Requeue: true}) {
+		t.Fatal("revocation pass did not requeue before finalization")
+	}
+	var got infrav1alpha1.Template
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: tmpl.Name}, &got); err != nil {
+		t.Fatalf("Template disappeared before external finalizer completed: %v", err)
+	}
+	if len(got.Status.Capabilities) != 0 {
+		t.Fatalf("deleting Template retained browser capability: %+v", got.Status.Capabilities)
+	}
+	if len(stb.SeenTeardowns) != 0 {
+		t.Fatalf("teardown ran before capability revocation: %v", stb.SeenTeardowns)
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: tmpl.Name}}); err != nil {
+		t.Fatalf("reconcile finalization: %v", err)
+	}
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: tmpl.Name}, &got); err != nil {
+		t.Fatalf("Template disappeared before external finalizer completed: %v", err)
+	}
+	if len(got.Status.Capabilities) != 0 {
+		t.Fatalf("finalizing Template regained browser capability: %+v", got.Status.Capabilities)
 	}
 }
 

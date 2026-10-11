@@ -28,6 +28,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 type fakeProjectAssistantPreviewInspector struct {
@@ -44,6 +45,26 @@ func (f *fakeProjectAssistantPreviewInspector) Inspect(_ context.Context, reques
 	f.calls++
 	f.request = request
 	return f.result, f.err
+}
+
+func TestProjectAssistantEnhancedPreviewToolCallRequestPreservesThread(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}
+	runRequest := projectAssistantRunRequest{
+		Identity:     identity{tenant: "tenant", clusterID: "cluster", user: "alice"},
+		Project:      &aiv1alpha1.Project{},
+		ThreadID:     "thread-stable-across-runs",
+		AssistantRun: &store.AssistantRun{ID: "run-one"},
+	}
+	toolRequest := projectAssistantEnhancedPreviewToolCallRequest(runRequest, newProjectEinoAssistantRunState(), map[string]any{})
+	owner := server.nativeBrowserOwner(toolRequest)
+	if owner.AssistantThreadID != runRequest.ThreadID {
+		t.Fatalf("enhanced preview request thread = %q, want %q", owner.AssistantThreadID, runRequest.ThreadID)
+	}
+	nextTurn := runRequest
+	nextTurn.AssistantRun = &store.AssistantRun{ID: "run-two"}
+	if owner.key() != server.nativeBrowserOwner(projectAssistantEnhancedPreviewToolCallRequest(nextTurn, newProjectEinoAssistantRunState(), map[string]any{})).key() {
+		t.Fatal("enhanced preview request changed its browser owner across runs in one thread")
+	}
 }
 
 func TestProjectAssistantPreviewInspectionTargetURLConfinesOrigin(t *testing.T) {

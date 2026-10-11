@@ -37,6 +37,12 @@ var (
 	studioResource  = tenant.Resource{GVR: aiv1alpha1.SchemeGroupVersion.WithResource("studios"), Kind: "Studio", Plural: "Studios"}
 )
 
+const (
+	managedBrowserTemplateName            = "browser"
+	managedBrowserIsolationCapabilityName = "mcp.browser-session-isolation"
+	managedBrowserIsolationCapabilityV1   = "v1"
+)
+
 // ensureSessionCR projects a freshly-created thread into a Session CR. The
 // Session reconciler mirrors status and purges the store on CR delete; the
 // ownerReference makes Project deletion take the conversations with it.
@@ -259,11 +265,140 @@ func (s *Server) searchBackend(ctx context.Context, c *asclient.Client) (resourc
 	return s.studioBackend(ctx, c, "search")
 }
 
-// browserBackend reports the workspace's shared headless browser for a turn.
-// Empty when there is none — preview inspection then reports unavailable
-// rather than failing obscurely.
-func (s *Server) browserBackend(ctx context.Context, c *asclient.Client) (resource, name string) {
-	return s.studioBackend(ctx, c, "browser")
+// browserBackendRef returns the Studio's Ready browser endpoint and reports
+// whether the live Instance, its current Template, and the Template's
+// runtime-projected Deployment proof all match the managed browser contract.
+// A Ready custom or drifted endpoint is returned with false so callers can
+// distinguish it from a workspace with no Ready backend, but it is never
+// asserted safe for concurrent MCP contexts.
+func (s *Server) browserBackendRef(ctx context.Context, c *asclient.Client) (dataPlaneRef, bool) {
+	if c == nil {
+		return dataPlaneRef{}, false
+	}
+	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+	if err != nil || !st.GetDeletionTimestamp().IsZero() {
+		return dataPlaneRef{}, false
+	}
+	resource, name := studioBackendFromObject(st, "browser")
+	if strings.TrimSpace(resource) == "" || strings.TrimSpace(name) == "" {
+		return dataPlaneRef{}, false
+	}
+	ref := dataPlaneRef{Resource: resource, Name: name}
+	if resource != "instances" {
+		return ref, false
+	}
+	instance, err := c.Resource(tenant.InfrastructureInstancesResource, "").Get(ctx, name, metav1.GetOptions{})
+	if err != nil || !instance.GetDeletionTimestamp().IsZero() {
+		return ref, false
+	}
+	ref.InstanceUID = string(instance.GetUID())
+	templateName, found, err := unstructured.NestedString(instance.Object, "spec", "template")
+	if err != nil || !found || strings.TrimSpace(templateName) == "" {
+		return ref, false
+	}
+	template, err := c.Resource(templateResource, "").Get(ctx, templateName, metav1.GetOptions{})
+	if err != nil || !template.GetDeletionTimestamp().IsZero() {
+		return ref, false
+	}
+	ref.TemplateVersion, _, _ = unstructured.NestedString(template.Object, "spec", "version")
+	ref.TemplateGeneration = template.GetGeneration()
+	ref.TemplateUID = string(template.GetUID())
+	ref.IsolatedMCPContexts = browserMCPContextsAreIsolated(instance, template, st, ref)
+	return ref, ref.IsolatedMCPContexts
+}
+
+// browserMCPContextsAreIsolated requires fresh status at every layer. The
+// Infrastructure controller owns the Template capability proof; Instance
+// status proves the current Template version and instance generation reached
+// Ready, while mcpIsolationReady remains the runtime-projected Deployment
+// proof. CachedResource replication is eventually consistent, so this checks
+// the exact object incarnations observed by this request.
+func browserMCPContextsAreIsolated(instance, template, studio *unstructured.Unstructured, ref dataPlaneRef) bool {
+	if instance == nil || template == nil || studio == nil || ref.Resource != "instances" || ref.Name != studioBrowserInstanceName || ref.InstanceUID == "" || ref.InstanceUID != string(instance.GetUID()) || ref.TemplateUID == "" || ref.TemplateUID != string(template.GetUID()) {
+		return false
+	}
+	if !instance.GetDeletionTimestamp().IsZero() || !template.GetDeletionTimestamp().IsZero() || !studio.GetDeletionTimestamp().IsZero() {
+		return false
+	}
+	version, found, err := unstructured.NestedString(template.Object, "spec", "version")
+	if err != nil || !found || version == "" || ref.TemplateVersion != version || ref.TemplateGeneration <= 0 || ref.TemplateGeneration != template.GetGeneration() {
+		return false
+	}
+	templateGeneration := template.GetGeneration()
+	templateObservedGeneration, found, err := unstructured.NestedInt64(template.Object, "status", "observedGeneration")
+	if err != nil || !found || templateGeneration <= 0 || templateObservedGeneration != templateGeneration || !browserReadyConditionCurrent(template, templateGeneration) || !browserTemplateHasIsolationCapability(template) {
+		return false
+	}
+	browserRef, found, err := unstructured.NestedMap(studio.Object, "spec", "browser", "resourceRef")
+	if err != nil || !found {
+		return false
+	}
+	apiVersion, _ := browserRef["apiVersion"].(string)
+	kind, _ := browserRef["kind"].(string)
+	resource, _ := browserRef["resource"].(string)
+	name, _ := browserRef["name"].(string)
+	if apiVersion != infrastructureGroupVersion.String() || kind != "Instance" || resource != ref.Resource || name != ref.Name {
+		return false
+	}
+	instanceTemplate, found, err := unstructured.NestedString(instance.Object, "spec", "template")
+	if err != nil || !found || instanceTemplate != managedBrowserTemplateName {
+		return false
+	}
+	statusTemplate, found, err := unstructured.NestedString(instance.Object, "status", "template")
+	if err != nil || !found || statusTemplate != managedBrowserTemplateName {
+		return false
+	}
+	templateVersion, found, err := unstructured.NestedString(instance.Object, "status", "templateVersion")
+	if err != nil || !found || templateVersion == "" || templateVersion != version {
+		return false
+	}
+	generation := instance.GetGeneration()
+	observedGeneration, found, err := unstructured.NestedInt64(instance.Object, "status", "observedGeneration")
+	if err != nil || !found || generation <= 0 || observedGeneration != generation {
+		return false
+	}
+	phase, found, err := unstructured.NestedString(instance.Object, "status", "phase")
+	if err != nil || !found || phase != "Ready" || !browserReadyConditionCurrent(instance, generation) {
+		return false
+	}
+	isolationReady, found, err := unstructured.NestedBool(instance.Object, "status", "mcpIsolationReady")
+	if err != nil || !found || !isolationReady {
+		return false
+	}
+	return true
+}
+
+func browserTemplateHasIsolationCapability(template *unstructured.Unstructured) bool {
+	capabilities, found, err := unstructured.NestedSlice(template.Object, "status", "capabilities")
+	if err != nil || !found {
+		return false
+	}
+	for _, raw := range capabilities {
+		capability, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if capability["name"] == managedBrowserIsolationCapabilityName && capability["version"] == managedBrowserIsolationCapabilityV1 {
+			return true
+		}
+	}
+	return false
+}
+
+func browserReadyConditionCurrent(object *unstructured.Unstructured, generation int64) bool {
+	conditions, found, err := unstructured.NestedSlice(object.Object, "status", "conditions")
+	if err != nil || !found {
+		return false
+	}
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if !ok || condition["type"] != "Ready" || condition["status"] != "True" {
+			continue
+		}
+		observed, ok := condition["observedGeneration"].(int64)
+		return ok && observed == generation
+	}
+	return false
 }
 
 // studioBackend reads one ready shared service (search/browser) off the Studio
@@ -275,6 +410,13 @@ func (s *Server) studioBackend(ctx context.Context, c *asclient.Client, service 
 	}
 	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
 	if err != nil {
+		return "", ""
+	}
+	return studioBackendFromObject(st, service)
+}
+
+func studioBackendFromObject(st *unstructured.Unstructured, service string) (resource, name string) {
+	if st == nil {
 		return "", ""
 	}
 	if disabled, _, _ := unstructured.NestedBool(st.Object, "spec", service, "disabled"); disabled {

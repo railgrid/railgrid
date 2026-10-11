@@ -237,15 +237,15 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		}
 		browserRef = ref
 	}
+	var sourceFence *projectAssistantPreviewSourceFence
 	if req.RunState != nil {
 		checkpointed, checkpointErr := s.checkpointProjectAssistantRunSandboxIfDirty(ctx, req.RunState)
 		if checkpointErr != nil {
-			return projectAssistantPreviewInspectionResult{
-				Status:           "failed",
-				FailureKind:      "not_current",
-				Summary:          projectAssistantRunSandboxCheckpointFailure(checkpointErr),
-				ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
-			}, nil
+			return projectAssistantPreviewNotCurrent(checkpointErr, includeScreenshot)
+		}
+		sourceFence, checkpointErr = s.captureProjectAssistantPreviewSourceFence(ctx, req.RunState, projectAssistantPreviewWorkspaceScope(req))
+		if checkpointErr != nil {
+			return projectAssistantPreviewNotCurrent(checkpointErr, includeScreenshot)
 		}
 		revision, _ := req.RunState.SourceMutationRevisions()
 		if revision > 0 {
@@ -255,6 +255,9 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 					status, failure = req.RunState.WaitForDevelopmentSync(ctx, revision, projectSandboxSyncTimeout+time.Second)
 				}
 				if status != "succeeded" {
+					if err := ctx.Err(); err != nil {
+						return projectAssistantPreviewInspectionResult{}, err
+					}
 					if failure == "" {
 						failure = "the current workspace mutation has not completed development synchronization"
 					}
@@ -266,6 +269,13 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 					}, nil
 				}
 			}
+		}
+	}
+	if req.RunState == nil {
+		var err error
+		sourceFence, err = s.captureProjectAssistantPreviewSourceFence(ctx, nil, projectAssistantPreviewWorkspaceScope(req))
+		if err != nil {
+			return projectAssistantPreviewNotCurrent(err, includeScreenshot)
 		}
 	}
 	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, req.Identity, req.Project)
@@ -287,6 +297,9 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		IncludeScreenshot:  includeScreenshot,
 		RequiresHubSession: strings.EqualFold(strings.TrimSpace(preview.ObservedAccess), "private"),
 	}
+	if err := sourceFence.validate(ctx); err != nil {
+		return projectAssistantPreviewNotCurrent(err, includeScreenshot)
+	}
 	var result projectAssistantPreviewInspectionResult
 	if s.previewInspector != nil {
 		result, err = s.previewInspector.Inspect(ctx, inspectionReq)
@@ -296,6 +309,9 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}
+	if err := sourceFence.validate(ctx); err != nil {
+		return projectAssistantPreviewNotCurrent(err, includeScreenshot)
+	}
 	projectAssistantFinalizePreviewScreenshotStatus(&result, includeScreenshot)
 	result.EvidenceScope = "rendered_state_only"
 	result.InteractionEvidence = false
@@ -303,6 +319,18 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		"This inspection did not click, type, press keys, submit forms, or execute application interactions. Static text and role assertions do not verify interaction behavior.",
 	}
 	return result, nil
+}
+
+func projectAssistantPreviewNotCurrent(err error, includeScreenshot bool) (projectAssistantPreviewInspectionResult, error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return projectAssistantPreviewInspectionResult{}, err
+	}
+	return projectAssistantPreviewInspectionResult{
+		Status:           "failed",
+		FailureKind:      "not_current",
+		Summary:          projectAssistantRunSandboxCheckpointFailure(err),
+		ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
+	}, nil
 }
 
 func projectAssistantPreviewScreenshotStatusForUnavailable(requested bool) string {
