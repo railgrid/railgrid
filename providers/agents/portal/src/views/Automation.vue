@@ -45,8 +45,14 @@ interface Draft {
   runAt: string
   timeZone: string
   source: string
-  connectionRef: string
+  /** filter is the generic key=value editor; in GitHub mode it holds only the
+   *  keys the structured fields below do not own (match, header.<name>). */
   filter: string
+  /** The GitHub flavour's structured half of spec.filter — see GITHUB_EVENTS. */
+  ghEvents: string[]
+  ghOtherEvents: string
+  ghActions: string
+  ghRepos: string
   task: string
   channelRef: string
   suspend: boolean
@@ -65,7 +71,7 @@ const META: Record<AutomationKind, Meta> = {
   trigger: {
     title: 'Triggers',
     one: 'trigger',
-    blurb: 'External events that wake this agent — a webhook POST or a GitHub event.',
+    blurb: 'External events that wake this agent — any webhook POST, or a GitHub repository webhook.',
     empty: 'No triggers yet.',
     whenHeader: 'Source',
     namePlaceholder: 'on-issue',
@@ -80,8 +86,11 @@ const EMPTY: Draft = {
   runAt: '',
   timeZone: '',
   source: 'webhook',
-  connectionRef: '',
   filter: '',
+  ghEvents: [],
+  ghOtherEvents: '',
+  ghActions: '',
+  ghRepos: '',
   task: '',
   channelRef: '',
   suspend: false,
@@ -137,22 +146,45 @@ const channels = computed(() => {
   void revision.value
   return props.store.agent(props.agent)?.spec?.channels || []
 })
-const connections = computed(() => {
-  void revision.value
-  return props.store.connections.data
-})
 const typeOptions = [
   { value: 'cron', label: 'recurring (cron)' },
   { value: 'wakeup', label: 'one-shot (runAt)' },
 ]
+// Both sources are the same inbound webhook endpoint on the provider; `github`
+// only records that the sender is GitHub so the form can offer its event
+// catalog instead of a raw key=value editor.
 const sourceOptions = [
-  { value: 'webhook', label: 'webhook' },
-  { value: 'github', label: 'github' },
+  { value: 'webhook', label: 'Generic webhook' },
+  { value: 'github', label: 'GitHub webhook' },
 ]
-const connectionOptions = computed(() => [
-  { value: '', label: '— none —' },
-  ...connections.value.map(connection => ({ value: connection.metadata.name, label: connection.metadata.name })),
-])
+const sourceLabel = (source: string): string => sourceOptions.find(option => option.value === source)?.label ?? source
+
+// GITHUB_EVENTS is the catalog the GitHub flavour offers as checkboxes: the
+// X-GitHub-Event names a repository or organization webhook sends that an
+// agent is usually asked to react to. Anything else goes in "other events".
+const GITHUB_EVENTS: readonly { name: string; label: string; hint: string }[] = [
+  { name: 'pull_request', label: 'Pull requests', hint: 'opened, synchronize, closed, …' },
+  { name: 'pull_request_review', label: 'PR reviews', hint: 'a review is submitted or dismissed' },
+  { name: 'pull_request_review_comment', label: 'PR review comments', hint: 'a comment on the diff' },
+  { name: 'issues', label: 'Issues', hint: 'opened, labeled, closed, …' },
+  { name: 'issue_comment', label: 'Issue & PR comments', hint: 'a comment on an issue or PR thread' },
+  { name: 'push', label: 'Pushes', hint: 'commits or tags pushed' },
+  { name: 'release', label: 'Releases', hint: 'published, created, …' },
+  { name: 'workflow_run', label: 'Workflow runs', hint: 'an Actions workflow finishes' },
+  { name: 'check_suite', label: 'Check suites', hint: 'CI checks complete' },
+  { name: 'discussion', label: 'Discussions', hint: 'created, answered, …' },
+]
+// A fresh GitHub trigger listens to pull requests: the review-on-PR agent is
+// the case the flavour exists for, and an empty selection would fire on
+// everything the webhook sends.
+const DEFAULT_GITHUB_EVENTS: string[] = ['pull_request']
+// The spec.filter keys the structured GitHub fields own. The "more filters"
+// lines may not restate them, or the two would silently fight over one key.
+const GITHUB_FILTER_KEYS = ['eventType', 'action', 'repository']
+
+// sourceModel routes the Source select through switchSource so a change of
+// flavour carries the filter across instead of dropping it.
+const sourceModel = computed({ get: () => draft.source, set: (next: string) => switchSource(next) })
 const channelOptions = computed(() => [
   { value: '', label: '— primary channel —' },
   ...channels.value.map(channel => ({ value: channel.name, label: `${channel.name}${channel.primary ? ' (primary)' : ''}` })),
@@ -189,6 +221,70 @@ function parseFilterText(input: string): { filter: Record<string, string>; error
   return { filter, error: '' }
 }
 
+const splitList = (value: string | undefined): string[] => (value ?? '').split(',').map(entry => entry.trim()).filter(Boolean)
+
+// splitGitHubFilter lifts the keys the structured GitHub fields own out of a
+// spec.filter map; whatever is left is what the "more filters" lines show.
+function splitGitHubFilter(filter: Record<string, string> | undefined): { events: string[]; otherEvents: string; actions: string; repos: string; rest: Record<string, string> } {
+  const rest: Record<string, string> = {}
+  for (const [key, value] of Object.entries(filter ?? {})) if (!GITHUB_FILTER_KEYS.includes(key)) rest[key] = value
+  const events: string[] = []
+  const other: string[] = []
+  for (const name of splitList(filter?.eventType)) (GITHUB_EVENTS.some(event => event.name === name) ? events : other).push(name)
+  return {
+    events,
+    otherEvents: other.join(', '),
+    actions: splitList(filter?.action).join(', '),
+    repos: splitList(filter?.repository).join(', '),
+    rest,
+  }
+}
+
+// draftFilter assembles the spec.filter the form currently describes: the
+// key=value lines, plus — in GitHub mode — the structured fields. Each list
+// key is written comma-separated, which the provider matches as any-of.
+function draftFilter(): { filter: Record<string, string>; error: string } {
+  const parsed = parseFilterText(draft.filter)
+  if (parsed.error || draft.source !== 'github') return parsed
+  const owned = Object.keys(parsed.filter).find(key => GITHUB_FILTER_KEYS.includes(key))
+  if (owned) return { filter: parsed.filter, error: `${owned} is set by the fields above — remove that line.` }
+  const filter = { ...parsed.filter }
+  const picked = GITHUB_EVENTS.filter(event => draft.ghEvents.includes(event.name)).map(event => event.name)
+  const events = [...picked, ...splitList(draft.ghOtherEvents).filter(name => !picked.includes(name))]
+  if (events.length) filter.eventType = events.join(',')
+  const actions = splitList(draft.ghActions)
+  if (actions.length) filter.action = actions.join(',')
+  const repos = splitList(draft.ghRepos)
+  if (repos.length) filter.repository = repos.join(',')
+  return { filter, error: '' }
+}
+
+// switchSource changes the flavour without losing the filter: going to GitHub
+// lifts eventType/action/repository into the structured fields (defaulting
+// the events when there were none), going back folds them into the lines.
+function switchSource(next: string): void {
+  if (next === draft.source) return
+  if (next === 'github') {
+    const parsed = parseFilterText(draft.filter)
+    if (!parsed.error) {
+      const split = splitGitHubFilter(parsed.filter)
+      draft.ghEvents = split.events.length || split.otherEvents ? split.events : [...DEFAULT_GITHUB_EVENTS]
+      draft.ghOtherEvents = split.otherEvents
+      draft.ghActions = split.actions
+      draft.ghRepos = split.repos
+      draft.filter = filterToText(split.rest)
+      filterError.value = ''
+    }
+  } else {
+    const built = draftFilter()
+    if (!built.error) {
+      draft.filter = filterToText(built.filter)
+      filterError.value = ''
+    }
+  }
+  draft.source = next
+}
+
 // filterPatch is the merge-patch fragment that turns `before` into `after`:
 // changed and added keys carry their value, removed keys carry null, and an
 // unchanged map yields undefined so the save does not touch spec.filter.
@@ -221,7 +317,7 @@ function automationStatus(row: Automation): (Schedule['status'] & Trigger['statu
 function whenText(row: Automation): string {
   const spec = automationSpec(row)
   if (props.kind === 'schedule') return `${spec.type === 'wakeup' ? spec.runAt || '' : spec.schedule || ''}${spec.timeZone ? ` ${spec.timeZone}` : ''}`
-  return `${spec.source}${spec.connectionRef ? ` ${spec.connectionRef}` : ''}`
+  return sourceLabel(spec.source)
 }
 
 function statusText(row: Automation): string {
@@ -234,7 +330,7 @@ function statusText(row: Automation): string {
 }
 
 function resetDraft(values: Draft = EMPTY): void {
-  Object.assign(draft, values)
+  Object.assign(draft, values, { ghEvents: [...values.ghEvents] })
 }
 
 function openCreate(): void {
@@ -243,6 +339,12 @@ function openCreate(): void {
 
 function openEdit(row: Automation): void {
 	emit('navigate', { kind: 'automation', resource: props.kind, agent: props.agent, action: 'edit', name: row.metadata.name })
+}
+
+function hydrateFilter(source: string | undefined, filter: Record<string, string> | undefined): Pick<Draft, 'filter' | 'ghEvents' | 'ghOtherEvents' | 'ghActions' | 'ghRepos'> {
+  if (source !== 'github') return { filter: filterToText(filter), ghEvents: [], ghOtherEvents: '', ghActions: '', ghRepos: '' }
+  const split = splitGitHubFilter(filter)
+  return { filter: filterToText(split.rest), ghEvents: split.events, ghOtherEvents: split.otherEvents, ghActions: split.actions, ghRepos: split.repos }
 }
 
 function hydrateEdit(row: Automation): void {
@@ -254,8 +356,7 @@ function hydrateEdit(row: Automation): void {
     runAt: spec.runAt || '',
     timeZone: spec.timeZone || '',
     source: spec.source || 'webhook',
-    connectionRef: spec.connectionRef || '',
-    filter: filterToText(spec.filter),
+    ...hydrateFilter(spec.source, spec.filter),
     task: spec.task || spec.checklist || '',
     channelRef: spec.channelRef || '',
     suspend: !!spec.suspend,
@@ -283,14 +384,15 @@ function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
     else body.schedule = draft.schedule
     return body
   }
+  // No connectionRef: neither flavour reads one, the token in the URL is the
+  // whole handshake, and a stale value on an older trigger is left untouched.
   const body: TriggerPatch = {
     source: draft.source || 'webhook',
-    connectionRef: draft.connectionRef,
     task: draft.task,
     suspend: draft.suspend,
     channelRef: draft.channelRef,
   }
-  const filter = filterPatch(currentEdit.value ? automationSpec(currentEdit.value).filter : undefined, parseFilterText(draft.filter).filter)
+  const filter = filterPatch(currentEdit.value ? automationSpec(currentEdit.value).filter : undefined, draftFilter().filter)
   if (filter) body.filter = filter
   return body
 }
@@ -307,9 +409,9 @@ async function save(): Promise<void> {
     return
   }
   if (kind === 'trigger') {
-    const parsed = parseFilterText(draft.filter)
-    if (parsed.error) {
-      filterError.value = parsed.error
+    const built = draftFilter()
+    if (built.error) {
+      filterError.value = built.error
       return
     }
   }
@@ -511,16 +613,28 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           <label v-else>Cron<input v-model="draft.schedule" class="k-input mono" name="schedule" aria-label="Cron" :aria-describedby="`automation-${kind}-cron-hint`" placeholder="0 9 * * *" :disabled="formBusy" /><span :id="`automation-${kind}-cron-hint`" class="agents-hint">5-field cron · crontab.guru</span></label>
         </template>
         <template v-else>
-          <div class="agents-grid2">
-            <label><span :id="`automation-${kind}-source-label`">Source</span><FormSelect v-model="draft.source" :options="sourceOptions" :disabled="formBusy" :labelledby="`automation-${kind}-source-label`" :describedby="`automation-${kind}-source-hint`" /><span :id="`automation-${kind}-source-hint`" class="agents-hint">{{ draft.source === 'github' ? 'GitHub delivers to the webhook URL below; filter on the X-GitHub-Event name.' : 'Any sender that can POST JSON to the webhook URL below.' }}</span></label>
-            <label><span :id="`automation-${kind}-connection-label`">Connection</span><FormSelect v-model="draft.connectionRef" :options="connectionOptions" :disabled="formBusy" :labelledby="`automation-${kind}-connection-label`" /></label>
-          </div>
-          <label>Filter<textarea v-model="draft.filter" class="k-input mono" name="filter" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="eventType=pull_request" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">One key=value per line. eventType matches the event header (X-GitHub-Event), match is a substring of the payload, header.&lt;name&gt; matches a request header. Empty fires on every delivery.</span></label>
+          <label><span :id="`automation-${kind}-source-label`">Source</span><FormSelect v-model="sourceModel" :options="sourceOptions" :disabled="formBusy" :labelledby="`automation-${kind}-source-label`" :describedby="`automation-${kind}-source-hint`" /><span :id="`automation-${kind}-source-hint`" class="agents-hint">{{ draft.source === 'github' ? 'A repository or organization webhook on GitHub. Pick the events below; GitHub’s ping on setup is acknowledged and ignored.' : 'Any sender that can POST JSON to the webhook URL below.' }}</span></label>
+          <template v-if="draft.source === 'github'">
+            <fieldset class="agents-fieldset" :aria-describedby="`automation-${kind}-events-hint`">
+              <legend class="agents-fieldset-legend">Events</legend>
+              <div class="agents-checkrow">
+                <label v-for="event in GITHUB_EVENTS" :key="event.name" class="agents-check k-checkbox-hit"><input v-model="draft.ghEvents" type="checkbox" name="ghEvents" :value="event.name" :disabled="formBusy" /><span class="agents-check-copy"><span>{{ event.label }}</span><span class="agents-hint">{{ event.hint }}</span></span></label>
+              </div>
+              <span :id="`automation-${kind}-events-hint`" class="agents-hint">The event names this trigger fires on. Nothing selected fires on every event the webhook sends.</span>
+            </fieldset>
+            <div class="agents-grid2">
+              <label>Other events<input v-model="draft.ghOtherEvents" class="k-input mono" name="ghOtherEvents" placeholder="deployment_status, create" :aria-describedby="`automation-${kind}-other-events-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-other-events-hint`" class="agents-hint">Comma-separated event names not listed above.</span></label>
+              <label>Actions<input v-model="draft.ghActions" class="k-input mono" name="ghActions" placeholder="opened, synchronize, reopened" :aria-describedby="`automation-${kind}-actions-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-actions-hint`" class="agents-hint">Comma-separated payload actions. Empty fires on every action.</span></label>
+            </div>
+            <label>Repositories<input v-model="draft.ghRepos" class="k-input mono" name="ghRepos" placeholder="octo-org/api, octo-org/web" :aria-describedby="`automation-${kind}-repos-hint`" :disabled="formBusy" /><span :id="`automation-${kind}-repos-hint`" class="agents-hint">Comma-separated owner/repo. Empty accepts every repository that delivers here — the usual choice for an organization webhook.</span></label>
+            <label>More filters<textarea v-model="draft.filter" class="k-input mono" name="filter" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="match=needs-review" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">Optional, one key=value per line: match is a substring of the payload, header.&lt;name&gt; matches a request header.</span></label>
+          </template>
+          <label v-else>Filter<textarea v-model="draft.filter" class="k-input mono" name="filter" rows="2" :aria-describedby="filterError ? `automation-${kind}-filter-error` : `automation-${kind}-filter-hint`" :aria-invalid="filterError ? 'true' : undefined" placeholder="eventType=deployment.created" :disabled="formBusy" @input="filterError = ''"></textarea><span v-if="filterError" :id="`automation-${kind}-filter-error`" class="agents-fielderr" role="alert">{{ filterError }}</span><span v-else :id="`automation-${kind}-filter-hint`" class="agents-hint">One key=value per line. eventType matches the X-Event-Type header or the body’s type/action, action matches the body’s action, match is a substring of the payload, header.&lt;name&gt; matches a request header. eventType and action take a comma-separated list. Empty fires on every delivery.</span></label>
           <section v-if="editing && webhookURL" class="k-card agents-secret-handoff agents-webhook-url" aria-label="Webhook URL">
             <div>
               <strong>Webhook URL</strong>
               <code data-testid="automation-webhook-url">{{ webhookURL }}</code>
-              <span class="agents-hint">{{ draft.source === 'github' ? 'Paste as the Payload URL under the repository’s Settings → Webhooks, content type application/json. ' : 'POST JSON deliveries here. ' }}The URL embeds this trigger’s secret token; treat it like a password.</span>
+              <span class="agents-hint">{{ draft.source === 'github' ? 'On GitHub, under Settings → Webhooks → Add webhook: Payload URL is this URL, Content type is application/json, Secret stays empty (the URL carries the token), and under “Let me select individual events” tick the events chosen above. ' : 'POST JSON deliveries here. ' }}The URL embeds this trigger’s secret token; treat it like a password.</span>
             </div>
             <div class="agents-secret-handoff-actions">
               <button type="button" class="k-btn k-btn--ghost" :disabled="formBusy" @click="copyWebhookURL(webhookURL)"><Check v-if="copied" aria-hidden="true" /><Copy v-else aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy webhook URL' }}</button>

@@ -62,20 +62,27 @@ type TriggerSpec struct {
 	AgentRef string `json:"agentRef"`
 
 	// Source is where events come from: webhook or github. Both provision a
-	// hub-routed webhook endpoint and fire on inbound delivery.
+	// hub-routed webhook endpoint and fire on inbound delivery; github only
+	// records that the sender is GitHub so the portal can offer its event
+	// catalog, the delivery path is the same.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Enum=webhook;github
 	Source string `json:"source"`
 
-	// ConnectionRef names the Connection backing non-webhook sources (channel,
-	// github, connection). Empty for webhook sources.
+	// ConnectionRef is reserved for sources that subscribe to a Connection's
+	// event stream. Neither webhook nor github reads it: both are inbound
+	// HTTP deliveries authenticated by the token in status.webhookPath.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ConnectionRef string `json:"connectionRef,omitempty"`
 
-	// Filter narrows which events fire the trigger. Keys are source-specific:
-	// e.g. "eventType" and "labels" for github, "match" (regex) for channel,
-	// "path" or "header.<name>" for webhook.
+	// Filter narrows which deliveries fire the trigger; every key must pass.
+	// "eventType" matches the event header (X-GitHub-Event, X-Event-Type) or
+	// the body's top-level type/action, "action" the body's top-level action
+	// (GitHub's opened/synchronize/…), "repository" the body's
+	// repository.full_name (owner/repo), "match" a substring of the raw
+	// payload and "header.<name>" a request header. eventType, action and
+	// repository take a comma-separated any-of list.
 	// +optional
 	Filter map[string]string `json:"filter,omitempty"`
 
