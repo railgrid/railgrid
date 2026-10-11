@@ -569,6 +569,13 @@ spec:
                     required:
                     - workspaceDigest
                     type: object
+                  sourceMutationID:
+                    description: |-
+                      SourceMutationID identifies the source write that owns SourceRevision.
+                      It lets a writer resolve a lost status-write acknowledgment without
+                      mistaking another writer's revision for its own.
+                    maxLength: 64
+                    type: string
                   sourcePathAttributions:
                     description: |-
                       SourcePathAttributions retains the last unambiguous assistant turn that

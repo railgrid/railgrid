@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261011-abf3b713.projects.ai.railgrid.ai
+  name: v261011-d03ccb24.projects.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -564,6 +564,13 @@ spec:
                   required:
                   - workspaceDigest
                   type: object
+                sourceMutationID:
+                  description: |-
+                    SourceMutationID identifies the source write that owns SourceRevision.
+                    It lets a writer resolve a lost status-write acknowledgment without
+                    mistaking another writer's revision for its own.
+                  maxLength: 64
+                  type: string
                 sourcePathAttributions:
                   description: |-
                     SourcePathAttributions retains the last unambiguous assistant turn that

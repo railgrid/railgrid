@@ -21,6 +21,7 @@ package commitbundle
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -166,6 +167,12 @@ type BundleFile struct {
 // Store persists and fetches immutable commit bundles.
 type Store interface {
 	Put(ctx context.Context, scope string, files []File) (BundleRef, error)
+	// PutIsolated stores an immutable bundle under a unique name, even when an
+	// identical payload already exists in the scope. The digest still describes
+	// the canonical contents. Use this for independently-lived staged uploads;
+	// Put remains content-addressed for callers that intentionally share a
+	// bundle, such as commit storage relocation.
+	PutIsolated(ctx context.Context, scope string, files []File) (BundleRef, error)
 	Get(ctx context.Context, scope, name, digest string) (*Bundle, error)
 	Delete(ctx context.Context, scope, name, digest string) error
 }
@@ -282,6 +289,17 @@ func (s *FileStore) Dir() string {
 
 // Put validates, canonicalizes, and writes an immutable bundle.
 func (s *FileStore) Put(ctx context.Context, scope string, files []File) (BundleRef, error) {
+	return s.put(ctx, scope, files, false)
+}
+
+// PutIsolated stores a bundle under a unique name while keeping the digest
+// content-derived. Deleting one isolated bundle therefore cannot remove an
+// identical payload staged by another request.
+func (s *FileStore) PutIsolated(ctx context.Context, scope string, files []File) (BundleRef, error) {
+	return s.put(ctx, scope, files, true)
+}
+
+func (s *FileStore) put(ctx context.Context, scope string, files []File, isolated bool) (BundleRef, error) {
 	if s == nil {
 		return BundleRef{}, errors.New("bundle store is nil")
 	}
@@ -296,6 +314,14 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	}
 	bundle.Scope = scope
 	ref.Scope = scope
+	if isolated {
+		name, err := newIsolatedBundleName()
+		if err != nil {
+			return BundleRef{}, err
+		}
+		bundle.Name = name
+		ref.Name = name
+	}
 	if err := ctx.Err(); err != nil {
 		return BundleRef{}, err
 	}
@@ -304,15 +330,17 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 		return BundleRef{}, fmt.Errorf("create scoped bundle directory: %w", err)
 	}
 	path := s.path(key, bundle.Name)
-	if _, err := os.Stat(path); err == nil {
-		// Reusing an identical bundle: refresh its age so the orphan sweeper
-		// does not reclaim it out from under this new request.
-		now := time.Now()
-		_ = os.Chtimes(path, now, now)
-		s.announce(scope, bundle.Name)
-		return ref, nil
-	} else if !os.IsNotExist(err) {
-		return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
+	if !isolated {
+		if _, err := os.Stat(path); err == nil {
+			// Reusing an identical bundle: refresh its age so the orphan sweeper
+			// does not reclaim it out from under this new request.
+			now := time.Now()
+			_ = os.Chtimes(path, now, now)
+			s.announce(scope, bundle.Name)
+			return ref, nil
+		} else if !os.IsNotExist(err) {
+			return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
+		}
 	}
 	data, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
@@ -333,11 +361,25 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if err := tmp.Close(); err != nil {
 		return BundleRef{}, fmt.Errorf("close bundle: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if isolated {
+		// Linking the completed temporary file publishes it atomically without
+		// replacing a different bundle if a random handle ever collides.
+		if err := os.Link(tmpName, path); err != nil {
+			return BundleRef{}, fmt.Errorf("publish isolated bundle: %w", err)
+		}
+	} else if err := os.Rename(tmpName, path); err != nil {
 		return BundleRef{}, fmt.Errorf("publish bundle: %w", err)
 	}
 	s.announce(scope, bundle.Name)
 	return ref, nil
+}
+
+func newIsolatedBundleName() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate isolated bundle name: %w", err)
+	}
+	return "bundle-stage-" + hex.EncodeToString(random[:]), nil
 }
 
 // Get loads a bundle and verifies its digest when digest is provided.

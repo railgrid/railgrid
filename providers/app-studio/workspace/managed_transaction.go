@@ -29,15 +29,16 @@ import (
 )
 
 const (
-	// Managed transactions are deliberately bounded. Text transactions retain
-	// at most one 8 MiB payload and 8 MiB of preimages. Multipart binary uploads
-	// retain at most the existing 48 MiB payload allowance plus 25 MiB of
-	// aggregate preimages, for a 73 MiB retained-byte cap.
+	// Managed transactions are deliberately bounded. Text content contributes
+	// at most 8 MiB to the 16 MiB combined text payload-and-preimage budget for
+	// diff paths. A transaction containing Data may also carry up to 48 MiB of
+	// total payload, with all payloads and preimages together capped at 73 MiB.
 	maxManagedTransactionChanges             = 400
 	maxManagedTransactionBytes               = 8 << 20
 	maxManagedTransactionRetainedBytes       = 2 * maxManagedTransactionBytes
 	maxManagedTransactionBinaryPayloadBytes  = 48 << 20
 	maxManagedTransactionBinaryRetainedBytes = maxManagedTransactionBinaryPayloadBytes + MaxBinaryWriteBytes
+	maxManagedTransactionTextRetainedBytes   = maxManagedTransactionRetainedBytes
 	managedTransactionTempPrefix             = workspaceTempFilePrefix + "txn-"
 	managedTransactionBackupPrefix           = workspaceTempFilePrefix + "backup-"
 )
@@ -211,7 +212,7 @@ func managedTransactionLimits(changes []ManagedFileChange) (payload, retained in
 func (s *FileStore) preflightManagedTransactionWithLimits(ctx context.Context, scope Scope, dir string, changes []ManagedFileChange, payloadLimit, retainedLimit int) ([]*managedTransactionEntry, error) {
 	entries := make([]*managedTransactionEntry, 0, len(changes))
 	seen := make(map[string]struct{}, len(changes))
-	var payloadBytes, preimageBytes int
+	var payloadBytes, textPayloadBytes, preimageBytes, textPreimageBytes int
 	for _, change := range changes {
 		if change.Data != nil && change.Content != "" {
 			return nil, newMutationError(MutationErrorInvalid, change.Path, "content and data cannot be combined")
@@ -221,6 +222,12 @@ func (s *FileStore) preflightManagedTransactionWithLimits(ctx context.Context, s
 			return nil, newMutationError(MutationErrorInvalid, change.Path, "managed transaction content is too large")
 		}
 		payloadBytes += payloadSize
+		if change.Data == nil {
+			if payloadSize > maxManagedTransactionBytes || textPayloadBytes > maxManagedTransactionBytes-payloadSize {
+				return nil, newMutationError(MutationErrorInvalid, change.Path, "managed transaction text content is too large")
+			}
+			textPayloadBytes += payloadSize
+		}
 	}
 	if payloadBytes > retainedLimit {
 		return nil, newMutationError(MutationErrorInvalid, "", "managed transaction content is too large")
@@ -275,7 +282,8 @@ func (s *FileStore) preflightManagedTransactionWithLimits(ctx context.Context, s
 			readLimit = MaxBinaryWriteBytes
 		}
 		remaining := retainedLimit - payloadBytes - preimageBytes
-		before, existed, err := s.readManagedTransactionPreimage(ctx, dir, clean, readLimit, remaining)
+		textRemaining := maxManagedTransactionTextRetainedBytes - textPayloadBytes - textPreimageBytes
+		before, existed, err := s.readManagedTransactionPreimage(ctx, dir, clean, readLimit, remaining, textRemaining, change.Data == nil)
 		if err != nil {
 			var tooLarge *workspaceFileTooLargeError
 			if errors.As(err, &tooLarge) {
@@ -287,6 +295,12 @@ func (s *FileStore) preflightManagedTransactionWithLimits(ctx context.Context, s
 			return nil, newMutationError(MutationErrorInvalid, clean, "managed transaction content is too large")
 		}
 		preimageBytes += len(before)
+		if change.Data == nil {
+			textPreimageBytes += len(before)
+			if textPreimageBytes > maxManagedTransactionTextRetainedBytes-textPayloadBytes {
+				return nil, newMutationError(MutationErrorInvalid, clean, "managed transaction text content is too large")
+			}
+		}
 		entry.before, entry.existed = before, existed
 		switch change.Operation {
 		case ManagedFileCreate:
@@ -339,7 +353,7 @@ func managedTransactionPayloadSize(change ManagedFileChange) int {
 	return len(change.Content)
 }
 
-func (s *FileStore) readManagedTransactionPreimage(ctx context.Context, dir, clean string, fileLimit, aggregateRemaining int) ([]byte, bool, error) {
+func (s *FileStore) readManagedTransactionPreimage(ctx context.Context, dir, clean string, fileLimit, aggregateRemaining, textAggregateRemaining int, countText bool) ([]byte, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -372,14 +386,17 @@ func (s *FileStore) readManagedTransactionPreimage(ctx context.Context, dir, cle
 	if info.Size() > int64(aggregateRemaining) {
 		return nil, true, newMutationError(MutationErrorInvalid, clean, "managed transaction content is too large")
 	}
+	if countText && info.Size() > int64(textAggregateRemaining) {
+		return nil, true, newMutationError(MutationErrorInvalid, clean, "managed transaction text content is too large")
+	}
 	f, err := os.Open(target)
 	if err != nil {
 		return nil, false, fmt.Errorf("open %q: %w", clean, err)
 	}
 	defer func() { _ = f.Close() }()
-	// Allocate only the size already checked against both limits. Reading into
-	// this exact buffer avoids io.ReadAll growing capacity past the remaining
-	// aggregate budget if another process changes the file while preflight runs.
+	// Allocate only the size already checked against the total and, on text
+	// diff paths, text retained-byte budgets. Reading into this exact buffer
+	// avoids io.ReadAll growing capacity past either remaining budget.
 	before := make([]byte, int(info.Size()))
 	n, readErr := f.ReadAt(before, 0)
 	if readErr != nil && !errors.Is(readErr, io.EOF) {

@@ -19,6 +19,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,24 +284,129 @@ func TestManagedTransactionPreflightBoundsAggregatePreimages(t *testing.T) {
 	}
 }
 
-func TestManagedTransactionPreflightPreservesBinaryPayloadBudgetWithoutCopy(t *testing.T) {
+func TestManagedTransactionMixedPayloadKeepsTextAggregateBound(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
-	first := make([]byte, maxManagedTransactionBinaryPayloadBytes/2)
-	second := make([]byte, maxManagedTransactionBinaryPayloadBytes/2)
-	first[0], second[0] = 0, 0
-	changes := []ManagedFileChange{
-		{Path: "first.bin", Operation: ManagedFileCreate, Data: first},
-		{Path: "second.bin", Operation: ManagedFileCreate, Data: second},
-	}
 	dir, err := store.scopeDir(scope)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	text := strings.Repeat("x", MaxWriteBytes)
+	changes := []ManagedFileChange{{Path: "marker.bin", Operation: ManagedFileCreate, Data: []byte{0}}}
+	for i := 0; i < 31; i++ {
+		changes = append(changes, ManagedFileChange{
+			Path:      filepath.Join("text", fmt.Sprintf("%02d.txt", i)),
+			Operation: ManagedFileCreate,
+			Content:   text,
+		})
+	}
+	if _, err := store.preflightManagedTransaction(ctx, scope, dir, changes); err != nil {
+		t.Fatalf("mixed transaction below the 8 MiB text limit was rejected: %v", err)
+	}
+}
+
+func TestManagedTransactionEmptyDataDoesNotRaiseTextAggregateLimit(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changes := []ManagedFileChange{{Path: "empty.bin", Operation: ManagedFileCreate, Data: []byte{}}}
+	content := strings.Repeat("x", MaxWriteBytes)
+	for i := 0; i < 33; i++ {
+		changes = append(changes, ManagedFileChange{
+			Path:      filepath.Join("text", fmt.Sprintf("%02d.txt", i)),
+			Operation: ManagedFileCreate,
+			Content:   content,
+		})
+	}
+	if changes[0].Data == nil {
+		t.Fatal("empty Data marker unexpectedly nil")
+	}
+	if _, err := store.preflightManagedTransaction(ctx, scope, dir, changes); err == nil || !strings.Contains(err.Error(), "managed transaction text content is too large") {
+		t.Fatalf("8.25 MiB text payload with an empty Data marker error = %v, want text aggregate limit", err)
+	}
+}
+
+func TestManagedTransactionMixedTextRetainedBudgetIncludesPreimages(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	preimage := []byte(strings.Repeat("x", MaxWriteBytes))
+	expectedVersion := fileVersion(preimage)
+	changes := make([]ManagedFileChange, 0, 66)
+	changes = append(changes, ManagedFileChange{Path: "marker.bin", Operation: ManagedFileCreate, Data: []byte{0}})
+	for i := 0; i < 4; i++ {
+		changes = append(changes, ManagedFileChange{
+			Path:      filepath.Join("created", fmt.Sprintf("%02d.txt", i)),
+			Operation: ManagedFileCreate,
+			Content:   string(preimage),
+		})
+	}
+	for i := 0; i < 61; i++ {
+		path := filepath.Join("existing", fmt.Sprintf("%02d.txt", i))
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, path)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, path), preimage, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, ManagedFileChange{
+			Path:            path,
+			Operation:       ManagedFileReplace,
+			Content:         "",
+			ExpectedVersion: expectedVersion,
+		})
+	}
+
+	// Four text payloads plus sixty text preimages exactly fill the 16 MiB
+	// retained-text budget, even though the transaction also contains Data.
+	if _, err := store.preflightManagedTransaction(ctx, scope, dir, changes[:65]); err != nil {
+		t.Fatalf("mixed transaction at the 16 MiB retained-text limit was rejected: %v", err)
+	}
+	if _, err := store.preflightManagedTransaction(ctx, scope, dir, changes); err == nil || !strings.Contains(err.Error(), "managed transaction text content is too large") {
+		t.Fatalf("mixed transaction above the retained-text limit error = %v, want text retained limit", err)
+	}
+}
+
+func TestManagedTransactionPreflightPreservesBinaryPayloadBudgetWithoutCopy(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	dir, err := store.scopeDir(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	preimage := []byte(strings.Repeat("x", MaxBinaryWriteBytes))
+	if err := os.WriteFile(filepath.Join(dir, "first.bin"), preimage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := make([]byte, maxManagedTransactionBinaryPayloadBytes/2)
+	second := make([]byte, maxManagedTransactionBinaryPayloadBytes/2)
+	first[0], second[0] = 0, 0
+	changes := []ManagedFileChange{
+		{Path: "first.bin", Operation: ManagedFileReplace, Data: first, ExpectedVersion: fileVersion(preimage)},
+		{Path: "second.bin", Operation: ManagedFileCreate, Data: second},
+	}
 	entries, err := store.preflightManagedTransaction(ctx, scope, dir, changes)
 	if err != nil {
-		t.Fatalf("48 MiB binary payload preflight: %v", err)
+		t.Fatalf("48 MiB payload plus 25 MiB opaque preimage preflight: %v", err)
 	}
 	if len(entries) != len(changes) {
 		t.Fatalf("preflight entries = %d, want %d", len(entries), len(changes))

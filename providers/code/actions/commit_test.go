@@ -170,6 +170,77 @@ func TestStagedBundleCommits(t *testing.T) {
 	}
 }
 
+func TestIdenticalStagesKeepIndependentCommitLifetimes(t *testing.T) {
+	f := newCommitFixture(t)
+	stage := func() stageCommitBundleOutput {
+		t.Helper()
+		response, envelope := f.invoke(t, StageCommitBundle, map[string]any{
+			"repositoryUID": "repo-uid",
+			"files":         []any{map[string]any{"path": "app/main.go", "content": "package main"}},
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("stage: %d %s", response.Code, response.Body.String())
+		}
+		var staged stageCommitBundleOutput
+		if err := json.Unmarshal(envelope.Result, &staged); err != nil {
+			t.Fatal(err)
+		}
+		return staged
+	}
+	first := stage()
+	second := stage()
+	if first.BundleRef == second.BundleRef {
+		t.Fatalf("identical stage calls returned the same handle %q", first.BundleRef)
+	}
+	if first.BundleDigest != second.BundleDigest {
+		t.Fatalf("identical stages have different digests: %q and %q", first.BundleDigest, second.BundleDigest)
+	}
+
+	commit := func(requestID string, staged stageCommitBundleOutput) (int, commitOutput) {
+		t.Helper()
+		response, envelope := f.invoke(t, Commit, map[string]any{
+			"repositoryUID": "repo-uid",
+			"requestID":     requestID,
+			"message":       "Save app",
+			"bundleRef":     staged.BundleRef,
+			"bundleDigest":  staged.BundleDigest,
+		})
+		if response.Code != http.StatusOK {
+			return response.Code, commitOutput{}
+		}
+		var result commitOutput
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("decode commit %q result: %v", requestID, err)
+		}
+		return response.Code, result
+	}
+	firstStatus, firstCommit := commit("intent-a", first)
+	if firstStatus != http.StatusOK || firstCommit.Commit.Name == "" {
+		t.Fatalf("first commit: status=%d result=%+v", firstStatus, firstCommit)
+	}
+
+	// This is the cleanup the controller performs after a commit reaches a
+	// terminal phase. The old content-addressed implementation made both
+	// identical stage calls point at this same file, so this removed the
+	// second request's pending source before it could create its commit.
+	if err := f.bundles.Delete(context.Background(), testCluster, first.BundleRef, first.BundleDigest); err != nil {
+		t.Fatal(err)
+	}
+	secondStatus, secondCommit := commit("intent-b", second)
+	if secondStatus != http.StatusOK || secondCommit.Commit.Name == "" {
+		t.Fatalf("second commit after first cleanup: status=%d result=%+v", secondStatus, secondCommit)
+	}
+	if secondCommit.Commit.Name == firstCommit.Commit.Name {
+		t.Fatalf("different request IDs returned the same commit %q", firstCommit.Commit.Name)
+	}
+
+	// Replaying the first key remains safe after its source handle was deleted.
+	replayStatus, replay := commit("intent-a", first)
+	if replayStatus != http.StatusOK || replay.Commit.Name != firstCommit.Commit.Name {
+		t.Fatalf("first replay after cleanup: status=%d result=%+v, want %q", replayStatus, replay, firstCommit.Commit.Name)
+	}
+}
+
 // A handle nobody staged, a UID that does not match what the gate returned,
 // and a body naming both sources are all caller bugs, and none of them leaves
 // a RepositoryCommit behind.

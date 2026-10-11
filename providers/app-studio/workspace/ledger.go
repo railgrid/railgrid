@@ -93,7 +93,10 @@ type LedgerRecord struct {
 	// SourceRevision is the monotonic working-copy revision. Zero means the
 	// working copy has never been written; readers report it as 1 so an
 	// omitted or zero authority is always rejected downstream.
-	SourceRevision        uint64
+	SourceRevision uint64
+	// SourceMutationID identifies the writer of SourceRevision so an ambiguous
+	// status-write response cannot be confused with another writer at that revision.
+	SourceMutationID      string
 	LastSourceChange      *SourceChange
 	LastPreviewCheckpoint *SourceChange
 	// SourcePathAttributions retains one unambiguous owner per source path
@@ -111,7 +114,7 @@ type LedgerRecord struct {
 // DeepCopy returns a record that shares nothing with the receiver, so a
 // Ledger implementation can hand callers a record it also caches.
 func (r LedgerRecord) DeepCopy() LedgerRecord {
-	out := LedgerRecord{SourceRevision: r.SourceRevision}
+	out := LedgerRecord{SourceRevision: r.SourceRevision, SourceMutationID: r.SourceMutationID}
 	if r.LastSourceChange != nil {
 		change := *r.LastSourceChange
 		out.LastSourceChange = &change

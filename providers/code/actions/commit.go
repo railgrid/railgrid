@@ -39,9 +39,14 @@ const Commit = "commit"
 // a catalogue that lies about its own bounds would be worse than declaring
 // the exception. A caller with more than one mebibyte of files uploads them
 // here, gets an opaque bundle handle back, and passes that handle to Commit
-// as `bundleRef`. Both verbs are gated exactly like a catalogued action, and
-// kcp authorizes this one as `create` on repositories/stage-commit-bundle, so
-// the grant to upload is separate from the grant to commit.
+// as `bundleRef`. Each successful upload gets its own opaque handle, even when
+// another request stages identical bytes, so one commit's terminal cleanup
+// cannot remove another request's pending source. A handle belongs to one
+// logical commit; retries reuse that handle with the same requestID, while a
+// separate intent stages its own handle. Both verbs are gated exactly like a
+// catalogued action, and kcp authorizes this one as `create` on
+// repositories/stage-commit-bundle, so the grant to upload is separate from
+// the grant to commit.
 //
 // See docs/provider-actions.md, "Uncatalogued large-upload verbs".
 const StageCommitBundle = "stage-commit-bundle"
@@ -169,7 +174,7 @@ func (s *Server) stageCommitBundle(ctx context.Context, req dataplane.Request, v
 	if s.Bundles == nil {
 		return nil, wireError("bundle_unavailable")
 	}
-	ref, err := s.Bundles.Put(ctx, req.ClusterID, commitFiles(in.Files))
+	ref, err := s.Bundles.PutIsolated(ctx, req.ClusterID, commitFiles(in.Files))
 	if err != nil {
 		return nil, wireError("invalid_action_input")
 	}

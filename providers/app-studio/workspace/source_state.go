@@ -44,6 +44,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // RetainsSource reports whether THIS replica's tree is the one the project is
@@ -291,10 +293,17 @@ func (s *FileStore) sourceRevision(ctx context.Context, scope Scope) (uint64, er
 }
 
 type sourceMutation struct {
+	id                   string
 	revision             uint64
 	paths                []string
 	previousAttributions []SourcePathAttribution
 	localTreeWasCurrent  bool
+}
+
+type sourceTreeMutation struct {
+	id       string
+	revision uint64
+	paths    []string
 }
 
 // beginSourceMutation advances the durable fence before changing bytes, but
@@ -342,7 +351,7 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		return nil, errors.New("source mutation requires at least one path")
 	}
 
-	mutation := &sourceMutation{paths: cleanPaths}
+	mutation := &sourceMutation{id: uuid.NewString(), paths: cleanPaths}
 	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		currentRevision := record.SourceRevision
 		pristine := currentRevision == 0 && localRevision == 0
@@ -357,6 +366,7 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		mutation.localTreeWasCurrent = treeExists && localRevision == currentRevision || pristine
 		mutation.previousAttributions = sourcePathAttributionsFor(record.SourcePathAttributions, cleanPaths)
 		record.SourceRevision = mutation.revision
+		record.SourceMutationID = mutation.id
 		// Reserve the revision without claiming that bytes or their provenance
 		// have been written. A crash or later rollback leaves these entries
 		// explicitly unattributed at the advanced revision.
@@ -365,6 +375,21 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		return true, nil
 	})
 	if err != nil {
+		// Update may have persisted the reservation before losing its response.
+		// The unique durable ID distinguishes that write from a competing writer
+		// that happened to reserve the same next revision. No bytes have changed
+		// yet, and the callback only accepts a current initial tree, so the
+		// reserved record plus its ID is enough to safely retag this unchanged
+		// tree. The reserved provenance is already unknown, which is the correct
+		// durable state for an operation we return as failed.
+		if mutation.revision > 0 && mutation.localTreeWasCurrent {
+			verifyCtx, cancel := sourceMutationVerifyContext(ctx)
+			confirmed, ok, _ := readSourceMutation(verifyCtx, ledger, scope, mutation.revision, mutation.id)
+			cancel()
+			if ok && sourceMutationFailureRecorded(confirmed, mutation) {
+				s.tagLocalTree(scope, mutation.revision)
+			}
+		}
 		return nil, fmt.Errorf("reserve workspace source revision: %w", err)
 	}
 	if mutation.revision == 0 {
@@ -390,8 +415,8 @@ func (s *FileStore) completeSourceMutation(ctx context.Context, scope Scope, mut
 		if currentRevision == 0 {
 			currentRevision = 1
 		}
-		if currentRevision != mutation.revision {
-			return false, fmt.Errorf("%w: mutation reserved %d, current %d", ErrSourceRevisionConflict, mutation.revision, currentRevision)
+		if currentRevision != mutation.revision || record.SourceMutationID != mutation.id {
+			return false, fmt.Errorf("%w: mutation %s reserved %d, current %d (current mutation %s)", ErrSourceRevisionConflict, mutation.id, mutation.revision, currentRevision, record.SourceMutationID)
 		}
 		restoreReservedSourcePathAttributions(record, mutation)
 		origin, _ := ctx.Value(mutationOriginContextKey{}).(SourceChange)
@@ -429,15 +454,24 @@ func (s *FileStore) failSourceMutation(ctx context.Context, scope Scope, mutatio
 		if currentRevision == 0 {
 			currentRevision = 1
 		}
-		if currentRevision != mutation.revision {
-			return false, fmt.Errorf("%w: failed mutation reserved %d, current %d", ErrSourceRevisionConflict, mutation.revision, currentRevision)
+		if currentRevision != mutation.revision || record.SourceMutationID != mutation.id {
+			return false, fmt.Errorf("%w: failed mutation %s reserved %d, current %d (current mutation %s)", ErrSourceRevisionConflict, mutation.id, mutation.revision, currentRevision, record.SourceMutationID)
 		}
 		record.LastSourceChange = &SourceChange{SourceRevision: mutation.revision}
 		setUnknownSourcePathAttributions(record, mutation.paths, mutation.revision)
 		return true, nil
 	})
 	if err != nil {
-		return fmt.Errorf("record failed workspace source mutation: %w", err)
+		// A lost update response is recoverable only when this exact mutation
+		// still owns the revision and the failure state is visible. In
+		// particular, revision equality alone could belong to another writer.
+		verifyCtx, cancel := sourceMutationVerifyContext(ctx)
+		confirmed, ok, verifyErr := readSourceMutation(verifyCtx, ledger, scope, mutation.revision, mutation.id)
+		cancel()
+		if !ok || !sourceMutationFailureRecorded(confirmed, mutation) {
+			return errors.Join(fmt.Errorf("record failed workspace source mutation: %w", err), verifyErr)
+		}
+		record = confirmed
 	}
 	if !treeRestored || !mutation.localTreeWasCurrent || record.SourceRevision != mutation.revision {
 		return nil
@@ -451,6 +485,66 @@ func (s *FileStore) failSourceMutation(ctx context.Context, scope Scope, mutatio
 	}
 	s.tagLocalTree(scope, mutation.revision)
 	return nil
+}
+
+const sourceMutationVerifyTimeout = 5 * time.Second
+
+func sourceMutationVerifyContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), sourceMutationVerifyTimeout)
+}
+
+// readSourceMutation waits briefly for a write-through ledger's read path to
+// observe an Update that may have committed before its response was lost. A
+// lower revision may be a lagging read; the requested revision with another
+// ID, or any newer revision, proves this mutation is no longer current.
+func readSourceMutation(ctx context.Context, ledger Ledger, scope Scope, revision uint64, id string) (LedgerRecord, bool, error) {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	var last LedgerRecord
+	var lastErr error
+	for {
+		record, err := ledger.Read(ctx, scope)
+		if err == nil {
+			last = record
+			lastErr = nil
+			current := record.SourceRevision
+			if current == revision {
+				return record, record.SourceMutationID == id, nil
+			}
+			if current > revision {
+				return record, false, nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return last, false, errors.Join(ctx.Err(), lastErr)
+			}
+			return last, false, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func sourceMutationFailureRecorded(record LedgerRecord, mutation *sourceMutation) bool {
+	if mutation == nil || record.SourceRevision != mutation.revision || record.SourceMutationID != mutation.id ||
+		record.LastSourceChange == nil || record.LastSourceChange.SourceRevision != mutation.revision ||
+		record.LastSourceChange.ThreadID != "" || record.LastSourceChange.RunID != "" {
+		return false
+	}
+	byPath := make(map[string]SourcePathAttribution, len(record.SourcePathAttributions))
+	for _, attribution := range record.SourcePathAttributions {
+		byPath[attribution.Path] = attribution
+	}
+	for _, path := range mutation.paths {
+		attribution, ok := byPath[path]
+		if !ok || attribution.SourceRevision != mutation.revision || attribution.ThreadID != "" || attribution.RunID != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func sourcePathAttributionsFor(current []SourcePathAttribution, paths []string) []SourcePathAttribution {
@@ -642,19 +736,20 @@ func (s *FileStore) tagLocalTree(scope Scope, revision uint64) {
 // against the ledger inside that update: it is the compare of the whole-tree
 // replacement's compare-and-swap, and the only place it can be enforced
 // against a writer on another replica.
-func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected *uint64, paths []string, committed bool) (uint64, error) {
+func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected *uint64, paths []string, committed bool) (sourceTreeMutation, error) {
 	ledger, err := s.ledgerFor(ctx)
 	if err != nil {
-		return 0, err
+		return sourceTreeMutation{}, err
 	}
 	clean := make([]string, 0, len(paths))
 	for _, raw := range paths {
 		path, err := cleanProjectPath(raw)
 		if err != nil {
-			return 0, err
+			return sourceTreeMutation{}, err
 		}
 		clean = append(clean, path)
 	}
+	mutation := sourceTreeMutation{id: uuid.NewString(), paths: clean}
 	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		current := record.SourceRevision
 		if current == 0 {
@@ -663,7 +758,9 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		if expected != nil && *expected != current {
 			return false, fmt.Errorf("%w: expected %d, current %d", ErrSourceRevisionConflict, *expected, current)
 		}
-		record.SourceRevision = current + 1
+		mutation.revision = current + 1
+		record.SourceRevision = mutation.revision
+		record.SourceMutationID = mutation.id
 		origin, _ := ctx.Value(mutationOriginContextKey{}).(SourceChange)
 		origin.SourceRevision = record.SourceRevision
 		record.LastSourceChange = &origin
@@ -680,10 +777,97 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		return true, nil
 	})
 	if err != nil {
-		return 0, err
+		// The tree bytes have already been replaced. If the exact whole-tree
+		// ledger update landed, keep those bytes and report success. A revision
+		// match by itself is ambiguous when another replica reserved the same
+		// next revision, so require the unique mutation ID written atomically
+		// with the dirty set and provenance.
+		if mutation.revision > 0 {
+			verifyCtx, cancel := sourceMutationVerifyContext(ctx)
+			_, ok, _ := readSourceMutation(verifyCtx, ledger, scope, mutation.revision, mutation.id)
+			cancel()
+			if ok {
+				s.tagLocalTree(scope, mutation.revision)
+				return mutation, nil
+			}
+		}
+		return mutation, err
 	}
 	s.tagLocalTree(scope, record.SourceRevision)
-	return record.SourceRevision, nil
+	return mutation, nil
+}
+
+// reconcileTreeRollback records a tree update that was rolled back after the
+// ledger update failed or could not be confirmed. Its conditional update is
+// fenced by both revision and mutation ID so it cannot clear a later writer's
+// provenance. Failed whole-tree replacements conservatively leave their paths
+// dirty and unattributed, including replacements marked Committed: after a
+// rollback, the bytes may differ from the repository tree.
+func (s *FileStore) reconcileTreeRollback(ctx context.Context, scope Scope, mutation sourceTreeMutation, treeRestored bool) error {
+	if mutation.revision == 0 || mutation.id == "" {
+		return nil
+	}
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return err
+	}
+	failed := &sourceMutation{id: mutation.id, revision: mutation.revision, paths: mutation.paths}
+	verifyCtx, cancel := sourceMutationVerifyContext(ctx)
+	defer cancel()
+	matched := false
+	record, updateErr := ledger.Update(verifyCtx, scope, func(record *LedgerRecord) (bool, error) {
+		matched = false
+		current := record.SourceRevision
+		if current == 0 {
+			current = 1
+		}
+		if current != mutation.revision || record.SourceMutationID != mutation.id {
+			return false, nil
+		}
+		matched = true
+		record.LastSourceChange = &SourceChange{SourceRevision: mutation.revision}
+		setUnknownSourcePathAttributions(record, mutation.paths, mutation.revision)
+		record.UncommittedPaths = normalizeLedgerPaths(append(append([]string(nil), record.UncommittedPaths...), mutation.paths...))
+		return true, nil
+	})
+	if updateErr == nil && matched && sourceTreeRollbackRecorded(record, failed) {
+		if treeRestored && record.SourceRevision == mutation.revision && record.SourceMutationID == mutation.id {
+			s.tagLocalTree(scope, mutation.revision)
+		}
+		return nil
+	}
+	if updateErr != nil {
+		readCtx, cancelRead := sourceMutationVerifyContext(ctx)
+		confirmed, ok, readErr := readSourceMutation(readCtx, ledger, scope, mutation.revision, mutation.id)
+		cancelRead()
+		if ok && sourceTreeRollbackRecorded(confirmed, failed) {
+			if treeRestored {
+				s.tagLocalTree(scope, mutation.revision)
+			}
+			return nil
+		}
+		return errors.Join(fmt.Errorf("record failed workspace tree replacement: %w", updateErr), readErr)
+	}
+	if !matched {
+		return nil
+	}
+	return fmt.Errorf("record failed workspace tree replacement: ledger did not retain failure state for mutation %s revision %d", mutation.id, mutation.revision)
+}
+
+func sourceTreeRollbackRecorded(record LedgerRecord, mutation *sourceMutation) bool {
+	if !sourceMutationFailureRecorded(record, mutation) {
+		return false
+	}
+	dirty := make(map[string]struct{}, len(record.UncommittedPaths))
+	for _, path := range record.UncommittedPaths {
+		dirty[path] = struct{}{}
+	}
+	for _, path := range mutation.paths {
+		if _, ok := dirty[path]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // EnsureSourceRevisionFloor raises the durable source revision to at least
@@ -709,6 +893,9 @@ func (s *FileStore) EnsureSourceRevisionFloor(ctx context.Context, scope Scope, 
 			return false, nil
 		}
 		record.SourceRevision = floor
+		// A revision floor is an authority repair, not a source tree write. Do
+		// not let a prior mutation ID appear to own the raised revision.
+		record.SourceMutationID = ""
 		return true, nil
 	}); err != nil {
 		return fmt.Errorf("raise workspace source revision floor: %w", err)

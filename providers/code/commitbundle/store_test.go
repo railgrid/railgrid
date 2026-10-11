@@ -65,6 +65,84 @@ func TestFileStorePutGet(t *testing.T) {
 	}
 }
 
+func TestFileStorePutIsolatedSeparatesIdenticalLifetimes(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	files := []File{{Path: "src/main.go", Content: "package main\n"}}
+	legacy, err := store.Put(ctx, "root:acme", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.PutIsolated(ctx, "root:acme", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.PutIsolated(ctx, "root:acme", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name == second.Name {
+		t.Fatalf("identical isolated uploads share a name: %q", first.Name)
+	}
+	if first.Name == legacy.Name {
+		t.Fatalf("isolated upload reused the legacy content-addressed name %q", first.Name)
+	}
+	if first.Digest != second.Digest || !strings.HasPrefix(first.Digest, "sha256:") {
+		t.Fatalf("content digests differ: %q and %q", first.Digest, second.Digest)
+	}
+	for _, ref := range []BundleRef{first, second} {
+		if _, err := store.Get(ctx, "root:acme", ref.Name, ref.Digest); err != nil {
+			t.Fatalf("isolated bundle %q is unreadable: %v", ref.Name, err)
+		}
+	}
+	if err := store.Delete(ctx, "root:acme", first.Name, first.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, "root:acme", second.Name, second.Digest); err != nil {
+		t.Fatalf("deleting first isolated bundle removed the second: %v", err)
+	}
+	if err := store.Delete(ctx, "root:acme", legacy.Name, legacy.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, "root:acme", second.Name, second.Digest); err != nil {
+		t.Fatalf("legacy cleanup removed a newer isolated bundle: %v", err)
+	}
+}
+
+func TestFileStorePutRemainsContentAddressedAcrossScopes(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	files := []File{{Path: "src/main.go", Content: "package main\n"}}
+	first, err := store.Put(ctx, "logical-cluster-a", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Put(ctx, "logical-cluster-b", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != second.Name || first.Digest != second.Digest {
+		t.Fatalf("Put changed its content address across scopes: %+v and %+v", first, second)
+	}
+	for _, ref := range []BundleRef{first, second} {
+		if _, err := store.Get(ctx, ref.Scope, ref.Name, ref.Digest); err != nil {
+			t.Fatalf("bundle in scope %q is unreadable: %v", ref.Scope, err)
+		}
+	}
+	if err := store.Delete(ctx, first.Scope, first.Name, first.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, second.Scope, second.Name, second.Digest); err != nil {
+		t.Fatalf("deleting the source-scope copy removed the relocated copy: %v", err)
+	}
+}
+
 func TestFileStorePutGetIncludesDeletions(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
@@ -342,6 +420,44 @@ func TestFileStoreSweepRemovesOnlyOrphans(t *testing.T) {
 	}
 	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
 		t.Fatalf("abandoned temp file survived: %v", err)
+	}
+}
+
+func TestFileStoreSweepRemovesStaleIsolatedBundleWithoutTouchingFreshCopy(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	files := []File{{Path: "index.html", Content: "<h1>demo</h1>"}}
+	stale, err := store.PutIsolated(ctx, "logical-cluster", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := store.PutIsolated(ctx, "logical-cluster", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := scopeKey("logical-cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * DefaultSweepMaxAge)
+	if err := os.Chtimes(store.path(key, stale.Name), old, old); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := store.Sweep(time.Now(), DefaultSweepMaxAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("Sweep removed %d files, want only the stale isolated bundle", removed)
+	}
+	if _, err := store.Get(ctx, "logical-cluster", stale.Name, stale.Digest); !IsNotFound(err) {
+		t.Fatalf("stale isolated bundle survived: %v", err)
+	}
+	if _, err := store.Get(ctx, "logical-cluster", fresh.Name, fresh.Digest); err != nil {
+		t.Fatalf("fresh isolated bundle was swept: %v", err)
 	}
 }
 

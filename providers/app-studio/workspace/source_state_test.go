@@ -502,6 +502,48 @@ type failLedgerOnAttributedCompletion struct {
 	Ledger
 }
 
+type lostAckTestLedger struct {
+	Ledger
+	loseNextUpdate       bool
+	readOverrideRevision uint64
+	readOverrideCount    int
+	readOverridesApplied int
+	readOverride         func(LedgerRecord) LedgerRecord
+	afterPersist         func(LedgerRecord) error
+}
+
+var errLostLedgerUpdateAck = errors.New("injected lost ledger update response")
+
+func (l *lostAckTestLedger) Read(ctx context.Context, scope Scope) (LedgerRecord, error) {
+	record, err := l.Ledger.Read(ctx, scope)
+	if err != nil {
+		return record, err
+	}
+	if l.readOverride != nil && record.SourceRevision == l.readOverrideRevision &&
+		(l.readOverrideCount == 0 || l.readOverridesApplied < l.readOverrideCount) {
+		l.readOverridesApplied++
+		return l.readOverride(record), nil
+	}
+	return record, nil
+}
+
+func (l *lostAckTestLedger) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
+	record, err := l.Ledger.Update(ctx, scope, mutate)
+	if err != nil {
+		return record, err
+	}
+	if l.afterPersist != nil {
+		if err := l.afterPersist(record); err != nil {
+			return record, err
+		}
+	}
+	if l.loseNextUpdate {
+		l.loseNextUpdate = false
+		return LedgerRecord{}, errLostLedgerUpdateAck
+	}
+	return record, nil
+}
+
 func (l *failLedgerOnAttributedCompletion) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
 	return l.Ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		changed, err := mutate(record)
@@ -519,6 +561,63 @@ func (l *cancelLedgerAtRevision) Update(ctx context.Context, scope Scope, mutate
 		l.cancel()
 	}
 	return record, err
+}
+
+type competingReservationLedger struct {
+	Ledger
+}
+
+type failCompletionThenLoseFailureAckLedger struct {
+	Ledger
+	updates int
+}
+
+var errInjectedSourceCompletionFailure = errors.New("injected source completion failure")
+
+func (l *failCompletionThenLoseFailureAckLedger) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
+	l.updates++
+	if l.updates == 2 {
+		record, err := l.Read(ctx, scope)
+		if err != nil {
+			return LedgerRecord{}, err
+		}
+		if _, err := mutate(&record); err != nil {
+			return LedgerRecord{}, err
+		}
+		return LedgerRecord{}, errInjectedSourceCompletionFailure
+	}
+	record, err := l.Ledger.Update(ctx, scope, mutate)
+	if err != nil {
+		return record, err
+	}
+	if l.updates == 3 {
+		return LedgerRecord{}, errLostLedgerUpdateAck
+	}
+	return record, nil
+}
+
+func (l *competingReservationLedger) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
+	attempted, err := l.Read(ctx, scope)
+	if err != nil {
+		return LedgerRecord{}, err
+	}
+	if _, err := mutate(&attempted); err != nil {
+		return LedgerRecord{}, err
+	}
+	record, err := l.Ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		current := record.SourceRevision
+		if current == 0 {
+			current = 1
+		}
+		record.SourceRevision = current + 1
+		record.SourceMutationID = "another-writer"
+		record.LastSourceChange = &SourceChange{SourceRevision: current + 1}
+		return true, nil
+	})
+	if err != nil {
+		return record, err
+	}
+	return LedgerRecord{}, errors.New("injected competing reservation response loss")
 }
 
 func TestFailedOrdinaryWriteKeepsRevisionButDoesNotPublishProvenance(t *testing.T) {
@@ -784,5 +883,169 @@ func TestManagedTransactionRollsBackWhenSourceCompletionFails(t *testing.T) {
 	}
 	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "later.txt", Content: "retry"}); err != nil {
 		t.Fatalf("next edit after completion-failure rollback: %v", err)
+	}
+}
+
+func TestFileStoreReservationLostAckTagsUnchangedCurrentTree(t *testing.T) {
+	ctx := context.Background()
+	ledger := NewMemoryLedger()
+	store := NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{{Path: "app.txt", Content: "before"}}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	beforeRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetLedger(&lostAckTestLedger{
+		Ledger:               ledger,
+		loseNextUpdate:       true,
+		readOverrideRevision: beforeRevision + 1,
+		readOverrideCount:    1,
+		readOverride: func(record LedgerRecord) LedgerRecord {
+			// The first post-update read is a stale cached view. Recovery must
+			// keep polling until the exact reservation ID becomes visible.
+			record.SourceRevision = beforeRevision
+			record.SourceMutationID = ""
+			return record
+		},
+	})
+	if _, err := store.WriteFile(ContextWithMutationOrigin(ctx, "thread-lost", "run-lost"), scope, WriteOptions{Path: "app.txt", Content: "first edit"}); !errors.Is(err, errLostLedgerUpdateAck) {
+		t.Fatalf("write with lost reservation response = %v, want injected response loss", err)
+	}
+	store.SetLedger(ledger)
+	reservedRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil || reservedRevision != beforeRevision+1 {
+		t.Fatalf("reserved revision = %d, err=%v; want %d", reservedRevision, err, beforeRevision+1)
+	}
+	localRevision, err := store.LocalTreeRevision(ctx, scope)
+	if err != nil || localRevision != reservedRevision {
+		t.Fatalf("unchanged tree tag = %d, err=%v; want %d", localRevision, err, reservedRevision)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("unchanged tree after lost reservation response is stale: retained=%v err=%v", retained, err)
+	}
+	file, err := store.ReadFile(ctx, scope, ReadOptions{Path: "app.txt"})
+	if err != nil || file.Content != "before" {
+		t.Fatalf("bytes after lost reservation response = %#v, err=%v", file, err)
+	}
+	last, err := store.LastSourceChange(ctx, scope)
+	if err != nil || last == nil || last.SourceRevision != reservedRevision || last.ThreadID != "" || last.RunID != "" {
+		t.Fatalf("lost reservation published source attribution: %#v, err=%v", last, err)
+	}
+	if _, err := store.WriteFile(ContextWithMutationOrigin(ctx, "thread-next", "run-next"), scope, WriteOptions{Path: "app.txt", Content: "retry"}); err != nil {
+		t.Fatalf("retry after recovered reservation: %v", err)
+	}
+}
+
+func TestFileStoreReservationLostAckDoesNotTagCompetingWriterAtSameRevision(t *testing.T) {
+	ctx := context.Background()
+	ledger := NewMemoryLedger()
+	store := NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{{Path: "app.txt", Content: "before"}}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	beforeRevision, err := store.LocalTreeRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetLedger(&competingReservationLedger{Ledger: ledger})
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "app.txt", Content: "must not be written"}); err == nil {
+		t.Fatal("write succeeded after a competing reservation")
+	}
+	store.SetLedger(ledger)
+	localRevision, err := store.LocalTreeRevision(ctx, scope)
+	if err != nil || localRevision != beforeRevision {
+		t.Fatalf("tree tag after competing same-revision reservation = %d, err=%v; want old revision %d", localRevision, err, beforeRevision)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || retained {
+		t.Fatalf("competing reservation was incorrectly certified current: retained=%v err=%v", retained, err)
+	}
+	file, err := store.ReadFile(ctx, scope, ReadOptions{Path: "app.txt"})
+	if err != nil || file.Content != "before" {
+		t.Fatalf("bytes after competing reservation = %#v, err=%v", file, err)
+	}
+}
+
+func TestManagedTransactionRecoversLostFailureFinalizationAckAfterRollback(t *testing.T) {
+	ctx := context.Background()
+	ledger := NewMemoryLedger()
+	store := NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{
+		{Path: "a.txt", Content: "a-before"},
+		{Path: "b.txt", Content: "b-before"},
+	}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	versionA := testFileVersion(t, ctx, store, scope, "a.txt")
+	versionB := testFileVersion(t, ctx, store, scope, "b.txt")
+	beforeRevision, err := store.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetLedger(&failCompletionThenLoseFailureAckLedger{Ledger: ledger})
+	_, err = store.ApplyManagedTransaction(ContextWithMutationOrigin(ctx, "thread-attempt", "run-attempt"), scope, []ManagedFileChange{
+		{Path: "a.txt", Operation: ManagedFileReplace, Content: "a-after", ExpectedVersion: versionA},
+		{Path: "b.txt", Operation: ManagedFileReplace, Content: "b-after", ExpectedVersion: versionB},
+	})
+	if !errors.Is(err, errInjectedSourceCompletionFailure) {
+		t.Fatalf("managed transaction error = %v, want injected completion failure", err)
+	}
+	store.SetLedger(ledger)
+	for path, want := range map[string]string{"a.txt": "a-before", "b.txt": "b-before"} {
+		file, readErr := store.ReadFile(ctx, scope, ReadOptions{Path: path})
+		if readErr != nil || file.Content != want {
+			t.Fatalf("rollback %s = %#v, err=%v; want %q", path, file, readErr, want)
+		}
+	}
+	if got, err := store.SourceRevision(ctx, scope); err != nil || got != beforeRevision+1 {
+		t.Fatalf("revision after rolled-back transaction = %d, err=%v; want %d", got, err, beforeRevision+1)
+	}
+	last, err := store.LastSourceChange(ctx, scope)
+	if err != nil || last == nil || last.SourceRevision != beforeRevision+1 || last.ThreadID != "" || last.RunID != "" {
+		t.Fatalf("failure finalization retained source attribution: %#v, err=%v", last, err)
+	}
+	owners, err := store.SourceAttributions(ctx, scope, []string{"a.txt", "b.txt"})
+	if err != nil || len(owners) != 0 {
+		t.Fatalf("failure finalization retained path attribution: %+v, err=%v", owners, err)
+	}
+	localRevision, err := store.LocalTreeRevision(ctx, scope)
+	if err != nil || localRevision != beforeRevision+1 {
+		t.Fatalf("restored tree tag = %d, err=%v; want %d", localRevision, err, beforeRevision+1)
+	}
+	if retained, err := store.RetainsSource(ctx, scope); err != nil || !retained {
+		t.Fatalf("restored tree after lost failure ack is stale: retained=%v err=%v", retained, err)
+	}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "next.txt", Content: "retry"}); err != nil {
+		t.Fatalf("next edit after lost failure acknowledgment: %v", err)
+	}
+}
+
+func TestEnsureSourceRevisionFloorClearsPreviousMutationID(t *testing.T) {
+	ctx := context.Background()
+	ledger := NewMemoryLedger()
+	store := NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{{Path: "app.txt", Content: "source"}}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	before, err := ledger.Read(ctx, scope)
+	if err != nil || before.SourceMutationID == "" {
+		t.Fatalf("source mutation ID before floor = %q, err=%v; want a recorded mutation", before.SourceMutationID, err)
+	}
+	floor := before.SourceRevision + 4
+	if err := store.EnsureSourceRevisionFloor(ctx, scope, floor); err != nil {
+		t.Fatalf("EnsureSourceRevisionFloor: %v", err)
+	}
+	after, err := ledger.Read(ctx, scope)
+	if err != nil || after.SourceRevision != floor || after.SourceMutationID != "" {
+		t.Fatalf("ledger after revision floor = revision %d mutation %q, err=%v; want %d and no owner", after.SourceRevision, after.SourceMutationID, err, floor)
 	}
 }

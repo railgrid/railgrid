@@ -466,6 +466,13 @@ type ProjectWorkspaceStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	SourceRevision int64 `json:"sourceRevision,omitempty"`
 
+	// SourceMutationID identifies the source write that owns SourceRevision.
+	// It lets a writer resolve a lost status-write acknowledgment without
+	// mistaking another writer's revision for its own.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	SourceMutationID string `json:"sourceMutationID,omitempty"`
+
 	// LastSourceChange identifies the thread and run that wrote this revision.
 	// +optional
 	LastSourceChange *ProjectSourceChange `json:"lastSourceChange,omitempty"`

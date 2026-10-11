@@ -339,15 +339,20 @@ create-only semantics for new files; conflicting transactions apply no changes.
 Writes without a trusted origin remain unattributed. A mutation reserves its
 revision before changing bytes and records its origin only after it succeeds.
 A complete rollback leaves the restored tree usable; an incomplete rollback or
-stale replica cannot certify that tree as current.
+stale replica cannot certify that tree as current. A unique mutation receipt
+persisted with the revision distinguishes a lost write acknowledgment from a
+competing writer. Recovery confirms that receipt before trusting local bytes;
+unverifiable writes remain blocked. Mixed text and binary transactions retain
+the independent text payload and diff budgets.
 
 Commits stage an immutable source bundle in Code, then reserve a single durable
 intent on the Project before requesting a RepositoryCommit. Retries use the
 saved bundle, repository UID, and request ID, so a lost response does not create
 a second commit or pick up newer edits. Settlement and failure callbacks are
-fenced to that intent. A changed repository binding or recreated Repository
-blocks an unbound intent for operator recovery rather than replaying it against
-a different repository. Code retains staged bundles under its existing 24-hour
+fenced to that intent. Each staging upload receives its own bundle handle, even
+for identical contents, so another commit’s cleanup cannot delete its source.
+A changed repository binding or recreated Repository blocks an unbound intent
+for operator recovery rather than replaying it against a different repository. Code retains staged bundles under its existing 24-hour
 orphan retention policy. If an outage outlasts that window before a commit is
 created, recovery remains blocked for operator attention; it does not rebuild
 the saved request from newer source files.

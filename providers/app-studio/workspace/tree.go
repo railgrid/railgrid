@@ -241,14 +241,16 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 	// opts.ExpectedSourceRevision is re-checked inside it, so a foreign writer
 	// that moved the project between the fail-fast check above and here loses
 	// the race here instead of silently winning it.
-	revision, err := s.advanceAndRecord(ctx, scope, opts.ExpectedSourceRevision, changedPaths, opts.Committed)
+	mutation, err := s.advanceAndRecord(ctx, scope, opts.ExpectedSourceRevision, changedPaths, opts.Committed)
 	if err != nil {
-		return ReplaceTreeResult{}, s.rollbackTree(entries, err)
+		treeRestored, rollbackErr := s.rollbackTreeWithStatus(entries, err)
+		reconcileErr := s.reconcileTreeRollback(ctx, scope, mutation, treeRestored)
+		return ReplaceTreeResult{}, errors.Join(rollbackErr, reconcileErr)
 	}
 	return ReplaceTreeResult{
 		Written:        written,
 		Deleted:        deleted,
-		SourceRevision: revision,
+		SourceRevision: mutation.revision,
 	}, nil
 }
 
@@ -418,6 +420,11 @@ func (s *FileStore) verifyTreeBaseline(ctx context.Context, scope Scope, dir str
 }
 
 func (s *FileStore) rollbackTree(entries []treeEntry, cause error) error {
+	_, err := s.rollbackTreeWithStatus(entries, cause)
+	return err
+}
+
+func (s *FileStore) rollbackTreeWithStatus(entries []treeEntry, cause error) (bool, error) {
 	var rollbackErrs []error
 	// Remove every newly committed target before restoring any backup. This
 	// ordering matters for file/directory transitions: restoring an old `src`
@@ -452,7 +459,7 @@ func (s *FileStore) rollbackTree(entries []treeEntry, cause error) error {
 		}
 	}
 	if len(rollbackErrs) == 0 {
-		return cause
+		return true, cause
 	}
-	return errors.Join(cause, errors.Join(rollbackErrs...))
+	return false, errors.Join(cause, errors.Join(rollbackErrs...))
 }

@@ -543,3 +543,30 @@ func TestLedgerPersistsReservedCommitBeforeObjectNameExists(t *testing.T) {
 		t.Fatal("attaching the returned object reset the reservation timestamp")
 	}
 }
+
+// The mutation receipt must survive the Project status merge patch, including clearing.
+func TestLedgerPersistsAndClearsSourceMutationIdentity(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	for _, id := range []string{"mutation-one", "mutation-two", ""} {
+		if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+			record.SourceRevision++
+			record.SourceMutationID = id
+			return true, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		record, err := New(projects).Read(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.SourceMutationID != id || record.DeepCopy().SourceMutationID != id {
+			t.Fatalf("mutation identity after merge patch = %q, want %q", record.SourceMutationID, id)
+		}
+		if projects.project.Status.Workspace.SourceMutationID != id {
+			t.Fatalf("persisted Project identity = %q, want %q", projects.project.Status.Workspace.SourceMutationID, id)
+		}
+	}
+}

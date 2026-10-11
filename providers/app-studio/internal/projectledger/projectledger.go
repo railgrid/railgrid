@@ -196,7 +196,7 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 	if status == nil {
 		return workspace.LedgerRecord{}
 	}
-	record := workspace.LedgerRecord{}
+	record := workspace.LedgerRecord{SourceMutationID: status.SourceMutationID}
 	if source := status.LastSourceChange; source != nil {
 		record.LastSourceChange = &workspace.SourceChange{ThreadID: source.ThreadID, RunID: source.RunID, SourceRevision: uint64(source.SourceRevision)}
 	}
@@ -256,6 +256,7 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 // moment it was actually requested.
 func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorkspaceStatus, now time.Time) *aiv1alpha1.ProjectWorkspaceStatus {
 	status := &aiv1alpha1.ProjectWorkspaceStatus{
+		SourceMutationID:       record.SourceMutationID,
 		SourceRevision:         int64(record.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
 		UncommittedPaths:       record.UncommittedPaths,
 		SourcePathAttributions: make([]aiv1alpha1.ProjectSourcePathAttribution, 0, len(record.SourcePathAttributions)),
@@ -315,7 +316,7 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 			RecordedAt:      recordedAt,
 		}
 	}
-	if status.SourceRevision == 0 && len(status.UncommittedPaths) == 0 && len(status.SourcePathAttributions) == 0 &&
+	if status.SourceRevision == 0 && status.SourceMutationID == "" && len(status.UncommittedPaths) == 0 && len(status.SourcePathAttributions) == 0 &&
 		status.LastSourceChange == nil && status.LastPreviewCheckpoint == nil && status.PendingCommit == nil && status.Settlement == nil {
 		return nil
 	}
@@ -332,6 +333,7 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 	} else {
 		ledger := map[string]any{
 			"sourceRevision":         status.SourceRevision,
+			"sourceMutationID":       nullableString(status.SourceMutationID),
 			"lastSourceChange":       sourceChangePatch(status.LastSourceChange),
 			"lastPreviewCheckpoint":  sourceChangePatch(status.LastPreviewCheckpoint),
 			"uncommittedPaths":       nullIfEmpty(status.UncommittedPaths),

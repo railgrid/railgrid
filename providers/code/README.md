@@ -216,6 +216,11 @@ shape and behind the same gate, with its own `create` grant on
 inline bundle. Source trees use the second: `stage-commit-bundle`, gated on
 `repositories/stage-commit-bundle`, which stores a file list (48 MiB decoded,
 500 files) and returns the `bundleRef`/`bundleDigest` pair `commit` names.
+Each successful stage call returns its own opaque handle, even for identical
+file lists, while the digest remains content-derived. Treat one handle as the
+source for one logical commit: retries reuse that same handle and `requestID`,
+and a separate commit intent stages its own handle. Previously issued
+content-addressed handles remain readable by `commit`.
 The third goes the other way: `checkout`, gated on `repositories/checkout`,
 reads the tree at a ref (`{repositoryUID, ref?, binaryEncoding?}`) and returns
 the files inline, the same `{repositoryRef, name, phase, ref, commitSHA,
