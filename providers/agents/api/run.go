@@ -1299,6 +1299,7 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	stored.Phase = out.Phase
 	stored.Message = out.Message
+	s.closeParkedInboxItem(ctx, scope, stored, out.Phase, end)
 	stored.Checkpoint = nil
 	if out.Output != "" {
 		stored.Output = safeTruncate(out.Output, maxStoredOutput)
@@ -1327,6 +1328,48 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
 	_ = s.saveRun(ctx, scope, stored)
+}
+
+// closeParkedInboxItem closes the inbox item a run was parked on when the run
+// ends without it being resolved. A cancel, a deadline or a recovery close all
+// finish the run through finishRun and drop its checkpoint, and the checkpoint
+// is the only thing that names the item — leaving it pending put a card in the
+// portal's "Needs your attention" list with no run left to resume and, for a
+// question, nothing that could ever clear it. Approvals close as denied and
+// questions as answered, the same convention failPark uses, so no resolution
+// path mistakes the closing for a verdict that resumes anything.
+func (s *Server) closeParkedInboxItem(ctx context.Context, scope store.Scope, run store.Run, phase store.RunPhase, now time.Time) {
+	if len(run.Checkpoint) == 0 || !runSettled(phase) {
+		return
+	}
+	var ck runCheckpoint
+	if json.Unmarshal(run.Checkpoint, &ck) != nil || ck.InboxID == "" {
+		return
+	}
+	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	item, err := s.store.GetInboxItem(ctx, wsScope, ck.InboxID)
+	if err != nil {
+		log.Printf("run %s: reading inbox item %s to close it: %v", run.ID, ck.InboxID, err)
+		return
+	}
+	if item.State != store.InboxStatePending || item.RunID != run.ID || item.AgentName != run.AgentName {
+		return
+	}
+	state := store.InboxStateDenied
+	if item.Kind == store.InboxKindQuestion {
+		state = store.InboxStateAnswered
+	}
+	response := "The run ended before this was resolved."
+	if phase == store.RunPhaseAborted {
+		response = "The run was cancelled before this was resolved."
+	}
+	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now); err != nil {
+		log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
+		return
+	}
+	s.events.publish(wsScope, "inbox", map[string]any{
+		"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
+	})
 }
 
 // repositoryDeadlineMargin is how much longer than its own maxDurationSeconds
