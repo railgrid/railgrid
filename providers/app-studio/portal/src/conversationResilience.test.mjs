@@ -2069,3 +2069,175 @@ test('App latches one stable theme-colored stop control until interruption settl
   assert.match(primaryStyles, /\.k-ai-primary-action--stopping:disabled[\s\S]*?background: var\(--color-accent/)
   assert.doesNotMatch(primaryStyles, /\.k-ai-primary-action--(?:stop|stopping)[^{]*\{[^}]*danger/)
 })
+
+function interruptResponseHarness(kind) {
+  const names = ['resolveToolPermission', 'submitFollowUpAnswer', 'followUpQuestions']
+  const statements = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
+  assert.equal(statements.length, names.length)
+  return new Function('ref', 'kind', `
+    const props = { ctx: { tenant: 'tenant-a' } };
+    const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const activeAssistantThreadID = ref('thread-a');
+    const appComponentMounted = true;
+    const appContextFingerprint = ctx => JSON.stringify(ctx);
+    const assistantActionScopePrefix = (...parts) => JSON.stringify(parts);
+    const assistantActionKey = (scope, run, request) => scope + ':' + run + ':' + request;
+    const permissionErrors = ref({}), permissionBusy = ref({});
+    const followUpErrors = ref({}), followUpBusy = ref({}), followUpAnswers = ref({});
+    const reviewPanelHold = ref(null), conversationStatus = ref('');
+    const marks = [], refreshes = [], failures = [];
+    const markInterruptResolvedLocally = (...args) => marks.push(['resolved', ...args]);
+    const markInterruptPendingLocally = (...args) => marks.push(['pending', ...args]);
+    const refreshSelectedProjectConversation = async project => refreshes.push(project);
+    const handleResumeFailure = async (...args) => failures.push(args);
+    let resolve, reject;
+    const response = new Promise((yes, no) => { resolve = yes; reject = no; });
+    const calls = [];
+    const api = { respondAssistantTurn: (...args) => { calls.push(args); return response; } };
+    const message = { id: 'message-a', projectID: 'project-a' };
+    const interrupt = { interruptId: 'interrupt-a', status: 'pending', action: { runId: 'run-a', requestId: 'request-a' }, questions: [{ id: 'q', question: 'Continue?' }] };
+    const key = assistantActionKey(assistantActionScopePrefix('project-a', 'uid-a', 'thread-a', appContextFingerprint(props.ctx)), 'run-a', 'request-a');
+    followUpAnswers.value[key] = { q: 'Yes' };
+    ${compileStatements(statements)}
+    return { marks, refreshes, failures, calls, reviewPanelHold, conversationStatus, activeAssistantThreadID,
+      permissionBusy, followUpBusy, followUpAnswers, key, resolve, reject,
+      send: () => kind === 'approval' ? resolveToolPermission(message, interrupt, 'allow') : submitFollowUpAnswer(message, interrupt),
+    };
+  `)(ref, kind)
+}
+
+for (const kind of ['approval', 'input']) {
+  test(`${kind} stays pending until acceptance and a late failure cannot patch a sibling thread`, async () => {
+    const h = interruptResponseHarness(kind)
+    const response = h.send()
+    assert.equal(h.calls[0][2], 'thread-a')
+    assert.deepEqual(h.marks, [], 'no optimistic resolved state before acceptance')
+    h.activeAssistantThreadID.value = 'thread-b'
+    h.conversationStatus.value = 'Sibling is working'
+    h.reject(new Error('response failed'))
+    await response
+    assert.deepEqual(h.marks, [], 'rollback must never inject the old message into the current thread')
+    assert.equal(h.reviewPanelHold.value, null, 'retire only the failed request hold')
+    assert.equal(h.conversationStatus.value, 'Sibling is working')
+    assert.deepEqual(h.refreshes, [])
+    assert.deepEqual(h.failures, [])
+    assert.deepEqual(h.permissionBusy.value, {})
+    assert.deepEqual(h.followUpBusy.value, {})
+    assert.deepEqual(h.followUpAnswers.value[h.key], { q: 'Yes' })
+  })
+
+  test(`${kind} late acceptance preserves a newer thread's hold and answers`, async () => {
+    const h = interruptResponseHarness(kind)
+    const response = h.send()
+    h.activeAssistantThreadID.value = 'thread-b'
+    h.reviewPanelHold.value = { key: 'sibling-request' }
+    h.followUpAnswers.value.sibling = { q: 'No' }
+    h.resolve()
+    await response
+    assert.deepEqual(h.marks, [])
+    assert.equal(h.reviewPanelHold.value.key, 'sibling-request')
+    assert.deepEqual(h.followUpAnswers.value.sibling, { q: 'No' })
+  })
+
+  test(`${kind} marks the visible interrupt resolved only after acceptance`, async () => {
+    const h = interruptResponseHarness(kind)
+    const response = h.send()
+    assert.deepEqual(h.marks, [])
+    h.resolve()
+    await response
+    assert.equal(h.reviewPanelHold.value, null, 'accepted interrupts must not reappear as an actionable held panel')
+    assert.equal(h.marks.length, 1)
+    assert.deepEqual(h.marks[0].slice(0, 3), ['resolved', 'project-a', 'message-a'])
+    assert.deepEqual(h.refreshes, ['project-a'])
+  })
+}
+
+test('draft cleanup follows identity transitions without purging on token refresh or thread navigation', t => {
+  const statements = ast.statements.filter(node =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'assistantComposerDraftIdentity' ||
+    ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx))'),
+  )
+  assert.equal(statements.length, 2)
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  const h = scope.run(() => new Function('ref', 'watch', `
+    const context = ref({ token: 'token-1', tenant: 'tenant', orgUUID: 'org', workspaceUUID: 'workspace', user: { sub: 'alice' }, subPath: 'project' });
+    const props = { get ctx() { return context.value; } };
+    const purges = [], activeIdentities = [];
+    const setAssistantComposerDraftActiveIdentity = identity => activeIdentities.push(identity);
+    const purgeAssistantComposerDraftsForIdentity = identity => purges.push(identity);
+    ${compileStatements(statements)}
+    return { context, purges, activeIdentities };
+  `)(ref, watch))
+  h.context.value = { ...h.context.value, token: 'rotated', subPath: 'another-project' }
+  assert.deepEqual(h.purges, [])
+  h.context.value = { ...h.context.value, token: undefined, fetch: async () => new Response() }
+  assert.deepEqual(h.purges, [], 'host-owned fetch authenticates without the deprecated token')
+  h.context.value = { ...h.context.value, workspaceUUID: 'new-workspace' }
+  assert.equal(h.purges.length, 1)
+  assert.equal(h.purges[0].workspaceUUID, 'workspace')
+  h.context.value = { ...h.context.value, user: { sub: 'bob' } }
+  assert.equal(h.purges.length, 2)
+  assert.equal(h.purges[1].user, 'alice')
+  h.context.value = { ...h.context.value, token: null, fetch: null }
+  assert.equal(h.purges.length, 3)
+  assert.equal(h.purges[2].user, 'bob')
+  assert.equal(h.activeIdentities[0].user, 'alice')
+  assert.equal(h.activeIdentities.at(-1), null)
+})
+
+function expiredReceiptRecoveryHarness() {
+  const names = new Set(['recoverUnavailableAssistantAttachmentReceipts', 'recoverUnavailableAssistantAttachmentSend'])
+  const statements = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
+  assert.equal(statements.length, 2)
+  return new Function('ref', `
+    const expired = { type: 'attachment', attachment: { id: 'expired-upload', createdAt: '2026-01-01T00:00:00Z' } };
+    const valid = { type: 'attachment', attachment: { id: 'recent-upload', createdAt: '2026-01-02T01:00:00Z' } };
+    const text = { type: 'text', text: 'Draft edited after the old upload expired' };
+    const parts = [text, expired, valid];
+    const props = { ctx: {} }, assistantComposerRef = ref(null);
+    const assistantComposerParts = ref(parts), assistantComposerAttachmentsPending = ref(false);
+    const prompt = ref(text.text), error = ref(''), messageStreaming = ref(true);
+    let pendingMessageSubmission = { id: 'rejected-turn' }, current = true, resolve;
+    const listed = new Promise(yes => { resolve = yes; });
+    const api = { listAssistantAttachments: () => listed };
+    const assistantAttachmentReceiptsMatch = (left, right) => left.id === right.id;
+    const saved = [];
+    const persistCurrentAssistantComposerDraft = parts => saved.push(parts);
+    ${compileStatements(statements)}
+    return { parts, valid, prompt, error, assistantComposerParts, messageStreaming, saved,
+      resolve: () => resolve([valid.attachment]),
+      navigate: () => { current = false; prompt.value = 'Sibling draft'; assistantComposerParts.value = []; },
+      recover: () => recoverUnavailableAssistantAttachmentSend('project', text.text, parts, () => current),
+      submission: () => pendingMessageSubmission,
+    };
+  `)(ref)
+}
+
+test('a renewed draft with an expired upload preserves text and valid receipts and requires explicit reattachment', async () => {
+  const h = expiredReceiptRecoveryHarness()
+  const recovery = h.recover()
+  h.resolve()
+  const result = await recovery
+  assert.equal(result.removed, 1)
+  assert.equal(result.unresolved, 0)
+  assert.equal(h.prompt.value, h.parts[0].text)
+  assert.deepEqual(h.assistantComposerParts.value, [h.parts[0], h.valid])
+  assert.deepEqual(h.saved, [[h.parts[0], h.valid]])
+  assert.match(h.error.value, /no longer available.*Reattach.*send again/)
+  assert.equal(h.submission(), null, 'the rejected submission is retired, never replayed')
+  assert.equal(h.messageStreaming.value, false)
+})
+
+test('receipt expiry recovery after navigation cannot edit the newly visible draft', async () => {
+  const h = expiredReceiptRecoveryHarness()
+  const recovery = h.recover()
+  h.navigate()
+  h.resolve()
+  assert.equal((await recovery).stale, true)
+  assert.equal(h.prompt.value, 'Sibling draft')
+  assert.deepEqual(h.assistantComposerParts.value, [])
+  assert.deepEqual(h.saved, [])
+  assert.equal(h.error.value, '')
+  assert.equal(h.submission().id, 'rejected-turn')
+})

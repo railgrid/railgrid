@@ -26,6 +26,16 @@ export interface AssistantComposerDraftStorage {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
   removeItem(key: string): void
+  /** sessionStorage enumeration is optional for isolated/test storage adapters. */
+  readonly length?: number
+  key?(index: number): string | null
+}
+
+export interface AssistantComposerDraftIdentity {
+  tenant: string
+  orgUUID: string
+  workspaceUUID: string
+  user: string
 }
 
 const STORAGE_PREFIX = 'railgrid:app-studio:assistant-composer-draft:v1'
@@ -39,6 +49,8 @@ const MAX_DRAFT_BYTES = 1_100_000
 const LEGACY_MAX_DRAFT_BYTES = 64 * 16_384 + 4_096
 const MAX_MEMORY_DRAFTS = 32
 const MAX_MEMORY_DRAFT_BYTES = MAX_DRAFT_BYTES * 4
+const MAX_STORED_DRAFTS = 32
+const MAX_STORED_DRAFT_BYTES = 2_800_000
 export const ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1_000
 
 interface MemoryDraftEntry {
@@ -52,8 +64,98 @@ interface MemoryDraftEntry {
 // fallback in this App instance; successful storage writes remain canonical.
 const memoryDrafts = new Map<string, MemoryDraftEntry>()
 
+// undefined means App Studio has not supplied its initial identity yet. null
+// means there is no authenticated owner. An object fences synchronous draft
+// operations to one tenant/user, including delayed attachment-delete callbacks.
+let activeDraftIdentityKey: string | null | undefined
+
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength
+}
+
+// Web Storage quota accounting is implementation-dependent. UTF-16 code units
+// are the conservative basis used by common browsers, and include the key.
+function storageByteLength(value: string): number {
+  return value.length * 2
+}
+
+function normalizedIdentity(identity: AssistantComposerDraftIdentity): string[] | null {
+  const parts = [identity.tenant, identity.orgUUID, identity.workspaceUUID, identity.user]
+    .map((part) => typeof part === 'string' ? part.trim() : '')
+  return parts.every((part) => part.length > 0 && part.length <= MAX_SCOPE_PART_LENGTH) ? parts : null
+}
+
+function identityKey(parts: readonly string[]): string {
+  return JSON.stringify(parts)
+}
+
+function scopeIdentityKey(scope: AssistantComposerDraftScope): string | null {
+  const normalized = normalizedScope(scope)
+  return normalized ? identityKey([
+    normalized.tenant, normalized.orgUUID, normalized.workspaceUUID, normalized.user,
+  ]) : null
+}
+
+function draftOperationAllowed(scope: AssistantComposerDraftScope): boolean {
+  if (activeDraftIdentityKey === undefined) return true
+  if (activeDraftIdentityKey === null) return false
+  return scopeIdentityKey(scope) === activeDraftIdentityKey
+}
+
+function storageKeyIdentityParts(key: string): string[] | null {
+  if (key.startsWith(`${STORAGE_PREFIX}:`) && key.length <= STORAGE_PREFIX.length + 1 + MAX_SCOPE_PART_LENGTH * 9 * 7) {
+    try {
+      const encoded = key.slice(STORAGE_PREFIX.length + 1).split(':')
+      if (encoded.length < 4 || encoded.length > 7) return null
+      const parts = encoded.slice(0, 4).map(decodeURIComponent)
+      return parts.every((part) => part.length > 0 && part.length <= MAX_SCOPE_PART_LENGTH) ? parts : null
+    } catch {
+      return null
+    }
+  }
+  for (const prefix of LEGACY_STORAGE_PREFIXES) {
+    if (!key.startsWith(`${prefix}:`) || key.length > prefix.length + 1 + MAX_SCOPE_PART_LENGTH * 6 * 9) continue
+    const encoded = key.slice(prefix.length + 1).split(':')
+    if (encoded.length !== 6) return null
+    try {
+      const parts = encoded.map(decodeURIComponent)
+      return parts.every((part, index) => (index === 5 || part.length > 0) && part.length <= MAX_SCOPE_PART_LENGTH)
+        ? parts.slice(0, 4)
+        : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+export function setAssistantComposerDraftActiveIdentity(
+  identity: AssistantComposerDraftIdentity | null | undefined,
+): void {
+  if (identity === undefined) {
+    activeDraftIdentityKey = undefined
+    return
+  }
+  if (identity === null) {
+    activeDraftIdentityKey = null
+    return
+  }
+  const parts = normalizedIdentity(identity)
+  activeDraftIdentityKey = parts ? identityKey(parts) : null
+}
+
+export function purgeAssistantComposerDraftMemoryForIdentity(identity: AssistantComposerDraftIdentity): number {
+  const parts = normalizedIdentity(identity)
+  if (!parts) return 0
+  const target = identityKey(parts)
+  let removed = 0
+  for (const key of memoryDrafts.keys()) {
+    if (storageKeyIdentityParts(key) && identityKey(storageKeyIdentityParts(key)!) === target) {
+      memoryDrafts.delete(key)
+      removed++
+    }
+  }
+  return removed
 }
 
 function memoryDraft(key: string, now: number): MemoryDraftEntry | null {
@@ -68,6 +170,14 @@ function memoryDraft(key: string, now: number): MemoryDraftEntry | null {
   return entry
 }
 
+function pruneExpiredMemoryDrafts(now: number): void {
+  for (const [key, entry] of memoryDrafts) {
+    if (now - entry.savedAt > ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS) {
+      memoryDrafts.delete(key)
+    }
+  }
+}
+
 function rememberMemoryDraft(key: string, draft: AssistantComposerDraft | null, savedAt: number): void {
   let bytes = 0
   if (draft) {
@@ -75,6 +185,7 @@ function rememberMemoryDraft(key: string, draft: AssistantComposerDraft | null, 
     bytes = byteLength(raw)
   }
   if (bytes > MAX_MEMORY_DRAFT_BYTES) return
+  pruneExpiredMemoryDrafts(savedAt)
   memoryDrafts.delete(key)
   memoryDrafts.set(key, { draft, savedAt, bytes })
   let totalBytes = [...memoryDrafts.values()].reduce((sum, entry) => sum + entry.bytes, 0)
@@ -282,6 +393,169 @@ function recoverLegacyAnnotationDraft(
   return latest.draft
 }
 
+interface StoredDraftMetadata {
+  savedAt: number
+  storageBytes: number
+}
+
+function legacyStorageKeyParts(key: string): string[] | null {
+  for (const prefix of LEGACY_STORAGE_PREFIXES) {
+    if (!key.startsWith(`${prefix}:`) || key.length > prefix.length + 1 + MAX_SCOPE_PART_LENGTH * 6 * 9) continue
+    const encoded = key.slice(prefix.length + 1).split(':')
+    if (encoded.length !== 6) return null
+    try {
+      const parts = encoded.map(decodeURIComponent)
+      return parts.every((part, index) => (index === 5 || part.length > 0) && part.length <= MAX_SCOPE_PART_LENGTH) ? parts : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+function parseLegacyStoredDraft(raw: string, parts: readonly string[], now: number): number | null {
+  if (byteLength(raw) > LEGACY_MAX_DRAFT_BYTES) return null
+  try {
+    const envelope = JSON.parse(raw) as Record<string, unknown>
+    if (
+      envelope.version !== STORAGE_VERSION ||
+      envelope.scope !== JSON.stringify(parts) ||
+      typeof envelope.savedAt !== 'number' ||
+      !Number.isFinite(envelope.savedAt) ||
+      envelope.savedAt > now + 60_000 ||
+      now - envelope.savedAt > ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS ||
+      !Array.isArray(envelope.annotations) ||
+      envelope.annotations.length === 0
+    ) return null
+    const projected = projectAssistantComposerParts(envelope.annotations)
+    if (projected.length !== envelope.annotations.length || projected.some((part) => part.type !== 'annotation')) return null
+    const ids = projected.map((part) => part.type === 'annotation' ? part.annotation.id : '')
+    if (new Set(ids).size !== ids.length) return null
+    return envelope.savedAt
+  } catch {
+    return null
+  }
+}
+
+function ownedStorageKey(key: string): boolean {
+  return key.startsWith(`${STORAGE_PREFIX}:`) || LEGACY_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:`))
+}
+
+function storageKeySnapshot(storage: AssistantComposerDraftStorage): string[] | null {
+  try {
+    if (typeof storage.key !== 'function' || !Number.isSafeInteger(storage.length) || storage.length! < 0) return null
+    const keys: string[] = []
+    for (let index = 0; index < storage.length!; index++) {
+      const key = storage.key(index)
+      if (key !== null && ownedStorageKey(key)) keys.push(key)
+    }
+    return keys
+  } catch {
+    return null
+  }
+}
+
+function storedDraftMetadata(
+  key: string,
+  raw: string,
+  now: number,
+): StoredDraftMetadata | null {
+  let savedAt: number | null = null
+  if (key.startsWith(`${STORAGE_PREFIX}:`)) {
+    if (!validComposerDraftStorageKey(key)) return null
+    savedAt = parseStoredDraft(raw, now)?.savedAt ?? null
+  } else {
+    const parts = legacyStorageKeyParts(key)
+    if (!parts) return null
+    savedAt = parseLegacyStoredDraft(raw, parts, now)
+  }
+  return savedAt === null ? null : {
+    savedAt,
+    storageBytes: storageByteLength(key) + storageByteLength(raw),
+  }
+}
+
+/**
+ * Best-effort pruning is deliberately confined to this provider's exact
+ * sessionStorage namespaces. A pending replacement is counted in advance but
+ * its existing value is left intact until setItem succeeds.
+ */
+function pruneAssistantComposerDraftStorage(
+  storage: AssistantComposerDraftStorage,
+  now: number,
+  options: {
+    pinnedKeys?: readonly string[]
+    reserve?: { key: string, value: string, savedAt: number }
+  } = {},
+): void {
+  const keys = storageKeySnapshot(storage)
+  if (!keys) return
+  const pinnedKeys = new Set(options.pinnedKeys ?? [])
+  const reservedKey = options.reserve?.key
+  const entries: Array<{ key: string, metadata: StoredDraftMetadata }> = []
+  let count = options.reserve ? 1 : 0
+  let bytes = options.reserve
+    ? storageByteLength(options.reserve.key) + storageByteLength(options.reserve.value)
+    : 0
+
+  for (const key of keys) {
+    let raw: string | null
+    try { raw = storage.getItem(key) } catch { return }
+    if (raw === null) continue
+    const metadata = storedDraftMetadata(key, raw, now)
+    if (!metadata) {
+      try { storage.removeItem(key) } catch {}
+      continue
+    }
+    if (key === reservedKey) continue
+    if (pinnedKeys.has(key)) {
+      count++
+      bytes += metadata.storageBytes
+    } else {
+      entries.push({ key, metadata })
+    }
+  }
+
+  entries.sort((left, right) => left.metadata.savedAt - right.metadata.savedAt || left.key.localeCompare(right.key))
+  count += entries.length
+  bytes += entries.reduce((sum, entry) => sum + entry.metadata.storageBytes, 0)
+  for (const entry of entries) {
+    if (count <= MAX_STORED_DRAFTS && bytes <= MAX_STORED_DRAFT_BYTES) break
+    try {
+      storage.removeItem(entry.key)
+      count--
+      bytes -= entry.metadata.storageBytes
+    } catch {
+      // Keep going: another old entry may still make the current write fit.
+    }
+  }
+}
+
+/** Purge only the departing identity's entries in App Studio's draft namespaces. */
+export function purgeAssistantComposerDraftsForIdentity(
+  identity: AssistantComposerDraftIdentity,
+  storage: AssistantComposerDraftStorage | null | undefined = defaultStorage(),
+): number {
+  const parts = normalizedIdentity(identity)
+  if (!parts) return 0
+  const target = identityKey(parts)
+  let removed = purgeAssistantComposerDraftMemoryForIdentity(identity)
+  if (!storage) return removed
+  const keys = storageKeySnapshot(storage)
+  if (!keys) return removed
+  for (const key of keys) {
+    const keyParts = storageKeyIdentityParts(key)
+    if (!keyParts || identityKey(keyParts) !== target) continue
+    try {
+      storage.removeItem(key)
+      removed++
+    } catch {
+      // A storage failure must not stop the App's active-identity fence.
+    }
+  }
+  return removed
+}
+
 export function readAssistantComposerDraft(
   scope: AssistantComposerDraftScope,
   storage: AssistantComposerDraftStorage | null | undefined = defaultStorage(),
@@ -289,7 +563,7 @@ export function readAssistantComposerDraft(
 ): AssistantComposerDraft {
   const normalized = normalizedScope(scope)
   const key = normalized ? assistantComposerDraftStorageKey(normalized) : ''
-  if (!normalized || !key) return emptyAssistantComposerDraft()
+  if (!normalized || !key || !draftOperationAllowed(normalized)) return emptyAssistantComposerDraft()
   const cached = memoryDraft(key, now)
   let raw: string | null = null
   let storageReadable = false
@@ -304,6 +578,11 @@ export function readAssistantComposerDraft(
   const stored = raw ? parseStoredDraft(raw, now) : null
   if (raw && !stored) {
     try { storage?.removeItem(key) } catch {}
+  }
+  if (storage) {
+    pruneAssistantComposerDraftStorage(storage, now, {
+      pinnedKeys: [key, ...legacyAnnotationDraftStorageKeys(normalized)],
+    })
   }
   if (cached && (!stored || cached.savedAt >= stored.savedAt)) {
     return cached.draft ? normalizeDraft(cached.draft) ?? emptyAssistantComposerDraft() : emptyAssistantComposerDraft()
@@ -328,7 +607,7 @@ export function writeAssistantComposerDraft(
 ): boolean {
   const normalized = normalizedScope(scope)
   const key = normalized ? assistantComposerDraftStorageKey(normalized) : ''
-  if (!normalized || !key) return false
+  if (!normalized || !key || !draftOperationAllowed(normalized)) return false
   try {
     const projected = normalizeDraft(draft)
     if (!projected) return false
@@ -346,7 +625,10 @@ export function writeAssistantComposerDraft(
       } catch {}
       if (removed) memoryDrafts.delete(key)
       else rememberMemoryDraft(key, null, now)
-      if (storage) removeLegacyAnnotationDraft(normalized, storage)
+      if (storage) {
+        removeLegacyAnnotationDraft(normalized, storage)
+        pruneAssistantComposerDraftStorage(storage, now)
+      }
       return true
     }
     const raw = JSON.stringify({
@@ -357,9 +639,14 @@ export function writeAssistantComposerDraft(
     if (byteLength(raw) > MAX_DRAFT_BYTES) return false
     if (storage) {
       try {
+        pruneAssistantComposerDraftStorage(storage, now, {
+          pinnedKeys: legacyAnnotationDraftStorageKeys(normalized),
+          reserve: { key, value: raw, savedAt: now },
+        })
         storage.setItem(key, raw)
         memoryDrafts.delete(key)
         removeLegacyAnnotationDraft(normalized, storage)
+        pruneAssistantComposerDraftStorage(storage, now, { pinnedKeys: [key] })
         return true
       } catch {
         // sessionStorage can become unavailable or quota-limited mid-session.
@@ -378,7 +665,7 @@ export function clearAssistantComposerDraft(
   now = Date.now(),
 ): void {
   const key = assistantComposerDraftStorageKey(scope)
-  if (!key) return
+  if (!key || !draftOperationAllowed(scope)) return
   let removed = false
   try {
     storage?.removeItem(key)
@@ -387,7 +674,10 @@ export function clearAssistantComposerDraft(
   if (removed) memoryDrafts.delete(key)
   else rememberMemoryDraft(key, null, now)
   const normalized = normalizedScope(scope)
-  if (normalized && storage) removeLegacyAnnotationDraft(normalized, storage)
+  if (normalized && storage) {
+    removeLegacyAnnotationDraft(normalized, storage)
+    pruneAssistantComposerDraftStorage(storage, now)
+  }
 }
 
 /** Move the provisional no-thread draft to the first server-owned thread. */
@@ -401,7 +691,8 @@ export function transferAssistantComposerDraftToThread(
   const to = normalizedScope(toScope)
   if (!from || !to || from.thread !== '' || !to.thread
     || from.tenant !== to.tenant || from.orgUUID !== to.orgUUID || from.workspaceUUID !== to.workspaceUUID
-    || from.user !== to.user || from.project !== to.project || from.projectUID !== to.projectUID) return false
+    || from.user !== to.user || from.project !== to.project || from.projectUID !== to.projectUID
+    || !draftOperationAllowed(from) || !draftOperationAllowed(to)) return false
 
   const draft = readAssistantComposerDraft(fromScope, storage, now)
   if (!writeAssistantComposerDraft(toScope, draft, storage, now)) return false
@@ -417,7 +708,10 @@ export function removeAssistantComposerDraftAttachment(
   now = Date.now(),
 ): boolean {
   const id = attachmentID.trim()
-  if (!validComposerDraftStorageKey(storageKey) || !id) return false
+  const parts = storageKeyIdentityParts(storageKey)
+  if (!validComposerDraftStorageKey(storageKey) || !id || !parts
+    || activeDraftIdentityKey === null
+    || (activeDraftIdentityKey !== undefined && identityKey(parts) !== activeDraftIdentityKey)) return false
   const cached = memoryDraft(storageKey, now)
   let raw: string | null = null
   let storageReadable = !storage
@@ -467,6 +761,7 @@ export function removeAssistantComposerDraftAttachment(
     if (storage) {
       storage.setItem(storageKey, nextRaw)
       memoryDrafts.delete(storageKey)
+      pruneAssistantComposerDraftStorage(storage, now, { pinnedKeys: [storageKey] })
     } else {
       rememberMemoryDraft(storageKey, nextDraft, now)
     }

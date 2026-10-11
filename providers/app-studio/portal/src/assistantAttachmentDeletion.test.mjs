@@ -19,6 +19,7 @@ const {
 } = draftModule
 const {
   bindAssistantAttachmentChipsToDraftScope,
+  commitScopedAssistantAttachmentChips,
   reconcileAssistantAttachmentChips,
   removeScopedAssistantAttachment,
   shouldCleanupAssistantAttachmentOnScopeSwitch,
@@ -257,6 +258,38 @@ test('first-send scope adoption binds only selected ready receipts from the matc
   assert.equal(adopted[2].draftScopeKey, '')
   assert.equal(adopted[3].draftScopeKey, '')
   assert.equal(adopted[4].draftScopeKey, '')
+})
+
+test('accepted receipt commits require the exact owner, project, and receipt ID', () => {
+  const chips = [
+    { clientID: 'owner-match', projectName: 'project-a', draftScopeKey: 'scope-thread-a', status: 'ready', receipt: { id: 'receipt-a' } },
+    { clientID: 'owner-near-match', projectName: 'project-a', draftScopeKey: 'scope-thread-a', status: 'ready', receipt: { id: 'receipt-a-extra' } },
+    { clientID: 'wrong-project', projectName: 'project-b', draftScopeKey: 'scope-thread-a', status: 'ready', receipt: { id: 'receipt-a' } },
+    { clientID: 'wrong-thread', projectName: 'project-a', draftScopeKey: 'scope-thread-b', status: 'ready', receipt: { id: 'receipt-a' } },
+  ]
+  const accepted = commitScopedAssistantAttachmentChips(chips, 'scope-thread-a', 'project-a', [' receipt-a '])
+  assert.deepEqual(accepted.map((chip) => Boolean(chip.committed)), [true, false, false, false])
+})
+
+test('delayed acceptance commits only its captured owner after navigation', () => {
+  const ownerScopeKey = 'scope-thread-a'
+  const activeScopeKey = 'scope-thread-b'
+  const chips = [
+    { clientID: 'owner-receipt', projectName: 'project-a', draftScopeKey: ownerScopeKey, status: 'ready', receipt: { id: 'receipt-shared' } },
+    { clientID: 'other-thread-receipt', projectName: 'project-a', draftScopeKey: activeScopeKey, status: 'ready', receipt: { id: 'receipt-shared' } },
+  ]
+  const accepted = commitScopedAssistantAttachmentChips(chips, ownerScopeKey, 'project-a', ['receipt-shared'])
+  assert.deepEqual(accepted.map((chip) => chip.committed), [true, undefined])
+
+  let deleteCount = 0
+  const returnedOwner = reconcileAssistantAttachmentChips(accepted, ownerScopeKey, new Set())
+  for (const chip of accepted) {
+    if (chip.draftScopeKey === ownerScopeKey && chip.status === 'ready' && !chip.committed && !returnedOwner.some((candidate) => candidate.clientID === chip.clientID)) {
+      deleteCount += 1
+    }
+  }
+  assert.deepEqual(returnedOwner.map((chip) => chip.clientID), ['other-thread-receipt'])
+  assert.equal(deleteCount, 0, 'an accepted owner receipt leaves the chip projection without issuing DELETE')
 })
 
 test('owner draft removal preserves unrelated fields and refuses unscoped keys', () => {

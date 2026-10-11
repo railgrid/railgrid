@@ -24,6 +24,31 @@ interface AdoptableAssistantAttachmentChip extends ReconciledAssistantAttachment
   committed?: boolean
 }
 
+interface CommittableAssistantAttachmentChip extends AdoptableAssistantAttachmentChip {
+  receipt?: { id: string }
+}
+
+/** Mark only submitted receipts owned by the captured thread, even after navigation. */
+export function commitScopedAssistantAttachmentChips<T extends CommittableAssistantAttachmentChip>(
+  chips: readonly T[],
+  ownerScopeKey: string,
+  ownerProjectName: string,
+  receiptIDs: readonly string[],
+): T[] {
+  if (!ownerScopeKey || !ownerProjectName) return [...chips]
+  const committedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
+  if (!committedIDs.size) return [...chips]
+  return chips.map((chip) =>
+    chip.draftScopeKey === ownerScopeKey &&
+      chip.projectName === ownerProjectName &&
+      chip.status === 'ready' &&
+      chip.receipt &&
+      committedIDs.has(chip.receipt.id)
+      ? { ...chip, committed: true }
+      : chip,
+  )
+}
+
 /** Bind first-send receipts to the durable thread created for their captured draft. */
 export function bindAssistantAttachmentChipsToDraftScope<T extends AdoptableAssistantAttachmentChip>(
   chips: readonly T[],

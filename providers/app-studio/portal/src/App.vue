@@ -143,6 +143,9 @@ import {
   assistantComposerDraftStorageKey,
   clearAssistantComposerDraft,
   readAssistantComposerDraft,
+  purgeAssistantComposerDraftsForIdentity,
+  setAssistantComposerDraftActiveIdentity,
+  type AssistantComposerDraftIdentity,
   transferAssistantComposerDraftToThread,
   writeAssistantComposerDraft,
   type AssistantComposerDraft,
@@ -469,6 +472,21 @@ function assistantComposerDraftScope(
   }
 }
 
+function assistantComposerDraftIdentity(ctx: RailgridContext | null): AssistantComposerDraftIdentity | null {
+  if (!ctx || (!ctx.fetch && !ctx.token)) return null
+  const user = ctx.user?.userId || ctx.user?.sub || ctx.user?.email || ''
+  if (!user) return null
+  return { tenant: ctx.tenant ?? '', orgUUID: ctx.orgUUID ?? '', workspaceUUID: ctx.workspaceUUID ?? '', user }
+}
+
+// Credentials may rotate without changing ownership. Clear only the departing
+// identity's draft namespace on logout or a user/workspace transition.
+watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx)), (current, previous) => {
+  if (current === previous) return
+  if (previous && previous !== 'null') purgeAssistantComposerDraftsForIdentity(JSON.parse(previous) as AssistantComposerDraftIdentity)
+  setAssistantComposerDraftActiveIdentity(JSON.parse(current) as AssistantComposerDraftIdentity | null)
+}, { immediate: true, flush: 'sync' })
+
 function assistantMessageQueueScope(
   projectName = selected.value?.name ?? '',
   threadID = activeAssistantThreadID.value,
@@ -764,7 +782,7 @@ const assistantComposerRef = ref<{
   openPalette: () => void
   closePalette: (restoreFocus?: boolean) => void
   recoverUnavailableAttachments?: (receiptIDs: readonly string[]) => Promise<AssistantAttachmentRecoveryCounts>
-  commitAttachments?: (receiptIDs: readonly string[]) => void
+  commitAttachments?: (receiptIDs: readonly string[], ownerScopeKey: string, ownerProjectName: string) => void
   adoptAttachmentDraftScope?: (fromScopeKey: string, toScopeKey: string, projectName: string, receiptIDs: readonly string[]) => void
 } | null>(null)
 const threadRailRef = ref<{
@@ -5706,9 +5724,9 @@ function clearSelectedTurnAttachments() {
   assistantComposerAttachmentsPending.value = false
 }
 
-function commitAttachments(parts: readonly ProjectAssistantContentPart[]) {
+function commitAttachments(parts: readonly ProjectAssistantContentPart[], ownerScope: AssistantComposerDraftScope) {
   const receiptIDs = parts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])
-  assistantComposerRef.value?.commitAttachments?.(receiptIDs)
+  assistantComposerRef.value?.commitAttachments?.(receiptIDs, assistantComposerDraftStorageKey(ownerScope), ownerScope.project)
 }
 
 function currentAssistantComposerDraft(parts: readonly ProjectAssistantContentPart[] = assistantComposerParts.value): AssistantComposerDraft {
@@ -7819,7 +7837,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       // stream setup failures must not make already-consumed attachments look
       // available for a second turn.
       clearStoredAssistantComposerDraft(projectName, requestedThreadID, sendContext, projectUID)
-      commitAttachments(turnContentParts)
+      commitAttachments(turnContentParts, assistantComposerDraftScope(projectName, submissionOwner.threadID, sendContext, projectUID))
       if (!submissionIsCurrent()) return finishAcceptedSubmission()
       clearSelectedTurnAttachments()
       if (canonicalThreadID !== requestedThreadID) {
@@ -7974,7 +7992,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
           recoveredSameRequest = true
           clearOwnedPendingSubmission()
           clearStoredAssistantComposerDraft(projectName, submissionOwner.threadID, sendContext, projectUID)
-          commitAttachments(turnContentParts)
+          commitAttachments(turnContentParts, assistantComposerDraftScope(projectName, submissionOwner.threadID, sendContext, projectUID))
           clearSelectedTurnAttachments()
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
@@ -8148,16 +8166,19 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
   conversationStatus.value = 'Working'
   let responseApplied = false
   try {
-    markInterruptResolvedLocally(projectName, message.id, interrupt)
     if (!threadID) throw new Error('active assistant thread is missing')
     await api.respondAssistantTurn(context, projectName, threadID, runID, 'approval', { requestID, decision })
-    if (!isCurrent()) return
     responseApplied = true
+    if (reviewPanelHold.value?.key === key) reviewPanelHold.value = null
+    if (!isCurrent()) return
+    markInterruptResolvedLocally(projectName, message.id, interrupt)
     await refreshSelectedProjectConversation(projectName)
     if (!isCurrent()) return
   } catch (e) {
-    if (!isCurrent()) return
+    // Keep the durable interrupt pending until the response is accepted. A late
+    // failure may retire its own hold, but must never patch another thread.
     if (!responseApplied && reviewPanelHold.value?.key === key) reviewPanelHold.value = null
+    if (!isCurrent()) return
     await handleResumeFailure(projectName, key, e, {
       panelMessage: responseApplied ? 'Approval updated, but the conversation did not refresh. Reopen this project.' : 'Could not update approval. Try again.',
       isCurrent,
@@ -8167,6 +8188,7 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
       restorePending: responseApplied ? undefined : () => markInterruptPendingLocally(projectName, message.id, interrupt),
     })
   } finally {
+    if (!isCurrent() && reviewPanelHold.value?.key === key) reviewPanelHold.value = null
     const next = { ...permissionBusy.value }
     delete next[key]
     permissionBusy.value = next
@@ -8208,19 +8230,22 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
   conversationStatus.value = 'Working'
   let responseApplied = false
   try {
-    markInterruptResolvedLocally(projectName, message.id, interrupt)
     if (!threadID) throw new Error('active assistant thread is missing')
     await api.respondAssistantTurn(context, projectName, threadID, runID, 'input', { requestID, answers: responseAnswers })
-    if (!isCurrent()) return
     responseApplied = true
+    if (reviewPanelHold.value?.key === key) reviewPanelHold.value = null
+    if (!isCurrent()) return
+    markInterruptResolvedLocally(projectName, message.id, interrupt)
     await refreshSelectedProjectConversation(projectName)
     if (!isCurrent()) return
     const storedAnswers = { ...followUpAnswers.value }
     delete storedAnswers[key]
     followUpAnswers.value = storedAnswers
   } catch (e) {
-    if (!isCurrent()) return
+    // Keep the durable interrupt pending until the response is accepted. A late
+    // failure may retire its own hold, but must never patch another thread.
     if (!responseApplied && reviewPanelHold.value?.key === key) reviewPanelHold.value = null
+    if (!isCurrent()) return
     await handleResumeFailure(projectName, key, e, {
       panelMessage: responseApplied ? 'Answer sent, but the conversation did not refresh. Reopen this project.' : 'Could not send answer. Try again.',
       isCurrent,
@@ -8230,6 +8255,7 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
       restorePending: responseApplied ? undefined : () => markInterruptPendingLocally(projectName, message.id, interrupt),
     })
   } finally {
+    if (!isCurrent() && reviewPanelHold.value?.key === key) reviewPanelHold.value = null
     const next = { ...followUpBusy.value }
     delete next[key]
     followUpBusy.value = next

@@ -9,6 +9,8 @@ const {
   assistantComposerDraftStorageKey,
   clearAssistantComposerDraft,
   removeAssistantComposerDraftAttachment,
+  purgeAssistantComposerDraftsForIdentity,
+  setAssistantComposerDraftActiveIdentity,
   readAssistantComposerDraft,
   transferAssistantComposerDraftToThread,
   writeAssistantComposerDraft,
@@ -73,14 +75,35 @@ function saveLegacyDraft(storage, overrides = {}, legacyScope = scope, namespace
   return key
 }
 
-function memoryStorage() {
+function memoryStorage({ quotaBytes = Infinity } = {}) {
   const values = new Map()
   return {
     values,
+    get length() { return values.size },
+    key: (index) => [...values.keys()][index] ?? null,
     getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
+    setItem: (key, value) => {
+      let used = 0
+      for (const [storedKey, storedValue] of values) {
+        if (storedKey !== key) used += (storedKey.length + storedValue.length) * 2
+      }
+      if (used + (key.length + value.length) * 2 > quotaBytes) {
+        throw Object.assign(new Error('quota exceeded'), { name: 'QuotaExceededError' })
+      }
+      values.set(key, value)
+    },
     removeItem: (key) => values.delete(key),
   }
+}
+
+function saveStoredDraft(storage, ownerScope, content, savedAt) {
+  const key = assistantComposerDraftStorageKey(ownerScope)
+  storage.setItem(key, JSON.stringify({
+    version: 1,
+    savedAt,
+    draft: { content, contentParts: [], skillIDs: [], resources: [], responseMode: 'default' },
+  }))
+  return key
 }
 
 test('stores a complete composer draft only for its exact user, project UID, and thread', () => {
@@ -356,4 +379,133 @@ test('clearing or replacing a draft retires legacy annotations so they cannot re
   assert.equal(writeAssistantComposerDraft(scope, { content: '', contentParts: [], skillIDs: [], resources: [], responseMode: 'default' }, storage, 10_100), true)
   assert.equal(storage.getItem(key), null)
   assert.deepEqual(readAssistantComposerDraft(liveProjectScope, storage, 10_200).contentParts, [])
+})
+
+test('prunes expired and malformed owned entries while leaving other origin data alone', () => {
+  const storage = memoryStorage()
+  const now = 1_000_000_000
+  const expiredKey = saveStoredDraft(storage, { ...scope, thread: 'expired' }, 'old receipt', now - ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS - 1)
+  const malformedKey = 'railgrid:app-studio:assistant-composer-draft:v1:broken'
+  storage.setItem(malformedKey, '{not json')
+  const legacyExpiredKey = saveLegacyDraft(storage, {
+    savedAt: now - ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS - 1,
+  }, { ...scope, thread: '' })
+  const unrelatedKey = 'railgrid:another-provider:settings'
+  storage.setItem(unrelatedKey, 'keep this untouched')
+  const currentKey = saveStoredDraft(storage, scope, 'current draft', now - 100)
+
+  assert.equal(readAssistantComposerDraft(scope, storage, now).content, 'current draft')
+  assert.equal(storage.getItem(expiredKey), null)
+  assert.equal(storage.getItem(malformedKey), null)
+  assert.equal(storage.getItem(legacyExpiredKey), null)
+  assert.ok(storage.getItem(currentKey))
+  assert.equal(storage.getItem(unrelatedKey), 'keep this untouched')
+})
+
+test('bounds persistent draft count and evicts the oldest scoped entry first', () => {
+  const storage = memoryStorage()
+  const oldKeys = []
+  for (let index = 0; index < 32; index++) {
+    oldKeys.push(saveStoredDraft(storage, { ...scope, thread: `stored-${index}` }, `draft ${index}`, 1_000 + index))
+  }
+  const unrelatedKey = 'railgrid:another-provider:cache'
+  storage.setItem(unrelatedKey, 'preserve')
+  const current = { ...scope, thread: 'new-current' }
+  assert.equal(writeAssistantComposerDraft(current, {
+    content: 'newest draft', contentParts: [], skillIDs: [], resources: [], responseMode: 'default',
+  }, storage, 2_000), true)
+
+  const ownedKeys = [...storage.values.keys()].filter((key) => key.startsWith('railgrid:app-studio:assistant-composer-draft:v1:'))
+  assert.equal(ownedKeys.length, 32)
+  assert.equal(storage.getItem(oldKeys[0]), null)
+  assert.ok(storage.getItem(oldKeys[31]))
+  assert.ok(storage.getItem(assistantComposerDraftStorageKey(current)))
+  assert.equal(storage.getItem(unrelatedKey), 'preserve')
+})
+
+test('bounds persistent bytes using conservative Web Storage accounting and keeps newest drafts', () => {
+  const storage = memoryStorage()
+  const oldKeys = []
+  for (let index = 0; index < 4; index++) {
+    oldKeys.push(saveStoredDraft(storage, { ...scope, thread: `large-${index}` }, 'x'.repeat(400_000), 1_000 + index))
+  }
+  const current = { ...scope, thread: 'large-current' }
+  assert.equal(writeAssistantComposerDraft(current, {
+    content: 'x'.repeat(400_000), contentParts: [], skillIDs: [], resources: [], responseMode: 'default',
+  }, storage, 2_000), true)
+
+  const ownedKeys = [...storage.values.keys()].filter((key) => key.startsWith('railgrid:app-studio:assistant-composer-draft:v1:'))
+  const storedBytes = ownedKeys.reduce((sum, key) => sum + (key.length + storage.getItem(key).length) * 2, 0)
+  assert.ok(storedBytes <= 2_800_000, `owned drafts use ${storedBytes} bytes`)
+  assert.equal(storage.getItem(oldKeys[0]), null)
+  assert.equal(storage.getItem(oldKeys[1]), null)
+  assert.ok(storage.getItem(oldKeys[2]))
+  assert.ok(storage.getItem(oldKeys[3]))
+  assert.ok(storage.getItem(assistantComposerDraftStorageKey(current)))
+})
+
+test('a quota-limited session store falls back without deleting unrelated origin data', () => {
+  const storage = memoryStorage({ quotaBytes: 1_500_000 })
+  const unrelatedKey = 'railgrid:another-provider:large-cache'
+  storage.setItem(unrelatedKey, 'u'.repeat(700_000))
+  const ownerScope = { ...scope, thread: 'quota-fallback' }
+  const currentDraft = {
+    content: 'c'.repeat(100_000), contentParts: [attachment], skillIDs: [], resources: [], responseMode: 'default',
+  }
+  assert.equal(writeAssistantComposerDraft(ownerScope, currentDraft, storage, 10_000), true)
+  assert.equal(storage.getItem(assistantComposerDraftStorageKey(ownerScope)), null)
+  assert.equal(readAssistantComposerDraft(ownerScope, storage, 10_100).content, currentDraft.content)
+  assert.equal(storage.getItem(unrelatedKey), 'u'.repeat(700_000))
+})
+
+test('identity purge clears only that user tenant namespace in storage and memory and fences stale operations', () => {
+  const storage = memoryStorage()
+  const identityA = { tenant: scope.tenant, orgUUID: scope.orgUUID, workspaceUUID: scope.workspaceUUID, user: scope.user }
+  const scopeB = { ...scope, user: 'user-b' }
+  const identityB = { ...identityA, user: scopeB.user }
+  const keyA = saveStoredDraft(storage, scope, 'alice draft', 10_000)
+  const keyB = saveStoredDraft(storage, scopeB, 'bob draft', 10_000)
+  const legacyScope = { ...scope, thread: '' }
+  const legacyKeyA = saveLegacyDraft(storage, { savedAt: 10_000 }, legacyScope)
+  const unrelatedKey = 'railgrid:another-provider:setting'
+  storage.setItem(unrelatedKey, 'leave me')
+
+  const memoryScopeA = { ...scope, thread: 'memory-a' }
+  const memoryScopeB = { ...scopeB, thread: 'memory-b' }
+  const draft = { content: 'memory draft', contentParts: [], skillIDs: [], resources: [], responseMode: 'default' }
+  assert.equal(writeAssistantComposerDraft(memoryScopeA, draft, null, 10_000), true)
+  assert.equal(writeAssistantComposerDraft(memoryScopeB, draft, null, 10_000), true)
+
+  const removed = purgeAssistantComposerDraftsForIdentity(identityA, storage)
+  assert.ok(removed >= 3)
+  assert.equal(storage.getItem(keyA), null)
+  assert.equal(storage.getItem(legacyKeyA), null, 'the provisional empty-thread legacy key is purged by its identity prefix')
+  assert.ok(storage.getItem(keyB))
+  assert.equal(storage.getItem(unrelatedKey), 'leave me')
+  assert.equal(readAssistantComposerDraft(memoryScopeA, null, 10_100).content, '')
+  assert.equal(readAssistantComposerDraft(memoryScopeB, null, 10_100).content, 'memory draft')
+
+  try {
+    setAssistantComposerDraftActiveIdentity(identityA)
+    assert.equal(readAssistantComposerDraft(scopeB, storage, 10_100).content, '')
+    assert.equal(writeAssistantComposerDraft(scopeB, draft, storage, 10_100), false)
+    setAssistantComposerDraftActiveIdentity(identityB)
+    assert.equal(readAssistantComposerDraft(scopeB, storage, 10_100).content, 'bob draft')
+    setAssistantComposerDraftActiveIdentity(null)
+    assert.equal(readAssistantComposerDraft(scopeB, storage, 10_100).content, '')
+    assert.equal(removeAssistantComposerDraftAttachment(keyB, 'receipt-a', storage, 10_100), false)
+  } finally {
+    setAssistantComposerDraftActiveIdentity(undefined)
+  }
+})
+
+test('an expired attachment receipt draft is removed before it can be submitted again', () => {
+  const storage = memoryStorage()
+  const key = saveStoredDraft(storage, scope, '', 10_000)
+  const envelope = JSON.parse(storage.getItem(key))
+  envelope.draft.contentParts = [attachment]
+  storage.setItem(key, JSON.stringify(envelope))
+  const expiredAt = 10_000 + ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS + 1
+  assert.deepEqual(readAssistantComposerDraft(scope, storage, expiredAt).contentParts, [])
+  assert.equal(storage.getItem(key), null)
 })

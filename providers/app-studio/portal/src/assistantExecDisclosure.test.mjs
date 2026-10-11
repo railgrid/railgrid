@@ -258,7 +258,7 @@ test('renders completed activity status, duration, and bounded stdout/stderr', a
   assert.doesNotMatch(html, /Direct command|Sanitized argv|Relative cwd|Exit status|stdout|stderr|web/)
 })
 
-test('renders successful stale output as unverified and keeps failure stale explanations', async () => {
+test('preserves failure and blocked details while adding stale source context', async () => {
   const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
   const staleSuccess = await renderToString(createSSRApp(AssistantExecDetails, {
     exec: {
@@ -283,13 +283,72 @@ test('renders successful stale output as unverified and keeps failure stale expl
       sourceStale: true,
       exitCode: 2,
       stderr: ['BUILD_FAILED'],
+      detail: 'The compiler reported a missing module.',
       summary: 'Command failed. Project source changed from revision 1 to 2 while this command ran; this failure is not evidence about current source.',
     },
   }))
   assert.match(staleFailure, /Failed · exit 2/)
   assert.match(staleFailure, /BUILD_FAILED/)
+  assert.match(staleFailure, /The compiler reported a missing module/)
   assert.match(staleFailure, /changed from revision 1 to 2/)
   assert.doesNotMatch(staleFailure, /Unverified|Success|k-ai-execution-details__status--success/)
+
+  const staleBlocked = await renderToString(createSSRApp(AssistantExecDetails, {
+    exec: {
+      argv: ['npm', 'run', 'build'],
+      status: 'permission_required',
+      sourceStale: true,
+      detail: 'Approval is required before this command can run.',
+    },
+  }))
+  assert.match(staleBlocked, /Blocked/)
+  assert.match(staleBlocked, /Approval is required before this command can run/)
+  assert.match(staleBlocked, /project source may have changed during execution/)
+  assert.doesNotMatch(staleBlocked, /Unverified/)
+})
+
+test('renders shared command status labels for blocked, skipped, unknown, and terminal outcomes', async () => {
+  const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
+  const cases = [
+    { status: 'permission_required', sourceStale: true, want: 'Blocked' },
+    { status: 'not_executed', want: 'Blocked' },
+    { status: 'rejected', want: 'Blocked' },
+    { status: 'skipped', want: 'Skipped' },
+    { status: 'outcome_unknown', exitCode: null, sourceStale: true, want: 'Unverified' },
+    { status: 'failed', exitCode: 2, sourceStale: true, want: 'Failed · exit 2' },
+    { status: 'timed_out', exitCode: 124, sourceStale: true, want: 'Timed out · exit 124' },
+    { status: 'succeeded', want: 'Unverified' },
+  ]
+  for (const [index, { want, ...exec }] of cases.entries()) {
+    const html = await renderToString(createSSRApp(AssistantExecDetails, {
+      exec: { argv: ['npm', 'run', `case-${index}`], ...exec },
+    }))
+    assert.ok(html.includes(want), `status ${exec.status} should render ${want}`)
+    if (exec.status === 'not_executed') assert.doesNotMatch(html, /Not run/)
+  }
+})
+
+test('renders source provenance in activity and approval disclosures', async () => {
+  const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
+  const sourceDigest = `sha256:${'a'.repeat(64)}`
+  const exec = {
+    component: 'backend',
+    argv: ['go', 'test', './...'],
+    sourceRevision: 42,
+    sourceDigest,
+    syncStatus: 'stale',
+    status: 'failed',
+    exitCode: 2,
+  }
+  for (const variant of ['activity', 'approval']) {
+    const html = await renderToString(createSSRApp(AssistantExecDetails, { exec, variant }))
+    assert.match(html, /Source revision/)
+    assert.match(html, />42</)
+    assert.match(html, /Source digest/)
+    assert.match(html, new RegExp(sourceDigest))
+    assert.match(html, /Sync status/)
+    assert.match(html, />stale</)
+  }
 })
 
 test('does not render unknown disclosure fields', async () => {

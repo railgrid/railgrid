@@ -30,7 +30,7 @@ import {
 import { dragCarriesFiles, droppedFiles } from './projectFiles'
 import { useDismissibleAddMenu } from './useDismissibleAddMenu'
 import { useAssistantFilePickerFocus } from './useAssistantFilePickerFocus'
-import { bindAssistantAttachmentChipsToDraftScope, reconcileAssistantAttachmentChips, removeScopedAssistantAttachment, shouldCleanupAssistantAttachmentOnScopeSwitch } from './assistantAttachmentDeletion'
+import { bindAssistantAttachmentChipsToDraftScope, commitScopedAssistantAttachmentChips, reconcileAssistantAttachmentChips, removeScopedAssistantAttachment, shouldCleanupAssistantAttachmentOnScopeSwitch } from './assistantAttachmentDeletion'
 import { removeAssistantComposerDraftAttachment } from './assistantComposerDraft'
 import type {
   RailgridContext,
@@ -795,12 +795,13 @@ async function recoverUnavailableAttachments(receiptIDs: readonly string[]): Pro
  * host's POST acceptance continuation is the only layer that knows when a
  * submission crossed the durable boundary.
  */
-function commitAttachments(receiptIDs: readonly string[]) {
-  const committedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
-  if (!committedIDs.size) return
-  for (const chip of attachmentChips.value) {
-    if (chip.draftScopeKey === props.draftScopeKey && chip.status === 'ready' && chip.receipt && committedIDs.has(chip.receipt.id)) chip.committed = true
-  }
+function commitAttachments(receiptIDs: readonly string[], ownerScopeKey: string, ownerProjectName: string) {
+  attachmentChips.value = commitScopedAssistantAttachmentChips(
+    attachmentChips.value,
+    ownerScopeKey,
+    ownerProjectName,
+    receiptIDs,
+  )
 }
 
 function adoptAttachmentDraftScope(
