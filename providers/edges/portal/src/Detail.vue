@@ -271,12 +271,21 @@ const upgradeHelmSnippet = computed(
   () => `helm upgrade railgrid-agent oci://ghcr.io/railgrid/charts/railgrid-agent \\
   --namespace railgrid-agent \\
   --reuse-values \\
-  --set agent.image.tag=${targetVersion.value}`,
+  --set image.tag=${targetVersion.value}`,
 )
+// Both host snippets mirror what `railgrid edge upgrade` prints: the release
+// archives are named after uname (kubectl-railgrid_Linux_x86_64, …), the
+// installer places the binary at /usr/local/bin/railgrid, and the unit / label
+// carry the edge name (pkg/cli/cmd/agent.go, launchd.go).
 const upgradeServerSnippet = computed(
-  () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_linux_amd64.tar.gz | tar xz
+  () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
 sudo mv kubectl-railgrid /usr/local/bin/railgrid
 sudo systemctl restart railgrid-agent-${props.name}`,
+)
+const upgradeMacOSSnippet = computed(
+  () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
+sudo mv kubectl-railgrid /usr/local/bin/railgrid
+sudo launchctl kickstart -k system/com.railgrid.agent.${props.name}`,
 )
 
 // ─── Services ────────────────────────────────────────────────────────
@@ -603,7 +612,20 @@ onUnmounted(() => {
                       </div>
                       <pre>{{ upgradeServerSnippet }}</pre>
                     </div>
-                    <p v-else class="muted">Upgrade this macOS agent through the launchd installation on the host. The connection state will update after the agent reports its new version.</p>
+                    <div v-else class="snippet">
+                      <div class="snippet-head"><span>Replace binary and restart the launchd service</span>
+                        <button
+                          type="button"
+                          class="k-icon-action snippet-copy"
+                          :aria-label="copyControlLabel('up-mac', 'macOS upgrade command')"
+                          :data-k-tip="copyControlLabel('up-mac', 'macOS upgrade command')"
+                          @click="copy(upgradeMacOSSnippet, 'up-mac', 'macOS upgrade command')"
+                        >
+                          <component :is="copied === 'up-mac' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
+                        </button>
+                      </div>
+                      <pre>{{ upgradeMacOSSnippet }}</pre>
+                    </div>
 
                     <p class="muted">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
                   </div>
