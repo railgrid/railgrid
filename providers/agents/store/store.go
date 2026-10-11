@@ -133,7 +133,16 @@ type Run struct {
 	ParentRunID string   `json:"parentRunID,omitempty"`
 	Phase       RunPhase `json:"phase"`
 	Attempt     int      `json:"attempt,omitempty"`
-	Input       string   `json:"input,omitempty"`
+	// Retries counts how many times this run was handed back to the queue after
+	// a transient refusal (a runner at capacity, a runner not yet ready) instead
+	// of being failed. It is distinct from Attempt, which counts recoveries of a
+	// run that was already executing: a retry starts over, a recovery resumes.
+	Retries int `json:"retries,omitempty"`
+	// RetryAt is when a re-queued run may be claimed again. Set together with
+	// Phase=Pending by the executor that handed it back; nil on every other row.
+	// The Run reconciler wakes on it rather than polling for it.
+	RetryAt *time.Time `json:"retryAt,omitempty"`
+	Input   string     `json:"input,omitempty"`
 	// Output is the run's final answer. Kept on the run record (not only as a
 	// transcript row) so a programmatic caller — the parent of a spawned worker,
 	// or GET /api/runs/{id} — reads the result where it read the phase, instead

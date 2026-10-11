@@ -113,8 +113,11 @@ type ScheduleSpec struct {
 
 // ScheduleRetryPolicy tunes retry behavior for a schedule's runs.
 type ScheduleRetryPolicy struct {
-	// MaxAttempts is the number of tries for a transient failure before the run
-	// is marked failed. Zero uses the provider default (3).
+	// MaxAttempts is the number of tries a run gets before a transient refusal
+	// (a runner at capacity, a runner not yet ready) marks it failed. Only a
+	// refusal that left nothing running is retried; a turn that ran and failed
+	// is not. Zero uses the provider default (24 attempts, backing off from one
+	// minute to five between them). One disables retries for this schedule.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	MaxAttempts int32 `json:"maxAttempts,omitempty"`

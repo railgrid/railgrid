@@ -154,7 +154,10 @@ The table retains native `<table>` and `<tr>` semantics. Interactive rows use
 `tabindex="0"` and Enter/Space emits `rowClick`; nested links, buttons, inputs,
 selects, summaries, and other explicit controls remain independent. Resource
 names disclose full values in a viewport overlay only when actually truncated,
-using `fullValue(row)` when a slot label differs. Shared icon-only action buttons
+using `fullValue(row)` when a slot label differs. A primary column may set `maxWidth`
+(a CSS length) to cap its value: table auto-layout otherwise widens the column
+to fit a long nowrap label and pushes the other columns out of view, whereas a
+capped value truncates at that width with the same disclosure. Shared icon-only action buttons
 use `ResourceTableActionTooltip` on hover and focus: a body-teleported,
 viewport-clamped visual tooltip, with the button's full accessible label retained.
 They never add a duplicate native title or clipped `data-k-tip`. Empty/error

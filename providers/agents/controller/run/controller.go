@@ -65,6 +65,7 @@ package run
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -95,6 +96,11 @@ const (
 	// process executing it would otherwise be re-queued by every new leader,
 	// forever, and the provider would never start cleanly again.
 	MaxClaims = 3
+	// dispatchRetry is how long a run handed back after a failed dispatch waits
+	// before it is claimed again. Short, because what fails here is a store or
+	// workspace call that did not go through and clears in seconds; MaxClaims
+	// bounds how often it is tried.
+	dispatchRetry = 30 * time.Second
 	// purgeRetryInterval spaces retries of a failed purge.
 	purgeRetryInterval = 30 * time.Second
 	// purgeGiveUp bounds how long a delete may be held open for the purge.
@@ -236,9 +242,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if claimable, requeue := r.claimable(&object); claimable {
 		return r.claimAndDispatch(ctx, c, &object, clusterID)
 	} else if requeue > 0 {
-		// Somebody else's claim, still inside the grace. Wake when it lapses so
-		// an abandoned run is picked up then rather than at the next unrelated
-		// event.
+		// Somebody else's claim, still inside the grace — or a run handed back
+		// for a retry whose wake-up time has not come. Wake exactly then, so an
+		// abandoned run is picked up promptly and a retried one not before its
+		// time, rather than at the next unrelated event.
+		if object.Status.RetryAt != nil {
+			if err := r.noteRetry(ctx, c, &object); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
@@ -282,6 +294,16 @@ func (r *Reconciler) claimable(object *agentsv1alpha1.Run) (bool, time.Duration)
 	}
 	if object.Status.Attempt >= MaxClaims {
 		return false, 0
+	}
+	if at := object.Status.RetryAt; at != nil {
+		// Handed back by its executor after a transient refusal (a runner at
+		// capacity). The owner is not consulted: whoever held the claim has
+		// finished with it in good order and said so, which is the opposite of
+		// the abandonment the grace guards against. Only the wake-up time is.
+		if wait := at.Sub(r.now()); wait > 0 {
+			return false, wait
+		}
+		return true, 0
 	}
 	if object.Status.Owner == "" {
 		return true, 0
@@ -343,9 +365,33 @@ func (r *Reconciler) claimAndDispatch(ctx context.Context, c client.Client, obje
 	logger := klog.FromContext(ctx).WithValues("run", object.Name, "agent", object.Spec.AgentRef, "cluster", clusterID)
 
 	now := metav1.NewTime(r.now())
+	// A wake-up time means the run was handed back — by its executor, which
+	// leaves its claim on the object, or by this reconciler after a dispatch
+	// that failed (handBack), which releases the owner. The two differ in what
+	// they say about the pickup count: an executor's hand-back ended in good
+	// order and said so, which is the opposite of the crash MaxClaims guards
+	// against, so the series starts over; a failed dispatch ran nothing, but
+	// the claim counted, and the series continues so that MaxClaims still
+	// bounds a run nothing can dispatch.
+	retry := object.Status.RetryAt != nil
+	freshSeries := retry && object.Status.Owner != ""
 	object.Status.Owner = r.ProcessID
 	object.Status.ClaimedAt = &now
-	object.Status.Attempt++
+	if freshSeries {
+		object.Status.Attempt = 1
+	} else {
+		object.Status.Attempt++
+	}
+	if retry {
+		// The wake-up is consumed here, and the old attempt's deadline with it
+		// — a retried run gets a new one when it starts.
+		object.Status.RetryAt = nil
+		object.Status.DeadlineAt = nil
+		if cond := meta.FindStatusCondition(object.Status.Conditions, agentsv1alpha1.ConditionValidated); cond != nil && cond.Reason == agentsv1alpha1.ReasonRunRetryScheduled {
+			// The explanation for waiting goes with the wait.
+			meta.RemoveStatusCondition(&object.Status.Conditions, agentsv1alpha1.ConditionValidated)
+		}
+	}
 	if object.Status.Phase == "" {
 		object.Status.Phase = agentsv1alpha1.RunPhasePending
 	}
@@ -365,15 +411,101 @@ func (r *Reconciler) claimAndDispatch(ctx context.Context, c client.Client, obje
 		logger.Info("claiming a run for the last permitted attempt", "attempt", attempt, "max", MaxClaims)
 	}
 	if err := r.Dispatch(ctx, clusterID, object); err != nil {
-		// The claim stands: releasing it here would hand the run straight back
-		// to a process that has just failed to take it. ClaimGrace is what
-		// gives it to somebody else, and status.attempt is what stops that
-		// going on forever.
-		logger.Error(err, "dispatching a claimed run", "attempt", attempt)
-		return ctrl.Result{RequeueAfter: ClaimGrace}, nil
+		// Nothing is running it. Hand it back the way an executor does — Pending
+		// with a wake-up the reconciler wakes on — but with the owner released,
+		// so the pickup series continues: this claim counted, and MaxClaims is
+		// what stops a run nothing can dispatch from being tried forever. Left
+		// claimed instead, the run would be unreachable: our own claim is never
+		// re-dispatched, the stranded path ignores Pending, and the deadline
+		// needs a start — which is exactly how a run whose dispatch raced its
+		// own store row sat Pending in production.
+		logger.Error(err, "dispatching a claimed run", "attempt", attempt, "retryIn", dispatchRetry)
+		if herr := r.handBack(ctx, c, object, attempt, err); herr != nil {
+			return ctrl.Result{}, herr
+		}
+		return ctrl.Result{RequeueAfter: dispatchRetry}, nil
 	}
 	logger.V(2).Info("run claimed and dispatched", "attempt", attempt, "owner", r.ProcessID)
 	return ctrl.Result{}, nil
+}
+
+// handBack re-queues a run whose dispatch failed: Pending, unowned, with a
+// wake-up time and an explanation the object carries while it waits. A
+// conflict is retried on a fresh read, because the alternative — the claim
+// left standing — is the unreachable run this exists to prevent; it is given
+// up only if the run has meanwhile moved on without us.
+func (r *Reconciler) handBack(ctx context.Context, c client.Client, object *agentsv1alpha1.Run, attempt int32, cause error) error {
+	retryAt := metav1.NewTime(r.now().Add(dispatchRetry))
+	message := clip("attempt "+itoa(int(attempt))+" of "+itoa(MaxClaims)+" could not be dispatched: "+cause.Error(), runMessageMax-len("; retrying at "+retryAt.UTC().Format(time.RFC3339))) +
+		"; retrying at " + retryAt.UTC().Format(time.RFC3339)
+	apply := func(o *agentsv1alpha1.Run) {
+		o.Status.Owner = ""
+		o.Status.ClaimedAt = nil
+		o.Status.RetryAt = &retryAt
+		o.Status.Message = message
+		meta.SetStatusCondition(&o.Status.Conditions, metav1.Condition{
+			Type:               agentsv1alpha1.ConditionValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             agentsv1alpha1.ReasonRunRetryScheduled,
+			Message:            message,
+			ObservedGeneration: o.Generation,
+		})
+	}
+	apply(object)
+	err := c.Status().Update(ctx, object)
+	for i := 0; i < 3 && apierrors.IsConflict(err); i++ {
+		var fresh agentsv1alpha1.Run
+		if gerr := c.Get(ctx, client.ObjectKeyFromObject(object), &fresh); gerr != nil {
+			return client.IgnoreNotFound(gerr)
+		}
+		if fresh.Status.Owner != r.ProcessID || fresh.Status.Phase != agentsv1alpha1.RunPhasePending {
+			// Somebody moved it — cancelled, or executing after all. Not ours
+			// to hand back.
+			return nil
+		}
+		apply(&fresh)
+		err = c.Status().Update(ctx, &fresh)
+	}
+	return err
+}
+
+// runMessageMax is the CRD bound on status.message.
+const runMessageMax = 2048
+
+// clip bounds s to n bytes on a rune boundary, with no marker: the callers
+// append their own tail and the bound is a CRD MaxLength, which an overrun
+// turns into a rejected write.
+func clip(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// noteRetry says on the object why a run is Pending for a second time: its
+// executor handed it back after a transient refusal, and status.retryAt is
+// when it is picked up again. The message is the executor's own (what refused,
+// which attempt, when next), so nothing is restated. Idempotent: an unchanged
+// condition is not rewritten, which matters because every status write wakes
+// this reconciler again.
+func (r *Reconciler) noteRetry(ctx context.Context, c client.Client, object *agentsv1alpha1.Run) error {
+	if !meta.SetStatusCondition(&object.Status.Conditions, metav1.Condition{
+		Type:               agentsv1alpha1.ConditionValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             agentsv1alpha1.ReasonRunRetryScheduled,
+		Message:            object.Status.Message,
+		ObservedGeneration: object.Generation,
+	}) {
+		return nil
+	}
+	return ignoreConflict(c.Status().Update(ctx, object))
 }
 
 // abandon closes a run that has been claimed too many times without finishing.
@@ -381,8 +513,13 @@ func (r *Reconciler) abandon(ctx context.Context, object *agentsv1alpha1.Run, cl
 	if r.Stop == nil {
 		return nil
 	}
-	return r.Stop(ctx, clusterID, object.Spec.AgentRef, object.Name,
-		"this run was picked up "+itoa(int(object.Status.Attempt))+" times without finishing, so it will not be retried again")
+	reason := "this run was picked up " + itoa(int(object.Status.Attempt)) + " times without finishing, so it will not be retried again"
+	if last := object.Status.Message; last != "" {
+		// What the last pickup said about itself — a dispatch that could not
+		// read the run, a runner that refused it — is the part worth keeping.
+		reason += " (last: " + last + ")"
+	}
+	return r.Stop(ctx, clusterID, object.Spec.AgentRef, object.Name, reason)
 }
 
 func itoa(n int) string {

@@ -624,8 +624,9 @@ func TestInboundSubmissionFailsWhenTheRunObjectCannotBeCreated(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d, want 503 so the platform redelivers", w.Code)
 	}
-	// And nothing is left behind: the row is not written without an object,
-	// so a later retry starts clean rather than duplicating the work.
+	// And nothing is left behind: the row, written first, is taken back out
+	// when the object cannot follow it, so a later retry starts clean rather
+	// than duplicating the work.
 	runs, err := s.store.ListRuns(t.Context(), store.Scope{OrgUUID: "unmapped", WorkspaceUUID: testCluster}, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -635,18 +636,20 @@ func TestInboundSubmissionFailsWhenTheRunObjectCannotBeCreated(t *testing.T) {
 	}
 }
 
-// The mirror image: the object was created and the ROW write failed. The
-// submission still fails, and the orphaned object is taken back out — a Run
-// nothing can dispatch is worse than no Run at all.
-func TestInboundSubmissionRemovesTheObjectWhenTheRowCannotBeWritten(t *testing.T) {
+// The mirror image: the ROW write failed. The row goes in first — the
+// reconciler claims an object the moment it sees one and reads the row to
+// execute it, so an object ahead of its row is a run that is claimed and cannot
+// be dispatched — which means no object was ever written here: the submission
+// fails, and there is nothing to take back out.
+func TestInboundSubmissionCreatesNoObjectWhenTheRowCannotBeWritten(t *testing.T) {
 	ex := &captureExec{}
 	s, token, dyn := inboundServerFake(t, ex,
 		slackObjects(map[string]string{signingSecretKey: testSlackSecret})...)
 	s.store = failingRunStore{Store: s.store}
 
-	var deleted int
-	dyn.PrependReactor("delete", "runs", func(k8stesting.Action) (bool, runtime.Object, error) {
-		deleted++
+	var created int
+	dyn.PrependReactor("create", "runs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		created++
 		return false, nil, nil
 	})
 
@@ -654,8 +657,8 @@ func TestInboundSubmissionRemovesTheObjectWhenTheRowCannotBeWritten(t *testing.T
 	if w := postChannel(s, token, body, slackHeaders(testSlackSecret, body, time.Now())); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d, want 503", w.Code)
 	}
-	if deleted != 1 {
-		t.Fatalf("the orphaned Run object was not removed (%d deletes)", deleted)
+	if created != 0 {
+		t.Fatalf("a Run object was created for a run whose row could not be written (%d creates); nothing could ever dispatch it", created)
 	}
 }
 

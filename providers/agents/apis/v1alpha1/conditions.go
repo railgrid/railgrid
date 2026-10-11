@@ -99,6 +99,12 @@ const (
 	// the deadline pass, the executor is what stops the work.
 	ReasonRunDeadlineExceeded = "DeadlineExceeded"
 
+	// ReasonRunRetryScheduled is a Run handed back to the queue after a
+	// transient refusal (status.retryAt says when it is picked up again). The
+	// message carries what refused it, so a reader sees why the run is Pending
+	// a second time instead of inferring it from a counter.
+	ReasonRunRetryScheduled = "RetryScheduled"
+
 	// ReasonChannelConflict is a Connection bound as a channel by more than
 	// one Agent. Inbound routing maps a Connection to exactly one agent, so
 	// the second binding would silently steal — or lose — the messages.

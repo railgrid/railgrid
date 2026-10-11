@@ -257,6 +257,27 @@ type RunStatus struct {
 	// +optional
 	Attempt int32 `json:"attempt,omitempty"`
 
+	// Retries counts how many times this run was handed back to the queue after
+	// a transient refusal — a runner at capacity, a runner not yet ready —
+	// instead of being failed. Each one starts the turn over; Attempt, by
+	// contrast, counts pickups of a run that was already under way. The
+	// executor bounds it (the schedule's spec.retry.maxAttempts, or the
+	// provider default) and fails the run when the bound is reached.
+	// +optional
+	Retries int32 `json:"retries,omitempty"`
+
+	// RetryAt is when a re-queued run may be claimed again. It is set, with
+	// Phase=Pending, by the executor that handed the run back, and cleared by
+	// the reconciler when it claims the run for the retry. The reconciler wakes
+	// on it — the sanctioned computed-deadline requeue — rather than polling
+	// for it, and an unattended run with a RetryAt in the past is claimable
+	// whoever its last owner was: the hand-back was orderly, so the previous
+	// claim is spent, not abandoned. The reconciler also sets it, with Owner
+	// released, when a dispatch it attempted failed; that hand-back continues
+	// the pickup series (Attempt) rather than opening a new one.
+	// +optional
+	RetryAt *metav1.Time `json:"retryAt,omitempty"`
+
 	// StartedAt is when execution began — not when the run was accepted. The
 	// timeout deadline is measured from it.
 	// +optional

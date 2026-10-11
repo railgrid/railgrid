@@ -503,20 +503,105 @@ func TestAProcessWithNoDispatcherClaimsNothing(t *testing.T) {
 	}
 }
 
-// A failed dispatch keeps the claim. Releasing it would hand the run straight
-// back to the process that just failed to take it; the grace is what gives it
-// to somebody else, and the attempt count is what stops that forever.
-func TestAFailedDispatchKeepsTheClaim(t *testing.T) {
-	d := &dispatcher{err: errors.New("pool is gone")}
+// A failed dispatch hands the run back: nothing is running it, so the claim is
+// released and a wake-up time written, with the object saying why it waits.
+// Left claimed, the run would be unreachable — our own claim is never
+// re-dispatched, the stranded path ignores Pending, and the deadline needs a
+// start.
+func TestAFailedDispatchHandsTheRunBack(t *testing.T) {
+	d := &dispatcher{err: errors.New(`reading run r1 to execute it: run "r1" not found`)}
 	r := &Reconciler{Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: d.dispatch}
 	c, result := run(t, r, unattended("r1", nil), newAgent(600))
 
-	if result.RequeueAfter != ClaimGrace {
-		t.Errorf("RequeueAfter = %v, want the grace (%v)", result.RequeueAfter, ClaimGrace)
+	if result.RequeueAfter != dispatchRetry {
+		t.Errorf("RequeueAfter = %v, want the dispatch retry (%v)", result.RequeueAfter, dispatchRetry)
 	}
 	got := get(t, c, "r1")
-	if got.Status.Owner != "pod-a" || got.Status.Attempt != 1 {
-		t.Errorf("owner = %q attempt = %d, want the claim to stand", got.Status.Owner, got.Status.Attempt)
+	if got.Status.Owner != "" || got.Status.ClaimedAt != nil {
+		t.Errorf("owner = %q claimedAt = %v, want the claim released", got.Status.Owner, got.Status.ClaimedAt)
+	}
+	if got.Status.Phase != agentsv1alpha1.RunPhasePending || got.Status.Attempt != 1 {
+		t.Errorf("phase = %q attempt = %d, want Pending on attempt 1", got.Status.Phase, got.Status.Attempt)
+	}
+	if got.Status.RetryAt == nil || !got.Status.RetryAt.Time.Equal(started.Add(dispatchRetry)) {
+		t.Errorf("retryAt = %v, want %v", got.Status.RetryAt, started.Add(dispatchRetry))
+	}
+	if !strings.Contains(got.Status.Message, "attempt 1 of 3") || !strings.Contains(got.Status.Message, "not found") {
+		t.Errorf("message = %q, want it to say which attempt failed and why", got.Status.Message)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionValidated)
+	if cond == nil || cond.Reason != agentsv1alpha1.ReasonRunRetryScheduled || cond.Message != got.Status.Message {
+		t.Errorf("condition = %+v, want RetryScheduled carrying the message", cond)
+	}
+}
+
+// At its wake-up time a run handed back after a failed dispatch is claimed
+// again — by the same process, which an ordinary claim would refuse as "our
+// own" — and the pickup series continues rather than starting over: that claim
+// counted, and MaxClaims must still bound a run nothing can dispatch.
+func TestAHandedBackDispatchIsRetriedAndCounted(t *testing.T) {
+	failing := &dispatcher{err: errors.New("store is away")}
+	r := &Reconciler{Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: failing.dispatch}
+	c, _ := run(t, r, unattended("r1", nil), newAgent(600))
+	handedBack := get(t, c, "r1")
+	handedBack.ResourceVersion = ""
+
+	d := &dispatcher{}
+	wakeUp := handedBack.Status.RetryAt.Time
+	r = &Reconciler{Now: func() time.Time { return wakeUp }, ProcessID: "pod-a", Dispatch: d.dispatch}
+	c, _ = run(t, r, &handedBack, newAgent(600))
+
+	if len(d.runs) != 1 || d.runs[0] != "r1" {
+		t.Fatalf("dispatched %v, want [r1] at the wake-up time", d.runs)
+	}
+	got := get(t, c, "r1")
+	if got.Status.Owner != "pod-a" || got.Status.ClaimedAt == nil || !got.Status.ClaimedAt.Time.Equal(wakeUp) {
+		t.Errorf("claim = owner %q at %v, want this process now", got.Status.Owner, got.Status.ClaimedAt)
+	}
+	if got.Status.Attempt != 2 {
+		t.Errorf("attempt = %d, want 2: a failed dispatch counts, the series continues", got.Status.Attempt)
+	}
+	if got.Status.RetryAt != nil {
+		t.Errorf("retryAt = %v, want it consumed by the claim", got.Status.RetryAt)
+	}
+	if cond := meta.FindStatusCondition(got.Status.Conditions, agentsv1alpha1.ConditionValidated); cond != nil {
+		t.Errorf("condition = %+v, want the RetryScheduled explanation removed with the wait", cond)
+	}
+}
+
+// A run whose dispatch fails MaxClaims times is closed, with what the last
+// attempt said about itself, rather than handed back once more.
+func TestRepeatedDispatchFailuresCloseTheRun(t *testing.T) {
+	d := &dispatcher{err: errors.New("store is away")}
+	var stopped struct{ run, reason string }
+	r := &Reconciler{
+		Now: func() time.Time { return started }, ProcessID: "pod-a", Dispatch: d.dispatch,
+		Stop: func(_ context.Context, _, _, runID, reason string) error {
+			stopped.run, stopped.reason = runID, reason
+			return nil
+		},
+	}
+	object := unattended("r1", nil)
+	for i := 0; i < MaxClaims; i++ {
+		c, _ := run(t, r, object, newAgent(600))
+		got := get(t, c, "r1")
+		got.ResourceVersion = ""
+		if got.Status.RetryAt == nil {
+			t.Fatalf("attempt %d: the run was not handed back", i+1)
+		}
+		wakeUp := got.Status.RetryAt.Time
+		r.Now = func() time.Time { return wakeUp }
+		object = &got
+	}
+	if len(d.runs) != MaxClaims || stopped.run != "" {
+		t.Fatalf("dispatched %d time(s), stopped %q; want %d attempts and no stop yet", len(d.runs), stopped.run, MaxClaims)
+	}
+	run(t, r, object, newAgent(600))
+	if stopped.run != "r1" || !strings.Contains(stopped.reason, "store is away") {
+		t.Fatalf("stopped %q with %q; want r1 closed with the last dispatch error", stopped.run, stopped.reason)
+	}
+	if len(d.runs) != MaxClaims {
+		t.Fatalf("dispatched %d time(s), want no attempt past the limit", len(d.runs))
 	}
 }
 

@@ -245,9 +245,16 @@ those outranks new features.**
 
 8. **At-rest encryption.** Message/memory content is plaintext in Postgres (the
    columns exist; the app-studio-style key wiring isn't ported).
-9. **Retry backoff.** Failed schedules count failures and disable at 5; the
-   designed 30s/60s/5m escalating retry isn't implemented
-   (`schedule.spec.retry.maxAttempts` is still unread).
+9. **Retry backoff.** An unattended run (schedule, trigger, channel) refused
+   before anything ran — the runner at capacity or not ready — is handed back
+   to the queue instead of failed: the Run row and object go `Pending` with a
+   `retryAt` (1m doubling to 5m) and a `retries` count, the Run reconciler
+   wakes at `retryAt` and re-claims it, and the schedule's failure counter is
+   left alone until an attempt settles. `schedule.spec.retry.maxAttempts`
+   bounds it (default 24; triggers and channels use the default). Only a
+   runner refusal flagged retryable with no receipt qualifies (`api/retry.go`);
+   a turn that ran and failed, a transport error on Start, and LLM 429/5xx are
+   still terminal, and a run-now from the portal (attended) is never retried.
 10. **Inbound hardening leftovers.** Slack signature verification, Telegram
     secret tokens, per-event de-duplication, and payload quarantine are built
     (see [`agents-multi-channel.md`](./agents-multi-channel.md#inbound-verification-de-duplication-and-quarantine)).
@@ -631,6 +638,20 @@ the virtual workspace is reachable *and* being watched.
   `api/recover.go` — resume from its checkpoint, or close it honestly and tell
   whoever was waiting. `status.attempt` caps both, so a run that kills whatever
   picks it up is closed instead of taking the provider down on every restart.
+
+  **The row goes in before the object** (`api/runprojection.go`, `saveNewRun`).
+  The leader claims an object the moment the watch delivers it and its dispatch
+  reads the store row for the task, so an object written ahead of its row is a
+  run that is claimed and cannot be executed — a webhook-fired run on the
+  non-leader replica was caught exactly so, 50ms apart. If the object write
+  fails the row is deleted and the producer gets the error. **A failed dispatch
+  hands the run back**: the owner is released, `status.retryAt` set
+  (`dispatchRetry`, 30s) and the reason written to `status.message`, so the
+  reconciler wakes and claims it again; unlike an executor's hand-back, the
+  pickup series continues, so `MaxClaims` closes a run nothing can dispatch
+  with that reason. A claim left standing after a failed dispatch would be
+  unreachable — our own claim is never re-dispatched, the stranded path ignores
+  Pending, and the deadline needs a start.
 
   A run a person is watching is never claimed here: it executes on the replica
   that served their request and carries no unattended delivery kind. That is

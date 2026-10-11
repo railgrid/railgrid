@@ -49,3 +49,10 @@ test('table filter triggers and options meet the 44px coarse and hybrid pointer 
 test('current-page text remains readable on the accent tint in both themes', () => {
   assert.match(styles, /\.k-table__page-indicator \{\s*background: var\(--color-accent-subtle[\s\S]*?color: var\(--color-accent-hover/)
 })
+
+test('a primary column can cap its width so a long value truncates with disclosure instead of widening the table', () => {
+  assert.match(component, /maxWidth\?: string/)
+  assert.equal((component.match(/class="k-table__primary-value" :style="primaryValueStyle"/g) ?? []).length, 2)
+  assert.match(component, /'--k-table-primary-max-width': maxWidth/)
+  assert.match(styles, /\.k-table__primary-value \{[\s\S]*?max-width: var\(--k-table-primary-max-width, none\);[\s\S]*?\}/)
+})

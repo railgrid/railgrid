@@ -14,6 +14,7 @@ import type { Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
+import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -103,14 +104,25 @@ const filters = computed<TableFilterDefinition[]>(() => [
   },
 ])
 const columns = computed(() => [
-  { key: 'input', label: props.agent ? 'Run' : 'Run / Agent', primary: true, fullValue: (row: Record<string, unknown>) => props.agent ? String(row.input) : `${row.input} · ${row.agent}` },
+  {
+    key: 'input', label: props.agent ? 'Run' : 'Run / Agent', primary: true, maxWidth: RUN_PREVIEW_MAX_WIDTH,
+    fullValue: (row: Record<string, unknown>) => props.agent ? String(row.fullInput) : `${row.fullInput} · ${row.agent}`,
+  },
   { key: 'phase', label: 'Phase' },
   { key: 'trigger', label: 'Trigger / Class' },
   { key: 'duration', label: 'Duration', align: 'end' as const },
   { key: 'usage', label: 'Usage', align: 'end' as const },
   { key: 'when', label: 'Created', align: 'end' as const },
 ])
-const tableRows = computed(() => runs.value.map(run => ({ ...run, input: run.inputPreview || '—', when: run.createdAt, run })))
+// A run's input can be a whole prompt. The row shows one bounded line of it and
+// discloses a longer cut on hover; the run page has it in full.
+const tableRows = computed(() => runs.value.map(run => ({
+  ...run,
+  input: runPreview(run.inputPreview, RUN_PREVIEW_CELL_CHARS) || '—',
+  fullInput: runPreview(run.inputPreview, RUN_PREVIEW_DISCLOSURE_CHARS) || '—',
+  when: run.createdAt,
+  run,
+})))
 
 /**
  * ranOnHarness marks only the rows that say so. A run with no recorded backend
@@ -370,11 +382,14 @@ onBeforeUnmount(() => {
       @retry="reload('foreground')"
       @row-click="openRun"
     >
+      <!--
+        Both lines are inline content of the kit's primary value, not nested
+        blocks: the kit truncates and measures its own line boxes, so a block
+        wrapper would neither ellipsize nor trigger the disclosure tooltip.
+      -->
       <template #input="{ row }">
-        <span class="agents-run-cell">
-          <strong class="agents-run-preview">{{ row.input }}</strong>
-          <span v-if="!agent" class="agents-run-secondary">{{ row.agent }}</span>
-        </span>
+        <strong class="agents-run-preview">{{ row.input }}</strong>
+        <template v-if="!agent"><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
       </template>
       <template #trigger="{ row }">
         <span class="agents-run-cell">

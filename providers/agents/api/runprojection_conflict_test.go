@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -125,33 +126,52 @@ func TestRunProjectionUsesCurrentRowBeforeTheFirstWrite(t *testing.T) {
 	}
 }
 
-func TestUnattendedRunProjectionCreatesObjectBeforeItsStoreRow(t *testing.T) {
+// The row goes in before the object. The Run reconciler claims an object the
+// moment the watch delivers it and its dispatch reads the row for the task, so
+// an object that exists ahead of its row is a run that gets claimed and cannot
+// be executed — which is how a webhook-fired run sat Pending in production.
+func TestUnattendedRunProjectionWritesTheStoreRowBeforeTheObject(t *testing.T) {
 	ctx := context.Background()
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	s, scope, run := newProjectionFixture(t, dyn, store.RunPhasePending)
 	run.ID = "new-unattended-run"
-	s.store = projectionAdmissionStore{Store: s.store, check: func() {
-		object := projectedObject(t, dyn, run.ID)
-		if phase, _, _ := unstructured.NestedString(object.Object, "status", "phase"); phase != agentsv1alpha1.RunPhasePending {
-			t.Fatalf("object phase before row=%q; want Pending", phase)
+	created := false
+	dyn.PrependReactor("create", "runs", func(ktesting.Action) (bool, runtime.Object, error) {
+		if _, err := s.store.GetRun(ctx, scope, run.ID); err != nil {
+			t.Fatalf("the Run object was created before its row: %v", err)
 		}
-	}}
+		created = true
+		return false, nil, nil
+	})
 	if err := s.saveNewRun(ctx, scope.ClusterID, scope, run); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.store.GetRun(ctx, scope, run.ID); err != nil {
-		t.Fatal(err)
+	if !created {
+		t.Fatal("the Run object was never created")
+	}
+	if phase, _, _ := unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "status", "phase"); phase != agentsv1alpha1.RunPhasePending {
+		t.Fatalf("object phase=%q; want Pending", phase)
 	}
 }
 
-type projectionAdmissionStore struct {
-	store.Store
-	check func()
-}
-
-func (s projectionAdmissionStore) SaveRun(ctx context.Context, scope store.Scope, run store.Run) error {
-	s.check()
-	return s.Store.SaveRun(ctx, scope, run)
+// When the object cannot be written the row is taken back out: a Pending row
+// with no object is a run nothing will ever claim, and the producer is told so
+// it can retry the whole thing.
+func TestUnattendedRunProjectionRemovesTheRowWhenTheObjectFails(t *testing.T) {
+	ctx := context.Background()
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	s, scope, run := newProjectionFixture(t, dyn, store.RunPhasePending)
+	run.ID = "new-unattended-run"
+	dyn.PrependReactor("create", "runs", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("virtual workspace unavailable")
+	})
+	err := s.saveNewRun(ctx, scope.ClusterID, scope, run)
+	if err == nil || !strings.Contains(err.Error(), "virtual workspace unavailable") {
+		t.Fatalf("err = %v, want the object write's failure", err)
+	}
+	if _, err := s.store.GetRun(ctx, scope, run.ID); err == nil {
+		t.Fatal("the row survived a failed object write")
+	}
 }
 
 func TestRunProjectionNeverReopensTerminalOrRequeuesStartedObjects(t *testing.T) {

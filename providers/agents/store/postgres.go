@@ -161,6 +161,11 @@ var agentsSchema = []string{
 	// run, which is every row written before repository runs existed.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS repository JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS result JSONB`,
+	// A run handed back to the queue after a transient refusal: how many times,
+	// and when it may be claimed again. Zero / NULL on every row written before
+	// unattended runs could be retried.
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS retries INT NOT NULL DEFAULT 0`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ`,
 	// Partial unique index: at most one primary run per (tenant, agent, key),
 	// while migrated duplicate run records remain intact for history.
 	`CREATE UNIQUE INDEX IF NOT EXISTS agents_runs_idempotency_primary_idx
@@ -820,10 +825,11 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
 			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-			 backend, attempt_id, harness_session_id, repository, result)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+			 backend, attempt_id, harness_session_id, repository, result, retries, retry_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
+			retries=EXCLUDED.retries, retry_at=EXCLUDED.retry_at,
 			output=EXCLUDED.output, sources=EXCLUDED.sources, delivery=EXCLUDED.delivery,
 			checkpoint=EXCLUDED.checkpoint, input_tokens=EXCLUDED.input_tokens,
 			output_tokens=EXCLUDED.output_tokens, usd_micros=EXCLUDED.usd_micros,
@@ -836,7 +842,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt))
 	if err != nil {
 		return err
 	}
@@ -847,7 +853,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result`
+		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result, retries, retry_at`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1039,7 +1045,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var run Run
 	var phase string
 	var checkpoint, sources, delivery, repository, result []byte
-	var started, finished, cancelAt sql.NullTime
+	var started, finished, cancelAt, retryAt sql.NullTime
 	var worked sql.NullInt64
 	dest := []any{}
 	if sc != nil {
@@ -1048,13 +1054,17 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
 		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt,
-		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result)
+		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
 	if cancelAt.Valid {
 		t := cancelAt.Time.UTC()
 		run.CancelRequestedAt = &t
+	}
+	if retryAt.Valid {
+		t := retryAt.Time.UTC()
+		run.RetryAt = &t
 	}
 	run.Phase = RunPhase(phase)
 	run.Checkpoint = checkpoint

@@ -94,24 +94,33 @@ func (s *Server) saveRun(ctx context.Context, scope store.Scope, run store.Run) 
 	return nil
 }
 
-// saveNewRun records a new UNATTENDED run: the object first, then the store
-// row. Either failure is returned.
+// saveNewRun records a new UNATTENDED run: the store row first, then the Run
+// object. Either failure is returned.
 //
-// Order is the point. The object is what will cause the run to execute — the
-// reconciler claims it, and nothing else is watching — so writing the row first
-// and dying before the object leaves work nobody will ever do. This way the
-// worst case is an object with no row, which the reconciler finds, cannot
-// dispatch, and closes; and the producer is told either way.
+// Order is the point. The object is what will cause the run to execute: the
+// Run reconciler on the leader claims it the moment the watch delivers it, and
+// its dispatch then reads the row for the task. Written the other way round, a
+// claim lands in the gap between the two writes — observed in production, 50ms
+// after the object and before the row's INSERT committed, on a replica other
+// than the one serving the webhook — the dispatch finds no row, and the run sits
+// Pending under a claim nothing revisits. With the row in place first, an
+// object the reconciler can see is always one it can execute.
+//
+// The worst case is now a row with no object: the process dies between the two
+// writes, or the object write fails and the delete below fails too. Such a row
+// is inert — visible in the portal as Pending, never claimed, never executed —
+// and the producer is told either way; an inbound webhook that is told 503 is
+// redelivered by its platform.
 func (s *Server) saveNewRun(ctx context.Context, clusterID string, scope store.Scope, run store.Run) error {
-	if err := s.projectRunTo(ctx, clusterID, run, nil); err != nil {
-		return fmt.Errorf("creating the Run object: %w", err)
-	}
 	if err := s.store.SaveRun(ctx, scope, run); err != nil {
-		// Take the object back out rather than leave a run that can never be
-		// executed. Best-effort: if this also fails the reconciler closes it
-		// after MaxClaims, which is slower but not wrong.
-		s.deleteRunObject(ctx, clusterID, run.ID)
-		return err
+		return fmt.Errorf("saving the run row: %w", err)
+	}
+	if err := s.projectRunTo(ctx, clusterID, run, nil); err != nil {
+		// Take the row back out rather than leave a run nothing will ever
+		// claim. Best-effort: if this also fails the row is a Pending record
+		// with no object behind it, which is inert and visible, not executed.
+		s.deleteRunRow(ctx, scope, run.ID)
+		return fmt.Errorf("creating the Run object: %w", err)
 	}
 	return nil
 }
@@ -154,18 +163,13 @@ func (s *Server) projectRunTo(ctx context.Context, clusterID string, run store.R
 	return s.writeRunObject(ctx, dyn, run, readRun)
 }
 
-// deleteRunObject removes a Run object this process created and then could not
-// back with a store row.
-func (s *Server) deleteRunObject(ctx context.Context, clusterID, runID string) {
+// deleteRunRow removes the store row of a run this process recorded and then
+// could not give a Run object.
+func (s *Server) deleteRunRow(ctx context.Context, scope store.Scope, runID string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), projectionTimeout)
 	defer cancel()
-	dyn, err := s.bg.scoped(ctx, clusterID)
-	if err != nil {
-		log.Printf("agents: removing the orphaned Run object %s in %s: %v", runID, clusterID, err)
-		return
-	}
-	if err := dyn.Resource(agentsclient.RunGVR).Delete(ctx, runID, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		log.Printf("agents: removing the orphaned Run object %s in %s: %v", runID, clusterID, err)
+	if err := s.store.DeleteRunData(ctx, scope, runID); err != nil {
+		log.Printf("agents: removing the orphaned run row %s: %v", runID, err)
 	}
 }
 
@@ -209,7 +213,9 @@ func (s *Server) writeRunObject(ctx context.Context, dyn dynamic.Interface, run 
 		if finalRunPhase(currentPhase) && !finalRunPhase(desired.Phase) {
 			return nil
 		}
-		if desired.Phase == agentsv1alpha1.RunPhasePending && currentPhase != "" && currentPhase != agentsv1alpha1.RunPhasePending {
+		// Pending is otherwise a one-way door — except for a run its executor
+		// handed back to the queue, which says so with a RetryAt.
+		if desired.Phase == agentsv1alpha1.RunPhasePending && currentPhase != "" && currentPhase != agentsv1alpha1.RunPhasePending && desired.RetryAt == nil {
 			return nil
 		}
 		current, _, _ := unstructured.NestedMap(existing.Object, "status")
@@ -339,6 +345,14 @@ func runStatusFor(run store.Run) agentsv1alpha1.RunStatus {
 	status := agentsv1alpha1.RunStatus{
 		Phase:   string(run.Phase),
 		Message: safeTruncate(run.Message, 2048),
+		Retries: int32(run.Retries),
+	}
+	if run.RetryAt != nil && run.Phase == store.RunPhasePending {
+		// Only a queued run has a wake-up time; the reconciler clears it on the
+		// object when it claims the retry, and the row drops it when the turn
+		// starts, so the two agree without either carrying the other's copy.
+		at := metav1.NewTime(*run.RetryAt)
+		status.RetryAt = &at
 	}
 	if run.StartedAt != nil {
 		at := metav1.NewTime(*run.StartedAt)

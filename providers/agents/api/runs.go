@@ -25,16 +25,20 @@ import (
 // (interactive vs background) so the portal can filter without knowing the
 // trigger taxonomy.
 type runSummary struct {
-	ID           string `json:"id"`
-	Agent        string `json:"agent"`
-	SessionID    string `json:"sessionID,omitempty"`
-	Trigger      string `json:"trigger"`
-	Class        string `json:"class"`
-	ParentRunID  string `json:"parentRunID,omitempty"`
-	Phase        string `json:"phase"`
-	Attempt      int    `json:"attempt,omitempty"`
-	InputPreview string `json:"inputPreview,omitempty"`
-	Message      string `json:"message,omitempty"`
+	ID          string `json:"id"`
+	Agent       string `json:"agent"`
+	SessionID   string `json:"sessionID,omitempty"`
+	Trigger     string `json:"trigger"`
+	Class       string `json:"class"`
+	ParentRunID string `json:"parentRunID,omitempty"`
+	Phase       string `json:"phase"`
+	Attempt     int    `json:"attempt,omitempty"`
+	// Retries is how many times the run was handed back to the queue after a
+	// transient refusal, and RetryAt when a queued one is picked up again.
+	Retries      int        `json:"retries,omitempty"`
+	RetryAt      *time.Time `json:"retryAt,omitempty"`
+	InputPreview string     `json:"inputPreview,omitempty"`
+	Message      string     `json:"message,omitempty"`
 	// HasOutput reports that this run produced an answer, fetchable from
 	// GET /api/runs/{id}. Lists carry the flag rather than the text.
 	HasOutput    bool       `json:"hasOutput,omitempty"`
@@ -116,6 +120,7 @@ func summarize(run store.Run) runSummary {
 	rs := runSummary{
 		ID: run.ID, Agent: run.AgentName, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Class: class,
 		ParentRunID: run.ParentRunID, Phase: string(run.Phase), Attempt: run.Attempt,
+		Retries: run.Retries, RetryAt: run.RetryAt,
 		InputPreview: safeTruncate(strings.Join(strings.Fields(run.Input), " "), 160),
 		Message:      safeTruncate(run.Message, 500),
 		HasOutput:    run.Output != "",
