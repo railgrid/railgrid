@@ -27,12 +27,24 @@ package api
 // Start may have started an attempt, and a turn that ran and failed has done
 // whatever it did. Those stay terminal, as does anything on an attended run,
 // where the person waiting gets the error instead.
+//
+// The runner has one slot. A queue of refused runs that all wake on the same
+// timer is a herd: every wake-up dispatches all of them, one wins, the rest are
+// refused again — each refusal a round-trip, a retry spent and a longer wait —
+// and the slot sits idle between wake-ups. Two things keep the queue moving at
+// the runner's rate instead of the backoff's. A refused run's wake-up is
+// staggered by its position in the queue, so runs refused together come back
+// one at a time. And when a run on the agent finishes, the oldest queued run
+// is woken at once (wakeNextQueued): the slot it needs has just been freed.
+// One run, not all — waking them all is the herd again. If something else
+// takes the slot first, the woken run is refused and handed back as usual.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner"
@@ -55,6 +67,13 @@ const (
 	// hour gains nothing from waiting another fifteen minutes to check.
 	runRetryBaseBackoff = time.Minute
 	runRetryMaxBackoff  = 5 * time.Minute
+	// runRetryStagger spaces the wake-ups of runs queued behind each other on
+	// the same agent: the nth run in the queue waits n times this on top of
+	// its backoff, bounded by runRetryMaxBackoff. A turn takes tens of seconds,
+	// so this is enough for the run ahead to have started before the next
+	// asks, and short enough not to matter once wakeNextQueued is doing the
+	// pacing.
+	runRetryStagger = 15 * time.Second
 )
 
 // runRetryBackoff is how long the nth retry (1-based) waits before the run may
@@ -140,7 +159,7 @@ func (s *Server) retryRun(ctx context.Context, scope store.Scope, run taskRun, c
 		return nil, false
 	}
 	stored.Retries++
-	retryAt := at.Add(runRetryBackoff(stored.Retries))
+	retryAt := at.Add(runRetryBackoff(stored.Retries)).Add(s.queueStagger(persistCtx, scope, run.RunID))
 	stored.Phase = store.RunPhasePending
 	stored.RetryAt = &retryAt
 	stored.StartedAt = nil
@@ -154,6 +173,63 @@ func (s *Server) retryRun(ctx context.Context, scope store.Scope, run taskRun, c
 		return nil, false
 	}
 	return &runRequeued{cause: cause, at: retryAt, attempt: attempt, max: maxAttempts}, true
+}
+
+// queueStagger is the extra wait a run handed back now takes so it wakes after
+// the runs already queued ahead of it, rather than with them. The count is read
+// from the store, so runs refused in the same instant see each other as they
+// land; a read that fails staggers nothing, which is only the old behaviour.
+func (s *Server) queueStagger(ctx context.Context, scope store.Scope, runID string) time.Duration {
+	queued, err := s.store.ListQueuedRuns(ctx, scope)
+	if err != nil {
+		return 0
+	}
+	ahead := 0
+	for _, other := range queued {
+		if other.ID != runID {
+			ahead++
+		}
+	}
+	return min(time.Duration(ahead)*runRetryStagger, runRetryMaxBackoff)
+}
+
+// wakeNextQueued brings the oldest queued run of an agent forward to now. It
+// is called when a run on that agent finishes, which is when the runner's slot
+// is known to be free; the Run reconciler sees the moved wake-up on the object
+// and claims the run. Runs already due are left alone — the reconciler has
+// them — and exactly one run is woken, because waking every queued run is the
+// herd this exists to avoid. A failure here costs nothing but the head start:
+// the run's own wake-up still stands.
+func (s *Server) wakeNextQueued(ctx context.Context, scope store.Scope, agentName string, now time.Time) {
+	if s == nil || s.store == nil || agentName == "" {
+		return
+	}
+	scope.AgentName = agentName
+	queued, err := s.store.ListQueuedRuns(ctx, scope)
+	if err != nil {
+		log.Printf("agent %s: reading the queue after a run finished: %v", agentName, err)
+		return
+	}
+	for _, run := range queued {
+		if run.RetryAt == nil || !run.RetryAt.After(now) {
+			continue
+		}
+		wakeAt := now
+		run.RetryAt = &wakeAt
+		run.UpdatedAt = now
+		message := run.Message
+		if i := strings.LastIndex(message, "; retrying at "); i >= 0 {
+			message = message[:i]
+		}
+		run.Message = message + "; a run on this agent finished, retrying now"
+		if err := s.saveRun(ctx, scope, run); err != nil {
+			log.Printf("run %s: waking it after a run finished: %v", run.ID, err)
+			return
+		}
+		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePending})
+		log.Printf("run %s: woken early, a run on agent %s finished", run.ID, agentName)
+		return
+	}
 }
 
 // withoutRun drops the rows one run wrote from a session's history. A retried

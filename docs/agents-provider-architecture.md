@@ -260,6 +260,13 @@ those outranks new features.**
    runner refusal flagged retryable with no receipt qualifies (`api/retry.go`);
    a turn that ran and failed, a transport error on Start, and LLM 429/5xx are
    still terminal, and a run-now from the portal (attended) is never retried.
+   The runner has one slot, so a queue that wakes on one timer is a herd: all
+   dispatched, one wins, the rest refused again with a longer wait, and the
+   slot idle in between. Two things pace the queue at the runner's rate
+   instead: a refused run's `retryAt` is staggered 15s per run already queued
+   ahead of it, and when a run on the agent finishes, the oldest queued run's
+   `retryAt` is moved to now (`wakeNextQueued`) — one run, not all, because
+   waking them all is the herd again.
 10. **Inbound hardening leftovers.** Slack signature verification, Telegram
     secret tokens, per-event de-duplication, and payload quarantine are built
     (see [`agents-multi-channel.md`](./agents-multi-channel.md#inbound-verification-de-duplication-and-quarantine)).

@@ -870,6 +870,33 @@ func (m *MemoryStore) ListRuns(_ context.Context, scope Scope, limit int) ([]Run
 	return out, nil
 }
 
+func (m *MemoryStore) ListQueuedRuns(_ context.Context, scope Scope) ([]Run, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := tenantKey(scope) + "|"
+	var out []Run
+	for k, run := range m.runs {
+		if !hasPrefix(k, prefix) || run.AgentName != scope.AgentName {
+			continue
+		}
+		if run.Phase != RunPhasePending || run.RetryAt == nil || run.CancelRequested {
+			continue
+		}
+		out = append(out, run)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
 func (m *MemoryStore) QueryRuns(_ context.Context, scope Scope, q RunQuery) (RunPage, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {

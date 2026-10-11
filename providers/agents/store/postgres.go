@@ -971,6 +971,33 @@ func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([
 	return out, rows.Err()
 }
 
+func (p *PostgresStore) ListQueuedRuns(ctx context.Context, scope Scope) ([]Run, error) {
+	scope = p.normalizeScope(ctx, scope)
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT `+runColumns+`
+		FROM agents_runs
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND phase=$4
+		  AND retry_at IS NOT NULL AND NOT cancel_requested
+		ORDER BY created_at ASC, id ASC LIMIT 200`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, string(RunPhasePending))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
+
 func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error) {
 	scope = p.normalizeScope(ctx, scope)
 	if err := scope.validate(); err != nil {

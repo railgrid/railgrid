@@ -678,6 +678,11 @@ type Store interface {
 	ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error)
 	// QueryRuns lists runs newest-first with filters and cursor pagination.
 	QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error)
+	// ListQueuedRuns lists one agent's runs that were handed back to the queue
+	// after a refusal and are waiting for their wake-up time: Pending, with a
+	// RetryAt, not cancelled — oldest first, which is the order they should
+	// run in. Scope must name the agent.
+	ListQueuedRuns(ctx context.Context, scope Scope) ([]Run, error)
 	// FindRunByIdempotencyKey returns the run a caller already started under this
 	// key, so a retried request is answered with the original run rather than
 	// starting the same work again. Scope must name the agent.
