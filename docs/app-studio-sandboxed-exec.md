@@ -9,7 +9,14 @@ second source-only executor pod.
 Parallel threads in the same Project share that development workspace and its
 installed dependencies. Starting a thread does not require provisioning another
 sandbox. Source edits retain file-version preconditions, and command sessions
-and cancellation remain scoped to the initiating run. If the Project source
+and cancellation remain scoped to the initiating run. Commands from different
+threads may execute at the same time in a component. The workspace transaction
+lock covers validation and source mutations, not a command's full lifetime.
+Each component permits four active command trees; additional sessions wait for
+a slot. Each command has a cleanup supervisor process in the same runtime so
+cancellation can reap its descendants without stopping another command.
+Commands share dependency directories, caches, and generated output, so callers
+must account for tools that write to the same paths. If the Project source
 changes while a command runs, its output is retained but cannot verify the newer
 revision; the assistant must report that evidence as stale rather than silently
 rerunning the command.
@@ -45,6 +52,12 @@ caller-authorized data-plane `exec` capability.
    managed source files, runs typed argv only when the workspace exactly
    matches the expected revision and SHA-256 digest, and returns bounded
    stdout, stderr, exit state, and truncation metadata.
+
+The revision and digest are dispatch evidence. Source synchronization may
+proceed while a shared-runtime command executes; it does not cancel that command
+or change the revision recorded on its receipt. App Studio checks the durable
+source revision after completion and marks changed-source results unverified.
+This mode does not promise a fixed filesystem for the lifetime of a command.
 
 Start, poll, and cancel are caller-bound and idempotent per assistant run and
 tool call. The coordinator binds each idempotency key to the request fingerprint

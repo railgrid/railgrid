@@ -145,6 +145,13 @@ type agentConfig struct {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == execWorkerArg {
+		if err := runExecWorker(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) >= 3 && os.Args[1] == "--install" {
 		if err := installSelf(os.Args[2]); err != nil {
 			log.Fatalf("install: %v", err)
@@ -418,10 +425,58 @@ func runStatelessExecutor(ctx context.Context, cfg *agentConfig) error {
 	executor := &statelessExecutor{
 		workspace: cfg.WorkDir,
 		env:       execContext{Port: cfg.Port, Component: cfg.Component},
+		startExec: startPersistentExecHelper,
 		exit:      os.Exit,
 	}
 	srv := &http.Server{Addr: defaultExecutorAddr, Handler: executor, ReadHeaderTimeout: 10 * time.Second}
 	return serveUntilDone(ctx, srv, nil)
+}
+
+func runExecWorker() error {
+	writeMessage := func(message execWorkerMessage) error {
+		return json.NewEncoder(os.Stdout).Encode(message)
+	}
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, execRequestMaxBytes+1))
+	if err != nil {
+		return fmt.Errorf("read execution helper request: %w", err)
+	}
+	if len(raw) > execRequestMaxBytes {
+		return writeMessage(execWorkerMessage{Phase: "error", Error: "execution helper request is too large"})
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var input execWorkerInput
+	if err := decoder.Decode(&input); err != nil {
+		return writeMessage(execWorkerMessage{Phase: "error", Error: "invalid execution helper request: " + err.Error()})
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return writeMessage(execWorkerMessage{Phase: "error", Error: "execution helper request must contain one JSON object"})
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	process, err := startPersistentExecWithContext(ctx, input.Workspace, input.Env, input.Request, func() error {
+		return writeMessage(execWorkerMessage{Phase: "started"})
+	})
+	if err != nil {
+		_ = writeMessage(execWorkerMessage{
+			Phase: "error", Error: err.Error(), CleanupUnproven: errors.Is(err, errExecCleanupUnproven),
+		})
+		return nil
+	}
+	response, runErr := process.wait(ctx)
+	message := execWorkerMessage{Phase: "completed", Response: &response}
+	if runErr != nil {
+		message.Error = runErr.Error()
+		message.CleanupUnproven = errors.Is(runErr, errExecCleanupUnproven)
+		response.Error = runErr.Error()
+		response.CleanupUnproven = message.CleanupUnproven
+		message.Response = &response
+	}
+	if err := writeMessage(message); err != nil {
+		return fmt.Errorf("write execution helper result: %w", err)
+	}
+	return runErr
 }
 
 func runCoordinator(ctx context.Context, cfg *agentConfig) error {
@@ -1749,6 +1804,10 @@ func (s *agentServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
 	}
+	if s.mutationMu != nil {
+		s.mutationMu.Lock()
+		defer s.mutationMu.Unlock()
+	}
 	if err := s.runtime.Restart(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1768,6 +1827,10 @@ func (s *agentServer) handleEnv(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	if s.mutationMu != nil {
+		s.mutationMu.Lock()
+		defer s.mutationMu.Unlock()
 	}
 	applied, err := s.runtime.SetEnv(r.Context(), req.Env)
 	if err != nil {

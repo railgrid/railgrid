@@ -203,17 +203,36 @@ type blockingDispatcher struct {
 	mu      sync.Mutex
 }
 
-func (d *blockingDispatcher) Execute(ctx context.Context, _ persistentExecRequest) (execResponse, error) {
+func (d *blockingDispatcher) Start(_ context.Context, _ persistentExecRequest) (execExecution, error) {
 	d.mu.Lock()
 	d.calls++
 	d.mu.Unlock()
 	d.once.Do(func() { close(d.started) })
+	return blockingExecution{release: d.release}, nil
+}
+
+type blockingExecution struct {
+	release <-chan struct{}
+}
+
+func (e blockingExecution) Wait(ctx context.Context) (execResponse, error) {
 	select {
-	case <-d.release:
+	case <-e.release:
 		return execResponse{ExitCode: 0}, nil
 	case <-ctx.Done():
 		return execResponse{ExitCode: -1, Cancelled: true}, ctx.Err()
 	}
+}
+
+type parallelDispatcher struct {
+	started  chan string
+	releases map[string]chan struct{}
+}
+
+func (d *parallelDispatcher) Start(_ context.Context, req persistentExecRequest) (execExecution, error) {
+	key := req.Argv[1]
+	d.started <- key
+	return blockingExecution{release: d.releases[key]}, nil
 }
 
 func testWorkerRequest() workerExecRequest {
@@ -225,6 +244,21 @@ func testWorkerRequest() workerExecRequest {
 			SourceRevision: 1, SourceDigest: strings.Repeat("c", 64),
 		},
 	}
+}
+
+func waitForExecCoordinatorInactive(t *testing.T, coordinator *execCoordinator, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		coordinator.mu.Lock()
+		_, active := coordinator.active[sessionID]
+		coordinator.mu.Unlock()
+		if !active {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("execution session %s remained active", sessionID)
 }
 
 func TestCoordinatorIdempotencyCallerBindingAndRestartRecovery(t *testing.T) {
@@ -283,7 +317,7 @@ func TestCoordinatorIdempotencyCallerBindingAndRestartRecovery(t *testing.T) {
 	t.Fatal("original coordinator dispatch did not finish")
 }
 
-func TestCoordinatorMutationLockCoversCompleteDispatchAndCancelDoesNotWait(t *testing.T) {
+func TestCoordinatorMutationLockEndsAtDispatchAndCancelDoesNotWait(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	mutationMu := &sync.Mutex{}
 	dispatch := &blockingDispatcher{started: make(chan struct{}), release: make(chan struct{})}
@@ -300,8 +334,8 @@ func TestCoordinatorMutationLockCoversCompleteDispatchAndCancelDoesNotWait(t *te
 	go func() { mutationMu.Lock(); close(locked); mutationMu.Unlock() }()
 	select {
 	case <-locked:
-		t.Fatal("mutation lock released before complete dispatch")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("workspace mutation remained blocked for the command lifetime")
 	}
 	cancelReq := req
 	cancelReq.Action = "cancel"
@@ -310,10 +344,177 @@ func TestCoordinatorMutationLockCoversCompleteDispatchAndCancelDoesNotWait(t *te
 	if err != nil || result.State != "canceled" || time.Since(started) > 250*time.Millisecond {
 		t.Fatalf("cancel = %+v, %v after %s", result, err, time.Since(started))
 	}
+	waitForExecCoordinatorInactive(t, coordinator, req.SessionID)
+}
+
+func TestCoordinatorRunsCommandsConcurrentlyAndCancellationIsScoped(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	dispatch := &parallelDispatcher{
+		started: make(chan string, 2),
+		releases: map[string]chan struct{}{
+			"first":  make(chan struct{}),
+			"second": make(chan struct{}),
+		},
+	}
+	coordinator, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := testWorkerRequest()
+	first.Argv = []string{"test-command", "first"}
+	second := first
+	second.SessionID = strings.Repeat("d", 32)
+	second.RequestID = "request-2"
+	second.Fingerprint = strings.Repeat("e", 64)
+	second.Argv = []string{"test-command", "second"}
+	if _, err := coordinator.start(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.start(second); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case key := <-dispatch.started:
+			seen[key] = true
+		case <-time.After(time.Second):
+			t.Fatal("second command did not reach dispatch while the first was still running")
+		}
+	}
+	if !seen["first"] || !seen["second"] {
+		t.Fatalf("dispatched commands = %v, want both", seen)
+	}
+
+	cancelReq := first
+	cancelReq.Action = "cancel"
+	if result, err := coordinator.cancel(cancelReq); err != nil || result.State != "canceled" {
+		t.Fatalf("cancel first = %+v, %v", result, err)
+	}
+	secondPoll := second
+	secondPoll.Action = "poll"
+	if result, err := coordinator.poll(secondPoll); err != nil || result.State != "running" {
+		t.Fatalf("second command after first cancellation = %+v, %v; want running", result, err)
+	}
+	close(dispatch.releases["second"])
+	deadline := time.Now().Add(time.Second)
+	finished := false
+	for time.Now().Before(deadline) {
+		result, err := coordinator.poll(secondPoll)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.State == "succeeded" {
+			finished = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !finished {
+		t.Fatal("second command did not finish successfully after the first was canceled")
+	}
+	waitForExecCoordinatorInactive(t, coordinator, first.SessionID)
+}
+
+func TestCoordinatorBoundsConcurrentCommandTrees(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	dispatch := &parallelDispatcher{
+		started:  make(chan string, execMaxConcurrentCommands+1),
+		releases: map[string]chan struct{}{},
+	}
+	for i := range execMaxConcurrentCommands + 1 {
+		key := fmt.Sprintf("command-%d", i)
+		dispatch.releases[key] = make(chan struct{})
+	}
+	coordinator, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make([]workerExecRequest, execMaxConcurrentCommands+1)
+	t.Cleanup(func() {
+		for _, gate := range dispatch.releases {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}
+		for _, request := range requests {
+			waitForExecCoordinatorInactive(t, coordinator, request.SessionID)
+		}
+	})
+	for i := range requests {
+		key := fmt.Sprintf("command-%d", i)
+		request := testWorkerRequest()
+		request.SessionID = fmt.Sprintf("%032x", i+1)
+		request.RequestID = key
+		request.Fingerprint = fmt.Sprintf("%064x", i+1)
+		request.Argv = []string{"test-command", key}
+		requests[i] = request
+		if _, err := coordinator.start(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := map[string]bool{}
+	for range execMaxConcurrentCommands {
+		select {
+		case key := <-dispatch.started:
+			started[key] = true
+		case <-time.After(time.Second):
+			t.Fatal("concurrency limit prevented an available command from dispatching")
+		}
+	}
 	select {
-	case <-locked:
+	case key := <-dispatch.started:
+		t.Fatalf("command %s dispatched beyond the concurrency bound", key)
+	case <-time.After(50 * time.Millisecond):
+	}
+	var releasedKey string
+	for key := range started {
+		releasedKey = key
+		break
+	}
+	var queuedKey string
+	for i := range requests {
+		key := requests[i].Argv[1]
+		if !started[key] {
+			queuedKey = key
+			break
+		}
+	}
+	close(dispatch.releases[releasedKey])
+	select {
+	case key := <-dispatch.started:
+		if key != queuedKey {
+			t.Fatalf("queued command = %q, want %q", key, queuedKey)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("dispatch did not release mutation lock after cancellation")
+		t.Fatal("queued command did not dispatch when a slot became available")
+	}
+	for _, request := range requests {
+		key := request.Argv[1]
+		if key != releasedKey {
+			close(dispatch.releases[key])
+		}
+	}
+	for _, request := range requests {
+		poll := request
+		poll.Action = "poll"
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			result, err := coordinator.poll(poll)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State == "succeeded" {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		result, err := coordinator.poll(poll)
+		if err != nil || result.State != "succeeded" {
+			t.Fatalf("command %s state = %+v, %v; want succeeded", request.RequestID, result, err)
+		}
 	}
 }
 

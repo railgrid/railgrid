@@ -40,6 +40,9 @@ const (
 	execSessionRetention = 10 * time.Minute
 	execSessionCapacity  = 128
 	execDispatchMaxTries = 9
+	// Keep the number of simultaneously running command trees small even when
+	// many sessions are accepted into the durable queue.
+	execMaxConcurrentCommands = 4
 )
 
 type workerExecRequest struct {
@@ -73,7 +76,23 @@ type execSessionRecord struct {
 }
 
 type execDispatcher interface {
-	Execute(context.Context, persistentExecRequest) (execResponse, error)
+	Start(context.Context, persistentExecRequest) (execExecution, error)
+}
+
+// execExecution is a command that has passed validation and started. Waiting
+// for its result is separate from dispatch so workspace sync can proceed
+// while the command is running.
+type execExecution interface {
+	Wait(context.Context) (execResponse, error)
+}
+
+type completedExecExecution struct {
+	response execResponse
+	err      error
+}
+
+func (e completedExecExecution) Wait(context.Context) (execResponse, error) {
+	return e.response, e.err
 }
 
 type httpExecDispatcher struct {
@@ -81,16 +100,16 @@ type httpExecDispatcher struct {
 	client *http.Client
 }
 
-func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequest) (execResponse, error) {
+func (d *httpExecDispatcher) Start(ctx context.Context, req persistentExecRequest) (execExecution, error) {
 	raw, err := json.Marshal(req)
 	if err != nil {
-		return execResponse{}, err
+		return nil, err
 	}
 	var resp *http.Response
 	for attempt := 1; attempt <= execDispatchMaxTries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(raw))
 		if err != nil {
-			return execResponse{}, err
+			return nil, err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
 		resp, err = d.client.Do(httpReq)
@@ -98,23 +117,68 @@ func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequ
 			break
 		}
 		if !isExecDialRefused(err) || attempt == execDispatchMaxTries {
-			return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
+			return nil, fmt.Errorf("dispatch stateless execution: %w", err)
 		}
 		if err := waitExecDispatchRetry(ctx, attempt); err != nil {
-			return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
+			return nil, fmt.Errorf("dispatch stateless execution: %w", err)
 		}
 	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body)))
+	}
+	if resp.Header.Get(execStartedHeader) == "true" {
+		return &httpExecExecution{response: resp}, nil
+	}
+	// Older executor instances return only after completion. Keep that response
+	// shape working during a rolling update; new instances stream a start ack.
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, execResponseMaxBytes))
+	if err != nil {
+		return nil, err
+	}
+	var result execResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode stateless executor response: %w", err)
+	}
+	return completedExecExecution{response: result}, nil
+}
+
+// Execute keeps a synchronous convenience for existing callers and tests.
+func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequest) (execResponse, error) {
+	execution, err := d.Start(ctx, req)
 	if err != nil {
 		return execResponse{}, err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return execResponse{}, fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body)))
+	return execution.Wait(ctx)
+}
+
+type httpExecExecution struct {
+	response *http.Response
+}
+
+func (e *httpExecExecution) Wait(ctx context.Context) (execResponse, error) {
+	defer func() { _ = e.response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(e.response.Body, execResponseMaxBytes))
+	if err != nil {
+		if ctx.Err() != nil {
+			return execResponse{}, ctx.Err()
+		}
+		return execResponse{}, err
 	}
 	var result execResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return execResponse{}, fmt.Errorf("decode stateless executor response: %w", err)
+	}
+	if result.Error != "" {
+		if result.CleanupUnproven {
+			return result, fmt.Errorf("%w: %s", errExecCleanupUnproven, result.Error)
+		}
+		return result, errors.New(result.Error)
 	}
 	return result, nil
 }
@@ -163,6 +227,7 @@ type execCoordinator struct {
 	logf         func(string, ...any)
 	mu           sync.Mutex
 	active       map[string]context.CancelFunc
+	execSlots    chan struct{}
 }
 
 func newExecCoordinator(workspace, stateDir, token string, dispatcher execDispatcher, mutationMu *sync.Mutex) (*execCoordinator, error) {
@@ -182,7 +247,8 @@ func newExecCoordinator(workspace, stateDir, token string, dispatcher execDispat
 	w := &execCoordinator{
 		workspace: workspace, stateDir: prepared, recordDir: filepath.Join(prepared, stateSessionsDir),
 		token: token, dispatcher: dispatcher, mutationMu: mutationMu, active: map[string]context.CancelFunc{},
-		exit: os.Exit, logf: log.Printf,
+		execSlots: make(chan struct{}, execMaxConcurrentCommands),
+		exit:      os.Exit, logf: log.Printf,
 	}
 	w.writeSession = w.writeRecord
 	if err := w.recoverSessions(); err != nil {
@@ -430,26 +496,42 @@ func (w *execCoordinator) boundRecord(req workerExecRequest) (execSessionRecord,
 }
 
 func (w *execCoordinator) run(ctx context.Context, req workerExecRequest) {
-	// One coordinator-owned boundary covers validation in the stateless
-	// executor and the complete command lifetime. Sync holds this same lock
-	// through reload/restart, so neither mutation can interleave.
+	select {
+	case w.execSlots <- struct{}{}:
+		defer func() { <-w.execSlots }()
+	case <-ctx.Done():
+		w.finish(req.SessionID, workerExecResult{State: "canceled"}, ctx.Err())
+		return
+	}
+
+	// Hold the workspace mutation lock only until the executor has verified the
+	// requested revision/digest and started the process. The execution itself
+	// runs against that dispatch revision while later syncs may update source.
 	w.mutationMu.Lock()
-	defer w.mutationMu.Unlock()
 	if ctx.Err() != nil {
+		w.mutationMu.Unlock()
 		w.finish(req.SessionID, workerExecResult{State: "canceled"}, ctx.Err())
 		return
 	}
 	running, err := w.setRunning(req.SessionID)
 	if err != nil {
+		w.mutationMu.Unlock()
 		w.clearActive(req.SessionID)
 		w.fatalPersistence(req.SessionID, err)
 		return
 	}
 	if !running {
+		w.mutationMu.Unlock()
 		w.clearActive(req.SessionID)
 		return
 	}
-	response, runErr := w.dispatcher.Execute(ctx, req.persistentExecRequest)
+	execution, err := w.dispatcher.Start(ctx, req.persistentExecRequest)
+	w.mutationMu.Unlock()
+	if err != nil {
+		w.finish(req.SessionID, workerResultFromExec(execResponse{}, err), err)
+		return
+	}
+	response, runErr := execution.Wait(ctx)
 	w.finish(req.SessionID, workerResultFromExec(response, runErr), runErr)
 }
 

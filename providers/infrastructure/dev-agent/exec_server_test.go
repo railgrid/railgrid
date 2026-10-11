@@ -29,11 +29,207 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 2 && os.Args[1] == execWorkerArg {
+		if err := runExecWorker(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func writeExecTestManifest(t *testing.T, workspace string, manifest workspaceManifest) {
+	t.Helper()
+	root, err := openWorkspaceRoot(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := writeWorkspaceManifest(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForExecTestFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
+func waitForExecTestState(t *testing.T, coordinator *execCoordinator, req workerExecRequest, want string) workerExecResult {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := coordinator.poll(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.State == want {
+			return result
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	result, err := coordinator.poll(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("execution state = %q, want %q", result.State, want)
+	return workerExecResult{}
+}
+
+func TestStatelessExecutorHelpersRunInParallelAcrossSourceSync(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid is unavailable")
+	}
+	workspace := t.TempDir()
+	digest, err := digestSyncFiles(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecTestManifest(t, workspace, workspaceManifest{SourceRevision: 1, SourceDigest: digest})
+	executor := &statelessExecutor{workspace: workspace, startExec: startPersistentExecHelper}
+	executorServer := httptest.NewServer(executor)
+	defer executorServer.Close()
+	mutationMu := &sync.Mutex{}
+	coordinator, err := newExecCoordinator(workspace, t.TempDir(), "token", &httpExecDispatcher{
+		url: executorServer.URL + "/internal/exec", client: executorServer.Client(),
+	}, mutationMu)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := testWorkerRequest()
+	first.persistentExecRequest = persistentExecRequest{
+		Argv:    []string{"/bin/sh", "-c", "setsid /bin/sh -c 'echo $$ > escaped.pid; exec sleep 30' </dev/null >/dev/null 2>&1 & echo $! > escaped-parent.pid; touch first.started; sleep 30"},
+		WorkDir: ".", TimeoutMS: 30_000, SourceRevision: 1, SourceDigest: digest,
+	}
+	second := first
+	second.SessionID = strings.Repeat("d", 32)
+	second.RequestID = "request-2"
+	second.Fingerprint = strings.Repeat("e", 64)
+	second.persistentExecRequest = persistentExecRequest{
+		Argv:    []string{"/bin/sh", "-c", "touch second.started; while [ ! -f release-second ]; do sleep 0.02; done; echo done > second.done"},
+		WorkDir: ".", TimeoutMS: 30_000, SourceRevision: 1, SourceDigest: digest,
+	}
+	// Ensure failures in the test do not leave commands behind or waiting on the
+	// release marker.
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(workspace, "release-second"), nil, 0o600)
+		firstCancel := first
+		firstCancel.Action = "cancel"
+		_, _ = coordinator.cancel(firstCancel)
+		secondCancel := second
+		secondCancel.Action = "cancel"
+		_, _ = coordinator.cancel(secondCancel)
+		waitForExecCoordinatorInactive(t, coordinator, first.SessionID)
+		waitForExecCoordinatorInactive(t, coordinator, second.SessionID)
+	})
+	if _, err := coordinator.start(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.start(second); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForExecTestFile(t, filepath.Join(workspace, "first.started"))
+	waitForExecTestFile(t, filepath.Join(workspace, "second.started"))
+	// This is the same lock used by source sync. It must become available after
+	// the helper acknowledges cmd.Start, even though both commands are active.
+	mutationLocked := make(chan struct{})
+	go func() {
+		mutationMu.Lock()
+		close(mutationLocked)
+	}()
+	select {
+	case <-mutationLocked:
+	case <-time.After(time.Second):
+		t.Fatal("source mutation lock stayed held for the command lifetime")
+	}
+	func() {
+		defer mutationMu.Unlock()
+		writeExecTestManifest(t, workspace, workspaceManifest{SourceRevision: 2, SourceDigest: digest})
+	}()
+
+	waitForExecTestFile(t, filepath.Join(workspace, "escaped.pid"))
+	secondPoll := second
+	secondPoll.Action = "poll"
+	if result, err := coordinator.poll(secondPoll); err != nil || result.State != "running" {
+		t.Fatalf("second command before first cancellation = %+v, %v; want running", result, err)
+	}
+	firstCancel := first
+	firstCancel.Action = "cancel"
+	if result, err := coordinator.cancel(firstCancel); err != nil || result.State != "canceled" {
+		t.Fatalf("cancel first command = %+v, %v", result, err)
+	}
+	waitForExecTestState(t, coordinator, first, "canceled")
+	waitForExecCoordinatorInactive(t, coordinator, first.SessionID)
+	rawPID, err := os.ReadFile(filepath.Join(workspace, "escaped.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("canceled command's escaped descendant pid %d is still alive: %v", pid, err)
+	}
+	if result, err := coordinator.poll(secondPoll); err != nil || result.State != "running" {
+		t.Fatalf("second command after first cancellation = %+v, %v; want running", result, err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "release-second"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForExecTestState(t, coordinator, second, "succeeded")
+	waitForExecCoordinatorInactive(t, coordinator, second.SessionID)
+}
+
+func TestStatelessExecutorRejectsStaleRevisionBeforeDispatch(t *testing.T) {
+	workspace := t.TempDir()
+	digest, err := digestSyncFiles(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecTestManifest(t, workspace, workspaceManifest{SourceRevision: 2, SourceDigest: digest})
+	executor := &statelessExecutor{workspace: workspace, startExec: startPersistentExecHelper}
+	request, err := json.Marshal(persistentExecRequest{
+		Argv: []string{"/bin/sh", "-c", "touch must-not-run"}, WorkDir: ".",
+		SourceRevision: 1, SourceDigest: digest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	executor.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/exec", bytes.NewReader(request)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("stale dispatch status = %d, want %d; body=%s", response.Code, http.StatusConflict, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "must-not-run")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale command ran: stat error = %v", err)
+	}
+}
 
 func TestPersistentExecReapsSetsidDescendantOnEveryCompletionPath(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
