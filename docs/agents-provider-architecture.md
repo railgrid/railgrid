@@ -639,6 +639,20 @@ the virtual workspace is reachable *and* being watched.
   whoever was waiting. `status.attempt` caps both, so a run that kills whatever
   picks it up is closed instead of taking the provider down on every restart.
 
+  **The row goes in before the object** (`api/runprojection.go`, `saveNewRun`).
+  The leader claims an object the moment the watch delivers it and its dispatch
+  reads the store row for the task, so an object written ahead of its row is a
+  run that is claimed and cannot be executed — a webhook-fired run on the
+  non-leader replica was caught exactly so, 50ms apart. If the object write
+  fails the row is deleted and the producer gets the error. **A failed dispatch
+  hands the run back**: the owner is released, `status.retryAt` set
+  (`dispatchRetry`, 30s) and the reason written to `status.message`, so the
+  reconciler wakes and claims it again; unlike an executor's hand-back, the
+  pickup series continues, so `MaxClaims` closes a run nothing can dispatch
+  with that reason. A claim left standing after a failed dispatch would be
+  unreachable — our own claim is never re-dispatched, the stranded path ignores
+  Pending, and the deadline needs a start.
+
   A run a person is watching is never claimed here: it executes on the replica
   that served their request and carries no unattended delivery kind. That is
   the one distinction keeping a chat turn from being charged twice. The deadline is `status.startedAt` plus the agent's

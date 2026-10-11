@@ -272,7 +272,9 @@ type RunStatus struct {
 	// on it — the sanctioned computed-deadline requeue — rather than polling
 	// for it, and an unattended run with a RetryAt in the past is claimable
 	// whoever its last owner was: the hand-back was orderly, so the previous
-	// claim is spent, not abandoned.
+	// claim is spent, not abandoned. The reconciler also sets it, with Owner
+	// released, when a dispatch it attempted failed; that hand-back continues
+	// the pickup series (Attempt) rather than opening a new one.
 	// +optional
 	RetryAt *metav1.Time `json:"retryAt,omitempty"`
 
