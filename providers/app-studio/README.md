@@ -422,6 +422,27 @@ rolling upgrade, an older reader may still display its legacy canceled label
 when reconstructing a cancellation-marked record; accurate unknown-outcome
 presentation and late-receipt repair require the updated reader.
 
+The portal keeps composer drafts separate by tenant, user, Project UID, and
+thread. Text, selected skills/resources, annotations, attachments, and response
+mode survive navigation and a reload in the same browser tab through bounded,
+expiring session storage (24 hours, at most 32 drafts and 2.8 MB including keys,
+accounted as UTF-16). Access prunes invalid and expired records; writes evict the
+oldest drafts to stay within that provider-only budget. Signing out or changing
+user/workspace purges the departing identity's drafts and fences late callbacks.
+If storage is unavailable, a bounded memory cache
+preserves drafts during navigation; recovering them after a reload still
+requires session storage. A recreated project cannot inherit a deleted project's draft through its reused name.
+Refreshing a draft does not extend an unbound upload's lifetime. If its receipt
+has expired, the composer preserves the text and valid attachments, asks the user
+to reattach the missing file, and never resends the turn automatically.
+Attachment deletion and delayed run controls retain their original owner when
+the visible thread changes; switching threads never cancels a sibling turn.
+
+Command disclosures retain the source revision and digest, synchronization
+status, and stale-source indication supplied by the server. A pre-start blocker
+has no fabricated exit code; an unknown outcome remains unknown. Source and
+preview checkpoint labels identify the thread that produced them when known.
+
 File API writes can run alongside assistant turns under the same project owner.
 Creating a file requires `If-None-Match: *`; replacing or deleting a file
 requires `If-Match` with its exact version. Missing preconditions are rejected,

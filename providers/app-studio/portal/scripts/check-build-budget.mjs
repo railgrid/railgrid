@@ -79,10 +79,11 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// Baseline 57897281 measures 1,228,846 raw / 342,197 gzip on the page path.
-// The source-version contract adds 1,154 raw / 346 gzip locally; preserve a
-// small 200-byte raw / 257-byte gzip margin over that measured result.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_230_200, gzipBytes: 342_800 })
-// Baseline total assets measure 1,303,872 raw / 367,471 gzip. The same portal
-// change adds 1,600 raw / 546 gzip; keep 128 raw / 283 gzip of local headroom.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_305_600, gzipBytes: 368_300 })
+// Baseline af32e06a measures 1,230,052 raw / 342,558 gzip on the page path.
+// Scoped drafts, bounded storage/identity cleanup, attachment ownership, and
+// command evidence add 18,852 raw / 5,748 gzip bytes. Keep 596 raw / 394 gzip
+// bytes of local headroom. Review fixes account for 5,808 raw / 1,620 gzip bytes.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_249_500, gzipBytes: 348_700 })
+// Baseline total assets measure 1,305,524 raw / 368,042 gzip. The same change
+// adds 18,852 raw / 5,745 gzip; keep 624 raw / 413 gzip bytes of headroom.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_325_000, gzipBytes: 374_200 })

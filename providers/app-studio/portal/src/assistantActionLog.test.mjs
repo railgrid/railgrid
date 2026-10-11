@@ -91,23 +91,24 @@ test('uses nested exec state labels and keeps each disclosure collapsed by defau
   const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
   const states = [
     ['running', 'running', 'Running'],
-    ['success', 'succeeded', 'Ran'],
-    ['failure', 'failed', 'Failed'],
-    ['cancel', 'canceled', 'Canceled'],
-    ['timeout', 'timed_out', 'Timed out'],
+    ['success', 'succeeded', 'Ran', 0],
+    ['failure', 'failed', 'Failed', 1],
+    ['cancel', 'canceled', 'Canceled', 130],
+    ['timeout', 'timed_out', 'Timed out', 124],
     ['blocked', 'blocked', 'Blocked'],
   ]
   const html = await renderToString(createSSRApp(AssistantActionLog, {
     messageId: 'assistant-exec-states',
-    items: states.map(([id, status]) => ({
+    items: states.map(([id, status, , exitCode]) => ({
       id: `exec-${id}`,
       kind: 'run',
       // The outer action is settled successfully in this fixture. The nested
-      // command result is the authoritative state shown to the user.
+      // command result is the authoritative state shown to the user. Terminal
+      // command receipts include exit proof; running and blocked do not.
       status: 'succeeded',
       title: 'Ran command',
       severity: 'normal',
-      exec: { argv: ['npm', 'run', id], status },
+      exec: { argv: ['npm', 'run', id], status, ...(exitCode === undefined ? {} : { exitCode }) },
     })),
   }))
   for (const [id, , label] of states) {
@@ -115,6 +116,34 @@ test('uses nested exec state labels and keeps each disclosure collapsed by defau
     assert.match(html, new RegExp(`aria-expanded="false"[^>]+aria-controls="app-studio-assistant-actions-assistant-exec-states-exec-${id}-exec"`))
   }
   assert.doesNotMatch(html, /Shell|Direct command|stdout|stderr/)
+})
+
+test('keeps legacy command outcomes unverified without terminal proof and preserves generic action labels', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const html = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-legacy-exec',
+    items: [
+      {
+        id: 'legacy-command',
+        kind: 'run',
+        status: 'succeeded',
+        title: 'Legacy command',
+        severity: 'normal',
+        exec: { argv: ['npm', 'test'] },
+      },
+      {
+        id: 'generic-inspection',
+        kind: 'inspect',
+        status: 'succeeded',
+        title: 'Inspected project',
+        severity: 'normal',
+      },
+    ],
+  }))
+  assert.match(html, /Unverified npm test/)
+  assert.doesNotMatch(html, /Ran npm test/)
+  assert.match(html, /Completed/)
+  assert.match(html, /Inspected project/)
 })
 
 test('keeps structured failure diagnostics out of the user-visible action history', async () => {

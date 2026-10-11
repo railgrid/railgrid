@@ -7,6 +7,9 @@ import { computed, effectScope, ref, watch } from 'vue'
 const source = await readFile(new URL('./conversationResilience.ts', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } })
 const state = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+const composerDraftSource = await readFile(new URL('./assistantComposerDraftPolicy.ts', import.meta.url), 'utf8')
+const { outputText: composerDraftOutput } = ts.transpileModule(composerDraftSource, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } })
+const composerDraft = await import(`data:text/javascript;base64,${Buffer.from(composerDraftOutput).toString('base64')}`)
 
 const message = (id, content) => ({ id, projectID: 'p', role: 'assistant', content, createdAt: '2026-01-01T00:00:00Z' })
 const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', mode: 'default', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
@@ -101,10 +104,10 @@ async function stopStateHarness(t) {
   const functions = new Set(['setActiveAssistantRun', 'resetAssistantStopState', 'assistantStopContextFingerprint', 'cancelMessageStream'])
   const statements = ast.statements.filter(node =>
     ts.isFunctionDeclaration(node) && functions.has(node.name?.text) ||
-    ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => decl.name.getText(ast) === 'assistantStopRequested') ||
+    ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => ['assistantRunOwners', 'assistantStopRequested'].includes(decl.name.getText(ast))) ||
     ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(') && node.getText(ast).includes('() => resetAssistantStopState()'),
   )
-  assert.equal(statements.length, 6)
+  assert.equal(statements.length, 7)
   const outputText = compileStatements(statements)
   const scope = effectScope()
   t.after(() => scope.stop())
@@ -162,17 +165,20 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     if (ts.isVariableStatement(node) && node.declarationList.declarations.some(decl => ['threadNavigationDisabled', 'threadActionsDisabled'].includes(decl.name.getText(ast)))) return true
     if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression) || node.expression.expression.getText(ast) !== 'watch') return false
     const source = node.expression.arguments[0]?.getText(ast) ?? ''
-    return source === 'activeAssistantThreadID' || source.startsWith('() => `${selected.value?.name')
+    return source === 'activeAssistantThreadID' || source === 'activeAssistantComposerDraftScopeKey' || source.startsWith('() => `${selected.value?.name')
   })
   assert.equal(statements.filter(node => ts.isFunctionDeclaration(node)).length, functions.size)
   assert.equal(statements.filter(node => ts.isVariableStatement(node)).length, 2)
-  assert.equal(statements.filter(node => ts.isExpressionStatement(node)).length, 2)
+  assert.equal(statements.filter(node => ts.isExpressionStatement(node)).length, 3)
   const outputText = compileStatements(statements)
   const scope = effectScope()
   t.after(() => scope.stop())
   const startCalls = []
   const createCalls = []
   const clearDraftCalls = []
+  const transferDraftCalls = []
+  const rebindDraftCalls = []
+  const writeDraftCalls = []
   const committedParts = []
   const mutationCalls = []
   const steerCalls = []
@@ -205,10 +211,10 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
   const activeTurnOutcomes = [...(initialState.activeTurnOutcomes ?? [])]
   const startControllerCalls = []
   const stopCalls = []
-  return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', `
+  return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'transferDraftCalls', 'rebindDraftCalls', 'writeDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', 'composerDraft', `
     const props = { ctx: { tenant: 'tenant-a', workspaceUUID: 'workspace-a', subPath: '/project-a' } };
     const selected = ref({ name: 'project-a', uid: 'uid-a' });
-    const activeAssistantThreadID = ref('thread-a');
+    const activeAssistantThreadID = ref(initialState.noThread ? '' : 'thread-a');
     let assistantThreadRequestSerial = 0;
     let assistantSubmissionGeneration = 0;
     let activeAssistantSubmissionOwner = null;
@@ -240,7 +246,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const assistantThreadHistoryOperation = ref(null);
     const prompt = ref('first message');
     const messages = ref([]);
-    const assistantThreads = ref([{ id: 'thread-a' }, { id: 'thread-b' }, { id: 'thread-a-recreated' }]);
+    const assistantThreads = ref(initialState.noThread ? [] : [{ id: 'thread-a' }, { id: 'thread-b' }, { id: 'thread-a-recreated' }]);
     const assistantComposerParts = ref(initialParts);
     const selectedTurnSkills = ref(initialState.selectedTurnSkills ?? []);
     const selectedTurnResources = ref(initialState.selectedTurnResources ?? []);
@@ -263,7 +269,17 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const approvalModeSaving = ref(false);
     const assistantThreadViewingOlderHistory = ref(false);
     const selectedLLMModelID = ref('model-a');
-    const assistantIntent = ref('default');
+    const assistantIntent = ref(initialState.assistantIntent ?? 'default');
+    const assistantComposerDraftMatches = composerDraft.assistantComposerDraftMatches;
+    const shouldHydrateAssistantComposerDraftForThread = composerDraft.shouldHydrateAssistantComposerDraftForThread;
+    const hydrateCurrentAssistantComposerDraft = () => {
+      if (!initialState.simulateComposerDraftScopeHydration) return;
+      prompt.value = '';
+      assistantComposerParts.value = [];
+      selectedTurnSkills.value = [];
+      selectedTurnResources.value = [];
+      assistantIntent.value = 'default';
+    };
     const llmConfigured = ref(true);
     const contextFingerprint = (ctx) => JSON.stringify([ctx.tenant, ctx.workspaceUUID, ctx.subPath]);
     const projectContextFingerprint = (ctx) => contextFingerprint(ctx);
@@ -277,10 +293,26 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const setActiveAssistantRun = (run) => { activeAssistantRun = run; };
     const assistantThreadFocusScope = () => ({});
     const persistAssistantThreadFocus = () => {};
-    const assistantAnnotationDraftScope = () => ({});
-    const writeAssistantAnnotationDraft = () => {};
-    const persistCurrentAssistantAnnotationDraft = () => {};
-    const clearStoredAssistantAnnotationDraft = (...args) => clearDraftCalls.push(args);
+    const assistantComposerDraftScope = (projectName = selected.value?.name ?? '', threadID = activeAssistantThreadID.value, ctx = props.ctx, projectUID = selected.value?.uid ?? '') => ({
+      tenant: ctx.tenant, workspaceUUID: ctx.workspaceUUID, user: 'user-a', project: projectName, projectUID, thread: threadID,
+    });
+    const assistantComposerDraftStorageKey = (scope) => 'draft:' + scope.thread;
+    const activeAssistantComposerDraftScopeKey = computed(() => assistantComposerDraftStorageKey(assistantComposerDraftScope()));
+    const transferAssistantComposerDraftToThread = (...args) => { transferDraftCalls.push({ args, activeThread: activeAssistantThreadID.value }); return true; };
+    const assistantComposerRef = { value: { adoptAttachmentDraftScope: (...args) => rebindDraftCalls.push({ args, activeThread: activeAssistantThreadID.value }) } };
+    const currentAssistantComposerDraft = () => ({
+      content: prompt.value,
+      contentParts: [...assistantComposerParts.value],
+      skillIDs: selectedTurnSkills.value.map(skill => skill.id),
+      resources: [...selectedTurnResources.value],
+      responseMode: assistantIntent.value,
+    });
+    const writeAssistantComposerDraft = (...args) => writeDraftCalls.push(args);
+    const persistCurrentAssistantComposerDraft = () => {
+      if (assistantComposerSubmitting.value) return;
+      writeAssistantComposerDraft(assistantComposerDraftScope(), currentAssistantComposerDraft());
+    };
+    const clearStoredAssistantComposerDraft = (...args) => clearDraftCalls.push(args);
     const commitAttachments = (parts) => committedParts.push(parts);
     const clearSelectedTurnAttachments = () => {
       assistantComposerParts.value = [];
@@ -356,8 +388,8 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     return {
       prompt, selected, activeAssistantThreadID, assistantThreadRequestSerial: () => assistantThreadRequestSerial,
       messages, assistantThreads, assistantComposerParts, assistantComposerSubmitting, assistantPendingStartStopRequested,
-      assistantStopRequestedRunID, assistantStopError, conversationStatus,
-      selectedTurnSkills, selectedTurnResources, messageStreaming, busy, error, props, startCalls, createCalls, steerCalls, clearDraftCalls, committedParts, threadMutationBusy, threadError, mutationCalls,
+      assistantStopRequestedRunID, assistantStopError, conversationStatus, transferDraftCalls, rebindDraftCalls,
+      selectedTurnSkills, selectedTurnResources, assistantIntent, messageStreaming, busy, error, props, startCalls, createCalls, steerCalls, clearDraftCalls, writeDraftCalls, committedParts, threadMutationBusy, threadError, mutationCalls,
       get pendingMessageSubmission() { return pendingMessageSubmission; },
       pendingAcceptedAssistantOptimisticMessageCount: () => pendingAcceptedAssistantOptimisticMessages.size,
       createAssistantThread,
@@ -393,7 +425,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
       stopCalls,
       resetConversation() { busy.value = false; messageStreaming.value = false; error.value = null; messages.value = []; },
     };
-  `)(ref, computed, watch, api, outputText, state.assistantRunStartFingerprint, initialParts, initialState, startCalls, createCalls, clearDraftCalls, committedParts, mutationCalls, steerCalls, recoveryCalls, pageCalls, pageOutcomes, activeTurnCalls, activeTurnOutcomes, state, (run) => Boolean(run && !state.assistantRunTerminal(run.status)), state.assistantRunTerminal, startControllerCalls, stopCalls))
+  `)(ref, computed, watch, api, outputText, state.assistantRunStartFingerprint, initialParts, initialState, startCalls, createCalls, clearDraftCalls, transferDraftCalls, rebindDraftCalls, writeDraftCalls, committedParts, mutationCalls, steerCalls, recoveryCalls, pageCalls, pageOutcomes, activeTurnCalls, activeTurnOutcomes, state, (run) => Boolean(run && !state.assistantRunTerminal(run.status)), state.assistantRunTerminal, startControllerCalls, stopCalls, composerDraft))
 }
 
 function assistantThreadSequenceHarness() {
@@ -531,6 +563,106 @@ test('delayed thread creation disables the composer and preserves a fast-submit 
   assert.equal(h.startCalls[0].args[2], 'thread-new', 'the retained draft can now be sent to its new thread')
   h.startCalls[0].reject(new Error('controlled test rejection'))
   assert.equal(await newThreadSend, false)
+})
+
+test('a failed first-thread send restores its full composer draft for an identical retry', async t => {
+  const content = 'Review the selected table with SQL guidance'
+  const skill = { id: 'team:sql-review', name: 'SQL review' }
+  const resource = {
+    provider: 'demo',
+    resourceRef: { apiVersion: 'demo.example.io/v1', kind: 'Table', resource: 'tables', name: 'trips' },
+  }
+  const parts = [
+    { type: 'text', text: content },
+    { type: 'skill', skillID: skill.id },
+    { type: 'resource', resourceIndex: 0 },
+    { type: 'attachment', attachment: { id: 'first-thread-receipt', filename: 'review.txt' } },
+  ]
+  const h = await assistantSubmissionHarness(t, parts, {
+    noThread: true,
+    simulateComposerDraftScopeHydration: true,
+    selectedTurnSkills: [skill],
+    selectedTurnResources: [resource],
+    assistantIntent: 'plan',
+  })
+  h.prompt.value = content
+
+  const firstSend = h.sendMessage()
+  assert.equal(h.createCalls.length, 1)
+  h.createCalls[0].resolve({ id: 'thread-created', projectName: 'project-a' })
+  await Promise.resolve()
+  assert.equal(h.activeAssistantThreadID.value, 'thread-created')
+  assert.equal(h.transferDraftCalls.length, 1, 'the provisional project draft transfers to its first server thread')
+  assert.equal(h.transferDraftCalls[0].args[0].thread, '')
+  assert.equal(h.transferDraftCalls[0].args[1].thread, 'thread-created')
+  assert.equal(h.transferDraftCalls[0].activeThread, '', 'the draft transfer runs before the active thread changes')
+  assert.equal(h.rebindDraftCalls.length, 1, 'the selected receipt chip is rebound before the child scope watcher runs')
+  assert.deepEqual(h.rebindDraftCalls[0].args, ['draft:', 'draft:thread-created', 'project-a', ['first-thread-receipt']])
+  assert.equal(h.rebindDraftCalls[0].activeThread, '')
+  assert.equal(h.startCalls.length, 1)
+  assert.deepEqual(h.selectedTurnSkills.value, [skill], 'the first-thread scope change must not hydrate an empty draft over the captured selections')
+  assert.deepEqual(h.selectedTurnResources.value, [resource])
+  assert.equal(h.assistantIntent.value, 'plan')
+
+  const firstPayload = h.startCalls[0].args[3]
+  assert.equal(firstPayload.content, content)
+  assert.equal(firstPayload.collaborationMode, 'plan')
+  assert.deepEqual(firstPayload.skills, [skill.id])
+  assert.deepEqual(firstPayload.contextResources, [resource])
+  assert.deepEqual(firstPayload.contentParts, parts)
+  h.startCalls[0].reject(new Error('request rejected before acceptance'))
+  assert.equal(await firstSend, false)
+
+  assert.equal(h.prompt.value, content)
+  assert.deepEqual(h.assistantComposerParts.value, parts)
+  assert.deepEqual(h.selectedTurnSkills.value, [skill])
+  assert.deepEqual(h.selectedTurnResources.value, [resource])
+  assert.equal(h.assistantIntent.value, 'plan')
+  assert.equal(h.writeDraftCalls.at(-1)[1].skillIDs[0], skill.id, 'the restored draft is persisted under its created thread scope')
+
+  const retry = h.sendMessage()
+  assert.equal(h.startCalls.length, 2)
+  assert.equal(h.startCalls[1].args[2], 'thread-created')
+  assert.deepEqual(h.startCalls[1].args[3], firstPayload, 'retry reissues the same context and response mode')
+  h.startCalls[1].reject(new Error('retry rejected before acceptance'))
+  assert.equal(await retry, false)
+})
+
+test('a newer draft typed while a first-thread send waits survives its rejection', async t => {
+  const skill = { id: 'team:sql-review', name: 'SQL review' }
+  const resource = {
+    provider: 'demo',
+    resourceRef: { apiVersion: 'demo.example.io/v1', kind: 'Table', resource: 'tables', name: 'trips' },
+  }
+  const h = await assistantSubmissionHarness(t, [{ type: 'text', text: 'Original prompt' }], {
+    noThread: true,
+    simulateComposerDraftScopeHydration: true,
+    selectedTurnSkills: [skill],
+    selectedTurnResources: [resource],
+    assistantIntent: 'plan',
+  })
+  h.prompt.value = 'Original prompt'
+  const pending = h.sendMessage()
+  h.createCalls[0].resolve({ id: 'thread-created', projectName: 'project-a' })
+  await Promise.resolve()
+  assert.equal(h.startCalls.length, 1)
+
+  const newerContent = 'A newer draft entered while the request waits'
+  h.prompt.value = newerContent
+  h.assistantComposerParts.value = [{ type: 'text', text: newerContent }]
+  h.selectedTurnSkills.value = []
+  h.selectedTurnResources.value = []
+  h.assistantIntent.value = 'review'
+  h.startCalls[0].reject(new Error('request rejected before acceptance'))
+  assert.equal(await pending, false)
+
+  assert.equal(h.prompt.value, newerContent)
+  assert.deepEqual(h.assistantComposerParts.value, [{ type: 'text', text: newerContent }])
+  assert.deepEqual(h.selectedTurnSkills.value, [])
+  assert.deepEqual(h.selectedTurnResources.value, [])
+  assert.equal(h.assistantIntent.value, 'review')
+  assert.equal(h.writeDraftCalls.at(-1)[1].content, newerContent, 'the newer draft is saved after the send-owned persistence pause ends')
+  assert.equal(h.writeDraftCalls.at(-1)[1].responseMode, 'review')
 })
 
 test('stopping survives recovery but cannot follow project, tenant or run replacement', async t => {
@@ -783,6 +915,8 @@ test('accepted turn and steer projection failures recover the existing run witho
       assert.equal(await send, true)
       assert.equal(h.startCalls.length, intent === 'turn' ? 1 : 0, 'recovery never resends the accepted request')
       assert.equal(h.steerCalls.length, intent === 'steer' ? 1 : 0)
+      assert.deepEqual(h.clearDraftCalls[0].slice(0, 2), ['project-a', 'thread-a'], 'accepted sends clear the exact submitted thread draft before projection recovery')
+      assert.equal(h.clearDraftCalls[0][2].workspaceUUID, 'workspace-a')
       assert.equal(h.recoveryCalls.length, 1, 'the existing active-turn/item reconciliation runs once')
       assert.equal(h.activeTurnCalls.length, 1)
       assert.equal(h.pageCalls.length, 2, 'one failed projection is followed by one recovery projection')
@@ -1103,7 +1237,31 @@ test('first-send thread creation cannot mutate state after an App unmount or req
   assert.match(sendMessage, /const submissionIsCurrent = \(\) => appComponentMounted &&[\s\S]*submissionOwner\.generation === assistantSubmissionGeneration[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*selected\.value\?\.name === submissionOwner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === submissionOwner\.projectUID[\s\S]*activeAssistantThreadID\.value === submissionOwner\.threadID/)
   assert.match(appSource, /watch\(\s*activeAssistantThreadID,[\s\S]*current !== owner\.threadID[\s\S]*invalidateAssistantMessageSubmission\(\)/)
   assert.match(appSource, /\(\) => `\$\{selected\.value\?\.name \?\? ''\}\\u0000\$\{selected\.value\?\.uid \?\? ''\}`[\s\S]*invalidateAssistantMessageSubmission\(\)/)
-  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantAnnotationDraft/)
+  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantComposerDraft/)
+})
+
+test('resume and stop controls keep their captured project, thread, and run scope', async () => {
+  const controllerStart = app.indexOf('const assistantRunController = new ConversationRunController({')
+  const controllerEnd = app.indexOf('\nfunction startAssistantRunController', controllerStart)
+  assert.ok(controllerStart >= 0 && controllerEnd > controllerStart)
+  const controller = app.slice(controllerStart, controllerEnd)
+  assert.match(controller, /const owner = assistantRunOwners\.get\(runID\)/)
+  assert.match(controller, /api\.interruptAssistantTurn\(owner\.context, owner\.projectName, owner\.threadID, runID/)
+  assert.match(controller, /await recoverAssistantConversation\(owner\.projectName\)/)
+  assert.match(controller, /assistantRunOwnerIsCurrent\(owner\)/)
+  assert.match(app, /function assistantRunOwnerIsCurrent\(owner: AssistantRunOwner\): boolean[\s\S]*selected\.value\?\.name === owner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === owner\.projectUID[\s\S]*activeAssistantThreadID\.value === owner\.threadID/)
+
+  const permissionStart = app.indexOf('async function resolveToolPermission(')
+  const followUpStart = app.indexOf('async function submitFollowUpAnswer(', permissionStart)
+  const resumeFailureStart = app.indexOf('async function handleResumeFailure(', followUpStart)
+  const permission = app.slice(permissionStart, followUpStart)
+  const followUp = app.slice(followUpStart, resumeFailureStart)
+  assert.match(permission, /const threadID = activeAssistantThreadID\.value[\s\S]*const context = props\.ctx[\s\S]*const contextFingerprint = appContextFingerprint\(context\)/)
+  assert.match(permission, /api\.respondAssistantTurn\(context, projectName, threadID, runID, 'approval'/)
+  assert.match(followUp, /api\.respondAssistantTurn\(context, projectName, threadID, runID, 'input'/)
+  assert.match(permission, /activeAssistantThreadID\.value === threadID/)
+  assert.match(followUp, /activeAssistantThreadID\.value === threadID/)
+  assert.match(app, /const assistantResumeBusy = computed\(\(\) => \{[\s\S]*assistantActionScopePrefix\(\)[\s\S]*key\.startsWith\(prefix\)/)
 })
 
 test('late pre-acceptance failure cannot restore an old draft or release a newer submission', async t => {
@@ -1300,7 +1458,7 @@ test('regular send adopts the canonical thread returned by the start response', 
   assert.match(acceptedStart, /activeAssistantThreadID\.value = canonicalThreadID/)
   assert.match(acceptedStart, /persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), canonicalThreadID\)/)
   assert.match(acceptedStart, /listAssistantThreadItemPage\(props\.ctx, projectName, canonicalThreadID\)/)
-  assert.match(acceptedStart, /clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID, sendContext\)/)
+  assert.match(acceptedStart, /clearStoredAssistantComposerDraft\(projectName, requestedThreadID, sendContext, projectUID\)/)
 })
 
 test('regular receipt failures recover through the composer without replaying a changed turn', async () => {
@@ -1308,7 +1466,7 @@ test('regular receipt failures recover through the composer without replaying a 
   const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
   assert.match(appSource, /recoverUnavailableAttachments/)
   assert.match(sendMessage, /recoverUnavailableAssistantAttachmentSend\(projectName, content, turnContentParts, submissionIsCurrent\)/)
-  assert.match(sendMessage, /if \(attachmentRecovery\.stale \|\| attachmentRecovery\.candidateCount > 0\) return false/)
+  assert.match(sendMessage, /if \(attachmentRecovery\.stale \|\| attachmentRecovery\.candidateCount > 0\) \{[\s\S]*if \(!attachmentRecovery\.stale\) restoreCapturedComposerDraft\(true\)[\s\S]*return false/)
   const recoveryStart = appSource.indexOf('async function recoverUnavailableAssistantAttachmentSend')
   const recoveryEnd = appSource.indexOf('\n\nwatch(', recoveryStart)
   assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart)
@@ -1910,4 +2068,176 @@ test('App latches one stable theme-colored stop control until interruption settl
   assert.match(primaryStyles, /\.k-ai-primary-action--stop,\s*\.k-ai-primary-action--stopping[\s\S]*?background: var\(--color-accent/)
   assert.match(primaryStyles, /\.k-ai-primary-action--stopping:disabled[\s\S]*?background: var\(--color-accent/)
   assert.doesNotMatch(primaryStyles, /\.k-ai-primary-action--(?:stop|stopping)[^{]*\{[^}]*danger/)
+})
+
+function interruptResponseHarness(kind) {
+  const names = ['resolveToolPermission', 'submitFollowUpAnswer', 'followUpQuestions']
+  const statements = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
+  assert.equal(statements.length, names.length)
+  return new Function('ref', 'kind', `
+    const props = { ctx: { tenant: 'tenant-a' } };
+    const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const activeAssistantThreadID = ref('thread-a');
+    const appComponentMounted = true;
+    const appContextFingerprint = ctx => JSON.stringify(ctx);
+    const assistantActionScopePrefix = (...parts) => JSON.stringify(parts);
+    const assistantActionKey = (scope, run, request) => scope + ':' + run + ':' + request;
+    const permissionErrors = ref({}), permissionBusy = ref({});
+    const followUpErrors = ref({}), followUpBusy = ref({}), followUpAnswers = ref({});
+    const reviewPanelHold = ref(null), conversationStatus = ref('');
+    const marks = [], refreshes = [], failures = [];
+    const markInterruptResolvedLocally = (...args) => marks.push(['resolved', ...args]);
+    const markInterruptPendingLocally = (...args) => marks.push(['pending', ...args]);
+    const refreshSelectedProjectConversation = async project => refreshes.push(project);
+    const handleResumeFailure = async (...args) => failures.push(args);
+    let resolve, reject;
+    const response = new Promise((yes, no) => { resolve = yes; reject = no; });
+    const calls = [];
+    const api = { respondAssistantTurn: (...args) => { calls.push(args); return response; } };
+    const message = { id: 'message-a', projectID: 'project-a' };
+    const interrupt = { interruptId: 'interrupt-a', status: 'pending', action: { runId: 'run-a', requestId: 'request-a' }, questions: [{ id: 'q', question: 'Continue?' }] };
+    const key = assistantActionKey(assistantActionScopePrefix('project-a', 'uid-a', 'thread-a', appContextFingerprint(props.ctx)), 'run-a', 'request-a');
+    followUpAnswers.value[key] = { q: 'Yes' };
+    ${compileStatements(statements)}
+    return { marks, refreshes, failures, calls, reviewPanelHold, conversationStatus, activeAssistantThreadID,
+      permissionBusy, followUpBusy, followUpAnswers, key, resolve, reject,
+      send: () => kind === 'approval' ? resolveToolPermission(message, interrupt, 'allow') : submitFollowUpAnswer(message, interrupt),
+    };
+  `)(ref, kind)
+}
+
+for (const kind of ['approval', 'input']) {
+  test(`${kind} stays pending until acceptance and a late failure cannot patch a sibling thread`, async () => {
+    const h = interruptResponseHarness(kind)
+    const response = h.send()
+    assert.equal(h.calls[0][2], 'thread-a')
+    assert.deepEqual(h.marks, [], 'no optimistic resolved state before acceptance')
+    h.activeAssistantThreadID.value = 'thread-b'
+    h.conversationStatus.value = 'Sibling is working'
+    h.reject(new Error('response failed'))
+    await response
+    assert.deepEqual(h.marks, [], 'rollback must never inject the old message into the current thread')
+    assert.equal(h.reviewPanelHold.value, null, 'retire only the failed request hold')
+    assert.equal(h.conversationStatus.value, 'Sibling is working')
+    assert.deepEqual(h.refreshes, [])
+    assert.deepEqual(h.failures, [])
+    assert.deepEqual(h.permissionBusy.value, {})
+    assert.deepEqual(h.followUpBusy.value, {})
+    assert.deepEqual(h.followUpAnswers.value[h.key], { q: 'Yes' })
+  })
+
+  test(`${kind} late acceptance preserves a newer thread's hold and answers`, async () => {
+    const h = interruptResponseHarness(kind)
+    const response = h.send()
+    h.activeAssistantThreadID.value = 'thread-b'
+    h.reviewPanelHold.value = { key: 'sibling-request' }
+    h.followUpAnswers.value.sibling = { q: 'No' }
+    h.resolve()
+    await response
+    assert.deepEqual(h.marks, [])
+    assert.equal(h.reviewPanelHold.value.key, 'sibling-request')
+    assert.deepEqual(h.followUpAnswers.value.sibling, { q: 'No' })
+  })
+
+  test(`${kind} marks the visible interrupt resolved only after acceptance`, async () => {
+    const h = interruptResponseHarness(kind)
+    const response = h.send()
+    assert.deepEqual(h.marks, [])
+    h.resolve()
+    await response
+    assert.equal(h.reviewPanelHold.value, null, 'accepted interrupts must not reappear as an actionable held panel')
+    assert.equal(h.marks.length, 1)
+    assert.deepEqual(h.marks[0].slice(0, 3), ['resolved', 'project-a', 'message-a'])
+    assert.deepEqual(h.refreshes, ['project-a'])
+  })
+}
+
+test('draft cleanup follows identity transitions without purging on token refresh or thread navigation', t => {
+  const statements = ast.statements.filter(node =>
+    ts.isFunctionDeclaration(node) && node.name?.text === 'assistantComposerDraftIdentity' ||
+    ts.isExpressionStatement(node) && node.getText(ast).startsWith('watch(() => JSON.stringify(assistantComposerDraftIdentity(props.ctx))'),
+  )
+  assert.equal(statements.length, 2)
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  const h = scope.run(() => new Function('ref', 'watch', `
+    const context = ref({ token: 'token-1', tenant: 'tenant', orgUUID: 'org', workspaceUUID: 'workspace', user: { sub: 'alice' }, subPath: 'project' });
+    const props = { get ctx() { return context.value; } };
+    const purges = [], activeIdentities = [];
+    const setAssistantComposerDraftActiveIdentity = identity => activeIdentities.push(identity);
+    const purgeAssistantComposerDraftsForIdentity = identity => purges.push(identity);
+    ${compileStatements(statements)}
+    return { context, purges, activeIdentities };
+  `)(ref, watch))
+  h.context.value = { ...h.context.value, token: 'rotated', subPath: 'another-project' }
+  assert.deepEqual(h.purges, [])
+  h.context.value = { ...h.context.value, token: undefined, fetch: async () => new Response() }
+  assert.deepEqual(h.purges, [], 'host-owned fetch authenticates without the deprecated token')
+  h.context.value = { ...h.context.value, workspaceUUID: 'new-workspace' }
+  assert.equal(h.purges.length, 1)
+  assert.equal(h.purges[0].workspaceUUID, 'workspace')
+  h.context.value = { ...h.context.value, user: { sub: 'bob' } }
+  assert.equal(h.purges.length, 2)
+  assert.equal(h.purges[1].user, 'alice')
+  h.context.value = { ...h.context.value, token: null, fetch: null }
+  assert.equal(h.purges.length, 3)
+  assert.equal(h.purges[2].user, 'bob')
+  assert.equal(h.activeIdentities[0].user, 'alice')
+  assert.equal(h.activeIdentities.at(-1), null)
+})
+
+function expiredReceiptRecoveryHarness() {
+  const names = new Set(['recoverUnavailableAssistantAttachmentReceipts', 'recoverUnavailableAssistantAttachmentSend'])
+  const statements = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
+  assert.equal(statements.length, 2)
+  return new Function('ref', `
+    const expired = { type: 'attachment', attachment: { id: 'expired-upload', createdAt: '2026-01-01T00:00:00Z' } };
+    const valid = { type: 'attachment', attachment: { id: 'recent-upload', createdAt: '2026-01-02T01:00:00Z' } };
+    const text = { type: 'text', text: 'Draft edited after the old upload expired' };
+    const parts = [text, expired, valid];
+    const props = { ctx: {} }, assistantComposerRef = ref(null);
+    const assistantComposerParts = ref(parts), assistantComposerAttachmentsPending = ref(false);
+    const prompt = ref(text.text), error = ref(''), messageStreaming = ref(true);
+    let pendingMessageSubmission = { id: 'rejected-turn' }, current = true, resolve;
+    const listed = new Promise(yes => { resolve = yes; });
+    const api = { listAssistantAttachments: () => listed };
+    const assistantAttachmentReceiptsMatch = (left, right) => left.id === right.id;
+    const saved = [];
+    const persistCurrentAssistantComposerDraft = parts => saved.push(parts);
+    ${compileStatements(statements)}
+    return { parts, valid, prompt, error, assistantComposerParts, messageStreaming, saved,
+      resolve: () => resolve([valid.attachment]),
+      navigate: () => { current = false; prompt.value = 'Sibling draft'; assistantComposerParts.value = []; },
+      recover: () => recoverUnavailableAssistantAttachmentSend('project', text.text, parts, () => current),
+      submission: () => pendingMessageSubmission,
+    };
+  `)(ref)
+}
+
+test('a renewed draft with an expired upload preserves text and valid receipts and requires explicit reattachment', async () => {
+  const h = expiredReceiptRecoveryHarness()
+  const recovery = h.recover()
+  h.resolve()
+  const result = await recovery
+  assert.equal(result.removed, 1)
+  assert.equal(result.unresolved, 0)
+  assert.equal(h.prompt.value, h.parts[0].text)
+  assert.deepEqual(h.assistantComposerParts.value, [h.parts[0], h.valid])
+  assert.deepEqual(h.saved, [[h.parts[0], h.valid]])
+  assert.match(h.error.value, /no longer available.*Reattach.*send again/)
+  assert.equal(h.submission(), null, 'the rejected submission is retired, never replayed')
+  assert.equal(h.messageStreaming.value, false)
+})
+
+test('receipt expiry recovery after navigation cannot edit the newly visible draft', async () => {
+  const h = expiredReceiptRecoveryHarness()
+  const recovery = h.recover()
+  h.navigate()
+  h.resolve()
+  assert.equal((await recovery).stale, true)
+  assert.equal(h.prompt.value, 'Sibling draft')
+  assert.deepEqual(h.assistantComposerParts.value, [])
+  assert.deepEqual(h.saved, [])
+  assert.equal(h.error.value, '')
+  assert.equal(h.submission().id, 'rejected-turn')
 })

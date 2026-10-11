@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import ts from 'typescript'
+import { computed, ref } from 'vue'
 import { createServer } from 'vite'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
@@ -168,33 +170,39 @@ test('cancelled uploads retain a recoverable File and treat absent draft deletes
   const uploadBody = source.slice(uploadStart, uploadEnd)
   const removeBody = source.slice(removeStart, removeEnd)
   assert.match(uploadBody, /const projectName = props\.projectName/)
-  assert.match(uploadBody, /api\.uploadAssistantAttachment\(props\.ctx, projectName, file/)
+  assert.match(uploadBody, /const draftScopeKey = props\.draftScopeKey/)
+  assert.match(uploadBody, /const context = props\.ctx/)
+  assert.match(uploadBody, /api\.uploadAssistantAttachment\(context, projectName, file/)
   assert.match(uploadBody, /bestEffortDeleteAttachment\(chip, projectName\)/)
-  assert.match(uploadBody, /props\.projectName !== projectName/)
+  assert.match(uploadBody, /props\.projectName !== projectName \|\| props\.draftScopeKey !== draftScopeKey/)
   assert.match(uploadBody, /isAttachmentAbortError\(error\)/)
   assert.match(uploadBody, /current\.status = 'staged'/)
   assert.match(uploadBody, /current\.error = undefined/)
   assert.match(removeBody, /chip\.controller\?\.abort\(\)/)
-  assert.match(removeBody, /bestEffortDeleteAttachment\(chip, props\.projectName\)/)
-  assert.match(removeBody, /isProjectAPINotFoundError\(error\)/)
+  assert.match(removeBody, /bestEffortDeleteAttachment\(chip, projectName\)/)
+  assert.match(removeBody, /removeScopedAssistantAttachment\(/)
+  assert.match(removeBody, /removeOwnerDraftReceipt: \(\) => draftScopeKey[\s\S]*removeAssistantComposerDraftAttachment\(draftScopeKey, receiptID\)[\s\S]*: true/)
+  assert.match(removeBody, /deleteAttachment: \(\) => api\.deleteAssistantAttachment\(chip\.context \?\? props\.ctx, projectName, receiptID\)/)
   assert.match(removeBody, /attachmentChips\.value = attachmentChips\.value\.filter/)
 })
 
 test('composer commits accepted receipts before clearing parts and cleans only abandoned drafts', async () => {
   const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
   assert.match(source, /projectName\?: string/)
+  assert.match(source, /draftScopeKey: string/)
+  assert.match(source, /context\?: RailgridContext \| null/)
+  assert.match(source, /const visibleAttachmentChips = computed\(\(\) => attachmentChips\.value\.filter\(\(chip\) => chip\.draftScopeKey === props\.draftScopeKey\)\)/)
   assert.match(source, /committed\?: boolean/)
   assert.match(source, /function cleanupAttachmentChips\(chips: readonly AssistantAttachmentChip\[\], fallbackProjectName: string\)/)
   assert.match(source, /chip\.projectName \|\| fallbackProjectName/)
-  assert.match(source, /function commitAttachments\(receiptIDs: readonly string\[\]\)/)
+  assert.match(source, /function commitAttachments\(receiptIDs: readonly string\[\], ownerScopeKey: string, ownerProjectName: string\)/)
 
   const handoffStart = source.indexOf('function commitAttachments(')
-  const handoffEnd = source.indexOf('\n}\n\nfunction handleAttachmentInput', handoffStart)
+  const handoffEnd = source.indexOf('\n}\n\nfunction adoptAttachmentDraftScope', handoffStart)
   assert.ok(handoffStart >= 0 && handoffEnd > handoffStart, 'accepted ownership handoff must remain a bounded helper')
   const handoffBody = source.slice(handoffStart, handoffEnd)
-  assert.match(handoffBody, /const committedIDs = new Set\(receiptIDs\.map\(\(id\) => id\.trim\(\)\)\.filter\(Boolean\)\)/)
-  assert.match(handoffBody, /chip\.status === 'ready' && chip\.receipt && committedIDs\.has\(chip\.receipt\.id\)/)
-  assert.match(handoffBody, /chip\.committed = true/)
+  assert.match(handoffBody, /commitScopedAssistantAttachmentChips\(\s*attachmentChips\.value,\s*ownerScopeKey,\s*ownerProjectName,\s*receiptIDs/)
+  assert.doesNotMatch(handoffBody, /props\.draftScopeKey|props\.projectName/)
 
   const cleanupStart = source.indexOf('function cleanupAttachmentChips(')
   const cleanupEnd = source.indexOf('\n}\n\nfunction isAttachmentAbortError', cleanupStart)
@@ -207,35 +215,30 @@ test('composer commits accepted receipts before clearing parts and cleans only a
   const reconcileEnd = source.indexOf('\n}\n\nconst selectedSkillIDs', reconcileStart)
   assert.ok(reconcileStart >= 0 && reconcileEnd > reconcileStart, 'receipt reconciliation must remain a bounded helper')
   const reconcileBody = source.slice(reconcileStart, reconcileEnd)
-  assert.match(reconcileBody, /chip\.status === 'ready'/)
+  assert.match(reconcileBody, /chip\.draftScopeKey === scopeKey && chip\.status === 'ready'/)
   assert.match(reconcileBody, /!chip\.committed/)
   assert.match(reconcileBody, /!receiptIDs\.has\(chip\.receipt\.id\)/)
   assert.match(reconcileBody, /bestEffortDeleteAttachment\(chip, chip\.projectName \|\| props\.projectName\)/)
+  assert.match(reconcileBody, /reconcileAssistantAttachmentChips\(attachmentChips\.value, scopeKey, receiptIDs\)/)
 
-  // Model the two ownership outcomes at the acceptance boundary: the host
-  // commits the accepted receipt before clearing parts, while an abandoned
-  // receipt remains eligible for the next teardown cleanup.
-  const accepted = { status: 'ready', receipt: { id: 'accepted' }, committed: false }
-  const abandoned = { status: 'ready', receipt: { id: 'abandoned' }, committed: false }
-  const committedIDs = new Set(['accepted'])
-  for (const chip of [accepted, abandoned]) {
-    if (chip.receipt && committedIDs.has(chip.receipt.id)) chip.committed = true
-  }
-  assert.equal(accepted.committed, true)
-  assert.equal(abandoned.committed, false)
-  assert.deepEqual([accepted, abandoned].filter((chip) => !chip.committed).map((chip) => chip.receipt.id), ['abandoned'])
   assert.match(source, /defineExpose\(\{[\s\S]*commitAttachments/)
 
-  const projectWatcherStart = source.indexOf('watch(() => props.projectName')
-  const projectWatcherEnd = source.indexOf('\n})\nwatch(() => \[props.disabled', projectWatcherStart)
-  assert.ok(projectWatcherStart >= 0 && projectWatcherEnd > projectWatcherStart, 'project watcher must remain a bounded helper')
+  const projectWatcherStart = source.indexOf('watch(() => [props.projectName, props.draftScopeKey] as const')
+  const projectWatcherEnd = source.indexOf("\n}, { flush: 'sync' })\nwatch(() => [props.disabled", projectWatcherStart)
+  assert.ok(projectWatcherStart >= 0 && projectWatcherEnd > projectWatcherStart, 'owner-scope watcher must remain a bounded helper')
   const projectWatcher = source.slice(projectWatcherStart, projectWatcherEnd)
-  assert.match(projectWatcher, /cleanupAttachmentChips\(attachmentChips\.value, previous\)/)
+  assert.match(projectWatcher, /pendingFromPreviousScope/)
+  assert.match(projectWatcher, /cleanupAttachmentChips\(pendingFromPreviousScope, previousProject\)/)
+  assert.match(projectWatcher, /shouldCleanupAssistantAttachmentOnScopeSwitch\(chip\.status, chip\.retryAction, Boolean\(previousScope\)\)/)
+  assert.match(source, /watch\(\(\) => \[props\.modelValue,[\s\S]*props\.draftScopeKey\], syncFromProps\)/)
 
   const unmountStart = source.indexOf('onBeforeUnmount(() => {')
   const unmountEnd = source.indexOf('\n})\n\ndefineExpose', unmountStart)
   assert.ok(unmountStart >= 0 && unmountEnd > unmountStart, 'unmount cleanup must remain explicit')
-  assert.match(source.slice(unmountStart, unmountEnd), /cleanupAttachmentChips\(attachmentChips\.value, props\.projectName\)/)
+  const unmountBody = source.slice(unmountStart, unmountEnd)
+  assert.match(unmountBody, /const transientChips = attachmentChips\.value\.filter\(\(chip\) =>\s*!?shouldCleanupAssistantAttachmentOnScopeSwitch\(chip\.status, chip\.retryAction, Boolean\(chip\.draftScopeKey\)\)/)
+  assert.match(unmountBody, /cleanupAttachmentChips\(transientChips, props\.projectName\)/)
+  assert.doesNotMatch(unmountBody, /cleanupAttachmentChips\(attachmentChips\.value/)
   assert.match(source, /A 409 is expected when the receipt was bound/)
 })
 
@@ -246,8 +249,124 @@ test('regular receipt recovery reuploads retained Files and clears receipt-only 
   assert.match(source, /localParts\.value = localParts\.value\.filter\([\s\S]*previousReceiptID/)
   assert.match(source, /if \(!replacementFile\) \{[\s\S]*attachmentChips\.value = attachmentChips\.value\.filter\([\s\S]*emitState\(\)/)
   assert.match(source, /await uploadAttachment\(replacementFile, chip\.clientID, true\)/)
+  assert.match(source, /for \(const chip of \[\.\.\.visibleAttachmentChips\.value\]\)/)
   assert.match(source, /defineExpose\(\{[\s\S]*recoverUnavailableAttachments/)
   assert.match(source, /chip\.clientID/)
+})
+
+test('delayed accepted POST commits its captured chip before returning to that draft, without DELETE', async () => {
+  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('AssistantRichComposer.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = new Set(['commitAttachments', 'reconcileAttachmentChips'])
+  const declarations = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
+  assert.equal(declarations.length, names.size)
+  const { outputText } = ts.transpileModule(declarations.map(node => node.getText(ast)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  })
+  const { commitScopedAssistantAttachmentChips, reconcileAssistantAttachmentChips } = await vite.ssrLoadModule('/src/assistantAttachmentDeletion.ts')
+  const ownerScopeKey = 'scope-thread-a'
+  const activeScopeKey = 'scope-thread-b'
+  const props = { projectName: 'project-a', draftScopeKey: activeScopeKey }
+  const owner = { clientID: 'owner-chip', projectName: 'project-a', draftScopeKey: ownerScopeKey, status: 'ready', receipt: { id: 'accepted-receipt' } }
+  const sibling = { clientID: 'sibling-chip', projectName: 'project-a', draftScopeKey: activeScopeKey, status: 'ready', receipt: { id: 'sibling-receipt' } }
+  const attachmentChips = ref([owner, sibling])
+  const deleteCalls = []
+  const helpers = new Function(
+    'commitScopedAssistantAttachmentChips', 'reconcileAssistantAttachmentChips',
+    'attachmentChips', 'props', 'bestEffortDeleteAttachment', 'emitAttachmentPending',
+    `${outputText}\nreturn { commitAttachments, reconcileAttachmentChips }`,
+  )(commitScopedAssistantAttachmentChips, reconcileAssistantAttachmentChips, attachmentChips, props,
+    (chip, projectName) => deleteCalls.push({ chip, projectName }), () => {})
+
+  // The POST was sent for thread A, but its accepted response arrives after navigation to B.
+  helpers.commitAttachments(['accepted-receipt'], ownerScopeKey, 'project-a')
+  assert.equal(attachmentChips.value[0].committed, true)
+  assert.equal(attachmentChips.value[1].committed, undefined)
+
+  // Returning to A after App clears the submitted parts must retire the chip without deleting its bound receipt.
+  props.draftScopeKey = ownerScopeKey
+  helpers.reconcileAttachmentChips([])
+  assert.deepEqual(deleteCalls, [])
+  assert.deepEqual(attachmentChips.value.map(chip => chip.clientID), ['sibling-chip'])
+})
+
+test('hydrated receipt-only recovery removes just the unavailable attachment', async () => {
+  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('AssistantRichComposer.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'recoverUnavailableAttachments')
+  assert.ok(declaration, 'the exposed recovery operation must remain an explicit function')
+  const { outputText } = ts.transpileModule(declaration.getText(ast), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  })
+  const props = { projectName: 'project-a', draftScopeKey: 'scope-thread-a' }
+  const expired = { clientID: 'expired-chip', projectName: 'project-a', draftScopeKey: props.draftScopeKey, status: 'ready', receipt: { id: 'expired-receipt' } }
+  const healthy = { clientID: 'healthy-chip', projectName: 'project-a', draftScopeKey: props.draftScopeKey, status: 'ready', receipt: { id: 'healthy-receipt' } }
+  const sibling = { clientID: 'sibling-chip', projectName: 'project-a', draftScopeKey: 'scope-thread-b', status: 'ready', receipt: { id: 'sibling-receipt' } }
+  const attachmentChips = ref([expired, healthy, sibling])
+  const visibleAttachmentChips = computed(() => attachmentChips.value.filter(chip => chip.draftScopeKey === props.draftScopeKey))
+  const textPart = { type: 'text', text: 'Keep this draft text' }
+  const expiredPart = { type: 'attachment', attachment: { id: 'expired-receipt' } }
+  const healthyPart = { type: 'attachment', attachment: { id: 'healthy-receipt' } }
+  const localParts = ref([textPart, expiredPart, healthyPart])
+  const emitted = []
+  const emitState = () => emitted.push(localParts.value.slice())
+  let uploadCalls = 0
+  const uploadAttachment = async () => { uploadCalls++ }
+  const recoverUnavailableAttachments = new Function(
+    'props', 'visibleAttachmentChips', 'localParts', 'attachmentChips', 'emitState', 'uploadAttachment',
+    `${outputText}\nreturn recoverUnavailableAttachments`,
+  )(props, visibleAttachmentChips, localParts, attachmentChips, emitState, uploadAttachment)
+
+  const result = await recoverUnavailableAttachments(['expired-receipt'])
+
+  assert.deepEqual(result, { recovered: 0, removed: 1, unresolved: 0 })
+  assert.deepEqual(localParts.value, [textPart, healthyPart], 'authored text and the other valid receipt stay in the draft')
+  assert.deepEqual(attachmentChips.value.map(chip => chip.clientID), ['healthy-chip', 'sibling-chip'])
+  assert.equal(uploadCalls, 0, 'receipt-only recovery cannot fabricate a File upload')
+  assert.equal(emitted.length, 1)
+  assert.deepEqual(emitted[0], [textPart, healthyPart])
+})
+
+test('rich composer isolates attachment counts, upload results, and accepted ownership by draft scope', async () => {
+  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const uploadStart = source.indexOf('async function uploadAttachment(')
+  const uploadEnd = source.indexOf('\n}\n\ninterface UnavailableAttachmentRecovery', uploadStart)
+  const handoffStart = source.indexOf('function commitAttachments(')
+  const handoffEnd = source.indexOf('\n}\n\nfunction handleAttachmentInput', handoffStart)
+  assert.ok(uploadStart >= 0 && uploadEnd > uploadStart)
+  assert.ok(handoffStart >= 0 && handoffEnd > handoffStart)
+
+  const upload = source.slice(uploadStart, uploadEnd)
+  const handoff = source.slice(handoffStart, handoffEnd)
+  assert.match(upload, /visibleAttachmentChips\.value\.filter/)
+  assert.match(upload, /props\.draftScopeKey !== draftScopeKey/)
+  assert.match(upload, /api\.uploadAssistantAttachment\(context, projectName, file/)
+  assert.match(handoff, /commitScopedAssistantAttachmentChips\([\s\S]*ownerScopeKey[\s\S]*ownerProjectName[\s\S]*receiptIDs/)
+  assert.doesNotMatch(handoff, /props\.draftScopeKey|props\.projectName/)
+  assert.match(source, /v-for="chip in visibleAttachmentChips"/)
+  assert.match(source, /const attachmentChipsPending = computed\(\(\) => visibleAttachmentChips\.value\.some/)
+  assert.match(source, /function adoptAttachmentDraftScope\([\s\S]*bindAssistantAttachmentChipsToDraftScope/)
+  assert.match(source, /adoptAttachmentDraftScope,\s*\}\)/)
+})
+
+test('late upload and delete completions cannot mutate an unmounted composer', async () => {
+  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const uploadStart = source.indexOf('async function uploadAttachment(')
+  const uploadEnd = source.indexOf('\n}\n\ninterface UnavailableAttachmentRecovery', uploadStart)
+  const removeStart = source.indexOf('async function removeAttachment(')
+  const removeEnd = source.indexOf('\n}\n\nfunction detectSlash', removeStart)
+  const unmountStart = source.indexOf('onBeforeUnmount(() => {')
+  const unmountEnd = source.indexOf('\n})\n\ndefineExpose', unmountStart)
+  assert.ok(uploadStart >= 0 && uploadEnd > uploadStart)
+  assert.ok(removeStart >= 0 && removeEnd > removeStart)
+  assert.ok(unmountStart >= 0 && unmountEnd > unmountStart)
+  assert.match(source.slice(uploadStart, uploadEnd), /if \(!composerMounted \|\| props\.projectName !== projectName \|\| props\.draftScopeKey !== draftScopeKey\)/)
+  assert.match(source.slice(uploadStart, uploadEnd), /if \(!composerMounted\) return/)
+  assert.match(source.slice(removeStart, removeEnd), /isOwnerScopeCurrent: \(\) => composerMounted &&/)
+  assert.match(source.slice(removeStart, removeEnd), /shouldUpdateComposer: \(\) => composerMounted/)
+  assert.match(source.slice(unmountStart, unmountEnd), /composerMounted = false/)
 })
 
 test('Add menu keyboard navigation wraps, skips disabled entries, and restores trigger focus on Escape', async () => {

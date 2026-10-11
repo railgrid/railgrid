@@ -211,11 +211,12 @@ test('annotation commit synchronizes durable pins immediately', async () => {
   assert.match(appSource, /aria-label="Delete annotation"/)
 })
 
-test('hydrates annotation drafts per active thread and clears only after accepted sends', async () => {
+test('hydrates composer drafts per active thread and clears only after accepted sends', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(appSource, /watch\(activeAssistantAnnotationDraftScopeKey,[\s\S]*hydrateCurrentAssistantAnnotationDraft\(\)[\s\S]*\{ flush: 'post' \}/)
-  assert.match(appSource, /startPostAccepted = true\s+submissionOwner\.postAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantAnnotationDraft\(projectName, requestedThreadID, sendContext\)\s+commitAttachments\(turnContentParts\)[\s\S]*?clearSelectedTurnAttachments\(\)/)
-  assert.match(appSource, /assistantComposerParts\.value = turnContentParts[\s\S]*persistCurrentAssistantAnnotationDraft\(turnContentParts\)/)
+  assert.match(appSource, /const activeAssistantComposerDraftScopeKey = computed\(\(\) => assistantComposerDraftStorageKey\(assistantComposerDraftScope\(\)\)\)/)
+  assert.match(appSource, /watch\(activeAssistantComposerDraftScopeKey,[\s\S]*hydrateCurrentAssistantComposerDraft\(\)[\s\S]*\{ flush: 'sync' \}/)
+  assert.match(appSource, /startPostAccepted = true\s+submissionOwner\.postAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantComposerDraft\(projectName, requestedThreadID, sendContext, projectUID\)\s+commitAttachments\(turnContentParts, assistantComposerDraftScope\(projectName, submissionOwner\.threadID, sendContext, projectUID\)\)[\s\S]*?clearSelectedTurnAttachments\(\)/)
+  assert.match(appSource, /function updateAssistantComposerParts\(parts: ProjectAssistantContentPart\[\]\) \{\s+assistantComposerParts\.value = parts\.slice\(0, MAX_ASSISTANT_COMPOSER_PARTS\)\s+persistCurrentAssistantComposerDraft\(\)/)
 })
 
 test('hot reload replaces only the local bridge without waiting for remote deletion', async () => {
