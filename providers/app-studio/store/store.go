@@ -212,6 +212,10 @@ type Store interface {
 	// transcript. This prevents metadata-only tails from consuming the complete
 	// history materialization budget.
 	ListAssistantThreadTurnEventsBefore(ctx context.Context, scope Scope, threadID string, beforeSequence int64, limit int) ([]AssistantThreadEvent, error)
+	// ListAssistantThreadTurnEventsAfter returns a bounded chronological page
+	// for one exact turn and event type. It supports late projection repair
+	// without scanning newer turns or unrelated thread history.
+	ListAssistantThreadTurnEventsAfter(ctx context.Context, scope Scope, threadID, turnID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error)
 	// GetAssistantThreadTurnStartSequence returns the canonical turn.started
 	// sequence without loading the turn's potentially large event stream.
 	GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error)

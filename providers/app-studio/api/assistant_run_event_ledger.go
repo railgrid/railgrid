@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 
@@ -77,6 +78,7 @@ type projectAssistantRunToolCallState struct {
 	Dispatched        bool
 	Attempts          int
 	Outcome           *projectAssistantRunToolCallOutcome
+	OutcomeAt         time.Time
 }
 
 // projectAssistantRunToolCallToken binds a post-dispatch result to the exact
@@ -109,6 +111,9 @@ type projectAssistantRunToolCallOutcome struct {
 	Canceled     bool
 	Disposition  projectAssistantToolDisposition
 	PlanSnapshot *projectAssistantPlanSnapshot
+	// ObservedAt is reconstructed from the durable event row and is omitted
+	// from the event payload itself.
+	ObservedAt time.Time `json:"-"`
 }
 
 type projectAssistantToolDisposition string
@@ -143,6 +148,25 @@ type projectAssistantRunToolResultPayload struct {
 	Canceled     bool                            `json:"canceled,omitempty"`
 	Disposition  projectAssistantToolDisposition `json:"disposition,omitempty"`
 	PlanSnapshot *projectAssistantPlanSnapshot   `json:"planSnapshot,omitempty"`
+}
+
+// projectAssistantRunToolResultEventPayload preserves the stable meaning of
+// Failed as a Go invocation error. Structured tool failures remain durable in
+// Disposition, which newer readers use for status and telemetry. Replay keeps
+// the original result/error boundary, including empty errors.
+func projectAssistantRunToolResultEventPayload(outcome projectAssistantRunToolCallOutcome) projectAssistantRunToolResultPayload {
+	return projectAssistantRunToolResultPayload{
+		Result: outcome.Result, Error: outcome.Error,
+		Failed: outcome.Failed, Canceled: outcome.Canceled,
+		Disposition: outcome.Disposition, PlanSnapshot: outcome.PlanSnapshot,
+	}
+}
+
+func (payload projectAssistantRunToolResultPayload) outcome() projectAssistantRunToolCallOutcome {
+	return projectAssistantRunToolCallOutcome{
+		Result: payload.Result, Error: payload.Error, Failed: payload.Failed,
+		Canceled: payload.Canceled, Disposition: payload.Disposition, PlanSnapshot: payload.PlanSnapshot,
+	}
 }
 
 // projectAssistantRunToolCancellation identifies errors produced by a
@@ -186,8 +210,8 @@ func projectAssistantRunToolCanceledResultJSON(toolName string, args json.RawMes
 			component = truncateProjectToolInfo(strings.TrimSpace(input.Component))
 		}
 		encoded, err := json.Marshal(projectAssistantExecCommandResult{
-			Status:    "canceled",
-			Summary:   "Command execution was canceled before a terminal result was recorded.",
+			Status:    "outcome_unknown",
+			Summary:   "Command cancellation was requested before a terminal result was recorded, so the process outcome is unknown.",
 			Component: component,
 		})
 		if err == nil {
@@ -582,6 +606,7 @@ func (l *projectAssistantRunEventLedger) finishToolCall(
 		}
 		if state.Outcome != nil {
 			persisted := *state.Outcome
+			persisted.ObservedAt = state.OutcomeAt
 			if err := l.appendToolResultConversationLocked(persistCtx, token.CallID, token.ToolName, persisted); err != nil {
 				return projectAssistantRunToolCallOutcome{}, err
 			}
@@ -628,7 +653,7 @@ func (l *projectAssistantRunEventLedger) finishToolCall(
 			copy := cloneProjectAssistantPlanSnapshot(*persistPlan)
 			outcome.PlanSnapshot = &copy
 		}
-		payload, err := json.Marshal(projectAssistantRunToolResultPayload(outcome))
+		payload, err := json.Marshal(projectAssistantRunToolResultEventPayload(outcome))
 		if err != nil {
 			return projectAssistantRunToolCallOutcome{}, fmt.Errorf("encode assistant run tool result event: %w", err)
 		}
@@ -650,6 +675,7 @@ func (l *projectAssistantRunEventLedger) finishToolCall(
 		if err := l.applyEventLocked(saved); err != nil {
 			return projectAssistantRunToolCallOutcome{}, err
 		}
+		outcome.ObservedAt = saved.CreatedAt
 		if err := l.appendToolResultConversationLocked(persistCtx, token.CallID, token.ToolName, outcome); err != nil {
 			return projectAssistantRunToolCallOutcome{}, err
 		}
@@ -849,7 +875,7 @@ func (l *projectAssistantRunEventLedger) applyEventLocked(event store.AssistantR
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("%w: invalid tool result payload at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
 		}
-		outcome := projectAssistantRunToolCallOutcome(payload)
+		outcome := payload.outcome()
 		if outcome.Canceled {
 			if outcome.PlanSnapshot != nil {
 				return fmt.Errorf("%w: canceled tool result at sequence %d contains a plan snapshot", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
@@ -878,8 +904,21 @@ func (l *projectAssistantRunEventLedger) applyEventLocked(event store.AssistantR
 				return fmt.Errorf("%w: invalid plan snapshot tool result at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
 			}
 		}
-		if state.Outcome != nil && !reflect.DeepEqual(*state.Outcome, outcome) {
-			return fmt.Errorf("%w: call %q has conflicting durable results", errProjectAssistantRunToolLedgerCorrupt, callID)
+		if state.Outcome != nil {
+			existing := *state.Outcome
+			existing.ObservedAt = time.Time{}
+			comparison := outcome
+			comparison.ObservedAt = time.Time{}
+			if !reflect.DeepEqual(existing, comparison) {
+				return fmt.Errorf("%w: call %q has conflicting durable results", errProjectAssistantRunToolLedgerCorrupt, callID)
+			}
+			// Legacy duplicate result rows can carry a later row timestamp even
+			// when their payload is identical. Keep the first accepted result's
+			// timestamp as the authoritative observation time.
+			outcome.ObservedAt = state.OutcomeAt
+		} else {
+			outcome.ObservedAt = event.CreatedAt
+			state.OutcomeAt = event.CreatedAt
 		}
 		state.Outcome = &outcome
 		copy := cloneProjectAssistantPlanSnapshotIfPresent(outcome.PlanSnapshot)
@@ -926,6 +965,28 @@ func (l *projectAssistantRunEventLedger) SettledToolCall(
 	callID string,
 	toolName string,
 ) (map[string]any, projectAssistantRunToolCallOutcome, bool, error) {
+	return l.settledToolCall(ctx, callID, toolName, false)
+}
+
+// DispatchedSettledToolCall is the strict receipt lookup used for terminal
+// execution reconciliation. It accepts a validated legacy tool_call event
+// without a preceding request event. A present request and its admitted call
+// may have different arguments after normalization; each digest is validated
+// against its own durable payload, and the admitted arguments are returned.
+func (l *projectAssistantRunEventLedger) DispatchedSettledToolCall(
+	ctx context.Context,
+	callID string,
+	toolName string,
+) (map[string]any, projectAssistantRunToolCallOutcome, bool, error) {
+	return l.settledToolCall(ctx, callID, toolName, true)
+}
+
+func (l *projectAssistantRunEventLedger) settledToolCall(
+	ctx context.Context,
+	callID string,
+	toolName string,
+	requireDispatch bool,
+) (map[string]any, projectAssistantRunToolCallOutcome, bool, error) {
 	if l == nil {
 		return nil, projectAssistantRunToolCallOutcome{}, false, nil
 	}
@@ -948,25 +1009,53 @@ func (l *projectAssistantRunEventLedger) SettledToolCall(
 			state.ToolName,
 		)
 	}
+	if requireDispatch && !state.Dispatched {
+		return nil, projectAssistantRunToolCallOutcome{}, false, nil
+	}
+	if requireDispatch && state.Requested && state.RequestArgsDigest == "" {
+		return nil, projectAssistantRunToolCallOutcome{}, false, fmt.Errorf(
+			"%w: call %q request has no validated input digest",
+			errProjectAssistantRunToolLedgerCorrupt,
+			callID,
+		)
+	}
 	args := map[string]any{}
 	if err := json.Unmarshal(state.Arguments, &args); err != nil {
 		return nil, projectAssistantRunToolCallOutcome{}, false, fmt.Errorf("%w: call %q arguments are invalid", errProjectAssistantRunToolLedgerCorrupt, callID)
 	}
-	return args, *state.Outcome, true, nil
+	outcome := *state.Outcome
+	outcome.ObservedAt = state.OutcomeAt
+	return args, outcome, true, nil
 }
 
 func (l *projectAssistantRunEventLedger) ToolCallOutcome(ctx context.Context, callID string) (projectAssistantRunToolCallOutcome, bool, error) {
 	if l == nil {
 		return projectAssistantRunToolCallOutcome{}, false, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	callID = strings.TrimSpace(callID)
-	l.mu.Lock()
+	wait := time.NewTicker(5 * time.Millisecond)
+	defer wait.Stop()
+	for !l.mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return projectAssistantRunToolCallOutcome{}, false, ctx.Err()
+		case <-wait.C:
+		}
+	}
 	defer l.mu.Unlock()
 	// FinishToolCall applies the durable result to this ledger before returning.
-	// Consume that settled outcome without consulting a caller context that may
-	// already be cancelled immediately after the external side effect succeeds.
+	// Consume that settled outcome even when the caller was canceled while
+	// waiting for the lock: a known terminal receipt remains authoritative.
 	if state := l.calls[callID]; state != nil && state.Outcome != nil {
-		return *state.Outcome, true, nil
+		outcome := *state.Outcome
+		outcome.ObservedAt = state.OutcomeAt
+		return outcome, true, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return projectAssistantRunToolCallOutcome{}, false, err
 	}
 	if err := l.refreshLocked(ctx); err != nil {
 		return projectAssistantRunToolCallOutcome{}, false, err
@@ -975,7 +1064,9 @@ func (l *projectAssistantRunEventLedger) ToolCallOutcome(ctx context.Context, ca
 	if state == nil || state.Outcome == nil {
 		return projectAssistantRunToolCallOutcome{}, false, nil
 	}
-	return *state.Outcome, true, nil
+	outcome := *state.Outcome
+	outcome.ObservedAt = state.OutcomeAt
+	return outcome, true, nil
 }
 
 // RecoverDanglingToolCall resolves the missing tool-result message that Eino's

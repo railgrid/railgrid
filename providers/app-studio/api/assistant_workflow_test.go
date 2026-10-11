@@ -163,7 +163,7 @@ func TestProjectAssistantDurableExecGraphToolProjectsPublicActionFeed(t *testing
 		{
 			name:           "timed out",
 			result:         `{"status":"timed_out","summary":"Command timed out","exitCode":124,"durationMs":2000}`,
-			wantStatus:     "failed",
+			wantStatus:     "timed_out",
 			wantExecStatus: "timed_out",
 			wantAction:     "failed",
 			wantExit:       124,

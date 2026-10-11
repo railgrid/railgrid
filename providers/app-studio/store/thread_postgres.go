@@ -804,6 +804,49 @@ func (s *PostgresStore) ListAssistantThreadTurnEventsBefore(ctx context.Context,
 	return events, nil
 }
 
+func (s *PostgresStore) ListAssistantThreadTurnEventsAfter(ctx context.Context, scope Scope, threadID, turnID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	eventType = strings.TrimSpace(eventType)
+	if turnID == "" || eventType == "" {
+		return nil, errors.New("assistant turn id and event type are required")
+	}
+	limit = normalizeLimit(limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT sequence,payload,created_at,item_id,request_id
+		FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+			AND thread_id=$5 AND turn_id=$6 AND event_type=$7 AND sequence>$8
+		ORDER BY sequence ASC LIMIT $9`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		threadID, turnID, eventType, afterSequence, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list assistant thread turn events after sequence: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	events := make([]AssistantThreadEvent, 0, limit)
+	for rows.Next() {
+		event := AssistantThreadEvent{ThreadID: threadID, TurnID: turnID, Type: eventType}
+		if err := rows.Scan(&event.Sequence, &event.Payload, &event.CreatedAt, &event.ItemID, &event.RequestID); err != nil {
+			return nil, fmt.Errorf("scan assistant thread turn event after sequence: %w", err)
+		}
+		event.CreatedAt = event.CreatedAt.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate assistant thread turn events after sequence: %w", err)
+	}
+	if len(events) == 0 {
+		if _, err := s.GetAssistantThread(ctx, scope, threadID); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
 func (s *PostgresStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error) {
 	if err := scope.validate(); err != nil {
 		return 0, err

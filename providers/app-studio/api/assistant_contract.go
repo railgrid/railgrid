@@ -156,6 +156,7 @@ type projectAssistantCompletionEvidence struct {
 	PlanDefined               bool     `json:"planDefined"`
 	PlanComplete              bool     `json:"planComplete"`
 	SourceMutationRevision    uint64   `json:"sourceMutationRevision,omitempty"`
+	CheckedMutationRevision   uint64   `json:"checkedMutationRevision,omitempty"`
 	VerifiedMutationRevision  uint64   `json:"verifiedMutationRevision,omitempty"`
 	LatestMutationVerified    bool     `json:"latestMutationVerified"`
 	CommitRequired            bool     `json:"commitRequired,omitempty"`
@@ -167,15 +168,32 @@ type projectAssistantCompletionEvidence struct {
 	// Preview evidence is server-owned and additive to the operational
 	// verification fields above. It is deliberately a bounded summary rather
 	// than a browser snapshot or model-authored claim.
-	PreviewEvidenceRevision      uint64 `json:"previewEvidenceRevision,omitempty"`
-	PreviewEvidenceScope         string `json:"previewEvidenceScope,omitempty"`
-	PreviewEvidenceOutcome       string `json:"previewEvidenceOutcome,omitempty"`
-	PreviewRenderedStateObserved bool   `json:"previewRenderedStateObserved,omitempty"`
-	PreviewInteractionVerified   bool   `json:"previewInteractionVerified,omitempty"`
-	PreviewAssertionsObserved    bool   `json:"previewAssertionsObserved,omitempty"`
-	PreviewAssertionsPassed      bool   `json:"previewAssertionsPassed,omitempty"`
-	PreviewAssertionCount        int    `json:"previewAssertionCount,omitempty"`
-	PreviewFailedAssertionCount  int    `json:"previewFailedAssertionCount,omitempty"`
+	PreviewEvidenceRevision      uint64                           `json:"previewEvidenceRevision,omitempty"`
+	PreviewEvidenceScope         string                           `json:"previewEvidenceScope,omitempty"`
+	PreviewEvidenceOutcome       string                           `json:"previewEvidenceOutcome,omitempty"`
+	PreviewRenderedStateObserved bool                             `json:"previewRenderedStateObserved,omitempty"`
+	PreviewInteractionVerified   bool                             `json:"previewInteractionVerified,omitempty"`
+	PreviewAssertionsObserved    bool                             `json:"previewAssertionsObserved,omitempty"`
+	PreviewAssertionsPassed      bool                             `json:"previewAssertionsPassed,omitempty"`
+	PreviewAssertionCount        int                              `json:"previewAssertionCount,omitempty"`
+	PreviewFailedAssertionCount  int                              `json:"previewFailedAssertionCount,omitempty"`
+	CommandReceipts              []projectAssistantCommandReceipt `json:"commandReceipts,omitempty"`
+}
+
+const projectAssistantCommandReceiptMaxCount = 8
+
+// projectAssistantCommandReceipt is a bounded server-owned command outcome.
+// It omits argv and output while retaining the dispatch source revision and
+// the observed source relationship for truthful reporting.
+type projectAssistantCommandReceipt struct {
+	ReferenceID             string `json:"referenceID"`
+	Component               string `json:"component,omitempty"`
+	Status                  string `json:"status"`
+	WorkspaceSourceRevision uint64 `json:"workspaceSourceRevision,omitempty"`
+	MutationRevision        uint64 `json:"mutationRevision,omitempty"`
+	SourceRelation          string `json:"sourceRelation"`
+	SyncStatus              string `json:"syncStatus,omitempty"`
+	ExitCode                *int   `json:"exitCode,omitempty"`
 }
 
 // projectAssistantPreviewEvidence is a bounded, server-owned record of the
@@ -224,16 +242,17 @@ const (
 )
 
 type projectAssistantToolCall struct {
-	ID         string                        `json:"id"`
-	Name       string                        `json:"name"`
-	Status     string                        `json:"status,omitempty"`
-	Arguments  string                        `json:"arguments,omitempty"`
-	Summary    string                        `json:"summary,omitempty"`
-	Error      string                        `json:"error,omitempty"`
-	Input      json.RawMessage               `json:"input,omitempty"`
-	Result     json.RawMessage               `json:"result,omitempty"`
-	Exec       *projectAssistantExecMetadata `json:"exec,omitempty"`
-	RecoveryOf string                        `json:"recoveryOf,omitempty"`
+	ID                string                            `json:"id"`
+	Name              string                            `json:"name"`
+	Status            string                            `json:"status,omitempty"`
+	Arguments         string                            `json:"arguments,omitempty"`
+	Summary           string                            `json:"summary,omitempty"`
+	Error             string                            `json:"error,omitempty"`
+	Input             json.RawMessage                   `json:"input,omitempty"`
+	Result            json.RawMessage                   `json:"result,omitempty"`
+	Exec              *projectAssistantExecMetadata     `json:"exec,omitempty"`
+	RecoveryOf        string                            `json:"recoveryOf,omitempty"`
+	FailureDiagnostic *projectAssistantActionDiagnostic `json:"failureDiagnostic,omitempty"`
 }
 
 type projectAssistantPermission struct {

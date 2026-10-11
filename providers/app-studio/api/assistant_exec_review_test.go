@@ -171,10 +171,10 @@ func TestProjectAssistantExecTypedRetryRejectionAfterAmbiguousStartRemainsUncert
 	if err != nil || result == nil {
 		t.Fatalf("ambiguous start followed by typed rejection = %#v, err=%v", result, err)
 	}
-	if result.Status != "error" || len(result.Blockers) != 0 || result.SessionID != "" || result.ExitCode != nil || len(result.Stdout) != 0 || len(result.Stderr) != 0 {
+	if result.Status != "outcome_unknown" || len(result.Blockers) != 0 || result.SessionID != "" || result.ExitCode != nil || len(result.Stdout) != 0 || len(result.Stderr) != 0 {
 		t.Fatalf("ambiguous START was treated as definitive rejection or execution receipt: %#v", result)
 	}
-	if !strings.Contains(result.Summary, "could not be confirmed") || strings.Contains(result.Summary, "The command did not start") || result.SourceStale {
+	if !strings.Contains(result.Summary, "may have been accepted") || strings.Contains(result.Summary, "The command did not start") || result.SourceStale {
 		t.Fatalf("ambiguous START summary/evidence = %#v; want uncertain start with no false pre-start or stale claim", result)
 	}
 	if startAttempts != 2 || len(actions) != 3 || actions[0].Action != "start" || actions[1].Action != "start" || actions[2].Action != "cancel" {
@@ -223,7 +223,7 @@ func TestProjectAssistantExecStartWithoutSessionDoesNotClaimOutputWasRunOrStale(
 	if err != nil || result == nil {
 		t.Fatalf("start without session = %#v, err=%v", result, err)
 	}
-	if result.Status != "error" || result.SessionID != "" || result.ExitCode != nil || len(result.Stdout) != 0 || len(result.Stderr) != 0 {
+	if result.Status != "outcome_unknown" || result.SessionID != "" || result.ExitCode != nil || len(result.Stdout) != 0 || len(result.Stderr) != 0 {
 		t.Fatalf("uncertain start outcome = %#v; want an error without session or fabricated execution receipt", result)
 	}
 	if result.SourceStale || result.SyncStatus != "succeeded" || result.SourceRevision != initialRevision {

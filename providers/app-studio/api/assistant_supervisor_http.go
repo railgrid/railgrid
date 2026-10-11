@@ -29,6 +29,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/google/uuid"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -859,8 +860,22 @@ func (s *Server) persistProjectAssistantDurableMetadata(ctx context.Context, acc
 	return s.persistProjectAssistantDurableMetadataWith(ctx, accumulator.UpdateSnapshot, workspaceScope, state, runStatus)
 }
 
-func (s *Server) persistProjectAssistantStoppingToolMetadata(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator, workspaceScope workspace.Scope, state *projectAssistantDurableMetadataState) error {
-	return s.persistProjectAssistantDurableMetadataWith(ctx, accumulator.UpdateStoppingToolSnapshot, workspaceScope, state, nil)
+func (s *Server) persistProjectAssistantStoppingToolMetadata(
+	ctx context.Context,
+	accumulator *projectAssistantSnapshotAccumulator,
+	workspaceScope workspace.Scope,
+	state *projectAssistantDurableMetadataState,
+	event projectToolCallStreamEvent,
+) error {
+	update := func(ctx context.Context, mutate func(*store.AssistantRun, *store.Message)) error {
+		return accumulator.UpdateStoppingToolSnapshot(ctx, event, func(run *store.AssistantRun, message *store.Message) {
+			if updatedAudit, ok := projectAssistantAuditInterruptedExecUpdate(run.Audit, event); ok {
+				run.Audit = updatedAudit
+			}
+			mutate(run, message)
+		})
+	}
+	return s.persistProjectAssistantDurableMetadataWith(ctx, update, workspaceScope, state, nil)
 }
 
 func (s *Server) persistProjectAssistantDurableMetadataWith(ctx context.Context, update func(context.Context, func(*store.AssistantRun, *store.Message)) error, workspaceScope workspace.Scope, state *projectAssistantDurableMetadataState, runStatus *store.AssistantRunStatus) error {
@@ -1053,16 +1068,28 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			recordSnapshotErr(persistMetadata(ctx, nil))
 		},
 		OnToolCall: func(event projectToolCallStreamEvent) {
+			if event.ObservedAt.IsZero() && projectAssistantToolCallCanSettleStopping(event.Status) {
+				// The callback is the first reliable observation available to the
+				// live projection. Recovery can later replace this with the exact
+				// durable ledger timestamp.
+				event.ObservedAt = time.Now().UTC()
+			}
 			callbackMu.Lock()
-			defer callbackMu.Unlock()
 			if callbacksClosed {
+				callbackMu.Unlock()
+				if projectToolBaseName(event.Name) == projectToolExecCommand && projectAssistantToolCallCanSettleStopping(event.Status) {
+					if err := s.reconcileProjectAssistantExecReceipt(context.Background(), projectMessageScope(id.orgUUID, id.workspaceUUID, project), run.ID, event.ID); err != nil {
+						klog.ErrorS(err, "late assistant exec receipt reconciliation failed", "runID", run.ID)
+					}
+				}
 				return
 			}
+			defer callbackMu.Unlock()
 			syncSteeringSegment()
 			state.upsertToolCall(event)
 			recordSnapshotErr(persistProjectAssistantToolCallSnapshot(ctx, func(persistCtx context.Context) error {
 				if projectAssistantToolCallCanSettleStopping(event.Status) {
-					return s.persistProjectAssistantStoppingToolMetadata(persistCtx, accumulator, workspaceScope, state)
+					return s.persistProjectAssistantStoppingToolMetadata(persistCtx, accumulator, workspaceScope, state, event)
 				}
 				return s.persistProjectAssistantDurableMetadata(persistCtx, accumulator, workspaceScope, state, nil)
 			}))
@@ -1117,6 +1144,22 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 	callbacksClosed = true
 	contentText := content.String()
 	callbackMu.Unlock()
+	committedRun, hasCommittedRun := accumulator.CommittedRun()
+	stopping := hasCommittedRun && (committedRun.Status == store.AssistantRunStatusStopping || committedRun.Status == store.AssistantRunStatusInterrupted)
+	if stopping || errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), adk.ErrStreamCanceled) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, adk.ErrStreamCanceled) {
+		receiptErr := s.reconcileProjectAssistantExecReceiptsBeforeFinalization(
+			ctx,
+			projectMessageScope(id.orgUUID, id.workspaceUUID, project),
+			workspaceScope,
+			run.ID,
+			accumulator,
+			state,
+		)
+		if receiptErr != nil {
+			recordSnapshotErr(receiptErr)
+		}
+	}
 	state.initialBuild = state.initialBuild || result.InitialBuild
 	verification := projectAssistantVerificationFromCompletionEvidence(result.CompletionEvidence)
 	state.verification = &verification
@@ -1275,14 +1318,14 @@ func persistProjectAssistantToolCallSnapshot(ctx context.Context, persist func(c
 	if ctx == nil || ctx.Err() == nil {
 		return persist(ctx)
 	}
-	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	persistCtx, cancel := projectAssistantExecReceiptPersistenceContext(ctx)
 	defer cancel()
 	return persist(persistCtx)
 }
 
 func projectAssistantToolCallCanSettleStopping(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "succeeded", "failed", "canceled", "cancelled", "timed_out", "blocked", "rejected":
+	case "succeeded", "failed", "canceled", "cancelled", "timed_out", "blocked", "rejected", "stale", "not_executed", "skipped":
 		return true
 	default:
 		return false
@@ -1503,9 +1546,16 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 		// generic terminal state but before its canonical thread projection was
 		// repaired. Terminal runs therefore still need the idempotent projection
 		// pass on callers that do not already hold the per-turn lock.
+		persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+		defer cancel()
+		if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, reconcileCanonicalProjection); err != nil {
+			return err
+		}
 		if reconcileCanonicalProjection {
-			persistCtx, cancel := detachedProjectPersistenceContext(ctx)
-			defer cancel()
+			run, err = s.store.GetAssistantRun(persistCtx, scope, run.ID)
+			if err != nil {
+				return err
+			}
 			return s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run)
 		}
 		return nil
@@ -1551,7 +1601,14 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 		return nil
 	}
 	if assistantRunTerminal(run.Status) {
+		if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, reconcileCanonicalProjection); err != nil {
+			return err
+		}
 		if reconcileCanonicalProjection {
+			run, err = s.store.GetAssistantRun(persistCtx, scope, run.ID)
+			if err != nil {
+				return err
+			}
 			return s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run)
 		}
 		return nil
@@ -1584,6 +1641,13 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 	message.Metadata = projectAssistantDurableMetadataFromExisting(run, "Interrupted", false, message.Metadata)
 	projectAssistantClearPendingInterruptMetadata(&message, run.ID)
 	if err := s.store.SaveAssistantRunSnapshot(persistCtx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
+		return err
+	}
+	if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, reconcileCanonicalProjection); err != nil {
+		return err
+	}
+	run, err = s.store.GetAssistantRun(persistCtx, scope, run.ID)
+	if err != nil {
 		return err
 	}
 	if err := appendProjectAssistantInterruptedBoundary(persistCtx, s.store, scope, run); err != nil {

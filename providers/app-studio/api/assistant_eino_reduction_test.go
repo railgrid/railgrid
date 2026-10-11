@@ -265,6 +265,8 @@ func TestProjectEinoAssistantUnverifiableReceiptsAreNonSuccess(t *testing.T) {
 		{name: "outcome unknown", result: `{"status":"outcome_unknown","outcome":"unknown","replayed":false}`},
 		{name: "unverifiable", result: `{"status":"unverifiable","outcome":"unknown","replayed":false,"requiresSnapshot":true}`},
 		{name: "not executed", result: `{"status":"not_executed","outcome":"not_executed","replayed":false,"reason":"preview_context_changed"}`},
+		{name: "stale source", result: `{"status":"stale","sourceStale":true,"sourceRevision":9}`},
+		{name: "source stale flag", result: `{"status":"succeeded","sourceStale":true,"sourceRevision":9}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if projectEinoAssistantSuccessfulToolContent(tc.result) {

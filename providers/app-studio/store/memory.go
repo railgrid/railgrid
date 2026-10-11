@@ -38,6 +38,7 @@ type MemoryStore struct {
 	assistantTurns       map[Scope]map[string]map[string]AssistantTurn
 	threadEvents         map[Scope]map[string][]AssistantThreadEvent
 	threadTurnEvents     map[Scope]map[string][]AssistantThreadEvent
+	threadTurnEventIndex map[Scope]map[string]map[assistantThreadTurnEventLookupKey][]AssistantThreadEvent
 	threadTurnStarts     map[Scope]map[string]map[string]int64
 	messages             map[Scope]map[string]Message
 	assistantRuns        map[Scope]map[string]AssistantRun
@@ -65,6 +66,10 @@ type assistantRunEventLookupKey struct {
 	runID, eventType string
 }
 
+type assistantThreadTurnEventLookupKey struct {
+	turnID, eventType string
+}
+
 type projectBootstrapPermit struct {
 	actor, promptDigest, clientRequestID string
 }
@@ -77,6 +82,7 @@ func NewMemoryStore() *MemoryStore {
 		assistantTurns:        map[Scope]map[string]map[string]AssistantTurn{},
 		threadEvents:          map[Scope]map[string][]AssistantThreadEvent{},
 		threadTurnEvents:      map[Scope]map[string][]AssistantThreadEvent{},
+		threadTurnEventIndex:  map[Scope]map[string]map[assistantThreadTurnEventLookupKey][]AssistantThreadEvent{},
 		threadTurnStarts:      map[Scope]map[string]map[string]int64{},
 		messages:              map[Scope]map[string]Message{},
 		assistantRuns:         map[Scope]map[string]AssistantRun{},
@@ -758,6 +764,7 @@ func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) erro
 	delete(s.assistantTurns, scope)
 	delete(s.threadEvents, scope)
 	delete(s.threadTurnEvents, scope)
+	delete(s.threadTurnEventIndex, scope)
 	delete(s.threadTurnStarts, scope)
 	delete(s.bootstrapPermits, scope)
 	delete(s.approvalModes, scope)
@@ -1167,6 +1174,7 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 			delete(s.assistantTurns[scope], threadID)
 			delete(s.threadEvents[scope], threadID)
 			delete(s.threadTurnEvents[scope], threadID)
+			delete(s.threadTurnEventIndex[scope], threadID)
 			delete(s.threadTurnStarts[scope], threadID)
 		}
 		if len(threads) == 0 {
@@ -1180,6 +1188,9 @@ func (s *MemoryStore) DeleteMessagesOlderThan(_ context.Context, before time.Tim
 		}
 		if len(s.threadTurnEvents[scope]) == 0 {
 			delete(s.threadTurnEvents, scope)
+		}
+		if len(s.threadTurnEventIndex[scope]) == 0 {
+			delete(s.threadTurnEventIndex, scope)
 		}
 		if len(s.threadTurnStarts[scope]) == 0 {
 			delete(s.threadTurnStarts, scope)

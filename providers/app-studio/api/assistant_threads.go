@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -368,12 +369,14 @@ func (s *Server) validateAssistantThreadItemPageBeforeSequence(ctx context.Conte
 
 // loadAssistantThreadEventWindow walks backward from the requested cursor and
 // stops as soon as it has the requested complete turns. Thread-level metadata
-// is filtered by the store, and both per-query and per-request transcript work
-// are bounded (500 turn events x 20 pages). Keeping complete turns preserves
-// item deltas and terminal lifecycle truth. A pathological turn that exceeds
-// the event bound is omitted as one unit and yields its start sequence as the
-// next cursor, keeping older complete turns reachable without returning a
-// corrupt partial projection.
+// is filtered by the store, and base transcript work is bounded (500 turn
+// events x 20 pages). Receipt settlements are overlaid only after turn
+// membership is selected, using a shared 500 x 20 event budget across selected
+// interrupted turns. Keeping complete turns preserves item deltas and
+// terminal lifecycle truth. A pathological turn that exceeds the base event
+// bound is omitted as one unit and yields its start sequence as the next
+// cursor, keeping older complete turns reachable without returning a corrupt
+// partial projection.
 func (s *Server) loadAssistantThreadEventWindow(
 	ctx context.Context,
 	scope store.Scope,
@@ -408,6 +411,13 @@ func (s *Server) loadAssistantThreadEventWindow(
 		}
 		for eventIndex := len(page) - 1; eventIndex >= 0; eventIndex-- {
 			event := page[eventIndex]
+			// Receipt settlements are appended after their original turn may
+			// have ended and a newer turn may have completed. They update an
+			// item's projection but never change which turn owns this sequence
+			// window or its pagination order.
+			if assistantThreadReceiptSettlementEvent(event) {
+				continue
+			}
 			turnID := strings.TrimSpace(event.TurnID)
 			if len(turns) == 0 || turns[len(turns)-1].id != turnID {
 				turns = append(turns, turnEvents{id: turnID})
@@ -456,13 +466,107 @@ func (s *Server) loadAssistantThreadEventWindow(
 			events = append(events, turn.events[eventIndex])
 		}
 	}
+	nextCursor := int64(0)
 	if hasOlder && len(events) > 0 {
 		if events[0].Type != assistantThreadEventTurnStarted || strings.TrimSpace(events[0].TurnID) == "" {
 			return nil, 0, fmt.Errorf("assistant thread turn %q does not begin with a turn.started event", events[0].TurnID)
 		}
-		return events, events[0].Sequence, nil
+		nextCursor = events[0].Sequence
 	}
-	return events, 0, nil
+	var err error
+	events, err = s.appendAssistantThreadReceiptSettlementEvents(ctx, scope, threadID, events)
+	if err != nil {
+		return nil, 0, err
+	}
+	return events, nextCursor, nil
+}
+
+// appendAssistantThreadReceiptSettlementEvents overlays post-terminal receipt
+// events for turns already selected by the bounded history window. It uses
+// the indexed exact-turn lookup and the same projection validator as the turn
+// detail reducer, while keeping late settlement sequences out of membership
+// and cursor selection.
+func (s *Server) appendAssistantThreadReceiptSettlementEvents(
+	ctx context.Context,
+	scope store.Scope,
+	threadID string,
+	events []store.AssistantThreadEvent,
+) ([]store.AssistantThreadEvent, error) {
+	type selectedTurn struct {
+		terminalSequence int64
+		terminalType     string
+		items            *assistantThreadTurnToolItems
+	}
+	selected := map[string]*selectedTurn{}
+	turnOrder := make([]string, 0)
+	for _, event := range events {
+		turnID := strings.TrimSpace(event.TurnID)
+		if turnID == "" || assistantThreadReceiptSettlementEvent(event) {
+			continue
+		}
+		turn := selected[turnID]
+		if turn == nil {
+			turn = &selectedTurn{items: &assistantThreadTurnToolItems{}}
+			selected[turnID] = turn
+			turnOrder = append(turnOrder, turnID)
+		}
+		turn.items.observeEvent(event)
+		switch event.Type {
+		case assistantThreadEventTurnCompleted, assistantThreadEventTurnFailed, assistantThreadEventTurnInterrupted:
+			if turn.terminalSequence == 0 {
+				turn.terminalSequence = event.Sequence
+				turn.terminalType = event.Type
+			}
+		}
+	}
+
+	settlements := make([]store.AssistantThreadEvent, 0)
+	remainingEventBudget := assistantThreadEventWindowPageSize * assistantThreadEventWindowMaxPages
+	for _, turnID := range turnOrder {
+		turn := selected[turnID]
+		if turn.terminalSequence == 0 || turn.terminalType != assistantThreadEventTurnInterrupted {
+			continue
+		}
+		afterSequence := turn.terminalSequence
+		for pageIndex := 0; pageIndex < assistantThreadEventWindowMaxPages; pageIndex++ {
+			if remainingEventBudget <= 0 {
+				return nil, fmt.Errorf("assistant thread receipt settlement history exceeded its bounded event budget")
+			}
+			limit := min(assistantThreadEventWindowPageSize, remainingEventBudget)
+			page, err := s.store.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, turnID, assistantThreadEventItemCompleted, afterSequence, limit)
+			if err != nil {
+				return nil, err
+			}
+			remainingEventBudget -= len(page)
+			for _, event := range page {
+				if assistantThreadReceiptSettlementEvent(event) {
+					prior, exists := turn.items.items[event.ItemID]
+					if assistantThreadReceiptSettlementCanProjectToolItem(event, turnID, prior, exists) {
+						turn.items.observeEvent(event)
+						settlements = append(settlements, event)
+					}
+				}
+				afterSequence = event.Sequence
+			}
+			if len(page) < limit {
+				break
+			}
+			if remainingEventBudget == 0 {
+				return nil, fmt.Errorf("assistant thread receipt settlement history exceeded its bounded event budget")
+			}
+			if pageIndex == assistantThreadEventWindowMaxPages-1 {
+				return nil, fmt.Errorf("assistant thread receipt settlement turn %q exceeded its bounded page window", turnID)
+			}
+		}
+	}
+	if len(settlements) == 0 {
+		return events, nil
+	}
+	merged := append(append([]store.AssistantThreadEvent(nil), events...), settlements...)
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Sequence < merged[j].Sequence
+	})
+	return merged, nil
 }
 
 // attachAssistantThreadDynamicToolPresentation repairs generic historical
@@ -1080,6 +1184,20 @@ func (s *Server) getProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
+	if run.Status == store.AssistantRunStatusInterrupted {
+		// Terminal turns can receive a durable exec result after their original
+		// stream has closed. Repair from the run ledger on detail reads so the
+		// read model converges after a restart or a missed callback.
+		if err := s.reconcileInterruptedProjectAssistantExecReceipts(r.Context(), scope, run.ID, true); err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+		run, err = s.store.GetAssistantRun(r.Context(), scope, turn.ID)
+		if err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+	}
 	toolItems, err := s.loadAssistantThreadTurnToolItems(r.Context(), scope, thread.ID, turn.ID)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
@@ -1343,7 +1461,23 @@ func (s *Server) streamProjectAssistantThreadEvents(w http.ResponseWriter, r *ht
 func (s *Server) assistantThreadTerminalEventEndsStream(ctx context.Context, scope store.Scope, threadID string, event store.AssistantThreadEvent) bool {
 	switch event.Type {
 	case assistantThreadEventTurnCompleted, assistantThreadEventTurnFailed, assistantThreadEventTurnInterrupted:
+	case assistantThreadEventItemCompleted:
+		if !assistantThreadReceiptSettlementEvent(event) {
+			return false
+		}
+		turn, err := s.store.GetAssistantTurn(ctx, scope, threadID, event.TurnID)
+		if err != nil || turn.Status == store.AssistantTurnStatusInProgress {
+			return false
+		}
 	default:
+		return false
+	}
+	if event.Sequence <= 0 {
+		return false
+	}
+	latest, err := s.store.ListAssistantThreadTurnEventsBefore(ctx, scope, threadID, 0, 1)
+	if err != nil || len(latest) != 1 || latest[0].Sequence != event.Sequence ||
+		latest[0].TurnID != event.TurnID || latest[0].Type != event.Type {
 		return false
 	}
 	active, err := s.store.ActiveAssistantTurn(ctx, scope, threadID)
@@ -1351,6 +1485,16 @@ func (s *Server) assistantThreadTerminalEventEndsStream(ctx context.Context, sco
 		return active.ID == event.TurnID
 	}
 	return errors.Is(err, store.ErrAssistantTurnNotFound)
+}
+
+func assistantThreadReceiptSettlementEvent(event store.AssistantThreadEvent) bool {
+	if event.Type != assistantThreadEventItemCompleted || event.ItemID == "" {
+		return false
+	}
+	var envelope struct {
+		ReceiptSettlement bool `json:"receiptSettlement"`
+	}
+	return json.Unmarshal(event.Payload, &envelope) == nil && envelope.ReceiptSettlement
 }
 
 // reconcileProjectAssistantThreadTurn closes the canonical projection when a

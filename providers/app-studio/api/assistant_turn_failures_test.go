@@ -39,6 +39,121 @@ func assistantTurnFailureTestItem(t *testing.T, itemID, itemStatus string, actio
 	return assistantThreadItem{ID: itemID, Type: assistantThreadEventDynamicToolCall, Status: itemStatus, Content: action.Title, Data: data}
 }
 
+func assistantReceiptSettlementTestEvent(t *testing.T, turnID, assistantMessageID string, action projectAssistantActionFeedItem) (store.AssistantThreadEvent, assistantThreadItem) {
+	t.Helper()
+	item := assistantTurnFailureTestItem(t, assistantThreadDynamicToolItemID(assistantMessageID, action.ID), projectAssistantThreadToolItemStatus(action.Status), action)
+	item.TurnID = turnID
+	item.AssistantMessageID = assistantMessageID
+	item.Sequence = int64(action.Sequence)
+	item.Status = projectAssistantThreadToolItemStatus(action.Status)
+	payload, err := json.Marshal(struct {
+		Item              assistantThreadItem `json:"item"`
+		ReceiptSettlement bool                `json:"receiptSettlement"`
+	}{Item: item, ReceiptSettlement: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.AssistantThreadEvent{
+		TurnID: turnID, Sequence: 20, Type: assistantThreadEventItemCompleted, ItemID: item.ID, Payload: payload,
+	}, item
+}
+
+func TestAssistantThreadReceiptSettlementRequiresCanonicalObservedTerminal(t *testing.T) {
+	const (
+		turnID             = "turn-receipt"
+		assistantMessageID = "assistant-receipt"
+	)
+	zero := 0
+	settled := projectAssistantActionFeedItem{
+		ID: "call-receipt", Kind: projectAssistantActionFeedItemRun, Status: projectAssistantActionFeedStatusSucceeded,
+		Title: "Command completed", Sequence: 4,
+		Exec: &projectAssistantExecMetadata{Component: "web", Argv: []string{"go", "test", "./..."}, Status: "succeeded", ExitCode: &zero},
+	}
+	validEvent, settledItem := assistantReceiptSettlementTestEvent(t, turnID, assistantMessageID, settled)
+	if !assistantThreadReceiptSettlementCanCreateToolItem(validEvent, turnID) {
+		t.Fatal("valid observed terminal receipt was rejected for creation")
+	}
+	if !assistantThreadReceiptSettlementCanProjectToolItem(validEvent, turnID, settledItem, true) {
+		t.Fatal("exact terminal receipt replay was not idempotent")
+	}
+
+	t.Run("settles running row", func(t *testing.T) {
+		running := settled
+		running.Status = projectAssistantActionFeedStatusRunning
+		running.Title = "Running command"
+		running.Exec = &projectAssistantExecMetadata{Component: settled.Exec.Component, Argv: append([]string(nil), settled.Exec.Argv...), Status: "running"}
+		_, prior := assistantReceiptSettlementTestEvent(t, turnID, assistantMessageID, running)
+		prior.Status = "in_progress"
+		if !assistantThreadReceiptSettlementCanProjectToolItem(validEvent, turnID, prior, true) {
+			t.Fatal("observed terminal receipt should settle an in-progress item")
+		}
+	})
+
+	t.Run("cannot turn interrupted row back to running", func(t *testing.T) {
+		malformed := settled
+		malformed.Status = projectAssistantActionFeedStatusRunning
+		malformed.Title = "Running command"
+		malformed.Exec = &projectAssistantExecMetadata{Component: settled.Exec.Component, Argv: append([]string(nil), settled.Exec.Argv...), Status: "running"}
+		event, _ := assistantReceiptSettlementTestEvent(t, turnID, assistantMessageID, malformed)
+		if assistantThreadReceiptSettlementCanCreateToolItem(event, turnID) {
+			t.Fatal("running row was accepted as a terminal settlement")
+		}
+	})
+
+	t.Run("rejects inconsistent item state", func(t *testing.T) {
+		malformed := validEvent
+		malformed.Payload = append(json.RawMessage(nil), validEvent.Payload...)
+		var envelope struct {
+			Item              assistantThreadItem `json:"item"`
+			ReceiptSettlement bool                `json:"receiptSettlement"`
+		}
+		if err := json.Unmarshal(malformed.Payload, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		envelope.Item.Status = "failed"
+		malformed.Payload, _ = json.Marshal(envelope)
+		if assistantThreadReceiptSettlementCanCreateToolItem(malformed, turnID) {
+			t.Fatal("item status inconsistent with the terminal action was accepted")
+		}
+	})
+
+	t.Run("rejects terminal status without process receipt", func(t *testing.T) {
+		uncertain := settled
+		uncertain.Exec = &projectAssistantExecMetadata{Component: settled.Exec.Component, Argv: append([]string(nil), settled.Exec.Argv...), Status: "succeeded"}
+		event, _ := assistantReceiptSettlementTestEvent(t, turnID, assistantMessageID, uncertain)
+		if assistantThreadReceiptSettlementCanCreateToolItem(event, turnID) {
+			t.Fatal("success without an observed exit code was accepted as a receipt")
+		}
+	})
+
+	t.Run("settles synthetic interrupted row", func(t *testing.T) {
+		interrupted := settled
+		interrupted.Status = projectAssistantActionFeedStatusFailed
+		interrupted.Title = "Command failed"
+		interrupted.Diagnostic = &projectAssistantActionDiagnostic{Category: "runtime", Message: "Unknown outcome", Code: "command_outcome_unobserved"}
+		interrupted.Exec = &projectAssistantExecMetadata{Component: settled.Exec.Component, Argv: append([]string(nil), settled.Exec.Argv...), Status: "failed"}
+		_, prior := assistantReceiptSettlementTestEvent(t, turnID, assistantMessageID, interrupted)
+		prior.Status = "failed"
+		if !assistantThreadReceiptSettlementCanProjectToolItem(validEvent, turnID, prior, true) {
+			t.Fatal("valid terminal receipt did not settle the synthetic interrupted row")
+		}
+	})
+
+	t.Run("preserves genuine failure", func(t *testing.T) {
+		one := 1
+		failed := settled
+		failed.Status = projectAssistantActionFeedStatusFailed
+		failed.Title = "Command failed"
+		failed.Diagnostic = &projectAssistantActionDiagnostic{Category: "runtime", Message: "Command failed", Code: "command_failed"}
+		failed.Exec = &projectAssistantExecMetadata{Component: settled.Exec.Component, Argv: append([]string(nil), settled.Exec.Argv...), Status: "failed", ExitCode: &one}
+		_, prior := assistantReceiptSettlementTestEvent(t, turnID, assistantMessageID, failed)
+		prior.Status = "failed"
+		if assistantThreadReceiptSettlementCanProjectToolItem(validEvent, turnID, prior, true) {
+			t.Fatal("later success overwrote a genuine failed command result")
+		}
+	})
+}
+
 func TestAssistantThreadTurnViewOmitsSummaryWithoutFailures(t *testing.T) {
 	var toolItems assistantThreadTurnToolItems
 	toolItems.observe("tool-a", assistantTurnFailureTestItem(t, "tool-a", "completed", projectAssistantActionFeedItem{
@@ -142,7 +257,7 @@ func TestAssistantThreadTurnCompletedCarriesFailureSummary(t *testing.T) {
 	createAssistantThreadForHTTPTest(t, messages, scope, "thread-failures", "test-user")
 	now := time.Now().UTC()
 	run := store.AssistantRun{
-		ID: "turn-failures", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		ID: "turn-failures", ThreadID: "thread-failures", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
 		Status: store.AssistantRunStatusRunning, ClientRequestID: "client-failures", UserMessageID: "user-failures",
 		ActiveMessageID: "assistant-failures-1", Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}

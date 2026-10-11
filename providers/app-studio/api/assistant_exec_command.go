@@ -58,6 +58,7 @@ const (
 	projectAssistantExecPollInterval        = 250 * time.Millisecond
 	projectAssistantExecPollTimeout         = 2 * time.Minute
 	projectAssistantExecCancelTimeout       = 5 * time.Second
+	projectAssistantExecObservedAtTimeout   = 2 * time.Second
 	projectAssistantExecSnapshotAttempts    = 3
 	projectAssistantExecStartRetryTimeout   = 30 * time.Second
 	projectAssistantExecStartAttemptTimeout = 10 * time.Second
@@ -115,6 +116,7 @@ type projectSandboxExecResponse struct {
 
 type projectAssistantExecCommandResult struct {
 	Status          string   `json:"status"`
+	Code            string   `json:"code,omitempty"`
 	Summary         string   `json:"summary"`
 	Component       string   `json:"component,omitempty"`
 	SessionID       string   `json:"sessionID,omitempty"`
@@ -154,6 +156,93 @@ type projectAssistantExecMetadata struct {
 	Stdout           []string `json:"stdout,omitempty"`
 	Stderr           []string `json:"stderr,omitempty"`
 	OutputTruncated  bool     `json:"outputTruncated,omitempty"`
+}
+
+// projectAssistantExecCommandReceiptStatus normalizes the public command
+// result before it enters a durable receipt or terminal tool-call event.
+// Cancellation is an intent until the executor returns its terminal receipt,
+// and a process result without an exit code is not sufficient evidence that
+// the process tree reached a known terminal state.
+func projectAssistantExecCommandReceiptStatus(exec *projectAssistantExecMetadata) string {
+	if exec == nil {
+		return "unverifiable"
+	}
+	status := strings.ToLower(strings.TrimSpace(exec.Status))
+	switch status {
+	case "blocked", "rejected", "not_executed", "skipped":
+		return status
+	case "succeeded", "failed", "stale", "canceled", "cancelled", "timed_out":
+		if exec.ExitCode == nil {
+			return "outcome_unknown"
+		}
+		if status == "cancelled" {
+			return "canceled"
+		}
+		return status
+	case "outcome_unknown", "unverifiable":
+		return status
+	case "error":
+		return "outcome_unknown"
+	case "running", "requested", "pending", "permission_required", "input_required":
+		return status
+	default:
+		return "unverifiable"
+	}
+}
+
+// projectAssistantExecCommandReceiptObserved is the centralized proof rule
+// for App Studio exec receipts. Pre-start blockers need no process exit code;
+// every process terminal status does. Unknown, error, and running outcomes are
+// never recorded as completed command receipts.
+func projectAssistantExecCommandReceiptObserved(exec *projectAssistantExecMetadata) bool {
+	switch projectAssistantExecCommandReceiptStatus(exec) {
+	case "blocked", "rejected", "not_executed", "skipped":
+		return true
+	case "succeeded", "failed", "stale", "canceled", "timed_out":
+		return exec != nil && exec.ExitCode != nil
+	default:
+		return false
+	}
+}
+
+func projectAssistantExecToolCallTerminalStatus(event projectToolCallStreamEvent) string {
+	if projectToolBaseName(event.Name) != projectToolExecCommand || event.Exec == nil || strings.TrimSpace(event.Exec.Status) == "" {
+		return event.Status
+	}
+	status := projectAssistantExecCommandReceiptStatus(event.Exec)
+	return status
+}
+
+func projectAssistantExecToolCallNeedsObservedAtLookup(event projectToolCallStreamEvent) bool {
+	if projectToolBaseName(event.Name) != projectToolExecCommand || event.Exec == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(event.Status)) {
+	case "", "running", "requested", "pending", "permission_required", "input_required":
+		return false
+	default:
+		return true
+	}
+}
+
+// projectAssistantExecToolCallObservedAt reads the durable result timestamp
+// only for terminal command events. The callback is best-effort because the
+// timestamp enriches audit ordering but does not determine command outcome.
+func projectAssistantExecToolCallObservedAt(ledger *projectAssistantRunEventLedger, callID string) time.Time {
+	if ledger == nil || strings.TrimSpace(callID) == "" {
+		return time.Time{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), projectAssistantExecObservedAtTimeout)
+	defer cancel()
+	outcome, ok, err := ledger.ToolCallOutcome(ctx, callID)
+	if err != nil {
+		klog.V(4).InfoS("Could not load durable assistant tool result timestamp", "error", projectEinoAssistantSafeErrorText(err))
+		return time.Time{}
+	}
+	if !ok {
+		return time.Time{}
+	}
+	return outcome.ObservedAt
 }
 
 // projectAssistantExecCommandToolSpecForRun documents the selected execution
@@ -429,6 +518,7 @@ func projectAssistantExecMetadataForToolArguments(name string, args map[string]a
 	metadata.Stdout = stdout
 	metadata.Stderr = stderr
 	metadata.OutputTruncated = commandResult.OutputTruncated || stdoutTruncated || stderrTruncated
+	metadata.Status = projectAssistantExecCommandReceiptStatus(metadata)
 	return metadata
 }
 
@@ -681,7 +771,7 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 			sandbox, sandboxErr := current.RunState.EnsureSandbox(ctx)
 			if sandboxErr != nil {
 				if errors.Is(sandboxErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-					return &projectAssistantExecCommandResult{Status: "canceled", Summary: "Command canceled before the private coding sandbox was ready."}, nil
+					return &projectAssistantExecCommandResult{Status: "not_executed", Summary: "Command was not started because cancellation arrived before the private coding sandbox was ready."}, nil
 				}
 				return &projectAssistantExecCommandResult{Status: "failed", Summary: "Private coding sandbox setup failed: " + sandboxErr.Error()}, nil
 			}
@@ -878,18 +968,10 @@ func execProjectAssistantSharedRuntimeCommand(ctx context.Context, runCtx projec
 			projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 				return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
 			})
+			return finalize(projectAssistantExecOutcomeUnknown(component, sourceRevision, digest, syncStatus,
+				"Command start may have been accepted. Cancellation was requested, but a terminal process result was not observed."))
 		}
 		if startBlocked != nil {
-			if mayHaveStarted {
-				return finalize(&projectAssistantExecCommandResult{
-					Status:         "error",
-					Summary:        "Command start could not be confirmed because startup could not be revalidated; cancellation was requested by request ID.",
-					Component:      component,
-					SourceRevision: sourceRevision,
-					SourceDigest:   digest,
-					SyncStatus:     syncStatus,
-				})
-			}
 			return &projectAssistantExecCommandResult{
 				Status:         "blocked",
 				Summary:        startBlocked.Summary,
@@ -906,7 +988,8 @@ func execProjectAssistantSharedRuntimeCommand(ctx context.Context, runCtx projec
 		projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 			return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
 		})
-		return finalize(&projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
+		return finalize(projectAssistantExecOutcomeUnknown(component, sourceRevision, digest, syncStatus,
+			"Command start returned no session ID. Cancellation was requested, but a terminal process result was not observed."))
 	}
 	startedAt := time.Now()
 	result := started
@@ -936,16 +1019,19 @@ func execProjectAssistantSharedRuntimeCommand(ctx context.Context, runCtx projec
 			pollImmediately = false
 			if ctx.Err() != nil {
 				cancelSession()
-				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"))
+				return finalize(projectAssistantExecOutcomeUnknownResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt),
+					"Command cancellation was requested, but a terminal process result was not observed."))
 			}
 		} else {
 			select {
 			case <-ctx.Done():
 				cancelSession()
-				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"))
+				return finalize(projectAssistantExecOutcomeUnknownResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt),
+					"Command cancellation was requested, but a terminal process result was not observed."))
 			case <-deadline.C:
 				cancelSession()
-				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "timed_out"))
+				return finalize(projectAssistantExecOutcomeUnknownResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt),
+					"The App Studio polling deadline elapsed before a terminal result. Cancellation was requested, so the process outcome is unknown."))
 			case <-time.After(projectAssistantExecPollInterval):
 			}
 		}
@@ -953,9 +1039,10 @@ func execProjectAssistantSharedRuntimeCommand(ctx context.Context, runCtx projec
 		if err != nil {
 			if ctx.Err() != nil {
 				cancelSession()
-				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"))
+				return finalize(projectAssistantExecOutcomeUnknownResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt),
+					"Command cancellation was requested, but a terminal process result was not observed."))
 			}
-			return finalize(&projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
+			return finalize(&projectAssistantExecCommandResult{Status: "outcome_unknown", Summary: "Command polling failed: " + trimProjectAssistantWorkflowString(projectEinoAssistantSafeErrorText(err), 240) + ". Cancellation was requested, but a terminal process result was not observed.", Component: component, SessionID: started.SessionID, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
 		}
 	}
 	if rejected, ok := projectAssistantExecWorkdirExecutionFailure(result, args, component, componentInfo, sourceRevision, digest, syncStatus); ok {
@@ -1052,6 +1139,7 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 				}
 				return sandbox.client.Exec(cancelCtx, sandbox.id, sandbox.target.dataPlaneRefFor(component), request)
 			})
+			return &projectAssistantExecCommandResult{Status: "outcome_unknown", Summary: "Command start may have been accepted. Cancellation was requested, but a terminal process result was not observed.", Component: component}, nil
 		}
 		return &projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component}, nil
 	}
@@ -1062,7 +1150,7 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 			}
 			return sandbox.client.Exec(cancelCtx, sandbox.id, sandbox.target.dataPlaneRefFor(component), request)
 		})
-		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component}, nil
+		return &projectAssistantExecCommandResult{Status: "outcome_unknown", Summary: "Command start returned no session ID. Cancellation was requested, but a terminal process result was not observed.", Component: component}, nil
 	}
 	startedAt := time.Now()
 	result := started
@@ -1091,7 +1179,7 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 				cancelSession()
 				meta := sandbox.metadataSnapshot()
 				revision, digest := projectAssistantSandboxRemoteFence(meta)
-				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+				return projectAssistantExecOutcomeUnknownResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "Command cancellation was requested, but a terminal process result was not observed."), nil
 			}
 		} else {
 			select {
@@ -1099,12 +1187,12 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 				cancelSession()
 				meta := sandbox.metadataSnapshot()
 				revision, digest := projectAssistantSandboxRemoteFence(meta)
-				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+				return projectAssistantExecOutcomeUnknownResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "Command cancellation was requested, but a terminal process result was not observed."), nil
 			case <-deadline.C:
 				cancelSession()
 				meta := sandbox.metadataSnapshot()
 				revision, digest := projectAssistantSandboxRemoteFence(meta)
-				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "timed_out"), nil
+				return projectAssistantExecOutcomeUnknownResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "The polling deadline elapsed before a terminal result. Cancellation was requested, so the process outcome is unknown."), nil
 			case <-time.After(projectAssistantExecPollInterval):
 			}
 		}
@@ -1114,9 +1202,9 @@ func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectA
 				cancelSession()
 				meta := sandbox.metadataSnapshot()
 				revision, digest := projectAssistantSandboxRemoteFence(meta)
-				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+				return projectAssistantExecOutcomeUnknownResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "Command cancellation was requested, but a terminal process result was not observed."), nil
 			}
-			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID}, nil
+			return &projectAssistantExecCommandResult{Status: "outcome_unknown", Summary: "Command polling failed: " + trimProjectAssistantWorkflowString(projectEinoAssistantSafeErrorText(err), 240) + ". A terminal process result was not observed.", Component: component, SessionID: started.SessionID}, nil
 		}
 	}
 	meta := sandbox.metadataSnapshot()
@@ -1140,10 +1228,42 @@ func projectAssistantExecResult(raw projectSandboxExecResponse, component string
 			status = "error"
 		}
 	}
+	if raw.ExitCode == nil {
+		switch status {
+		case "succeeded", "failed", "canceled", "timed_out", "stale", "error":
+			status = "outcome_unknown"
+		}
+	}
 	stdout, stdoutTruncated := boundedProjectAssistantExecOutput(raw.Stdout)
 	stderr, stderrTruncated := boundedProjectAssistantExecOutput(raw.Stderr)
 	result := &projectAssistantExecCommandResult{Status: status, Component: component, SessionID: raw.SessionID, ExitCode: raw.ExitCode, Stdout: stdout, Stderr: stderr, OutputTruncated: raw.Truncated || stdoutTruncated || stderrTruncated, DurationMS: duration.Milliseconds(), SourceRevision: revision, SourceDigest: digest, SyncStatus: syncStatus}
-	result.Summary = fmt.Sprintf("Command %s in component %q.", status, component)
+	if status == "outcome_unknown" {
+		result.ExitCode = nil
+		result.Summary = fmt.Sprintf("Command outcome in component %q could not be confirmed because no terminal exit code was observed.", component)
+	} else {
+		result.Summary = fmt.Sprintf("Command %s in component %q.", status, component)
+	}
+	return result
+}
+
+func projectAssistantExecOutcomeUnknown(component string, revision uint64, digest, syncStatus, summary string) *projectAssistantExecCommandResult {
+	return &projectAssistantExecCommandResult{
+		Status:         "outcome_unknown",
+		Summary:        strings.TrimSpace(summary),
+		Component:      component,
+		SourceRevision: revision,
+		SourceDigest:   digest,
+		SyncStatus:     syncStatus,
+	}
+}
+
+func projectAssistantExecOutcomeUnknownResult(raw projectSandboxExecResponse, component string, revision uint64, digest, syncStatus string, duration time.Duration, summary string) *projectAssistantExecCommandResult {
+	result := projectAssistantExecResult(raw, component, revision, digest, syncStatus, duration, "outcome_unknown")
+	result.Status = "outcome_unknown"
+	result.ExitCode = nil
+	if strings.TrimSpace(summary) != "" {
+		result.Summary = strings.TrimSpace(summary)
+	}
 	return result
 }
 
@@ -1235,6 +1355,7 @@ func projectAssistantExecBlockedWorkdirResult(
 	blocker := fmt.Sprintf("The execution service rejected workdir %q for component %q (root %s): %s. workdir is relative to that component root; omit it to run at the root or choose an existing nested directory. The command did not start.", workdir, component, root, detail)
 	return &projectAssistantExecCommandResult{
 		Status:         "blocked",
+		Code:           "invalid_workdir",
 		Summary:        "Command was not started because the selected workdir is not a valid directory under the component root.",
 		Component:      component,
 		SourceRevision: sourceRevision,

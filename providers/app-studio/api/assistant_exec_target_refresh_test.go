@@ -154,8 +154,8 @@ func TestSharedRuntimeExecRechecksTargetBeforeRetryAfterAmbiguousStart(t *testin
 	if cancelURL != startURL {
 		t.Fatalf("cancel URL = %q, want the original target %q", cancelURL, startURL)
 	}
-	if result == nil || result.Status != "error" || result.SessionID != "" || result.ExitCode != nil || len(result.Stdout) != 0 || len(result.Stderr) != 0 {
-		t.Fatalf("ambiguous start result = %#v, want unconfirmed error without invented session or output", result)
+	if result == nil || result.Status != "outcome_unknown" || result.SessionID != "" || result.ExitCode != nil || len(result.Stdout) != 0 || len(result.Stderr) != 0 {
+		t.Fatalf("ambiguous start result = %#v, want unknown without invented session or output", result)
 	}
 	if result.Summary == "" {
 		t.Fatal("ambiguous start result has no explanation")

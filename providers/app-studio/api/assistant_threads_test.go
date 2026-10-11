@@ -890,30 +890,50 @@ func TestAssistantThreadTerminalEventDoesNotEndStreamForNewerTurn(t *testing.T) 
 	if _, err := memoryStore.CreateAssistantThread(context.Background(), scope, thread, nil); err != nil {
 		t.Fatal(err)
 	}
-	first := store.AssistantTurn{ID: "turn-old", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-old", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
-	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, first, nil); err != nil {
-		t.Fatal(err)
-	}
-	first.Status = store.AssistantTurnStatusCompleted
-	first.UpdatedAt = now.Add(time.Second)
-	if err := memoryStore.SaveAssistantTurnWithEvent(context.Background(), scope, first, store.AssistantThreadEvent{Type: assistantThreadEventTurnCompleted}, 0); err != nil {
+	first := store.AssistantTurn{ID: "turn-old", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-old", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now.Add(time.Second)}
+	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, first, []store.AssistantThreadEvent{
+		{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{Type: assistantThreadEventTurnInterrupted, CreatedAt: now.Add(time.Second)},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	second := store.AssistantTurn{ID: "turn-new", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-new", Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest, Status: store.AssistantTurnStatusInProgress, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)}
-	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, second, nil); err != nil {
+	if _, err := memoryStore.CreateAssistantTurn(context.Background(), scope, second, []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, CreatedAt: second.CreatedAt}}); err != nil {
 		t.Fatal(err)
 	}
-	oldTerminal := store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: first.ID, Type: assistantThreadEventTurnCompleted}
+	oldTerminal := store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: first.ID, Type: assistantThreadEventTurnInterrupted, Sequence: 2}
 	if server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, oldTerminal) {
 		t.Fatal("older turn terminal event ended stream while newer turn was active")
 	}
 	second.Status = store.AssistantTurnStatusCompleted
 	second.UpdatedAt = now.Add(3 * time.Second)
-	if err := memoryStore.SaveAssistantTurnWithEvent(context.Background(), scope, second, store.AssistantThreadEvent{Type: assistantThreadEventTurnCompleted}, 1); err != nil {
+	if err := memoryStore.SaveAssistantTurnWithEvent(context.Background(), scope, second, store.AssistantThreadEvent{Type: assistantThreadEventTurnCompleted}, 3); err != nil {
 		t.Fatal(err)
 	}
-	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, store.AssistantThreadEvent{ThreadID: thread.ID, TurnID: second.ID, Type: assistantThreadEventTurnCompleted}) {
+	events, err := memoryStore.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newTerminal := events[len(events)-1]
+	if server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, oldTerminal) {
+		t.Fatal("historical turn terminal replay ended stream after newer turn completed")
+	}
+	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, newTerminal) {
 		t.Fatal("current turn terminal event did not end stream")
+	}
+
+	settlement, err := memoryStore.AppendAssistantThreadEvent(context.Background(), scope, store.AssistantThreadEvent{
+		ThreadID: thread.ID, TurnID: first.ID, Type: assistantThreadEventItemCompleted, ItemID: "late-tool-item",
+		Payload: json.RawMessage(`{"receiptSettlement":true}`), CreatedAt: now.Add(4 * time.Second),
+	}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, newTerminal) {
+		t.Fatal("newer terminal event ended stream before the later persisted receipt settlement")
+	}
+	if !server.assistantThreadTerminalEventEndsStream(context.Background(), scope, thread.ID, settlement) {
+		t.Fatal("tail receipt settlement did not end stream after it was delivered")
 	}
 }
 
@@ -970,5 +990,176 @@ func TestTerminalizeProjectAssistantTurnStartFailureClosesCanonicalTurn(t *testi
 	}
 	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventTurnFailed, ""); got != 1 {
 		t.Fatalf("failed turn events = %d, want one: %#v", got, events)
+	}
+}
+
+func TestLoadAssistantThreadEventWindowKeepsLateSettlementWithOriginalTurn(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		settlementBeforeBEnd bool
+	}{
+		{name: "settlement after newer turn completes"},
+		{name: "settlement before newer turn completes", settlementBeforeBEnd: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			messages := store.NewMemoryStore()
+			server := NewWithWorkspace(nil, messages, nil, "", false)
+			scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+			now := time.Now().UTC()
+			thread, err := messages.CreateAssistantThread(ctx, scope, store.AssistantThread{
+				ID: "thread-late-settlement", ActorID: "actor-a", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+			}, []store.AssistantThreadEvent{{Type: assistantThreadEventThreadCreated, CreatedAt: now}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			toolCall := projectToolCallStreamEvent{
+				ID: "call-a", Name: projectToolExecCommand, Status: "running",
+				Arguments: `{"component":"workspace","argv":["go","test"],"timeoutSeconds":90}`,
+				Exec: &projectAssistantExecMetadata{
+					Component: "workspace", Argv: []string{"go", "test"}, TimeoutSeconds: 90, Status: "running",
+				},
+			}
+			action := projectAssistantActionFeedItemFromToolCall(toolCall)
+			action.Sequence = 7
+			actionPayload, err := json.Marshal(action)
+			if err != nil {
+				t.Fatal(err)
+			}
+			itemID := assistantThreadDynamicToolItemID("assistant-a", action.ID)
+			item := assistantThreadItem{
+				ID: itemID, TurnID: "turn-a", Type: assistantThreadEventDynamicToolCall,
+				Status: "in_progress", Content: action.Title, Data: actionPayload,
+				AssistantMessageID: "assistant-a", Sequence: int64(action.Sequence), CreatedAt: now,
+			}
+			itemPayload, err := json.Marshal(map[string]any{"item": item})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+				ID: "turn-a", ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-a",
+				Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+				Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now,
+			}, []store.AssistantThreadEvent{
+				{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+				{Type: assistantThreadEventItemStarted, ItemID: itemID, Payload: itemPayload, CreatedAt: now},
+				{Type: assistantThreadEventTurnInterrupted, CreatedAt: now},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			bEvents := []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, CreatedAt: now.Add(time.Second)}}
+			if test.settlementBeforeBEnd {
+				bEvents = append(bEvents, store.AssistantThreadEvent{Type: assistantThreadEventItemStarted, ItemID: "assistant-b", Payload: json.RawMessage(`{"item":{"id":"assistant-b","turnID":"turn-b","type":"agentMessage","status":"in_progress"}}`), CreatedAt: now.Add(time.Second)})
+			}
+			bTurn, err := messages.CreateAssistantTurn(ctx, scope, store.AssistantTurn{
+				ID: "turn-b", ThreadID: thread.ID, ActorID: "actor-a", ClientUserMessageID: "client-b",
+				Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+				Status: store.AssistantTurnStatusInProgress, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+			}, bEvents)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			settledCall := toolCall
+			settledCall.Status = "succeeded"
+			settledCall.Summary = "Command completed"
+			settledCall.Exec = cloneProjectAssistantExecMetadata(toolCall.Exec)
+			settledCall.Exec.Status = "succeeded"
+			settledCall.Exec.ExitCode = intPointer(0)
+			settledAction := projectAssistantActionFeedItemFromToolCall(settledCall)
+			settledAction.Sequence = action.Sequence
+			settledData, err := json.Marshal(settledAction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settledItem := item
+			settledItem.Status = "completed"
+			settledItem.Content = settledAction.Title
+			settledItem.Data = settledData
+			settledPayload, err := json.Marshal(map[string]any{"item": settledItem, "receiptSettlement": true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendSettlement := func() (store.AssistantThreadEvent, error) {
+				allEvents, err := messages.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 100)
+				if err != nil {
+					return store.AssistantThreadEvent{}, err
+				}
+				return messages.AppendAssistantThreadEvent(ctx, scope, store.AssistantThreadEvent{
+					ThreadID: thread.ID, TurnID: "turn-a", Type: assistantThreadEventItemCompleted,
+					ItemID: itemID, Payload: settledPayload, CreatedAt: now.Add(3 * time.Second),
+				}, int64(len(allEvents)))
+			}
+			completeBTurn := func() error {
+				allEvents, err := messages.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 100)
+				if err != nil {
+					return err
+				}
+				bTurn.Status = store.AssistantTurnStatusCompleted
+				bTurn.UpdatedAt = now.Add(4 * time.Second)
+				return messages.SaveAssistantTurnWithEvent(ctx, scope, bTurn, store.AssistantThreadEvent{
+					Type: assistantThreadEventTurnCompleted, CreatedAt: bTurn.UpdatedAt,
+				}, int64(len(allEvents)))
+			}
+			var settlement store.AssistantThreadEvent
+			if test.settlementBeforeBEnd {
+				settlement, err = appendSettlement()
+				if err == nil {
+					err = completeBTurn()
+				}
+			} else {
+				err = completeBTurn()
+				if err == nil {
+					settlement, err = appendSettlement()
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if test.settlementBeforeBEnd {
+				window, cursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 2)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cursor != 0 || len(window) < 2 || window[0].Type != assistantThreadEventTurnStarted || window[len(window)-1].TurnID != "turn-b" {
+					t.Fatalf("A/B history window = %#v cursor=%d; want both complete turns in original sequence order", window, cursor)
+				}
+				for index := 1; index < len(window); index++ {
+					if window[index].Sequence <= window[index-1].Sequence {
+						t.Fatalf("merged history sequences are not increasing: %#v", window)
+					}
+				}
+				if window[len(window)-2].Sequence != settlement.Sequence || window[len(window)-1].Type != assistantThreadEventTurnCompleted {
+					t.Fatalf("late settlement ordering = %#v; want receipt before newer turn terminal", window)
+				}
+				return
+			}
+
+			recent, nextCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, 0, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if nextCursor == 0 || len(recent) != 2 || recent[0].TurnID != "turn-b" || recent[1].TurnID != "turn-b" {
+				t.Fatalf("newest page = %#v cursor=%d; want only newer B and a cursor at B's start", recent, nextCursor)
+			}
+			if recent[0].Sequence != nextCursor || recent[0].Type != assistantThreadEventTurnStarted {
+				t.Fatalf("newest page cursor boundary = %#v cursor=%d; want B's original turn.started", recent, nextCursor)
+			}
+			older, olderCursor, err := server.loadAssistantThreadEventWindow(ctx, scope, thread.ID, nextCursor, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if olderCursor != 0 || len(older) != 4 || older[len(older)-1].Sequence != settlement.Sequence ||
+				!assistantThreadReceiptSettlementEvent(older[len(older)-1]) {
+				t.Fatalf("older A page = %#v cursor=%d; want A plus its receipt despite receipt being after B's cursor", older, olderCursor)
+			}
+			items := materializeAssistantThreadItems(older)
+			if len(items) != 1 || items[0].ID != itemID || items[0].Status != "completed" {
+				t.Fatalf("materialized older A items = %#v; want repaired settled item", items)
+			}
+		})
 	}
 }

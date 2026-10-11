@@ -176,7 +176,7 @@ func newAppStudioSharedExecTestContext(t *testing.T, state *projectEinoAssistant
 			response := projectSandboxExecResponse{State: "failed"}
 			if handler != nil {
 				response = handler(request, payload, files, scope)
-				if err := request.Context().Err(); err != nil {
+				if err := request.Context().Err(); err != nil && !projectAssistantExecTerminal(response.State) {
 					return nil, err
 				}
 			}
@@ -254,7 +254,8 @@ func TestProjectAssistantExecCommandDoesNotFallbackWhenPrivateSandboxIsUnavailab
 	var sharedCalls atomic.Int32
 	runCtx, _, _ := newAppStudioSharedExecTestContext(t, state, func(_ *http.Request, _ projectSandboxExecRequest, _ *workspace.FileStore, _ workspace.Scope) projectSandboxExecResponse {
 		sharedCalls.Add(1)
-		return projectSandboxExecResponse{State: "succeeded"}
+		exitCode := 0
+		return projectSandboxExecResponse{State: "succeeded", ExitCode: &exitCode}
 	})
 	result, err := execProjectAssistantCommand(runCtx)(context.Background(), &projectAssistantExecCommandInput{
 		Component: projectAssistantRunSandboxWorkspaceVerb,
@@ -373,11 +374,15 @@ func TestProjectAssistantExecSharedCancellationSendsScopedCancelWithoutExitCode(
 	case <-time.After(5 * time.Second):
 		t.Fatal("shared command did not return after request cancellation")
 	}
-	if err := <-errCh; err != nil || result == nil || result.Status != "canceled" {
-		t.Fatalf("canceled shared command = %#v, err=%v", result, err)
+	if err := <-errCh; err != nil || result == nil || result.Status != "outcome_unknown" {
+		t.Fatalf("unconfirmed canceled shared command = %#v, err=%v", result, err)
 	}
 	if result.ExitCode != nil {
-		t.Fatalf("canceled command invented an exit code: %#v", result)
+		t.Fatalf("unconfirmed command invented an exit code: %#v", result)
+	}
+	metadata := projectAssistantExecMetadataForToolArguments(projectToolExecCommand, map[string]any{"component": "backend", "argv": []string{"npm", "run", "build"}}, mustJSON(t, result), "failed")
+	if projectAssistantExecCommandReceiptObserved(metadata) {
+		t.Fatalf("unconfirmed canceled command was treated as a receipt: %#v", metadata)
 	}
 	select {
 	case cancelRequest := <-cancelSeen:
@@ -386,6 +391,35 @@ func TestProjectAssistantExecSharedCancellationSendsScopedCancelWithoutExitCode(
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("canceled command did not send remote cleanup")
+	}
+}
+
+func TestProjectAssistantExecPreservesObservedTerminalReceiptAfterCancellation(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ConfigureSandboxCapability(CodingSandboxEligibility{Reason: "coding sandbox mode is off"}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runCtx, _, _ := newAppStudioSharedExecTestContext(t, state, func(_ *http.Request, payload projectSandboxExecRequest, _ *workspace.FileStore, _ workspace.Scope) projectSandboxExecResponse {
+		switch payload.Action {
+		case "start":
+			return projectSandboxExecResponse{SessionID: "terminal-session", State: "running"}
+		case "poll":
+			exitCode := 0
+			cancel()
+			return projectSandboxExecResponse{SessionID: "terminal-session", State: "succeeded", ExitCode: &exitCode, Stdout: "terminal receipt"}
+		case "cancel":
+			return projectSandboxExecResponse{SessionID: "terminal-session", State: "cancelled"}
+		default:
+			return projectSandboxExecResponse{State: "error"}
+		}
+	})
+	result, err := execProjectAssistantCommand(runCtx)(ctx, &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"go", "test"}})
+	if err != nil || result == nil || result.Status != "succeeded" || result.ExitCode == nil || *result.ExitCode != 0 {
+		t.Fatalf("observed terminal result after cancellation = %#v, err=%v; want preserved success receipt", result, err)
+	}
+	metadata := projectAssistantExecMetadataForToolArguments(projectToolExecCommand, map[string]any{"component": "backend", "argv": []string{"go", "test"}}, mustJSON(t, result), "succeeded")
+	if !projectAssistantExecCommandReceiptObserved(metadata) {
+		t.Fatalf("observed terminal process result was not recognized as a receipt: %#v", metadata)
 	}
 }
 
@@ -405,8 +439,8 @@ func TestProjectAssistantExecSharedTerminalErrorDoesNotPollAgainOrInventExitCode
 		}
 	})
 	result, err := execProjectAssistantCommand(runCtx)(context.Background(), &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"npm", "run", "build"}})
-	if err != nil || result == nil || result.Status != "error" || result.ExitCode != nil {
-		t.Fatalf("terminal executor error = %#v, err=%v; want error without exit code", result, err)
+	if err != nil || result == nil || result.Status != "outcome_unknown" || result.ExitCode != nil {
+		t.Fatalf("terminal executor error = %#v, err=%v; want unknown without exit code", result, err)
 	}
 	if !reflect.DeepEqual(actions, []string{"start", "poll"}) {
 		t.Fatalf("shared actions = %#v, want one start and one terminal poll", actions)
@@ -450,7 +484,7 @@ func TestProjectAssistantExecClassifiesWorkdirRejectionAsPreStartBlocker(t *test
 		&projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "workdir missing: no such directory", rejectionCode: "invalid_workdir"},
 		args, "backend", component, 8, "source-digest", "succeeded",
 	)
-	if !ok || result.Status != "blocked" || !strings.Contains(result.Blockers[0], "project/api/") || !strings.Contains(result.Blockers[0], "The command did not start") {
+	if !ok || result.Status != "blocked" || result.Code != "invalid_workdir" || !strings.Contains(result.Blockers[0], "project/api/") || !strings.Contains(result.Blockers[0], "The command did not start") {
 		t.Fatalf("workdir HTTP rejection = %#v, classified=%t", result, ok)
 	}
 	result, ok = projectAssistantExecWorkdirExecutionFailure(
@@ -553,7 +587,7 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 func TestProjectAssistantFirstExecLazilyInitializesSandboxExactlyOnce(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
-	client := &sandboxClientFake{execResponse: projectSandboxExecResponse{SessionID: "exec-session", State: "succeeded", Stdout: "EXEC_LAZY_OK"}}
+	client := &sandboxClientFake{execResponse: projectSandboxExecResponse{SessionID: "exec-session", State: "succeeded", ExitCode: intPointer(0), Stdout: "EXEC_LAZY_OK"}}
 	setupCalls := 0
 	state.ConfigureSandboxCapability(CodingSandboxEligibility{
 		Eligible: true, ProviderExportPath: projectAssistantPlatformInfrastructureExportPath, TransportGeneration: projectAssistantSandboxTransportGeneration,
@@ -600,8 +634,8 @@ func TestProjectAssistantExecCanceledDuringSandboxSetupIsNotReportedFailed(t *te
 	<-setupStarted
 	cancelRun()
 	result := <-resultCh
-	if result == nil || result.Status != "canceled" || result.Summary != "Command canceled before the private coding sandbox was ready." {
-		t.Fatalf("canceled setup result = %#v, want canceled command", result)
+	if result == nil || result.Status != "not_executed" || result.Summary != "Command was not started because cancellation arrived before the private coding sandbox was ready." {
+		t.Fatalf("canceled setup result = %#v, want truthful pre-start result", result)
 	}
 }
 
@@ -684,10 +718,11 @@ func TestProjectAssistantRunSandboxExecCleansUpAmbiguousStart(t *testing.T) {
 		execError    error
 		execResponse projectSandboxExecResponse
 		wantCancel   bool
+		wantStatus   string
 	}{
-		{name: "ambiguous transport failure", execError: errors.New("connection reset after worker accepted START"), wantCancel: true},
-		{name: "successful response without session ID", execResponse: projectSandboxExecResponse{State: "running"}, wantCancel: true},
-		{name: "definitive client rejection", execError: &projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "invalid argv"}},
+		{name: "ambiguous transport failure", execError: errors.New("connection reset after worker accepted START"), wantCancel: true, wantStatus: "outcome_unknown"},
+		{name: "successful response without session ID", execResponse: projectSandboxExecResponse{State: "running"}, wantCancel: true, wantStatus: "outcome_unknown"},
+		{name: "definitive client rejection", execError: &projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "invalid argv"}, wantStatus: "error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &sandboxClientFake{execErr: tc.execError, execResponse: tc.execResponse}
@@ -702,8 +737,8 @@ func TestProjectAssistantRunSandboxExecCleansUpAmbiguousStart(t *testing.T) {
 				Component: projectAssistantRunSandboxWorkspaceVerb,
 				Argv:      []string{"go", "test", "./..."},
 			})
-			if err != nil || result == nil || result.Status != "error" {
-				t.Fatalf("exec result = %#v, err=%v; want an error result", result, err)
+			if err != nil || result == nil || result.Status != tc.wantStatus {
+				t.Fatalf("exec result = %#v, err=%v; want status %q", result, err, tc.wantStatus)
 			}
 			client.mu.Lock()
 			requests := append([]projectSandboxExecRequest(nil), client.execRequests...)
@@ -739,7 +774,7 @@ func (f *assistantRunSandboxExecGateFake) Workspace(context.Context, identity, d
 
 func (f *assistantRunSandboxExecGateFake) Exec(_ context.Context, _ identity, _ dataPlaneRef, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 	f.execs = append(f.execs, request)
-	return projectSandboxExecResponse{SessionID: "session-1", State: "succeeded"}, nil
+	return projectSandboxExecResponse{SessionID: "session-1", State: "succeeded", ExitCode: intPointer(0)}, nil
 }
 
 func TestProjectAssistantExecSnapshotRoutesSelectedComponent(t *testing.T) {
@@ -943,13 +978,47 @@ func TestProjectAssistantExecSnapshotRejectsChangedMutationRevision(t *testing.T
 }
 
 func TestProjectAssistantExecResultBoundsOutput(t *testing.T) {
-	result := projectAssistantExecResult(projectSandboxExecResponse{SessionID: "session", State: "succeeded", Stdout: strings.Repeat("x", projectAssistantExecMaxOutput+1)}, "backend", 3, "sha256:digest", "succeeded", 2, "")
+	result := projectAssistantExecResult(projectSandboxExecResponse{SessionID: "session", State: "succeeded", ExitCode: intPointer(0), Stdout: strings.Repeat("x", projectAssistantExecMaxOutput+1)}, "backend", 3, "sha256:digest", "succeeded", 2, "")
 	if !result.OutputTruncated || len(result.Stdout) == 0 || result.Status != "succeeded" || result.SourceRevision != 3 {
 		t.Fatalf("result = %#v", result)
 	}
 	empty := projectAssistantExecResult(projectSandboxExecResponse{State: "succeeded"}, "backend", 0, "sha256:empty", "succeeded", 0, "")
 	if empty.OutputTruncated {
 		t.Fatal("empty output must not be marked truncated")
+	}
+}
+
+func TestProjectAssistantExecCommandReceiptRequiresTerminalProof(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, wantStatus string
+		exitCode                 *int
+		wantObserved             bool
+	}{
+		{name: "blocked prestart", status: "blocked", wantStatus: "blocked", wantObserved: true},
+		{name: "rejected prestart", status: "rejected", wantStatus: "rejected", wantObserved: true},
+		{name: "not executed", status: "not_executed", wantStatus: "not_executed", wantObserved: true},
+		{name: "successful without exit", status: "succeeded", wantStatus: "outcome_unknown"},
+		{name: "failed without exit", status: "failed", wantStatus: "outcome_unknown"},
+		{name: "canceled without exit", status: "canceled", wantStatus: "outcome_unknown"},
+		{name: "timed out without exit", status: "timed_out", wantStatus: "outcome_unknown"},
+		{name: "error", status: "error", wantStatus: "outcome_unknown"},
+		{name: "unknown", status: "outcome_unknown", wantStatus: "outcome_unknown"},
+		{name: "canceled terminal receipt", status: "cancelled", exitCode: intPointer(130), wantStatus: "canceled", wantObserved: true},
+		{name: "successful terminal receipt", status: "succeeded", exitCode: intPointer(0), wantStatus: "succeeded", wantObserved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata := &projectAssistantExecMetadata{Status: tc.status, ExitCode: tc.exitCode}
+			if got := projectAssistantExecCommandReceiptStatus(metadata); got != tc.wantStatus {
+				t.Fatalf("normalized receipt status = %q, want %q", got, tc.wantStatus)
+			}
+			if got := projectAssistantExecCommandReceiptObserved(metadata); got != tc.wantObserved {
+				t.Fatalf("receipt observed = %t, want %t", got, tc.wantObserved)
+			}
+			event := projectToolCallStreamEvent{Name: projectToolExecCommand, Status: "failed", Exec: metadata}
+			if got := projectAssistantExecToolCallTerminalStatus(event); got != tc.wantStatus {
+				t.Fatalf("event status = %q, want %q", got, tc.wantStatus)
+			}
+		})
 	}
 }
 

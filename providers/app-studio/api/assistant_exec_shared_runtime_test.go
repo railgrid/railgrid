@@ -339,8 +339,8 @@ func TestSharedRuntimeExecCancellationTargetsOnlyItsCommand(t *testing.T) {
 			t.Fatal("commands did not finish after scoped cancellation")
 		}
 	}
-	if got := seen[firstRequestID]; got == nil || got.Status != "canceled" {
-		t.Fatalf("canceled command result = %#v, want canceled", got)
+	if got := seen[firstRequestID]; got == nil || got.Status != "outcome_unknown" || got.ExitCode != nil {
+		t.Fatalf("canceled command result = %#v, want unresolved outcome without exit code", got)
 	}
 	if got := seen[secondRequestID]; got == nil || got.Status != "succeeded" {
 		t.Fatalf("independent command result = %#v, want succeeded", got)

@@ -415,14 +415,28 @@ func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAs
 // exec_command is rendered with a typed, sanitized execution disclosure.
 func emitProjectAssistantWorkflowExecToolCall(
 	runState *projectEinoAssistantRunState,
+	ledger *projectAssistantRunEventLedger,
 	callback func(projectToolCallStreamEvent),
 	event projectToolCallStreamEvent,
 ) {
-	if callback == nil || projectToolBaseName(event.Name) != projectToolExecCommand {
+	if projectToolBaseName(event.Name) != projectToolExecCommand {
 		return
 	}
 	if strings.TrimSpace(event.ID) == "" {
 		event.ID = "tool-1"
+	}
+	event.Status = projectAssistantExecToolCallTerminalStatus(event)
+	if event.Exec != nil {
+		event.Exec.Status = event.Status
+	}
+	if event.ObservedAt.IsZero() && projectAssistantExecToolCallNeedsObservedAtLookup(event) {
+		event.ObservedAt = projectAssistantExecToolCallObservedAt(ledger, event.ID)
+	}
+	if runState != nil && projectAssistantExecCommandReceiptObserved(event.Exec) {
+		runState.RecordCommandReceipt(event.ID, event.Status, event.Exec)
+	}
+	if callback == nil {
+		return
 	}
 	if runState != nil {
 		runState.EmitToolCall(callback, event)
@@ -509,13 +523,14 @@ func (t projectAssistantDeniedGraphTool) InvokableRun(
 	reason := projectAssistantPermissionDenialReason(t.Spec, t.RunState, args, false)
 	result := projectEinoAssistantSafeToolFailureResult(projectToolBaseName(t.Spec.Name), errors.New(reason))
 	if t.Ledger == nil {
-		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.OnToolCall, projectToolCallStreamEvent{
-			ID:        compose.GetToolCallID(ctx),
-			Name:      t.Spec.Name,
-			Status:    "rejected",
-			Arguments: summarizeProjectToolArgumentsMap(t.Spec.Name, args),
-			Error:     projectEinoAssistantSafeErrorText(errors.New(reason)),
-			Exec:      projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, result, "rejected"),
+		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.Ledger, t.OnToolCall, projectToolCallStreamEvent{
+			ID:                compose.GetToolCallID(ctx),
+			Name:              t.Spec.Name,
+			Status:            "rejected",
+			Arguments:         summarizeProjectToolArgumentsMap(t.Spec.Name, args),
+			Error:             projectEinoAssistantSafeErrorText(errors.New(reason)),
+			Exec:              projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, result, "rejected"),
+			FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(compose.GetToolCallID(ctx), t.Spec.Name, result),
 		})
 		return result, nil
 	}
@@ -528,13 +543,14 @@ func (t projectAssistantDeniedGraphTool) InvokableRun(
 		return "", err
 	}
 	if decision.Replay != nil {
-		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.OnToolCall, projectToolCallStreamEvent{
-			ID:        callID,
-			Name:      t.Spec.Name,
-			Status:    "rejected",
-			Arguments: summarizeProjectToolArgumentsMap(t.Spec.Name, args),
-			Error:     projectEinoAssistantSafeErrorText(errors.New(reason)),
-			Exec:      projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, decision.Replay.Result, "rejected"),
+		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.Ledger, t.OnToolCall, projectToolCallStreamEvent{
+			ID:                callID,
+			Name:              t.Spec.Name,
+			Status:            "rejected",
+			Arguments:         summarizeProjectToolArgumentsMap(t.Spec.Name, args),
+			Error:             projectEinoAssistantSafeErrorText(errors.New(reason)),
+			Exec:              projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, decision.Replay.Result, "rejected"),
+			FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, t.Spec.Name, decision.Replay.Result),
 		})
 		return decision.Replay.Result, nil
 	}
@@ -542,13 +558,14 @@ func (t projectAssistantDeniedGraphTool) InvokableRun(
 	if err != nil {
 		return "", err
 	}
-	emitProjectAssistantWorkflowExecToolCall(t.RunState, t.OnToolCall, projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      t.Spec.Name,
-		Status:    "rejected",
-		Arguments: summarizeProjectToolArgumentsMap(t.Spec.Name, args),
-		Error:     projectEinoAssistantSafeErrorText(errors.New(reason)),
-		Exec:      projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, outcome.Result, "rejected"),
+	emitProjectAssistantWorkflowExecToolCall(t.RunState, t.Ledger, t.OnToolCall, projectToolCallStreamEvent{
+		ID:                callID,
+		Name:              t.Spec.Name,
+		Status:            "rejected",
+		Arguments:         summarizeProjectToolArgumentsMap(t.Spec.Name, args),
+		Error:             projectEinoAssistantSafeErrorText(errors.New(reason)),
+		Exec:              projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, outcome.Result, "rejected"),
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, t.Spec.Name, outcome.Result),
 	})
 	return outcome.Result, nil
 }
@@ -709,17 +726,18 @@ func (t projectAssistantDurableGraphTool) emitExecToolCall(
 		status = projectToolCallTerminalStatus(t.spec.Name, result, succeeded)
 	}
 	event := projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      t.spec.Name,
-		Status:    status,
-		Arguments: summarizeProjectToolArgumentsMap(t.spec.Name, args),
-		Summary:   summarizeProjectToolResult(t.spec.Name, result),
-		Exec:      projectAssistantExecMetadataForToolArguments(t.spec.Name, args, result, status),
+		ID:                callID,
+		Name:              t.spec.Name,
+		Status:            status,
+		Arguments:         summarizeProjectToolArgumentsMap(t.spec.Name, args),
+		Summary:           summarizeProjectToolResult(t.spec.Name, result),
+		Exec:              projectAssistantExecMetadataForToolArguments(t.spec.Name, args, result, status),
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, t.spec.Name, result),
 	}
 	if strings.TrimSpace(errorText) != "" && !projectAssistantRunToolCancellation(errors.New(errorText)) {
 		event.Error = projectEinoAssistantSafeErrorText(errors.New(errorText))
 	}
-	emitProjectAssistantWorkflowExecToolCall(t.runState, t.onToolCall, event)
+	emitProjectAssistantWorkflowExecToolCall(t.runState, t.ledger, t.onToolCall, event)
 }
 
 func newProjectAssistantPlanningGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {

@@ -166,6 +166,66 @@ func TestAssistantThreadTurnEventWindowExcludesThreadMetadata(t *testing.T) {
 	}
 }
 
+func TestAssistantThreadTurnEventsAfterUsesExactTurnAndType(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		new  func(*testing.T) Store
+	}{
+		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "encrypted", new: func(t *testing.T) Store {
+			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return wrapped
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := fixture.new(t)
+			scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+			now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+			thread, err := s.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-receipt-events", ActorID: "alice", CreatedAt: now, UpdatedAt: now}, []AssistantThreadEvent{
+				{Type: "thread.created", Payload: json.RawMessage(`{"title":"demo"}`), CreatedAt: now},
+				{TurnID: "turn-old", Type: "turn.started", CreatedAt: now},
+				{TurnID: "turn-old", Type: "item.completed", ItemID: "tool-first", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"tool-first"}}`), CreatedAt: now},
+				{TurnID: "turn-old", Type: "item.completed", ItemID: "tool-second", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"tool-second"}}`), CreatedAt: now},
+				{TurnID: "turn-old", Type: "item.started", ItemID: "tool-third", Payload: json.RawMessage(`{"item":{"id":"tool-third"}}`), CreatedAt: now},
+				{TurnID: "turn-new", Type: "item.completed", ItemID: "new-turn-tool", Payload: json.RawMessage(`{"receiptSettlement":true,"item":{"id":"new-turn-tool"}}`), CreatedAt: now},
+				{TurnID: "turn-old", Type: "turn.completed", CreatedAt: now},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			first, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, thread.ID, "turn-old", "item.completed", 0, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first) != 1 || first[0].Sequence != 3 || first[0].TurnID != "turn-old" || first[0].ItemID != "tool-first" {
+				t.Fatalf("first exact-turn page = %#v, want sequence 3 for tool-first", first)
+			}
+			second, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, thread.ID, "turn-old", "item.completed", first[0].Sequence, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(second) != 1 || second[0].Sequence != 4 || second[0].TurnID != "turn-old" || second[0].ItemID != "tool-second" {
+				t.Fatalf("second exact-turn page = %#v, want only sequence 4 for tool-second", second)
+			}
+			if payload := string(second[0].Payload); !strings.Contains(payload, "receiptSettlement") {
+				t.Fatalf("encrypted event payload was not recovered: %s", payload)
+			}
+			empty, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, thread.ID, "turn-old", "item.completed", second[0].Sequence, 10)
+			if err != nil || len(empty) != 0 {
+				t.Fatalf("exhausted exact-turn page = %#v, %v; want empty", empty, err)
+			}
+			if _, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, thread.ID, " ", "item.completed", 0, 10); err == nil {
+				t.Fatal("empty turn ID unexpectedly accepted")
+			}
+		})
+	}
+}
+
 func TestMemoryAssistantThreadSequenceIndexesTrackAndCleanUp(t *testing.T) {
 	ctx := context.Background()
 	memory := NewMemoryStore()
@@ -214,6 +274,9 @@ func TestMemoryAssistantThreadSequenceIndexesTrackAndCleanUp(t *testing.T) {
 	}
 	if _, ok := memory.threadTurnEvents[scope]; ok {
 		t.Fatalf("turn-event scope index retained after deleting its final thread: %#v", memory.threadTurnEvents[scope])
+	}
+	if _, ok := memory.threadTurnEventIndex[scope]; ok {
+		t.Fatalf("exact turn-event scope index retained after deleting its final thread: %#v", memory.threadTurnEventIndex[scope])
 	}
 }
 

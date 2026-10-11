@@ -949,14 +949,16 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 				return "", durableErr
 			}
 			t.emitToolCall(projectToolCallStreamEvent{
-				ID:         callID,
-				Name:       spec.Name,
-				Status:     "failed",
-				Arguments:  summarizeProjectToolArgumentsMap(spec.Name, args),
-				Summary:    summarizeProjectToolResult(spec.Name, modelResult),
-				Exec:       projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, "failed"),
-				Mutation:   projectAssistantMutationFromResult(spec.Name, modelResult),
-				RecoveryOf: inputRecovery,
+				ID:                callID,
+				Name:              spec.Name,
+				Status:            "failed",
+				Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
+				Summary:           summarizeProjectToolResult(spec.Name, modelResult),
+				Exec:              projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, "failed"),
+				Mutation:          projectAssistantMutationFromResult(spec.Name, modelResult),
+				MutationError:     projectAssistantMutationFailureFromResult(spec.Name, modelResult),
+				FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, spec.Name, modelResult),
+				RecoveryOf:        inputRecovery,
 			})
 			t.recordToolMessage(callID, spec.Name, modelResult)
 			t.appendBuilderEvent(projectBuilderEventWorkspaceChanged)
@@ -1030,7 +1032,9 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
 		Summary:           summarizeProjectToolResult(spec.Name, modelResult),
 		Exec:              projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, status),
-		Mutation:          projectAssistantMutationFromSuccessfulResult(spec.Name, modelResult, successful),
+		Mutation:          projectAssistantMutationFromResult(spec.Name, modelResult),
+		MutationError:     projectAssistantMutationFailureFromResult(spec.Name, modelResult),
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, spec.Name, modelResult),
 		RecoveryOf:        inputRecovery,
 		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(spec.Name, result),
 	})
@@ -1204,7 +1208,9 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 		Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
 		Summary:           summarizeProjectToolResult(spec.Name, result),
 		Exec:              projectAssistantExecMetadataForToolArguments(spec.Name, args, result, status),
-		Mutation:          projectAssistantMutationFromSuccessfulResult(spec.Name, result, successful),
+		Mutation:          projectAssistantMutationFromResult(spec.Name, result),
+		MutationError:     projectAssistantMutationFailureFromResult(spec.Name, result),
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, spec.Name, result),
 		RecoveryOf:        inputRecovery,
 		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(spec.Name, result),
 	})
@@ -1461,6 +1467,7 @@ func projectAssistantMutationFromResult(name, result string) *projectAssistantMu
 		Operation    string   `json:"operation"`
 		Changed      *bool    `json:"changed"`
 		Status       string   `json:"status"`
+		Phase        string   `json:"phase"`
 		Path         string   `json:"path"`
 		PreviousPath string   `json:"previousPath"`
 		Paths        []string `json:"paths"`
@@ -1476,7 +1483,11 @@ func projectAssistantMutationFromResult(name, result string) *projectAssistantMu
 	if decoded.Operation != "" && decoded.Operation != projectToolBaseName(name) {
 		return nil
 	}
-	changed := !strings.EqualFold(strings.TrimSpace(decoded.Status), "failed")
+	status := strings.TrimSpace(decoded.Status)
+	if status == "" {
+		status = strings.TrimSpace(decoded.Phase)
+	}
+	changed := !projectAssistantTypedFailureStatus(status)
 	if decoded.Changed != nil {
 		changed = *decoded.Changed
 	}
@@ -1889,11 +1900,12 @@ func (t projectEinoAssistantTool) finishFailedToolCall(callID, name, rawArgs, re
 	}
 	safeReason := projectEinoAssistantSafeErrorText(errors.New(reason))
 	t.emitToolCall(projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      name,
-		Status:    "failed",
-		Arguments: summarizeProjectToolArgumentsMap(name, args),
-		Error:     safeReason,
+		ID:                callID,
+		Name:              name,
+		Status:            "failed",
+		Arguments:         summarizeProjectToolArgumentsMap(name, args),
+		Error:             safeReason,
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticForTool(callID, name, safeReason),
 	})
 	result := projectEinoAssistantSafeToolFailureResult(projectToolBaseName(name), errors.New(safeReason))
 	t.recordToolMessage(callID, name, result)
@@ -1930,6 +1942,11 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 		Message:    "Tool call failed: " + safeError,
 		Error:      failure,
 	}
+	payload, err := json.Marshal(encodedFailure)
+	if err != nil {
+		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), encodedFailure.Message)
+	}
+	result := string(payload)
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:         callID,
 		Name:       name,
@@ -1943,18 +1960,15 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 			RecoveryOf: inputRecovery,
 		},
 		MutationError: &projectAssistantMutationFailure{
-			Code:       failure.Code,
-			Operation:  failure.Operation,
-			Path:       failure.Path,
-			Guidance:   failure.Guidance,
-			RecoveryOf: inputRecovery,
+			ChangedFiles: append([]string(nil), failure.ChangedFiles...),
+			Code:         failure.Code,
+			Operation:    failure.Operation,
+			Path:         failure.Path,
+			Guidance:     failure.Guidance,
+			RecoveryOf:   inputRecovery,
 		},
+		FailureDiagnostic: projectAssistantActionFeedDiagnosticFromTypedResult(callID, name, result),
 	})
-	payload, err := json.Marshal(encodedFailure)
-	if err != nil {
-		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), encodedFailure.Message)
-	}
-	result := string(payload)
 	t.recordToolMessage(callID, name, result)
 	return result
 }
@@ -1972,13 +1986,24 @@ func (t projectEinoAssistantTool) finishFailedNonMutationToolCall(callID, name s
 }
 
 func (t projectEinoAssistantTool) emitToolCall(event projectToolCallStreamEvent) {
-	if t.req.StreamCallbacks.OnToolCall == nil {
-		return
-	}
 	if event.ID == "" {
 		event.ID = "tool-1"
 	}
-	t.runState.EmitToolCall(t.req.StreamCallbacks.OnToolCall, event)
+	if projectToolBaseName(event.Name) == projectToolExecCommand {
+		event.Status = projectAssistantExecToolCallTerminalStatus(event)
+		if event.Exec != nil {
+			event.Exec.Status = event.Status
+		}
+		if event.ObservedAt.IsZero() && projectAssistantExecToolCallNeedsObservedAtLookup(event) {
+			event.ObservedAt = projectAssistantExecToolCallObservedAt(t.req.eventLedger, event.ID)
+		}
+		if t.runState != nil && projectAssistantExecCommandReceiptObserved(event.Exec) {
+			t.runState.RecordCommandReceipt(event.ID, event.Status, event.Exec)
+		}
+	}
+	if t.req.StreamCallbacks.OnToolCall != nil {
+		t.runState.EmitToolCall(t.req.StreamCallbacks.OnToolCall, event)
+	}
 }
 
 func (t projectEinoAssistantTool) recordToolMessage(callID, name, content string) {

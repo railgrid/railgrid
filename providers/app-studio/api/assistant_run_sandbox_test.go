@@ -1641,7 +1641,7 @@ func (f *sandboxRevisionDomainFake) Exec(_ context.Context, _ identity, _ dataPl
 	if request.SourceRevision != f.revision || !sandboxDigestEqual(request.SourceDigest, f.digest) {
 		return projectSandboxExecResponse{}, errProjectAssistantRunSandboxConflict
 	}
-	return projectSandboxExecResponse{State: "succeeded", Stdout: "WARM_SANDBOX_OK"}, nil
+	return projectSandboxExecResponse{State: "succeeded", ExitCode: intPointer(0), Stdout: "WARM_SANDBOX_OK"}, nil
 }
 
 func (f *sandboxRevisionDomainFake) mutateRemote(path, content string) {
@@ -1707,7 +1707,7 @@ func (f *sandboxClientFake) Exec(ctx context.Context, _ identity, _ dataPlaneRef
 	if strings.TrimSpace(f.execResponse.State) != "" {
 		return f.execResponse, nil
 	}
-	return projectSandboxExecResponse{SessionID: "session", State: "succeeded"}, nil
+	return projectSandboxExecResponse{SessionID: "session", State: "succeeded", ExitCode: intPointer(0)}, nil
 }
 
 var _ projectAssistantSandboxClient = (*sandboxClientFake)(nil)

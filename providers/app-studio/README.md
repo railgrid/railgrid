@@ -392,6 +392,21 @@ It is not an atomic transaction with external Kubernetes object edits. A target
 change stops retries, and an earlier unconfirmed START is canceled by its
 original request ID against the original target.
 
+Command outcomes are recorded in the durable run ledger before they are
+projected into conversation history. Stopping a turn does not establish that
+its command stopped: until a terminal result is known, history reports the
+outcome as unknown. A late result may settle only the matching dispatched
+command in an interrupted run; it does not reopen the turn or overwrite a
+confirmed failure. Recovery rechecks the ledger and repairs the audit, action
+feed, and canonical thread item with revision checks and bounded work.
+
+Late receipt events retain their original turn and item identity, even after
+newer turns have completed. History pagination overlays those receipts onto
+that original turn. Failure diagnostics and recovery links are bounded
+server-owned metadata; completion evidence retains a bounded list of command
+receipts with their dispatch revision, observed source relationship, and exit
+code when known. A successful command alone does not verify the current app.
+
 File API writes can run alongside assistant turns under the same project owner.
 Creating a file requires `If-None-Match: *`; replacing or deleting a file
 requires `If-Match` with its exact version. Missing preconditions are rejected,
