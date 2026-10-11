@@ -52,6 +52,9 @@ func TestProjectAssistantModePromptGuidesKnownArgumentBatchingWithoutWeakeningRe
 		"A read receipt returned in that same batch does not authorize replace_file, delete_file, or move_file",
 		"those still require the complete read in an earlier model response",
 		"Wait for a receipt if you need its content or version to form a later call.",
+		"Repository state prevents commit_project_files only. Continue authorized Project workspace mutations and shared development component execution when configured",
+		"an explicitly enabled private coding sandbox is available only when the authoritative turn snapshot says it is active",
+		"When that private sandbox is active, successful terminal checkpointing remains durable in App Studio",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("default mode prompt missing batching/proof guidance %q", want)

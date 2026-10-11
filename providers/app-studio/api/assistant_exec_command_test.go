@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,9 +37,15 @@ import (
 	"time"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubmcp"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
 func TestNormalizeProjectAssistantExecCommandInput(t *testing.T) {
@@ -86,7 +93,7 @@ func TestProjectAssistantExecCommandContractAndPolicy(t *testing.T) {
 	if !ok {
 		t.Fatal("exec_command workflow spec is missing")
 	}
-	for _, want := range []string{"user-authorized", "compiler, test, lint, or read-only diagnostic", "argv tokens", "4096 UTF-8 bytes", "existing workspace script", "cannot write back to App Studio source"} {
+	for _, want := range []string{"user-authorized", "compiler, test, lint, or read-only diagnostic", "argv tokens", "4096 UTF-8 bytes", "existing workspace script", "selected shared project development component", "source revision checked at launch", "result is marked stale", "cannot write back to App Studio source"} {
 		if !strings.Contains(spec.Description, want) {
 			t.Errorf("live exec_command description missing %q: %s", want, spec.Description)
 		}
@@ -125,6 +132,350 @@ func TestProjectAssistantExecCommandContractAndPolicy(t *testing.T) {
 	if got := projectAssistantToolsForCollaborationMode([]projectAssistantTool{projectAssistantToolFunc{spec: spec}}, projectAssistantCollaborationModePlan); len(got) != 0 {
 		t.Fatal("plan mode must hide exec_command")
 	}
+}
+
+type sharedExecTestHandler func(*http.Request, projectSandboxExecRequest, *workspace.FileStore, workspace.Scope) projectSandboxExecResponse
+
+func newAppStudioSharedExecTestContext(t *testing.T, state *projectEinoAssistantRunState, handler sharedExecTestHandler) (projectAssistantWorkflowRunContext, *workspace.FileStore, workspace.Scope) {
+	t.Helper()
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "shop", ProjectUID: "project-uid"}
+	if err := files.ApplyFiles(ctx, scope, []workspace.File{{Path: "api/main.go", Content: "package main\n"}}); err != nil {
+		t.Fatalf("seed shared runtime source: %v", err)
+	}
+	if state == nil {
+		state = newProjectEinoAssistantRunState()
+	}
+	state.RecordSourceMutation()
+	revision := state.BeginDevelopmentSyncForCurrentMutation()
+	state.CompleteDevelopmentSync(revision, nil)
+	project := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"},
+		Spec:       aiv1alpha1.ProjectSpec{Template: &aiv1alpha1.ProjectTemplateSpec{Name: "application"}},
+	}
+	applicationGVR := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
+	instance := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
+		"kind":       "Instance",
+		"metadata":   map[string]any{"name": projectTemplateInstanceName(project)},
+	}}
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		asclient.ProjectGVR:  "ProjectList",
+		templateResource.GVR: "TemplateList",
+		applicationGVR:       "InstanceList",
+	}, runtimeProjectObject(t, project), applicationTemplateObject(), instance)
+	server := testDataPlaneServer()
+	server.workspaces = files
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			var payload projectSandboxExecRequest
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				return nil, fmt.Errorf("decode shared exec payload: %w", err)
+			}
+			response := projectSandboxExecResponse{State: "failed"}
+			if handler != nil {
+				response = handler(request, payload, files, scope)
+				if err := request.Context().Err(); err != nil {
+					return nil, err
+				}
+			}
+			body, err := json.Marshal(response)
+			if err != nil {
+				return nil, fmt.Errorf("encode shared exec response: %w", err)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: request}, nil
+		})}
+	}
+	return projectAssistantWorkflowRunContext{
+		Server: server, Project: project, WorkspaceScope: scope, Workspace: files, AssistantRunID: "run-shared-exec", RunState: state,
+		Identity: identity{clusterID: "rgl3jcl2cfl3xa5p", user: "alice"}, Client: asclient.NewFromDynamic(dynamicClient),
+	}, files, scope
+}
+
+func TestProjectAssistantExecCommandUsesSharedRuntimeWhenPrivateSandboxIsOff(t *testing.T) {
+	var setupCalls atomic.Int32
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
+	state.ConfigureSandboxCapability(CodingSandboxEligibility{Reason: "coding sandbox mode is off"}, func(context.Context) (*projectAssistantRunSandbox, func(), error) {
+		setupCalls.Add(1)
+		return nil, nil, errors.New("private setup must not run while mode is off")
+	})
+	var requests []projectSandboxExecRequest
+	var requestIDs []string
+	runCtx, files, scope := newAppStudioSharedExecTestContext(t, state, func(request *http.Request, payload projectSandboxExecRequest, _ *workspace.FileStore, _ workspace.Scope) projectSandboxExecResponse {
+		if got := request.URL.Query().Get("component"); got != "backend" {
+			t.Errorf("exec component = %q, want backend", got)
+		}
+		if key := request.Header.Get("Idempotency-Key"); key == "" || key != payload.RequestID {
+			t.Errorf("Idempotency-Key = %q, request ID = %q; want same non-empty key", key, payload.RequestID)
+		}
+		requests = append(requests, payload)
+		requestIDs = append(requestIDs, payload.RequestID)
+		switch payload.Action {
+		case "start":
+			return projectSandboxExecResponse{SessionID: "shared-session", State: "running"}
+		case "poll":
+			exitCode := 0
+			return projectSandboxExecResponse{SessionID: "shared-session", State: "succeeded", ExitCode: &exitCode, Stdout: "SHARED_BUILD_OK"}
+		default:
+			t.Errorf("unexpected shared exec action %q", payload.Action)
+			return projectSandboxExecResponse{State: "error"}
+		}
+	})
+	initialRevision, err := files.SourceRevision(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("read initial source revision: %v", err)
+	}
+	result, err := execProjectAssistantCommand(runCtx)(context.Background(), &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"npm", "run", "build"}})
+	if err != nil || result == nil || result.Status != "succeeded" {
+		t.Fatalf("shared exec result = %#v, err=%v; want succeeded", result, err)
+	}
+	if setupCalls.Load() != 0 {
+		t.Fatalf("private sandbox setup calls = %d, want none while mode is off", setupCalls.Load())
+	}
+	if len(requests) != 2 || requests[0].Action != "start" || requests[1].Action != "poll" || requestIDs[0] != requestIDs[1] {
+		t.Fatalf("shared exec requests = %#v, ids=%#v; want start/poll with the same idempotency key", requests, requestIDs)
+	}
+	if requests[0].SourceRevision != result.SourceRevision || requests[0].SourceDigest != result.SourceDigest || result.SourceRevision != initialRevision || result.SourceDigest == "" {
+		t.Fatalf("shared exec launch precondition/result receipt = %#v / %#v, want the source revision and digest", requests[0], result)
+	}
+	if got := strings.Join(result.Stdout, "\n"); got != "SHARED_BUILD_OK" || result.ExitCode == nil || *result.ExitCode != 0 || result.SourceStale {
+		t.Fatalf("shared exec output/status = %#v, want unchanged verified success", result)
+	}
+}
+
+func TestProjectAssistantExecCommandDoesNotFallbackWhenPrivateSandboxIsUnavailable(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
+	state.ConfigureSandboxCapability(CodingSandboxEligibility{Eligible: true}, func(context.Context) (*projectAssistantRunSandbox, func(), error) {
+		return nil, nil, nil
+	})
+	var sharedCalls atomic.Int32
+	runCtx, _, _ := newAppStudioSharedExecTestContext(t, state, func(_ *http.Request, _ projectSandboxExecRequest, _ *workspace.FileStore, _ workspace.Scope) projectSandboxExecResponse {
+		sharedCalls.Add(1)
+		return projectSandboxExecResponse{State: "succeeded"}
+	})
+	result, err := execProjectAssistantCommand(runCtx)(context.Background(), &projectAssistantExecCommandInput{
+		Component: projectAssistantRunSandboxWorkspaceVerb,
+		Argv:      []string{"go", "test", "./..."},
+	})
+	if err != nil || result == nil || result.Status != "blocked" || !strings.Contains(result.Summary, "private coding sandbox is unavailable") {
+		t.Fatalf("private sandbox unavailable result = %#v, err=%v; want blocked private-runtime result", result, err)
+	}
+	if sharedCalls.Load() != 0 {
+		t.Fatalf("shared runtime calls = %d, want none when private mode is explicitly enabled", sharedCalls.Load())
+	}
+}
+
+func TestProjectAssistantExecCommandMarksSharedResultsStaleWhenSourceChanges(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		state      string
+		exitCode   int
+		wantStatus string
+	}{
+		{name: "successful output is unverified", state: "succeeded", exitCode: 0, wantStatus: "stale"},
+		{name: "command failure remains failed", state: "failed", exitCode: 2, wantStatus: "failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := newProjectEinoAssistantRunState()
+			state.ConfigureSandboxCapability(CodingSandboxEligibility{Reason: "coding sandbox mode is off"}, nil)
+			runCtx, files, scope := newAppStudioSharedExecTestContext(t, state, func(_ *http.Request, payload projectSandboxExecRequest, files *workspace.FileStore, scope workspace.Scope) projectSandboxExecResponse {
+				switch payload.Action {
+				case "start":
+					return projectSandboxExecResponse{SessionID: "shared-session", State: "running"}
+				case "poll":
+					if _, err := files.PutFile(context.Background(), scope, workspace.PutOptions{Path: "api/main.go", Data: []byte("package main // changed after launch\n")}); err != nil {
+						t.Errorf("change source during command: %v", err)
+					}
+					exitCode := test.exitCode
+					return projectSandboxExecResponse{SessionID: "shared-session", State: test.state, ExitCode: &exitCode, Stdout: "BUILD_OUTPUT", Stderr: "BUILD_DIAGNOSTIC"}
+				default:
+					t.Errorf("unexpected shared exec action %q", payload.Action)
+					return projectSandboxExecResponse{State: "error"}
+				}
+			})
+			initialRevision, err := files.SourceRevision(context.Background(), scope)
+			if err != nil {
+				t.Fatalf("read initial source revision: %v", err)
+			}
+			result, err := execProjectAssistantCommand(runCtx)(context.Background(), &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"npm", "run", "build"}})
+			if err != nil || result == nil {
+				t.Fatalf("shared exec result = %#v, err=%v", result, err)
+			}
+			if result.Status != test.wantStatus || !result.SourceStale || result.SyncStatus != "stale" {
+				t.Fatalf("stale shared exec status = %#v, want status=%q with sourceStale=true", result, test.wantStatus)
+			}
+			if result.SourceRevision != initialRevision || result.SourceDigest == "" || result.ExitCode == nil || *result.ExitCode != test.exitCode || strings.Join(result.Stdout, "\n") != "BUILD_OUTPUT" || strings.Join(result.Stderr, "\n") != "BUILD_DIAGNOSTIC" {
+				t.Fatalf("stale result lost launch receipt or command outcome: %#v", result)
+			}
+			if !strings.Contains(result.Summary, fmt.Sprintf("dispatched for revision %d", initialRevision)) || !strings.Contains(result.Summary, "unverified for current source") {
+				t.Fatalf("stale result summary = %q, want explicit source-change explanation", result.Summary)
+			}
+			currentRevision, err := files.SourceRevision(context.Background(), scope)
+			if err != nil || currentRevision != initialRevision+1 {
+				t.Fatalf("current source revision = %d, err=%v, want newer revision %d", currentRevision, err, initialRevision+1)
+			}
+			metadata := projectAssistantExecMetadataForToolArguments(projectToolExecCommand, map[string]any{
+				"component": "backend", "argv": []string{"npm", "run", "build"},
+			}, mustJSON(t, result), "succeeded")
+			if metadata == nil || !metadata.SourceStale || metadata.SourceRevision != initialRevision || metadata.SourceDigest != result.SourceDigest || metadata.SyncStatus != "stale" || metadata.Status != test.wantStatus || metadata.ExitCode == nil || *metadata.ExitCode != test.exitCode {
+				t.Fatalf("public stale exec metadata = %#v", metadata)
+			}
+			action := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{ID: "exec-stale", Name: projectToolExecCommand, Status: "succeeded", Exec: metadata})
+			if action.Exec == nil || action.Exec.Status != test.wantStatus || !action.Exec.SourceStale ||
+				action.Exec.SourceRevision != initialRevision || action.Exec.SourceDigest != result.SourceDigest || action.Exec.SyncStatus != "stale" {
+				t.Fatalf("action feed stale disclosure = %#v, want receipt and terminal source-stale evidence", action.Exec)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantExecSharedCancellationSendsScopedCancelWithoutExitCode(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ConfigureSandboxCapability(CodingSandboxEligibility{Reason: "coding sandbox mode is off"}, nil)
+	pollStarted := make(chan struct{})
+	cancelSeen := make(chan projectSandboxExecRequest, 1)
+	runCtx, _, _ := newAppStudioSharedExecTestContext(t, state, func(request *http.Request, payload projectSandboxExecRequest, _ *workspace.FileStore, _ workspace.Scope) projectSandboxExecResponse {
+		switch payload.Action {
+		case "start":
+			return projectSandboxExecResponse{SessionID: "cancel-session", State: "running"}
+		case "poll":
+			close(pollStarted)
+			<-request.Context().Done()
+			return projectSandboxExecResponse{}
+		case "cancel":
+			cancelSeen <- payload
+			return projectSandboxExecResponse{SessionID: "cancel-session", State: "canceled"}
+		default:
+			return projectSandboxExecResponse{State: "error"}
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan *projectAssistantExecCommandResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := execProjectAssistantCommand(runCtx)(ctx, &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"npm", "run", "build"}})
+		resultCh <- result
+		errCh <- err
+	}()
+	select {
+	case <-pollStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared command did not start polling")
+	}
+	cancel()
+	var result *projectAssistantExecCommandResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared command did not return after request cancellation")
+	}
+	if err := <-errCh; err != nil || result == nil || result.Status != "canceled" {
+		t.Fatalf("canceled shared command = %#v, err=%v", result, err)
+	}
+	if result.ExitCode != nil {
+		t.Fatalf("canceled command invented an exit code: %#v", result)
+	}
+	select {
+	case cancelRequest := <-cancelSeen:
+		if cancelRequest.Action != "cancel" || cancelRequest.RequestID == "" || cancelRequest.SessionID != "cancel-session" {
+			t.Fatalf("remote cancel request = %#v, want request/session scoped cleanup", cancelRequest)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled command did not send remote cleanup")
+	}
+}
+
+func TestProjectAssistantExecSharedTerminalErrorDoesNotPollAgainOrInventExitCode(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.ConfigureSandboxCapability(CodingSandboxEligibility{Reason: "coding sandbox mode is off"}, nil)
+	var actions []string
+	runCtx, _, _ := newAppStudioSharedExecTestContext(t, state, func(_ *http.Request, payload projectSandboxExecRequest, _ *workspace.FileStore, _ workspace.Scope) projectSandboxExecResponse {
+		actions = append(actions, payload.Action)
+		switch payload.Action {
+		case "start":
+			return projectSandboxExecResponse{SessionID: "error-session", State: "running"}
+		case "poll":
+			return projectSandboxExecResponse{SessionID: "error-session", State: "error", Stderr: "cleanup status unavailable"}
+		default:
+			return projectSandboxExecResponse{State: "canceled"}
+		}
+	})
+	result, err := execProjectAssistantCommand(runCtx)(context.Background(), &projectAssistantExecCommandInput{Component: "backend", Argv: []string{"npm", "run", "build"}})
+	if err != nil || result == nil || result.Status != "error" || result.ExitCode != nil {
+		t.Fatalf("terminal executor error = %#v, err=%v; want error without exit code", result, err)
+	}
+	if !reflect.DeepEqual(actions, []string{"start", "poll"}) {
+		t.Fatalf("shared actions = %#v, want one start and one terminal poll", actions)
+	}
+}
+
+func TestProjectAssistantExecPresentationUsesActiveTemplateComponentRoots(t *testing.T) {
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolExecCommand)
+	if !ok {
+		t.Fatal("exec_command workflow spec is missing")
+	}
+	state := newProjectEinoAssistantRunState()
+	state.SetSessionSnapshot(projectEinoAssistantSessionSnapshot{DevelopmentComponents: map[string]projectTemplateComponent{
+		"backend":  {WorkspacePath: "api"},
+		"frontend": {WorkspacePath: "web"},
+	}})
+	got := projectAssistantExecCommandToolSpecForRun(spec, projectAssistantWorkflowRunContext{RunState: state})
+	if !strings.Contains(got.Description, "backend → api/") || !strings.Contains(got.Description, "frontend → web/") ||
+		!strings.Contains(got.Description, "relative to that root") || !strings.Contains(got.Description, "do not repeat") {
+		t.Fatalf("shared command description = %q, want active component roots and relative workdir guidance", got.Description)
+	}
+	var parameters map[string]any
+	if err := json.Unmarshal(got.Parameters, &parameters); err != nil {
+		t.Fatalf("decode dynamic exec schema: %v", err)
+	}
+	properties := parameters["properties"].(map[string]any)
+	component := properties["component"].(map[string]any)
+	if !reflect.DeepEqual(component["enum"], []any{"backend", "frontend"}) {
+		t.Fatalf("shared component enum = %#v, want active template components", component["enum"])
+	}
+	workdir := properties["workdir"].(map[string]any)
+	if !strings.Contains(projectToolString(workdir["description"]), "beneath the selected component root") {
+		t.Fatalf("shared workdir schema description = %#v", workdir["description"])
+	}
+}
+
+func TestProjectAssistantExecClassifiesWorkdirRejectionAsPreStartBlocker(t *testing.T) {
+	args := &projectAssistantExecCommandInput{Component: "backend", Workdir: "missing", Argv: []string{"go", "test"}}
+	component := projectTemplateComponent{WorkspacePath: "api"}
+	result, ok := projectAssistantExecWorkdirRejection(
+		&projectAssistantExecHTTPError{status: http.StatusBadRequest, detail: "workdir missing: no such directory"},
+		args, "backend", component, 8, "source-digest", "succeeded",
+	)
+	if !ok || result.Status != "blocked" || !strings.Contains(result.Blockers[0], "project/api/") || !strings.Contains(result.Blockers[0], "The command did not start") {
+		t.Fatalf("workdir HTTP rejection = %#v, classified=%t", result, ok)
+	}
+	result, ok = projectAssistantExecWorkdirExecutionFailure(
+		projectSandboxExecResponse{State: "failed", Stderr: "stateless executor rejected request: workdir missing: no such directory"},
+		args, "backend", component, 8, "source-digest", "succeeded",
+	)
+	if !ok || result.Status != "blocked" || result.ExitCode != nil {
+		t.Fatalf("workdir terminal rejection = %#v, classified=%t", result, ok)
+	}
+	exitCode := 2
+	if _, ok := projectAssistantExecWorkdirExecutionFailure(
+		projectSandboxExecResponse{State: "failed", ExitCode: &exitCode, Stderr: "workdir command failed"},
+		args, "backend", component, 8, "source-digest", "succeeded",
+	); ok {
+		t.Fatal("a started command with an exit code was misclassified as a pre-start workdir rejection")
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal test result: %v", err)
+	}
+	return string(encoded)
 }
 
 func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.T) {
@@ -249,7 +600,7 @@ func TestProjectAssistantExecCanceledDuringSandboxSetupIsNotReportedFailed(t *te
 	<-setupStarted
 	cancelRun()
 	result := <-resultCh
-	if result == nil || result.Status != "canceled" || result.Summary != "Command canceled before the coding sandbox was ready." {
+	if result == nil || result.Status != "canceled" || result.Summary != "Command canceled before the private coding sandbox was ready." {
 		t.Fatalf("canceled setup result = %#v, want canceled command", result)
 	}
 }
@@ -711,9 +1062,10 @@ func TestProjectAssistantExecMetadataIsStructuredAndDoesNotExposeSecrets(t *test
 		"argv":           []any{"go", "test", "--token", "super-secret"},
 		"workdir":        "internal",
 		"timeoutSeconds": float64(42),
-	}, `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":2,"durationMs":123}`, "failed")
+	}, `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":2,"durationMs":123,"sourceRevision":7,"sourceDigest":"digest-7","syncStatus":"stale","sourceStale":true}`, "failed")
 	if metadata == nil || metadata.Component != "backend" || metadata.Workdir != "internal" || metadata.TimeoutSeconds != 42 ||
-		metadata.NetworkProfile != "application-runtime" || metadata.AuthorityProfile != "application-container" || metadata.WritebackPolicy != "runtime-workspace-only" || metadata.ExitCode == nil || *metadata.ExitCode != 2 {
+		metadata.NetworkProfile != "application-runtime" || metadata.AuthorityProfile != "application-container" || metadata.WritebackPolicy != "runtime-workspace-only" || metadata.ExitCode == nil || *metadata.ExitCode != 2 ||
+		metadata.SourceRevision != 7 || metadata.SourceDigest != "digest-7" || metadata.SyncStatus != "stale" || !metadata.SourceStale {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 	if len(metadata.Argv) != 4 || metadata.Argv[3] != "[redacted]" {
@@ -725,6 +1077,22 @@ func TestProjectAssistantExecMetadataIsStructuredAndDoesNotExposeSecrets(t *test
 	}
 	if strings.Contains(string(raw), "super-secret") {
 		t.Fatalf("metadata leaked argv secret: %s", raw)
+	}
+}
+
+func TestProjectAssistantExecMetadataMergePreservesSourceReceipt(t *testing.T) {
+	existing := &projectAssistantExecMetadata{
+		Status:         "stale",
+		Summary:        "Project source is now revision 8; this command was dispatched for revision 7, so its output is unverified for current source.",
+		SourceRevision: 7,
+		SourceDigest:   "digest-7",
+		SyncStatus:     "stale",
+		SourceStale:    true,
+	}
+	next := &projectAssistantExecMetadata{Status: "succeeded", Summary: "command completed"}
+	got := mergeProjectAssistantExecMetadata(existing, next)
+	if got.Status != "stale" || !got.SourceStale || got.SourceRevision != 7 || got.SourceDigest != "digest-7" || got.SyncStatus != "stale" || got.Summary != existing.Summary {
+		t.Fatalf("merged exec metadata = %#v, want preserved stale launch receipt", got)
 	}
 }
 

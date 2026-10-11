@@ -606,15 +606,20 @@ func TestProjectPromptSeparatesCodingPreviewAndRepositoryBoundaries(t *testing.T
 		true,
 	)
 	for _, want := range []string{
-		"codingEnvironment field, when present, controls source authoring and command execution",
+		"When a shared component is configured, exec_command uses the selected component in the shared project runtime by default",
+		"codingEnvironment field, when present, explicitly opts this run into command execution",
+		"For either execution mode, exec_command is verification and runtime-local setup only with respect to source",
+		"this does not authorize command-side source edits",
+		"developmentComponents field describes the template-declared shared project components",
 		"publicPreview=false means it is never evidence of a hosted browser preview",
 		"Repository readiness governs Git commit and CI handoff only",
-		"exec_command is verification-only with respect to source",
+		"direct command writes invalidate the synchronized source evidence needed by subsequent command launch checks and, in a private environment, terminal checkpointing",
 		"gofmt -d rather than gofmt -w",
 		"Hosted development/preview template: NONE",
-		"lack of a hosted template is not an authoring, compiler, or test blocker",
+		"lack of a hosted template is not a source-authoring blocker",
+		"compiler or test execution requires a configured shared development component or an explicitly enabled private coding sandbox",
 		"Repository state prevents commit_project_files only",
-		"successful workspace checkpointing remains durable in App Studio",
+		"When that private sandbox is active, successful terminal checkpointing remains durable in App Studio",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("unbound prompt missing %q:\n%s", want, prompt)
