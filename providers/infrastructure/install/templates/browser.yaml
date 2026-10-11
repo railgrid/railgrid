@@ -6,7 +6,7 @@ spec:
   displayName: "Browser (Playwright MCP)"
   description: "A headless Chromium driven by the official Playwright MCP server, reachable only from inside the platform over the infrastructure provider's data plane — wire it to an agent and it gains real browsing tools: navigate, click, type, snapshot."
   category: Agent tools
-  version: 0.1.0
+  version: 0.2.0
   # exposure: what the platform tells callers about reaching an instance.
   # Internal by default, reachable through the dataPlane proxy verb.
   # Setting expose.enabled publishes it behind oauth2-proxy — never ungated.
@@ -55,17 +55,16 @@ spec:
       Use the browser when, and only when, the page genuinely needs JavaScript
       execution, a session/login, or interaction.
 
-      IT IS STATEFUL, AND EFFECTIVELY SINGLE-SESSION. One instance is one
-      Chromium: the page you navigated to stays open, cookies and logins
-      persist between tool calls, and the tools act on whatever the current
-      page is. Two agents pointed at the same instance will fight over the same
-      tab — provision one instance per agent that needs concurrent browsing.
-      A pod restart drops all of it (open tabs, cookies, logins); nothing here
-      is persisted, so treat a session as disposable and re-establish state
-      rather than assuming it survived. This is also why the instance is pinned
-      to one replica: the data plane's services/proxy hop picks a random ready
-      pod per request, so a second replica would answer half a session's calls
-      from a Chromium that never saw the first navigation.
+      EACH MCP SESSION HAS AN ISOLATED BROWSER CONTEXT. Cookies, open tabs,
+      navigation history, and logins belong to that session. Keep using the
+      same MCP session for a multi-step flow; closing it discards that context.
+      Concurrent sessions share the Chromium process, not page or cookie state.
+      Do not enable --shared-browser-context: it breaks this isolation contract.
+      Callers must bound concurrent sessions and close idle contexts.
+      A pod restart drops all sessions; nothing here is persisted. Re-establish
+      authorization and verify page state after reconnecting instead of replaying
+      an uncertain write. One replica is required because services/proxy may
+      otherwise route a session's next call to a pod that never saw its history.
 
       INPUTS you set when provisioning: name (required) and size. There is no
       headless toggle: the upstream container image supports headless Chromium
@@ -305,6 +304,9 @@ spec:
                       - --allowed-hosts
                       - "*"
                       - --ignore-https-errors
+                      # Explicitly create a fresh in-memory BrowserContext for
+                      # each MCP client; do not rely on upstream defaults.
+                      - --isolated
                     ports:
                       - name: http
                         containerPort: 8931
@@ -343,6 +345,12 @@ spec:
                     emptyDir:
                       medium: Memory
                       sizeLimit: '${schema.spec.size == "small" ? "256Mi" : (schema.spec.size == "medium" ? "512Mi" : "1Gi")}'
+
+        # Require the current Deployment generation and the full single-replica
+        # rollout before kro reports this resource ready. This closes the gap
+        # where an old Ready condition could describe a pre-isolation pod.
+        readyWhen:
+          - '${deployment.status.observedGeneration == deployment.metadata.generation && deployment.spec.replicas == 1 && deployment.spec.strategy.type == "Recreate" && deployment.status.updatedReplicas == 1 && deployment.status.readyReplicas == 1 && deployment.status.availableReplicas == 1}'
 
       # The port is NAMED because the data-plane contract addresses it by name
       # (services/proxy takes <service>:<port-name>), not by number.
@@ -566,6 +574,13 @@ spec:
         name: ${service.metadata.name}
         namespace: ${service.metadata.namespace}
       ready: ${deployment.status.readyReplicas}
+      # This is a proof about the deployed Deployment, not a copy of the
+      # Template's desired settings. App Studio may allow concurrent MCP
+      # contexts only when this expression is true and the Instance and
+      # Template generations are current. Missing or stale Deployment fields
+      # make it false or unavailable, so native browser use stays unavailable
+      # until the proof reconciles.
+      mcpIsolationReady: ${deployment.metadata.generation == deployment.status.observedGeneration && deployment.spec.replicas == 1 && deployment.spec.strategy.type == "Recreate" && deployment.status.updatedReplicas == 1 && deployment.status.readyReplicas == 1 && deployment.status.availableReplicas == 1 && deployment.spec.template.spec.containers.size() == 1 && !has(deployment.spec.template.spec.initContainers) && deployment.spec.template.spec.containers[0].image == "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804" && deployment.spec.template.spec.containers[0].args == ["--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"] && deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--isolated") && !deployment.spec.template.spec.containers[0].args.exists(arg, arg == "--shared-browser-context") && !has(deployment.spec.template.spec.containers[0].command) && !has(deployment.spec.template.spec.containers[0].env) && !has(deployment.spec.template.spec.containers[0].envFrom) && !has(deployment.spec.template.spec.containers[0].lifecycle) && deployment.spec.template.spec.containers[0].readinessProbe.tcpSocket.port == 8931 && !has(deployment.spec.template.spec.containers[0].readinessProbe.exec) && !has(deployment.spec.template.spec.containers[0].readinessProbe.httpGet) && !has(deployment.spec.template.spec.containers[0].readinessProbe.grpc) && !has(deployment.spec.template.spec.containers[0].livenessProbe) && !has(deployment.spec.template.spec.containers[0].startupProbe) && deployment.spec.template.spec.containers[0].volumeMounts.size() == 1 && deployment.spec.template.spec.containers[0].volumeMounts[0].name == "dshm" && deployment.spec.template.spec.containers[0].volumeMounts[0].mountPath == "/dev/shm" && deployment.spec.template.spec.volumes.size() == 1 && deployment.spec.template.spec.volumes[0].name == "dshm" && deployment.spec.template.spec.volumes[0].emptyDir.medium == "Memory"}
       # Read off the HTTPRoute, never off spec: ${schema.*} is forbidden in
       # status by this kro fork (the RGD is rejected outright), and the route
       # is includeWhen-gated — so this resolves only for an instance that

@@ -12,16 +12,306 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"math"
+	"os"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic/fake"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 )
+
+// managedBrowserIsolationTestObjects returns the complete trusted backend
+// fixture required before App Studio may assert isolated MCP contexts. The
+// Template is parsed from the actual infrastructure seed, while its status,
+// the Instance status, and the runtime-projected isolation proof model a
+// fully reconciled installation.
+func managedBrowserIsolationTestObjects(t *testing.T) []runtime.Object {
+	t.Helper()
+	return []runtime.Object{
+		readyBrowserIsolationStudio(),
+		readyBrowserIsolationInstance(),
+		readyManagedBrowserTemplate(t),
+	}
+}
+
+func readyManagedBrowserTemplate(t *testing.T) *unstructured.Unstructured {
+	t.Helper()
+	data, err := os.ReadFile("../../infrastructure/install/templates/browser.yaml")
+	if err != nil {
+		t.Fatalf("read seeded Browser Template: %v", err)
+	}
+	jsonData, err := utilyaml.ToJSON(data)
+	if err != nil {
+		t.Fatalf("decode seeded Browser Template YAML: %v", err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(jsonData, &object); err != nil {
+		t.Fatalf("parse seeded Browser Template: %v", err)
+	}
+	object = normalizeBrowserTemplateJSONNumbers(object).(map[string]any)
+	template := &unstructured.Unstructured{Object: object}
+	template.SetGeneration(6)
+	template.SetUID("browser-template-uid")
+	_ = unstructured.SetNestedField(template.Object, int64(6), "status", "observedGeneration")
+	_ = unstructured.SetNestedMap(template.Object, map[string]any{"name": "kro", "ready": true}, "status", "backend")
+	_ = unstructured.SetNestedSlice(template.Object, []any{map[string]any{
+		"type": "Ready", "status": "True", "observedGeneration": int64(6),
+	}}, "status", "conditions")
+	return template
+}
+
+func normalizeBrowserTemplateJSONNumbers(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			typed[key] = normalizeBrowserTemplateJSONNumbers(nested)
+		}
+		return typed
+	case []any:
+		for index, nested := range typed {
+			typed[index] = normalizeBrowserTemplateJSONNumbers(nested)
+		}
+		return typed
+	case float64:
+		if typed == math.Trunc(typed) {
+			return int64(typed)
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
+func readyBrowserIsolationStudio() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": aiv1alpha1.SchemeGroupVersion.String(),
+		"kind":       "Studio",
+		"metadata":   map[string]any{"name": aiv1alpha1.StudioName},
+		"spec": map[string]any{"browser": map[string]any{
+			"resourceRef": map[string]any{
+				"apiVersion": infrastructureGroupVersion.String(),
+				"kind":       "Instance",
+				"resource":   "instances",
+				"name":       studioBrowserInstanceName,
+			},
+		}},
+		"status": map[string]any{"browser": map[string]any{
+			"phase": aiv1alpha1.StudioServiceReady, "resource": "instances", "instance": studioBrowserInstanceName,
+		}},
+	}}
+}
+
+func readyBrowserIsolationInstance() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": infrastructureGroupVersion.String(),
+		"kind":       "Instance",
+		"metadata": map[string]any{
+			"name": studioBrowserInstanceName, "uid": "browser-instance-uid", "generation": int64(4),
+		},
+		"spec": map[string]any{"template": managedBrowserTemplateName},
+		"status": map[string]any{
+			"template":           managedBrowserTemplateName,
+			"templateVersion":    managedBrowserTemplateVersion,
+			"phase":              "Ready",
+			"observedGeneration": int64(4),
+			"mcpIsolationReady":  true,
+			"conditions": []any{map[string]any{
+				"type": "Ready", "status": "True", "observedGeneration": int64(4),
+			}},
+		},
+	}}
+}
+
+func setManagedBrowserArgs(template *unstructured.Unstructured, args []string) {
+	resources, _, _ := unstructured.NestedSlice(template.Object, "spec", "backendConfig", "resources")
+	for resourceIndex, raw := range resources {
+		resource, ok := raw.(map[string]any)
+		if !ok || resource["id"] != "deployment" {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(resource, "template", "spec", "template", "spec", "containers")
+		container := containers[0].(map[string]any)
+		container["args"] = browserStringSliceAsAny(args)
+		_ = unstructured.SetNestedSlice(resource, containers, "template", "spec", "template", "spec", "containers")
+		resources[resourceIndex] = resource
+		_ = unstructured.SetNestedSlice(template.Object, resources, "spec", "backendConfig", "resources")
+		return
+	}
+}
+
+func setManagedBrowserContainerField(template *unstructured.Unstructured, field string, value any) {
+	resources, _, _ := unstructured.NestedSlice(template.Object, "spec", "backendConfig", "resources")
+	for resourceIndex, raw := range resources {
+		resource, ok := raw.(map[string]any)
+		if !ok || resource["id"] != "deployment" {
+			continue
+		}
+		containers, _, _ := unstructured.NestedSlice(resource, "template", "spec", "template", "spec", "containers")
+		container := containers[0].(map[string]any)
+		container[field] = value
+		_ = unstructured.SetNestedSlice(resource, containers, "template", "spec", "template", "spec", "containers")
+		resources[resourceIndex] = resource
+		_ = unstructured.SetNestedSlice(template.Object, resources, "spec", "backendConfig", "resources")
+		return
+	}
+}
+
+func setManagedBrowserPodField(template *unstructured.Unstructured, field string, value any) {
+	resources, _, _ := unstructured.NestedSlice(template.Object, "spec", "backendConfig", "resources")
+	for resourceIndex, raw := range resources {
+		resource, ok := raw.(map[string]any)
+		if !ok || resource["id"] != "deployment" {
+			continue
+		}
+		podSpec, _, _ := unstructured.NestedMap(resource, "template", "spec", "template", "spec")
+		podSpec[field] = value
+		_ = unstructured.SetNestedMap(resource, podSpec, "template", "spec", "template", "spec")
+		resources[resourceIndex] = resource
+		_ = unstructured.SetNestedSlice(template.Object, resources, "spec", "backendConfig", "resources")
+		return
+	}
+}
+
+func browserStringSliceAsAny(values []string) []any {
+	result := make([]any, len(values))
+	for index, value := range values {
+		result[index] = value
+	}
+	return result
+}
+
+func setBrowserReadyConditionGeneration(instance *unstructured.Unstructured, generation int64) {
+	conditions, _, _ := unstructured.NestedSlice(instance.Object, "status", "conditions")
+	condition := conditions[0].(map[string]any)
+	condition["observedGeneration"] = generation
+	_ = unstructured.SetNestedSlice(instance.Object, conditions, "status", "conditions")
+}
+
+func setBrowserTemplateReadyConditionGeneration(template *unstructured.Unstructured, generation int64) {
+	conditions, _, _ := unstructured.NestedSlice(template.Object, "status", "conditions")
+	condition := conditions[0].(map[string]any)
+	condition["observedGeneration"] = generation
+	_ = unstructured.SetNestedSlice(template.Object, conditions, "status", "conditions")
+}
+
+func setManagedBrowserStatusExpression(template *unstructured.Unstructured, expression string) {
+	_ = unstructured.SetNestedField(template.Object, expression, "spec", "backendConfig", "status", "mcpIsolationReady")
+}
+
+func setManagedBrowserReadyWhen(template *unstructured.Unstructured, expressions []string) {
+	resources, _, _ := unstructured.NestedSlice(template.Object, "spec", "backendConfig", "resources")
+	for resourceIndex, raw := range resources {
+		resource, ok := raw.(map[string]any)
+		if !ok || resource["id"] != "deployment" {
+			continue
+		}
+		resource["readyWhen"] = browserStringSliceAsAny(expressions)
+		resources[resourceIndex] = resource
+		_ = unstructured.SetNestedSlice(template.Object, resources, "spec", "backendConfig", "resources")
+		return
+	}
+}
+
+func TestBrowserBackendRefRequiresCurrentManagedDeploymentProof(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(studio, instance, template *unstructured.Unstructured)
+		want   bool
+	}{
+		{name: "managed isolated Browser", want: true},
+		{name: "stale Instance observed generation", mutate: func(_ *unstructured.Unstructured, instance, _ *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(instance.Object, int64(3), "status", "observedGeneration")
+		}},
+		{name: "stale Instance Ready condition", mutate: func(_ *unstructured.Unstructured, instance, _ *unstructured.Unstructured) {
+			setBrowserReadyConditionGeneration(instance, 3)
+		}},
+		{name: "old Template version on Instance", mutate: func(_ *unstructured.Unstructured, instance, _ *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(instance.Object, "0.1.0", "status", "templateVersion")
+		}},
+		{name: "runtime Deployment proof absent", mutate: func(_ *unstructured.Unstructured, instance, _ *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(instance.Object, "status", "mcpIsolationReady")
+		}},
+		{name: "runtime Deployment proof false", mutate: func(_ *unstructured.Unstructured, instance, _ *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(instance.Object, false, "status", "mcpIsolationReady")
+		}},
+		{name: "stale Template generation", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			template.SetGeneration(7)
+		}},
+		{name: "stale Template Ready condition", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setBrowserTemplateReadyConditionGeneration(template, 5)
+		}},
+		{name: "missing isolated argument", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserArgs(template, managedBrowserArgs[:len(managedBrowserArgs)-1])
+		}},
+		{name: "shared context argument", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			args := append(append([]string(nil), managedBrowserArgs...), "--shared-browser-context")
+			setManagedBrowserArgs(template, args)
+		}},
+		{name: "mutable image", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserContainerField(template, "image", "mcr.microsoft.com/playwright/mcp:latest")
+		}},
+		{name: "environment override", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserContainerField(template, "env", []any{map[string]any{"name": "PLAYWRIGHT_MCP_SHARED_BROWSER_CONTEXT", "value": "true"}})
+		}},
+		{name: "entrypoint override", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserContainerField(template, "command", []any{"node", "/app/cli.js", "--shared-browser-context"})
+		}},
+		{name: "lifecycle hook override", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserContainerField(template, "lifecycle", map[string]any{"postStart": map[string]any{"exec": map[string]any{"command": []any{"/bin/sh", "-c", "echo override"}}}})
+		}},
+		{name: "exec readiness probe override", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserContainerField(template, "readinessProbe", map[string]any{"exec": map[string]any{"command": []any{"/bin/sh", "-c", "echo override"}}})
+		}},
+		{name: "init container override", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserPodField(template, "initContainers", []any{map[string]any{"name": "override", "image": "busybox", "command": []any{"/bin/sh", "-c", "echo override"}}})
+		}},
+		{name: "wrong deployment readiness expression", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserReadyWhen(template, []string{"${true}"})
+		}},
+		{name: "wrong runtime status expression", mutate: func(_ *unstructured.Unstructured, _ *unstructured.Unstructured, template *unstructured.Unstructured) {
+			setManagedBrowserStatusExpression(template, "${true}")
+		}},
+		{name: "Studio points at a different Instance", mutate: func(studio, _ *unstructured.Unstructured, _ *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(studio.Object, "other-browser", "spec", "browser", "resourceRef", "name")
+		}},
+		{name: "custom Instance template", mutate: func(_ *unstructured.Unstructured, instance, _ *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(instance.Object, "custom-browser", "spec", "template")
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			objects := managedBrowserIsolationTestObjects(t)
+			studio := objects[0].(*unstructured.Unstructured)
+			instance := objects[1].(*unstructured.Unstructured)
+			template := objects[2].(*unstructured.Unstructured)
+			if test.mutate != nil {
+				test.mutate(studio, instance, template)
+			}
+			dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), studio, instance, template)
+			server := &Server{}
+			ref, isolated := server.browserBackendRef(context.Background(), asclient.NewFromDynamic(dynamicClient))
+			if isolated != test.want {
+				t.Fatalf("isolated MCP contexts = %v, want %v (ref=%+v)", isolated, test.want, ref)
+			}
+			if test.want {
+				if ref.Resource != "instances" || ref.Name != studioBrowserInstanceName || !ref.IsolatedMCPContexts {
+					t.Fatalf("managed browser ref = %+v, want isolated %s/%s", ref, "instances", studioBrowserInstanceName)
+				}
+				if ref.InstanceUID != "browser-instance-uid" || ref.TemplateVersion != managedBrowserTemplateVersion || ref.TemplateGeneration != 6 {
+					t.Fatalf("managed browser identity = uid %q, template %q generation %d", ref.InstanceUID, ref.TemplateVersion, ref.TemplateGeneration)
+				}
+			}
+		})
+	}
+}
 
 func studioSharedServiceTemplate(name string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{

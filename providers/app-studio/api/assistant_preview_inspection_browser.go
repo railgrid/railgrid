@@ -60,7 +60,61 @@ const (
 	browserSessionHandoffPath = "/auth/apps/preview-handoff"
 	privateAppAuthorizePath   = "/auth/apps/authorize"
 	privateAppCallbackPath    = "/__railgrid/auth/callback"
+
+	browserMCPEventStreamRecoveryWindow        = 20 * time.Second
+	browserMCPEventStreamRecoveryHeaderTimeout = 2 * time.Second
+	browserMCPEventStreamRecoveryInitialDelay  = 100 * time.Millisecond
+	browserMCPEventStreamRecoveryMaxDelay      = time.Second
+	browserMCPEventStreamRecoveryMaxAttempts   = 24
+	browserMCPEventStreamRecoveryStableWindow  = 5 * time.Second
+	browserMCPEventStreamMaxLineBytes          = 64 << 10
+	browserMCPEventStreamMaxEventBytes         = 1 << 20
 )
+
+var errBrowserMCPSessionGone = errors.New("preview browser MCP session was not found or has expired")
+
+var errProjectAssistantBrowserIsolationUnverified = errors.New("preview browser session isolation is unverified; reconcile the managed isolated browser before use")
+
+type browserMCPHTTPStatusError struct {
+	operation string
+	status    int
+}
+
+type browserMCPEventStreamRecoveryPolicy struct {
+	window        time.Duration
+	headerTimeout time.Duration
+	initialDelay  time.Duration
+	maxDelay      time.Duration
+	maxAttempts   int
+	stableWindow  time.Duration
+}
+
+type browserMCPEventStreamRecoveryEpisode struct {
+	done chan struct{}
+	err  error
+}
+
+func defaultBrowserMCPEventStreamRecoveryPolicy() browserMCPEventStreamRecoveryPolicy {
+	return browserMCPEventStreamRecoveryPolicy{
+		window:        browserMCPEventStreamRecoveryWindow,
+		headerTimeout: browserMCPEventStreamRecoveryHeaderTimeout,
+		initialDelay:  browserMCPEventStreamRecoveryInitialDelay,
+		maxDelay:      browserMCPEventStreamRecoveryMaxDelay,
+		maxAttempts:   browserMCPEventStreamRecoveryMaxAttempts,
+		stableWindow:  browserMCPEventStreamRecoveryStableWindow,
+	}
+}
+
+func (err *browserMCPHTTPStatusError) Error() string {
+	if err == nil {
+		return "preview browser request failed"
+	}
+	return fmt.Sprintf("%s: status %d", err.operation, err.status)
+}
+
+func (err *browserMCPHTTPStatusError) Is(target error) bool {
+	return target == errBrowserMCPSessionGone && err != nil && err.operation == "preview browser event stream" && (err.status == http.StatusNotFound || err.status == http.StatusGone)
+}
 
 var supportedBrowserMCPProtocolVersions = map[string]struct{}{
 	"2025-03-26": {},
@@ -76,11 +130,14 @@ func (s *Server) resolveBrowserDataPlaneRef(ctx context.Context, id identity) (d
 	if err != nil {
 		return dataPlaneRef{}, false
 	}
-	resource, name := s.browserBackend(ctx, client)
-	if strings.TrimSpace(resource) == "" || strings.TrimSpace(name) == "" {
+	ref, _ := s.browserBackendRef(ctx, client)
+	if strings.TrimSpace(ref.Resource) == "" || strings.TrimSpace(ref.Name) == "" {
 		return dataPlaneRef{}, false
 	}
-	return dataPlaneRef{Resource: resource, Name: name}, true
+	// The bool reports whether a Ready backend exists. Isolation is a separate
+	// proof carried on the ref so each browser flow can reject an unverified
+	// endpoint with its own user-facing failure.
+	return ref, true
 }
 
 // inspectPreviewViaBrowserMCP drives the shared Playwright MCP browser to load
@@ -88,6 +145,9 @@ func (s *Server) resolveBrowserDataPlaneRef(ctx context.Context, id identity) (d
 // against the snapshot, and (optionally) capture a screenshot. It builds the
 // same projectAssistantPreviewInspectionResult the retired worker produced.
 func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, ref dataPlaneRef, req projectAssistantPreviewInspectionRequest) (projectAssistantPreviewInspectionResult, error) {
+	if !ref.IsolatedMCPContexts {
+		return projectAssistantPreviewInspectionResult{}, errProjectAssistantBrowserIsolationUnverified
+	}
 	unlock, err := lockBrowserInstanceContext(ctx, id.clusterID, ref)
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
@@ -416,6 +476,20 @@ type browserMCPSession struct {
 	streamBody   io.ReadCloser
 	streamDone   chan struct{}
 	streamErr    error
+	streamGone   error
+	recoverySeq  uint64
+
+	sessionCtx     context.Context
+	sessionCancel  context.CancelFunc
+	recoveryCtx    context.Context
+	recoveryCancel context.CancelFunc
+	recoveryWake   chan struct{}
+	recoveryDone   chan struct{}
+	reconnectGate  chan struct{}
+	recoveryPolicy browserMCPEventStreamRecoveryPolicy
+	recoveryMu     sync.Mutex
+	recoveryActive *browserMCPEventStreamRecoveryEpisode
+	exhaustedSeq   uint64
 
 	closeMu sync.Mutex
 	closed  bool
@@ -438,18 +512,29 @@ func (s *Server) newBrowserMCPSession(ctx context.Context, id identity, ref data
 }
 
 func (s *Server) newBrowserMCPSessionWithRole(ctx context.Context, id identity, ref dataPlaneRef, role string) (*browserMCPSession, error) {
+	return s.newBrowserMCPSessionWithRecoveryPolicy(ctx, id, ref, role, defaultBrowserMCPEventStreamRecoveryPolicy())
+}
+
+func (s *Server) newBrowserMCPSessionWithRecoveryPolicy(ctx context.Context, id identity, ref dataPlaneRef, role string, recoveryPolicy browserMCPEventStreamRecoveryPolicy) (*browserMCPSession, error) {
 	role = strings.TrimSpace(role)
 	if role == "" {
 		role = projectAssistantBrowserSessionRoleUnspecified
 	}
 	session := &browserMCPSession{
-		s:       s,
-		id:      id,
-		ref:     ref,
-		role:    role,
-		traceID: atomic.AddUint64(&projectAssistantBrowserTraceSequence, 1),
-		nextID:  1,
+		s:              s,
+		id:             id,
+		ref:            ref,
+		role:           role,
+		traceID:        atomic.AddUint64(&projectAssistantBrowserTraceSequence, 1),
+		nextID:         1,
+		recoveryWake:   make(chan struct{}, 1),
+		recoveryDone:   make(chan struct{}),
+		reconnectGate:  make(chan struct{}, 1),
+		recoveryPolicy: recoveryPolicy,
 	}
+	session.sessionCtx, session.sessionCancel = context.WithCancel(context.Background())
+	session.recoveryCtx, session.recoveryCancel = context.WithCancel(context.Background())
+	go session.runEventStreamRecovery()
 	projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
 		Event:       "session_create",
 		Role:        session.role,
@@ -496,6 +581,7 @@ func (s *Server) newBrowserMCPSessionWithRole(ctx context.Context, id identity, 
 		session.closeWithReason("event_stream_open_failed", "newBrowserMCPSessionWithRole")
 		return nil, err
 	}
+	session.signalEventStreamRecoveryIfNeeded()
 	return session, nil
 }
 
@@ -582,6 +668,25 @@ func (session *browserMCPSession) isClosed() bool {
 	return session.closed
 }
 
+// httpClient keeps browser MCP redirects visible to the transport. Go follows
+// 307/308 redirects for POST by default, which can dispatch one tools/call
+// more than once. Copy the configured client so this browser-local policy
+// does not mutate a shared provider client.
+func (session *browserMCPSession) httpClient(timeout time.Duration) *http.Client {
+	if session == nil || session.s == nil {
+		return nil
+	}
+	client := session.s.sandboxDataPlaneClient(timeout)
+	if client == nil {
+		return nil
+	}
+	bounded := *client
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &bounded
+}
+
 // eventStreamFailure reports an unexpected end of the long-lived GET stream.
 // The MCP session may still accept POSTs after the GET has gone away, but it
 // can no longer answer the server heartbeat. Treating that session as live
@@ -595,6 +700,454 @@ func (session *browserMCPSession) eventStreamFailure() error {
 	return session.streamErr
 }
 
+func (session *browserMCPSession) eventStreamSessionGone() error {
+	if session == nil {
+		return errors.New("preview browser session is not configured")
+	}
+	session.streamMu.Lock()
+	defer session.streamMu.Unlock()
+	return session.streamGone
+}
+
+func (session *browserMCPSession) eventStreamIsOpen() bool {
+	if session == nil {
+		return false
+	}
+	session.streamMu.Lock()
+	defer session.streamMu.Unlock()
+	return session.streamErr == nil && session.streamBody != nil
+}
+
+func (session *browserMCPSession) eventStreamFailureSequence() uint64 {
+	if session == nil {
+		return 0
+	}
+	session.streamMu.Lock()
+	defer session.streamMu.Unlock()
+	return session.recoverySeq
+}
+
+// reconnectEventStream waits for the automatic recovery episode, starting one
+// only when no recovery is active. Native tool calls join the same bounded GET
+// recovery instead of issuing a second request during its backoff.
+func (session *browserMCPSession) reconnectEventStream(ctx context.Context) error {
+	if session == nil {
+		return errors.New("preview browser session is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if gone := session.eventStreamSessionGone(); gone != nil {
+		return gone
+	}
+	// A recovery GET may already have returned 200 while the worker is still
+	// holding the episode open to verify that the stream survives its stability
+	// window. Join that episode before treating the stream as recovered.
+	episode := session.activeEventStreamRecovery()
+	if episode == nil && session.eventStreamIsOpen() {
+		return nil
+	}
+	if episode == nil {
+		episode = session.ensureEventStreamRecovery()
+	}
+	if episode == nil {
+		if gone := session.eventStreamSessionGone(); gone != nil {
+			return gone
+		}
+		if err := session.eventStreamFailure(); err != nil {
+			return err
+		}
+		return errors.New("preview browser event stream recovery is not active")
+	}
+	select {
+	case <-episode.done:
+		if gone := session.eventStreamSessionGone(); gone != nil {
+			return gone
+		}
+		if episode.err != nil {
+			return episode.err
+		}
+		if session.eventStreamIsOpen() {
+			return nil
+		}
+		if err := session.eventStreamFailure(); err != nil {
+			return err
+		}
+		return errors.New("preview browser event stream recovery ended without a stable stream")
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-session.recoveryCtx.Done():
+		return errors.New("preview browser event stream recovery was canceled")
+	}
+}
+
+func (session *browserMCPSession) ensureEventStreamRecovery() *browserMCPEventStreamRecoveryEpisode {
+	if session == nil || session.eventStreamFailure() == nil || session.isClosed() || session.eventStreamSessionGone() != nil {
+		return nil
+	}
+	failureSequence := session.eventStreamFailureSequence()
+	session.recoveryMu.Lock()
+	episode := session.recoveryActive
+	if episode == nil {
+		if failureSequence != 0 && failureSequence == session.exhaustedSeq {
+			session.recoveryMu.Unlock()
+			return nil
+		}
+		episode = &browserMCPEventStreamRecoveryEpisode{done: make(chan struct{})}
+		session.recoveryActive = episode
+	}
+	session.recoveryMu.Unlock()
+	select {
+	case session.recoveryWake <- struct{}{}:
+	default:
+	}
+	return episode
+}
+
+func (session *browserMCPSession) activeEventStreamRecovery() *browserMCPEventStreamRecoveryEpisode {
+	if session == nil {
+		return nil
+	}
+	session.recoveryMu.Lock()
+	defer session.recoveryMu.Unlock()
+	return session.recoveryActive
+}
+
+func (session *browserMCPSession) finishEventStreamRecovery(episode *browserMCPEventStreamRecoveryEpisode, err error, stable bool) {
+	if session == nil || episode == nil {
+		return
+	}
+	failureSequence := session.eventStreamFailureSequence()
+	session.recoveryMu.Lock()
+	defer session.recoveryMu.Unlock()
+	if session.recoveryActive != episode {
+		return
+	}
+	if stable {
+		session.exhaustedSeq = 0
+	} else if failureSequence != 0 {
+		session.exhaustedSeq = failureSequence
+	}
+	episode.err = err
+	session.recoveryActive = nil
+	close(episode.done)
+}
+
+// openEventStreamForRecovery performs one GET attempt. The worker owns the
+// recovery budget; reconnectGate also protects shutdown and guards against any
+// accidental duplicate worker invocation.
+func (session *browserMCPSession) openEventStreamForRecovery(ctx context.Context) error {
+	if session == nil {
+		return errors.New("preview browser session is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if session.reconnectGate == nil {
+		return errors.New("preview browser session recovery is not configured")
+	}
+	select {
+	case session.reconnectGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-session.recoveryCtx.Done():
+		return errors.New("preview browser event stream recovery was canceled")
+	}
+	defer func() { <-session.reconnectGate }()
+	if err := session.recoveryCtx.Err(); err != nil {
+		return errors.New("preview browser event stream recovery was canceled")
+	}
+	if session.isClosed() {
+		return errors.New("preview browser session is closed")
+	}
+	if gone := session.eventStreamSessionGone(); gone != nil {
+		return gone
+	}
+	if session.eventStreamIsOpen() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if session.eventStreamFailure() != nil {
+		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+			Event:       "event_stream_reconnect_start",
+			Role:        session.role,
+			SessionHash: session.traceSessionHash(),
+			RefHash:     projectAssistantBrowserTraceRef(session.ref),
+			Reason:      "prior_stream_terminated",
+			CallSite:    "browserMCPSession.openEventStreamForRecovery",
+		})
+	}
+	session.stopEventStream("reconnect", "browserMCPSession.openEventStreamForRecovery")
+	if err := session.openEventStream(ctx); err != nil {
+		if errors.Is(err, errBrowserMCPSessionGone) {
+			session.markEventStreamSessionGone(err)
+		} else {
+			session.markEventStreamFailure(err)
+		}
+		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+			Event:       "event_stream_reconnect_error",
+			Role:        session.role,
+			SessionHash: session.traceSessionHash(),
+			RefHash:     projectAssistantBrowserTraceRef(session.ref),
+			Reason:      "reopen_failed",
+			CallSite:    "browserMCPSession.openEventStreamForRecovery",
+		})
+		return fmt.Errorf("preview browser event stream reconnect: %w", err)
+	}
+	projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+		Event:       "event_stream_reconnect_ready",
+		Role:        session.role,
+		SessionHash: session.traceSessionHash(),
+		RefHash:     projectAssistantBrowserTraceRef(session.ref),
+		CallSite:    "browserMCPSession.openEventStreamForRecovery",
+	})
+	return nil
+}
+
+func (session *browserMCPSession) runEventStreamRecovery() {
+	defer close(session.recoveryDone)
+	policy := session.recoveryPolicy
+	for {
+		select {
+		case <-session.recoveryCtx.Done():
+			return
+		case <-session.recoveryWake:
+		}
+		episode := session.activeEventStreamRecovery()
+		if episode == nil {
+			episode = session.ensureEventStreamRecovery()
+		}
+		if episode == nil {
+			continue
+		}
+		if session.isClosed() {
+			session.finishEventStreamRecovery(episode, errors.New("preview browser session is closed"), false)
+			return
+		}
+		if gone := session.eventStreamSessionGone(); gone != nil {
+			session.finishEventStreamRecovery(episode, gone, false)
+			return
+		}
+		if session.eventStreamFailure() == nil {
+			session.finishEventStreamRecovery(episode, nil, true)
+			continue
+		}
+
+		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+			Event:       "event_stream_recovery_start",
+			Role:        session.role,
+			SessionHash: session.traceSessionHash(),
+			RefHash:     projectAssistantBrowserTraceRef(session.ref),
+			Reason:      "unexpected_stream_termination",
+			CallSite:    "browserMCPSession.runEventStreamRecovery",
+		})
+
+		recovered, recoveryErr := session.recoverEventStreamEpisode(policy)
+		session.finishEventStreamRecovery(episode, recoveryErr, recovered)
+		if session.recoveryCtx.Err() != nil || session.isClosed() || session.eventStreamSessionGone() != nil {
+			return
+		}
+	}
+}
+
+func (session *browserMCPSession) recoverEventStreamEpisode(policy browserMCPEventStreamRecoveryPolicy) (bool, error) {
+	deadline := time.Now().Add(policy.window)
+	delay := policy.initialDelay
+	var lastErr error
+	for attempt := 0; attempt < policy.maxAttempts && time.Now().Before(deadline); attempt++ {
+		if session.isClosed() {
+			return false, errors.New("preview browser session is closed")
+		}
+		if gone := session.eventStreamSessionGone(); gone != nil {
+			return false, gone
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		headerTimeout := policy.headerTimeout
+		if headerTimeout <= 0 || headerTimeout > remaining {
+			headerTimeout = remaining
+		}
+		recoveryCtx, cancel := context.WithTimeout(session.recoveryCtx, headerTimeout)
+		err := session.openEventStreamForRecovery(recoveryCtx)
+		cancel()
+		if err == nil {
+			// The stability interval is part of the episode budget, not extra
+			// time after it. A late successful GET must not extend bounded
+			// recovery beyond its original deadline.
+			stabilityCtx, cancel := context.WithDeadline(session.recoveryCtx, deadline)
+			stable, stableErr := session.waitForEventStreamStability(stabilityCtx, policy.stableWindow)
+			cancel()
+			if stable {
+				return true, nil
+			}
+			if session.recoveryCtx.Err() != nil {
+				return false, session.recoveryCtx.Err()
+			}
+			if gone := session.eventStreamSessionGone(); gone != nil {
+				return false, gone
+			}
+			if stableErr == nil {
+				stableErr = errors.New("preview browser event stream closed before recovery was stable")
+			}
+			err = stableErr
+		}
+		lastErr = err
+		if errors.Is(err, errBrowserMCPSessionGone) || !browserMCPEventStreamRecoveryRetryable(err) {
+			if errors.Is(err, errBrowserMCPSessionGone) {
+				status := http.StatusNotFound
+				var statusErr *browserMCPHTTPStatusError
+				if errors.As(err, &statusErr) {
+					status = statusErr.status
+				}
+				projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+					Event:       "event_stream_session_gone",
+					Role:        session.role,
+					SessionHash: session.traceSessionHash(),
+					RefHash:     projectAssistantBrowserTraceRef(session.ref),
+					Method:      http.MethodGet,
+					Status:      status,
+					Reason:      "authoritative_mcp_session_expired",
+					CallSite:    "browserMCPSession.recoverEventStreamEpisode",
+				})
+			}
+			break
+		}
+
+		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+			Event:       "event_stream_recovery_retry",
+			Role:        session.role,
+			SessionHash: session.traceSessionHash(),
+			RefHash:     projectAssistantBrowserTraceRef(session.ref),
+			Method:      http.MethodGet,
+			Reason:      "transient_reopen_failure",
+			CallSite:    "browserMCPSession.recoverEventStreamEpisode",
+		})
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		backoff := delay
+		if backoff > remaining {
+			backoff = remaining
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-session.recoveryCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return false, session.recoveryCtx.Err()
+		case <-timer.C:
+		}
+		if delay < policy.maxDelay {
+			delay *= 2
+			if delay > policy.maxDelay {
+				delay = policy.maxDelay
+			}
+		}
+	}
+	if gone := session.eventStreamSessionGone(); gone != nil {
+		return false, gone
+	}
+	if lastErr == nil {
+		lastErr = session.eventStreamFailure()
+	}
+	if lastErr == nil {
+		lastErr = errors.New("preview browser event stream recovery was exhausted")
+	}
+	projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+		Event:       "event_stream_recovery_exhausted",
+		Role:        session.role,
+		SessionHash: session.traceSessionHash(),
+		RefHash:     projectAssistantBrowserTraceRef(session.ref),
+		Method:      http.MethodGet,
+		Reason:      "bounded_recovery_window_elapsed",
+		CallSite:    "browserMCPSession.recoverEventStreamEpisode",
+	})
+	return false, lastErr
+}
+
+// waitForEventStreamStability keeps an early-EOF 200 response in the same
+// recovery episode as the GET that opened it. Recovery only resets after the
+// stream has stayed open for a complete stability interval.
+func (session *browserMCPSession) waitForEventStreamStability(ctx context.Context, stableWindow time.Duration) (bool, error) {
+	if stableWindow <= 0 {
+		stableWindow = browserMCPEventStreamRecoveryStableWindow
+	}
+	timer := time.NewTimer(stableWindow)
+	defer timer.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if err := session.eventStreamFailure(); err != nil {
+			return false, err
+		}
+		if !session.eventStreamIsOpen() {
+			return false, errors.New("preview browser event stream closed before recovery was stable")
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-session.recoveryWake:
+			if gone := session.eventStreamSessionGone(); gone != nil {
+				return false, gone
+			}
+			if err := session.eventStreamFailure(); err != nil {
+				return false, err
+			}
+		case <-timer.C:
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if err := session.eventStreamFailure(); err != nil {
+				return false, err
+			}
+			if session.eventStreamIsOpen() {
+				return true, nil
+			}
+			return false, errors.New("preview browser event stream closed before recovery was stable")
+		}
+	}
+}
+
+func browserMCPEventStreamRecoveryRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, errBrowserMCPSessionGone) {
+		return false
+	}
+	var statusErr *browserMCPHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.status == http.StatusRequestTimeout || statusErr.status == http.StatusTooManyRequests || statusErr.status >= http.StatusInternalServerError
+	}
+	return true
+}
+
+func (session *browserMCPSession) signalEventStreamRecoveryIfNeeded() {
+	_ = session.ensureEventStreamRecovery()
+}
+
+func (session *browserMCPSession) markEventStreamSessionGone(err error) {
+	if session == nil {
+		return
+	}
+	if err == nil {
+		err = errBrowserMCPSessionGone
+	}
+	session.streamMu.Lock()
+	if session.streamGone == nil {
+		session.streamGone = err
+	}
+	if session.streamErr == nil {
+		session.streamErr = err
+	}
+	session.streamMu.Unlock()
+}
+
 func (session *browserMCPSession) markEventStreamFailure(readErr error) {
 	if session == nil {
 		return
@@ -605,30 +1158,37 @@ func (session *browserMCPSession) markEventStreamFailure(readErr error) {
 	if session.isClosed() {
 		return
 	}
+	firstFailure := false
 	session.streamMu.Lock()
 	if session.streamErr == nil {
 		session.streamErr = fmt.Errorf("preview browser session event stream terminated: %w", readErr)
+		session.recoverySeq++
+		firstFailure = true
 	}
 	session.streamMu.Unlock()
+	if firstFailure {
+		session.signalEventStreamRecoveryIfNeeded()
+	}
 }
 
 // rpc posts one JSON-RPC request to the browser's data-plane proxy root and
 // returns the raw result. It captures (and thereafter echoes) the session id.
+// A failed GET is not proof the MCP session or page is gone; a POST response is
+// authoritative. Each tool call is dispatched at most once.
 func (session *browserMCPSession) rpc(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if session == nil {
 		return nil, errors.New("preview browser session is not configured")
 	}
 	if streamErr := session.eventStreamFailure(); streamErr != nil {
 		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
-			Event:       "rpc_error",
+			Event:       "rpc_with_ended_event_stream",
 			Role:        session.role,
 			SessionHash: session.traceSessionHash(),
 			RefHash:     projectAssistantBrowserTraceRef(session.ref),
 			Method:      method,
-			Reason:      "event_stream_terminated",
+			Reason:      "post_probe_session_state",
 			CallSite:    "browserMCPSession.rpc",
 		})
-		return nil, streamErr
 	}
 	headerBefore := session.currentSessionID()
 	projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
@@ -678,7 +1238,7 @@ func (session *browserMCPSession) rpc(ctx context.Context, method string, params
 	if headerBefore != "" {
 		session.setProtocolHeaders(req)
 	}
-	resp, err := session.s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
+	resp, err := session.httpClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
 		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
 			Event:                   "rpc_error",
@@ -694,6 +1254,22 @@ func (session *browserMCPSession) rpc(ctx context.Context, method string, params
 	}
 	defer func() { _ = resp.Body.Close() }()
 	headerResponse := strings.TrimSpace(resp.Header.Get("Mcp-Session-Id"))
+	if headerBefore != "" && headerResponse != "" && headerResponse != headerBefore {
+		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+			Event:                     "rpc_error",
+			Role:                      session.role,
+			SessionHash:               session.traceSessionHash(),
+			RefHash:                   projectAssistantBrowserTraceRef(session.ref),
+			Method:                    method,
+			Status:                    resp.StatusCode,
+			SessionHeaderBeforeHash:   projectAssistantBrowserTraceHash(headerBefore),
+			SessionHeaderResponseHash: projectAssistantBrowserTraceHash(headerResponse),
+			SessionHeaderAfterHash:    projectAssistantBrowserTraceHash(session.currentSessionID()),
+			Reason:                    "session_header_changed",
+			CallSite:                  "browserMCPSession.rpc",
+		})
+		return nil, errors.New("preview browser response changed the negotiated MCP session")
+	}
 	session.setSessionID(headerResponse)
 	projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
 		Event:                     "rpc_response",
@@ -764,7 +1340,11 @@ func (session *browserMCPSession) openEventStream(waitCtx context.Context) error
 		return errors.New("preview browser event stream requires a negotiated session")
 	}
 
-	streamCtx, streamCancel := context.WithCancel(context.Background())
+	streamParent := session.sessionCtx
+	if streamParent == nil {
+		streamParent = context.Background()
+	}
+	streamCtx, streamCancel := context.WithCancel(streamParent)
 	req, err := session.s.newDataPlaneRequest(streamCtx, http.MethodGet, session.id, session.ref, dataPlaneVerbProxy, "", nil)
 	if err != nil {
 		streamCancel()
@@ -784,12 +1364,16 @@ func (session *browserMCPSession) openEventStream(waitCtx context.Context) error
 
 	responseCh := make(chan browserMCPEventStreamResponse, 1)
 	go func() {
-		resp, err := session.s.sandboxDataPlaneClient(0).Do(req)
+		resp, err := session.httpClient(0).Do(req)
 		responseCh <- browserMCPEventStreamResponse{resp: resp, err: err}
 	}()
 	timer := time.NewTimer(dataPlaneCallTimeout)
 	defer timer.Stop()
 	var response browserMCPEventStreamResponse
+	recoveryCtx := session.recoveryCtx
+	if recoveryCtx == nil {
+		recoveryCtx = context.Background()
+	}
 	select {
 	case response = <-responseCh:
 	case <-waitCtx.Done():
@@ -805,6 +1389,10 @@ func (session *browserMCPSession) openEventStream(waitCtx context.Context) error
 			CallSite:    "browserMCPSession.openEventStream",
 		})
 		return fmt.Errorf("preview browser event stream: %w", waitCtx.Err())
+	case <-recoveryCtx.Done():
+		streamCancel()
+		go closeEventStreamResponseBody(responseCh)
+		return errors.New("preview browser event stream recovery was canceled")
 	case <-timer.C:
 		streamCancel()
 		go closeEventStreamResponseBody(responseCh)
@@ -851,10 +1439,9 @@ func (session *browserMCPSession) openEventStream(waitCtx context.Context) error
 		CallSite:                  "browserMCPSession.openEventStream",
 	})
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 		_ = resp.Body.Close()
 		streamCancel()
-		return fmt.Errorf("preview browser event stream: status %d: %s", resp.StatusCode, browserMCPFirstLine(string(raw), ""))
+		return &browserMCPHTTPStatusError{operation: "preview browser event stream", status: resp.StatusCode}
 	}
 	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		_ = resp.Body.Close()
@@ -869,10 +1456,14 @@ func (session *browserMCPSession) openEventStream(waitCtx context.Context) error
 
 	done := make(chan struct{})
 	session.streamMu.Lock()
-	if session.isClosed() || session.streamBody != nil {
+	if session.isClosed() || session.streamGone != nil || session.streamBody != nil {
+		gone := session.streamGone
 		session.streamMu.Unlock()
 		_ = resp.Body.Close()
 		streamCancel()
+		if gone != nil {
+			return gone
+		}
 		if session.isClosed() {
 			return errors.New("preview browser event stream: session is closed")
 		}
@@ -881,6 +1472,7 @@ func (session *browserMCPSession) openEventStream(waitCtx context.Context) error
 	session.streamCancel = streamCancel
 	session.streamBody = resp.Body
 	session.streamDone = done
+	session.streamErr = nil
 	session.streamMu.Unlock()
 	go session.drainEventStream(streamCtx, resp.Body, done)
 	return nil
@@ -910,7 +1502,7 @@ func (session *browserMCPSession) drainEventStream(ctx context.Context, body io.
 		})
 	}()
 
-	reader := bufio.NewReader(body)
+	reader := bufio.NewReaderSize(body, browserMCPEventStreamMaxLineBytes)
 	var data strings.Builder
 	flush := func() {
 		payload := strings.TrimSpace(data.String())
@@ -943,7 +1535,22 @@ func (session *browserMCPSession) drainEventStream(ctx context.Context, body io.
 		}
 	}
 	for {
-		line, err := reader.ReadString('\n')
+		lineBytes, err := reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			failure := fmt.Errorf("preview browser event stream line exceeds %d bytes", browserMCPEventStreamMaxLineBytes)
+			session.markEventStreamFailure(failure)
+			projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+				Event:       "event_stream_error",
+				Role:        session.role,
+				SessionHash: session.traceSessionHash(),
+				RefHash:     projectAssistantBrowserTraceRef(session.ref),
+				Method:      http.MethodGet,
+				Reason:      "line_too_large",
+				CallSite:    "browserMCPSession.drainEventStream",
+			})
+			return
+		}
+		line := string(lineBytes)
 		if len(line) > 0 {
 			line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 			switch {
@@ -952,6 +1559,24 @@ func (session *browserMCPSession) drainEventStream(ctx context.Context, body io.
 			case strings.HasPrefix(line, "data:"):
 				value := strings.TrimPrefix(line, "data:")
 				value = strings.TrimPrefix(value, " ")
+				addedBytes := len(value)
+				if data.Len() > 0 {
+					addedBytes++
+				}
+				if addedBytes > browserMCPEventStreamMaxEventBytes-data.Len() {
+					failure := fmt.Errorf("preview browser event stream event exceeds %d bytes", browserMCPEventStreamMaxEventBytes)
+					session.markEventStreamFailure(failure)
+					projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
+						Event:       "event_stream_error",
+						Role:        session.role,
+						SessionHash: session.traceSessionHash(),
+						RefHash:     projectAssistantBrowserTraceRef(session.ref),
+						Method:      http.MethodGet,
+						Reason:      "event_too_large",
+						CallSite:    "browserMCPSession.drainEventStream",
+					})
+					return
+				}
 				if data.Len() > 0 {
 					data.WriteByte('\n')
 				}
@@ -959,6 +1584,9 @@ func (session *browserMCPSession) drainEventStream(ctx context.Context, body io.
 			}
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			session.markEventStreamFailure(err)
 			reason := "read_error"
 			if err == io.EOF {
@@ -1008,7 +1636,7 @@ func (session *browserMCPSession) respondToEventStreamRequest(ctx context.Contex
 		Method:      method,
 		CallSite:    "browserMCPSession.respondToEventStreamRequest",
 	})
-	resp, err := session.s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
+	resp, err := session.httpClient(dataPlaneCallTimeout).Do(req)
 	if err != nil {
 		return err
 	}
@@ -1146,7 +1774,25 @@ func (session *browserMCPSession) closeWithReason(reason, callSite string) {
 	}
 	session.closed = true
 	session.closeMu.Unlock()
-	defer session.stopEventStream(reason, callSite)
+	if session.recoveryCancel != nil {
+		session.recoveryCancel()
+	}
+	if session.recoveryDone != nil {
+		<-session.recoveryDone
+	}
+	// A native caller may be waiting for the automatic worker's in-flight GET.
+	// Wait for that serialized attempt to stop before sending DELETE so it cannot
+	// reopen the stream after the server has torn the session down.
+	if session.reconnectGate != nil {
+		session.reconnectGate <- struct{}{}
+		<-session.reconnectGate
+	}
+	defer func() {
+		if session.sessionCancel != nil {
+			session.sessionCancel()
+		}
+		session.stopEventStream(reason, callSite)
+	}()
 
 	sessionID := session.currentSessionID()
 	if sessionID == "" {
@@ -1183,7 +1829,7 @@ func (session *browserMCPSession) closeWithReason(reason, callSite string) {
 		return
 	}
 	session.setProtocolHeaders(req)
-	if resp, err := session.s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req); err == nil {
+	if resp, err := session.httpClient(dataPlaneCallTimeout).Do(req); err == nil {
 		projectAssistantBrowserTrace(projectAssistantBrowserTraceEvent{
 			Event:       "session_close_response",
 			Role:        session.role,

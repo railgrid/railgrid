@@ -902,6 +902,7 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		MCPEndpoint:          mcpServerURL(t.req.MCPBaseURL, t.req.Identity.clusterID, "default"),
 		SessionSnapshot:      t.runState.SessionSnapshot(),
 		AssistantRunID:       projectAssistantRunID(t.req),
+		AssistantThreadID:    strings.TrimSpace(t.req.ThreadID),
 		InitialBuild:         projectAssistantInitialBuildActive(t.req, t.runState),
 		RunState:             t.runState,
 		Conversation:         t.req.Conversation,

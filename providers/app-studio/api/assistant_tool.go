@@ -129,6 +129,7 @@ type projectAssistantToolCallRequest struct {
 	HTTPRequest          *http.Request
 	SessionSnapshot      *projectEinoAssistantSessionSnapshot
 	AssistantRunID       string
+	AssistantThreadID    string
 	InitialBuild         bool
 	RunState             *projectEinoAssistantRunState
 	// Conversation carries the durable metadata-only history for tools that

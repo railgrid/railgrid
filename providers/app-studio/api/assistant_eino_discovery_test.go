@@ -27,7 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
@@ -217,15 +216,7 @@ func TestProjectEinoAssistantDiscoveryKeepsIndependentFailuresAndGatesUnavailabl
 }
 
 func TestProjectEinoAssistantDiscoveryUsesOneFreshReadyBrowserRef(t *testing.T) {
-	studio := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": aiv1alpha1.SchemeGroupVersion.String(),
-		"kind":       "Studio",
-		"metadata":   map[string]any{"name": aiv1alpha1.StudioName},
-		"status": map[string]any{"browser": map[string]any{
-			"phase": aiv1alpha1.StudioServiceReady, "resource": "instances", "instance": "browser-a",
-		}},
-	}}
-	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), studio)
+	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), managedBrowserIsolationTestObjects(t)...)
 	var studioGets atomic.Int32
 	dynamicClient.PrependReactor("get", studioResource.GVR.Resource, func(action ktesting.Action) (bool, runtime.Object, error) {
 		studioGets.Add(1)
@@ -236,7 +227,11 @@ func TestProjectEinoAssistantDiscoveryUsesOneFreshReadyBrowserRef(t *testing.T) 
 	server.projectClientFor = func(identity) (*asclient.Client, error) { return asclient.NewFromDynamic(dynamicClient), nil }
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
-	ref := dataPlaneRef{Resource: "instances", Name: "browser-a"}
+	ref, ok := server.resolveBrowserDataPlaneRef(context.Background(), id)
+	if !ok || !ref.IsolatedMCPContexts {
+		t.Fatal("expected a verified managed browser fixture")
+	}
+	studioGets.Store(0)
 	server.browserSessions.setBrowserCatalog(id, ref, discoveryBrowserCatalog("catalog for current Ready ref"))
 	httpPort := projectAssistantHTTPToolPort{server: server, request: httptest.NewRequest(http.MethodPost, "/", nil)}
 	port := &discoveryTestToolPort{delegateWithRef: httpPort}

@@ -27,15 +27,19 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic/fake"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 type projectAssistantNativeBrowserTestRoundTripper func(*http.Request) (*http.Response, error)
@@ -184,7 +188,7 @@ func newManagedPrivatePreviewTestHarness(t *testing.T, handoffBody string) *mana
 }
 
 func (h *managedPrivatePreviewTestHarness) call(name string, args map[string]any, previewURL string) (string, error) {
-	return h.server.callProjectAssistantNativeBrowserSession(context.Background(), h.request, h.entry, h.entry.ref, name, args, true, previewURL, false)
+	return h.server.callProjectAssistantNativeBrowserSession(context.Background(), h.request, h.entry, h.entry.ref, name, args, true, previewURL, false, nil)
 }
 
 func (p fakeNativeBrowserToolPort) DiscoverMCP(context.Context, identity, *aiv1alpha1.Project, projectLLMSettings) ([]projectAssistantTool, bool, error) {
@@ -441,9 +445,15 @@ func TestProjectAssistantNativeBrowserAuthErrorsAreRedactedBeforeModelAndDurabil
 	server := h.server
 	server.hubBase = "https://hub.example"
 	server.callers = newTestCallers(nil, "")
+	// This case isolates auth-error redaction from shared-preview synchronization.
+	server.workspaces = nil
 	server.browserSessions = newProjectAssistantBrowserSessionManager()
 	defer server.browserSessions.closeAll()
 	configurePreviewInteractionBrowserTestServer(t, server, nil)
+	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme(), managedBrowserIsolationTestObjects(t)...)
+	server.projectClientFor = func(identity) (*asclient.Client, error) {
+		return asclient.NewFromDynamic(dynamicClient), nil
+	}
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
 		return "https://demo.preview.example/", nil
 	}
@@ -798,13 +808,14 @@ func TestProjectAssistantBrowserSessionOwnerIncludesProjectAndCaller(t *testing.
 	}
 }
 
-func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
+func TestProjectAssistantNativeBrowserCallReusesSessionPerThreadAcrossRuns(t *testing.T) {
 	server := newNativeBrowserTestServer(t)
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}}
 	request := projectAssistantToolCallRequest{
-		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
-		Project:        project,
-		AssistantRunID: "run-a",
+		Identity:          identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Project:           project,
+		AssistantThreadID: "thread-a",
+		AssistantRunID:    "run-a",
 	}
 	for i := 0; i < 2; i++ {
 		if _, err := server.callProjectAssistantNativeBrowserTool(context.Background(), request, "browser_snapshot", projectAssistantToolRiskRead); err != nil {
@@ -814,13 +825,22 @@ func TestProjectAssistantNativeBrowserCallReusesSessionPerRun(t *testing.T) {
 	if server.browserSessions == nil || len(server.browserSessions.sessions) != 1 {
 		t.Fatalf("browser sessions = %#v, want one owner session", server.browserSessions)
 	}
+	entryA := server.browserSessions.sessions[server.nativeBrowserOwner(request).key()]
+	server.browserSessions.releaseRun(request.AssistantRunID)
+	request.AssistantRunID = "run-b"
+	if _, err := server.callProjectAssistantNativeBrowserTool(context.Background(), request, "browser_snapshot", projectAssistantToolRiskRead); err != nil {
+		t.Fatalf("next thread run snapshot: %v", err)
+	}
+	if got := server.browserSessions.sessions[server.nativeBrowserOwner(request).key()]; got != entryA {
+		t.Fatalf("thread browser entry across runs = %p, want retained entry %p", got, entryA)
+	}
 	other := request
 	other.Identity.user = "bob"
 	if _, err := server.callProjectAssistantNativeBrowserTool(context.Background(), other, "browser_snapshot", projectAssistantToolRiskRead); err != nil {
 		t.Fatalf("other owner snapshot: %v", err)
 	}
-	if got := len(server.browserSessions.sessions); got != 1 {
-		t.Fatalf("browser sessions after other owner = %d, want one active owner", got)
+	if got := len(server.browserSessions.sessions); got != 2 {
+		t.Fatalf("browser sessions after other owner = %d, want one isolated session per owner", got)
 	}
 }
 
@@ -924,7 +944,7 @@ func TestProjectAssistantNativeBrowserPrivateHandoffThenFirstNonNavigationStarts
 	}
 	ref := dataPlaneRef{Resource: "instances", Name: "browser"}
 	entry := manager.entry(server.nativeBrowserOwner(request), ref)
-	if _, err := server.callProjectAssistantNativeBrowserSession(context.Background(), request, entry, ref, browserMCPToolSnapshot, map[string]any{}, true, previewURL, false); err != nil {
+	if _, err := server.callProjectAssistantNativeBrowserSession(context.Background(), request, entry, ref, browserMCPToolSnapshot, map[string]any{}, true, previewURL, false, nil); err != nil {
 		t.Fatalf("private first snapshot: %v", err)
 	}
 	if initializeCalls != 1 {
@@ -1386,16 +1406,17 @@ func TestProjectAssistantNativeBrowserManagedSessionSurvivesModelRefresh(t *test
 	}
 }
 
-func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *testing.T) {
+func TestProjectAssistantBrowserDiscoveryUsesIsolatedSessionWithoutClosingManagedSession(t *testing.T) {
 	server := newNativeBrowserTestServer(t)
-	var methods []string
+	var methods, deletedSessionIDs []string
+	var initializeCalls int
 	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			if request.Method == http.MethodGet {
 				return browserMCPTestEventStreamResponse(request), nil
 			}
 			if request.Method == http.MethodDelete {
-				methods = append(methods, "DELETE")
+				deletedSessionIDs = append(deletedSessionIDs, request.Header.Get("Mcp-Session-Id"))
 				recorder := httptest.NewRecorder()
 				recorder.WriteHeader(http.StatusNoContent)
 				return recorder.Result(), nil
@@ -1405,17 +1426,23 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 				return nil, err
 			}
 			methods = append(methods, envelope.Method)
-			if envelope.Method == "tools/list" {
-				return nil, errors.New("unexpected second browser discovery")
-			}
 			recorder := httptest.NewRecorder()
 			recorder.Header().Set("Content-Type", "application/json")
 			switch envelope.Method {
 			case "initialize":
-				recorder.Header().Set("Mcp-Session-Id", "managed-session")
-				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+				initializeCalls++
+				recorder.Header().Set("Mcp-Session-Id", fmt.Sprintf("isolated-session-%d", initializeCalls))
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": envelope.ID, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
 			case "notifications/initialized":
 				recorder.WriteHeader(http.StatusAccepted)
+			case "tools/list":
+				mcpTools := make([]projectMCPTool, 0)
+				for _, tool := range nativeBrowserCatalogTestTools(server) {
+					spec := tool.Spec()
+					mcpTools = append(mcpTools, projectMCPTool{Name: spec.Name, Description: spec.Description, InputSchema: spec.Parameters})
+				}
+				mcpTools = append(mcpTools, projectMCPTool{Name: "browser_tabs", Description: "tabs", InputSchema: json.RawMessage(`{"type":"object"}`)})
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": envelope.ID, "result": map[string]any{"tools": mcpTools}})
 			case "tools/call":
 				content := "- Page URL: https://demo.preview.example/\n- Page Snapshot:\n- generic [ref=e1]:"
 				if envelope.Params.Name == "browser_tabs" {
@@ -1439,16 +1466,24 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 	}
 
 	port := projectAssistantHTTPToolPort{server: server, request: httptest.NewRequest(http.MethodPost, "/", nil)}
-	if _, err := port.DiscoverBrowser(context.Background(), request.Identity, projectLLMSettings{}); err == nil || !strings.Contains(err.Error(), "managed browser session is active") {
-		t.Fatalf("discovery while managed session active = %v, want guarded failure", err)
+	discovered, err := port.DiscoverBrowser(context.Background(), request.Identity, projectLLMSettings{})
+	if err != nil || len(discovered) == 0 {
+		t.Fatalf("isolated discovery while managed session active = %d tools, err=%v", len(discovered), err)
 	}
-	for _, method := range methods {
-		if method == "tools/list" || method == "DELETE" {
-			t.Fatalf("managed-session discovery performed destructive method %q; methods=%v", method, methods)
+	if initializeCalls != 2 {
+		t.Fatalf("managed plus isolated discovery initialized %d sessions, want two", initializeCalls)
+	}
+	methodsAfterDiscovery := len(methods)
+	for _, sessionID := range deletedSessionIDs {
+		if sessionID == "isolated-session-1" {
+			t.Fatalf("discovery closed managed session %q; deletes=%v", sessionID, deletedSessionIDs)
 		}
 	}
 
-	ref := dataPlaneRef{Resource: "instances", Name: "browser"}
+	ref, ok := server.resolveBrowserDataPlaneRef(context.Background(), request.Identity)
+	if !ok {
+		t.Fatal("verified browser ref was not available")
+	}
 	server.browserSessions.setBrowserCatalog(request.Identity, ref, []projectMCPTool{
 		{Name: "browser_navigate", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		{Name: "browser_snapshot", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -1458,6 +1493,9 @@ func TestProjectAssistantBrowserDiscoveryDoesNotOpenOrCloseManagedSession(t *tes
 	})
 	if tools, err := port.DiscoverBrowser(context.Background(), request.Identity, projectLLMSettings{}); err != nil || len(tools) != 5 {
 		t.Fatalf("cached browser discovery = %d tools, err=%v; want five tools without transport", len(tools), err)
+	}
+	if len(methods) != methodsAfterDiscovery {
+		t.Fatalf("cached discovery repeated transport calls: before=%v after=%v", methodsAfterDiscovery, methods)
 	}
 }
 
@@ -1507,6 +1545,10 @@ func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundar
 		})}
 	}
 	identity := identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"}
+	ref, ok := server.resolveBrowserDataPlaneRef(context.Background(), identity)
+	if !ok {
+		t.Fatal("verified browser ref was not available")
+	}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}}
 	request := projectAssistantToolCallRequest{
 		Identity:       identity,
@@ -1525,7 +1567,7 @@ func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundar
 
 	inspectionDone := make(chan error, 1)
 	go func() {
-		_, err := server.inspectPreviewViaBrowserMCP(context.Background(), identity, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantPreviewInspectionRequest{URL: "https://demo.preview.example/"})
+		_, err := server.inspectPreviewViaBrowserMCP(context.Background(), identity, ref, projectAssistantPreviewInspectionRequest{URL: "https://demo.preview.example/"})
 		inspectionDone <- err
 	}()
 	select {
@@ -1548,7 +1590,7 @@ func TestProjectAssistantLegacyInspectionCannotCloseManagedSessionAtModelBoundar
 	if deleteCalls != 1 {
 		t.Fatalf("managed release deleted %d sessions, want one", deleteCalls)
 	}
-	if _, err := server.inspectPreviewViaBrowserMCP(context.Background(), identity, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantPreviewInspectionRequest{URL: "https://demo.preview.example/"}); err != nil {
+	if _, err := server.inspectPreviewViaBrowserMCP(context.Background(), identity, ref, projectAssistantPreviewInspectionRequest{URL: "https://demo.preview.example/"}); err != nil {
 		t.Fatalf("legacy inspection after managed release: %v", err)
 	}
 	if initializeCalls != 2 || deleteCalls != 2 {
@@ -1582,12 +1624,14 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 				return "https://demo.preview.example/", nil
 			}
 			toolCalls := map[string]int{}
+			deleteCalls := 0
 			server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 				return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 					if request.Method == http.MethodGet {
 						return browserMCPTestEventStreamResponse(request), nil
 					}
 					if request.Method == http.MethodDelete {
+						deleteCalls++
 						recorder := httptest.NewRecorder()
 						recorder.WriteHeader(http.StatusNoContent)
 						return recorder.Result(), nil
@@ -1653,8 +1697,19 @@ func TestProjectAssistantNativeBrowserMutationReportsUnknownAndFailsClosedWhenSa
 			if outcome["status"] != "outcome_unknown" || outcome["outcome"] != "unknown" || outcome["replayed"] != false {
 				t.Fatalf("post-effect safety outcome = %#v", outcome)
 			}
-			if got := len(server.browserSessions.sessions); got != 0 {
-				t.Fatalf("unsafe browser session count = %d, want discarded session", got)
+			ref, ok := server.resolveBrowserDataPlaneRef(context.Background(), request.Identity)
+			if !ok {
+				t.Fatal("verified browser ref was not available")
+			}
+			entry := server.browserSessions.entry(server.nativeBrowserOwner(request), ref)
+			if entry == nil {
+				t.Fatal("unsafe browser entry was removed instead of retaining its last verified URL")
+			}
+			entry.mu.Lock()
+			session, currentURL, previewURL := entry.session, entry.currentURL, entry.previewURL
+			entry.mu.Unlock()
+			if session != nil || currentURL != "https://demo.preview.example/" || previewURL != currentURL || deleteCalls != 1 || toolCalls["browser_click"] != 1 {
+				t.Fatalf("unsafe browser state session=%v currentURL=%q previewURL=%q deleteCalls=%d clickCalls=%d; want closed context and only the last verified same-origin URL retained", session, currentURL, previewURL, deleteCalls, toolCalls["browser_click"])
 			}
 		})
 	}
@@ -1698,15 +1753,15 @@ func TestProjectAssistantBrowserSessionManagerReapsIdleEntries(t *testing.T) {
 	manager.reapIdle(time.Now())
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if len(manager.sessions) != 0 || len(manager.activeByRef) != 0 {
-		t.Fatalf("idle manager state = sessions %d, active refs %d", len(manager.sessions), len(manager.activeByRef))
+	if len(manager.sessions) != 0 || len(manager.ownersByRef) != 0 {
+		t.Fatalf("idle manager state = sessions %d, active refs %d", len(manager.sessions), len(manager.ownersByRef))
 	}
 }
 
 func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t *testing.T) {
 	manager := newProjectAssistantBrowserSessionManager()
 	defer manager.closeAll()
-	ref := dataPlaneRef{Resource: "instances", Name: "browser"}
+	ref := dataPlaneRef{Resource: "instances", Name: "browser", IsolatedMCPContexts: true, InstanceUID: "instance-uid", TemplateVersion: "0.2.0", TemplateGeneration: 1}
 	idA := identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "ws-a", user: "alice"}
 	idB := identity{tenant: "root:railgrid:tenants:org-b:ws-b", clusterID: "cluster-b", orgUUID: "org-b", workspaceUUID: "ws-b", user: "bob"}
 	ownerA := browserSessionOwner{Identity: idA, AssistantRunID: "run-a"}
@@ -1720,7 +1775,7 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 	if got := len(manager.sessions); got != 2 {
 		t.Fatalf("managed sessions = %d, want two isolated workspace sessions", got)
 	}
-	if got := len(manager.activeByRef); got != 2 {
+	if got := len(manager.ownersByRef); got != 2 {
 		t.Fatalf("active browser scopes = %d, want two", got)
 	}
 	if !manager.hasActiveRef(idA, ref) || !manager.hasActiveRef(idB, ref) {
@@ -1740,13 +1795,296 @@ func TestProjectAssistantBrowserSessionManagerScopesRefsAndCatalogsByWorkspace(t
 	idASecondCaller.user = "carol"
 	entryASecondCaller := manager.entry(browserSessionOwner{Identity: idASecondCaller, AssistantRunID: "run-a-2"}, ref)
 	if entryASecondCaller == nil || entryASecondCaller == entryA {
-		t.Fatalf("same-endpoint handoff entry = %p, prior %p", entryASecondCaller, entryA)
+		t.Fatalf("same-endpoint owner entry = %p, prior %p", entryASecondCaller, entryA)
 	}
-	if _, retained := manager.sessions[ownerA.key()]; retained {
-		t.Fatal("same-endpoint owner handoff retained the prior workspace A owner")
+	if _, retained := manager.sessions[ownerA.key()]; !retained {
+		t.Fatal("same-endpoint isolated owner was evicted")
 	}
 	if _, retained := manager.sessions[ownerB.key()]; !retained {
-		t.Fatal("workspace A owner handoff evicted isolated workspace B")
+		t.Fatal("same-endpoint owner addition evicted isolated workspace B")
+	}
+	if _, retained := manager.sessions[entryASecondCaller.owner.key()]; !retained {
+		t.Fatal("same-endpoint isolated owner was not retained")
+	}
+}
+
+func TestProjectAssistantBrowserSessionOwnerUsesThreadAcrossRunIDs(t *testing.T) {
+	base := browserSessionOwner{
+		Identity:          identity{tenant: "tenant", clusterID: "cluster", user: "alice"},
+		ProjectUID:        "project-uid",
+		AssistantThreadID: "thread-a",
+		AssistantRunID:    "run-a",
+	}
+	sameThreadNextRun := base
+	sameThreadNextRun.AssistantRunID = "run-b"
+	otherThread := sameThreadNextRun
+	otherThread.AssistantThreadID = "thread-b"
+	if base.key() != sameThreadNextRun.key() {
+		t.Fatal("same assistant thread received different browser owner keys across runs")
+	}
+	if base.key() == otherThread.key() {
+		t.Fatal("different assistant threads shared a browser owner key")
+	}
+
+	manager := newProjectAssistantBrowserSessionManager()
+	defer manager.closeAll()
+	ref := dataPlaneRef{Resource: "instances", Name: "browser", IsolatedMCPContexts: true}
+	entryA := manager.entry(base, ref)
+	manager.releaseRun(base.AssistantRunID)
+	entryB := manager.entry(sameThreadNextRun, ref)
+	if entryA == nil || entryB != entryA {
+		t.Fatalf("thread browser entry across runs = %p, want retained entry %p", entryB, entryA)
+	}
+	if manager.entry(otherThread, ref) == entryA {
+		t.Fatal("different assistant thread reused the same browser entry")
+	}
+}
+
+func TestProjectAssistantBrowserSessionManagerRetainsIsolatedThreadContextAcrossABA(t *testing.T) {
+	server, deleteCalls := newBrowserSessionManagerTestServer(t)
+	manager := newProjectAssistantBrowserSessionManager()
+	defer manager.closeAll()
+	ref := dataPlaneRef{Resource: "instances", Name: "browser", IsolatedMCPContexts: true}
+	id := identity{tenant: "tenant", clusterID: "cluster-a", user: "alice"}
+	ownerA := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantThreadID: "thread-a", AssistantRunID: "run-a1"}
+	ownerB := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantThreadID: "thread-b", AssistantRunID: "run-b1"}
+
+	entryA, err := manager.entryWithPolicy(ownerA, ref)
+	if err != nil {
+		t.Fatalf("create thread A entry: %v", err)
+	}
+	sessionA, err := server.newBrowserMCPSession(context.Background(), id, ref)
+	if err != nil {
+		t.Fatalf("initialize thread A MCP session: %v", err)
+	}
+	entryA.mu.Lock()
+	entryA.session = sessionA
+	entryA.previewURL = "https://demo.preview.example/"
+	entryA.currentURL = "https://demo.preview.example/inventory"
+	entryA.previewReady = true
+	entryA.mu.Unlock()
+	if _, err := sessionA.callTool(context.Background(), browserMCPToolNavigate, map[string]any{"url": "https://demo.preview.example/inventory"}); err != nil {
+		t.Fatalf("navigate thread A: %v", err)
+	}
+
+	manager.releaseRun(ownerA.AssistantRunID)
+	entryB, err := manager.entryWithPolicy(ownerB, ref)
+	if err != nil {
+		t.Fatalf("create thread B entry: %v", err)
+	}
+	if entryB == entryA {
+		t.Fatal("thread B reused thread A's isolated entry")
+	}
+	sessionB, err := server.newBrowserMCPSession(context.Background(), id, ref)
+	if err != nil {
+		t.Fatalf("initialize thread B MCP session: %v", err)
+	}
+	entryB.mu.Lock()
+	entryB.session = sessionB
+	entryB.previewURL = "https://demo.preview.example/"
+	entryB.currentURL = "https://demo.preview.example/settings"
+	entryB.previewReady = true
+	entryB.mu.Unlock()
+	if _, err := sessionB.callTool(context.Background(), browserMCPToolNavigate, map[string]any{"url": "https://demo.preview.example/settings"}); err != nil {
+		t.Fatalf("navigate thread B: %v", err)
+	}
+
+	ownerANextRun := ownerA
+	ownerANextRun.AssistantRunID = "run-a2"
+	entryAAgain, err := manager.entryWithPolicy(ownerANextRun, ref)
+	if err != nil {
+		t.Fatalf("reuse thread A entry: %v", err)
+	}
+	entryAAgain.mu.Lock()
+	retainedSession := entryAAgain.session
+	retainedURL := entryAAgain.currentURL
+	entryAAgain.mu.Unlock()
+	if entryAAgain != entryA || retainedSession != sessionA || retainedURL != "https://demo.preview.example/inventory" {
+		t.Fatalf("thread A entry/session/route = %p/%p/%q, want retained %p/%p/inventory", entryAAgain, retainedSession, retainedURL, entryA, sessionA)
+	}
+	if sessionA.currentSessionID() == sessionB.currentSessionID() {
+		t.Fatal("threads A and B received the same MCP session ID")
+	}
+
+	resultA, err := sessionA.callTool(context.Background(), browserMCPToolSnapshot, map[string]any{})
+	if err != nil || !strings.Contains(resultA.text, "https://demo.preview.example/inventory") {
+		t.Fatalf("thread A snapshot after A→B→A = %q, err %v", resultA.text, err)
+	}
+	resultB, err := sessionB.callTool(context.Background(), browserMCPToolSnapshot, map[string]any{})
+	if err != nil || !strings.Contains(resultB.text, "https://demo.preview.example/settings") {
+		t.Fatalf("thread B snapshot after A→B→A = %q, err %v", resultB.text, err)
+	}
+
+	manager.closeAll()
+	if *deleteCalls != 2 {
+		t.Fatalf("A/B session cleanup DELETE calls = %d, want two", *deleteCalls)
+	}
+}
+
+func TestProjectAssistantBrowserSessionManagerCapacityDoesNotEvictActiveEntries(t *testing.T) {
+	manager := newProjectAssistantBrowserSessionManager()
+	defer manager.closeAll()
+	ref := dataPlaneRef{Resource: "instances", Name: "browser", IsolatedMCPContexts: true}
+	id := identity{tenant: "tenant", clusterID: "cluster-a", user: "alice"}
+	owners := make([]browserSessionOwner, projectAssistantBrowserSessionLimitPerRef)
+	entries := make([]*projectAssistantBrowserSessionEntry, projectAssistantBrowserSessionLimitPerRef)
+	for index := range owners {
+		owners[index] = browserSessionOwner{
+			Identity:          id,
+			ProjectUID:        "project-uid",
+			AssistantThreadID: fmt.Sprintf("thread-%d", index),
+			AssistantRunID:    fmt.Sprintf("run-%d", index),
+		}
+		entry, err := manager.entryWithPolicy(owners[index], ref)
+		if err != nil {
+			t.Fatalf("create entry %d: %v", index, err)
+		}
+		if !manager.begin(entry) {
+			t.Fatalf("begin entry %d", index)
+		}
+		entries[index] = entry
+	}
+
+	ninthOwner := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantThreadID: "thread-9", AssistantRunID: "run-9"}
+	if entry, err := manager.entryWithPolicy(ninthOwner, ref); entry != nil || !errors.Is(err, errProjectAssistantBrowserSessionLimit) {
+		t.Fatalf("ninth active isolated entry = %p, err %v; want typed capacity error", entry, err)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if len(manager.sessions) != projectAssistantBrowserSessionLimitPerRef {
+		t.Fatalf("session count after capacity rejection = %d, want %d", len(manager.sessions), projectAssistantBrowserSessionLimitPerRef)
+	}
+	for index, entry := range entries {
+		if manager.sessions[owners[index].key()] != entry || entry.inFlight != 1 {
+			t.Fatalf("active entry %d was evicted or altered: manager=%p entry=%p inFlight=%d", index, manager.sessions[owners[index].key()], entry, entry.inFlight)
+		}
+	}
+}
+
+func TestProjectAssistantBrowserSessionManagerClosesReplacedEntryAtCapacity(t *testing.T) {
+	server, deleteCalls := newBrowserSessionManagerTestServer(t)
+	manager := newProjectAssistantBrowserSessionManager()
+	defer manager.closeAll()
+	id := identity{tenant: "tenant", clusterID: "cluster-a", user: "alice"}
+	oldRef := dataPlaneRef{Resource: "instances", Name: "browser-old", IsolatedMCPContexts: true}
+	newRef := dataPlaneRef{Resource: "instances", Name: "browser-new", IsolatedMCPContexts: true}
+	replacedOwner := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantThreadID: "thread-replaced", AssistantRunID: "run-old"}
+	oldEntry, err := manager.entryWithPolicy(replacedOwner, oldRef)
+	if err != nil {
+		t.Fatalf("create old-ref entry: %v", err)
+	}
+	oldSession, err := server.newBrowserMCPSession(context.Background(), id, oldRef)
+	if err != nil {
+		t.Fatalf("initialize old-ref MCP session: %v", err)
+	}
+	oldEntry.mu.Lock()
+	oldEntry.session = oldSession
+	oldEntry.currentURL = "https://demo.preview.example/old"
+	oldEntry.mu.Unlock()
+
+	owners := make([]browserSessionOwner, projectAssistantBrowserSessionLimitPerRef)
+	for index := range owners {
+		owners[index] = browserSessionOwner{
+			Identity:          id,
+			ProjectUID:        "project-uid",
+			AssistantThreadID: fmt.Sprintf("new-ref-thread-%d", index),
+			AssistantRunID:    fmt.Sprintf("new-ref-run-%d", index),
+		}
+		if _, err := manager.entryWithPolicy(owners[index], newRef); err != nil {
+			t.Fatalf("fill new-ref slot %d: %v", index, err)
+		}
+	}
+	if entry, err := manager.entryWithPolicy(replacedOwner, newRef); entry != nil || !errors.Is(err, errProjectAssistantBrowserSessionLimit) {
+		t.Fatalf("replacement at full capacity = %p, err %v; want typed capacity error", entry, err)
+	}
+	if !oldSession.isClosed() || oldSession.recoveryCtx.Err() == nil || *deleteCalls != 1 {
+		t.Fatalf("detached old-ref session closed=%v recoveryCanceled=%t DELETE calls=%d; want closed/canceled session and one DELETE", oldSession.isClosed(), oldSession.recoveryCtx.Err() != nil, *deleteCalls)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.sessions[replacedOwner.key()] != nil || len(manager.sessions) != projectAssistantBrowserSessionLimitPerRef {
+		t.Fatalf("manager after rejected replacement has %d sessions and replaced owner=%p; want only the eight new-ref entries", len(manager.sessions), manager.sessions[replacedOwner.key()])
+	}
+	for index, owner := range owners {
+		if manager.sessions[owner.key()] == nil {
+			t.Fatalf("new-ref entry %d was evicted while rejecting replacement", index)
+		}
+	}
+}
+
+func TestProjectAssistantBrowserCatalogPurgesOldIncarnations(t *testing.T) {
+	manager := newProjectAssistantBrowserSessionManager()
+	defer manager.closeAll()
+	id := identity{tenant: "tenant", clusterID: "cluster-a", user: "alice"}
+	refA := dataPlaneRef{
+		Resource: "instances", Name: "browser", InstanceUID: "instance-a",
+		TemplateVersion: "0.2.0", TemplateGeneration: 1, IsolatedMCPContexts: true,
+	}
+	catalog := []projectMCPTool{{Name: browserMCPToolSnapshot, InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	manager.setBrowserCatalog(id, refA, catalog)
+	if got := len(manager.catalogs); got != 1 {
+		t.Fatalf("catalogs after first incarnation = %d, want one", got)
+	}
+
+	refB := refA
+	refB.InstanceUID = "instance-b"
+	refB.TemplateGeneration++
+	if _, ok := manager.browserCatalog(id, refB); ok {
+		t.Fatal("old browser incarnation catalog was returned for a recreated instance")
+	}
+	if got := len(manager.catalogs); got != 0 {
+		t.Fatalf("catalogs after observing replacement incarnation = %d, want zero", got)
+	}
+	manager.setBrowserCatalog(id, refB, catalog)
+
+	refC := refB
+	refC.TemplateGeneration++
+	owner := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantThreadID: "thread-a", AssistantRunID: "run-a"}
+	if _, err := manager.entryWithPolicy(owner, refC); err != nil {
+		t.Fatalf("create session entry for latest incarnation: %v", err)
+	}
+	if got := len(manager.catalogs); got != 0 {
+		t.Fatalf("catalogs after another incarnation change = %d, want zero", got)
+	}
+	manager.setBrowserCatalog(id, refC, catalog)
+	if got := len(manager.catalogs); got != 1 {
+		t.Fatalf("catalogs after latest incarnation discovery = %d, want one", got)
+	}
+}
+
+func TestProjectAssistantBrowserSessionManagerExclusiveHandoffWaitsForInflightOwner(t *testing.T) {
+	manager := newProjectAssistantBrowserSessionManager()
+	defer manager.closeAll()
+	ref := dataPlaneRef{Resource: "instances", Name: "custom-browser"}
+	id := identity{tenant: "tenant", clusterID: "cluster-a", user: "alice"}
+	ownerA := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantRunID: "run-a"}
+	ownerB := browserSessionOwner{Identity: id, ProjectUID: "project-uid", AssistantRunID: "run-b"}
+	entryA, err := manager.entryWithPolicy(ownerA, ref)
+	if err != nil {
+		t.Fatalf("create custom browser entry A: %v", err)
+	}
+	if !manager.begin(entryA) {
+		t.Fatal("begin custom browser entry A")
+	}
+	if entry, err := manager.entryWithPolicy(ownerB, ref); entry != nil || !errors.Is(err, errProjectAssistantBrowserSessionBusy) {
+		t.Fatalf("custom browser handoff during owner A call = %p, err %v; want busy error", entry, err)
+	}
+	manager.mu.Lock()
+	if manager.sessions[ownerA.key()] != entryA || manager.sessions[ownerB.key()] != nil || entryA.inFlight != 1 {
+		manager.mu.Unlock()
+		t.Fatal("busy custom-browser handoff detached or altered the in-flight owner")
+	}
+	manager.mu.Unlock()
+
+	manager.end(entryA)
+	entryB, err := manager.entryWithPolicy(ownerB, ref)
+	if err != nil || entryB == nil {
+		t.Fatalf("custom browser handoff after owner A completed = %p, err %v", entryB, err)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.sessions[ownerA.key()] != nil || manager.sessions[ownerB.key()] != entryB {
+		t.Fatal("exclusive custom-browser handoff did not replace the completed owner")
 	}
 }
 
@@ -1798,6 +2136,112 @@ func TestProjectAssistantNativeBrowserReadRetriesLostSessionOnce(t *testing.T) {
 	}
 	if initializeCalls != 2 || toolCalls != 4 {
 		t.Fatalf("read retry calls = initialize %d, tools/call %d; want 2/4 (preview restore, snapshot, safety tabs)", initializeCalls, toolCalls)
+	}
+}
+
+func TestProjectAssistantNativeBrowserReadDoesNotReopenAfterManagerShutdown(t *testing.T) {
+	server := newNativeBrowserTestServer(t)
+	manager := server.browserSessions
+	var countsMu sync.Mutex
+	initializeCalls, toolCalls, getCalls, deleteCalls := 0, 0, 0, 0
+	closeAllDone := make(chan struct{})
+	var closeAllOnce sync.Once
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				countsMu.Unlock()
+				return browserMCPTestEventStreamResponse(request), nil
+			}
+			if request.Method == http.MethodDelete {
+				countsMu.Lock()
+				deleteCalls++
+				countsMu.Unlock()
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope nativeBrowserTestEnvelope
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				countsMu.Lock()
+				initializeCalls++
+				countsMu.Unlock()
+				recorder.Header().Set("Mcp-Session-Id", "shutdown-read-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": envelope.ID, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			case "tools/call":
+				countsMu.Lock()
+				toolCalls++
+				countsMu.Unlock()
+				if envelope.Params.Name == browserMCPToolSnapshot {
+					closeAllOnce.Do(func() {
+						go func() {
+							manager.closeAll()
+							close(closeAllDone)
+						}()
+						deadline := time.Now().Add(time.Second)
+						for {
+							manager.mu.Lock()
+							closed := manager.closed
+							manager.mu.Unlock()
+							if closed {
+								break
+							}
+							if time.Now().After(deadline) {
+								return
+							}
+							time.Sleep(time.Millisecond)
+						}
+					})
+					recorder.WriteHeader(http.StatusNotFound)
+					_, _ = recorder.WriteString("session not found")
+					return recorder.Result(), nil
+				}
+				content := "- Page URL: https://demo.preview.example/\n- Page Snapshot:\n- generic [ref=e1]:"
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": envelope.ID, "result": map[string]any{"isError": false, "content": []map[string]string{{"type": "text", "text": content}}}})
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	request := projectAssistantToolCallRequest{
+		Identity:       identity{tenant: "root:railgrid:tenants:org-a:ws-a", clusterID: "cluster-a", user: "alice"},
+		Project:        &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("project-uid")}},
+		AssistantRunID: "run-shutdown-read",
+	}
+	result, err := server.callProjectAssistantNativeBrowserTool(context.Background(), request, browserMCPToolSnapshot, projectAssistantToolRiskRead)
+	if err != nil {
+		t.Fatalf("shutdown read result: %v", err)
+	}
+	var outcome map[string]any
+	if err := json.Unmarshal([]byte(result), &outcome); err != nil {
+		t.Fatalf("shutdown read outcome = %q: %v", result, err)
+	}
+	if outcome["status"] != "unverifiable" || outcome["replayed"] != false {
+		t.Fatalf("shutdown read outcome = %#v, want an unreplayed unverifiable result", outcome)
+	}
+	select {
+	case <-closeAllDone:
+	case <-time.After(time.Second):
+		t.Fatal("browser session manager did not finish closing")
+	}
+	countsMu.Lock()
+	gotInitializes, gotToolCalls, gotGETs, gotDELETEs := initializeCalls, toolCalls, getCalls, deleteCalls
+	countsMu.Unlock()
+	if gotInitializes != 1 || gotToolCalls != 2 || gotGETs != 1 || gotDELETEs != 1 {
+		t.Fatalf("requests after shutdown = initialize %d, tools/call %d, GET %d, DELETE %d; want 1/2/1/1 with no retry session", gotInitializes, gotToolCalls, gotGETs, gotDELETEs)
+	}
+	if entry, err := manager.entryWithPolicy(server.nativeBrowserOwner(request), dataPlaneRef{Resource: "instances", Name: "browser", IsolatedMCPContexts: true}); entry != nil || !errors.Is(err, errProjectAssistantBrowserSessionManagerClosed) {
+		t.Fatalf("manager accepted an entry after closeAll: entry=%p err=%v", entry, err)
 	}
 }
 
@@ -2051,6 +2495,7 @@ type nativeBrowserOriginGuardTestState struct {
 	escapeAfterNavigate     bool
 	unsafeNavigationReceipt bool
 	failNextSnapshotCall    bool
+	cancelNextSnapshot      context.CancelFunc
 	sessionLossOnTool       string
 }
 
@@ -2109,6 +2554,11 @@ func newNativeBrowserOriginGuardTestServer(t *testing.T, state *nativeBrowserOri
 					state.pageURL = "https://attacker.example/after-navigate"
 				}
 			case browserMCPToolSnapshot:
+				if state.cancelNextSnapshot != nil {
+					state.cancelNextSnapshot()
+					state.cancelNextSnapshot = nil
+					return nil, context.Canceled
+				}
 				if state.failNextSnapshotCall {
 					state.failNextSnapshotCall = false
 					recorder.WriteHeader(http.StatusGone)
@@ -2425,4 +2875,56 @@ func nativeBrowserTestClient(post func(*http.Request) (*http.Response, error)) f
 			}
 		})}
 	}
+}
+
+func newBrowserSessionManagerTestServer(t *testing.T) (*Server, *int) {
+	t.Helper()
+	server := newNativeBrowserTestServer(t)
+	deleteCalls := new(int)
+	pageURLs := map[string]string{}
+	initializeCalls := 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				return browserMCPTestEventStreamResponse(request), nil
+			}
+			if request.Method == http.MethodDelete {
+				*deleteCalls++
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope nativeBrowserTestEnvelope
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				initializeCalls++
+				sessionID := fmt.Sprintf("manager-test-session-%d", initializeCalls)
+				pageURLs[sessionID] = "about:blank"
+				recorder.Header().Set("Mcp-Session-Id", sessionID)
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": envelope.ID, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			case "tools/call":
+				sessionID := request.Header.Get("Mcp-Session-Id")
+				text := "ok"
+				switch envelope.Params.Name {
+				case browserMCPToolNavigate:
+					pageURLs[sessionID] = projectToolString(envelope.Params.Arguments["url"])
+					text = "- Page URL: " + pageURLs[sessionID]
+				case browserMCPToolSnapshot:
+					text = "- Page URL: " + pageURLs[sessionID] + "\n- Page Snapshot:\n- generic [ref=e1]:"
+				}
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": envelope.ID, "result": map[string]any{"isError": false, "content": []map[string]string{{"type": "text", "text": text}}}})
+			default:
+				return nil, fmt.Errorf("unexpected manager-test MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	return server, deleteCalls
 }

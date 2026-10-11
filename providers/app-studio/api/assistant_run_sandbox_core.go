@@ -296,6 +296,10 @@ func projectAssistantRunSandboxCheckpointFailure(err error) string {
 	if err == nil {
 		return "the current workspace mutation could not be checkpointed into the run sandbox"
 	}
+	var stalePreview *projectAssistantSharedPreviewSourceStaleError
+	if errors.As(err, &stalePreview) {
+		return stalePreview.Error()
+	}
 	reason := strings.TrimSpace(err.Error())
 	if errors.Is(err, errProjectAssistantRunSandboxConflict) {
 		return "the current workspace mutation is not current because the run sandbox checkpoint conflicted: " + reason

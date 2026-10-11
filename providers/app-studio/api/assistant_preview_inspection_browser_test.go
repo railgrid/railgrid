@@ -34,6 +34,10 @@ import (
 )
 
 func browserMCPTestEventStreamResponse(request *http.Request) *http.Response {
+	return browserMCPTestEventStreamResponseWithBody(request, &testBrowserEventStreamBody{closed: make(chan struct{})})
+}
+
+func browserMCPTestEventStreamResponseWithBody(request *http.Request, body io.ReadCloser) *http.Response {
 	header := make(http.Header)
 	header.Set("Content-Type", "text/event-stream")
 	if sessionID := request.Header.Get("Mcp-Session-Id"); sessionID != "" {
@@ -42,7 +46,7 @@ func browserMCPTestEventStreamResponse(request *http.Request) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     header,
-		Body:       &testBrowserEventStreamBody{closed: make(chan struct{})},
+		Body:       body,
 	}
 }
 
@@ -80,6 +84,29 @@ func TestBrowserMCPParseFieldsAndTree(t *testing.T) {
 	}
 	if nodes[1].role != "heading" || nodes[1].name != "Admin Login" {
 		t.Fatalf("node[1] = %+v", nodes[1])
+	}
+}
+
+func TestLegacyPreviewInspectionRejectsUnverifiedBrowserIsolation(t *testing.T) {
+	server := &Server{}
+	transportCalled := false
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		transportCalled = true
+		return &http.Client{Transport: sandboxRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("unexpected browser request")
+		})}
+	}
+	_, err := server.inspectPreviewViaBrowserMCP(
+		context.Background(),
+		identity{clusterID: "cluster-a"},
+		dataPlaneRef{Resource: "instances", Name: "browser"},
+		projectAssistantPreviewInspectionRequest{URL: "https://preview.example/"},
+	)
+	if !errors.Is(err, errProjectAssistantBrowserIsolationUnverified) {
+		t.Fatalf("inspection error = %v, want unverified-isolation error", err)
+	}
+	if transportCalled {
+		t.Fatal("unverified browser isolation reached the data-plane transport")
 	}
 }
 
@@ -264,14 +291,19 @@ func TestBrowserMCPSessionRejectsInvalidNegotiatedProtocolVersion(t *testing.T) 
 }
 
 type testBrowserEventStreamBody struct {
-	payload []byte
-	closed  chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	sent    bool
+	payload   []byte
+	closed    chan struct{}
+	once      sync.Once
+	mu        sync.Mutex
+	sent      bool
+	started   chan struct{}
+	startOnce sync.Once
 }
 
 func (body *testBrowserEventStreamBody) Read(p []byte) (int, error) {
+	if body.started != nil {
+		body.startOnce.Do(func() { close(body.started) })
+	}
 	body.mu.Lock()
 	if !body.sent && len(body.payload) > 0 {
 		body.sent = true
@@ -301,21 +333,69 @@ func (body *testBrowserEventStreamErrorBody) Read([]byte) (int, error) {
 
 func (body *testBrowserEventStreamErrorBody) Close() error { return nil }
 
-func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing.T) {
+type testBrowserEventStreamEOFBody struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (body *testBrowserEventStreamEOFBody) Read([]byte) (int, error) {
+	if body.started != nil {
+		body.once.Do(func() { close(body.started) })
+	}
+	return 0, io.EOF
+}
+
+func (body *testBrowserEventStreamEOFBody) Close() error { return nil }
+
+type testBrowserBlockedErrorBody struct {
+	readStarted chan struct{}
+	closed      chan struct{}
+	readOnce    sync.Once
+	closeOnce   sync.Once
+}
+
+func (body *testBrowserBlockedErrorBody) Read([]byte) (int, error) {
+	body.readOnce.Do(func() { close(body.readStarted) })
+	<-body.closed
+	return 0, io.EOF
+}
+
+func (body *testBrowserBlockedErrorBody) Close() error {
+	body.closeOnce.Do(func() { close(body.closed) })
+	return nil
+}
+
+func TestBrowserMCPSessionRecoversEventStreamWithoutReplayingToolCalls(t *testing.T) {
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
-	streamBody := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
-	deleteCalls := 0
+	firstStream := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
+	recoveredStream := &testBrowserEventStreamBody{closed: make(chan struct{}), started: make(chan struct{})}
+	var countsMu sync.Mutex
+	getCalls, initializeCalls, toolCallCalls, listCalls, deleteCalls := 0, 0, 0, 0, 0
+	counts := func() (int, int, int, int, int) {
+		countsMu.Lock()
+		defer countsMu.Unlock()
+		return getCalls, initializeCalls, toolCallCalls, listCalls, deleteCalls
+	}
 	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			if request.Method == http.MethodGet {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       streamBody,
-				}, nil
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				switch call {
+				case 1:
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: firstStream}, nil
+				case 2:
+					return nil, context.DeadlineExceeded
+				default:
+					return browserMCPTestEventStreamResponseWithBody(request, recoveredStream), nil
+				}
 			}
 			if request.Method == http.MethodDelete {
+				countsMu.Lock()
 				deleteCalls++
+				countsMu.Unlock()
 				recorder := httptest.NewRecorder()
 				recorder.WriteHeader(http.StatusNoContent)
 				return recorder.Result(), nil
@@ -330,12 +410,25 @@ func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing
 			recorder.Header().Set("Content-Type", "application/json")
 			switch envelope.Method {
 			case "initialize":
+				countsMu.Lock()
+				initializeCalls++
+				countsMu.Unlock()
 				recorder.Header().Set("Mcp-Session-Id", "stream-error-session")
 				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
 			case "notifications/initialized":
 				recorder.WriteHeader(http.StatusAccepted)
+			case "tools/call":
+				countsMu.Lock()
+				toolCallCalls++
+				countsMu.Unlock()
+				return nil, errors.New("simulated lost tools/call response")
+			case "tools/list":
+				countsMu.Lock()
+				listCalls++
+				countsMu.Unlock()
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"tools": []any{}}})
 			default:
-				return nil, fmt.Errorf("unexpected MCP method %q after stream failure", envelope.Method)
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
 			}
 			return recorder.Result(), nil
 		})}
@@ -344,26 +437,733 @@ func TestBrowserMCPSessionInvalidatesUnexpectedEventStreamReadFailure(t *testing
 	if err != nil {
 		t.Fatalf("new browser MCP session: %v", err)
 	}
-	<-streamBody.started
-	var streamErr error
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	if _, err := session.rpc(context.Background(), "tools/call", map[string]any{"name": "browser_click"}); err == nil || !strings.Contains(err.Error(), "simulated lost tools/call response") {
+		t.Fatalf("dispatched tools/call error = %v, want the simulated lost response", err)
+	}
+	select {
+	case <-recoveredStream.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("event stream did not recover; last error: %v", session.eventStreamFailure())
+	}
+	if session.eventStreamFailure() != nil || session.currentSessionID() != "stream-error-session" {
+		t.Fatalf("recovered session state: streamErr=%v sessionID=%q", session.eventStreamFailure(), session.currentSessionID())
+	}
+	if _, err := session.rpc(context.Background(), "tools/list", map[string]any{}); err != nil {
+		t.Fatalf("tools/list after event-stream recovery: %v", err)
+	}
+	getCount, initializeCount, toolCallCount, listCount, deleteCount := counts()
+	if getCount != 3 || initializeCount != 1 || toolCallCount != 1 || listCount != 1 || deleteCount != 0 {
+		t.Fatalf("recovery request counts = GET %d initialize %d tools/call %d tools/list %d DELETE %d; want 3/1/1/1/0", getCount, initializeCount, toolCallCount, listCount, deleteCount)
+	}
+	session.close()
+	_, _, _, _, deleteCount = counts()
+	if deleteCount != 1 {
+		t.Fatalf("DELETE calls = %d, want one", deleteCount)
+	}
+}
+
+func TestBrowserMCPSessionBoundsRepeatedImmediateEOFRecovery(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamBody{closed: make(chan struct{}), started: make(chan struct{})}
+	var countsMu sync.Mutex
+	getTimes := make([]time.Time, 0, 5)
+	getCalls, deleteCalls := 0, 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				getTimes = append(getTimes, time.Now())
+				countsMu.Unlock()
+				if call == 1 {
+					return browserMCPTestEventStreamResponseWithBody(request, firstStream), nil
+				}
+				return browserMCPTestEventStreamResponseWithBody(request, &testBrowserEventStreamEOFBody{}), nil
+			}
+			if request.Method == http.MethodDelete {
+				countsMu.Lock()
+				deleteCalls++
+				countsMu.Unlock()
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "immediate-eof-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	policy := browserMCPEventStreamRecoveryPolicy{
+		window:        500 * time.Millisecond,
+		headerTimeout: 50 * time.Millisecond,
+		initialDelay:  20 * time.Millisecond,
+		maxDelay:      40 * time.Millisecond,
+		maxAttempts:   4,
+		stableWindow:  25 * time.Millisecond,
+	}
+	session, err := server.newBrowserMCPSessionWithRecoveryPolicy(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantBrowserSessionRoleUnspecified, policy)
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	_ = firstStream.Close()
+
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		streamErr = session.eventStreamFailure()
-		if streamErr != nil {
+		countsMu.Lock()
+		count := getCalls
+		countsMu.Unlock()
+		if count == 1+policy.maxAttempts {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if streamErr == nil {
-		t.Fatal("event-stream read failure did not invalidate the session")
+	countsMu.Lock()
+	count := getCalls
+	times := append([]time.Time(nil), getTimes...)
+	countsMu.Unlock()
+	if count != 1+policy.maxAttempts {
+		t.Fatalf("GET calls = %d, want initial GET plus %d bounded recovery attempts", count, policy.maxAttempts)
 	}
-	if _, err := session.rpc(context.Background(), "tools/list", map[string]any{}); err == nil || !browserMCPErrorLooksLikeSessionLoss(err.Error()) {
-		t.Fatalf("RPC after event-stream failure = %v, want session-loss error", err)
+	if len(times) != count {
+		t.Fatalf("recorded %d GET timestamps for %d calls", len(times), count)
+	}
+	if got := times[2].Sub(times[1]); got < 15*time.Millisecond {
+		t.Fatalf("first repeated-EOF retry interval = %s, want backoff of at least 15ms", got)
+	}
+	if got := times[3].Sub(times[2]); got < 30*time.Millisecond {
+		t.Fatalf("second repeated-EOF retry interval = %s, want backoff of at least 30ms", got)
+	}
+	time.Sleep(100 * time.Millisecond)
+	countsMu.Lock()
+	finalCount := getCalls
+	countsMu.Unlock()
+	if finalCount != count {
+		t.Fatalf("GET calls after the bounded episode = %d, want %d", finalCount, count)
 	}
 	session.close()
-	if deleteCalls != 1 {
-		t.Fatalf("DELETE calls = %d, want one", deleteCalls)
+	countsMu.Lock()
+	finalDeleteCalls := deleteCalls
+	countsMu.Unlock()
+	if finalDeleteCalls != 1 {
+		t.Fatalf("DELETE calls = %d, want one", finalDeleteCalls)
 	}
+}
+
+func TestBrowserMCPSessionReconnectJoinsAutomaticRecovery(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
+	recoveredStream := &testBrowserEventStreamBody{closed: make(chan struct{})}
+	secondGetStarted := make(chan struct{})
+	allowSecondGet := make(chan struct{})
+	var startOnce sync.Once
+	var countsMu sync.Mutex
+	getCalls := 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				switch call {
+				case 1:
+					return browserMCPTestEventStreamResponseWithBody(request, firstStream), nil
+				case 2:
+					startOnce.Do(func() { close(secondGetStarted) })
+					select {
+					case <-allowSecondGet:
+						return browserMCPTestEventStreamResponseWithBody(request, recoveredStream), nil
+					case <-request.Context().Done():
+						return nil, request.Context().Err()
+					}
+				default:
+					return nil, fmt.Errorf("unexpected duplicate event-stream GET %d", call)
+				}
+			}
+			if request.Method == http.MethodDelete {
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "joined-recovery-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	policy := browserMCPEventStreamRecoveryPolicy{
+		window:        time.Second,
+		headerTimeout: 500 * time.Millisecond,
+		initialDelay:  20 * time.Millisecond,
+		maxDelay:      40 * time.Millisecond,
+		maxAttempts:   3,
+		stableWindow:  150 * time.Millisecond,
+	}
+	session, err := server.newBrowserMCPSessionWithRecoveryPolicy(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantBrowserSessionRoleUnspecified, policy)
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	joined := make(chan error, 1)
+	go func() { joined <- session.reconnectEventStream(context.Background()) }()
+	select {
+	case <-secondGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery did not start its GET")
+	}
+	time.Sleep(50 * time.Millisecond)
+	countsMu.Lock()
+	countWhileRecoveryActive := getCalls
+	countsMu.Unlock()
+	if countWhileRecoveryActive != 2 {
+		t.Fatalf("GET calls while native joined recovery = %d, want initial plus one worker GET", countWhileRecoveryActive)
+	}
+	close(allowSecondGet)
+	openDeadline := time.Now().Add(time.Second)
+	for !session.eventStreamIsOpen() && time.Now().Before(openDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !session.eventStreamIsOpen() {
+		t.Fatal("recovery GET did not open its event stream")
+	}
+	joinedWhileOpen := make(chan error, 1)
+	go func() { joinedWhileOpen <- session.reconnectEventStream(context.Background()) }()
+	select {
+	case err := <-joinedWhileOpen:
+		t.Fatalf("reconnectEventStream returned before the active recovery stability window: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	select {
+	case err := <-joined:
+		if err != nil {
+			t.Fatalf("reconnectEventStream joining automatic recovery: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("native reconnect caller did not receive the recovery result")
+	}
+	select {
+	case err := <-joinedWhileOpen:
+		if err != nil {
+			t.Fatalf("reconnectEventStream joining already-open recovery: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("native reconnect caller did not receive the already-open recovery result")
+	}
+	countsMu.Lock()
+	finalGetCalls := getCalls
+	countsMu.Unlock()
+	if finalGetCalls != 2 || !session.eventStreamIsOpen() {
+		t.Fatalf("joined recovery state: GET calls=%d streamOpen=%v; want 2/true", finalGetCalls, session.eventStreamIsOpen())
+	}
+}
+
+func TestBrowserMCPSessionCloseCancelsImmediateEOFRecoveryBackoff(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamBody{closed: make(chan struct{}), started: make(chan struct{})}
+	secondStreamRead := make(chan struct{})
+	var countsMu sync.Mutex
+	getCalls := 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				if call == 1 {
+					return browserMCPTestEventStreamResponseWithBody(request, firstStream), nil
+				}
+				return browserMCPTestEventStreamResponseWithBody(request, &testBrowserEventStreamEOFBody{started: secondStreamRead}), nil
+			}
+			if request.Method == http.MethodDelete {
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "cancel-eof-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	policy := browserMCPEventStreamRecoveryPolicy{
+		window:        2 * time.Second,
+		headerTimeout: 100 * time.Millisecond,
+		initialDelay:  500 * time.Millisecond,
+		maxDelay:      500 * time.Millisecond,
+		maxAttempts:   5,
+		stableWindow:  time.Second,
+	}
+	session, err := server.newBrowserMCPSessionWithRecoveryPolicy(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantBrowserSessionRoleUnspecified, policy)
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	_ = firstStream.Close()
+	select {
+	case <-secondStreamRead:
+	case <-time.After(time.Second):
+		t.Fatal("recovery event stream did not immediately reach EOF")
+	}
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline) && session.eventStreamFailure() == nil; {
+		time.Sleep(time.Millisecond)
+	}
+	if session.eventStreamFailure() == nil {
+		t.Fatal("recovery stream EOF was not recorded")
+	}
+	// Give the worker time to enter its half-second backoff before closing.
+	time.Sleep(25 * time.Millisecond)
+	session.close()
+	time.Sleep(550 * time.Millisecond)
+	countsMu.Lock()
+	count := getCalls
+	countsMu.Unlock()
+	if count != 2 {
+		t.Fatalf("GET calls after close canceled recovery backoff = %d, want 2", count)
+	}
+}
+
+func TestBrowserMCPSessionStopsRecoveryWhenGETReportsSessionGone(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
+	blockedErrorBody := &testBrowserBlockedErrorBody{readStarted: make(chan struct{}), closed: make(chan struct{})}
+	var countsMu sync.Mutex
+	getCalls, initializeCalls, toolCalls, deleteCalls := 0, 0, 0, 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				switch call {
+				case 1:
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: firstStream}, nil
+				case 2:
+					return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: blockedErrorBody}, nil
+				default:
+					recorder := httptest.NewRecorder()
+					recorder.WriteHeader(http.StatusNotFound)
+					return recorder.Result(), nil
+				}
+			}
+			if request.Method == http.MethodDelete {
+				countsMu.Lock()
+				deleteCalls++
+				countsMu.Unlock()
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			if envelope.Method == "initialize" {
+				countsMu.Lock()
+				initializeCalls++
+				countsMu.Unlock()
+				recorder.Header().Set("Mcp-Session-Id", "gone-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			} else if strings.HasPrefix(envelope.Method, "tools/") {
+				countsMu.Lock()
+				toolCalls++
+				countsMu.Unlock()
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	session, err := server.newBrowserMCPSession(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"})
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = blockedErrorBody.Close()
+		session.close()
+	})
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && session.eventStreamSessionGone() == nil {
+		time.Sleep(time.Millisecond)
+	}
+	if !errors.Is(session.eventStreamSessionGone(), errBrowserMCPSessionGone) {
+		_ = blockedErrorBody.Close()
+		session.close()
+		t.Fatalf("session loss classification = %v, want authoritative GET 404", session.eventStreamSessionGone())
+	}
+	select {
+	case <-blockedErrorBody.closed:
+	default:
+		t.Fatal("recovery did not close the transient error response body")
+	}
+	select {
+	case <-blockedErrorBody.readStarted:
+		t.Fatal("recovery tried to drain an unbounded GET error response")
+	default:
+	}
+	time.Sleep(50 * time.Millisecond)
+	countsMu.Lock()
+	gotGets, gotInitializes, gotToolCalls := getCalls, initializeCalls, toolCalls
+	countsMu.Unlock()
+	if gotGets != 3 || gotInitializes != 1 || gotToolCalls != 0 {
+		t.Fatalf("session-gone recovery counts = GET %d initialize %d tool calls %d; want 3/1/0", gotGets, gotInitializes, gotToolCalls)
+	}
+	session.close()
+	countsMu.Lock()
+	gotDeletes := deleteCalls
+	countsMu.Unlock()
+	if gotDeletes != 1 {
+		t.Fatalf("DELETE calls after session loss = %d, want one", gotDeletes)
+	}
+}
+
+func TestBrowserMCPSessionCloseCancelsInFlightRecoveryGET(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
+	secondGetStarted := make(chan struct{})
+	secondGetCanceled := make(chan struct{})
+	var secondGetStartOnce, secondGetCancelOnce sync.Once
+	var countsMu sync.Mutex
+	getCalls, deleteCalls := 0, 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				if call == 1 {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: firstStream}, nil
+				}
+				secondGetStartOnce.Do(func() { close(secondGetStarted) })
+				<-request.Context().Done()
+				secondGetCancelOnce.Do(func() { close(secondGetCanceled) })
+				return nil, request.Context().Err()
+			}
+			if request.Method == http.MethodDelete {
+				countsMu.Lock()
+				deleteCalls++
+				countsMu.Unlock()
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "closing-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	session, err := server.newBrowserMCPSession(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"})
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	select {
+	case <-secondGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery did not start a replacement GET")
+	}
+	closed := make(chan struct{})
+	go func() {
+		session.close()
+		close(closed)
+	}()
+	select {
+	case <-secondGetCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("closing the browser session did not cancel the recovery GET")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("browser session close did not finish after canceling recovery")
+	}
+	countsMu.Lock()
+	gotGets, gotDeletes := getCalls, deleteCalls
+	countsMu.Unlock()
+	if gotGets != 2 || gotDeletes != 1 || !session.isClosed() {
+		t.Fatalf("recovery close state: GET %d DELETE %d closed=%v; want 2/1/true", gotGets, gotDeletes, session.isClosed())
+	}
+}
+
+func TestBrowserMCPSessionClampsRecoveryGETToRemainingWindow(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamBody{closed: make(chan struct{}), started: make(chan struct{})}
+	secondGetStarted := make(chan struct{})
+	secondGetCanceled := make(chan time.Duration, 1)
+	var startOnce sync.Once
+	var countsMu sync.Mutex
+	getCalls := 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				if call == 1 {
+					return browserMCPTestEventStreamResponseWithBody(request, firstStream), nil
+				}
+				start := time.Now()
+				startOnce.Do(func() { close(secondGetStarted) })
+				<-request.Context().Done()
+				secondGetCanceled <- time.Since(start)
+				return nil, request.Context().Err()
+			}
+			if request.Method == http.MethodDelete {
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "bounded-window-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	policy := browserMCPEventStreamRecoveryPolicy{
+		window:        80 * time.Millisecond,
+		headerTimeout: 2 * time.Second,
+		initialDelay:  500 * time.Millisecond,
+		maxDelay:      500 * time.Millisecond,
+		maxAttempts:   5,
+		stableWindow:  time.Second,
+	}
+	session, err := server.newBrowserMCPSessionWithRecoveryPolicy(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantBrowserSessionRoleUnspecified, policy)
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	_ = firstStream.Close()
+	select {
+	case <-secondGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery did not start a replacement GET")
+	}
+	select {
+	case elapsed := <-secondGetCanceled:
+		if elapsed > 500*time.Millisecond {
+			t.Fatalf("recovery GET remained open for %s, want it clamped to the 80ms remaining window", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery GET was not canceled by its remaining-window deadline")
+	}
+	time.Sleep(100 * time.Millisecond)
+	countsMu.Lock()
+	count := getCalls
+	countsMu.Unlock()
+	if count != 2 {
+		t.Fatalf("GET calls after the bounded window = %d, want 2", count)
+	}
+	session.close()
+}
+
+func TestBrowserMCPSessionRecoveryStabilityWaitUsesRemainingBudget(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	firstStream := &testBrowserEventStreamBody{closed: make(chan struct{}), started: make(chan struct{})}
+	recoveredStream := &testBrowserEventStreamBody{closed: make(chan struct{})}
+	secondGetStarted := make(chan struct{})
+	var startOnce sync.Once
+	var countsMu sync.Mutex
+	getCalls := 0
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				countsMu.Lock()
+				getCalls++
+				call := getCalls
+				countsMu.Unlock()
+				if call == 1 {
+					return browserMCPTestEventStreamResponseWithBody(request, firstStream), nil
+				}
+				startOnce.Do(func() { close(secondGetStarted) })
+				timer := time.NewTimer(180 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+					return browserMCPTestEventStreamResponseWithBody(request, recoveredStream), nil
+				case <-request.Context().Done():
+					return nil, request.Context().Err()
+				}
+			}
+			if request.Method == http.MethodDelete {
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "late-stream-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	policy := browserMCPEventStreamRecoveryPolicy{
+		window:        300 * time.Millisecond,
+		headerTimeout: 250 * time.Millisecond,
+		initialDelay:  0,
+		maxDelay:      10 * time.Millisecond,
+		maxAttempts:   3,
+		stableWindow:  500 * time.Millisecond,
+	}
+	session, err := server.newBrowserMCPSessionWithRecoveryPolicy(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"}, projectAssistantBrowserSessionRoleUnspecified, policy)
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	select {
+	case <-firstStream.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial event stream reader did not start")
+	}
+	started := time.Now()
+	_ = firstStream.Close()
+	select {
+	case <-secondGetStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic recovery did not start a replacement GET")
+	}
+	err = session.reconnectEventStream(context.Background())
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("recovery result = %v, want the episode deadline", err)
+	}
+	if elapsed > policy.window+250*time.Millisecond {
+		t.Fatalf("recovery episode took %s, want it bounded by %s plus scheduling tolerance", elapsed, policy.window)
+	}
+	countsMu.Lock()
+	count := getCalls
+	countsMu.Unlock()
+	if count != 2 {
+		t.Fatalf("GET calls after the bounded episode = %d, want initial plus one late recovery GET", count)
+	}
+	session.close()
 }
 
 func TestBrowserMCPSessionKeepsEventStreamAliveAndClosesAfterDelete(t *testing.T) {
@@ -499,6 +1299,152 @@ func TestBrowserMCPSessionKeepsEventStreamAliveAndClosesAfterDelete(t *testing.T
 	}
 	if deleteBefore != 1 || deleteAfter != 0 {
 		t.Fatalf("session close ordering = before:%d after:%d; events=%v", deleteBefore, deleteAfter, gotEvents)
+	}
+}
+
+func TestBrowserMCPSessionRejectsChangedPOSTSessionHeader(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	streamBody := &testBrowserEventStreamBody{closed: make(chan struct{})}
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
+		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodGet {
+				return browserMCPTestEventStreamResponseWithBody(request, streamBody), nil
+			}
+			if request.Method == http.MethodDelete {
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(http.StatusNoContent)
+				return recorder.Result(), nil
+			}
+			var envelope struct {
+				Method string `json:"method"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+				return nil, err
+			}
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			switch envelope.Method {
+			case "initialize":
+				recorder.Header().Set("Mcp-Session-Id", "negotiated-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+			case "notifications/initialized":
+				recorder.WriteHeader(http.StatusAccepted)
+			case "tools/list":
+				if got := request.Header.Get("Mcp-Session-Id"); got != "negotiated-session" {
+					return nil, fmt.Errorf("tools/list request session = %q, want negotiated-session", got)
+				}
+				recorder.Header().Set("Mcp-Session-Id", "changed-session")
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"tools": []any{}}})
+			default:
+				return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+			}
+			return recorder.Result(), nil
+		})}
+	}
+	session, err := server.newBrowserMCPSession(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"})
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	if _, err := session.rpc(context.Background(), "tools/list", map[string]any{}); err == nil || !strings.Contains(err.Error(), "changed the negotiated MCP session") {
+		t.Fatalf("tools/list session header change error = %v", err)
+	}
+	if got := session.currentSessionID(); got != "negotiated-session" {
+		t.Fatalf("session ID after changed POST response = %q, want negotiated-session", got)
+	}
+}
+
+func TestBrowserMCPSessionDoesNotReplayPOSTOn307Redirect(t *testing.T) {
+	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: "https://hub.example", callers: newTestCallers(nil, "")}
+	streamBody := &testBrowserEventStreamBody{closed: make(chan struct{})}
+	var toolDispatches int
+	sharedClient := &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodGet {
+			return browserMCPTestEventStreamResponseWithBody(request, streamBody), nil
+		}
+		if request.Method == http.MethodDelete {
+			recorder := httptest.NewRecorder()
+			recorder.WriteHeader(http.StatusNoContent)
+			return recorder.Result(), nil
+		}
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+			return nil, err
+		}
+		recorder := httptest.NewRecorder()
+		recorder.Header().Set("Content-Type", "application/json")
+		switch envelope.Method {
+		case "initialize":
+			recorder.Header().Set("Mcp-Session-Id", "redirect-session")
+			_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+		case "notifications/initialized":
+			recorder.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			toolDispatches++
+			if toolDispatches == 1 {
+				recorder.Header().Set("Location", request.URL.String()+"?redirected=1")
+				recorder.WriteHeader(http.StatusTemporaryRedirect)
+				return recorder.Result(), nil
+			}
+			_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"isError": false}})
+		default:
+			return nil, fmt.Errorf("unexpected MCP method %q", envelope.Method)
+		}
+		return recorder.Result(), nil
+	})}
+	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client { return sharedClient }
+	session, err := server.newBrowserMCPSession(context.Background(), identity{clusterID: "cluster-a"}, dataPlaneRef{Resource: "instances", Name: "browser"})
+	if err != nil {
+		t.Fatalf("new browser MCP session: %v", err)
+	}
+	t.Cleanup(session.close)
+	if _, err := session.callToolReceipt(context.Background(), "browser_click", map[string]any{}); err == nil || !strings.Contains(err.Error(), "status 307") {
+		t.Fatalf("redirected tools/call error = %v, want visible 307 response", err)
+	}
+	if toolDispatches != 1 {
+		t.Fatalf("tools/call dispatches after 307 = %d, want one; redirect replayed a stateful action", toolDispatches)
+	}
+	if sharedClient.CheckRedirect != nil {
+		t.Fatal("browser MCP redirect policy mutated the shared HTTP client")
+	}
+}
+
+func TestBrowserMCPEventStreamBoundsLineAndEventMemory(t *testing.T) {
+	eventPayload := strings.Builder{}
+	longDataLine := strings.Repeat("x", browserMCPEventStreamMaxLineBytes-16)
+	for range browserMCPEventStreamMaxEventBytes/(len(longDataLine)+1) + 2 {
+		eventPayload.WriteString("data: ")
+		eventPayload.WriteString(longDataLine)
+		eventPayload.WriteByte('\n')
+	}
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "line",
+			payload: strings.Repeat("x", browserMCPEventStreamMaxLineBytes+1),
+			want:    "line exceeds",
+		},
+		{
+			name:    "event",
+			payload: eventPayload.String(),
+			want:    "event exceeds",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := &browserMCPSession{recoveryWake: make(chan struct{}, 1)}
+			done := make(chan struct{})
+			session.drainEventStream(context.Background(), io.NopCloser(strings.NewReader(tt.payload)), done)
+			<-done
+			if err := session.eventStreamFailure(); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("event stream overflow failure = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 

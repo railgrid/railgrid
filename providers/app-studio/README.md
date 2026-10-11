@@ -247,11 +247,31 @@ schemas directly to the model. Arbitrary-code tools such as
 `browser_evaluate`/`browser_run_code` and the old aggregate inspection or
 interaction wrappers are not model-facing capabilities.
 
+App Studio requires the managed browser's verified isolation contract before
+opening a page: the pinned image and exact isolated configuration must match,
+and the running Deployment must report that configuration fully observed and
+ready through `status.mcpIsolationReady`. Template version alone is insufficient.
+The Infrastructure `browser` seed is version 0.2.0; existing installations must
+reconcile that template and its runtime before browser tools become available.
+Custom or stale backends without this proof fail closed. A process-local lock
+cannot safely separate shared browser state across App Studio replicas.
+
+Browser contexts belong to the authenticated tenant/user, immutable Project
+UID, and thread, and survive successive turns in that thread. Backend instance
+replacement or template contract changes invalidate cached contexts and catalogs.
+Each provider process bounds contexts to eight per backend and closes idle
+contexts after five minutes. The managed browser has one replica with Recreate
+updates because an MCP session belongs to the process that created it.
+
 The shared browser uses MCP initialize/initialized, a persistent GET event
-stream, POST tool calls, and DELETE session close. App Studio owns the session
-owner tuple, preview-origin and private-preview handoff checks, and the
-source-synchronization fence. Interactions and history navigation get a trusted
-preflight plus post-call snapshot/tab safety checks. A failed preflight returns
+stream, POST tool calls, and DELETE session close. Interrupted GET streams are
+reopened with bounded backoff while preserving the session and page; transport
+recovery never resends a tool call. An authoritative session-gone response is
+handled separately from a transient event-stream disconnect. App Studio owns
+the preview-origin and private-preview handoff checks and captures immutable
+source evidence before and after browser observations. Evidence from a changed
+source revision cannot certify the newer project state. Interactions and history
+navigation get a trusted preflight plus post-call snapshot/tab safety checks. A failed preflight returns
 a typed `not_executed` receipt. If a page-changing action may have run but its
 post-call safety check cannot verify the page, App Studio returns
 `outcome_unknown`; it never replays interactions or history navigation. Safe

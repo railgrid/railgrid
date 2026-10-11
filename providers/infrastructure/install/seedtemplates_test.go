@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/cel-go/cel"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
@@ -109,6 +110,9 @@ func TestBrowserTemplatePinsVerifiedPlaywrightImage(t *testing.T) {
 	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
 		t.Fatalf("decode browser template: %v", err)
 	}
+	if tmpl.Spec.Version != "0.2.0" {
+		t.Fatalf("browser template version = %q, want 0.2.0 for the isolated-context contract", tmpl.Spec.Version)
+	}
 
 	var backend map[string]any
 	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
@@ -148,6 +152,20 @@ func TestBrowserTemplatePinsVerifiedPlaywrightImage(t *testing.T) {
 		if !ok {
 			t.Fatalf("browser container = %#v, want object", containers[0])
 		}
+		args, ok := container["args"].([]any)
+		if !ok {
+			t.Fatal("browser container args are missing")
+		}
+		isolated := false
+		for _, argument := range args {
+			if argument == "--shared-browser-context" {
+				t.Fatal("browser must not share cookies or pages across MCP sessions")
+			}
+			isolated = isolated || argument == "--isolated"
+		}
+		if !isolated {
+			t.Fatal("browser must explicitly use an isolated context per MCP session")
+		}
 		image, ok = container["image"].(string)
 		if !ok {
 			t.Fatalf("browser image = %#v, want string", container["image"])
@@ -172,6 +190,203 @@ func TestBrowserTemplatePinsVerifiedPlaywrightImage(t *testing.T) {
 	if _, err := hex.DecodeString(digest); err != nil {
 		t.Fatalf("Playwright MCP digest is not hexadecimal: %v", err)
 	}
+}
+
+func TestBrowserTemplateProjectsCurrentDeploymentIsolationProof(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/browser.yaml")
+	if err != nil {
+		t.Fatalf("read browser template: %v", err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatalf("decode browser template: %v", err)
+	}
+
+	var backend map[string]any
+	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+		t.Fatalf("decode browser backendConfig: %v", err)
+	}
+	resources, ok := backend["resources"].([]any)
+	if !ok {
+		t.Fatalf("browser backend resources = %#v, want list", backend["resources"])
+	}
+	var readyWhen []any
+	for _, rawResource := range resources {
+		resource, ok := rawResource.(map[string]any)
+		if !ok || resource["id"] != "deployment" {
+			continue
+		}
+		readyWhen, ok = resource["readyWhen"].([]any)
+		if !ok || len(readyWhen) != 1 {
+			t.Fatalf("browser deployment readyWhen = %#v, want one current-generation replica check", resource["readyWhen"])
+		}
+		break
+	}
+	if len(readyWhen) != 1 {
+		t.Fatal("browser deployment is missing its readiness expression")
+	}
+	readyExpression, ok := readyWhen[0].(string)
+	if !ok {
+		t.Fatalf("browser deployment readyWhen = %#v, want string expression", readyWhen[0])
+	}
+	for _, expected := range []string{
+		"deployment.status.observedGeneration == deployment.metadata.generation",
+		"deployment.spec.replicas == 1",
+		`deployment.spec.strategy.type == "Recreate"`,
+		"deployment.status.updatedReplicas == 1",
+		"deployment.status.readyReplicas == 1",
+		"deployment.status.availableReplicas == 1",
+	} {
+		if !strings.Contains(readyExpression, expected) {
+			t.Errorf("browser Deployment readiness expression %q is missing %q", readyExpression, expected)
+		}
+	}
+
+	status, ok := backend["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("browser backend status mapping = %#v, want object", backend["status"])
+	}
+	isolationExpression, ok := status["mcpIsolationReady"].(string)
+	if !ok || isolationExpression == "" {
+		t.Fatalf("browser mcpIsolationReady mapping = %#v, want expression", status["mcpIsolationReady"])
+	}
+	for _, expected := range []string{
+		"deployment.metadata.generation == deployment.status.observedGeneration",
+		"deployment.spec.replicas == 1",
+		`deployment.spec.strategy.type == "Recreate"`,
+		"deployment.status.updatedReplicas == 1",
+		"deployment.status.readyReplicas == 1",
+		"deployment.status.availableReplicas == 1",
+		"deployment.spec.template.spec.containers.size() == 1",
+		"deployment.spec.template.spec.containers[0].image == \"mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804\"",
+		`deployment.spec.template.spec.containers[0].args == ["--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"]`,
+		`arg == "--isolated"`,
+		`arg == "--shared-browser-context"`,
+		`!has(deployment.spec.template.spec.containers[0].command)`,
+		`!has(deployment.spec.template.spec.containers[0].env)`,
+		`!has(deployment.spec.template.spec.containers[0].envFrom)`,
+		`!has(deployment.spec.template.spec.containers[0].lifecycle)`,
+		`deployment.spec.template.spec.containers[0].readinessProbe.tcpSocket.port == 8931`,
+		`!has(deployment.spec.template.spec.containers[0].readinessProbe.exec)`,
+		`!has(deployment.spec.template.spec.containers[0].readinessProbe.httpGet)`,
+		`!has(deployment.spec.template.spec.containers[0].readinessProbe.grpc)`,
+		`!has(deployment.spec.template.spec.containers[0].livenessProbe)`,
+		`!has(deployment.spec.template.spec.containers[0].startupProbe)`,
+		`!has(deployment.spec.template.spec.initContainers)`,
+		`deployment.spec.template.spec.containers[0].volumeMounts.size() == 1`,
+		`deployment.spec.template.spec.volumes.size() == 1`,
+	} {
+		if !strings.Contains(isolationExpression, expected) {
+			t.Errorf("browser mcpIsolationReady expression %q is missing %q", isolationExpression, expected)
+		}
+	}
+
+	environment, err := cel.NewEnv(cel.Variable("deployment", cel.DynType))
+	if err != nil {
+		t.Fatalf("create CEL environment: %v", err)
+	}
+	compiled, issues := environment.Compile(strings.TrimSuffix(strings.TrimPrefix(isolationExpression, "${"), "}"))
+	if issues != nil && issues.Err() != nil {
+		t.Fatalf("compile mcpIsolationReady expression: %v", issues.Err())
+	}
+	program, err := environment.Program(compiled)
+	if err != nil {
+		t.Fatalf("create mcpIsolationReady program: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		want   bool
+	}{
+		{name: "current isolated Deployment", want: true},
+		{name: "controller has not observed the current generation", mutate: func(deployment map[string]any) {
+			deployment["status"].(map[string]any)["observedGeneration"] = int64(6)
+		}},
+		{name: "old image", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["image"] = "mcr.microsoft.com/playwright/mcp:latest"
+		}},
+		{name: "old args during new Template rollout", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["args"] = []any{"--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors"}
+		}},
+		{name: "shared context flag", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["args"] = []any{"--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated", "--shared-browser-context"}
+		}},
+		{name: "shared context environment override", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["env"] = []any{map[string]any{"name": "PLAYWRIGHT_MCP_SHARED_BROWSER_CONTEXT", "value": "true"}}
+		}},
+		{name: "entrypoint override", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["command"] = []any{"node", "/app/cli.js", "--shared-browser-context"}
+		}},
+		{name: "lifecycle hook override", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["lifecycle"] = map[string]any{"postStart": map[string]any{"exec": map[string]any{"command": []any{"/bin/sh", "-c", "echo override"}}}}
+		}},
+		{name: "exec readiness probe override", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["readinessProbe"] = map[string]any{"exec": map[string]any{"command": []any{"/bin/sh", "-c", "echo override"}}}
+		}},
+		{name: "init container override", mutate: func(deployment map[string]any) {
+			deployment["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["initContainers"] = []any{map[string]any{"name": "override", "image": "busybox", "command": []any{"/bin/sh", "-c", "echo override"}}}
+		}},
+		{name: "extra mounted configuration", mutate: func(deployment map[string]any) {
+			browserIsolationContainer(deployment)["volumeMounts"] = []any{
+				map[string]any{"name": "dshm", "mountPath": "/dev/shm"},
+				map[string]any{"name": "browser-config", "mountPath": "/app/config"},
+			}
+		}},
+		{name: "rolling strategy", mutate: func(deployment map[string]any) {
+			deployment["spec"].(map[string]any)["strategy"].(map[string]any)["type"] = "RollingUpdate"
+		}},
+		{name: "not fully available", mutate: func(deployment map[string]any) {
+			deployment["status"].(map[string]any)["availableReplicas"] = int64(0)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deployment := browserIsolationDeployment(7, 7)
+			if tc.mutate != nil {
+				tc.mutate(deployment)
+			}
+			result, _, err := program.Eval(map[string]any{"deployment": deployment})
+			if err != nil {
+				t.Fatalf("evaluate mcpIsolationReady expression: %v", err)
+			}
+			got, ok := result.Value().(bool)
+			if !ok || got != tc.want {
+				t.Fatalf("mcpIsolationReady = %#v, want %v", result.Value(), tc.want)
+			}
+		})
+	}
+}
+
+func browserIsolationDeployment(generation, observedGeneration int64) map[string]any {
+	return map[string]any{
+		"metadata": map[string]any{"generation": generation},
+		"status": map[string]any{
+			"observedGeneration": observedGeneration,
+			"updatedReplicas":    int64(1),
+			"readyReplicas":      int64(1),
+			"availableReplicas":  int64(1),
+		},
+		"spec": map[string]any{
+			"replicas": int64(1),
+			"strategy": map[string]any{"type": "Recreate"},
+			"template": map[string]any{"spec": map[string]any{
+				"containers": []any{map[string]any{
+					"image":          "mcr.microsoft.com/playwright/mcp@sha256:18c0a9c934004fe9580cc79f1e8e6e6cde7c667348b215335e8a23fd3e509804",
+					"args":           []any{"--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*", "--ignore-https-errors", "--isolated"},
+					"readinessProbe": map[string]any{"tcpSocket": map[string]any{"port": int64(8931)}},
+					"volumeMounts":   []any{map[string]any{"name": "dshm", "mountPath": "/dev/shm"}},
+				}},
+				"volumes": []any{map[string]any{"name": "dshm", "emptyDir": map[string]any{"medium": "Memory"}}},
+			}},
+		},
+	}
+}
+
+func browserIsolationContainer(deployment map[string]any) map[string]any {
+	spec := deployment["spec"].(map[string]any)
+	template := spec["template"].(map[string]any)
+	podSpec := template["spec"].(map[string]any)
+	containers := podSpec["containers"].([]any)
+	return containers[0].(map[string]any)
 }
 
 func TestSeedTemplatesExcludeOptInTerraformContrib(t *testing.T) {
