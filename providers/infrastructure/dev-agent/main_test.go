@@ -1230,6 +1230,75 @@ func TestRuntimeSupervisorInternalAPIIsNarrowAndBounded(t *testing.T) {
 	}
 }
 
+type mutationGateRuntime struct{ calls chan string }
+
+func (r *mutationGateRuntime) Restart(context.Context) error {
+	r.calls <- "restart"
+	return nil
+}
+func (*mutationGateRuntime) ExitContainer(context.Context) error    { return nil }
+func (*mutationGateRuntime) Reload(context.Context, []string) error { return nil }
+func (r *mutationGateRuntime) SetEnv(context.Context, map[string]string) ([]string, error) {
+	r.calls <- "env"
+	return []string{"FEATURE_FLAG"}, nil
+}
+func (*mutationGateRuntime) Logs(context.Context) (string, error) { return "", nil }
+func (*mutationGateRuntime) Status(context.Context) (processStatusResponse, error) {
+	return processStatusResponse{}, nil
+}
+
+func TestRestartAndEnvWaitForCoordinatorMutationLock(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		path string
+		body string
+		call string
+	}{
+		{name: "restart", path: "/restart", body: `{}`, call: "restart"},
+		{name: "env", path: "/env", body: `{"env":{"FEATURE_FLAG":"on"}}`, call: "env"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mutationMu := &sync.Mutex{}
+			mutationMu.Lock()
+			runtime := &mutationGateRuntime{calls: make(chan string, 1)}
+			server := newCoordinatorServer(&agentConfig{ControlToken: "test-token", WorkDir: t.TempDir()}, runtime, mutationMu)
+			started := make(chan struct{})
+			response := make(chan int, 1)
+			go func() {
+				req := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+				req.Header.Set(controlTokenHeader, "test-token")
+				rec := httptest.NewRecorder()
+				close(started)
+				server.ServeHTTP(rec, req)
+				response <- rec.Code
+			}()
+			<-started
+			select {
+			case call := <-runtime.calls:
+				t.Fatalf("runtime %s ran while the workspace mutation lock was held", call)
+			case <-time.After(50 * time.Millisecond):
+			}
+			mutationMu.Unlock()
+			select {
+			case call := <-runtime.calls:
+				if call != test.call {
+					t.Fatalf("runtime call = %q, want %q", call, test.call)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("runtime mutation did not continue after the lock was released")
+			}
+			select {
+			case status := <-response:
+				if status != http.StatusOK {
+					t.Fatalf("request status = %d, want 200", status)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("request did not finish after the lock was released")
+			}
+		})
+	}
+}
+
 func TestContainerReloadExitsRuntimeSupervisorAndKeepsCoordinatorAlive(t *testing.T) {
 	workdir := t.TempDir()
 	logs := newRingLog(10)

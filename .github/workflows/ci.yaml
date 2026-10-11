@@ -75,6 +75,8 @@ jobs:
           # Re-enable -race once that test synchronises the handler write.
           - { module: providers/edges, race: "" }
           - { module: providers/infrastructure, race: -race }
+          # Nested module: the parent provider suite does not include it.
+          - { module: providers/infrastructure/dev-agent, race: -race }
           - { module: providers/kuery, race: -race }
           - { module: providers/quickstart, race: -race }
     steps:
@@ -90,7 +92,7 @@ jobs:
     # give the embed a target here instead of building every portal twice —
     # `all:` accepts a lone dotfile, an empty directory is a compile error.
     - name: Stub portal/dist for go:embed
-      if: startsWith(matrix.module, 'providers/')
+      if: startsWith(matrix.module, 'providers/') && matrix.module != 'providers/infrastructure/dev-agent'
       working-directory: ${{ matrix.module }}
       run: mkdir -p portal/dist && touch portal/dist/.gitkeep
 
