@@ -617,7 +617,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           <template v-if="draft.source === 'github'">
             <fieldset class="agents-fieldset" :aria-describedby="`automation-${kind}-events-hint`">
               <legend class="agents-fieldset-legend">Events</legend>
-              <div class="agents-checkrow">
+              <div class="agents-checkgrid">
                 <label v-for="event in GITHUB_EVENTS" :key="event.name" class="agents-check k-checkbox-hit"><input v-model="draft.ghEvents" type="checkbox" name="ghEvents" :value="event.name" :disabled="formBusy" /><span class="agents-check-copy"><span>{{ event.label }}</span><span class="agents-hint">{{ event.hint }}</span></span></label>
               </div>
               <span :id="`automation-${kind}-events-hint`" class="agents-hint">The event names this trigger fires on. Nothing selected fires on every event the webhook sends.</span>
