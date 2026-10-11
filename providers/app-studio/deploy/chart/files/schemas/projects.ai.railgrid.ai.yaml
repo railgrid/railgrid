@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261011-d03ccb24.projects.ai.railgrid.ai
+  name: v261011-915f868b.projects.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -467,6 +467,26 @@ spec:
                       maxItems: 1024
                       type: array
                       x-kubernetes-list-type: atomic
+                    blockedAt:
+                      description: |-
+                        BlockedAt is when this immutable intent entered its blocked state or
+                        automatic retry cooldown.
+                      format: date-time
+                      type: string
+                    blockedMessage:
+                      description: |-
+                        BlockedMessage is a sanitized, user-facing explanation of the replay
+                        refusal or automatic retry cooldown.
+                      maxLength: 512
+                      type: string
+                    blockedReason:
+                      description: |-
+                        BlockedReason is set when replaying this immutable intent was refused
+                        permanently, or when its named RepositoryCommit failed and the controller
+                        is waiting through an automatic retry cooldown. The request remains
+                        recorded while blocked.
+                      maxLength: 64
+                      type: string
                     branch:
                       description: Branch is the captured target branch for the commit
                         intent.
@@ -517,6 +537,13 @@ spec:
                     requestedAt:
                       description: RequestedAt is when the commit action was called.
                       format: date-time
+                      type: string
+                    retryToken:
+                      description: |-
+                        RetryToken is the last operator retry token consumed for this request.
+                        It prevents a stale retry annotation from repeatedly waking the same
+                        blocked intent.
+                      maxLength: 160
                       type: string
                     sourceRevision:
                       description: |-

@@ -71,6 +71,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -190,6 +191,9 @@ func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
 		"repositoryUID": req.RepositoryUID,
 	}
 	if req.RequestID != "" {
+		if strings.TrimSpace(req.RequestID) == "" {
+			return Ref{}, fmt.Errorf("a replay-safe commit requires a non-empty request ID")
+		}
 		if strings.TrimSpace(req.BundleRef) == "" || strings.TrimSpace(req.BundleDigest) == "" || len(req.Files) != 0 {
 			return Ref{}, fmt.Errorf("a replay-safe commit requires only an immutable staged bundle")
 		}
@@ -310,6 +314,58 @@ type Checkout struct {
 	Skipped   []string       `json:"skipped"`
 }
 
+// ActionError preserves the typed actionwire failure returned by Code. Its
+// Retryable bit is kept because HTTP status alone cannot distinguish a
+// temporary backend outage from a permanent request refusal.
+type ActionError struct {
+	Action    string
+	Code      string
+	Message   string
+	Retryable bool
+	Status    int
+}
+
+func (e *ActionError) Error() string {
+	if e == nil {
+		return "Code action failed"
+	}
+	if message := strings.TrimSpace(e.Message); message != "" {
+		return fmt.Sprintf("%s: %s: %s", e.Action, e.Code, message)
+	}
+	return fmt.Sprintf("%s: %s", e.Action, e.Code)
+}
+
+// ClassifyPermanentCommitReplayFailure returns a bounded public reason for
+// action failures that cannot succeed by replaying the same immutable commit
+// intent. Unrecognized errors, retryable actionwire errors, generic backend
+// failures and non-commit actions stay transient.
+func ClassifyPermanentCommitReplayFailure(err error) (reason, message string, permanent bool) {
+	var actionErr *ActionError
+	if errors.As(err, &actionErr) {
+		if actionErr.Retryable || actionErr.Action != Action {
+			return "", "", false
+		}
+		switch actionErr.Code {
+		case "commit_request_conflict":
+			return "CommitRequestConflict", "Code rejected this replay because the request ID is already bound to different commit intent. The saved request remains available for review.", true
+		case "bundle_unavailable":
+			// The commit action emits this only for commitbundle.IsNotFound.
+			// A missing or swept immutable bundle cannot be rebuilt from the
+			// changed workspace. The staging action uses the same code for a
+			// missing store, but staging happens before a pending intent exists.
+			return "StagedBundleMissing", "Code could not find the staged bundle for this saved commit. The request is preserved, but its staged files are unavailable; operator review is required.", true
+		case "action_forbidden":
+			return "ActionForbidden", "Code refused this saved commit. Check the repository identity and workspace permission, then explicitly retry the saved request.", true
+		}
+		return "", "", false
+	}
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) && !statusErr.Malformed && statusErr.Action == Action && statusErr.Status == http.StatusForbidden {
+		return "ActionForbidden", "Code refused this saved commit. Check the repository identity and workspace permission, then explicitly retry the saved request.", true
+	}
+	return "", "", false
+}
+
 // Checkout reads the repository's tree at req.Ref. Binary files are always
 // asked for as base64: the verb's input declares the encoding, so — unlike
 // the MCP tool it replaced — there is no capability to probe first.
@@ -380,8 +436,9 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
 		} `json:"error"`
 	}
 	// A non-2xx answer still carries an envelope; the typed code in it says
@@ -390,12 +447,13 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 		return &StatusError{Action: action, Status: resp.StatusCode, Malformed: true}
 	}
 	if envelope.Error != nil && envelope.Error.Code != "" {
-		if message := strings.TrimSpace(envelope.Error.Message); message != "" && message != strings.ReplaceAll(envelope.Error.Code, "_", " ") {
-			// The provider only words an error when the detail is the
-			// consumer's to act on (a checkout's controller message).
-			return fmt.Errorf("%s: %s: %s", action, envelope.Error.Code, message)
+		return &ActionError{
+			Action:    action,
+			Code:      envelope.Error.Code,
+			Message:   strings.TrimSpace(envelope.Error.Message),
+			Retryable: envelope.Error.Retryable,
+			Status:    resp.StatusCode,
 		}
-		return fmt.Errorf("%s: %s", action, envelope.Error.Code)
 	}
 	if resp.StatusCode/100 != 2 {
 		return &StatusError{Action: action, Status: resp.StatusCode}

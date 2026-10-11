@@ -357,6 +357,34 @@ orphan retention policy. If an outage outlasts that window before a commit is
 created, recovery remains blocked for operator attention; it does not rebuild
 the saved request from newer source files.
 
+Permanent replay failures (request-ID conflict, missing staged bundle,
+repository binding or UID change, or a forbidden action) are persisted on the
+pending intent as `blockedReason`, `blockedMessage`, and `blockedAt`. The
+Project view exposes the reason, and automatic replay stops while the
+immutable request and dirty workspace paths remain recorded. Temporary Code
+outages continue through normal controller retries. After reviewing the cause,
+an operator can explicitly replay the same request by setting the Project
+annotation `ai.railgrid.ai/retry-pending-commit` to
+`<requestID>:<fresh-token>`. Each retry needs a new token; the request ID binds
+the retry to that one pending intent, and an unchanged consumed token is
+ignored.
+For example, set the annotation to
+`bb45abd6-a9e5-447f-a413-ea76b8bfd81c:operator-retry-1`, substituting the
+pending request ID and a new token. Do not delete or replace the pending intent
+as routine recovery. A missing staged bundle cannot be rebuilt from current
+workspace files; inspect the saved request and remaining dirty paths before
+deciding how to proceed.
+
+A named `RepositoryCommit` that reaches `Failed` is held with reason
+`RepositoryCommitFailed` for a 30-second cooldown. Its `BlockedAt` timestamp
+survives status events and controller restarts; the failed object is not
+replayed. When the cooldown expires, App Studio releases that failed pointer
+and the next pass stages a fresh immutable request from the still-dirty source
+paths. A fresh retry token for that request can skip the wait and take the same
+fresh-request path. The request ID and bundle therefore stay fixed only for
+permanent replay refusals; a terminally failed `RepositoryCommit` starts a new
+intent after review or cooldown.
+
 Roll out the Code provider's keyed commit support before this App Studio
 version, then drain older App Studio writers before admitting new commits:
 older writers do not understand reservations without a commit name. App Studio

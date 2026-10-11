@@ -18,9 +18,17 @@ package workspace
 
 import "context"
 
-// SourceState is a single durable snapshot of the revision and its provenance.
+// CommitBlock describes a commit intent awaiting operator recovery or an automatic retry.
+type CommitBlock struct {
+	RequestID string `json:"requestID"`
+	Reason    string `json:"reason"`
+	Message   string `json:"message"`
+}
+
+// SourceState is a single durable snapshot of source provenance and commit recovery.
 // Reading these together keeps API responses coherent during concurrent writes.
 type SourceState struct {
+	CommitBlock           *CommitBlock
 	SourceRevision        uint64
 	LastSourceChange      *SourceChange
 	LastPreviewCheckpoint *SourceChange
@@ -40,6 +48,9 @@ func (s *FileStore) SourceState(ctx context.Context, scope Scope) (SourceState, 
 		revision = 1
 	}
 	state := SourceState{SourceRevision: revision}
+	if pending := record.PendingCommit; pending != nil && pending.BlockedReason != "" {
+		state.CommitBlock = &CommitBlock{RequestID: pending.RequestID, Reason: pending.BlockedReason, Message: pending.BlockedMessage}
+	}
 	if record.LastSourceChange != nil {
 		change := *record.LastSourceChange
 		state.LastSourceChange = &change

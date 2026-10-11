@@ -830,6 +830,7 @@ func (l *advancingProjectViewLedger) Read(context.Context, workspace.Scope) (wor
 	l.reads++
 	return workspace.LedgerRecord{
 		SourceRevision:        l.reads,
+		PendingCommit:         &workspace.PendingCommit{RequestID: "blocked-request", BlockedReason: "commit_request_conflict", BlockedMessage: "The saved commit needs review."},
 		LastSourceChange:      &workspace.SourceChange{ThreadID: "thread", RunID: "run", SourceRevision: l.reads},
 		LastPreviewCheckpoint: &workspace.SourceChange{SourceRevision: l.reads},
 	}, nil
@@ -845,6 +846,9 @@ func TestProjectViewReadsRevisionAndProvenanceTogether(t *testing.T) {
 	view := server.projectViewWithSourceRevision(context.Background(), nil, project, id)
 	if ledger.reads != 1 || view.LastSourceChange == nil || view.LastPreviewCheckpoint == nil {
 		t.Fatalf("expected one complete source snapshot, reads=%d view=%+v", ledger.reads, view)
+	}
+	if view.CommitBlock == nil || view.CommitBlock.RequestID != "blocked-request" || view.CommitBlock.Reason != "commit_request_conflict" || view.CommitBlock.Message != "The saved commit needs review." {
+		t.Fatalf("response omitted durable commit blocker: %+v", view.CommitBlock)
 	}
 	if view.SourceRevision != view.LastSourceChange.SourceRevision || view.SourceRevision != view.LastPreviewCheckpoint.SourceRevision {
 		t.Fatalf("response mixed source snapshots: %+v", view)

@@ -221,6 +221,16 @@ file lists, while the digest remains content-derived. Treat one handle as the
 source for one logical commit: retries reuse that same handle and `requestID`,
 and a separate commit intent stages its own handle. Previously issued
 content-addressed handles remain readable by `commit`.
+Staging is limited to 32 stored bundle or temporary files and 512 MiB of
+serialized JSON bytes per logical cluster, whichever limit is reached first.
+The limit is enforced under a persistent filesystem lock shared by processes
+using the same bundle volume. A full scope returns retryable HTTP 429 with
+`bundle_quota_exceeded`; back off and retry the failed stage request. Once a
+stage succeeds, keep and reuse its handle and the same `requestID` for commit
+retries instead of staging the payload again. Commit and checkout controllers
+remove bundles when their resources finish; abandoned uploads are swept hourly
+after 24 hours. The bundle volume used by multiple provider replicas must
+support cross-process `flock` locking.
 The third goes the other way: `checkout`, gated on `repositories/checkout`,
 reads the tree at a ref (`{repositoryUID, ref?, binaryEncoding?}`) and returns
 the files inline, the same `{repositoryRef, name, phase, ref, commitSHA,

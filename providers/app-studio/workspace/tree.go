@@ -243,8 +243,29 @@ func (s *FileStore) ReplaceTree(ctx context.Context, scope Scope, opts ReplaceTr
 	// the race here instead of silently winning it.
 	mutation, err := s.advanceAndRecord(ctx, scope, opts.ExpectedSourceRevision, changedPaths, opts.Committed)
 	if err != nil {
+		// Confirmation and rollback reconciliation belong to one bounded
+		// recovery window. The deadline starts only after the ledger write
+		// fails, so ordinary work on a healthy request cannot consume it.
+		recoveryCtx := ctx
+		cancelRecovery := func() {}
+		if !mutation.callbackRejected && mutation.revision > 0 {
+			recoveryCtx, cancelRecovery = sourceMutationRecoveryContext(ctx)
+			ledger, ledgerErr := s.ledgerFor(recoveryCtx)
+			confirmed := false
+			if ledgerErr == nil {
+				confirmCtx, cancelConfirm := sourceMutationConfirmationContext(recoveryCtx)
+				_, confirmed, _ = readSourceMutation(confirmCtx, ledger, scope, mutation.revision, mutation.id)
+				cancelConfirm()
+			}
+			if confirmed {
+				s.tagLocalTree(scope, mutation.revision)
+				cancelRecovery()
+				return ReplaceTreeResult{Written: written, Deleted: deleted, SourceRevision: mutation.revision}, nil
+			}
+		}
+		defer cancelRecovery()
 		treeRestored, rollbackErr := s.rollbackTreeWithStatus(entries, err)
-		reconcileErr := s.reconcileTreeRollback(ctx, scope, mutation, treeRestored)
+		reconcileErr := s.reconcileTreeRollback(recoveryCtx, scope, mutation, treeRestored)
 		return ReplaceTreeResult{}, errors.Join(rollbackErr, reconcileErr)
 	}
 	return ReplaceTreeResult{

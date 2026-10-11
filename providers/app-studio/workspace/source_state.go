@@ -301,9 +301,10 @@ type sourceMutation struct {
 }
 
 type sourceTreeMutation struct {
-	id       string
-	revision uint64
-	paths    []string
+	id               string
+	revision         uint64
+	paths            []string
+	callbackRejected bool
 }
 
 // beginSourceMutation advances the durable fence before changing bytes, but
@@ -352,13 +353,22 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 	}
 
 	mutation := &sourceMutation{id: uuid.NewString(), paths: cleanPaths}
+	callbackRejected := false
 	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		// Ledger.Update may call the callback again after a compare-and-swap
+		// conflict. A rejected retry must not retain the reservation computed
+		// from an earlier, losing record.
+		mutation.revision = 0
+		mutation.localTreeWasCurrent = false
+		mutation.previousAttributions = nil
+		callbackRejected = false
 		currentRevision := record.SourceRevision
 		pristine := currentRevision == 0 && localRevision == 0
 		if currentRevision == 0 {
 			currentRevision = 1
 		}
 		if (!treeExists || localRevision != currentRevision) && !pristine {
+			callbackRejected = true
 			return false, newMutationError(MutationErrorConflict, cleanPaths[0], "workspace source is stale; refresh the project before editing")
 		}
 
@@ -375,6 +385,13 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		return true, nil
 	})
 	if err != nil {
+		// ProjectLedger reports capacity failures before it attempts the status
+		// patch. This reservation therefore cannot have committed, so a read
+		// confirmation would only spend the recovery budget waiting for a write
+		// we know was not attempted.
+		if errors.Is(err, ErrLedgerCapacity) {
+			return nil, fmt.Errorf("reserve workspace source revision: %w", err)
+		}
 		// Update may have persisted the reservation before losing its response.
 		// The unique durable ID distinguishes that write from a competing writer
 		// that happened to reserve the same next revision. No bytes have changed
@@ -382,8 +399,8 @@ func (s *FileStore) beginSourceMutation(ctx context.Context, scope Scope, paths 
 		// reserved record plus its ID is enough to safely retag this unchanged
 		// tree. The reserved provenance is already unknown, which is the correct
 		// durable state for an operation we return as failed.
-		if mutation.revision > 0 && mutation.localTreeWasCurrent {
-			verifyCtx, cancel := sourceMutationVerifyContext(ctx)
+		if !callbackRejected && mutation.revision > 0 && mutation.localTreeWasCurrent {
+			verifyCtx, cancel := sourceMutationRecoveryContext(ctx)
 			confirmed, ok, _ := readSourceMutation(verifyCtx, ledger, scope, mutation.revision, mutation.id)
 			cancel()
 			if ok && sourceMutationFailureRecorded(confirmed, mutation) {
@@ -447,14 +464,17 @@ func (s *FileStore) failSourceMutation(ctx context.Context, scope Scope, mutatio
 	if err != nil {
 		return err
 	}
-	verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	verifyCtx, cancel := sourceMutationRecoveryContext(ctx)
 	defer cancel()
+	callbackRejected := false
 	record, err := ledger.Update(verifyCtx, scope, func(record *LedgerRecord) (bool, error) {
+		callbackRejected = false
 		currentRevision := record.SourceRevision
 		if currentRevision == 0 {
 			currentRevision = 1
 		}
 		if currentRevision != mutation.revision || record.SourceMutationID != mutation.id {
+			callbackRejected = true
 			return false, fmt.Errorf("%w: failed mutation %s reserved %d, current %d (current mutation %s)", ErrSourceRevisionConflict, mutation.id, mutation.revision, currentRevision, record.SourceMutationID)
 		}
 		record.LastSourceChange = &SourceChange{SourceRevision: mutation.revision}
@@ -462,12 +482,21 @@ func (s *FileStore) failSourceMutation(ctx context.Context, scope Scope, mutatio
 		return true, nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrLedgerCapacity) {
+			// This is a definitive pre-patch rejection, so the failed-state write
+			// cannot have committed and a read cannot confirm it. Avoid spending
+			// the recovery window polling a full status.
+			return fmt.Errorf("record failed workspace source mutation: %w", err)
+		}
+		// The callback error is definitive: Ledger.Update rejected the write
+		// before it attempted persistence, so a read cannot confirm it.
+		if callbackRejected {
+			return fmt.Errorf("record failed workspace source mutation: %w", err)
+		}
 		// A lost update response is recoverable only when this exact mutation
 		// still owns the revision and the failure state is visible. In
 		// particular, revision equality alone could belong to another writer.
-		verifyCtx, cancel := sourceMutationVerifyContext(ctx)
 		confirmed, ok, verifyErr := readSourceMutation(verifyCtx, ledger, scope, mutation.revision, mutation.id)
-		cancel()
 		if !ok || !sourceMutationFailureRecorded(confirmed, mutation) {
 			return errors.Join(fmt.Errorf("record failed workspace source mutation: %w", err), verifyErr)
 		}
@@ -487,10 +516,19 @@ func (s *FileStore) failSourceMutation(ctx context.Context, scope Scope, mutatio
 	return nil
 }
 
-const sourceMutationVerifyTimeout = 5 * time.Second
+const sourceMutationRecoveryTimeout = 5 * time.Second
+const sourceMutationRecoveryConfirmationTimeout = 2 * time.Second
 
-func sourceMutationVerifyContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), sourceMutationVerifyTimeout)
+func sourceMutationRecoveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), sourceMutationRecoveryTimeout)
+}
+
+// sourceMutationConfirmationContext reserves the final part of the overall
+// recovery window for rollback reconciliation. Confirmation can wait for a
+// lagging read path, but it must not consume the time needed to record a
+// failed whole-tree replacement after the local bytes have been restored.
+func sourceMutationConfirmationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, sourceMutationRecoveryConfirmationTimeout)
 }
 
 // readSourceMutation waits briefly for a write-through ledger's read path to
@@ -750,12 +788,18 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		clean = append(clean, path)
 	}
 	mutation := sourceTreeMutation{id: uuid.NewString(), paths: clean}
+	callbackRejected := false
 	record, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		// The callback may be retried after a competing writer wins. Discard
+		// values derived from the prior record before examining the new one.
+		mutation.revision = 0
+		callbackRejected = false
 		current := record.SourceRevision
 		if current == 0 {
 			current = 1
 		}
 		if expected != nil && *expected != current {
+			callbackRejected = true
 			return false, fmt.Errorf("%w: expected %d, current %d", ErrSourceRevisionConflict, *expected, current)
 		}
 		mutation.revision = current + 1
@@ -776,20 +820,14 @@ func (s *FileStore) advanceAndRecord(ctx context.Context, scope Scope, expected 
 		}
 		return true, nil
 	})
+	mutation.callbackRejected = callbackRejected
 	if err != nil {
-		// The tree bytes have already been replaced. If the exact whole-tree
-		// ledger update landed, keep those bytes and report success. A revision
-		// match by itself is ambiguous when another replica reserved the same
-		// next revision, so require the unique mutation ID written atomically
-		// with the dirty set and provenance.
-		if mutation.revision > 0 {
-			verifyCtx, cancel := sourceMutationVerifyContext(ctx)
-			_, ok, _ := readSourceMutation(verifyCtx, ledger, scope, mutation.revision, mutation.id)
-			cancel()
-			if ok {
-				s.tagLocalTree(scope, mutation.revision)
-				return mutation, nil
-			}
+		// A capacity rejection is a pre-patch failure. The caller will roll
+		// back the local tree, and there is no ledger reservation to confirm or
+		// reconcile for this speculative revision.
+		if errors.Is(err, ErrLedgerCapacity) {
+			mutation.revision = 0
+			return mutation, err
 		}
 		return mutation, err
 	}
@@ -812,10 +850,8 @@ func (s *FileStore) reconcileTreeRollback(ctx context.Context, scope Scope, muta
 		return err
 	}
 	failed := &sourceMutation{id: mutation.id, revision: mutation.revision, paths: mutation.paths}
-	verifyCtx, cancel := sourceMutationVerifyContext(ctx)
-	defer cancel()
 	matched := false
-	record, updateErr := ledger.Update(verifyCtx, scope, func(record *LedgerRecord) (bool, error) {
+	record, updateErr := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
 		matched = false
 		current := record.SourceRevision
 		if current == 0 {
@@ -837,9 +873,13 @@ func (s *FileStore) reconcileTreeRollback(ctx context.Context, scope Scope, muta
 		return nil
 	}
 	if updateErr != nil {
-		readCtx, cancelRead := sourceMutationVerifyContext(ctx)
-		confirmed, ok, readErr := readSourceMutation(readCtx, ledger, scope, mutation.revision, mutation.id)
-		cancelRead()
+		if errors.Is(updateErr, ErrLedgerCapacity) {
+			// The failure-state update was rejected before patching; no read can
+			// confirm it. The caller fails closed by leaving the restored local
+			// tree untagged when this repair did not persist.
+			return fmt.Errorf("record failed workspace tree replacement: %w", updateErr)
+		}
+		confirmed, ok, readErr := readSourceMutation(ctx, ledger, scope, mutation.revision, mutation.id)
 		if ok && sourceTreeRollbackRecorded(confirmed, failed) {
 			if treeRestored {
 				s.tagLocalTree(scope, mutation.revision)

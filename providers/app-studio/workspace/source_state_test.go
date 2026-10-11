@@ -502,6 +502,51 @@ type failLedgerOnAttributedCompletion struct {
 	Ledger
 }
 
+// retryThenRejectSourceMutationLedger simulates an Update callback that first
+// sees a record it could reserve, loses a compare-and-swap, then rejects the
+// retry because another source mutation made the local tree stale.
+type retryThenRejectSourceMutationLedger struct {
+	Ledger
+	staleRecord LedgerRecord
+	readCount   int
+}
+
+func (l *retryThenRejectSourceMutationLedger) Read(ctx context.Context, _ Scope) (LedgerRecord, error) {
+	l.readCount++
+	if err := ctx.Err(); err != nil {
+		return LedgerRecord{}, err
+	}
+	return l.staleRecord.DeepCopy(), nil
+}
+
+func (l *retryThenRejectSourceMutationLedger) Update(ctx context.Context, scope Scope, mutate func(*LedgerRecord) (bool, error)) (LedgerRecord, error) {
+	attempt, err := l.Ledger.Read(ctx, scope)
+	if err != nil {
+		return LedgerRecord{}, err
+	}
+	if _, err := mutate(&attempt); err != nil {
+		return LedgerRecord{}, err
+	}
+	if _, err := l.Ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		current := record.SourceRevision
+		if current == 0 {
+			current = 1
+		}
+		record.SourceRevision = current + 1
+		record.SourceMutationID = "competing-mutation"
+		record.LastSourceChange = &SourceChange{SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		return LedgerRecord{}, err
+	}
+	winning, err := l.Ledger.Read(ctx, scope)
+	if err != nil {
+		return LedgerRecord{}, err
+	}
+	_, err = mutate(&winning)
+	return LedgerRecord{}, err
+}
+
 type lostAckTestLedger struct {
 	Ledger
 	loseNextUpdate       bool
@@ -937,6 +982,30 @@ func TestFileStoreReservationLostAckTagsUnchangedCurrentTree(t *testing.T) {
 	}
 	if _, err := store.WriteFile(ContextWithMutationOrigin(ctx, "thread-next", "run-next"), scope, WriteOptions{Path: "app.txt", Content: "retry"}); err != nil {
 		t.Fatalf("retry after recovered reservation: %v", err)
+	}
+}
+
+func TestFileStoreReservationRetryCallbackRejectionSkipsConfirmationRead(t *testing.T) {
+	ctx := context.Background()
+	ledger := NewMemoryLedger()
+	store := NewFileStore(t.TempDir())
+	store.SetLedger(ledger)
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "app", ProjectUID: "uid"}
+	if _, err := store.ReplaceTree(ctx, scope, ReplaceTreeOptions{Files: []File{{Path: "app.txt", Content: "before"}}, Committed: true}); err != nil {
+		t.Fatalf("seed source tree: %v", err)
+	}
+	stale, err := ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrying := &retryThenRejectSourceMutationLedger{Ledger: ledger, staleRecord: stale}
+	store.SetLedger(retrying)
+
+	if _, err := store.beginSourceMutation(ctx, scope, []string{"app.txt"}); err == nil {
+		t.Fatal("reservation succeeded after a retry found a stale tree")
+	}
+	if retrying.readCount != 0 {
+		t.Fatalf("confirmation reads after definitive callback rejection = %d, want none", retrying.readCount)
 	}
 }
 

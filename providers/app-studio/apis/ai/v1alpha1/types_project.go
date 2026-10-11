@@ -635,6 +635,32 @@ type ProjectPendingCommit struct {
 	// RequestedAt is when the commit action was called.
 	// +optional
 	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
+
+	// BlockedReason is set when replaying this immutable intent was refused
+	// permanently, or when its named RepositoryCommit failed and the controller
+	// is waiting through an automatic retry cooldown. The request remains
+	// recorded while blocked.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	BlockedReason string `json:"blockedReason,omitempty"`
+
+	// BlockedMessage is a sanitized, user-facing explanation of the replay
+	// refusal or automatic retry cooldown.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	BlockedMessage string `json:"blockedMessage,omitempty"`
+
+	// BlockedAt is when this immutable intent entered its blocked state or
+	// automatic retry cooldown.
+	// +optional
+	BlockedAt *metav1.Time `json:"blockedAt,omitempty"`
+
+	// RetryToken is the last operator retry token consumed for this request.
+	// It prevents a stale retry annotation from repeatedly waking the same
+	// blocked intent.
+	// +optional
+	// +kubebuilder:validation:MaxLength=160
+	RetryToken string `json:"retryToken,omitempty"`
 }
 
 // ProjectCommitAttribution groups the paths in a pending commit that one

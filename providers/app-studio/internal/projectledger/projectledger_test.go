@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -181,6 +182,8 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.PendingCommit = &workspace.PendingCommit{
 			Name: "commit-1", RepositoryRef: "demo-repo", WorkspaceDigest: "sha256:abc", Paths: []string{"src/a.ts"},
 			SourceRevision: 7, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
+			BlockedReason: "ActionForbidden", BlockedMessage: "Check the repository permission.",
+			BlockedAt: timePtr(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)), RetryToken: "retry-token-1",
 		}
 		record.Settlement = &workspace.CommitSettlement{WorkspaceDigest: "sha256:def", Paths: []string{"src/b.ts"}}
 		return true, nil
@@ -215,6 +218,9 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" ||
 		record.PendingCommit.SourceRevision != 7 || len(record.PendingCommit.Attributions) != 1 ||
 		record.PendingCommit.Attributions[0].ThreadID != "thread-source" ||
+		record.PendingCommit.BlockedReason != "ActionForbidden" || record.PendingCommit.BlockedMessage != "Check the repository permission." ||
+		record.PendingCommit.BlockedAt == nil || !record.PendingCommit.BlockedAt.Equal(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)) ||
+		record.PendingCommit.RetryToken != "retry-token-1" ||
 		!reflect.DeepEqual(record.PendingCommit.Attributions[0].Paths, []string{"src/a.ts"}) {
 		t.Fatalf("pending commit = %#v", record.PendingCommit)
 	}
@@ -223,6 +229,12 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	}
 	if projects.project.Status.Workspace.PendingCommit.RequestedAt == nil {
 		t.Fatal("pending commit carries no requestedAt")
+	}
+	if projects.project.Status.Workspace.PendingCommit.BlockedReason != "ActionForbidden" ||
+		projects.project.Status.Workspace.PendingCommit.BlockedMessage != "Check the repository permission." ||
+		projects.project.Status.Workspace.PendingCommit.BlockedAt == nil ||
+		projects.project.Status.Workspace.PendingCommit.RetryToken != "retry-token-1" {
+		t.Fatalf("Project pending commit block = %#v", projects.project.Status.Workspace.PendingCommit)
 	}
 
 	// Clearing has to be said out loud in a merge patch, or the members would
@@ -245,6 +257,153 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("clearing the dirty set moved the revision to %d", record.SourceRevision)
+	}
+}
+
+func timePtr(value time.Time) *time.Time { return &value }
+
+func TestLedgerRejectsPendingCommitPathLimitBeforeStatusWrite(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	paths := make([]string, MaxPendingCommitPaths+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("src/file-%04d.txt", i)
+	}
+
+	_, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &workspace.PendingCommit{
+			RequestID: "request-1", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+			BundleRef: "bundle", BundleDigest: "sha256:digest", WorkspaceDigest: "sha256:workspace",
+			Paths: paths,
+		}
+		return true, nil
+	})
+	if !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("Update error = %v, want ErrLedgerCapacity", err)
+	}
+	if projects.patches != 0 || projects.project.Status.Workspace != nil {
+		t.Fatalf("capacity rejection wrote status: patches=%d status=%#v", projects.patches, projects.project.Status.Workspace)
+	}
+}
+
+func TestLedgerRejectsOversizedLegacyPendingBlockMetadataBeforeStatusWrite(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+
+	_, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &workspace.PendingCommit{
+			Name: "legacy-commit", RepositoryRef: "repo", WorkspaceDigest: "sha256:workspace",
+			Paths: []string{"src/file.txt"}, BlockedReason: "RepositoryCommitFailed",
+			BlockedMessage: strings.Repeat("x", 513),
+		}
+		return true, nil
+	})
+	if !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("Update error = %v, want ErrLedgerCapacity", err)
+	}
+	if projects.patches != 0 || projects.project.Status.Workspace != nil {
+		t.Fatalf("schema-limit rejection wrote status: patches=%d status=%#v", projects.patches, projects.project.Status.Workspace)
+	}
+}
+
+func TestLedgerRejectsOversizedMultibyteWorkspaceStatusBeforeStatusWrite(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	paths := make([]string, 400)
+	for i := range paths {
+		// Each path is under the path-byte limit, but its UTF-8 encoding is
+		// several times longer than its character count.
+		paths[i] = fmt.Sprintf("src/%03d-%s", i, strings.Repeat("界", 300))
+	}
+
+	_, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &workspace.PendingCommit{
+			RequestID: "request-1", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+			BundleRef: "bundle", BundleDigest: "sha256:digest", WorkspaceDigest: "sha256:workspace",
+			Paths:        paths,
+			Attributions: []workspace.SourceAttribution{{ThreadID: "thread", RunID: "run", Paths: append([]string(nil), paths...)}},
+		}
+		return true, nil
+	})
+	if !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("Update error = %v, want ErrLedgerCapacity", err)
+	}
+	if projects.patches != 0 || projects.project.Status.Workspace != nil {
+		t.Fatalf("oversize rejection wrote status: patches=%d status=%#v", projects.patches, projects.project.Status.Workspace)
+	}
+}
+
+func TestLedgerRecordDeepCopyOwnsPendingCommitCollections(t *testing.T) {
+	blockedAt := time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)
+	record := workspace.LedgerRecord{
+		UncommittedPaths:       []string{"dirty.txt"},
+		SourcePathAttributions: []workspace.SourcePathAttribution{{Path: "dirty.txt", ThreadID: "thread", RunID: "run"}},
+		PendingCommit: &workspace.PendingCommit{
+			RequestID: "request-1", Paths: []string{"pending.txt"},
+			Attributions: []workspace.SourceAttribution{{ThreadID: "thread", RunID: "run", Paths: []string{"pending.txt"}}},
+			BlockedAt:    &blockedAt,
+		},
+		Settlement: &workspace.CommitSettlement{WorkspaceDigest: "sha256:workspace", Paths: []string{"settled.txt"}},
+	}
+	cloned := record.DeepCopy()
+	cloned.UncommittedPaths[0] = "changed-dirty.txt"
+	cloned.SourcePathAttributions[0].Path = "changed-attribution.txt"
+	cloned.PendingCommit.Paths[0] = "changed-pending.txt"
+	cloned.PendingCommit.Attributions[0].Paths[0] = "changed-pending-attribution.txt"
+	*cloned.PendingCommit.BlockedAt = blockedAt.Add(time.Hour)
+	cloned.Settlement.Paths[0] = "changed-settlement.txt"
+
+	if record.UncommittedPaths[0] != "dirty.txt" || record.SourcePathAttributions[0].Path != "dirty.txt" ||
+		record.PendingCommit.Paths[0] != "pending.txt" || record.PendingCommit.Attributions[0].Paths[0] != "pending.txt" ||
+		!record.PendingCommit.BlockedAt.Equal(blockedAt) || record.Settlement.Paths[0] != "settled.txt" {
+		t.Fatalf("DeepCopy mutation changed original record: %#v", record)
+	}
+}
+
+func TestNormalizeLedgerRecordPreservesMalformedKeyedPendingCommit(t *testing.T) {
+	for name, requestID := range map[string]string{
+		"ordinary key":   "request-1",
+		"whitespace key": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := workspace.LedgerRecord{PendingCommit: &workspace.PendingCommit{RequestID: requestID}}
+			workspace.NormalizeLedgerRecord(&record)
+			if record.PendingCommit == nil || record.PendingCommit.RequestID != requestID {
+				t.Fatalf("malformed keyed intent was discarded or changed: %#v", record.PendingCommit)
+			}
+			status := statusFrom(record, nil, time.Now())
+			patch, err := statusPatch("1", status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body struct {
+				Status struct {
+					Workspace struct {
+						PendingCommit struct {
+							RequestID *string `json:"requestID"`
+						} `json:"pendingCommit"`
+					} `json:"workspace"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal(patch, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Status.Workspace.PendingCommit.RequestID == nil || *body.Status.Workspace.PendingCommit.RequestID != requestID {
+				t.Fatalf("status patch lost malformed keyed request ID %q: %s", requestID, patch)
+			}
+		})
+	}
+
+	legacy := workspace.LedgerRecord{PendingCommit: &workspace.PendingCommit{}}
+	workspace.NormalizeLedgerRecord(&legacy)
+	if legacy.PendingCommit != nil {
+		t.Fatalf("invalid legacy pending commit behavior changed: %#v", legacy.PendingCommit)
 	}
 }
 

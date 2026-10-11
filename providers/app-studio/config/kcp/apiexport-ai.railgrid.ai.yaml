@@ -136,7 +136,7 @@ spec:
   resources:
   - group: ai.railgrid.ai
     name: projects
-    schema: v261011-d03ccb24.projects.ai.railgrid.ai
+    schema: v261011-915f868b.projects.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai

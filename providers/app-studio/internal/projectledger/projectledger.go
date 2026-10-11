@@ -59,6 +59,20 @@ import (
 // here would be a file that never reaches git.
 const MaxUncommittedPaths = 1024
 
+const (
+	// MaxPendingCommitPaths mirrors ProjectPendingCommit.Paths' MaxItems and
+	// bounds the immutable snapshot carried through a commit retry.
+	MaxPendingCommitPaths = 1024
+	// MaxPendingCommitAttributions mirrors the CRD's MaxItems. The aggregate
+	// serialized-size limit below also accounts for every group's path list.
+	MaxPendingCommitAttributions = 1024
+	// MaxWorkspaceStatusBytes bounds the complete workspace status merge patch,
+	// including duplicated paths in attributions and the request envelope. It
+	// leaves substantial room under the API server's object-size ceiling for
+	// the rest of Project status and metadata.
+	MaxWorkspaceStatusBytes = 512 << 10
+)
+
 // updateAttempts bounds the compare-and-swap retry. Contention is between a
 // handler and the reconciler on one project, so a handful of rounds is
 // generous; past that the caller gets the conflict and retries at its own
@@ -134,17 +148,28 @@ func (l *Ledger) Update(ctx context.Context, scope workspace.Scope, mutate func(
 		workspace.NormalizeLedgerRecord(&next)
 		if len(next.UncommittedPaths) > MaxUncommittedPaths {
 			return workspace.LedgerRecord{}, fmt.Errorf(
-				"project %s has %d uncommitted paths, more than the %d the ledger can record",
+				"%w: project %s has %d uncommitted paths, more than the %d the ledger can record",
+				workspace.ErrLedgerCapacity,
 				scope.ProjectName, len(next.UncommittedPaths), MaxUncommittedPaths)
 		}
 		if len(next.SourcePathAttributions) > MaxUncommittedPaths {
 			return workspace.LedgerRecord{}, fmt.Errorf(
-				"project %s has %d source path attributions, more than the %d the ledger can record",
+				"%w: project %s has %d source path attributions, more than the %d the ledger can record",
+				workspace.ErrLedgerCapacity,
 				scope.ProjectName, len(next.SourcePathAttributions), MaxUncommittedPaths)
 		}
-		patch, err := statusPatch(project.ResourceVersion, statusFrom(next, project.Status.Workspace, l.clock()))
+		status := statusFrom(next, project.Status.Workspace, l.clock())
+		if err := validateWorkspaceStatusCounts(status); err != nil {
+			return workspace.LedgerRecord{}, err
+		}
+		patch, err := statusPatch(project.ResourceVersion, status)
 		if err != nil {
 			return workspace.LedgerRecord{}, err
+		}
+		if len(patch) > MaxWorkspaceStatusBytes {
+			return workspace.LedgerRecord{}, fmt.Errorf(
+				"%w: project %s workspace status patch is %d bytes, above the %d-byte limit",
+				workspace.ErrLedgerCapacity, scope.ProjectName, len(patch), MaxWorkspaceStatusBytes)
 		}
 		err = l.projects.PatchStatus(ctx, scope.ProjectName, patch)
 		if err == nil {
@@ -161,6 +186,43 @@ func (l *Ledger) Update(ctx context.Context, scope workspace.Scope, mutate func(
 	return workspace.LedgerRecord{}, fmt.Errorf(
 		"record project %s working-copy ledger: gave up after %d conflicting attempts: %w",
 		scope.ProjectName, updateAttempts, lastConflict)
+}
+
+func validateWorkspaceStatusCounts(status *aiv1alpha1.ProjectWorkspaceStatus) error {
+	if status == nil {
+		return nil
+	}
+	if pending := status.PendingCommit; pending != nil {
+		if len(pending.BlockedReason) > 64 || len(pending.BlockedMessage) > 512 || len(pending.RetryToken) > 160 {
+			return fmt.Errorf("%w: pending commit block metadata exceeds its schema limit",
+				workspace.ErrLedgerCapacity)
+		}
+		if len(pending.Paths) > MaxPendingCommitPaths {
+			return fmt.Errorf("%w: pending commit has %d paths, above the %d-path limit",
+				workspace.ErrLedgerCapacity, len(pending.Paths), MaxPendingCommitPaths)
+		}
+		if len(pending.Attributions) > MaxPendingCommitAttributions {
+			return fmt.Errorf("%w: pending commit has %d attribution groups, above the %d-group limit",
+				workspace.ErrLedgerCapacity, len(pending.Attributions), MaxPendingCommitAttributions)
+		}
+		attributedPaths := 0
+		for _, attribution := range pending.Attributions {
+			if len(attribution.Paths) > MaxPendingCommitPaths {
+				return fmt.Errorf("%w: pending commit attribution has %d paths, above the %d-path limit",
+					workspace.ErrLedgerCapacity, len(attribution.Paths), MaxPendingCommitPaths)
+			}
+			attributedPaths += len(attribution.Paths)
+		}
+		if attributedPaths > MaxPendingCommitPaths {
+			return fmt.Errorf("%w: pending commit has %d attributed paths, above the %d-path limit",
+				workspace.ErrLedgerCapacity, attributedPaths, MaxPendingCommitPaths)
+		}
+	}
+	if settlement := status.Settlement; settlement != nil && len(settlement.Paths) > MaxUncommittedPaths {
+		return fmt.Errorf("%w: commit settlement has %d paths, above the %d-path limit",
+			workspace.ErrLedgerCapacity, len(settlement.Paths), MaxUncommittedPaths)
+	}
+	return nil
 }
 
 func (l *Ledger) clock() time.Time {
@@ -233,6 +295,13 @@ func recordFrom(status *aiv1alpha1.ProjectWorkspaceStatus) workspace.LedgerRecor
 			WorkspaceDigest: pending.WorkspaceDigest,
 			Paths:           append([]string(nil), pending.Paths...),
 			SourceRevision:  uint64(pending.SourceRevision),
+			BlockedReason:   pending.BlockedReason,
+			BlockedMessage:  pending.BlockedMessage,
+			RetryToken:      pending.RetryToken,
+		}
+		if pending.BlockedAt != nil {
+			blockedAt := pending.BlockedAt.Time
+			record.PendingCommit.BlockedAt = &blockedAt
 		}
 		for _, attribution := range pending.Attributions {
 			record.PendingCommit.Attributions = append(record.PendingCommit.Attributions, workspace.SourceAttribution{
@@ -295,6 +364,12 @@ func statusFrom(record workspace.LedgerRecord, previous *aiv1alpha1.ProjectWorks
 			Paths:           pending.Paths,
 			SourceRevision:  int64(pending.SourceRevision), //nolint:gosec // bounded by the revision counter, not by input
 			RequestedAt:     requestedAt,
+			BlockedReason:   pending.BlockedReason,
+			BlockedMessage:  pending.BlockedMessage,
+			RetryToken:      pending.RetryToken,
+		}
+		if pending.BlockedAt != nil {
+			status.PendingCommit.BlockedAt = &metav1.Time{Time: *pending.BlockedAt}
 		}
 		for _, attribution := range pending.Attributions {
 			status.PendingCommit.Attributions = append(status.PendingCommit.Attributions, aiv1alpha1.ProjectCommitAttribution{
@@ -345,7 +420,7 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 			ledger["pendingCommit"] = map[string]any{
 				"name":            nullableString(status.PendingCommit.Name),
 				"repositoryRef":   status.PendingCommit.RepositoryRef,
-				"requestID":       nullableString(status.PendingCommit.RequestID),
+				"requestID":       stringIfPresent(status.PendingCommit.RequestID),
 				"repositoryUID":   nullableString(status.PendingCommit.RepositoryUID),
 				"bundleRef":       nullableString(status.PendingCommit.BundleRef),
 				"bundleDigest":    nullableString(status.PendingCommit.BundleDigest),
@@ -356,6 +431,10 @@ func statusPatch(resourceVersion string, status *aiv1alpha1.ProjectWorkspaceStat
 				"sourceRevision":  status.PendingCommit.SourceRevision,
 				"attributions":    nullIfEmpty(status.PendingCommit.Attributions),
 				"requestedAt":     status.PendingCommit.RequestedAt,
+				"blockedReason":   nullableString(status.PendingCommit.BlockedReason),
+				"blockedMessage":  nullableString(status.PendingCommit.BlockedMessage),
+				"blockedAt":       status.PendingCommit.BlockedAt,
+				"retryToken":      nullableString(status.PendingCommit.RetryToken),
 			}
 		}
 		if status.Settlement != nil {
@@ -395,6 +474,13 @@ func nullIfEmpty[T any](values []T) any {
 
 func nullableString(value string) any {
 	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func stringIfPresent(value string) any {
+	if value == "" {
 		return nil
 	}
 	return value

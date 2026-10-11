@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"k8s.io/klog/v2"
 )
 
@@ -56,6 +58,12 @@ const (
 	MaxTotalBytes = 48 * 1024 * 1024
 	MaxPathLength = 1024
 
+	// MaxScopeBundles and MaxScopeBytes bound all stored bundles in one
+	// logical-cluster scope. Bytes are the serialized on-disk files, including
+	// abandoned temporary writes; the first limit reached rejects a new bundle.
+	MaxScopeBundles = 32
+	MaxScopeBytes   = 512 << 20
+
 	// EncodingUTF8 marks content carried verbatim as UTF-8 text (the default).
 	EncodingUTF8 = "utf-8"
 	// EncodingBase64 marks content carried as RFC 4648 standard base64 with
@@ -70,12 +78,21 @@ const (
 	DefaultSweepInterval = time.Hour
 )
 
-var errBundleNotFound = errors.New("bundle not found")
+var (
+	errBundleNotFound     = errors.New("bundle not found")
+	ErrScopeQuotaExceeded = errors.New("bundle scope quota exceeded")
+)
 
 // IsNotFound reports whether err means the requested bundle is not present in
 // the addressed scope.
 func IsNotFound(err error) bool {
 	return errors.Is(err, errBundleNotFound)
+}
+
+// IsQuotaExceeded reports whether storing another bundle would cross the
+// durable count or serialized-byte limit for its logical-cluster scope.
+func IsQuotaExceeded(err error) bool {
+	return errors.Is(err, ErrScopeQuotaExceeded)
 }
 
 // File is one file from an MCP commit_files call or a repository checkout.
@@ -329,6 +346,14 @@ func (s *FileStore) put(ctx context.Context, scope string, files []File, isolate
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return BundleRef{}, fmt.Errorf("create scoped bundle directory: %w", err)
 	}
+	unlock, err := s.lockScope(ctx, key)
+	if err != nil {
+		return BundleRef{}, err
+	}
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return BundleRef{}, err
+	}
 	path := s.path(key, bundle.Name)
 	if !isolated {
 		if _, err := os.Stat(path); err == nil {
@@ -345,6 +370,13 @@ func (s *FileStore) put(ctx context.Context, scope string, files []File, isolate
 	data, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
 		return BundleRef{}, fmt.Errorf("marshal bundle: %w", err)
+	}
+	count, usedBytes, err := s.scopeUsage(key)
+	if err != nil {
+		return BundleRef{}, err
+	}
+	if scopeQuotaWouldBeExceeded(count, usedBytes, int64(len(data))) {
+		return BundleRef{}, fmt.Errorf("%w: scope has %d bundles and %d serialized bytes; limits are %d bundles and %d bytes", ErrScopeQuotaExceeded, count, usedBytes, MaxScopeBundles, MaxScopeBytes)
 	}
 	tmp, err := os.CreateTemp(dir, "."+bundle.Name+"-*.tmp")
 	if err != nil {
@@ -372,6 +404,112 @@ func (s *FileStore) put(ctx context.Context, scope string, files []File, isolate
 	}
 	s.announce(scope, bundle.Name)
 	return ref, nil
+}
+
+// lockScope serializes quota checks and bundle publication across FileStore
+// instances and processes that share the backing filesystem. The lock file is
+// deliberately persistent: removing it could let two processes lock different
+// inodes with the same path.
+func (s *FileStore) lockScope(ctx context.Context, key string) (func(), error) {
+	path := filepath.Join(s.scopeDir(key), ".quota.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open bundle quota lock: %w", err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() {
+				_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+				_ = file.Close()
+			}, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			_ = file.Close()
+			return nil, fmt.Errorf("lock bundle quota scope: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = file.Close()
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// scopeUsage reads published bundles and abandoned writes from disk while the
+// caller holds the scope lock. Counting temporary files prevents a crashed
+// writer from leaving unaccounted bytes until the orphan sweeper removes them.
+func (s *FileStore) scopeUsage(key string) (finalCount int, finalBytes int64, resultErr error) {
+	dir := s.scopeDir(key)
+	root, err := os.Open(dir)
+	if err != nil {
+		return 0, 0, fmt.Errorf("open scoped bundles: %w", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil && resultErr == nil {
+			resultErr = fmt.Errorf("close scoped bundles: %w", err)
+		}
+	}()
+	const (
+		batchSize      = 32
+		maxScanEntries = MaxScopeBundles*4 + 64
+	)
+	var count int
+	var usedBytes int64
+	for scanned := 0; scanned < maxScanEntries; {
+		limit := batchSize
+		if maxScanEntries-scanned < limit {
+			limit = maxScanEntries - scanned
+		}
+		entries, readErr := root.ReadDir(limit)
+		scanned += len(entries)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || (!strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".tmp")) {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(dir, name))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return 0, 0, fmt.Errorf("stat scoped bundle %q: %w", name, err)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			count++
+			size := info.Size()
+			if size > MaxScopeBytes || usedBytes > MaxScopeBytes-size {
+				usedBytes = MaxScopeBytes + 1
+			} else {
+				usedBytes += size
+			}
+			if count >= MaxScopeBundles || usedBytes > MaxScopeBytes {
+				return count, usedBytes, nil
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return 0, 0, fmt.Errorf("read scoped bundles: %w", readErr)
+			}
+			return count, usedBytes, nil
+		}
+	}
+	// An unexpectedly crowded scope directory could otherwise make every Put
+	// scan without bound. Fail closed; the sweeper can reclaim stale entries.
+	return MaxScopeBundles, MaxScopeBytes, nil
+}
+
+func scopeQuotaWouldBeExceeded(count int, usedBytes, addedBytes int64) bool {
+	return count >= MaxScopeBundles || addedBytes > MaxScopeBytes || usedBytes > MaxScopeBytes-addedBytes
 }
 
 func newIsolatedBundleName() (string, error) {

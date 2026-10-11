@@ -61,6 +61,7 @@ type codeCommitHub struct {
 	// errorCode, when set, makes every commit answer the actionwire error
 	// envelope with that typed code, the way a refused or failed action does.
 	errorCode string
+	errorVerb string
 	calls     []codeCommitActionCall
 }
 
@@ -90,6 +91,9 @@ func (h *codeCommitHub) serve(t *testing.T) *httptest.Server {
 		h.mu.Lock()
 		h.calls = append(h.calls, call)
 		code := h.errorCode
+		if h.errorVerb != "" && h.errorVerb != call.Verb {
+			code = ""
+		}
 		h.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -436,5 +440,54 @@ func TestCommitToolBoundsPayloadBeforeTheProvider(t *testing.T) {
 	}
 	if len(hub.calls) != 0 {
 		t.Fatal("the Code provider was called after a local bounds failure")
+	}
+}
+
+func TestCommitToolSurfacesDurableReplayBlock(t *testing.T) {
+	for _, tc := range []struct{ code, reason string }{
+		{"commit_request_conflict", "CommitRequestConflict"},
+		{"bundle_unavailable", "StagedBundleMissing"},
+		{"action_forbidden", "ActionForbidden"},
+		{"commit_not_created", ""},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			ctx := context.Background()
+			hub := &codeCommitHub{errorCode: tc.code, errorVerb: codecommit.Action}
+			upstream := hub.serve(t)
+			files := workspace.NewFileStore(t.TempDir())
+			scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
+			writeTestWorkspaceFiles(t, ctx, files, scope, []workspace.File{{Path: "index.html", Content: "hello"}})
+			server := newCommitActionServer(t, files, upstream.URL)
+			args := map[string]any{"repositoryRef": testCommitRepositoryRef, "paths": []any{"index.html"}}
+			result, err := server.commitProjectWorkspaceFiles(ctx, testCommitIdentity(), scope, nil, testCommitRepositoryRef, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response map[string]any
+			if err := json.Unmarshal([]byte(result), &response); err != nil {
+				t.Fatal(err)
+			}
+			pending, ok, err := files.PendingCommit(ctx, scope)
+			if err != nil || !ok || pending.BlockedReason != tc.reason || pending.RequestID == "" || pending.BundleRef == "" {
+				t.Fatalf("pending=%+v ok=%v err=%v", pending, ok, err)
+			}
+			want := "reserved"
+			if tc.reason != "" {
+				want = "blocked"
+			}
+			if response["status"] != want {
+				t.Fatalf("response=%s want status %s", result, want)
+			}
+			if tc.reason != "" && (response["reason"] != tc.reason || pending.BlockedAt == nil) {
+				t.Fatalf("response=%s pending=%+v", result, pending)
+			}
+			_, nextErr := server.commitProjectWorkspaceFiles(ctx, testCommitIdentity(), scope, nil, testCommitRepositoryRef, args)
+			if nextErr == nil || (tc.reason != "" && !strings.Contains(nextErr.Error(), "is blocked")) {
+				t.Fatalf("next commit error=%v", nextErr)
+			}
+			if len(hub.actions(codecommit.Action)) != 1 || len(hub.actions(codecommit.StageBundleAction)) != 1 {
+				t.Fatal("pending request triggered an additional external action")
+			}
+		})
 	}
 }

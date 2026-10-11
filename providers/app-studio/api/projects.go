@@ -83,7 +83,8 @@ func (s *Server) consumeProjectInitialBootstrap(ctx context.Context, scope store
 }
 
 type ProjectView struct {
-	Name string `json:"name"`
+	CommitBlock *workspace.CommitBlock `json:"commitBlock,omitempty"`
+	Name        string                 `json:"name"`
 	// UID is the immutable Kubernetes identity. Project names may be reused
 	// after an asynchronous delete, so portal mutations must never key on name
 	// alone.
@@ -1518,6 +1519,12 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project,
 		Environments: projectEnvironmentViews(p),
 		CreatedAt:    p.CreationTimestamp.Time,
 	}
+	if p.Status.Workspace != nil && p.Status.Workspace.PendingCommit != nil {
+		pending := p.Status.Workspace.PendingCommit
+		if pending.BlockedReason != "" {
+			view.CommitBlock = &workspace.CommitBlock{RequestID: pending.RequestID, Reason: pending.BlockedReason, Message: pending.BlockedMessage}
+		}
+	}
 	if p.Spec.Template != nil {
 		view.Template = strings.TrimSpace(p.Spec.Template.Name)
 	}
@@ -1538,6 +1545,7 @@ func (s *Server) projectViewWithSourceRevision(ctx context.Context, c *asclient.
 		return view
 	}
 	if state, err := s.workspaces.SourceState(ctx, projectWorkspaceScope(id, p)); err == nil {
+		view.CommitBlock = state.CommitBlock
 		view.SourceRevision = state.SourceRevision
 		view.LastSourceChange = state.LastSourceChange
 		view.LastPreviewCheckpoint = state.LastPreviewCheckpoint

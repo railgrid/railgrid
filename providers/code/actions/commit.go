@@ -176,6 +176,9 @@ func (s *Server) stageCommitBundle(ctx context.Context, req dataplane.Request, v
 	}
 	ref, err := s.Bundles.PutIsolated(ctx, req.ClusterID, commitFiles(in.Files))
 	if err != nil {
+		if commitbundle.IsQuotaExceeded(err) {
+			return nil, wireErrorRetryable("bundle_quota_exceeded", true)
+		}
 		return nil, wireError("invalid_action_input")
 	}
 	return stageCommitBundleOutput{

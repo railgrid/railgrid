@@ -170,6 +170,25 @@ func TestStagedBundleCommits(t *testing.T) {
 	}
 }
 
+func TestStageCommitBundleReportsScopeQuota(t *testing.T) {
+	f := newCommitFixture(t)
+	for i := 0; i < commitbundle.MaxScopeBundles; i++ {
+		if _, err := f.bundles.PutIsolated(context.Background(), testCluster, []commitbundle.File{{Path: "source.txt", Content: "x"}}); err != nil {
+			t.Fatalf("fill scope quota at bundle %d: %v", i, err)
+		}
+	}
+	response, envelope := f.invoke(t, StageCommitBundle, map[string]any{
+		"repositoryUID": "repo-uid",
+		"files":         []any{map[string]any{"path": "source.txt", "content": "new"}},
+	})
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body %s", response.Code, response.Body.String())
+	}
+	if envelope.Error == nil || envelope.Error.Code != "bundle_quota_exceeded" || !envelope.Error.Retryable {
+		t.Fatalf("error = %+v, want retryable bundle_quota_exceeded", envelope.Error)
+	}
+}
+
 func TestIdenticalStagesKeepIndependentCommitLifetimes(t *testing.T) {
 	f := newCommitFixture(t)
 	stage := func() stageCommitBundleOutput {
@@ -238,6 +257,87 @@ func TestIdenticalStagesKeepIndependentCommitLifetimes(t *testing.T) {
 	replayStatus, replay := commit("intent-a", first)
 	if replayStatus != http.StatusOK || replay.Commit.Name != firstCommit.Commit.Name {
 		t.Fatalf("first replay after cleanup: status=%d result=%+v, want %q", replayStatus, replay, firstCommit.Commit.Name)
+	}
+}
+
+func TestKeyedCommitRequiresCreateScopeAndKeepsReplayStable(t *testing.T) {
+	t.Run("matching create scope succeeds and replays after collection", func(t *testing.T) {
+		f := newCommitFixture(t)
+		input := keyedCommitInput(t, f)
+		response, envelope := f.invoke(t, Commit, input)
+		if response.Code != http.StatusOK {
+			t.Fatalf("initial create: %d %s", response.Code, response.Body.String())
+		}
+		var first commitOutput
+		if err := json.Unmarshal(envelope.Result, &first); err != nil {
+			t.Fatal(err)
+		}
+
+		created, err := f.provider.Resource(repositoryCommits).Get(context.Background(), first.Commit.Name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := created.GetAnnotations()["kcp.io/cluster"]; got != testCluster {
+			t.Fatalf("created RepositoryCommit scope = %q, want staged scope %q", got, testCluster)
+		}
+		bundleName := input["bundleRef"].(string)
+		bundleDigest := input["bundleDigest"].(string)
+		if _, err := f.bundles.Get(context.Background(), testCluster, bundleName, bundleDigest); err != nil {
+			t.Fatalf("keyed create did not retain its scoped bundle: %v", err)
+		}
+
+		// Model terminal controller cleanup, then ensure the same request ID
+		// recovers the already-created object without needing the source bundle.
+		if err := f.bundles.Delete(context.Background(), testCluster, bundleName, bundleDigest); err != nil {
+			t.Fatal(err)
+		}
+		response, envelope = f.invoke(t, Commit, input)
+		if response.Code != http.StatusOK {
+			t.Fatalf("replay after collection: %d %s", response.Code, response.Body.String())
+		}
+		var replay commitOutput
+		if err := json.Unmarshal(envelope.Result, &replay); err != nil {
+			t.Fatal(err)
+		}
+		if replay.Commit != first.Commit {
+			t.Fatalf("replay returned %+v, want stable result %+v", replay.Commit, first.Commit)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		scope string
+	}{
+		{name: "different scope", scope: "different-logical-cluster"},
+		{name: "missing scope", scope: ""},
+	} {
+		t.Run(test.name+" is refused and retains the bundle", func(t *testing.T) {
+			f := newCommitFixture(t)
+			input := keyedCommitInput(t, f)
+			f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
+				object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+				annotations := object.GetAnnotations()
+				if test.scope == "" {
+					delete(annotations, "kcp.io/cluster")
+				} else {
+					annotations["kcp.io/cluster"] = test.scope
+				}
+				object.SetAnnotations(annotations)
+				object.SetUID("wrong-scope-commit")
+				return true, object, nil
+			})
+
+			response, envelope := f.invoke(t, Commit, input)
+			if response.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; body %s", response.Code, response.Body.String())
+			}
+			if envelope.Error == nil || envelope.Error.Code != "commit_not_created" {
+				t.Fatalf("error = %+v, want commit_not_created", envelope.Error)
+			}
+			if _, err := f.bundles.Get(context.Background(), testCluster, input["bundleRef"].(string), input["bundleDigest"].(string)); err != nil {
+				t.Fatalf("scope refusal discarded staged bundle needed for retry: %v", err)
+			}
+		})
 	}
 }
 

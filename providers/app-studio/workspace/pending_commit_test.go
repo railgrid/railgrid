@@ -114,6 +114,166 @@ func TestPendingCommitReservationIsExclusiveAndNameBindingIsFenced(t *testing.T)
 	}
 }
 
+func TestBlockedPendingCommitPreservesIntentAndRequiresFreshRetryToken(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid"}
+	ledger := NewMemoryLedger()
+	store.SetLedger(ledger)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		record.SourceRevision = 3
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	intent := PendingCommit{
+		RequestID: "request-a", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+		BundleRef: "bundle-a", BundleDigest: "sha256:bundle-a", Message: "commit A", Branch: "main",
+		WorkspaceDigest: "sha256:workspace-a", Paths: []string{"src/a.go"}, SourceRevision: 3,
+	}
+	if err := store.ReservePendingCommit(ctx, scope, intent); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := store.BlockPendingCommit(ctx, scope, intent.RequestID, "CommitRequestConflict", "The request conflicts."); err != nil || !blocked {
+		t.Fatalf("block pending commit = %t, %v; want true", blocked, err)
+	}
+	pending, ok, err := store.PendingCommit(ctx, scope)
+	if err != nil || !ok {
+		t.Fatalf("read blocked pending commit = %t, %v", ok, err)
+	}
+	if pending.BlockedReason != "CommitRequestConflict" || pending.BlockedMessage != "The request conflicts." || pending.BlockedAt == nil {
+		t.Fatalf("blocked metadata = %+v", pending)
+	}
+	if !pending.SameIntent(intent) {
+		t.Fatalf("blocking changed the immutable intent: before=%+v after=%+v", intent, pending)
+	}
+	if blocked, err := store.BlockPendingCommit(ctx, scope, intent.RequestID, "CommitRequestConflict", "The request conflicts."); err != nil || blocked {
+		t.Fatalf("idempotent block = %t, %v; want false", blocked, err)
+	}
+
+	if retried, err := store.RetryBlockedPendingCommit(ctx, scope, intent.RequestID, "retry-1"); err != nil || !retried {
+		t.Fatalf("first explicit retry = %t, %v; want true", retried, err)
+	}
+	pending, ok, err = store.PendingCommit(ctx, scope)
+	if err != nil || !ok || pending.BlockedReason != "" || pending.BlockedMessage != "" || pending.BlockedAt != nil || pending.RetryToken != "retry-1" {
+		t.Fatalf("pending after retry acknowledgment = %+v, ok %t, err %v", pending, ok, err)
+	}
+	if blocked, err := store.BlockPendingCommit(ctx, scope, intent.RequestID, "CommitRequestConflict", "The request conflicts again."); err != nil || !blocked {
+		t.Fatalf("re-block pending commit = %t, %v; want true", blocked, err)
+	}
+	if retried, err := store.RetryBlockedPendingCommit(ctx, scope, intent.RequestID, "retry-1"); err != nil || retried {
+		t.Fatalf("stale retry token = %t, %v; want false", retried, err)
+	}
+	if retried, err := store.RetryBlockedPendingCommit(ctx, scope, intent.RequestID, "retry-2"); err != nil || !retried {
+		t.Fatalf("fresh explicit retry = %t, %v; want true", retried, err)
+	}
+}
+
+func TestBlockedPendingCommitDoesNotOverwriteBoundCommit(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid"}
+	ledger := NewMemoryLedger()
+	store.SetLedger(ledger)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		record.SourceRevision = 1
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	intent := PendingCommit{RequestID: "request-a", RepositoryRef: "repo", RepositoryUID: "repo-uid", BundleRef: "bundle", BundleDigest: "sha256:bundle", WorkspaceDigest: "sha256:workspace", Paths: []string{"a.go"}, SourceRevision: 1}
+	if err := store.ReservePendingCommit(ctx, scope, intent); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := store.BlockPendingCommit(ctx, scope, intent.RequestID, "ActionForbidden", "refused"); err != nil || !blocked {
+		t.Fatalf("block unnamed commit = %t, %v; want true", blocked, err)
+	}
+	if err := store.BindPendingCommitName(ctx, scope, intent.RequestID, "commit-a"); err != nil {
+		t.Fatal(err)
+	}
+	pending, ok, err := store.PendingCommit(ctx, scope)
+	if err != nil || !ok || pending.Name != "commit-a" || pending.BlockedReason != "" || pending.BlockedMessage != "" || pending.BlockedAt != nil {
+		t.Fatalf("pending after successful name bind = %+v, ok %t, err %v; want unblocked named intent", pending, ok, err)
+	}
+	if blocked, err := store.BlockPendingCommit(ctx, scope, intent.RequestID, "ActionForbidden", "refused"); err != nil || blocked {
+		t.Fatalf("block already named commit = %t, %v; want false", blocked, err)
+	}
+	if retried, err := store.RetryBlockedPendingCommit(ctx, scope, intent.RequestID, "retry-1"); err != nil || retried {
+		t.Fatalf("retry already named commit = %t, %v; want false", retried, err)
+	}
+}
+
+func TestNamedPendingCommitBlockAndRetryAreFencedToTheBoundName(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid"}
+	ledger := NewMemoryLedger()
+	store.SetLedger(ledger)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		record.SourceRevision = 1
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	intent := PendingCommit{RequestID: "request-a", RepositoryRef: "repo", RepositoryUID: "repo-uid", BundleRef: "bundle", BundleDigest: "sha256:bundle", WorkspaceDigest: "sha256:workspace", Paths: []string{"a.go"}, SourceRevision: 1}
+	if err := store.ReservePendingCommit(ctx, scope, intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindPendingCommitName(ctx, scope, intent.RequestID, "commit-a"); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := store.BlockNamedPendingCommit(ctx, scope, intent.RequestID, "commit-other", "StagedBundleMissing", "bundle is missing"); err != nil || blocked {
+		t.Fatalf("wrong-name block = %t, %v; want false", blocked, err)
+	}
+	if blocked, err := store.BlockNamedPendingCommit(ctx, scope, intent.RequestID, "commit-a", "StagedBundleMissing", "bundle is missing"); err != nil || !blocked {
+		t.Fatalf("matching-name block = %t, %v; want true", blocked, err)
+	}
+	if blocked, err := store.BlockPendingCommit(ctx, scope, intent.RequestID, "ActionForbidden", "wrong unnamed fence"); err != nil || blocked {
+		t.Fatalf("unnamed block against a bound request = %t, %v; want false", blocked, err)
+	}
+	if retried, err := store.RetryBlockedPendingCommit(ctx, scope, intent.RequestID, "retry-1"); err != nil || retried {
+		t.Fatalf("unnamed retry against a bound request = %t, %v; want false", retried, err)
+	}
+	if retried, err := store.RetryNamedBlockedPendingCommit(ctx, scope, intent.RequestID, "commit-other", "retry-1"); err != nil || retried {
+		t.Fatalf("wrong-name retry = %t, %v; want false", retried, err)
+	}
+	if retried, err := store.RetryNamedBlockedPendingCommit(ctx, scope, intent.RequestID, "commit-a", "retry-1"); err != nil || !retried {
+		t.Fatalf("matching-name retry = %t, %v; want true", retried, err)
+	}
+	if blocked, err := store.BlockNamedPendingCommit(ctx, scope, intent.RequestID, "commit-a", "StagedBundleMissing", "bundle is still missing"); err != nil || !blocked {
+		t.Fatalf("re-block named request = %t, %v; want true", blocked, err)
+	}
+	if err := store.BindPendingCommitName(ctx, scope, intent.RequestID, "commit-a"); err != nil {
+		t.Fatal(err)
+	}
+	pending, ok, err := store.PendingCommit(ctx, scope)
+	if err != nil || !ok || pending.Name != "commit-a" || pending.BlockedReason != "" || pending.RetryToken != "retry-1" {
+		t.Fatalf("same-name successful bind did not clear the block: %+v, %t, %v", pending, ok, err)
+	}
+}
+
+func TestPendingCommitRejectsWhitespaceOnlyRequestID(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid"}
+	ledger := NewMemoryLedger()
+	store.SetLedger(ledger)
+	if _, err := ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		record.SourceRevision = 1
+		record.PendingCommit = &PendingCommit{
+			RequestID: " ", Name: "commit-a", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+			BundleRef: "bundle", BundleDigest: "sha256:bundle", WorkspaceDigest: "sha256:workspace",
+			Paths: []string{"a.go"}, SourceRevision: 1,
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.PendingCommit(ctx, scope); err == nil || ok {
+		t.Fatalf("malformed whitespace request ID returned pending=%t, err=%v; want validation failure", ok, err)
+	}
+}
+
 func TestPendingCommitSettlementRejectsDelayedLegacyCompletion(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())

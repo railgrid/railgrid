@@ -390,6 +390,7 @@ export interface ProjectAssistantFollowUpQuestionOption {
 }
 
 export interface Project {
+  commitBlock?: { requestID: string; reason: string; message: string }
   name: string
   /** Immutable Kubernetes identity; names can be reused after deletion. */
   uid?: string

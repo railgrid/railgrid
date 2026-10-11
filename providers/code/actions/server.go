@@ -177,6 +177,7 @@ var statusFor = map[string]int{
 	"invalid_snapshot":             http.StatusUnprocessableEntity,
 	"snapshot_unavailable":         http.StatusUnprocessableEntity,
 	"bundle_unavailable":           http.StatusUnprocessableEntity,
+	"bundle_quota_exceeded":        http.StatusTooManyRequests,
 	"clone_token_unavailable":      http.StatusBadGateway,
 	"commit_request_conflict":      http.StatusConflict,
 	"commit_not_created":           http.StatusBadGateway,
@@ -321,7 +322,11 @@ func gateFailureCode(status int) string {
 }
 
 func wireError(code string) *actionwire.Error {
-	return &actionwire.Error{Code: code, Message: strings.ReplaceAll(code, "_", " "), Retryable: false}
+	return wireErrorRetryable(code, false)
+}
+
+func wireErrorRetryable(code string, retryable bool) *actionwire.Error {
+	return &actionwire.Error{Code: code, Message: strings.ReplaceAll(code, "_", " "), Retryable: retryable}
 }
 
 // run is the executor dataplane.Serve calls once the gate has passed and the

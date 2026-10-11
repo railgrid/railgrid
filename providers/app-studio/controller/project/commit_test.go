@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -429,15 +430,16 @@ func TestCommitWorkspaceResendsAfterPendingCommitFails(t *testing.T) {
 	if dirty, err := env.commit(); err != nil || !dirty {
 		t.Fatalf("first commit = dirty %t, err %v; want pending", dirty, err)
 	}
-	// The failure clears the record; the same pass then sends a fresh commit.
-	if dirty, err := env.commit(); err != nil || !dirty {
-		t.Fatalf("after failed pending commit = dirty %t, err %v", dirty, err)
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || outcome.retry || outcome.retryAfter <= 0 {
+		t.Fatalf("after failed pending commit = %#v, %v; want persisted cooldown", outcome, err)
 	}
-	if env.commits() != 2 {
-		t.Fatalf("commit calls = %d, want a resend after the failure", env.commits())
+	if env.commits() != 1 || env.stages() != 1 {
+		t.Fatalf("stages=%d commits=%d; failed commit must not hot-retry or restage", env.stages(), env.commits())
 	}
-	if name, ok := env.pendingCommit(); !ok || name != "commit-2" {
-		t.Fatalf("pending commit = %q, %t; want commit-2", name, ok)
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.Name != "commit-1" || pending.BlockedReason != repositoryCommitFailedReason || pending.BlockedAt == nil {
+		t.Fatalf("pending failed commit = %#v, %t, %v; want retained failed object and cooldown", pending, ok, err)
 	}
 	if len(env.notified) != 0 {
 		t.Fatalf("a failed commit was announced: %+v", env.notified)
@@ -584,21 +586,426 @@ func TestCommitWorkspaceDoesNotCallCommitWhenReservationFails(t *testing.T) {
 func TestCommitWorkspaceRefusalLeavesFilesDirty(t *testing.T) {
 	env := newCommitTestEnv(t, func(int) (string, string) { return "", "action_forbidden" })
 	dirty, err := env.commit()
-	if err == nil || !dirty {
-		t.Fatalf("commit = dirty %t, err %v; want a reported failure", dirty, err)
-	}
-	if !strings.Contains(err.Error(), "action_forbidden") {
-		t.Fatalf("error does not carry the provider's typed code: %v", err)
+	if err != nil || !dirty {
+		t.Fatalf("commit = dirty %t, err %v; want durable block without a hot retry", dirty, err)
 	}
 	if name, ok := env.pendingCommit(); !ok || name != "" {
 		t.Fatalf("reserved commit = %q, %t; want the unnamed intent retained", name, ok)
 	}
 	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
-	if err != nil || !ok || pending.RequestID == "" || pending.BundleRef == "" {
+	if err != nil || !ok || pending.RequestID == "" || pending.BundleRef == "" || pending.BlockedReason != "ActionForbidden" {
 		t.Fatalf("pending recovery intent = %#v, %t, %v", pending, ok, err)
 	}
 	if got := env.pending(); len(got) != 1 {
 		t.Fatalf("uncommitted paths = %v, want the file still dirty", got)
+	}
+}
+
+func TestCommitWorkspaceBlocksPermanentReplayFailuresAndLeavesTransientFailuresRetryable(t *testing.T) {
+	tests := []struct {
+		name       string
+		code       string
+		wantReason string
+		wantRetry  bool
+		wantError  bool
+	}{
+		{name: "request conflict", code: "commit_request_conflict", wantReason: "CommitRequestConflict"},
+		{name: "missing staged bundle", code: "bundle_unavailable", wantReason: "StagedBundleMissing"},
+		{name: "forbidden", code: "action_forbidden", wantReason: "ActionForbidden"},
+		{name: "temporary backend outage", code: "commit_not_created", wantRetry: true, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newCommitTestEnv(t, func(int) (string, string) { return "", tt.code })
+			env.write("app.txt", "source\n")
+			outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+			if (err != nil) != tt.wantError || outcome.retry != tt.wantRetry || !outcome.dirty {
+				t.Fatalf("first outcome = %#v, %v; want dirty with retry=%t, error=%t", outcome, err, tt.wantRetry, tt.wantError)
+			}
+			pending, ok, pendingErr := env.files.PendingCommit(env.ctx, env.scope)
+			if pendingErr != nil || !ok {
+				t.Fatalf("pending intent = %#v, %t, %v", pending, ok, pendingErr)
+			}
+			if tt.wantReason == "" {
+				if pending.BlockedReason != "" {
+					t.Fatalf("transient failure was blocked: %+v", pending)
+				}
+				return
+			}
+			if pending.BlockedReason != tt.wantReason || pending.BlockedMessage == "" || pending.BlockedAt == nil || pending.Name != "" {
+				t.Fatalf("pending block = %+v; want unnamed %s block", pending, tt.wantReason)
+			}
+			beforeCalls := env.commits()
+			retryOutcome, retryErr := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+			if retryErr != nil || retryOutcome.retry || !retryOutcome.dirty || env.commits() != beforeCalls {
+				t.Fatalf("blocked follow-up = %#v, %v; commits=%d, want no retry or action call", retryOutcome, retryErr, env.commits())
+			}
+		})
+	}
+}
+
+func TestCommitWorkspaceRecoversBlockedReplayWithExplicitFreshToken(t *testing.T) {
+	env := newCommitTestEnv(t, func(call int) (string, string) {
+		if call == 1 {
+			return "commit-1", "lost_response"
+		}
+		if call == 2 {
+			return "", "commit_request_conflict"
+		}
+		return "commit-1", ""
+	})
+	env.write("app.txt", "saved source\n")
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err == nil || !outcome.retry {
+		t.Fatalf("lost response = %#v, %v; want a retryable ambiguous result", outcome, err)
+	}
+	reserved, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || reserved.Name != "" {
+		t.Fatalf("reserved request = %#v, %t, %v; want unnamed", reserved, ok, err)
+	}
+	env.write("later.txt", "later source\n")
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry {
+		t.Fatalf("permanent replay = %#v, %v; want durable block without a hot retry", outcome, err)
+	}
+	blocked, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || blocked.BlockedReason != "CommitRequestConflict" || blocked.Name != "" {
+		t.Fatalf("blocked request = %#v, %t, %v", blocked, ok, err)
+	}
+	if blocked.RequestID != reserved.RequestID || blocked.BundleRef != reserved.BundleRef || blocked.BundleDigest != reserved.BundleDigest ||
+		blocked.WorkspaceDigest != reserved.WorkspaceDigest || strings.Join(blocked.Paths, ",") != strings.Join(reserved.Paths, ",") {
+		t.Fatalf("blocking changed the immutable request: before=%+v after=%+v", reserved, blocked)
+	}
+	if env.stages() != 1 || env.commits() != 2 {
+		t.Fatalf("stages=%d commits=%d; want one stage and the original request plus one replay", env.stages(), env.commits())
+	}
+
+	// A fresh token explicitly asks App Studio to replay this request. The
+	// controller consumes the token before calling Code and keeps the same
+	// request ID, bundle, and captured source snapshot.
+	env.project.Annotations[retryPendingCommitAnnotation] = blocked.RequestID + ":operator-retry-1"
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || !outcome.dirty {
+		t.Fatalf("explicit retry = %#v, %v; want the original request to be pending", outcome, err)
+	}
+	recovered, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || recovered.Name != "commit-1" || recovered.BlockedReason != "" || recovered.RetryToken != "operator-retry-1" {
+		t.Fatalf("recovered request = %#v, %t, %v", recovered, ok, err)
+	}
+	if env.stages() != 1 || env.commits() != 3 {
+		t.Fatalf("stages=%d commits=%d; explicit recovery must replay without restaging", env.stages(), env.commits())
+	}
+}
+
+func TestCommitWorkspaceBlocksMissingNamedCommitAndRequiresExplicitRetry(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("initial commit = %#v, %v; want a named pending commit", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.Name != "commit-1" || pending.RequestID == "" {
+		t.Fatalf("initial pending commit = %#v, %t, %v", pending, ok, err)
+	}
+
+	// Simulate an expired bundle after the named RepositoryCommit was deleted.
+	env.respond = func(int) (string, string) { return "", "bundle_unavailable" }
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || !outcome.dirty {
+		t.Fatalf("missing named commit replay = %#v, %v; want durable block without hot retry", outcome, err)
+	}
+	blocked, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || blocked.Name != "commit-1" || blocked.BlockedReason != "StagedBundleMissing" {
+		t.Fatalf("named blocked intent = %#v, %t, %v", blocked, ok, err)
+	}
+	if env.stages() != 1 || env.commits() != 2 {
+		t.Fatalf("stages=%d commits=%d; want one stage and one missing-bundle replay", env.stages(), env.commits())
+	}
+
+	// The unchanged annotation does not wake the named request. A failed
+	// explicit attempt is also blocked again and is not retried on the next pass.
+	env.project.Annotations[retryPendingCommitAnnotation] = blocked.RequestID + ":operator-retry-1"
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || !outcome.dirty {
+		t.Fatalf("explicit missing-bundle retry = %#v, %v; want a fresh durable block", outcome, err)
+	}
+	if env.commits() != 3 || env.stages() != 1 {
+		t.Fatalf("stages=%d commits=%d; explicit retry should replay without staging", env.stages(), env.commits())
+	}
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || env.commits() != 3 {
+		t.Fatalf("same-token follow-up = %#v, %v; commits=%d, want no hot retry", outcome, err, env.commits())
+	}
+
+	// A new token is the only way to replay the exact named intent again.
+	env.project.Annotations[retryPendingCommitAnnotation] = blocked.RequestID + ":operator-retry-2"
+	env.respond = func(int) (string, string) { return "commit-1", "" }
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || !outcome.dirty {
+		t.Fatalf("second explicit retry = %#v, %v; want the same named request watched", outcome, err)
+	}
+	recovered, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || recovered.Name != "commit-1" || recovered.BlockedReason != "" || recovered.RetryToken != "operator-retry-2" {
+		t.Fatalf("recovered named intent = %#v, %t, %v", recovered, ok, err)
+	}
+	if env.stages() != 1 || env.commits() != 4 {
+		t.Fatalf("stages=%d commits=%d; explicit named retries must not restage", env.stages(), env.commits())
+	}
+}
+
+func TestNamedBlockedCommitStillSettlesWhenItsRepositoryCommitReappears(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("initial commit = %#v, %v", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.Name != "commit-1" {
+		t.Fatalf("initial named pending = %#v, %t, %v", pending, ok, err)
+	}
+	if err := env.c.Create(env.ctx, repositoryCommitObject("commit-1", "Running", "")); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := env.files.BlockNamedPendingCommit(env.ctx, env.scope, pending.RequestID, pending.Name, "StagedBundleMissing", "bundle unavailable"); err != nil || !blocked {
+		t.Fatalf("block named pending = %t, %v", blocked, err)
+	}
+
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || env.commits() != 1 {
+		t.Fatalf("running reappeared commit = %#v, %v; commits=%d, want watch wait", outcome, err, env.commits())
+	}
+	env.setRepositoryCommit("commit-1", "Succeeded", "feedface00")
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.retry || env.commits() != 1 {
+		t.Fatalf("settled reappeared commit = %#v, %v; commits=%d, want settle then schedule next pass", outcome, err, env.commits())
+	}
+	if _, ok, err := env.files.PendingCommit(env.ctx, env.scope); err != nil || ok {
+		t.Fatalf("pending after reappeared commit settlement = %t, %v; want cleared", ok, err)
+	}
+}
+
+func TestFailedNamedCommitRequeuesBeforeRestaging(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("initial commit = %#v, %v", outcome, err)
+	}
+	if err := env.c.Create(env.ctx, repositoryCommitObject("commit-1", "Failed", "")); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || outcome.retry || outcome.retryAfter <= 0 {
+		t.Fatalf("failed commit = %#v, %v; want dirty work held through a durable cooldown", outcome, err)
+	}
+	if env.stages() != 1 || env.commits() != 1 {
+		t.Fatalf("stages=%d commits=%d; failed commit must not retry during cooldown", env.stages(), env.commits())
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.Name != "commit-1" || pending.BlockedReason != repositoryCommitFailedReason || pending.BlockedAt == nil {
+		t.Fatalf("pending after failure = %#v, %t, %v; want exact failed request retained with cooldown", pending, ok, err)
+	}
+	if got := env.pending(); len(got) != 1 {
+		t.Fatalf("dirty paths after failed commit = %v; want source retained", got)
+	}
+
+	// A status watch event or controller restart before the deadline must read
+	// the same persisted timestamp and avoid another Code action.
+	blockedAt := *pending.BlockedAt
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || outcome.retry || outcome.retryAfter <= 0 || env.commits() != 1 || env.stages() != 1 {
+		t.Fatalf("immediate cooldown replay = %#v, %v; stages=%d commits=%d, want same persisted wait", outcome, err, env.stages(), env.commits())
+	}
+	// The failed object may be deleted while the Project is waiting. Its
+	// persisted BlockedAt still drives the release deadline.
+	failed := repositoryCommitObject("commit-1", "", "")
+	if err := env.c.Get(env.ctx, types.NamespacedName{Name: "commit-1"}, failed); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.c.Delete(env.ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	if env.project.Spec.Repository != nil {
+		env.project.Spec.Repository.RepositoryRef = "replacement-repository"
+	}
+	if err := env.r.blockPendingRepositoryBindingChange(env.ctx, env.project); err != nil {
+		t.Fatalf("preflight must preserve failed-commit cooldown: %v", err)
+	}
+	stillBlocked, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || stillBlocked.BlockedReason != repositoryCommitFailedReason || stillBlocked.BlockedAt == nil || !stillBlocked.BlockedAt.Equal(blockedAt) {
+		t.Fatalf("preflight changed failed cooldown = %#v, %t, %v; want stable reason and timestamp", stillBlocked, ok, err)
+	}
+	env.project.Spec.Repository.RepositoryRef = "demo-repo"
+
+	stored := &aiv1alpha1.Project{}
+	if err := env.c.Get(env.ctx, types.NamespacedName{Name: env.project.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Workspace == nil || stored.Status.Workspace.PendingCommit == nil {
+		t.Fatal("failed cooldown disappeared before its deadline")
+	}
+	expired := metav1.NewTime(time.Now().Add(-repositoryCommitFailedRetryDelay - time.Second))
+	stored.Status.Workspace.PendingCommit.BlockedAt = &expired
+	if err := env.c.Status().Update(env.ctx, stored); err != nil {
+		t.Fatalf("age failed cooldown timestamp: %v", err)
+	}
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || !outcome.retry || env.commits() != 1 || env.stages() != 1 {
+		t.Fatalf("expired cooldown release = %#v, %v; stages=%d commits=%d, want release before fresh stage", outcome, err, env.stages(), env.commits())
+	}
+	if _, ok, err := env.files.PendingCommit(env.ctx, env.scope); err != nil || ok {
+		t.Fatalf("pending after cooldown release = %t, %v; want cleared", ok, err)
+	}
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("next pass after cooldown = %#v, %v; want new request after clean release", outcome, err)
+	}
+	if env.stages() != 2 || env.commits() != 2 {
+		t.Fatalf("stages=%d commits=%d; fresh immutable intent should be created only after deadline", env.stages(), env.commits())
+	}
+}
+
+func TestLegacyNamedFailedCommitEntersCooldown(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	if err := env.files.RecordPendingCommit(env.ctx, env.scope, workspace.PendingCommit{
+		Name: "legacy-commit", WorkspaceDigest: "sha256:legacy", Paths: []string{"app.txt"},
+	}); err != nil {
+		t.Fatalf("record legacy named pending commit: %v", err)
+	}
+	if err := env.c.Create(env.ctx, repositoryCommitObject("legacy-commit", "Failed", "")); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || outcome.retry || outcome.retryAfter <= 0 {
+		t.Fatalf("legacy failed commit = %#v, %v; want named cooldown", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.RequestID != "" || pending.Name != "legacy-commit" || pending.BlockedReason != repositoryCommitFailedReason || pending.BlockedAt == nil {
+		t.Fatalf("legacy pending after failed phase = %#v, %t, %v; want retained named cooldown", pending, ok, err)
+	}
+	if env.stages() != 0 || env.commits() != 0 {
+		t.Fatalf("legacy cooldown unexpectedly called Code: stages=%d commits=%d", env.stages(), env.commits())
+	}
+}
+
+func TestFreshRetryTokenBypassesFailedCommitCooldown(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("initial commit = %#v, %v", outcome, err)
+	}
+	if err := env.c.Create(env.ctx, repositoryCommitObject("commit-1", "Failed", "")); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || outcome.retryAfter <= 0 {
+		t.Fatalf("failed commit = %#v, %v; want cooldown", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.BlockedReason != repositoryCommitFailedReason {
+		t.Fatalf("pending failed commit = %#v, %t, %v", pending, ok, err)
+	}
+	env.project.Annotations[retryPendingCommitAnnotation] = pending.RequestID + ":operator-bypass-1"
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || !outcome.retry {
+		t.Fatalf("explicit cooldown bypass = %#v, %v; want release and next-pass retry", outcome, err)
+	}
+	if _, ok, err := env.files.PendingCommit(env.ctx, env.scope); err != nil || ok {
+		t.Fatalf("pending after explicit cooldown bypass = %t, %v; want released", ok, err)
+	}
+	if env.stages() != 1 || env.commits() != 1 {
+		t.Fatalf("explicit cooldown bypass retried in same pass: stages=%d commits=%d", env.stages(), env.commits())
+	}
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("pass after explicit cooldown bypass = %#v, %v; want fresh request", outcome, err)
+	}
+	if env.stages() != 2 || env.commits() != 2 {
+		t.Fatalf("fresh request counts after bypass: stages=%d commits=%d", env.stages(), env.commits())
+	}
+}
+
+func TestFailedNamedCommitThatReappearsRunningReturnsToWatchSettlement(t *testing.T) {
+	env := newCommitTestEnv(t, nil)
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || !outcome.dirty {
+		t.Fatalf("initial commit = %#v, %v", outcome, err)
+	}
+	if err := env.c.Create(env.ctx, repositoryCommitObject("commit-1", "Failed", "")); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err != nil || outcome.retryAfter <= 0 {
+		t.Fatalf("failed commit = %#v, %v; want cooldown", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.BlockedReason != repositoryCommitFailedReason {
+		t.Fatalf("pending failed commit = %#v, %t, %v", pending, ok, err)
+	}
+	env.setRepositoryCommit("commit-1", "Running", "")
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || !outcome.dirty || outcome.retry || outcome.retryAfter != 0 {
+		t.Fatalf("reappeared running commit = %#v, %v; want watch-driven wait", outcome, err)
+	}
+	pending, ok, err = env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.Name != "commit-1" || pending.BlockedReason != "" {
+		t.Fatalf("pending running commit = %#v, %t, %v; want normal named watch state", pending, ok, err)
+	}
+	env.setRepositoryCommit("commit-1", "Succeeded", "feedface00")
+	outcome, err = env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry || env.commits() != 1 {
+		t.Fatalf("reappeared succeeded commit = %#v, %v; commits=%d, want settlement without replay", outcome, err, env.commits())
+	}
+	if _, ok, err := env.files.PendingCommit(env.ctx, env.scope); err != nil || ok {
+		t.Fatalf("pending after reappeared success = %t, %v; want cleared", ok, err)
+	}
+}
+
+func TestCommitWorkspaceBlocksRepositoryBindingChangeForReservedIntent(t *testing.T) {
+	env := newCommitTestEnv(t, func(int) (string, string) { return "commit-1", "lost_response" })
+	env.write("app.txt", "source\n")
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err == nil || !outcome.retry {
+		t.Fatalf("lost response = %#v, %v; want an unnamed durable intent", outcome, err)
+	}
+	env.project.Spec.Repository = nil
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry {
+		t.Fatalf("repository removal = %#v, %v; want a visible block without retry", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.BlockedReason != "RepositoryBindingChanged" || pending.Name != "" {
+		t.Fatalf("pending after repository removal = %#v, %t, %v", pending, ok, err)
+	}
+	if env.commits() != 1 {
+		t.Fatalf("commits=%d; binding removal must not replay the saved request", env.commits())
+	}
+}
+
+func TestPreflightBlocksChangedRepositoryRefBeforeRepositoryConvergence(t *testing.T) {
+	env := newCommitTestEnv(t, func(int) (string, string) { return "commit-1", "lost_response" })
+	env.write("app.txt", "source\n")
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err == nil || !outcome.retry {
+		t.Fatalf("lost response = %#v, %v; want an unnamed durable intent", outcome, err)
+	}
+	env.project.Spec.Repository.RepositoryRef = "replacement-repository"
+	if err := env.r.blockPendingRepositoryBindingChange(env.ctx, env.project); err != nil {
+		t.Fatalf("preflight binding check: %v", err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.BlockedReason != "RepositoryBindingChanged" || pending.Name != "" {
+		t.Fatalf("preflight pending block = %#v, %t, %v; want repository binding block", pending, ok, err)
+	}
+	if env.commits() != 1 {
+		t.Fatalf("commit calls=%d; preflight must not replay the saved request", env.commits())
+	}
+}
+
+func TestCommitWorkspaceBlocksRepositoryUIDMismatchForReservedIntent(t *testing.T) {
+	env := newCommitTestEnv(t, func(int) (string, string) { return "commit-1", "lost_response" })
+	env.write("app.txt", "source\n")
+	if outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo); err == nil || !outcome.retry {
+		t.Fatalf("lost response = %#v, %v; want an unnamed durable intent", outcome, err)
+	}
+	env.repo.SetUID(types.UID("replacement-repo-uid"))
+	outcome, err := env.r.commitWorkspace(env.ctx, env.c, env.project, env.repo)
+	if err != nil || outcome.retry {
+		t.Fatalf("repository UID change = %#v, %v; want a visible block without retry", outcome, err)
+	}
+	pending, ok, err := env.files.PendingCommit(env.ctx, env.scope)
+	if err != nil || !ok || pending.BlockedReason != "RepositoryUIDMismatch" || pending.Name != "" {
+		t.Fatalf("pending after repository UID change = %#v, %t, %v", pending, ok, err)
+	}
+	if env.commits() != 1 {
+		t.Fatalf("commits=%d; UID mismatch must not replay the saved request", env.commits())
 	}
 }
 

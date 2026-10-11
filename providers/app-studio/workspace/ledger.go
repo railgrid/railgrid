@@ -43,6 +43,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrNoLedger is returned when a working-copy ledger operation is attempted
@@ -50,6 +51,11 @@ import (
 // ledger that silently degraded to pod-local state is the failure mode this
 // whole design exists to remove.
 var ErrNoLedger = errors.New("project workspace ledger is not configured")
+
+// ErrLedgerCapacity means a normalized workspace ledger cannot fit the
+// durable status bounds. Implementations return it before attempting a status
+// write, so callers can treat it as a definitive no-write result.
+var ErrLedgerCapacity = errors.New("project workspace ledger capacity exceeded")
 
 // PendingCommit is a RepositoryCommit in flight for a project workspace.
 type PendingCommit struct {
@@ -80,6 +86,16 @@ type PendingCommit struct {
 	// paths. It travels with the pending RepositoryCommit so later source
 	// changes cannot steal the commit event.
 	Attributions []SourceAttribution
+	// BlockedReason and BlockedMessage retain an immutable intent when replay is
+	// permanently refused or a named RepositoryCommit failure is in its
+	// automatic retry cooldown. BlockedAt persists the start of that state so
+	// replicas and restarts observe the same deadline.
+	BlockedReason  string
+	BlockedMessage string
+	BlockedAt      *time.Time
+	// RetryToken is the last operator retry token consumed for this request.
+	// Keeping it beside the request makes a stale Project annotation inert.
+	RetryToken string
 }
 
 // CommitSettlement is the local cleanup a landed commit still owes the ledger.
@@ -133,6 +149,10 @@ func (r LedgerRecord) DeepCopy() LedgerRecord {
 		pending := *r.PendingCommit
 		pending.Paths = append([]string(nil), r.PendingCommit.Paths...)
 		pending.Attributions = cloneSourceAttributions(r.PendingCommit.Attributions)
+		if r.PendingCommit.BlockedAt != nil {
+			blockedAt := *r.PendingCommit.BlockedAt
+			pending.BlockedAt = &blockedAt
+		}
 		out.PendingCommit = &pending
 	}
 	if r.Settlement != nil {
@@ -272,21 +292,40 @@ func NormalizeLedgerRecord(record *LedgerRecord) {
 	record.UncommittedPaths = normalizeLedgerPaths(record.UncommittedPaths)
 	record.SourcePathAttributions = normalizeSourcePathAttributions(record.SourcePathAttributions)
 	if record.PendingCommit != nil {
+		requestIDWasPresent := record.PendingCommit.RequestID != ""
+		originalRequestID := record.PendingCommit.RequestID
 		record.PendingCommit.Name = strings.TrimSpace(record.PendingCommit.Name)
-		record.PendingCommit.RequestID = strings.TrimSpace(record.PendingCommit.RequestID)
+		record.PendingCommit.RequestID = strings.TrimSpace(originalRequestID)
 		record.PendingCommit.RepositoryRef = strings.TrimSpace(record.PendingCommit.RepositoryRef)
 		record.PendingCommit.RepositoryUID = strings.TrimSpace(record.PendingCommit.RepositoryUID)
 		record.PendingCommit.BundleRef = strings.TrimSpace(record.PendingCommit.BundleRef)
 		record.PendingCommit.BundleDigest = strings.TrimSpace(record.PendingCommit.BundleDigest)
 		record.PendingCommit.Message = strings.TrimSpace(record.PendingCommit.Message)
 		record.PendingCommit.Branch = strings.TrimSpace(record.PendingCommit.Branch)
+		record.PendingCommit.BlockedReason = strings.TrimSpace(record.PendingCommit.BlockedReason)
+		record.PendingCommit.BlockedMessage = strings.TrimSpace(record.PendingCommit.BlockedMessage)
+		record.PendingCommit.RetryToken = strings.TrimSpace(record.PendingCommit.RetryToken)
+		if record.PendingCommit.BlockedReason == "" {
+			record.PendingCommit.BlockedMessage = ""
+			record.PendingCommit.BlockedAt = nil
+		} else if record.PendingCommit.BlockedAt != nil {
+			blockedAt := record.PendingCommit.BlockedAt.UTC()
+			record.PendingCommit.BlockedAt = &blockedAt
+		}
 		record.PendingCommit.Paths = normalizeLedgerPaths(record.PendingCommit.Paths)
 		record.PendingCommit.Attributions = NormalizeSourceAttributions(record.PendingCommit.Attributions, record.PendingCommit.Paths)
-		validLegacy := record.PendingCommit.RequestID == "" && record.PendingCommit.Name != ""
+		validLegacy := !requestIDWasPresent && record.PendingCommit.RequestID == "" && record.PendingCommit.Name != ""
 		validIntent := record.PendingCommit.RequestID != "" && record.PendingCommit.RepositoryRef != "" &&
 			record.PendingCommit.RepositoryUID != "" && record.PendingCommit.BundleRef != "" && record.PendingCommit.BundleDigest != ""
 		if (!validLegacy && !validIntent) || record.PendingCommit.WorkspaceDigest == "" || len(record.PendingCommit.Paths) == 0 {
-			record.PendingCommit = nil
+			if !requestIDWasPresent {
+				record.PendingCommit = nil
+			} else if record.PendingCommit.RequestID == "" {
+				// Preserve a malformed keyed intent, including a whitespace-only
+				// request ID, so PendingCommit can reject it and prevent a newer
+				// commit from replacing its durable identity.
+				record.PendingCommit.RequestID = originalRequestID
+			}
 		}
 	}
 	if record.Settlement != nil {

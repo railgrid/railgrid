@@ -30,7 +30,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -881,6 +880,12 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if pending, ok, err := s.workspaces.PendingCommit(ctx, scope); err != nil {
 		return "", fmt.Errorf("read pending project commit: %w", err)
 	} else if ok {
+		if pending.BlockedReason == "RepositoryCommitFailed" {
+			return "", fmt.Errorf("project commit retry is scheduled: %s", pending.BlockedMessage)
+		}
+		if pending.BlockedReason != "" {
+			return "", fmt.Errorf("project commit %q is blocked (%s): %s", pending.RequestID, pending.BlockedReason, pending.BlockedMessage)
+		}
 		return "", fmt.Errorf("project commit %q is already pending; wait for it to settle before requesting another commit", pending.RequestID)
 	}
 	repositoryRef := projectToolString(args["repositoryRef"])
@@ -1012,7 +1017,7 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		// A status write can commit while its response is lost. Confirm the
 		// exact immutable intent before deciding no action may be sent.
 		current, ok, readErr := s.workspaces.PendingCommit(ctx, scope)
-		if readErr != nil || !ok || current.RequestID != requestID || !sameCommitRequest(current, intent) {
+		if readErr != nil || !ok || current.RequestID != requestID || !current.SameIntent(intent) {
 			return "", fmt.Errorf("reserve durable project commit: %w", err)
 		}
 	}
@@ -1045,7 +1050,19 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 			"repositoryRef": projectRepositoryRef,
 			"status":        "reserved",
 			"files":         writtenPaths,
-			"note":          "The commit request and its immutable contents are saved. App Studio is retrying the same request; wait for the RepositoryCommit to be reported before requesting another commit.",
+			"note":          "The commit request is saved for recovery. Check the project commit status before requesting another commit.",
+		}
+		if reason, message, permanent := codecommit.ClassifyPermanentCommitReplayFailure(commitErr); permanent {
+			// Persist a block only while this exact intent remains unnamed.
+			// A delayed successful response may already have bound its object.
+			if _, blockErr := s.workspaces.BlockPendingCommit(ctx, scope, requestID, reason, message); blockErr != nil {
+				klog.V(2).Infof("project %s commit %s block could not be confirmed: %v", scope.ProjectName, requestID, blockErr)
+			}
+			if current, ok, readErr := s.workspaces.PendingCommit(ctx, scope); readErr == nil && ok && current.RequestID == requestID && current.Name == "" && current.BlockedReason != "" {
+				result["status"] = "blocked"
+				result["reason"] = current.BlockedReason
+				result["note"] = current.BlockedMessage
+			}
 		}
 		if len(deletePaths) > 0 {
 			result["deletePaths"] = deletePaths
@@ -1076,13 +1093,6 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 		return "", err
 	}
 	return string(raw), nil
-}
-
-func sameCommitRequest(a, b workspace.PendingCommit) bool {
-	return a.RequestID == b.RequestID && a.RepositoryRef == b.RepositoryRef && a.RepositoryUID == b.RepositoryUID &&
-		a.BundleRef == b.BundleRef && a.BundleDigest == b.BundleDigest && a.Message == b.Message && a.Branch == b.Branch &&
-		a.WorkspaceDigest == b.WorkspaceDigest && a.SourceRevision == b.SourceRevision &&
-		reflect.DeepEqual(a.Paths, b.Paths) && reflect.DeepEqual(a.Attributions, b.Attributions)
 }
 
 // projectRepositoryUID reads the Code Repository this project is bound to, as

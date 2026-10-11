@@ -94,6 +94,9 @@ func createKeyedCommit(ctx context.Context, dyn dynamic.Interface, bundles commi
 	obj := commitObject(repo, *req.Bundle, req)
 	obj.SetName(name)
 	obj.SetAnnotations(map[string]string{commitRequestFingerprintAnnotation: fingerprint})
+	// kcp stamps the created object with the logical-cluster ID addressed by
+	// this request. The staged bundle remains in that same scope so a retry can
+	// recover the object; keyedCommitResult fails closed if this invariant breaks.
 	created, err := commits.Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
