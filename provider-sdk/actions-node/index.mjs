@@ -141,7 +141,11 @@ function providerFunction(options) {
 }
 
 function hasRefreshableCredential(options) {
-  return providerFunction(options) !== undefined || tokenFilePath(options) !== '';
+  if (providerFunction(options) !== undefined) return true;
+  // A non-empty static token takes precedence over the token file in
+  // resolveCredential, so that file cannot refresh this request's credential.
+  if (options.token !== undefined && normalizeToken(options.token)) return false;
+  return tokenFilePath(options) !== '';
 }
 
 function tokenFilePath(options) {
@@ -299,6 +303,12 @@ function stableEnvelope(body) {
   return envelope;
 }
 
+function hasProviderEnvelopeMarkers(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  return ['provider', 'resourceRef', 'actionVersion'].some((key) =>
+    Object.prototype.hasOwnProperty.call(body, key));
+}
+
 function errorFromEnvelope(envelope, status, body) {
   return new ProviderActionError(envelope.error.message, {
     code: envelope.error.code,
@@ -443,7 +453,13 @@ export class ActionsClient {
         }
 
         const envelope = stableEnvelope(body);
-        if (!envelope && response.status === 401 && attempt === 0 && hasRefreshableCredential(options)) continue;
+        if (
+          !envelope &&
+          !hasProviderEnvelopeMarkers(body) &&
+          response.status === 401 &&
+          attempt === 0 &&
+          hasRefreshableCredential(options)
+        ) continue;
         if (!envelope) {
           if (!response.ok) throw httpError(response.status, body);
           throw new ActionsClientError('provider action response did not match the stable envelope', {

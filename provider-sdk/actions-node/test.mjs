@@ -201,6 +201,32 @@ test('refreshes a dynamic credential once after HTTP 401', async () => {
   assert.deepEqual(requests, ['Bearer stale-token', 'Bearer fresh-token']);
 });
 
+test('does not retry a static credential when a token-file fallback is configured', async () => {
+  const prior = process.env.RAILGRID_ACTIONS_TOKEN_FILE;
+  let calls = 0;
+  try {
+    process.env.RAILGRID_ACTIONS_TOKEN_FILE = '/unused/token-file';
+    const client = createActionsClient({
+      baseURL: actionsBaseURL,
+      token: 'static-token',
+      fetch: async () => {
+        calls += 1;
+        return new Response('{}', { status: 401 });
+      },
+    });
+    await assert.rejects(
+      () => client.integration('sales').invoke('lookup/v1'),
+      (error) => error instanceof ActionsClientError
+        && error.code === 'authentication_failed'
+        && error.failureKind === 'authentication',
+    );
+    assert.equal(calls, 1);
+  } finally {
+    if (prior === undefined) delete process.env.RAILGRID_ACTIONS_TOKEN_FILE;
+    else process.env.RAILGRID_ACTIONS_TOKEN_FILE = prior;
+  }
+});
+
 test('reads the atomically refreshed token file on every request', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'railgrid-actions-sdk-'));
   const tokenPath = join(dir, 'token');
@@ -348,6 +374,35 @@ test('does not refresh or replay a provider action for an enveloped provider 401
       && error.code === 'provider_authentication_failed'
       && error.status === 401
       && error.failureKind === 'upstream',
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(credentials, [false]);
+});
+
+test('does not refresh or replay a malformed response with provider envelope markers', async () => {
+  const credentials = [];
+  let calls = 0;
+  const client = createActionsClient({
+    baseURL: actionsBaseURL,
+    getToken: async ({ forceRefresh }) => {
+      credentials.push(forceRefresh);
+      return forceRefresh ? 'fresh-token' : 'token';
+    },
+    fetch: async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        provider: 'code',
+        action: 'commit',
+        actionVersion: 'v1',
+        error: { code: 'provider_authentication_failed' },
+      }), { status: 401 });
+    },
+  });
+  await assert.rejects(
+    () => client.integration('repository').invoke('commit/v1'),
+    (error) => error instanceof ActionsClientError
+      && error.code === 'authentication_failed'
+      && error.failureKind === 'authentication',
   );
   assert.equal(calls, 1);
   assert.deepEqual(credentials, [false]);
