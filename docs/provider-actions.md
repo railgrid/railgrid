@@ -83,8 +83,14 @@ code provider:
 - `stage-commit-bundle` uploads a source tree (48 MiB decoded, 68 MiB on the
   wire, 500 files) into the provider's commit-bundle store and returns the
   `bundleRef`/`bundleDigest` pair the catalogued `commit` names instead of
-  inline `files`. A commit whose files fit the 1 MiB ceiling never touches it;
-  App Studio, which commits whole generated applications, normally does.
+  inline `files`. Each logical-cluster scope is capped at 32 stored bundle or
+  temporary files and 512 MiB of serialized bytes; a new stage that crosses
+  either limit receives retryable HTTP 429 `bundle_quota_exceeded`. The quota
+  check and publish use a persistent filesystem lock shared across provider
+  processes. The normal orphan sweep reclaims abandoned stages after 24 hours.
+  Legacy inline commits within the 1 MiB ceiling need no stage. App Studio
+  stages every keyed commit before reserving its immutable request, including
+  small commits.
 - `checkout` is the transfer in the other direction: it reads a repository's
   tree at a ref and returns the files inline (48 MiB decoded, 64 MiB as
   base64 plus the envelope, 500 files), creating the transient
@@ -129,8 +135,14 @@ cannot grant them through a project binding, so only a caller whose workspace
 RBAC already allows `create` on `repositories/stage-snapshot`,
 `repositories/stage-commit-bundle` or `repositories/checkout` can invoke them.
 A project identity that needs to commit more than a mebibyte therefore carries
-the staging verb as an explicit clause-C rule next to `repositories/commit`,
-and a consumer that only ever commits small inputs carries neither.
+the staging verb as an explicit clause-C rule next to `repositories/commit`.
+Keyed App Studio commits need both grants even for small inputs; a consumer
+using only small inline commits does not need the staging grant.
+
+Keyed commits keep their staged bundle under the request's logical-cluster ID
+so a retry can replay the same immutable handle. The Code provider relies on
+kcp returning the new `RepositoryCommit` with the matching `kcp.io/cluster`
+annotation and rejects a response that names another scope.
 
 ## Project grants and audit
 

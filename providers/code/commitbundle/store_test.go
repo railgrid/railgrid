@@ -17,12 +17,14 @@ limitations under the License.
 package commitbundle
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +64,245 @@ func TestFileStorePutGet(t *testing.T) {
 	}
 	if bundle.Files[0].Path != "README.md" || bundle.Files[1].Path != "src/main.go" {
 		t.Fatalf("files were not canonicalized and sorted: %#v", bundle.Files)
+	}
+}
+
+func TestFileStorePutIsolatedSeparatesIdenticalLifetimes(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	files := []File{{Path: "src/main.go", Content: "package main\n"}}
+	legacy, err := store.Put(ctx, "root:acme", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.PutIsolated(ctx, "root:acme", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.PutIsolated(ctx, "root:acme", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name == second.Name {
+		t.Fatalf("identical isolated uploads share a name: %q", first.Name)
+	}
+	if first.Name == legacy.Name {
+		t.Fatalf("isolated upload reused the legacy content-addressed name %q", first.Name)
+	}
+	if first.Digest != second.Digest || !strings.HasPrefix(first.Digest, "sha256:") {
+		t.Fatalf("content digests differ: %q and %q", first.Digest, second.Digest)
+	}
+	for _, ref := range []BundleRef{first, second} {
+		if _, err := store.Get(ctx, "root:acme", ref.Name, ref.Digest); err != nil {
+			t.Fatalf("isolated bundle %q is unreadable: %v", ref.Name, err)
+		}
+	}
+	if err := store.Delete(ctx, "root:acme", first.Name, first.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, "root:acme", second.Name, second.Digest); err != nil {
+		t.Fatalf("deleting first isolated bundle removed the second: %v", err)
+	}
+	if err := store.Delete(ctx, "root:acme", legacy.Name, legacy.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, "root:acme", second.Name, second.Digest); err != nil {
+		t.Fatalf("legacy cleanup removed a newer isolated bundle: %v", err)
+	}
+}
+
+func TestFileStoreQuotaCoordinatesConcurrentProcesses(t *testing.T) {
+	const (
+		dirEnv    = "CODE_TEST_BUNDLE_QUOTA_DIR"
+		startEnv  = "CODE_TEST_BUNDLE_QUOTA_START"
+		resultEnv = "CODE_TEST_BUNDLE_QUOTA_RESULT"
+	)
+	if dir := os.Getenv(dirEnv); dir != "" {
+		start := os.Getenv(startEnv)
+		for {
+			if _, err := os.Stat(start); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		store, err := NewFileStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := store.PutIsolated(context.Background(), "root:acme", []File{{Path: "retry.txt", Content: "x"}})
+		result := "stored"
+		if IsQuotaExceeded(err) {
+			result = "quota"
+		} else if err != nil {
+			t.Fatal(err)
+		} else if ref.Name == "" {
+			t.Fatal("stored bundle has no name")
+		}
+		if err := os.WriteFile(os.Getenv(resultEnv), []byte(result), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.PutIsolated(context.Background(), "root:acme", []File{{Path: "first.txt", Content: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < MaxScopeBundles-1; i++ {
+		if _, err := store.PutIsolated(context.Background(), "root:acme", []File{{Path: "seed.txt", Content: "x"}}); err != nil {
+			t.Fatalf("fill scope at bundle %d: %v", i, err)
+		}
+	}
+	start := filepath.Join(t.TempDir(), "start")
+	childCtx, cancelChildren := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelChildren()
+	children := make([]*exec.Cmd, 2)
+	outputs := make([]bytes.Buffer, len(children))
+	results := make([]string, len(children))
+	t.Cleanup(func() {
+		cancelChildren()
+		for _, child := range children {
+			if child != nil && child.Process != nil {
+				_ = child.Process.Kill()
+				_ = child.Wait()
+			}
+		}
+	})
+	for i := range children {
+		resultPath := filepath.Join(t.TempDir(), "result")
+		results[i] = resultPath
+		children[i] = exec.CommandContext(childCtx, os.Args[0], "-test.run=^TestFileStoreQuotaCoordinatesConcurrentProcesses$")
+		children[i].Env = append(os.Environ(), dirEnv+"="+dir, startEnv+"="+start, resultEnv+"="+resultPath)
+		children[i].Stdout = &outputs[i]
+		children[i].Stderr = &outputs[i]
+		if err := children[i].Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(start, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stored, rejected := 0, 0
+	for i, child := range children {
+		err := child.Wait()
+		if err != nil {
+			t.Fatalf("quota child %d: %v: %s", i, err, outputs[i].String())
+		}
+		result, err := os.ReadFile(results[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch string(result) {
+		case "stored":
+			stored++
+		case "quota":
+			rejected++
+		default:
+			t.Fatalf("quota child %d returned %q", i, result)
+		}
+	}
+	if stored != 1 || rejected != 1 {
+		t.Fatalf("concurrent stores succeeded=%d quota-rejected=%d, want one of each", stored, rejected)
+	}
+	if _, err := store.PutIsolated(context.Background(), "root:other", []File{{Path: "other.txt", Content: "x"}}); err != nil {
+		t.Fatalf("another logical-cluster scope shared the quota: %v", err)
+	}
+	if err := store.Delete(context.Background(), "root:acme", first.Name, first.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutIsolated(context.Background(), "root:acme", []File{{Path: "retry.txt", Content: "x"}}); err != nil {
+		t.Fatalf("quota did not recover after bundle deletion: %v", err)
+	}
+}
+
+func TestScopeQuotaWouldBeExceededUsesSerializedByteLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		count      int
+		usedBytes  int64
+		addedBytes int64
+		want       bool
+	}{
+		{name: "under both limits", count: MaxScopeBundles - 1, usedBytes: 10, addedBytes: 10},
+		{name: "count limit", count: MaxScopeBundles, addedBytes: 1, want: true},
+		{name: "exact byte limit", count: 1, usedBytes: MaxScopeBytes - 1, addedBytes: 1},
+		{name: "byte limit", count: 1, usedBytes: MaxScopeBytes, addedBytes: 1, want: true},
+		{name: "one bundle exceeds byte limit", count: 0, addedBytes: MaxScopeBytes + 1, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scopeQuotaWouldBeExceeded(tt.count, tt.usedBytes, tt.addedBytes); got != tt.want {
+				t.Fatalf("scopeQuotaWouldBeExceeded() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileStoreQuotaCountsSerializedBytesFromDisk(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := scopeKey("root:acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(store.scopeDir(key), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(store.path(key, "existing-bundle"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxScopeBytes); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutIsolated(context.Background(), "root:acme", []File{{Path: "new.txt", Content: "x"}}); !IsQuotaExceeded(err) {
+		t.Fatalf("PutIsolated error = %v, want disk byte quota exceeded", err)
+	}
+}
+
+func TestFileStorePutRemainsContentAddressedAcrossScopes(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	files := []File{{Path: "src/main.go", Content: "package main\n"}}
+	first, err := store.Put(ctx, "logical-cluster-a", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Put(ctx, "logical-cluster-b", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != second.Name || first.Digest != second.Digest {
+		t.Fatalf("Put changed its content address across scopes: %+v and %+v", first, second)
+	}
+	for _, ref := range []BundleRef{first, second} {
+		if _, err := store.Get(ctx, ref.Scope, ref.Name, ref.Digest); err != nil {
+			t.Fatalf("bundle in scope %q is unreadable: %v", ref.Scope, err)
+		}
+	}
+	if err := store.Delete(ctx, first.Scope, first.Name, first.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, second.Scope, second.Name, second.Digest); err != nil {
+		t.Fatalf("deleting the source-scope copy removed the relocated copy: %v", err)
 	}
 }
 
@@ -329,6 +570,9 @@ func TestFileStoreSweepRemovesOnlyOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sweep returned error: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(store.scopeDir(key), ".quota.lock")); err != nil {
+		t.Fatalf("Sweep removed the persistent quota lock file: %v", err)
+	}
 	if removed != 2 {
 		t.Fatalf("removed = %d, want the stale bundle and the abandoned temp file", removed)
 	}
@@ -342,6 +586,44 @@ func TestFileStoreSweepRemovesOnlyOrphans(t *testing.T) {
 	}
 	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
 		t.Fatalf("abandoned temp file survived: %v", err)
+	}
+}
+
+func TestFileStoreSweepRemovesStaleIsolatedBundleWithoutTouchingFreshCopy(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	files := []File{{Path: "index.html", Content: "<h1>demo</h1>"}}
+	stale, err := store.PutIsolated(ctx, "logical-cluster", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := store.PutIsolated(ctx, "logical-cluster", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := scopeKey("logical-cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * DefaultSweepMaxAge)
+	if err := os.Chtimes(store.path(key, stale.Name), old, old); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := store.Sweep(time.Now(), DefaultSweepMaxAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("Sweep removed %d files, want only the stale isolated bundle", removed)
+	}
+	if _, err := store.Get(ctx, "logical-cluster", stale.Name, stale.Digest); !IsNotFound(err) {
+		t.Fatalf("stale isolated bundle survived: %v", err)
+	}
+	if _, err := store.Get(ctx, "logical-cluster", fresh.Name, fresh.Digest); err != nil {
+		t.Fatalf("fresh isolated bundle was swept: %v", err)
 	}
 }
 

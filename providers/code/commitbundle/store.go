@@ -21,6 +21,7 @@ package commitbundle
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -29,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"k8s.io/klog/v2"
 )
 
@@ -55,6 +58,12 @@ const (
 	MaxTotalBytes = 48 * 1024 * 1024
 	MaxPathLength = 1024
 
+	// MaxScopeBundles and MaxScopeBytes bound all stored bundles in one
+	// logical-cluster scope. Bytes are the serialized on-disk files, including
+	// abandoned temporary writes; the first limit reached rejects a new bundle.
+	MaxScopeBundles = 32
+	MaxScopeBytes   = 512 << 20
+
 	// EncodingUTF8 marks content carried verbatim as UTF-8 text (the default).
 	EncodingUTF8 = "utf-8"
 	// EncodingBase64 marks content carried as RFC 4648 standard base64 with
@@ -69,12 +78,21 @@ const (
 	DefaultSweepInterval = time.Hour
 )
 
-var errBundleNotFound = errors.New("bundle not found")
+var (
+	errBundleNotFound     = errors.New("bundle not found")
+	ErrScopeQuotaExceeded = errors.New("bundle scope quota exceeded")
+)
 
 // IsNotFound reports whether err means the requested bundle is not present in
 // the addressed scope.
 func IsNotFound(err error) bool {
 	return errors.Is(err, errBundleNotFound)
+}
+
+// IsQuotaExceeded reports whether storing another bundle would cross the
+// durable count or serialized-byte limit for its logical-cluster scope.
+func IsQuotaExceeded(err error) bool {
+	return errors.Is(err, ErrScopeQuotaExceeded)
 }
 
 // File is one file from an MCP commit_files call or a repository checkout.
@@ -166,6 +184,12 @@ type BundleFile struct {
 // Store persists and fetches immutable commit bundles.
 type Store interface {
 	Put(ctx context.Context, scope string, files []File) (BundleRef, error)
+	// PutIsolated stores an immutable bundle under a unique name, even when an
+	// identical payload already exists in the scope. The digest still describes
+	// the canonical contents. Use this for independently-lived staged uploads;
+	// Put remains content-addressed for callers that intentionally share a
+	// bundle, such as commit storage relocation.
+	PutIsolated(ctx context.Context, scope string, files []File) (BundleRef, error)
 	Get(ctx context.Context, scope, name, digest string) (*Bundle, error)
 	Delete(ctx context.Context, scope, name, digest string) error
 }
@@ -282,6 +306,17 @@ func (s *FileStore) Dir() string {
 
 // Put validates, canonicalizes, and writes an immutable bundle.
 func (s *FileStore) Put(ctx context.Context, scope string, files []File) (BundleRef, error) {
+	return s.put(ctx, scope, files, false)
+}
+
+// PutIsolated stores a bundle under a unique name while keeping the digest
+// content-derived. Deleting one isolated bundle therefore cannot remove an
+// identical payload staged by another request.
+func (s *FileStore) PutIsolated(ctx context.Context, scope string, files []File) (BundleRef, error) {
+	return s.put(ctx, scope, files, true)
+}
+
+func (s *FileStore) put(ctx context.Context, scope string, files []File, isolated bool) (BundleRef, error) {
 	if s == nil {
 		return BundleRef{}, errors.New("bundle store is nil")
 	}
@@ -296,6 +331,14 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	}
 	bundle.Scope = scope
 	ref.Scope = scope
+	if isolated {
+		name, err := newIsolatedBundleName()
+		if err != nil {
+			return BundleRef{}, err
+		}
+		bundle.Name = name
+		ref.Name = name
+	}
 	if err := ctx.Err(); err != nil {
 		return BundleRef{}, err
 	}
@@ -303,20 +346,37 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return BundleRef{}, fmt.Errorf("create scoped bundle directory: %w", err)
 	}
+	unlock, err := s.lockScope(ctx, key)
+	if err != nil {
+		return BundleRef{}, err
+	}
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return BundleRef{}, err
+	}
 	path := s.path(key, bundle.Name)
-	if _, err := os.Stat(path); err == nil {
-		// Reusing an identical bundle: refresh its age so the orphan sweeper
-		// does not reclaim it out from under this new request.
-		now := time.Now()
-		_ = os.Chtimes(path, now, now)
-		s.announce(scope, bundle.Name)
-		return ref, nil
-	} else if !os.IsNotExist(err) {
-		return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
+	if !isolated {
+		if _, err := os.Stat(path); err == nil {
+			// Reusing an identical bundle: refresh its age so the orphan sweeper
+			// does not reclaim it out from under this new request.
+			now := time.Now()
+			_ = os.Chtimes(path, now, now)
+			s.announce(scope, bundle.Name)
+			return ref, nil
+		} else if !os.IsNotExist(err) {
+			return BundleRef{}, fmt.Errorf("stat bundle: %w", err)
+		}
 	}
 	data, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
 		return BundleRef{}, fmt.Errorf("marshal bundle: %w", err)
+	}
+	count, usedBytes, err := s.scopeUsage(key)
+	if err != nil {
+		return BundleRef{}, err
+	}
+	if scopeQuotaWouldBeExceeded(count, usedBytes, int64(len(data))) {
+		return BundleRef{}, fmt.Errorf("%w: scope has %d bundles and %d serialized bytes; limits are %d bundles and %d bytes", ErrScopeQuotaExceeded, count, usedBytes, MaxScopeBundles, MaxScopeBytes)
 	}
 	tmp, err := os.CreateTemp(dir, "."+bundle.Name+"-*.tmp")
 	if err != nil {
@@ -333,11 +393,131 @@ func (s *FileStore) Put(ctx context.Context, scope string, files []File) (Bundle
 	if err := tmp.Close(); err != nil {
 		return BundleRef{}, fmt.Errorf("close bundle: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if isolated {
+		// Linking the completed temporary file publishes it atomically without
+		// replacing a different bundle if a random handle ever collides.
+		if err := os.Link(tmpName, path); err != nil {
+			return BundleRef{}, fmt.Errorf("publish isolated bundle: %w", err)
+		}
+	} else if err := os.Rename(tmpName, path); err != nil {
 		return BundleRef{}, fmt.Errorf("publish bundle: %w", err)
 	}
 	s.announce(scope, bundle.Name)
 	return ref, nil
+}
+
+// lockScope serializes quota checks and bundle publication across FileStore
+// instances and processes that share the backing filesystem. The lock file is
+// deliberately persistent: removing it could let two processes lock different
+// inodes with the same path.
+func (s *FileStore) lockScope(ctx context.Context, key string) (func(), error) {
+	path := filepath.Join(s.scopeDir(key), ".quota.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open bundle quota lock: %w", err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() {
+				_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+				_ = file.Close()
+			}, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			_ = file.Close()
+			return nil, fmt.Errorf("lock bundle quota scope: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = file.Close()
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// scopeUsage reads published bundles and abandoned writes from disk while the
+// caller holds the scope lock. Counting temporary files prevents a crashed
+// writer from leaving unaccounted bytes until the orphan sweeper removes them.
+func (s *FileStore) scopeUsage(key string) (finalCount int, finalBytes int64, resultErr error) {
+	dir := s.scopeDir(key)
+	root, err := os.Open(dir)
+	if err != nil {
+		return 0, 0, fmt.Errorf("open scoped bundles: %w", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil && resultErr == nil {
+			resultErr = fmt.Errorf("close scoped bundles: %w", err)
+		}
+	}()
+	const (
+		batchSize      = 32
+		maxScanEntries = MaxScopeBundles*4 + 64
+	)
+	var count int
+	var usedBytes int64
+	for scanned := 0; scanned < maxScanEntries; {
+		limit := batchSize
+		if maxScanEntries-scanned < limit {
+			limit = maxScanEntries - scanned
+		}
+		entries, readErr := root.ReadDir(limit)
+		scanned += len(entries)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || (!strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, ".tmp")) {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(dir, name))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return 0, 0, fmt.Errorf("stat scoped bundle %q: %w", name, err)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			count++
+			size := info.Size()
+			if size > MaxScopeBytes || usedBytes > MaxScopeBytes-size {
+				usedBytes = MaxScopeBytes + 1
+			} else {
+				usedBytes += size
+			}
+			if count >= MaxScopeBundles || usedBytes > MaxScopeBytes {
+				return count, usedBytes, nil
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return 0, 0, fmt.Errorf("read scoped bundles: %w", readErr)
+			}
+			return count, usedBytes, nil
+		}
+	}
+	// An unexpectedly crowded scope directory could otherwise make every Put
+	// scan without bound. Fail closed; the sweeper can reclaim stale entries.
+	return MaxScopeBundles, MaxScopeBytes, nil
+}
+
+func scopeQuotaWouldBeExceeded(count int, usedBytes, addedBytes int64) bool {
+	return count >= MaxScopeBundles || addedBytes > MaxScopeBytes || usedBytes > MaxScopeBytes-addedBytes
+}
+
+func newIsolatedBundleName() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate isolated bundle name: %w", err)
+	}
+	return "bundle-stage-" + hex.EncodeToString(random[:]), nil
 }
 
 // Get loads a bundle and verifies its digest when digest is provided.

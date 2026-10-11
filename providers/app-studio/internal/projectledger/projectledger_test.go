@@ -17,13 +17,16 @@ limitations under the License.
 package projectledger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -77,7 +80,7 @@ func (f *fakeProjects) PatchStatus(_ context.Context, name string, patch []byte)
 		Metadata struct {
 			ResourceVersion string `json:"resourceVersion"`
 		} `json:"metadata"`
-		Status map[string]any `json:"status"`
+		Status map[string]json.RawMessage `json:"status"`
 	}
 	if err := json.Unmarshal(patch, &body); err != nil {
 		return err
@@ -86,22 +89,74 @@ func (f *fakeProjects) PatchStatus(_ context.Context, name string, patch []byte)
 		return apierrors.NewConflict(projectGR, name,
 			errors.New("the object has been modified; please apply your changes to the latest version and try again"))
 	}
-	// Apply just the member the ledger writes, the way a merge patch would.
-	raw, err := json.Marshal(body.Status["workspace"])
-	if err != nil {
-		return err
-	}
-	if string(raw) == "null" {
+	// Apply just the member the ledger writes, using JSON merge-patch semantics
+	// so nested nulls delete fields as they do on the API server.
+	raw := bytes.TrimSpace(body.Status["workspace"])
+	if bytes.Equal(raw, []byte("null")) {
 		f.project.Status.Workspace = nil
 	} else {
+		workspace := map[string]json.RawMessage{}
+		if f.project.Status.Workspace != nil {
+			current, err := json.Marshal(f.project.Status.Workspace)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(current, &workspace); err != nil {
+				return err
+			}
+		}
+		var workspacePatch map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &workspacePatch); err != nil {
+			return err
+		}
+		if err := applyJSONMergePatch(workspace, workspacePatch); err != nil {
+			return err
+		}
+		merged, err := json.Marshal(workspace)
+		if err != nil {
+			return err
+		}
 		var status aiv1alpha1.ProjectWorkspaceStatus
-		if err := json.Unmarshal(raw, &status); err != nil {
+		if err := json.Unmarshal(merged, &status); err != nil {
 			return err
 		}
 		f.project.Status.Workspace = &status
 	}
 	rv, _ := strconv.Atoi(f.project.ResourceVersion)
 	f.project.ResourceVersion = strconv.Itoa(rv + 1)
+	return nil
+}
+
+func applyJSONMergePatch(target, patch map[string]json.RawMessage) error {
+	for key, raw := range patch {
+		raw = bytes.TrimSpace(raw)
+		if bytes.Equal(raw, []byte("null")) {
+			delete(target, key)
+			continue
+		}
+		var patchObject map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &patchObject); err == nil && patchObject != nil {
+			var targetObject map[string]json.RawMessage
+			if current := target[key]; len(current) > 0 {
+				if err := json.Unmarshal(current, &targetObject); err != nil {
+					return err
+				}
+			}
+			if targetObject == nil {
+				targetObject = map[string]json.RawMessage{}
+			}
+			if err := applyJSONMergePatch(targetObject, patchObject); err != nil {
+				return err
+			}
+			merged, err := json.Marshal(targetObject)
+			if err != nil {
+				return err
+			}
+			target[key] = merged
+			continue
+		}
+		target[key] = append(json.RawMessage(nil), raw...)
+	}
 	return nil
 }
 
@@ -117,9 +172,18 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 
 	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
 		record.SourceRevision = 7
+		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7}
+		record.LastPreviewCheckpoint = &workspace.SourceChange{ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: 6}
 		record.UncommittedPaths = []string{"src/b.ts", "src/a.ts"}
+		record.SourcePathAttributions = []workspace.SourcePathAttribution{
+			{Path: "src/a.ts", ThreadID: "thread-source", RunID: "run-source", SourceRevision: 7},
+			{Path: "src/b.ts", SourceRevision: 5},
+		}
 		record.PendingCommit = &workspace.PendingCommit{
 			Name: "commit-1", RepositoryRef: "demo-repo", WorkspaceDigest: "sha256:abc", Paths: []string{"src/a.ts"},
+			SourceRevision: 7, Attributions: []workspace.SourceAttribution{{ThreadID: "thread-source", RunID: "run-source", Paths: []string{"src/a.ts"}}},
+			BlockedReason: "ActionForbidden", BlockedMessage: "Check the repository permission.",
+			BlockedAt: timePtr(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)), RetryToken: "retry-token-1",
 		}
 		record.Settlement = &workspace.CommitSettlement{WorkspaceDigest: "sha256:def", Paths: []string{"src/b.ts"}}
 		return true, nil
@@ -134,13 +198,30 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if record.SourceRevision != 7 {
 		t.Fatalf("source revision = %d, want 7", record.SourceRevision)
 	}
+	if record.LastSourceChange == nil || record.LastSourceChange.ThreadID != "thread-source" || record.LastSourceChange.RunID != "run-source" || record.LastSourceChange.SourceRevision != 7 {
+		t.Fatalf("source attribution = %#v", record.LastSourceChange)
+	}
+	if record.LastPreviewCheckpoint == nil || record.LastPreviewCheckpoint.ThreadID != "thread-preview" || record.LastPreviewCheckpoint.RunID != "run-preview" || record.LastPreviewCheckpoint.SourceRevision != 6 {
+		t.Fatalf("preview attribution = %#v", record.LastPreviewCheckpoint)
+	}
 	// Normalization is the ledger's, so readers never depend on which writer
 	// produced the record.
 	if strings.Join(record.UncommittedPaths, ",") != "src/a.ts,src/b.ts" {
 		t.Fatalf("uncommitted paths = %v, want sorted", record.UncommittedPaths)
 	}
+	if len(record.SourcePathAttributions) != 2 || record.SourcePathAttributions[0].Path != "src/a.ts" ||
+		record.SourcePathAttributions[0].ThreadID != "thread-source" || record.SourcePathAttributions[1].Path != "src/b.ts" ||
+		record.SourcePathAttributions[1].ThreadID != "" {
+		t.Fatalf("source path attributions = %+v", record.SourcePathAttributions)
+	}
 	if record.PendingCommit == nil || record.PendingCommit.Name != "commit-1" ||
-		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" {
+		record.PendingCommit.RepositoryRef != "demo-repo" || record.PendingCommit.WorkspaceDigest != "sha256:abc" ||
+		record.PendingCommit.SourceRevision != 7 || len(record.PendingCommit.Attributions) != 1 ||
+		record.PendingCommit.Attributions[0].ThreadID != "thread-source" ||
+		record.PendingCommit.BlockedReason != "ActionForbidden" || record.PendingCommit.BlockedMessage != "Check the repository permission." ||
+		record.PendingCommit.BlockedAt == nil || !record.PendingCommit.BlockedAt.Equal(time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)) ||
+		record.PendingCommit.RetryToken != "retry-token-1" ||
+		!reflect.DeepEqual(record.PendingCommit.Attributions[0].Paths, []string{"src/a.ts"}) {
 		t.Fatalf("pending commit = %#v", record.PendingCommit)
 	}
 	if record.Settlement == nil || record.Settlement.WorkspaceDigest != "sha256:def" {
@@ -149,6 +230,12 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if projects.project.Status.Workspace.PendingCommit.RequestedAt == nil {
 		t.Fatal("pending commit carries no requestedAt")
 	}
+	if projects.project.Status.Workspace.PendingCommit.BlockedReason != "ActionForbidden" ||
+		projects.project.Status.Workspace.PendingCommit.BlockedMessage != "Check the repository permission." ||
+		projects.project.Status.Workspace.PendingCommit.BlockedAt == nil ||
+		projects.project.Status.Workspace.PendingCommit.RetryToken != "retry-token-1" {
+		t.Fatalf("Project pending commit block = %#v", projects.project.Status.Workspace.PendingCommit)
+	}
 
 	// Clearing has to be said out loud in a merge patch, or the members would
 	// simply stay.
@@ -156,6 +243,7 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 		record.PendingCommit = nil
 		record.Settlement = nil
 		record.UncommittedPaths = nil
+		record.SourcePathAttributions = nil
 		return true, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -164,11 +252,285 @@ func TestLedgerRoundTripsEveryMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 {
+	if record.PendingCommit != nil || record.Settlement != nil || len(record.UncommittedPaths) != 0 || len(record.SourcePathAttributions) != 0 {
 		t.Fatalf("cleared ledger = %#v", record)
 	}
 	if record.SourceRevision != 7 {
 		t.Fatalf("clearing the dirty set moved the revision to %d", record.SourceRevision)
+	}
+}
+
+func timePtr(value time.Time) *time.Time { return &value }
+
+func TestLedgerRejectsPendingCommitPathLimitBeforeStatusWrite(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	paths := make([]string, MaxPendingCommitPaths+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("src/file-%04d.txt", i)
+	}
+
+	_, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &workspace.PendingCommit{
+			RequestID: "request-1", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+			BundleRef: "bundle", BundleDigest: "sha256:digest", WorkspaceDigest: "sha256:workspace",
+			Paths: paths,
+		}
+		return true, nil
+	})
+	if !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("Update error = %v, want ErrLedgerCapacity", err)
+	}
+	if projects.patches != 0 || projects.project.Status.Workspace != nil {
+		t.Fatalf("capacity rejection wrote status: patches=%d status=%#v", projects.patches, projects.project.Status.Workspace)
+	}
+}
+
+func TestLedgerRejectsOversizedLegacyPendingBlockMetadataBeforeStatusWrite(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+
+	_, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &workspace.PendingCommit{
+			Name: "legacy-commit", RepositoryRef: "repo", WorkspaceDigest: "sha256:workspace",
+			Paths: []string{"src/file.txt"}, BlockedReason: "RepositoryCommitFailed",
+			BlockedMessage: strings.Repeat("x", 513),
+		}
+		return true, nil
+	})
+	if !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("Update error = %v, want ErrLedgerCapacity", err)
+	}
+	if projects.patches != 0 || projects.project.Status.Workspace != nil {
+		t.Fatalf("schema-limit rejection wrote status: patches=%d status=%#v", projects.patches, projects.project.Status.Workspace)
+	}
+}
+
+func TestLedgerRejectsOversizedMultibyteWorkspaceStatusBeforeStatusWrite(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	paths := make([]string, 400)
+	for i := range paths {
+		// Each path is under the path-byte limit, but its UTF-8 encoding is
+		// several times longer than its character count.
+		paths[i] = fmt.Sprintf("src/%03d-%s", i, strings.Repeat("界", 300))
+	}
+
+	_, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &workspace.PendingCommit{
+			RequestID: "request-1", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+			BundleRef: "bundle", BundleDigest: "sha256:digest", WorkspaceDigest: "sha256:workspace",
+			Paths:        paths,
+			Attributions: []workspace.SourceAttribution{{ThreadID: "thread", RunID: "run", Paths: append([]string(nil), paths...)}},
+		}
+		return true, nil
+	})
+	if !errors.Is(err, workspace.ErrLedgerCapacity) {
+		t.Fatalf("Update error = %v, want ErrLedgerCapacity", err)
+	}
+	if projects.patches != 0 || projects.project.Status.Workspace != nil {
+		t.Fatalf("oversize rejection wrote status: patches=%d status=%#v", projects.patches, projects.project.Status.Workspace)
+	}
+}
+
+func TestLedgerRecordDeepCopyOwnsPendingCommitCollections(t *testing.T) {
+	blockedAt := time.Date(2026, time.October, 11, 12, 0, 0, 0, time.UTC)
+	record := workspace.LedgerRecord{
+		UncommittedPaths:       []string{"dirty.txt"},
+		SourcePathAttributions: []workspace.SourcePathAttribution{{Path: "dirty.txt", ThreadID: "thread", RunID: "run"}},
+		PendingCommit: &workspace.PendingCommit{
+			RequestID: "request-1", Paths: []string{"pending.txt"},
+			Attributions: []workspace.SourceAttribution{{ThreadID: "thread", RunID: "run", Paths: []string{"pending.txt"}}},
+			BlockedAt:    &blockedAt,
+		},
+		Settlement: &workspace.CommitSettlement{WorkspaceDigest: "sha256:workspace", Paths: []string{"settled.txt"}},
+	}
+	cloned := record.DeepCopy()
+	cloned.UncommittedPaths[0] = "changed-dirty.txt"
+	cloned.SourcePathAttributions[0].Path = "changed-attribution.txt"
+	cloned.PendingCommit.Paths[0] = "changed-pending.txt"
+	cloned.PendingCommit.Attributions[0].Paths[0] = "changed-pending-attribution.txt"
+	*cloned.PendingCommit.BlockedAt = blockedAt.Add(time.Hour)
+	cloned.Settlement.Paths[0] = "changed-settlement.txt"
+
+	if record.UncommittedPaths[0] != "dirty.txt" || record.SourcePathAttributions[0].Path != "dirty.txt" ||
+		record.PendingCommit.Paths[0] != "pending.txt" || record.PendingCommit.Attributions[0].Paths[0] != "pending.txt" ||
+		!record.PendingCommit.BlockedAt.Equal(blockedAt) || record.Settlement.Paths[0] != "settled.txt" {
+		t.Fatalf("DeepCopy mutation changed original record: %#v", record)
+	}
+}
+
+func TestNormalizeLedgerRecordPreservesMalformedKeyedPendingCommit(t *testing.T) {
+	for name, requestID := range map[string]string{
+		"ordinary key":   "request-1",
+		"whitespace key": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := workspace.LedgerRecord{PendingCommit: &workspace.PendingCommit{RequestID: requestID}}
+			workspace.NormalizeLedgerRecord(&record)
+			if record.PendingCommit == nil || record.PendingCommit.RequestID != requestID {
+				t.Fatalf("malformed keyed intent was discarded or changed: %#v", record.PendingCommit)
+			}
+			status := statusFrom(record, nil, time.Now())
+			patch, err := statusPatch("1", status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body struct {
+				Status struct {
+					Workspace struct {
+						PendingCommit struct {
+							RequestID *string `json:"requestID"`
+						} `json:"pendingCommit"`
+					} `json:"workspace"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal(patch, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Status.Workspace.PendingCommit.RequestID == nil || *body.Status.Workspace.PendingCommit.RequestID != requestID {
+				t.Fatalf("status patch lost malformed keyed request ID %q: %s", requestID, patch)
+			}
+		})
+	}
+
+	legacy := workspace.LedgerRecord{PendingCommit: &workspace.PendingCommit{}}
+	workspace.NormalizeLedgerRecord(&legacy)
+	if legacy.PendingCommit != nil {
+		t.Fatalf("invalid legacy pending commit behavior changed: %#v", legacy.PendingCommit)
+	}
+}
+
+func TestPreviewCheckpointPersistsAtInitialSourceRevision(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+
+	writer := workspace.NewFileStore(t.TempDir())
+	writer.SetLedger(ledger)
+	revision, err := writer.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision != 1 {
+		t.Fatalf("initial source revision = %d, want 1", revision)
+	}
+	if err := writer.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{
+		ThreadID: "thread-preview", RunID: "run-preview", SourceRevision: revision,
+	}); err != nil {
+		t.Fatalf("record initial preview checkpoint: %v", err)
+	}
+
+	// A separate ledger and FileStore must read the checkpoint from the Project
+	// status written by the first replica, even though no source mutation has
+	// materialized SourceRevision in the ledger yet.
+	freshLedger := New(projects)
+	reader := workspace.NewFileStore(t.TempDir())
+	reader.SetLedger(freshLedger)
+	checkpoint, err := reader.LastPreviewCheckpoint(ctx, scope)
+	if err != nil {
+		t.Fatalf("read checkpoint from a fresh store: %v", err)
+	}
+	if checkpoint == nil || checkpoint.ThreadID != "thread-preview" || checkpoint.RunID != "run-preview" || checkpoint.SourceRevision != 1 {
+		t.Fatalf("fresh store checkpoint = %#v, want preview turn at initial revision 1", checkpoint)
+	}
+	if projects.project.Status.Workspace == nil || projects.project.Status.Workspace.LastPreviewCheckpoint == nil {
+		t.Fatal("initial preview checkpoint was not persisted in Project status")
+	}
+
+	if _, err := freshLedger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.LastPreviewCheckpoint = nil
+		return true, nil
+	}); err != nil {
+		t.Fatalf("clear preview checkpoint: %v", err)
+	}
+	if projects.project.Status.Workspace != nil {
+		t.Fatalf("cleared empty ledger status = %#v, want nil", projects.project.Status.Workspace)
+	}
+	cleared, err := New(projects).Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read cleared empty ledger: %v", err)
+	}
+	if cleared.SourceRevision != 0 || cleared.LastPreviewCheckpoint != nil || cleared.LastSourceChange != nil ||
+		len(cleared.UncommittedPaths) != 0 || len(cleared.SourcePathAttributions) != 0 || cleared.PendingCommit != nil || cleared.Settlement != nil {
+		t.Fatalf("cleared ledger = %#v, want zero value", cleared)
+	}
+}
+
+func TestLedgerMutationMergePatchClearsOnlyManualProducer(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	projects.project.Status.Workspace = &aiv1alpha1.ProjectWorkspaceStatus{
+		SourceRevision: 7,
+		LastSourceChange: &aiv1alpha1.ProjectSourceChange{
+			ThreadID:       "thread-assistant",
+			RunID:          "run-assistant",
+			SourceRevision: 7,
+		},
+		LastPreviewCheckpoint: &aiv1alpha1.ProjectSourceChange{
+			ThreadID:       "thread-preview",
+			RunID:          "run-preview",
+			SourceRevision: 6,
+		},
+	}
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.SourceRevision++
+		record.LastSourceChange = &workspace.SourceChange{ThreadID: "thread-next", RunID: "run-next", SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("record next assistant source mutation: %v", err)
+	}
+	got, err := ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read ledger after assistant source mutation: %v", err)
+	}
+	if got.LastSourceChange == nil || got.LastSourceChange.SourceRevision != 8 || got.LastSourceChange.ThreadID != "thread-next" || got.LastSourceChange.RunID != "run-next" {
+		t.Fatalf("assistant source attribution = %#v, want the new producer at revision 8", got.LastSourceChange)
+	}
+	if got.LastPreviewCheckpoint == nil || got.LastPreviewCheckpoint.ThreadID != "thread-preview" || got.LastPreviewCheckpoint.RunID != "run-preview" || got.LastPreviewCheckpoint.SourceRevision != 6 {
+		t.Fatalf("assistant source mutation changed prior preview attribution: %#v", got.LastPreviewCheckpoint)
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.SourceRevision++
+		record.LastSourceChange = &workspace.SourceChange{SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("record manual source mutation: %v", err)
+	}
+	got, err = ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read ledger after manual source mutation: %v", err)
+	}
+	if got.LastSourceChange == nil || got.LastSourceChange.SourceRevision != 9 || got.LastSourceChange.ThreadID != "" || got.LastSourceChange.RunID != "" {
+		t.Fatalf("manual source attribution = %#v, want revision 9 with no assistant producer", got.LastSourceChange)
+	}
+	if got.LastPreviewCheckpoint == nil || got.LastPreviewCheckpoint.ThreadID != "thread-preview" || got.LastPreviewCheckpoint.RunID != "run-preview" || got.LastPreviewCheckpoint.SourceRevision != 6 {
+		t.Fatalf("manual source mutation changed preview attribution: %#v", got.LastPreviewCheckpoint)
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.LastPreviewCheckpoint = &workspace.SourceChange{SourceRevision: record.SourceRevision}
+		return true, nil
+	}); err != nil {
+		t.Fatalf("record manual preview checkpoint: %v", err)
+	}
+	got, err = ledger.Read(ctx, scope)
+	if err != nil {
+		t.Fatalf("read ledger after manual preview checkpoint: %v", err)
+	}
+	if got.LastPreviewCheckpoint == nil || got.LastPreviewCheckpoint.SourceRevision != 9 || got.LastPreviewCheckpoint.ThreadID != "" || got.LastPreviewCheckpoint.RunID != "" {
+		t.Fatalf("manual preview attribution = %#v, want revision 9 with no assistant producer", got.LastPreviewCheckpoint)
+	}
+	if got.LastSourceChange == nil || got.LastSourceChange.SourceRevision != 9 || got.LastSourceChange.ThreadID != "" || got.LastSourceChange.RunID != "" {
+		t.Fatalf("manual preview checkpoint changed source attribution: %#v", got.LastSourceChange)
 	}
 }
 
@@ -302,3 +664,68 @@ func TestLedgerRequiresABackend(t *testing.T) {
 }
 
 var _ runtime.Object = &aiv1alpha1.Project{}
+
+func TestLedgerPersistsReservedCommitBeforeObjectNameExists(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	intent := workspace.PendingCommit{
+		RequestID: "request-1", RepositoryRef: "repo", RepositoryUID: "repo-uid",
+		BundleRef: "bundle-1", BundleDigest: "sha256:content", Message: "Save source", Branch: "main",
+		WorkspaceDigest: "source-digest", Paths: []string{"app.txt"}, SourceRevision: 7,
+		Attributions: []workspace.SourceAttribution{{ThreadID: "thread-1", RunID: "run-1", Paths: []string{"app.txt"}}},
+	}
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &intent
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := ledger.Read(ctx, scope)
+	if err != nil || !reflect.DeepEqual(read.PendingCommit, &intent) {
+		t.Fatalf("unnamed durable intent lost inputs: %+v, %v", read.PendingCommit, err)
+	}
+	requestedAt := projects.project.Status.Workspace.PendingCommit.RequestedAt.DeepCopy()
+	intent.Name = "commit-1"
+	if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+		record.PendingCommit = &intent
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	read, err = ledger.Read(ctx, scope)
+	if err != nil || !reflect.DeepEqual(read.PendingCommit, &intent) {
+		t.Fatalf("submission lost immutable inputs: %+v, %v", read.PendingCommit, err)
+	}
+	if !projects.project.Status.Workspace.PendingCommit.RequestedAt.Equal(requestedAt) {
+		t.Fatal("attaching the returned object reset the reservation timestamp")
+	}
+}
+
+// The mutation receipt must survive the Project status merge patch, including clearing.
+func TestLedgerPersistsAndClearsSourceMutationIdentity(t *testing.T) {
+	ctx := context.Background()
+	projects := newFakeProjects()
+	ledger := New(projects)
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "demo", ProjectUID: "uid-demo"}
+	for _, id := range []string{"mutation-one", "mutation-two", ""} {
+		if _, err := ledger.Update(ctx, scope, func(record *workspace.LedgerRecord) (bool, error) {
+			record.SourceRevision++
+			record.SourceMutationID = id
+			return true, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		record, err := New(projects).Read(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.SourceMutationID != id || record.DeepCopy().SourceMutationID != id {
+			t.Fatalf("mutation identity after merge patch = %q, want %q", record.SourceMutationID, id)
+		}
+		if projects.project.Status.Workspace.SourceMutationID != id {
+			t.Fatalf("persisted Project identity = %q, want %q", projects.project.Status.Workspace.SourceMutationID, id)
+		}
+	}
+}

@@ -57,21 +57,21 @@ You may obtain a copy of the License at
 // else). The verb creates the CR as the Code provider behind its gate, so
 // the claim on the coordinate is the whole grant.
 //
-// Nothing here waits for the commit to land. The RepositoryCommit the action
-// creates is the durable thing, and the Project reconciler's watch on it is
-// what settles the workspace ledger — for both callers, because both record
-// the same pending commit.
-//
-// Files larger than the catalogue's 1 MiB input ceiling go up first through
-// `stage-commit-bundle` (the Code provider's uncatalogued large-upload verb,
-// docs/provider-actions.md §"Uncatalogued large-upload verbs") and the commit
-// then names the handle. A small commit skips the extra round trip.
+// Every commit is staged through `stage-commit-bundle` and named by an
+// immutable request ID. App Studio reserves that request and its source
+// snapshot before calling the keyed commit action, so a lost response can be
+// replayed without rereading mutable files. Nothing here waits for the commit
+// to land: the RepositoryCommit is the durable object, and the Project
+// reconciler's watch on it settles the workspace ledger for either caller.
+// `stage-commit-bundle` is the Code provider's uncatalogued large-upload verb
+// (docs/provider-actions.md §"Uncatalogued large-upload verbs").
 package codecommit
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,6 +152,12 @@ type Request struct {
 
 	RepositoryRef string
 	RepositoryUID string
+	// RequestID and the staged bundle identify one replay-safe, immutable
+	// commit intent. They are required together for commits recovered from the
+	// Project ledger after a timeout or process restart.
+	RequestID    string
+	BundleRef    string
+	BundleDigest string
 
 	Message string
 	Branch  string
@@ -181,12 +187,24 @@ func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
 	if c == nil || c.Callers == nil {
 		return Ref{}, fmt.Errorf("no provider credential configured to reach the Code provider with")
 	}
-	if len(req.Files) == 0 {
-		return Ref{}, fmt.Errorf("a commit needs at least one file")
-	}
 	input := map[string]any{
 		"repositoryUID": req.RepositoryUID,
-		"files":         req.Files,
+	}
+	if req.RequestID != "" {
+		if strings.TrimSpace(req.RequestID) == "" {
+			return Ref{}, fmt.Errorf("a replay-safe commit requires a non-empty request ID")
+		}
+		if strings.TrimSpace(req.BundleRef) == "" || strings.TrimSpace(req.BundleDigest) == "" || len(req.Files) != 0 {
+			return Ref{}, fmt.Errorf("a replay-safe commit requires only an immutable staged bundle")
+		}
+		input["requestID"] = strings.TrimSpace(req.RequestID)
+		input["bundleRef"] = strings.TrimSpace(req.BundleRef)
+		input["bundleDigest"] = strings.TrimSpace(req.BundleDigest)
+	} else {
+		if len(req.Files) == 0 {
+			return Ref{}, fmt.Errorf("a commit needs at least one file")
+		}
+		input["files"] = req.Files
 	}
 	if message := strings.TrimSpace(req.Message); message != "" {
 		input["message"] = message
@@ -198,7 +216,7 @@ func (c *Client) Commit(ctx context.Context, req Request) (Ref, error) {
 	if err != nil {
 		return Ref{}, err
 	}
-	if len(encoded) > InlineMaxBytes {
+	if req.RequestID == "" && len(encoded) > InlineMaxBytes {
 		staged, err := c.stage(ctx, req)
 		if err != nil {
 			return Ref{}, err
@@ -248,6 +266,20 @@ func (c *Client) stage(ctx context.Context, req Request) (StagedBundle, error) {
 	return staged, nil
 }
 
+// StageBundle stores immutable commit contents in Code before a durable
+// Project intent is recorded. The returned handle is then reused on every
+// keyed Commit replay; mutable workspace files are never re-read for that
+// request.
+func (c *Client) StageBundle(ctx context.Context, req Request) (StagedBundle, error) {
+	if c == nil || c.Callers == nil {
+		return StagedBundle{}, fmt.Errorf("no provider credential configured to reach the Code provider with")
+	}
+	if strings.TrimSpace(req.RepositoryUID) == "" || len(req.Files) == 0 {
+		return StagedBundle{}, fmt.Errorf("staging a commit requires a repository UID and files")
+	}
+	return c.stage(ctx, req)
+}
+
 // CheckoutRequest is one read of a Repository's tree.
 //
 // RepositoryUID pins the read the same way Request.RepositoryUID pins a
@@ -280,6 +312,58 @@ type Checkout struct {
 	CommitSHA string         `json:"commitSHA"`
 	Files     []CheckoutFile `json:"files"`
 	Skipped   []string       `json:"skipped"`
+}
+
+// ActionError preserves the typed actionwire failure returned by Code. Its
+// Retryable bit is kept because HTTP status alone cannot distinguish a
+// temporary backend outage from a permanent request refusal.
+type ActionError struct {
+	Action    string
+	Code      string
+	Message   string
+	Retryable bool
+	Status    int
+}
+
+func (e *ActionError) Error() string {
+	if e == nil {
+		return "Code action failed"
+	}
+	if message := strings.TrimSpace(e.Message); message != "" {
+		return fmt.Sprintf("%s: %s: %s", e.Action, e.Code, message)
+	}
+	return fmt.Sprintf("%s: %s", e.Action, e.Code)
+}
+
+// ClassifyPermanentCommitReplayFailure returns a bounded public reason for
+// action failures that cannot succeed by replaying the same immutable commit
+// intent. Unrecognized errors, retryable actionwire errors, generic backend
+// failures and non-commit actions stay transient.
+func ClassifyPermanentCommitReplayFailure(err error) (reason, message string, permanent bool) {
+	var actionErr *ActionError
+	if errors.As(err, &actionErr) {
+		if actionErr.Retryable || actionErr.Action != Action {
+			return "", "", false
+		}
+		switch actionErr.Code {
+		case "commit_request_conflict":
+			return "CommitRequestConflict", "Code rejected this replay because the request ID is already bound to different commit intent. The saved request remains available for review.", true
+		case "bundle_unavailable":
+			// The commit action emits this only for commitbundle.IsNotFound.
+			// A missing or swept immutable bundle cannot be rebuilt from the
+			// changed workspace. The staging action uses the same code for a
+			// missing store, but staging happens before a pending intent exists.
+			return "StagedBundleMissing", "Code could not find the staged bundle for this saved commit. The request is preserved, but its staged files are unavailable; operator review is required.", true
+		case "action_forbidden":
+			return "ActionForbidden", "Code refused this saved commit. Check the repository identity and workspace permission, then explicitly retry the saved request.", true
+		}
+		return "", "", false
+	}
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) && !statusErr.Malformed && statusErr.Action == Action && statusErr.Status == http.StatusForbidden {
+		return "ActionForbidden", "Code refused this saved commit. Check the repository identity and workspace permission, then explicitly retry the saved request.", true
+	}
+	return "", "", false
 }
 
 // Checkout reads the repository's tree at req.Ref. Binary files are always
@@ -352,8 +436,9 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			Retryable bool   `json:"retryable"`
 		} `json:"error"`
 	}
 	// A non-2xx answer still carries an envelope; the typed code in it says
@@ -362,12 +447,13 @@ func (c *Client) invokeBounded(ctx context.Context, cluster, repositoryRef, acti
 		return &StatusError{Action: action, Status: resp.StatusCode, Malformed: true}
 	}
 	if envelope.Error != nil && envelope.Error.Code != "" {
-		if message := strings.TrimSpace(envelope.Error.Message); message != "" && message != strings.ReplaceAll(envelope.Error.Code, "_", " ") {
-			// The provider only words an error when the detail is the
-			// consumer's to act on (a checkout's controller message).
-			return fmt.Errorf("%s: %s: %s", action, envelope.Error.Code, message)
+		return &ActionError{
+			Action:    action,
+			Code:      envelope.Error.Code,
+			Message:   strings.TrimSpace(envelope.Error.Message),
+			Retryable: envelope.Error.Retryable,
+			Status:    resp.StatusCode,
 		}
-		return fmt.Errorf("%s: %s", action, envelope.Error.Code)
 	}
 	if resp.StatusCode/100 != 2 {
 		return &StatusError{Action: action, Status: resp.StatusCode}

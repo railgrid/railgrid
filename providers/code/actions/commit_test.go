@@ -10,9 +10,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/commitbundle"
@@ -167,6 +170,177 @@ func TestStagedBundleCommits(t *testing.T) {
 	}
 }
 
+func TestStageCommitBundleReportsScopeQuota(t *testing.T) {
+	f := newCommitFixture(t)
+	for i := 0; i < commitbundle.MaxScopeBundles; i++ {
+		if _, err := f.bundles.PutIsolated(context.Background(), testCluster, []commitbundle.File{{Path: "source.txt", Content: "x"}}); err != nil {
+			t.Fatalf("fill scope quota at bundle %d: %v", i, err)
+		}
+	}
+	response, envelope := f.invoke(t, StageCommitBundle, map[string]any{
+		"repositoryUID": "repo-uid",
+		"files":         []any{map[string]any{"path": "source.txt", "content": "new"}},
+	})
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body %s", response.Code, response.Body.String())
+	}
+	if envelope.Error == nil || envelope.Error.Code != "bundle_quota_exceeded" || !envelope.Error.Retryable {
+		t.Fatalf("error = %+v, want retryable bundle_quota_exceeded", envelope.Error)
+	}
+}
+
+func TestIdenticalStagesKeepIndependentCommitLifetimes(t *testing.T) {
+	f := newCommitFixture(t)
+	stage := func() stageCommitBundleOutput {
+		t.Helper()
+		response, envelope := f.invoke(t, StageCommitBundle, map[string]any{
+			"repositoryUID": "repo-uid",
+			"files":         []any{map[string]any{"path": "app/main.go", "content": "package main"}},
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("stage: %d %s", response.Code, response.Body.String())
+		}
+		var staged stageCommitBundleOutput
+		if err := json.Unmarshal(envelope.Result, &staged); err != nil {
+			t.Fatal(err)
+		}
+		return staged
+	}
+	first := stage()
+	second := stage()
+	if first.BundleRef == second.BundleRef {
+		t.Fatalf("identical stage calls returned the same handle %q", first.BundleRef)
+	}
+	if first.BundleDigest != second.BundleDigest {
+		t.Fatalf("identical stages have different digests: %q and %q", first.BundleDigest, second.BundleDigest)
+	}
+
+	commit := func(requestID string, staged stageCommitBundleOutput) (int, commitOutput) {
+		t.Helper()
+		response, envelope := f.invoke(t, Commit, map[string]any{
+			"repositoryUID": "repo-uid",
+			"requestID":     requestID,
+			"message":       "Save app",
+			"bundleRef":     staged.BundleRef,
+			"bundleDigest":  staged.BundleDigest,
+		})
+		if response.Code != http.StatusOK {
+			return response.Code, commitOutput{}
+		}
+		var result commitOutput
+		if err := json.Unmarshal(envelope.Result, &result); err != nil {
+			t.Fatalf("decode commit %q result: %v", requestID, err)
+		}
+		return response.Code, result
+	}
+	firstStatus, firstCommit := commit("intent-a", first)
+	if firstStatus != http.StatusOK || firstCommit.Commit.Name == "" {
+		t.Fatalf("first commit: status=%d result=%+v", firstStatus, firstCommit)
+	}
+
+	// This is the cleanup the controller performs after a commit reaches a
+	// terminal phase. The old content-addressed implementation made both
+	// identical stage calls point at this same file, so this removed the
+	// second request's pending source before it could create its commit.
+	if err := f.bundles.Delete(context.Background(), testCluster, first.BundleRef, first.BundleDigest); err != nil {
+		t.Fatal(err)
+	}
+	secondStatus, secondCommit := commit("intent-b", second)
+	if secondStatus != http.StatusOK || secondCommit.Commit.Name == "" {
+		t.Fatalf("second commit after first cleanup: status=%d result=%+v", secondStatus, secondCommit)
+	}
+	if secondCommit.Commit.Name == firstCommit.Commit.Name {
+		t.Fatalf("different request IDs returned the same commit %q", firstCommit.Commit.Name)
+	}
+
+	// Replaying the first key remains safe after its source handle was deleted.
+	replayStatus, replay := commit("intent-a", first)
+	if replayStatus != http.StatusOK || replay.Commit.Name != firstCommit.Commit.Name {
+		t.Fatalf("first replay after cleanup: status=%d result=%+v, want %q", replayStatus, replay, firstCommit.Commit.Name)
+	}
+}
+
+func TestKeyedCommitRequiresCreateScopeAndKeepsReplayStable(t *testing.T) {
+	t.Run("matching create scope succeeds and replays after collection", func(t *testing.T) {
+		f := newCommitFixture(t)
+		input := keyedCommitInput(t, f)
+		response, envelope := f.invoke(t, Commit, input)
+		if response.Code != http.StatusOK {
+			t.Fatalf("initial create: %d %s", response.Code, response.Body.String())
+		}
+		var first commitOutput
+		if err := json.Unmarshal(envelope.Result, &first); err != nil {
+			t.Fatal(err)
+		}
+
+		created, err := f.provider.Resource(repositoryCommits).Get(context.Background(), first.Commit.Name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := created.GetAnnotations()["kcp.io/cluster"]; got != testCluster {
+			t.Fatalf("created RepositoryCommit scope = %q, want staged scope %q", got, testCluster)
+		}
+		bundleName := input["bundleRef"].(string)
+		bundleDigest := input["bundleDigest"].(string)
+		if _, err := f.bundles.Get(context.Background(), testCluster, bundleName, bundleDigest); err != nil {
+			t.Fatalf("keyed create did not retain its scoped bundle: %v", err)
+		}
+
+		// Model terminal controller cleanup, then ensure the same request ID
+		// recovers the already-created object without needing the source bundle.
+		if err := f.bundles.Delete(context.Background(), testCluster, bundleName, bundleDigest); err != nil {
+			t.Fatal(err)
+		}
+		response, envelope = f.invoke(t, Commit, input)
+		if response.Code != http.StatusOK {
+			t.Fatalf("replay after collection: %d %s", response.Code, response.Body.String())
+		}
+		var replay commitOutput
+		if err := json.Unmarshal(envelope.Result, &replay); err != nil {
+			t.Fatal(err)
+		}
+		if replay.Commit != first.Commit {
+			t.Fatalf("replay returned %+v, want stable result %+v", replay.Commit, first.Commit)
+		}
+	})
+
+	for _, test := range []struct {
+		name  string
+		scope string
+	}{
+		{name: "different scope", scope: "different-logical-cluster"},
+		{name: "missing scope", scope: ""},
+	} {
+		t.Run(test.name+" is refused and retains the bundle", func(t *testing.T) {
+			f := newCommitFixture(t)
+			input := keyedCommitInput(t, f)
+			f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
+				object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+				annotations := object.GetAnnotations()
+				if test.scope == "" {
+					delete(annotations, "kcp.io/cluster")
+				} else {
+					annotations["kcp.io/cluster"] = test.scope
+				}
+				object.SetAnnotations(annotations)
+				object.SetUID("wrong-scope-commit")
+				return true, object, nil
+			})
+
+			response, envelope := f.invoke(t, Commit, input)
+			if response.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; body %s", response.Code, response.Body.String())
+			}
+			if envelope.Error == nil || envelope.Error.Code != "commit_not_created" {
+				t.Fatalf("error = %+v, want commit_not_created", envelope.Error)
+			}
+			if _, err := f.bundles.Get(context.Background(), testCluster, input["bundleRef"].(string), input["bundleDigest"].(string)); err != nil {
+				t.Fatalf("scope refusal discarded staged bundle needed for retry: %v", err)
+			}
+		})
+	}
+}
+
 // A handle nobody staged, a UID that does not match what the gate returned,
 // and a body naming both sources are all caller bugs, and none of them leaves
 // a RepositoryCommit behind.
@@ -222,5 +396,131 @@ func TestCommitActionDeniedWithoutVisibility(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Fatalf("a denied commit left %d RepositoryCommit(s) behind", len(list.Items))
+	}
+}
+
+func keyedCommitInput(t *testing.T, f *commitFixture) map[string]any {
+	t.Helper()
+	bundle, err := f.bundles.Put(context.Background(), testCluster, []commitbundle.File{{Path: "app.txt", Content: "source"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]any{"repositoryUID": "repo-uid", "requestID": "request-1", "bundleRef": bundle.Name, "bundleDigest": bundle.Digest, "message": "Saved source"}
+}
+
+func TestKeyedCommitReplaysAfterBundleCollectionAndStillAuthorizes(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial: %d %s", response.Code, response.Body.String())
+	}
+	if err := f.bundles.Delete(context.Background(), testCluster, input["bundleRef"].(string), input["bundleDigest"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replay after bundle GC: %d %s", response.Code, response.Body.String())
+	}
+	input["message"] = "A different commit"
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("changed request: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 {
+		t.Fatalf("commits=%v err=%v", list, err)
+	}
+	f.visible = false
+	input["message"] = "Saved source"
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code == http.StatusOK {
+		t.Fatal("replay bypassed current authorization")
+	}
+}
+
+func TestKeyedCommitRecoversAcceptedCreateWithLostResponse(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	lost := false
+	f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if lost {
+			return false, nil, nil
+		}
+		lost = true
+		object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		annotations := object.GetAnnotations()
+		annotations["kcp.io/cluster"] = testCluster
+		object.SetAnnotations(annotations)
+		object.SetUID("accepted-commit-uid")
+		if err := f.provider.Tracker().Add(object); err != nil {
+			return true, nil, err
+		}
+		return true, nil, errors.New("connection lost after create was accepted")
+	})
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("lost response: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := f.bundles.Get(context.Background(), testCluster, input["bundleRef"].(string), input["bundleDigest"].(string)); err != nil {
+		t.Fatalf("accepted commit bundle removed: %v", err)
+	}
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("recovered response: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 || list.Items[0].GetUID() != "accepted-commit-uid" {
+		t.Fatalf("recovery duplicated the commit: %v, %v", list, err)
+	}
+}
+
+func TestKeyedCommitConcurrentCreateReturnsExistingObject(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	f.provider.PrependReactor("create", "repositorycommits", func(action ktesting.Action) (bool, runtime.Object, error) {
+		object := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		annotations := object.GetAnnotations()
+		annotations["kcp.io/cluster"] = testCluster
+		object.SetAnnotations(annotations)
+		object.SetUID("other-replica-commit")
+		if err := f.provider.Tracker().Add(object); err != nil {
+			return true, nil, err
+		}
+		return true, nil, apierrors.NewAlreadyExists(repositoryCommits.GroupResource(), object.GetName())
+	})
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("concurrent create: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 || list.Items[0].GetUID() != "other-replica-commit" {
+		t.Fatalf("did not reuse concurrent commit: %v, %v", list, err)
+	}
+}
+
+// A retained fingerprint must not certify a RepositoryCommit whose spec was
+// changed through the ordinary Kubernetes API after creation.
+func TestKeyedCommitRejectsChangedStoredIntent(t *testing.T) {
+	f := newCommitFixture(t)
+	input := keyedCommitInput(t, f)
+	response, _ := f.invoke(t, Commit, input)
+	if response.Code != http.StatusOK {
+		t.Fatalf("initial: %d %s", response.Code, response.Body.String())
+	}
+	list, err := f.provider.Resource(repositoryCommits).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(list.Items) != 1 {
+		t.Fatalf("commits=%v err=%v", list, err)
+	}
+	obj := list.Items[0].DeepCopy()
+	if err := unstructured.SetNestedField(obj.Object, "tampered", "spec", "message"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.provider.Resource(repositoryCommits).Update(context.Background(), obj, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	response, _ = f.invoke(t, Commit, input)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("changed stored spec: %d %s", response.Code, response.Body.String())
 	}
 }

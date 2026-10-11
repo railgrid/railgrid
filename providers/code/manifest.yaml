@@ -596,6 +596,12 @@ spec:
               required:
               - repositoryUID
               properties:
+                requestID:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  pattern: "^[A-Za-z0-9_-]+$"
+                  description: Optional replay key; requires bundleRef and bundleDigest. Reuse only with the identical staged request.
                 repositoryUID:
                   type: string
                   minLength: 1
@@ -656,11 +662,11 @@ spec:
                       maxLength: 253
                   additionalProperties: false
               additionalProperties: false
-            schemaDigest: sha256:7ee0cdf571702b8014a79bd01a8de43b3950de1fc36e45aed6b1ea0eb5ab77f1
+            schemaDigest: sha256:a8c6d27c459fe61c586b35c2a20964050e02a0cc14a705dbc8d9164e6a1b487b
             executionMode: async
             readOnly: false
             risk: high
-            idempotency: none
+            idempotency: keyed
             limits:
               timeoutSeconds: 180
               maxInputBytes: 1048576

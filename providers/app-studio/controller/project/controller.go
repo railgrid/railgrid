@@ -322,6 +322,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if !p.DeletionTimestamp.IsZero() {
 		return r.finalize(ctx, c, &p, string(req.ClusterName))
 	}
+	if err := r.blockPendingRepositoryBindingChange(ctx, &p); err != nil {
+		return ctrl.Result{}, fmt.Errorf("check pending commit repository binding: %w", err)
+	}
 	previewPolicyChanged, err := reconcileDevelopmentPreviewPolicy(&p)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -500,6 +503,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// one commit's bounds) is requeued, with the controller's backoff.
 	if instancesNeedRetry || commit.retry {
 		return ctrl.Result{Requeue: true}, nil
+	}
+	if commit.retryAfter > 0 {
+		return ctrl.Result{RequeueAfter: commit.retryAfter}, nil
 	}
 	return ctrl.Result{}, nil
 }

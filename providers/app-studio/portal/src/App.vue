@@ -9846,6 +9846,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <template v-else>{{ error }}</template>
       </div>
       <InlineNotification
+        v-if="selected?.commitBlock"
+        class="mx-3 mt-3"
+        tone="warning"
+        :title="selected.commitBlock.reason === 'RepositoryCommitFailed' ? 'Git commit retry scheduled' : 'Git commit needs attention'"
+      >
+        <span class="block break-words">{{ selected.commitBlock.message }}</span>
+        <span v-if="selected.commitBlock.reason !== 'RepositoryCommitFailed'" class="block">Your saved commit is preserved. Ask a workspace administrator to resolve the cause and retry it.</span>
+      </InlineNotification>
+      <InlineNotification
         v-if="projectDeletionError"
         class="mx-3 mt-3"
         tone="error"

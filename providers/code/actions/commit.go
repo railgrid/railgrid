@@ -8,6 +8,7 @@ package actions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/railgrid/provider-code/commitbundle"
@@ -38,9 +39,14 @@ const Commit = "commit"
 // a catalogue that lies about its own bounds would be worse than declaring
 // the exception. A caller with more than one mebibyte of files uploads them
 // here, gets an opaque bundle handle back, and passes that handle to Commit
-// as `bundleRef`. Both verbs are gated exactly like a catalogued action, and
-// kcp authorizes this one as `create` on repositories/stage-commit-bundle, so
-// the grant to upload is separate from the grant to commit.
+// as `bundleRef`. Each successful upload gets its own opaque handle, even when
+// another request stages identical bytes, so one commit's terminal cleanup
+// cannot remove another request's pending source. A handle belongs to one
+// logical commit; retries reuse that handle with the same requestID, while a
+// separate intent stages its own handle. Both verbs are gated exactly like a
+// catalogued action, and kcp authorizes this one as `create` on
+// repositories/stage-commit-bundle, so the grant to upload is separate from
+// the grant to commit.
 //
 // See docs/provider-actions.md, "Uncatalogued large-upload verbs".
 const StageCommitBundle = "stage-commit-bundle"
@@ -64,6 +70,7 @@ const MaxCommitBundleInputBytes = 68 << 20
 // therefore not in this contract; adding any of them starts at the CR and the
 // backend's RepositoryCommitInput, not here.
 type commitInput struct {
+	RequestID     string       `json:"requestID,omitempty"`
 	RepositoryUID string       `json:"repositoryUID"`
 	Message       string       `json:"message,omitempty"`
 	Branch        string       `json:"branch,omitempty"`
@@ -123,6 +130,8 @@ func (s *Server) commit(ctx context.Context, provider dynamic.Interface, req dat
 		return nil, wireError("action_forbidden")
 	}
 	request := commitexec.Request{
+		RequestID:     in.RequestID,
+		RepositoryUID: in.RepositoryUID,
 		RepositoryRef: req.Name,
 		Message:       in.Message,
 		Branch:        in.Branch,
@@ -136,6 +145,9 @@ func (s *Server) commit(ctx context.Context, provider dynamic.Interface, req dat
 	}
 	created, err := commitexec.Create(ctx, provider, s.Bundles, req.ClusterID, request)
 	if err != nil {
+		if errors.Is(err, commitexec.ErrCommitRequestConflict) {
+			return nil, wireError("commit_request_conflict")
+		}
 		if commitbundle.IsNotFound(err) {
 			return nil, wireError("bundle_unavailable")
 		}
@@ -162,8 +174,11 @@ func (s *Server) stageCommitBundle(ctx context.Context, req dataplane.Request, v
 	if s.Bundles == nil {
 		return nil, wireError("bundle_unavailable")
 	}
-	ref, err := s.Bundles.Put(ctx, req.ClusterID, commitFiles(in.Files))
+	ref, err := s.Bundles.PutIsolated(ctx, req.ClusterID, commitFiles(in.Files))
 	if err != nil {
+		if commitbundle.IsQuotaExceeded(err) {
+			return nil, wireErrorRetryable("bundle_quota_exceeded", true)
+		}
 		return nil, wireError("invalid_action_input")
 	}
 	return stageCommitBundleOutput{

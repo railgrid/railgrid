@@ -214,11 +214,19 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 			break
 		}
 	}
+	var mutation *sourceMutation
 	if changed {
 		// Reserve the revision before restoring any file. If an individual
 		// restore fails, rollback (even when incomplete) cannot leave bytes
 		// associated with the previous source authority.
-		if err := s.bumpSourceRevision(ctx, scope); err != nil {
+		changedPaths := make([]string, 0, len(plans))
+		for _, plan := range plans {
+			if !plan.restored {
+				changedPaths = append(changedPaths, plan.path)
+			}
+		}
+		mutation, err = s.beginSourceMutation(ctx, scope, changedPaths)
+		if err != nil {
 			return SnapshotRestoreResult{}, err
 		}
 	}
@@ -228,16 +236,38 @@ func (s *FileStore) RestoreSnapshot(ctx context.Context, scope Scope, snapshotID
 				rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer cancelRollback()
 				rollbackErrs := []error{err}
+				rollbackComplete := true
 				for rollbackIndex := index; rollbackIndex >= 0; rollbackIndex-- {
 					applied := plans[rollbackIndex]
 					if rollbackErr := s.restoreFileStateWithMode(rollbackCtx, scope, applied.path, applied.current, applied.existed, applied.mode); rollbackErr != nil {
 						rollbackErrs = append(rollbackErrs, fmt.Errorf("roll back %q: %w", applied.path, rollbackErr))
+						rollbackComplete = false
 					}
 				}
+				rollbackErrs = append(rollbackErrs, s.failSourceMutation(rollbackCtx, scope, mutation, rollbackComplete))
 				return SnapshotRestoreResult{}, errors.Join(rollbackErrs...)
 			}
 		}
 		result.Files = append(result.Files, mutationResult("restore_file", plan.path, plan.entry.After, string(plan.entry.Content), 0))
+	}
+	if mutation != nil {
+		if err := s.completeSourceMutation(ctx, scope, mutation); err != nil {
+			rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancelRollback()
+			rollbackErrs := []error{err}
+			rollbackComplete := true
+			for _, plan := range plans {
+				if plan.restored {
+					continue
+				}
+				if rollbackErr := s.restoreFileStateWithMode(rollbackCtx, scope, plan.path, plan.current, plan.existed, plan.mode); rollbackErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("roll back %q: %w", plan.path, rollbackErr))
+					rollbackComplete = false
+				}
+			}
+			rollbackErrs = append(rollbackErrs, s.failSourceMutation(rollbackCtx, scope, mutation, rollbackComplete))
+			return SnapshotRestoreResult{}, errors.Join(rollbackErrs...)
+		}
 	}
 	return result, nil
 }

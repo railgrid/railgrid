@@ -466,6 +466,32 @@ type ProjectWorkspaceStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	SourceRevision int64 `json:"sourceRevision,omitempty"`
 
+	// SourceMutationID identifies the source write that owns SourceRevision.
+	// It lets a writer resolve a lost status-write acknowledgment without
+	// mistaking another writer's revision for its own.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	SourceMutationID string `json:"sourceMutationID,omitempty"`
+
+	// LastSourceChange identifies the thread and run that wrote this revision.
+	// +optional
+	LastSourceChange *ProjectSourceChange `json:"lastSourceChange,omitempty"`
+
+	// LastPreviewCheckpoint attributes the source snapshot last synchronized
+	// successfully to all development components.
+	// +optional
+	LastPreviewCheckpoint *ProjectSourceChange `json:"lastPreviewCheckpoint,omitempty"`
+
+	// SourcePathAttributions retains the last unambiguous assistant turn that
+	// changed each uncommitted path. Entries with no thread/run identify paths
+	// whose source is legacy, system-authored, or mixed and must not be guessed
+	// onto a conversation turn.
+	// +optional
+	// +listType=map
+	// +listMapKey=path
+	// +kubebuilder:validation:MaxItems=1024
+	SourcePathAttributions []ProjectSourcePathAttribution `json:"sourcePathAttributions,omitempty"`
+
 	// UncommittedPaths are the working-copy paths that differ from the last
 	// commit, sorted. A path that no longer exists in the tree is a deletion
 	// and is committed as one.
@@ -497,19 +523,86 @@ type ProjectWorkspaceStatus struct {
 	Settlement *ProjectCommitSettlement `json:"settlement,omitempty"`
 }
 
+// ProjectSourceChange attributes a durable source revision to its originating turn.
+type ProjectSourceChange struct {
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ThreadID string `json:"threadID,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runID,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	SourceRevision int64 `json:"sourceRevision"`
+}
+
+// ProjectSourcePathAttribution records the producing turn for one path in
+// the durable working copy. An empty ThreadID and RunID deliberately mean
+// that the path has no unambiguous assistant owner.
+type ProjectSourcePathAttribution struct {
+	// Path is a normalized project-relative source path.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1024
+	Path string `json:"path"`
+
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	ThreadID string `json:"threadID,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runID,omitempty"`
+
+	// SourceRevision is the revision at which this path's current bytes were
+	// last changed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	SourceRevision int64 `json:"sourceRevision,omitempty"`
+}
+
 // ProjectPendingCommit names an in-flight RepositoryCommit and the working-copy
 // content it carried.
 type ProjectPendingCommit struct {
-	// Name is the RepositoryCommit object's name in the tenant workspace.
-	// +kubebuilder:validation:Required
+	// Name is populated after the reserved request returns a RepositoryCommit.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// RepositoryRef names the Repository the commit targets.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	RepositoryRef string `json:"repositoryRef,omitempty"`
+
+	// RequestID identifies the durable replay-safe commit intent.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	RequestID string `json:"requestID,omitempty"`
+
+	// RepositoryUID pins the target Repository incarnation.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	RepositoryUID string `json:"repositoryUID,omitempty"`
+
+	// BundleRef names the immutable staged commit payload in Code.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	BundleRef string `json:"bundleRef,omitempty"`
+
+	// BundleDigest pins the staged payload contents.
+	// +optional
+	// +kubebuilder:validation:MaxLength=96
+	BundleDigest string `json:"bundleDigest,omitempty"`
+
+	// Message is captured before submission and preserved on retries.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Message string `json:"message,omitempty"`
+
+	// Branch is the captured target branch for the commit intent.
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	Branch string `json:"branch,omitempty"`
 
 	// WorkspaceDigest binds Paths to the bytes they had when the commit was
 	// sent. Settlement only clears a path whose content still digests the
@@ -525,9 +618,68 @@ type ProjectPendingCommit struct {
 	// +kubebuilder:validation:items:MaxLength=1024
 	Paths []string `json:"paths,omitempty"`
 
+	// SourceRevision is the source revision at which the pending commit's
+	// bytes and attributions were captured.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	SourceRevision int64 `json:"sourceRevision,omitempty"`
+
+	// Attributions is the immutable grouping of committed paths by the
+	// assistant turn that produced them. Paths omitted here are deliberately
+	// unattributed (legacy, system-authored, or mixed source).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1024
+	Attributions []ProjectCommitAttribution `json:"attributions,omitempty"`
+
 	// RequestedAt is when the commit action was called.
 	// +optional
 	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
+
+	// BlockedReason is set when replaying this immutable intent was refused
+	// permanently, or when its named RepositoryCommit failed and the controller
+	// is waiting through an automatic retry cooldown. The request remains
+	// recorded while blocked.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	BlockedReason string `json:"blockedReason,omitempty"`
+
+	// BlockedMessage is a sanitized, user-facing explanation of the replay
+	// refusal or automatic retry cooldown.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	BlockedMessage string `json:"blockedMessage,omitempty"`
+
+	// BlockedAt is when this immutable intent entered its blocked state or
+	// automatic retry cooldown.
+	// +optional
+	BlockedAt *metav1.Time `json:"blockedAt,omitempty"`
+
+	// RetryToken is the last operator retry token consumed for this request.
+	// It prevents a stale retry annotation from repeatedly waking the same
+	// blocked intent.
+	// +optional
+	// +kubebuilder:validation:MaxLength=160
+	RetryToken string `json:"retryToken,omitempty"`
+}
+
+// ProjectCommitAttribution groups the paths in a pending commit that one
+// assistant turn produced.
+type ProjectCommitAttribution struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ThreadID string `json:"threadID"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	RunID string `json:"runID"`
+
+	// Paths are the exact subset of the pending commit produced by this turn.
+	// +kubebuilder:validation:MaxItems=1024
+	// +kubebuilder:validation:items:MaxLength=1024
+	Paths []string `json:"paths"`
 }
 
 // ProjectCommitSettlement is the receipt a landed commit leaves behind.

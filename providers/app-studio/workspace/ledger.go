@@ -43,6 +43,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrNoLedger is returned when a working-copy ledger operation is attempted
@@ -51,16 +52,50 @@ import (
 // whole design exists to remove.
 var ErrNoLedger = errors.New("project workspace ledger is not configured")
 
+// ErrLedgerCapacity means a normalized workspace ledger cannot fit the
+// durable status bounds. Implementations return it before attempting a status
+// write, so callers can treat it as a definitive no-write result.
+var ErrLedgerCapacity = errors.New("project workspace ledger capacity exceeded")
+
 // PendingCommit is a RepositoryCommit in flight for a project workspace.
 type PendingCommit struct {
 	// Name is the RepositoryCommit object's name in the tenant workspace.
+	// It is empty while the durable request is reserved but the Code provider
+	// has not yet returned (or the caller has not yet recorded) the object.
 	Name string
+	// RequestID makes creation replay-safe at the Code provider. The remaining
+	// request fields are the immutable inputs needed to retry after a process
+	// restart without reading mutable workspace files again.
+	RequestID string
 	// RepositoryRef names the Repository the commit targets.
 	RepositoryRef string
+	RepositoryUID string
+	BundleRef     string
+	BundleDigest  string
+	Message       string
+	Branch        string
 	// WorkspaceDigest and Paths are the workspace content the commit carried;
 	// they become the settlement receipt once the commit succeeds.
 	WorkspaceDigest string
 	Paths           []string
+	// SourceRevision is the durable source revision whose bytes and owners
+	// were captured for this request. Later mutations are fenced from this
+	// immutable commit snapshot.
+	SourceRevision uint64
+	// Attributions snapshots the source turns that produced the committed
+	// paths. It travels with the pending RepositoryCommit so later source
+	// changes cannot steal the commit event.
+	Attributions []SourceAttribution
+	// BlockedReason and BlockedMessage retain an immutable intent when replay is
+	// permanently refused or a named RepositoryCommit failure is in its
+	// automatic retry cooldown. BlockedAt persists the start of that state so
+	// replicas and restarts observe the same deadline.
+	BlockedReason  string
+	BlockedMessage string
+	BlockedAt      *time.Time
+	// RetryToken is the last operator retry token consumed for this request.
+	// Keeping it beside the request makes a stale Project annotation inert.
+	RetryToken string
 }
 
 // CommitSettlement is the local cleanup a landed commit still owes the ledger.
@@ -75,6 +110,15 @@ type LedgerRecord struct {
 	// working copy has never been written; readers report it as 1 so an
 	// omitted or zero authority is always rejected downstream.
 	SourceRevision uint64
+	// SourceMutationID identifies the writer of SourceRevision so an ambiguous
+	// status-write response cannot be confused with another writer at that revision.
+	SourceMutationID      string
+	LastSourceChange      *SourceChange
+	LastPreviewCheckpoint *SourceChange
+	// SourcePathAttributions retains one unambiguous owner per source path
+	// since that path last reached git. An empty owner records a path whose
+	// provenance is unknown or mixed, which must stay unattributed.
+	SourcePathAttributions []SourcePathAttribution
 	// UncommittedPaths are the paths that differ from the last commit.
 	UncommittedPaths []string
 	// PendingCommit, when set, is the RepositoryCommit being followed up.
@@ -86,13 +130,29 @@ type LedgerRecord struct {
 // DeepCopy returns a record that shares nothing with the receiver, so a
 // Ledger implementation can hand callers a record it also caches.
 func (r LedgerRecord) DeepCopy() LedgerRecord {
-	out := LedgerRecord{SourceRevision: r.SourceRevision}
+	out := LedgerRecord{SourceRevision: r.SourceRevision, SourceMutationID: r.SourceMutationID}
+	if r.LastSourceChange != nil {
+		change := *r.LastSourceChange
+		out.LastSourceChange = &change
+	}
+	if r.LastPreviewCheckpoint != nil {
+		change := *r.LastPreviewCheckpoint
+		out.LastPreviewCheckpoint = &change
+	}
+	if r.SourcePathAttributions != nil {
+		out.SourcePathAttributions = append([]SourcePathAttribution(nil), r.SourcePathAttributions...)
+	}
 	if r.UncommittedPaths != nil {
 		out.UncommittedPaths = append([]string(nil), r.UncommittedPaths...)
 	}
 	if r.PendingCommit != nil {
 		pending := *r.PendingCommit
 		pending.Paths = append([]string(nil), r.PendingCommit.Paths...)
+		pending.Attributions = cloneSourceAttributions(r.PendingCommit.Attributions)
+		if r.PendingCommit.BlockedAt != nil {
+			blockedAt := *r.PendingCommit.BlockedAt
+			pending.BlockedAt = &blockedAt
+		}
 		out.PendingCommit = &pending
 	}
 	if r.Settlement != nil {
@@ -230,11 +290,42 @@ func NormalizeLedgerRecord(record *LedgerRecord) {
 		return
 	}
 	record.UncommittedPaths = normalizeLedgerPaths(record.UncommittedPaths)
+	record.SourcePathAttributions = normalizeSourcePathAttributions(record.SourcePathAttributions)
 	if record.PendingCommit != nil {
+		requestIDWasPresent := record.PendingCommit.RequestID != ""
+		originalRequestID := record.PendingCommit.RequestID
 		record.PendingCommit.Name = strings.TrimSpace(record.PendingCommit.Name)
+		record.PendingCommit.RequestID = strings.TrimSpace(originalRequestID)
+		record.PendingCommit.RepositoryRef = strings.TrimSpace(record.PendingCommit.RepositoryRef)
+		record.PendingCommit.RepositoryUID = strings.TrimSpace(record.PendingCommit.RepositoryUID)
+		record.PendingCommit.BundleRef = strings.TrimSpace(record.PendingCommit.BundleRef)
+		record.PendingCommit.BundleDigest = strings.TrimSpace(record.PendingCommit.BundleDigest)
+		record.PendingCommit.Message = strings.TrimSpace(record.PendingCommit.Message)
+		record.PendingCommit.Branch = strings.TrimSpace(record.PendingCommit.Branch)
+		record.PendingCommit.BlockedReason = strings.TrimSpace(record.PendingCommit.BlockedReason)
+		record.PendingCommit.BlockedMessage = strings.TrimSpace(record.PendingCommit.BlockedMessage)
+		record.PendingCommit.RetryToken = strings.TrimSpace(record.PendingCommit.RetryToken)
+		if record.PendingCommit.BlockedReason == "" {
+			record.PendingCommit.BlockedMessage = ""
+			record.PendingCommit.BlockedAt = nil
+		} else if record.PendingCommit.BlockedAt != nil {
+			blockedAt := record.PendingCommit.BlockedAt.UTC()
+			record.PendingCommit.BlockedAt = &blockedAt
+		}
 		record.PendingCommit.Paths = normalizeLedgerPaths(record.PendingCommit.Paths)
-		if record.PendingCommit.Name == "" || record.PendingCommit.WorkspaceDigest == "" || len(record.PendingCommit.Paths) == 0 {
-			record.PendingCommit = nil
+		record.PendingCommit.Attributions = NormalizeSourceAttributions(record.PendingCommit.Attributions, record.PendingCommit.Paths)
+		validLegacy := !requestIDWasPresent && record.PendingCommit.RequestID == "" && record.PendingCommit.Name != ""
+		validIntent := record.PendingCommit.RequestID != "" && record.PendingCommit.RepositoryRef != "" &&
+			record.PendingCommit.RepositoryUID != "" && record.PendingCommit.BundleRef != "" && record.PendingCommit.BundleDigest != ""
+		if (!validLegacy && !validIntent) || record.PendingCommit.WorkspaceDigest == "" || len(record.PendingCommit.Paths) == 0 {
+			if !requestIDWasPresent {
+				record.PendingCommit = nil
+			} else if record.PendingCommit.RequestID == "" {
+				// Preserve a malformed keyed intent, including a whitespace-only
+				// request ID, so PendingCommit can reject it and prevent a newer
+				// commit from replacing its durable identity.
+				record.PendingCommit.RequestID = originalRequestID
+			}
 		}
 	}
 	if record.Settlement != nil {
@@ -243,6 +334,147 @@ func NormalizeLedgerRecord(record *LedgerRecord) {
 			record.Settlement = nil
 		}
 	}
+}
+
+// SourcePathAttribution records the owner of a path's current uncommitted
+// source state. Empty ThreadID and RunID mean the path is deliberately
+// unattributed because it is legacy, system-authored, or mixed across turns.
+type SourcePathAttribution struct {
+	Path           string `json:"path"`
+	ThreadID       string `json:"threadID,omitempty"`
+	RunID          string `json:"runID,omitempty"`
+	SourceRevision uint64 `json:"sourceRevision,omitempty"`
+}
+
+// SourceAttribution groups the exact paths in a pending commit that one
+// assistant turn produced. A commit can carry paths from several turns.
+type SourceAttribution struct {
+	ThreadID string   `json:"threadID"`
+	RunID    string   `json:"runID"`
+	Paths    []string `json:"paths"`
+}
+
+func cloneSourceAttributions(values []SourceAttribution) []SourceAttribution {
+	if values == nil {
+		return nil
+	}
+	out := make([]SourceAttribution, len(values))
+	for index, value := range values {
+		out[index] = value
+		out[index].Paths = append([]string(nil), value.Paths...)
+	}
+	return out
+}
+
+func normalizeSourcePathAttributions(values []SourcePathAttribution) []SourcePathAttribution {
+	if len(values) == 0 {
+		return nil
+	}
+	byPath := make(map[string]SourcePathAttribution, len(values))
+	ambiguous := make(map[string]struct{})
+	for _, value := range values {
+		path, err := cleanProjectPath(value.Path)
+		if err != nil {
+			continue
+		}
+		value.Path = path
+		value.ThreadID = strings.TrimSpace(value.ThreadID)
+		value.RunID = strings.TrimSpace(value.RunID)
+		if value.ThreadID == "" || value.RunID == "" {
+			value.ThreadID, value.RunID = "", ""
+		}
+		if _, alreadyAmbiguous := ambiguous[path]; alreadyAmbiguous {
+			continue
+		}
+		if existing, ok := byPath[path]; ok {
+			if existing.ThreadID != value.ThreadID || existing.RunID != value.RunID {
+				delete(byPath, path)
+				ambiguous[path] = struct{}{}
+			}
+			continue
+		}
+		byPath[path] = value
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	out := make([]SourcePathAttribution, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, byPath[path])
+	}
+	return out
+}
+
+// NormalizeSourceAttributions bounds attribution groups to committedPaths,
+// sorts their paths, and drops any path claimed by conflicting owners.
+func NormalizeSourceAttributions(values []SourceAttribution, committedPaths []string) []SourceAttribution {
+	if len(values) == 0 || len(committedPaths) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(committedPaths))
+	for _, rawPath := range committedPaths {
+		path, err := cleanProjectPath(rawPath)
+		if err == nil {
+			allowed[path] = struct{}{}
+		}
+	}
+	type owner struct{ threadID, runID string }
+	byOwner := make(map[owner]map[string]struct{}, len(values))
+	ownerByPath := make(map[string]owner)
+	ambiguous := make(map[string]struct{})
+	for _, value := range values {
+		key := owner{threadID: strings.TrimSpace(value.ThreadID), runID: strings.TrimSpace(value.RunID)}
+		if key.threadID == "" || key.runID == "" {
+			continue
+		}
+		for _, rawPath := range value.Paths {
+			path, err := cleanProjectPath(rawPath)
+			if err != nil {
+				continue
+			}
+			if _, ok := allowed[path]; !ok {
+				continue
+			}
+			if _, conflicted := ambiguous[path]; conflicted {
+				continue
+			}
+			if existing, ok := ownerByPath[path]; ok && existing != key {
+				delete(byOwner[existing], path)
+				delete(ownerByPath, path)
+				ambiguous[path] = struct{}{}
+				continue
+			}
+			ownerByPath[path] = key
+			if byOwner[key] == nil {
+				byOwner[key] = map[string]struct{}{}
+			}
+			byOwner[key][path] = struct{}{}
+		}
+	}
+	owners := make([]owner, 0, len(byOwner))
+	for key := range byOwner {
+		if len(byOwner[key]) > 0 {
+			owners = append(owners, key)
+		}
+	}
+	sort.Slice(owners, func(i, j int) bool {
+		if owners[i].threadID != owners[j].threadID {
+			return owners[i].threadID < owners[j].threadID
+		}
+		return owners[i].runID < owners[j].runID
+	})
+	out := make([]SourceAttribution, 0, len(owners))
+	for _, key := range owners {
+		paths := make([]string, 0, len(byOwner[key]))
+		for path := range byOwner[key] {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		out = append(out, SourceAttribution{ThreadID: key.threadID, RunID: key.runID, Paths: paths})
+	}
+	return out
 }
 
 // removeLedgerPaths returns current without any path in remove.
@@ -285,4 +517,58 @@ func normalizeLedgerPaths(paths []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// SourceChange records the immutable turn attribution of a source revision.
+type SourceChange struct {
+	ThreadID       string `json:"threadID,omitempty"`
+	RunID          string `json:"runID,omitempty"`
+	SourceRevision uint64 `json:"sourceRevision"`
+}
+
+type mutationOriginContextKey struct{}
+
+// ContextWithMutationOrigin attaches server-owned turn provenance to a short
+// workspace transaction. It is never parsed from client-provided headers.
+func ContextWithMutationOrigin(ctx context.Context, threadID, runID string) context.Context {
+	return context.WithValue(ctx, mutationOriginContextKey{}, SourceChange{ThreadID: threadID, RunID: runID})
+}
+
+// LastSourceChange reads provenance from the same durable ledger as its revision.
+func (s *FileStore) LastSourceChange(ctx context.Context, scope Scope) (*SourceChange, error) {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return record.DeepCopy().LastSourceChange, nil
+}
+
+func (s *FileStore) LastPreviewCheckpoint(ctx context.Context, scope Scope) (*SourceChange, error) {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	record, err := ledger.Read(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return record.DeepCopy().LastPreviewCheckpoint, nil
+}
+
+// RecordPreviewCheckpoint records only the snapshot acknowledged by the runtime.
+func (s *FileStore) RecordPreviewCheckpoint(ctx context.Context, scope Scope, source SourceChange) error {
+	ledger, err := s.ledgerFor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = ledger.Update(ctx, scope, func(record *LedgerRecord) (bool, error) {
+		copy := source
+		record.LastPreviewCheckpoint = &copy
+		return true, nil
+	})
+	return err
 }

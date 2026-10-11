@@ -75,21 +75,22 @@ func TestReadRepositoryCommitIsOneGetThroughTheManagerClient(t *testing.T) {
 		t.Fatalf("reads = %d Get / %d List, want exactly one Get and no list", gets, lists)
 	}
 
-	// A commit the Code provider no longer has still reads as NotFound, which
-	// is what lets the caller clear the pending pointer and resend.
+	// A missing RepositoryCommit still reads as NotFound. Legacy records can
+	// then be cleared; keyed records replay their original request safely.
 	if _, err := readRepositoryCommit(context.Background(), c, "commit-gone"); !apierrors.IsNotFound(err) {
-		t.Fatalf("missing commit error = %v, want NotFound so the pending pointer is cleared", err)
+		t.Fatalf("missing commit error = %v, want NotFound for the caller's recovery path", err)
 	}
 }
 
 // A workspace that has not accepted the claim is NOT a workspace whose commit
 // vanished. kcp answers an unserved kind with a RESTMapper miss, and reading
-// that as "gone" would clear the pending pointer and resend a commit that is
+// that as "gone" would clear the pending record and replay a commit that is
 // still in flight — the duplicate-commit shape this loop exists to avoid.
 //
 // The degradation is the one an unreachable workspace has always had: the
-// pointer survives, the error is returned, the controller's backoff retries,
-// and the pass settles itself the moment the binding accepts the claim.
+// pending record survives, the error is returned, the controller's backoff
+// retries, and the pass resumes the same keyed request once the binding
+// accepts the claim.
 func TestResolvePendingCommitKeepsThePointerWhenTheClaimIsUnaccepted(t *testing.T) {
 	noMatch := &meta.NoKindMatchError{
 		GroupKind:        schema.GroupKind{Group: repositoryCommitGVK.Group, Kind: repositoryCommitGVK.Kind},
@@ -105,7 +106,7 @@ func TestResolvePendingCommitKeepsThePointerWhenTheClaimIsUnaccepted(t *testing.
 	// clear the pending record: reaching clearPendingCommit would panic, which
 	// is a sharper assertion than any mock.
 	r := &Reconciler{}
-	resolved, err := r.resolvePendingCommit(context.Background(), c, nil,
+	resolved, err := r.resolvePendingCommit(context.Background(), c, nil, nil,
 		workspace.Scope{ProjectName: "demo"},
 		workspace.PendingCommit{Name: "commit-1", RepositoryRef: "demo-repo"})
 	if err == nil {
