@@ -689,6 +689,34 @@ func (s *MemoryStore) ListAssistantThreadTurnEventsAfter(_ context.Context, scop
 	return out, nil
 }
 
+func (s *MemoryStore) ListAssistantThreadTurnEventsByTypeAfter(_ context.Context, scope Scope, threadID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return nil, errors.New("assistant thread event type is required")
+	}
+	limit = normalizeLimit(limit)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, ok := s.assistantThreads[scope][threadID]; !ok {
+		return nil, ErrAssistantThreadNotFound
+	}
+	events := s.threadTurnEvents[scope][threadID]
+	start := sort.Search(len(events), func(index int) bool {
+		return events[index].Sequence > afterSequence
+	})
+	out := make([]AssistantThreadEvent, 0, min(limit, len(events)-start))
+	for index := start; index < len(events) && len(out) < limit; index++ {
+		if events[index].Type == eventType {
+			out = append(out, cloneAssistantThreadEvent(events[index]))
+		}
+	}
+	return out, nil
+}
+
 func (s *MemoryStore) GetAssistantThreadTurnStartSequence(_ context.Context, scope Scope, threadID, turnID string) (int64, error) {
 	if err := scope.validate(); err != nil {
 		return 0, err

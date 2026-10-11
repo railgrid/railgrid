@@ -2053,7 +2053,19 @@ func (a *projectAssistantSnapshotAccumulator) update(
 		return store.ErrAssistantRunNotFound
 	}
 	s.mu.Unlock()
-	active.transitionMu.Lock()
+	receiptBatch := false
+	if ctx != nil {
+		_, receiptBatch = ctx.Value(projectAssistantExecReceiptBatchDeadlineKey{}).(time.Time)
+	}
+	if receiptBatch && lateToolCall != nil && projectToolBaseName(lateToolCall.Name) == projectToolExecCommand {
+		// A late receipt is optional enrichment. Do not let it wait behind an
+		// in-flight run transition; a later recovery pass can retry the receipt.
+		if !active.transitionMu.TryLock() {
+			return store.ErrAssistantRunConflict
+		}
+	} else {
+		active.transitionMu.Lock()
+	}
 	defer active.transitionMu.Unlock()
 	s.mu.Lock()
 	if current := s.runs[a.key]; current != active || active.run.ID != a.runID {

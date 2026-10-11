@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"strings"
 
+	"k8s.io/klog/v2"
+
 	"github.com/railgrid/provider-app-studio/store"
 )
 
@@ -232,11 +234,26 @@ func (s *Server) loadAssistantThreadTurnToolItems(ctx context.Context, scope sto
 		after = events[len(events)-1].Sequence
 	}
 	if terminalSequence > 0 {
-		if err := s.loadAssistantThreadTurnReceiptSettlements(ctx, scope, threadID, turnID, terminalSequence, toolItems); err != nil {
-			return nil, err
+		candidate := cloneAssistantThreadTurnToolItems(toolItems)
+		if err := s.loadAssistantThreadTurnReceiptSettlements(ctx, scope, threadID, turnID, terminalSequence, candidate); err != nil {
+			klog.FromContext(ctx).Error(err, "assistant turn receipt settlement overlay unavailable; returning base projection", "threadID", threadID, "turnID", turnID)
+		} else {
+			toolItems = candidate
 		}
 	}
 	return toolItems, nil
+}
+
+func cloneAssistantThreadTurnToolItems(source *assistantThreadTurnToolItems) *assistantThreadTurnToolItems {
+	clone := &assistantThreadTurnToolItems{items: make(map[string]assistantThreadItem)}
+	if source == nil {
+		return clone
+	}
+	clone.order = append(clone.order, source.order...)
+	for id, item := range source.items {
+		clone.items[id] = item
+	}
+	return clone
 }
 
 func (s *Server) loadAssistantThreadTurnReceiptSettlements(ctx context.Context, scope store.Scope, threadID, turnID string, afterSequence int64, toolItems *assistantThreadTurnToolItems) error {
@@ -246,6 +263,10 @@ func (s *Server) loadAssistantThreadTurnReceiptSettlements(ctx context.Context, 
 			return err
 		}
 		for _, event := range events {
+			if event.Sequence <= afterSequence || event.Type != assistantThreadEventItemCompleted || event.TurnID != turnID {
+				return errors.New("assistant turn receipt settlement lookup returned an out-of-order event")
+			}
+			afterSequence = event.Sequence
 			if !assistantThreadReceiptSettlementEvent(event) {
 				continue
 			}
@@ -258,9 +279,8 @@ func (s *Server) loadAssistantThreadTurnReceiptSettlements(ctx context.Context, 
 		if len(events) < assistantThreadEventWindowPageSize {
 			return nil
 		}
-		afterSequence = events[len(events)-1].Sequence
 	}
-	return nil
+	return errors.New("assistant turn receipt settlement history exceeded its bounded page window")
 }
 
 // assistantThreadReceiptSettlementItem accepts only a canonical, sequence-bearing

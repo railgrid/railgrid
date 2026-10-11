@@ -395,6 +395,8 @@ func TestAssistantPointLookupIndexesHaveIndependentMigration(t *testing.T) {
 	for _, want := range []string{
 		"app_studio_assistant_thread_events_turn_idx",
 		"app_studio_assistant_thread_events_turn_sequence_idx",
+		"app_studio_assistant_thread_events_type_sequence_idx",
+		"thread_id, event_type, sequence",
 		"WHERE turn_id <> ''",
 		"app_studio_assistant_run_events_lookup_idx",
 		"run_id, event_type, sequence DESC",
@@ -408,7 +410,7 @@ func TestAssistantPointLookupIndexesHaveIndependentMigration(t *testing.T) {
 			t.Fatalf("assistant lookup index is not online-safe: %s", statement)
 		}
 	}
-	if assistantLookupIndexSchemaVersion != "assistant-point-lookups-online-v2" {
+	if assistantLookupIndexSchemaVersion != "assistant-point-lookups-online-v3" {
 		t.Fatalf("assistant point lookup schema version = %q", assistantLookupIndexSchemaVersion)
 	}
 	if strings.Contains(tryLockAssistantLookupIndexes, "xact") || !strings.Contains(tryLockAssistantLookupIndexes, "pg_try_advisory_lock") {
@@ -860,6 +862,18 @@ func TestPostgresAssistantThreadTurnEventsAfterExternalDSN(t *testing.T) {
 	byType, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, "turn-old", "item.started", 0, 10)
 	if err != nil || len(byType) != 1 || byType[0].ItemID != "tool-running" {
 		t.Fatalf("exact event-type query = %#v, %v; want item.started only", byType, err)
+	}
+	batchFirst, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, "item.completed", 2, 2)
+	if err != nil || len(batchFirst) != 2 || batchFirst[0].Sequence != 3 || batchFirst[0].TurnID != "turn-old" || batchFirst[1].Sequence != 4 {
+		t.Fatalf("batch event-type first page = %#v, %v; want scoped sequences 3 and 4", batchFirst, err)
+	}
+	batchSecond, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, "item.completed", batchFirst[1].Sequence, 2)
+	if err != nil || len(batchSecond) != 1 || batchSecond[0].Sequence != 6 || batchSecond[0].TurnID != "turn-new" {
+		t.Fatalf("batch event-type second page = %#v, %v; want sequence 6 from turn-new", batchSecond, err)
+	}
+	otherBatch, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, otherScope, threadID, "item.completed", 0, 10)
+	if err != nil || len(otherBatch) != 1 || otherBatch[0].ItemID != "other-project-tool" {
+		t.Fatalf("other project batch = %#v, %v; want only its own event", otherBatch, err)
 	}
 	empty, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, "turn-old", "item.completed", second[0].Sequence, 10)
 	if err != nil || len(empty) != 0 {

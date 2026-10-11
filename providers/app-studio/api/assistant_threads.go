@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -371,10 +372,10 @@ func (s *Server) validateAssistantThreadItemPageBeforeSequence(ctx context.Conte
 // stops as soon as it has the requested complete turns. Thread-level metadata
 // is filtered by the store, and base transcript work is bounded (500 turn
 // events x 20 pages). Receipt settlements are overlaid only after turn
-// membership is selected, using a shared 500 x 20 event budget across selected
-// interrupted turns. Keeping complete turns preserves item deltas and
-// terminal lifecycle truth. A pathological turn that exceeds the base event
-// bound is omitted as one unit and yields its start sequence as the next
+// membership is selected, using one indexed batch lookup and a shared 500 x 20
+// event budget across selected interrupted turns. Keeping complete turns
+// preserves item deltas and terminal lifecycle truth. A pathological turn that
+// exceeds the base event bound is omitted as one unit and yields its start sequence as the next
 // cursor, keeping older complete turns reachable without returning a corrupt
 // partial projection.
 func (s *Server) loadAssistantThreadEventWindow(
@@ -473,12 +474,12 @@ func (s *Server) loadAssistantThreadEventWindow(
 		}
 		nextCursor = events[0].Sequence
 	}
-	var err error
-	events, err = s.appendAssistantThreadReceiptSettlementEvents(ctx, scope, threadID, events)
+	settledEvents, err := s.appendAssistantThreadReceiptSettlementEvents(ctx, scope, threadID, events)
 	if err != nil {
-		return nil, 0, err
+		klog.FromContext(ctx).Error(err, "assistant thread receipt settlement overlay unavailable; returning base history", "threadID", threadID)
+		return events, nextCursor, nil
 	}
-	return events, nextCursor, nil
+	return settledEvents, nextCursor, nil
 }
 
 // appendAssistantThreadReceiptSettlementEvents overlays post-terminal receipt
@@ -498,7 +499,7 @@ func (s *Server) appendAssistantThreadReceiptSettlementEvents(
 		items            *assistantThreadTurnToolItems
 	}
 	selected := map[string]*selectedTurn{}
-	turnOrder := make([]string, 0)
+	firstTerminalSequence := int64(0)
 	for _, event := range events {
 		turnID := strings.TrimSpace(event.TurnID)
 		if turnID == "" || assistantThreadReceiptSettlementEvent(event) {
@@ -508,7 +509,6 @@ func (s *Server) appendAssistantThreadReceiptSettlementEvents(
 		if turn == nil {
 			turn = &selectedTurn{items: &assistantThreadTurnToolItems{}}
 			selected[turnID] = turn
-			turnOrder = append(turnOrder, turnID)
 		}
 		turn.items.observeEvent(event)
 		switch event.Type {
@@ -516,47 +516,53 @@ func (s *Server) appendAssistantThreadReceiptSettlementEvents(
 			if turn.terminalSequence == 0 {
 				turn.terminalSequence = event.Sequence
 				turn.terminalType = event.Type
+				if event.Type == assistantThreadEventTurnInterrupted && (firstTerminalSequence == 0 || event.Sequence < firstTerminalSequence) {
+					firstTerminalSequence = event.Sequence
+				}
 			}
 		}
+	}
+	if firstTerminalSequence == 0 {
+		return events, nil
 	}
 
 	settlements := make([]store.AssistantThreadEvent, 0)
 	remainingEventBudget := assistantThreadEventWindowPageSize * assistantThreadEventWindowMaxPages
-	for _, turnID := range turnOrder {
-		turn := selected[turnID]
-		if turn.terminalSequence == 0 || turn.terminalType != assistantThreadEventTurnInterrupted {
-			continue
+	afterSequence := firstTerminalSequence
+	for pageIndex := 0; pageIndex < assistantThreadEventWindowMaxPages; pageIndex++ {
+		if remainingEventBudget <= 0 {
+			return nil, fmt.Errorf("assistant thread receipt settlement history exceeded its bounded event budget")
 		}
-		afterSequence := turn.terminalSequence
-		for pageIndex := 0; pageIndex < assistantThreadEventWindowMaxPages; pageIndex++ {
-			if remainingEventBudget <= 0 {
-				return nil, fmt.Errorf("assistant thread receipt settlement history exceeded its bounded event budget")
+		limit := min(assistantThreadEventWindowPageSize, remainingEventBudget)
+		page, err := s.store.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, assistantThreadEventItemCompleted, afterSequence, limit)
+		if err != nil {
+			return nil, err
+		}
+		remainingEventBudget -= len(page)
+		for _, event := range page {
+			if event.Sequence <= afterSequence || event.Type != assistantThreadEventItemCompleted {
+				return nil, fmt.Errorf("assistant thread receipt settlement lookup returned an out-of-order event")
 			}
-			limit := min(assistantThreadEventWindowPageSize, remainingEventBudget)
-			page, err := s.store.ListAssistantThreadTurnEventsAfter(ctx, scope, threadID, turnID, assistantThreadEventItemCompleted, afterSequence, limit)
-			if err != nil {
-				return nil, err
+			afterSequence = event.Sequence
+			turn := selected[strings.TrimSpace(event.TurnID)]
+			if turn == nil || turn.terminalType != assistantThreadEventTurnInterrupted || event.Sequence <= turn.terminalSequence ||
+				!assistantThreadReceiptSettlementEvent(event) {
+				continue
 			}
-			remainingEventBudget -= len(page)
-			for _, event := range page {
-				if assistantThreadReceiptSettlementEvent(event) {
-					prior, exists := turn.items.items[event.ItemID]
-					if assistantThreadReceiptSettlementCanProjectToolItem(event, turnID, prior, exists) {
-						turn.items.observeEvent(event)
-						settlements = append(settlements, event)
-					}
-				}
-				afterSequence = event.Sequence
+			prior, exists := turn.items.items[event.ItemID]
+			if assistantThreadReceiptSettlementCanProjectToolItem(event, event.TurnID, prior, exists) {
+				turn.items.observeEvent(event)
+				settlements = append(settlements, event)
 			}
-			if len(page) < limit {
-				break
-			}
-			if remainingEventBudget == 0 {
-				return nil, fmt.Errorf("assistant thread receipt settlement history exceeded its bounded event budget")
-			}
-			if pageIndex == assistantThreadEventWindowMaxPages-1 {
-				return nil, fmt.Errorf("assistant thread receipt settlement turn %q exceeded its bounded page window", turnID)
-			}
+		}
+		if len(page) < limit {
+			break
+		}
+		if remainingEventBudget == 0 {
+			return nil, fmt.Errorf("assistant thread receipt settlement history exceeded its bounded event budget")
+		}
+		if pageIndex == assistantThreadEventWindowMaxPages-1 {
+			return nil, fmt.Errorf("assistant thread receipt settlement lookup exceeded its bounded page window")
 		}
 	}
 	if len(settlements) == 0 {
@@ -1184,24 +1190,31 @@ func (s *Server) getProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	if run.Status == store.AssistantRunStatusInterrupted {
-		// Terminal turns can receive a durable exec result after their original
-		// stream has closed. Repair from the run ledger on detail reads so the
-		// read model converges after a restart or a missed callback.
-		if err := s.reconcileInterruptedProjectAssistantExecReceipts(r.Context(), scope, run.ID, true); err != nil {
-			s.writeAssistantThreadError(w, err)
-			return
-		}
-		run, err = s.store.GetAssistantRun(r.Context(), scope, turn.ID)
-		if err != nil {
-			s.writeAssistantThreadError(w, err)
-			return
-		}
-	}
 	toolItems, err := s.loadAssistantThreadTurnToolItems(r.Context(), scope, thread.ID, turn.ID)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
 		return
+	}
+	if run.Status == store.AssistantRunStatusInterrupted {
+		// This repair is optional read enrichment. Avoid scanning the run ledger
+		// after the stored action and canonical item already agree. The terminal
+		// action branch still repairs a snapshot that committed before its
+		// canonical thread item did.
+		needsRepair, checkErr := s.interruptedProjectAssistantExecReceiptRepairNeeded(r.Context(), scope, run, toolItems)
+		if checkErr != nil {
+			klog.FromContext(r.Context()).Error(checkErr, "could not check interrupted exec receipt projection during turn read", "runID", run.ID)
+		} else if needsRepair {
+			if repairErr := s.reconcileInterruptedProjectAssistantExecReceipts(r.Context(), scope, run.ID, true); repairErr != nil {
+				klog.FromContext(r.Context()).Error(repairErr, "interrupted exec receipt repair failed during turn read", "runID", run.ID)
+			} else {
+				if refreshed, getErr := s.store.GetAssistantRun(r.Context(), scope, turn.ID); getErr == nil {
+					run = refreshed
+				}
+				if refreshed, refreshErr := s.loadAssistantThreadTurnToolItems(r.Context(), scope, thread.ID, turn.ID); refreshErr == nil {
+					toolItems = refreshed
+				}
+			}
+		}
 	}
 	response := assistantThreadTurnDetailResponse{Turn: newAssistantThreadTurnView(turn, toolItems)}
 	if assistantRunTerminal(run.Status) && len(run.Audit) > 0 {
@@ -1217,6 +1230,63 @@ func (s *Server) getProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Re
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) interruptedProjectAssistantExecReceiptRepairNeeded(
+	ctx context.Context,
+	scope store.Scope,
+	run store.AssistantRun,
+	toolItems *assistantThreadTurnToolItems,
+) (bool, error) {
+	if s == nil || s.store == nil || toolItems == nil || run.Status != store.AssistantRunStatusInterrupted ||
+		strings.TrimSpace(run.ActiveMessageID) == "" {
+		return false, nil
+	}
+	messages, err := s.store.GetMessagesByIDs(ctx, scope, []string{run.ActiveMessageID})
+	if err != nil {
+		return false, err
+	}
+	var message store.Message
+	for _, candidate := range messages {
+		if candidate.ID == run.ActiveMessageID {
+			message = candidate
+			break
+		}
+	}
+	if message.ID == "" {
+		return false, nil
+	}
+	for _, action := range projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed]) {
+		if action.Kind != projectAssistantActionFeedItemRun || action.Exec == nil || strings.TrimSpace(action.ID) == "" {
+			continue
+		}
+		if projectAssistantActionFeedHasUnobservedExecResult(action) {
+			return true, nil
+		}
+		if !projectAssistantExecCommandReceiptObserved(action.Exec) {
+			continue
+		}
+		itemID := assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID)
+		item, exists := toolItems.items[itemID]
+		if !exists || !assistantThreadCanonicalExecActionMatches(item, run, action) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func assistantThreadCanonicalExecActionMatches(item assistantThreadItem, run store.AssistantRun, action projectAssistantActionFeedItem) bool {
+	if action.Sequence < 1 || item.ID != assistantThreadDynamicToolItemID(run.ActiveMessageID, action.ID) ||
+		item.Sequence != int64(action.Sequence) || item.Type != assistantThreadEventDynamicToolCall || item.TurnID != run.ID ||
+		item.AssistantMessageID != run.ActiveMessageID || item.Status != projectAssistantThreadToolItemStatus(action.Status) ||
+		item.Content != action.Title {
+		return false
+	}
+	var canonicalAction projectAssistantActionFeedItem
+	if err := json.Unmarshal(item.Data, &canonicalAction); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(canonicalAction, action)
 }
 
 func (s *Server) steerProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {

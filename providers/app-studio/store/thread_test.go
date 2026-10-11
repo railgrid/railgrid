@@ -219,6 +219,14 @@ func TestAssistantThreadTurnEventsAfterUsesExactTurnAndType(t *testing.T) {
 			if err != nil || len(empty) != 0 {
 				t.Fatalf("exhausted exact-turn page = %#v, %v; want empty", empty, err)
 			}
+			batch, err := s.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, thread.ID, "item.completed", 2, 2)
+			if err != nil || len(batch) != 2 || batch[0].Sequence != 3 || batch[1].Sequence != 4 {
+				t.Fatalf("batch event-type page = %#v, %v; want sequences 3 and 4", batch, err)
+			}
+			batch, err = s.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, thread.ID, "item.completed", batch[1].Sequence, 2)
+			if err != nil || len(batch) != 1 || batch[0].Sequence != 6 || batch[0].TurnID != "turn-new" {
+				t.Fatalf("batch event-type next page = %#v, %v; want only turn-new sequence 6", batch, err)
+			}
 			if _, err := s.ListAssistantThreadTurnEventsAfter(ctx, scope, thread.ID, " ", "item.completed", 0, 10); err == nil {
 				t.Fatal("empty turn ID unexpectedly accepted")
 			}

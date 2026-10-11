@@ -29,13 +29,12 @@ import (
 
 const (
 	projectAssistantExecReceiptRecoveryPageSize   = 128
-	projectAssistantExecReceiptRecoveryMaxPages   = 128
 	projectAssistantExecReceiptSnapshotMaxRetries = 4
 	projectAssistantExecReceiptThreadMaxPages     = 32
 	projectAssistantExecReceiptThreadMaxRetries   = 8
 )
 
-var errProjectAssistantExecReceiptRecoveryLimit = errors.New("assistant exec receipt recovery exceeded its bounded event window")
+var errProjectAssistantExecReceiptLookupLimit = errors.New("assistant exec receipt lookup exceeded its bounded event window")
 
 type projectAssistantExecReceiptBatchDeadlineKey struct{}
 
@@ -67,57 +66,111 @@ func projectAssistantExecReceiptPersistenceContext(ctx context.Context) (context
 	return detachedProjectPersistenceContext(ctx)
 }
 
-// forEachSettledProjectAssistantExecReceipt scans the exact run in ascending
-// sequence order and visits each authoritative receipt as it is found. This
-// keeps recovery memory bounded to one event page while avoiding a result-count
-// cap that would make long but valid turns permanently unrecoverable.
+// forEachSettledProjectAssistantExecReceipt validates the exact run in
+// ascending sequence order before visiting any receipt. The store query is
+// paged and the caller's context bounds total scan time. The ledger retains
+// state for each call, and receipts are staged until the full ledger validates,
+// so memory grows with the run rather than only with one page.
 func (s *Server) forEachSettledProjectAssistantExecReceipt(ctx context.Context, scope store.Scope, runID string, visit func(projectToolCallStreamEvent) error) error {
 	if s == nil || s.store == nil || strings.TrimSpace(runID) == "" {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	runID = strings.TrimSpace(runID)
 	ledger := newProjectAssistantRunEventLedger(s.store, scope, runID)
-	afterSequence := int64(0)
-	for pageIndex := 0; pageIndex < projectAssistantExecReceiptRecoveryMaxPages; pageIndex++ {
-		page, err := s.store.ListAssistantRunEvents(ctx, scope, runID, afterSequence, projectAssistantExecReceiptRecoveryPageSize)
-		if err != nil {
-			return fmt.Errorf("list durable exec receipt events: %w", err)
-		}
-		for _, result := range page {
-			if result.RunID != runID || result.Sequence <= afterSequence {
-				return fmt.Errorf("%w: invalid event ordering or run identity", errProjectAssistantRunToolLedgerCorrupt)
+	receipts, err := func() ([]projectToolCallStreamEvent, error) {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		ledger.loaded = true
+		ledger.lastSequence = 0
+		ledger.calls = map[string]*projectAssistantRunToolCallState{}
+
+		var receipts []projectToolCallStreamEvent
+		seen := map[string]struct{}{}
+		afterSequence := int64(0)
+		for {
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-			afterSequence = result.Sequence
-			if result.Type != projectAssistantRunToolResultEventType || projectToolBaseName(result.ToolName) != projectToolExecCommand {
-				continue
-			}
-			if strings.TrimSpace(result.CallID) == "" {
-				return fmt.Errorf("%w: exec result event has no call ID", errProjectAssistantRunToolLedgerCorrupt)
-			}
-			event, found, err := projectAssistantExecReceiptFromLedger(ctx, ledger, result.CallID, result.ToolName)
+			page, err := s.store.ListAssistantRunEvents(ctx, scope, runID, afterSequence, projectAssistantExecReceiptRecoveryPageSize)
 			if err != nil {
+				return nil, fmt.Errorf("list durable exec receipt events: %w", err)
+			}
+			if len(page) > projectAssistantExecReceiptRecoveryPageSize {
+				return nil, fmt.Errorf("%w: store returned %d events for a page limit of %d", errProjectAssistantRunToolLedgerCorrupt, len(page), projectAssistantExecReceiptRecoveryPageSize)
+			}
+			if len(page) == 0 {
+				break
+			}
+			for _, result := range page {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if result.RunID != runID || result.Sequence <= afterSequence {
+					return nil, fmt.Errorf("%w: invalid event ordering or run identity", errProjectAssistantRunToolLedgerCorrupt)
+				}
+				if result.Sequence != ledger.lastSequence+1 {
+					return nil, fmt.Errorf("%w: event sequence advanced from %d to %d", errProjectAssistantRunToolLedgerCorrupt, ledger.lastSequence, result.Sequence)
+				}
+				if err := ledger.applyEventLocked(result); err != nil {
+					return nil, err
+				}
+				afterSequence = result.Sequence
+				if result.Type != projectAssistantRunToolResultEventType || projectToolBaseName(result.ToolName) != projectToolExecCommand {
+					continue
+				}
+				callID := strings.TrimSpace(result.CallID)
+				if callID == "" {
+					return nil, fmt.Errorf("%w: exec result event has no call ID", errProjectAssistantRunToolLedgerCorrupt)
+				}
+				if _, ok := seen[callID]; ok {
+					continue
+				}
+				state := ledger.calls[callID]
+				// A terminal tool response can be written before dispatch, for
+				// example when policy or argument validation rejects a call. Such a
+				// response is not an exec receipt and must not block later results.
+				if state == nil || !state.Dispatched || state.Outcome == nil {
+					continue
+				}
+				if state.Requested && state.RequestArgsDigest == "" {
+					return nil, fmt.Errorf("%w: call %q request has no validated input digest", errProjectAssistantRunToolLedgerCorrupt, callID)
+				}
+				args := map[string]any{}
+				if err := json.Unmarshal(state.Arguments, &args); err != nil {
+					return nil, fmt.Errorf("%w: call %q arguments are invalid", errProjectAssistantRunToolLedgerCorrupt, callID)
+				}
+				outcome := *state.Outcome
+				outcome.ObservedAt = state.OutcomeAt
+				event, found := projectAssistantExecReceiptFromOutcome(callID, result.ToolName, args, outcome)
+				if !found {
+					continue
+				}
+				seen[callID] = struct{}{}
+				receipts = append(receipts, event)
+			}
+			if len(page) < projectAssistantExecReceiptRecoveryPageSize {
+				break
+			}
+		}
+		return receipts, nil
+	}()
+	if err != nil {
+		return err
+	}
+	for _, event := range receipts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if visit != nil {
+			if err := visit(event); err != nil {
 				return err
 			}
-			// A terminal tool response can be written before dispatch, for example
-			// when policy or argument validation rejects a call. Such a response is
-			// not an exec receipt and must not block recovery of later results.
-			if !found {
-				continue
-			}
-			if event.ObservedAt.IsZero() {
-				event.ObservedAt = result.CreatedAt
-			}
-			if visit != nil {
-				if err := visit(event); err != nil {
-					return err
-				}
-			}
-		}
-		if len(page) < projectAssistantExecReceiptRecoveryPageSize {
-			return nil
 		}
 	}
-	return fmt.Errorf("%w: more than %d run-event pages", errProjectAssistantExecReceiptRecoveryLimit, projectAssistantExecReceiptRecoveryMaxPages)
+	return nil
 }
 
 func projectAssistantExecReceiptFromLedger(ctx context.Context, ledger *projectAssistantRunEventLedger, callID, toolName string) (projectToolCallStreamEvent, bool, error) {
@@ -128,13 +181,18 @@ func projectAssistantExecReceiptFromLedger(ctx context.Context, ledger *projectA
 	if err != nil || !found {
 		return projectToolCallStreamEvent{}, found, err
 	}
+	event, found := projectAssistantExecReceiptFromOutcome(callID, toolName, args, outcome)
+	return event, found, nil
+}
+
+func projectAssistantExecReceiptFromOutcome(callID, toolName string, args map[string]any, outcome projectAssistantRunToolCallOutcome) (projectToolCallStreamEvent, bool) {
 	status := projectToolCallTerminalStatus(toolName, outcome.Result, outcome.Succeeded())
 	exec := projectAssistantExecMetadataForToolArguments(toolName, args, outcome.Result, status)
 	if exec == nil || (outcome.Canceled && exec.ExitCode == nil) || !projectAssistantExecCommandReceiptObserved(exec) {
 		// App-side cancellation, a lost START response, and polling failures do
 		// not prove what the process did. Preserve the synthetic unknown action
 		// until the durable command result contains terminal process evidence.
-		return projectToolCallStreamEvent{}, false, nil
+		return projectToolCallStreamEvent{}, false
 	}
 	event := projectToolCallStreamEvent{
 		ID:         callID,
@@ -149,7 +207,7 @@ func projectAssistantExecReceiptFromLedger(ctx context.Context, ledger *projectA
 	if strings.TrimSpace(outcome.Error) != "" && !projectAssistantRunToolCancellation(errors.New(outcome.Error)) {
 		event.Error = projectEinoAssistantSafeErrorText(errors.New(outcome.Error))
 	}
-	return event, true, nil
+	return event, true
 }
 
 // reconcileProjectAssistantExecReceipt handles a late result after the normal
@@ -288,7 +346,9 @@ func (s *Server) loadProjectAssistantExecReceiptTarget(ctx context.Context, scop
 	}
 	if run.ID != strings.TrimSpace(runID) || strings.TrimSpace(run.ThreadID) == "" ||
 		strings.TrimSpace(run.ClientRequestID) == "" || strings.TrimSpace(run.UserMessageID) == "" || strings.TrimSpace(run.ActiveMessageID) == "" ||
-		(run.ProjectName != "" && run.ProjectName != scope.ProjectName) || (run.ProjectUID != "" && run.ProjectUID != scope.ProjectUID) {
+		// Both stores stamp the scope on every persisted run, so there is no
+		// legacy empty-scope form to accept during receipt recovery.
+		run.ProjectName != scope.ProjectName || run.ProjectUID != scope.ProjectUID {
 		return store.AssistantRun{}, store.AssistantTurn{}, store.AssistantThread{}, store.Message{}, false, nil
 	}
 	thread, err := s.store.GetAssistantThread(ctx, scope, run.ThreadID)
@@ -477,6 +537,11 @@ func (s *Server) appendProjectAssistantExecReceiptCanonicalEvent(ctx context.Con
 		Payload:  payload,
 	}
 	for attempt := 0; attempt < projectAssistantExecReceiptThreadMaxRetries; attempt++ {
+		if attempt > 0 {
+			if err := waitProjectAssistantExecReceiptCASRetry(ctx, attempt); err != nil {
+				return err
+			}
+		}
 		latest, err := s.store.ListAssistantThreadEventsBefore(ctx, scope, run.ThreadID, 0, 1)
 		if err != nil {
 			return err
@@ -513,50 +578,23 @@ func (s *Server) appendProjectAssistantExecReceiptCanonicalEvent(ctx context.Con
 	return store.ErrAssistantThreadEventConflict
 }
 
-func (s *Server) acquireAssistantThreadProjectionLockContext(ctx context.Context, scope store.Scope, threadID, turnID string) (func(), error) {
-	if s == nil {
-		return nil, errors.New("assistant thread projection server is not configured")
-	}
+func waitProjectAssistantExecReceiptCASRetry(ctx context.Context, attempt int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	key := fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s%d:%s%d:%s", len(scope.OrgUUID), scope.OrgUUID, len(scope.WorkspaceUUID), scope.WorkspaceUUID, len(scope.ProjectName), scope.ProjectName, len(scope.ProjectUID), scope.ProjectUID, len(threadID), threadID, len(turnID), turnID)
-	s.mu.Lock()
-	if s.assistantProjectionLocks == nil {
-		s.assistantProjectionLocks = map[string]*assistantThreadProjectionLockEntry{}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	entry := s.assistantProjectionLocks[key]
-	if entry == nil {
-		entry = &assistantThreadProjectionLockEntry{}
-		s.assistantProjectionLocks[key] = entry
+	// Keep retries short while preventing immediate cross-replica CAS hammering.
+	delay := 5 * time.Millisecond * time.Duration(1<<min(attempt-1, 3))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
 	}
-	entry.refs++
-	s.mu.Unlock()
-
-	wait := time.NewTicker(5 * time.Millisecond)
-	defer wait.Stop()
-	for !entry.mu.TryLock() {
-		select {
-		case <-ctx.Done():
-			s.mu.Lock()
-			entry.refs--
-			if entry.refs == 0 && s.assistantProjectionLocks[key] == entry {
-				delete(s.assistantProjectionLocks, key)
-			}
-			s.mu.Unlock()
-			return nil, ctx.Err()
-		case <-wait.C:
-		}
-	}
-	return func() {
-		entry.mu.Unlock()
-		s.mu.Lock()
-		entry.refs--
-		if entry.refs == 0 && s.assistantProjectionLocks[key] == entry {
-			delete(s.assistantProjectionLocks, key)
-		}
-		s.mu.Unlock()
-	}, nil
 }
 
 func (s *Server) findProjectAssistantExecReceiptCanonicalEvent(ctx context.Context, scope store.Scope, threadID, turnID string, afterSequence int64, want store.AssistantThreadEvent) (bool, error) {
@@ -579,7 +617,7 @@ func (s *Server) findProjectAssistantExecReceiptCanonicalEvent(ctx context.Conte
 		}
 		afterSequence = page[len(page)-1].Sequence
 	}
-	return false, fmt.Errorf("%w: assistant thread receipt lookup exceeded %d pages", errProjectAssistantExecReceiptRecoveryLimit, projectAssistantExecReceiptThreadMaxPages)
+	return false, fmt.Errorf("%w: assistant thread receipt lookup exceeded %d pages", errProjectAssistantExecReceiptLookupLimit, projectAssistantExecReceiptThreadMaxPages)
 }
 
 func projectAssistantReceiptEventMatches(event, want store.AssistantThreadEvent) bool {

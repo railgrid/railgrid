@@ -216,6 +216,10 @@ type Store interface {
 	// for one exact turn and event type. It supports late projection repair
 	// without scanning newer turns or unrelated thread history.
 	ListAssistantThreadTurnEventsAfter(ctx context.Context, scope Scope, threadID, turnID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error)
+	// ListAssistantThreadTurnEventsByTypeAfter returns a bounded chronological
+	// page for one event type across all turns in the thread. It supports batch
+	// enrichment of selected turns without one query per turn.
+	ListAssistantThreadTurnEventsByTypeAfter(ctx context.Context, scope Scope, threadID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error)
 	// GetAssistantThreadTurnStartSequence returns the canonical turn.started
 	// sequence without loading the turn's potentially large event stream.
 	GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error)

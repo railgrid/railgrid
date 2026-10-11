@@ -1078,7 +1078,10 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			if callbacksClosed {
 				callbackMu.Unlock()
 				if projectToolBaseName(event.Name) == projectToolExecCommand && projectAssistantToolCallCanSettleStopping(event.Status) {
-					if err := s.reconcileProjectAssistantExecReceipt(context.Background(), projectMessageScope(id.orgUUID, id.workspaceUUID, project), run.ID, event.ID); err != nil {
+					reconcileCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecObservedAtTimeout)
+					err := s.reconcileProjectAssistantExecReceipt(reconcileCtx, projectMessageScope(id.orgUUID, id.workspaceUUID, project), run.ID, event.ID)
+					cancel()
+					if err != nil {
 						klog.ErrorS(err, "late assistant exec receipt reconciliation failed", "runID", run.ID)
 					}
 				}
@@ -1414,12 +1417,15 @@ func (s *Server) acquireProjectAssistantOrphanRecoveryFence(ctx context.Context,
 	defer cancelClaims()
 	ownerReplica := "assistant-recovery-" + uuid.NewString()
 	ownedKeys := make([]string, 0, 3)
+	var releaseOnce sync.Once
 	release := func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
-		defer cancel()
-		for index := len(ownedKeys) - 1; index >= 0; index-- {
-			_ = s.store.ReleaseReplicaClaim(releaseCtx, ownedKeys[index], ownerReplica)
-		}
+		releaseOnce.Do(func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
+			defer cancel()
+			for index := len(ownedKeys) - 1; index >= 0; index-- {
+				_ = s.store.ReleaseReplicaClaim(releaseCtx, ownedKeys[index], ownerReplica)
+			}
+		})
 	}
 
 	claim := func(key, detail string) (bool, error) {
@@ -1542,21 +1548,24 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 		return err
 	}
 	if assistantRunTerminal(run.Status) {
-		// The process may have exited after a prior recovery committed the
-		// generic terminal state but before its canonical thread projection was
-		// repaired. Terminal runs therefore still need the idempotent projection
-		// pass on callers that do not already hold the per-turn lock.
-		persistCtx, cancel := detachedProjectPersistenceContext(ctx)
-		defer cancel()
-		if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, reconcileCanonicalProjection); err != nil {
-			return err
-		}
+		// Terminal projection repair is the recovery boundary. Receipt repair is
+		// optional enrichment and must not delay or prevent closing the turn.
 		if reconcileCanonicalProjection {
-			run, err = s.store.GetAssistantRun(persistCtx, scope, run.ID)
+			projectionCtx, cancelProjection := detachedProjectPersistenceContext(context.Background())
+			defer cancelProjection()
+			if run.Status == store.AssistantRunStatusInterrupted || run.Status == store.AssistantRunStatusAborted {
+				if err := appendProjectAssistantInterruptedBoundary(projectionCtx, s.store, scope, run); err != nil {
+					return err
+				}
+			}
+			run, err = s.store.GetAssistantRun(projectionCtx, scope, run.ID)
 			if err != nil {
 				return err
 			}
-			return s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run)
+			if err := s.reconcileOrphanedProjectAssistantCanonicalTurn(projectionCtx, scope, run); err != nil {
+				return err
+			}
+			s.reconcileInterruptedProjectAssistantExecReceiptsBestEffort(scope, run)
 		}
 		return nil
 	}
@@ -1584,7 +1593,12 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 	if err != nil || !fenced {
 		return err
 	}
-	defer releaseFence()
+	fenceReleased := false
+	defer func() {
+		if !fenceReleased {
+			releaseFence()
+		}
+	}()
 
 	// Re-read the durable run after acquiring the fence. A concurrent owner may
 	// have completed it while this recovery was waiting on storage.
@@ -1601,15 +1615,24 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 		return nil
 	}
 	if assistantRunTerminal(run.Status) {
-		if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, reconcileCanonicalProjection); err != nil {
-			return err
-		}
 		if reconcileCanonicalProjection {
-			run, err = s.store.GetAssistantRun(persistCtx, scope, run.ID)
+			projectionCtx, cancelProjection := detachedProjectPersistenceContext(context.Background())
+			defer cancelProjection()
+			if run.Status == store.AssistantRunStatusInterrupted || run.Status == store.AssistantRunStatusAborted {
+				if err := appendProjectAssistantInterruptedBoundary(projectionCtx, s.store, scope, run); err != nil {
+					return err
+				}
+			}
+			run, err = s.store.GetAssistantRun(projectionCtx, scope, run.ID)
 			if err != nil {
 				return err
 			}
-			return s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run)
+			if err := s.reconcileOrphanedProjectAssistantCanonicalTurn(projectionCtx, scope, run); err != nil {
+				return err
+			}
+			releaseFence()
+			fenceReleased = true
+			s.reconcileInterruptedProjectAssistantExecReceiptsBestEffort(scope, run)
 		}
 		return nil
 	}
@@ -1643,14 +1666,16 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 	if err := s.store.SaveAssistantRunSnapshot(persistCtx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
 		return err
 	}
-	if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, reconcileCanonicalProjection); err != nil {
-		return err
-	}
-	run, err = s.store.GetAssistantRun(persistCtx, scope, run.ID)
+	// Once the generic transition is committed, use a fresh budget for the
+	// canonical boundary and turn closure. The transition context may have been
+	// nearly exhausted by the run/message snapshot itself.
+	projectionCtx, cancelProjection := detachedProjectPersistenceContext(context.Background())
+	defer cancelProjection()
+	run, err = s.store.GetAssistantRun(projectionCtx, scope, run.ID)
 	if err != nil {
 		return err
 	}
-	if err := appendProjectAssistantInterruptedBoundary(persistCtx, s.store, scope, run); err != nil {
+	if err := appendProjectAssistantInterruptedBoundary(projectionCtx, s.store, scope, run); err != nil {
 		return err
 	}
 	s.projectAssistantSupervisor().log("orphan_interrupted", scope, run)
@@ -1660,11 +1685,27 @@ func (s *Server) reconcileOrphanedProjectAssistantRunWithProjection(ctx context.
 	// blocks future turns on the thread. Reconcile that projection now so a
 	// subsequent request cannot encounter a permanently active turn.
 	if reconcileCanonicalProjection {
-		if err := s.reconcileOrphanedProjectAssistantCanonicalTurn(persistCtx, scope, run); err != nil {
+		if err := s.reconcileOrphanedProjectAssistantCanonicalTurn(projectionCtx, scope, run); err != nil {
 			return err
 		}
+		releaseFence()
+		fenceReleased = true
+		// Receipt settlement enriches a closed turn. Give it a fresh bounded
+		// budget after releasing the recovery fence so new turns can proceed.
+		s.reconcileInterruptedProjectAssistantExecReceiptsBestEffort(scope, run)
 	}
 	return nil
+}
+
+func (s *Server) reconcileInterruptedProjectAssistantExecReceiptsBestEffort(scope store.Scope, run store.AssistantRun) {
+	if run.Status != store.AssistantRunStatusInterrupted {
+		return
+	}
+	persistCtx, cancel := detachedProjectPersistenceContext(context.Background())
+	defer cancel()
+	if err := s.reconcileInterruptedProjectAssistantExecReceipts(persistCtx, scope, run.ID, true); err != nil {
+		klog.ErrorS(err, "interrupted exec receipt reconciliation failed", "runID", run.ID)
+	}
 }
 
 func (s *Server) reconcileOrphanedProjectAssistantCanonicalTurn(ctx context.Context, scope store.Scope, run store.AssistantRun) error {

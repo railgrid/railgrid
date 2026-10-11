@@ -847,6 +847,48 @@ func (s *PostgresStore) ListAssistantThreadTurnEventsAfter(ctx context.Context, 
 	return events, nil
 }
 
+func (s *PostgresStore) ListAssistantThreadTurnEventsByTypeAfter(ctx context.Context, scope Scope, threadID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return nil, errors.New("assistant thread event type is required")
+	}
+	limit = normalizeLimit(limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT turn_id,sequence,event_type,item_id,request_id,payload,created_at
+		FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+			AND thread_id=$5 AND turn_id <> '' AND event_type=$6 AND sequence>$7
+		ORDER BY sequence ASC LIMIT $8`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		threadID, eventType, afterSequence, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list assistant thread turn events by type after sequence: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	events := make([]AssistantThreadEvent, 0, limit)
+	for rows.Next() {
+		event := AssistantThreadEvent{ThreadID: threadID}
+		if err := rows.Scan(&event.TurnID, &event.Sequence, &event.Type, &event.ItemID, &event.RequestID, &event.Payload, &event.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan assistant thread turn event by type after sequence: %w", err)
+		}
+		event.CreatedAt = event.CreatedAt.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate assistant thread turn events by type after sequence: %w", err)
+	}
+	if len(events) == 0 {
+		if _, err := s.GetAssistantThread(ctx, scope, threadID); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
 func (s *PostgresStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error) {
 	if err := scope.validate(); err != nil {
 		return 0, err

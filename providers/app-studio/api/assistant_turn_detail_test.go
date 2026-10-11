@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,17 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/store"
 )
+
+type assistantTurnRepairLedgerFailureStore struct {
+	store.Store
+	err   error
+	calls int
+}
+
+func (s *assistantTurnRepairLedgerFailureStore) ListAssistantRunEvents(_ context.Context, _ store.Scope, _ string, _ int64, _ int) ([]store.AssistantRunEvent, error) {
+	s.calls++
+	return nil, s.err
+}
 
 func TestGetProjectAssistantThreadTurnReturnsTerminalSettingsWithoutAudit(t *testing.T) {
 	messages := store.NewMemoryStore()
@@ -142,6 +154,78 @@ func TestGetProjectAssistantThreadTurnEnforcesThreadOwnership(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("cross-user turn detail status = %d, want %d: %s", response.Code, http.StatusNotFound, response.Body.String())
+	}
+}
+
+func TestGetProjectAssistantThreadTurnReturnsStoredProjectionWhenReceiptRepairFails(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	ledgerErr := errors.New("corrupt durable run receipt ledger")
+	messages := &assistantTurnRepairLedgerFailureStore{Store: inner, err: ledgerErr}
+	server := newAssistantTurnDetailServer(messages)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	now := time.Now().UTC()
+	threadID, turnID, assistantID := "thread-repair-read", "turn-repair-read", "assistant-repair-read"
+	if _, err := inner.CreateAssistantThread(ctx, scope, store.AssistantThread{
+		ID: threadID, ActorID: "test-user", Status: store.AssistantThreadStatusIdle, CreatedAt: now, UpdatedAt: now,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	call := projectToolCallStreamEvent{
+		ID: "call-repair-read", Name: projectToolExecCommand, Status: "running",
+		Exec: &projectAssistantExecMetadata{Component: "workspace", Argv: []string{"go", "test"}, TimeoutSeconds: 90, Status: "running"},
+	}
+	action := projectAssistantActionFeedItemFromToolCall(call)
+	action.Sequence = 1
+	action = finalizeProjectAssistantActionFeed([]projectAssistantActionFeedItem{action}, store.AssistantRunStatusInterrupted)[0]
+	itemID := assistantThreadDynamicToolItemID(assistantID, action.ID)
+	item := assistantThreadItem{
+		ID: itemID, TurnID: turnID, Type: assistantThreadEventDynamicToolCall,
+		Status: projectAssistantThreadToolItemStatus(action.Status), Content: action.Title,
+		AssistantMessageID: assistantID, Sequence: int64(action.Sequence), CreatedAt: now,
+	}
+	item.Data, _ = json.Marshal(action)
+	itemPayload, _ := json.Marshal(map[string]any{"item": item})
+	turn := store.AssistantTurn{
+		ID: turnID, ThreadID: threadID, ActorID: "test-user", ClientUserMessageID: "client-repair-read",
+		Mode: store.AssistantRunModeDefault, ApprovalMode: store.AssistantApprovalModeOnRequest,
+		Status: store.AssistantTurnStatusInterrupted, CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}
+	if _, err := inner.CreateAssistantTurn(ctx, scope, turn, []store.AssistantThreadEvent{
+		{Type: assistantThreadEventTurnStarted, CreatedAt: now},
+		{Type: assistantThreadEventItemStarted, ItemID: itemID, Payload: itemPayload, CreatedAt: now},
+		{Type: assistantThreadEventTurnInterrupted, CreatedAt: now.Add(time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := store.AssistantRun{
+		ID: turnID, ThreadID: threadID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID,
+		Mode: turn.Mode, ApprovalMode: turn.ApprovalMode, Status: store.AssistantRunStatusInterrupted,
+		ClientRequestID: turn.ClientUserMessageID, UserMessageID: "user-repair-read", ActiveMessageID: assistantID,
+		Revision: 1, CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}
+	if _, err := inner.CreateAssistantRun(ctx, scope,
+		store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now},
+		store.Message{ID: assistantID, Role: "assistant", ActorID: "test-user", Metadata: map[string]any{projectMessageMetadataAssistantActionFeed: []projectAssistantActionFeedItem{action}}, CreatedAt: now, UpdatedAt: now}, run); err != nil {
+		t.Fatal(err)
+	}
+
+	router := mux.NewRouter()
+	server.Register(router)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, assistantTurnDetailHTTPTestRequest(http.MethodGet, "/api/projects/demo/assistant/threads/"+threadID+"/turns/"+turnID, "test-user"))
+	if response.Code != http.StatusOK {
+		t.Fatalf("turn detail status = %d, want %d despite optional repair error: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var detail assistantThreadTurnDetailResponse
+	if err := json.NewDecoder(response.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Turn.Status != store.AssistantTurnStatusInterrupted || detail.Turn.FailedItems != 1 || len(detail.Turn.Failures) != 1 || detail.Turn.Failures[0].ItemID != itemID {
+		t.Fatalf("turn detail = %#v, want the saved interrupted projection and unknown-result row", detail.Turn)
+	}
+	if messages.calls != 1 {
+		t.Fatalf("durable receipt repair reads=%d, want one bounded attempt", messages.calls)
 	}
 }
 

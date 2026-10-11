@@ -423,6 +423,19 @@ func (s *encryptedStore) ListAssistantThreadTurnEventsAfter(ctx context.Context,
 	return events, nil
 }
 
+func (s *encryptedStore) ListAssistantThreadTurnEventsByTypeAfter(ctx context.Context, scope Scope, threadID, eventType string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	events, err := s.inner.ListAssistantThreadTurnEventsByTypeAfter(ctx, scope, threadID, eventType, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range events {
+		if err := s.decryptAssistantThreadEvent(scope, &events[index]); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
 func (s *encryptedStore) GetAssistantThreadTurnStartSequence(ctx context.Context, scope Scope, threadID, turnID string) (int64, error) {
 	return s.inner.GetAssistantThreadTurnStartSequence(ctx, scope, threadID, turnID)
 }

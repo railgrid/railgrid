@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -125,6 +126,269 @@ func TestProjectAssistantExecReceiptIgnoresCancellationWithoutTerminalExit(t *te
 	restarted := newProjectAssistantRunEventLedger(messages, scope, "receipt-canceled-no-exit")
 	if _, found, err := projectAssistantExecReceiptFromLedger(ctx, restarted, "canceled-call", projectToolExecCommand); err != nil || found {
 		t.Fatalf("canceled receipt = found %t, err=%v; want unknown until exit evidence exists", found, err)
+	}
+}
+
+type assistantExecReceiptPagedEventsStore struct {
+	store.Store
+	events []store.AssistantRunEvent
+}
+
+func (s *assistantExecReceiptPagedEventsStore) ListAssistantRunEvents(_ context.Context, _ store.Scope, runID string, afterSequence int64, limit int) ([]store.AssistantRunEvent, error) {
+	start := int(afterSequence)
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(s.events) {
+		return nil, nil
+	}
+	end := min(start+limit, len(s.events))
+	page := append([]store.AssistantRunEvent(nil), s.events[start:end]...)
+	for index := range page {
+		if page[index].RunID == "" {
+			page[index].RunID = runID
+		}
+	}
+	return page, nil
+}
+
+func TestReconcileInterruptedExecReceiptScansBeyond128EventPages(t *testing.T) {
+	const fillerEventCount = 128 * projectAssistantExecReceiptRecoveryPageSize
+	const runID = "receipt-many-pages"
+	const callID = "late-after-many-pages"
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	args := map[string]any{"component": "workspace", "argv": []string{"go", "test"}}
+	canonicalArgs, digest, err := projectAssistantRunToolCallDigest(projectToolExecCommand, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callPayload, err := json.Marshal(projectAssistantRunToolCallPayload{
+		Arguments: canonicalArgs, Read: true, Attempt: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPayload, err := json.Marshal(projectAssistantRunToolResultEventPayload(projectAssistantRunToolCallOutcome{
+		Result:      `{"status":"succeeded","summary":"Command completed.","exitCode":0}`,
+		Disposition: projectAssistantToolDispositionSucceeded,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make([]store.AssistantRunEvent, 0, fillerEventCount+2)
+	for sequence := 1; sequence <= fillerEventCount; sequence++ {
+		events = append(events, store.AssistantRunEvent{RunID: runID, Sequence: int64(sequence), Type: "audit_marker"})
+	}
+	events = append(events,
+		store.AssistantRunEvent{
+			RunID: runID, Sequence: int64(fillerEventCount + 1), Type: projectAssistantRunToolCallEventType,
+			CallID: callID, ToolName: projectToolExecCommand, ArgsDigest: digest, Payload: callPayload,
+			CreatedAt: now,
+		},
+		store.AssistantRunEvent{
+			RunID: runID, Sequence: int64(fillerEventCount + 2), Type: projectAssistantRunToolResultEventType,
+			CallID: callID, ToolName: projectToolExecCommand, ArgsDigest: digest, Payload: resultPayload,
+			CreatedAt: now.Add(time.Second),
+		},
+	)
+	messageStore := &assistantExecReceiptPagedEventsStore{events: events}
+	server := &Server{store: messageStore}
+	visited := 0
+	if err := server.forEachSettledProjectAssistantExecReceipt(context.Background(), store.Scope{}, runID, func(event projectToolCallStreamEvent) error {
+		visited++
+		if event.ID != callID || event.ObservedAt != now.Add(time.Second) || event.Exec == nil || event.Exec.ExitCode == nil || *event.Exec.ExitCode != 0 {
+			t.Fatalf("late event = %#v, want durable receipt after %d filler events", event, fillerEventCount)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan full ledger: %v", err)
+	}
+	if visited != 1 {
+		t.Fatalf("visited %d receipts, want one after %d filler events", visited, fillerEventCount)
+	}
+}
+
+type assistantExecReceiptSequenceGapStore struct {
+	store.Store
+}
+
+func (s assistantExecReceiptSequenceGapStore) ListAssistantRunEvents(ctx context.Context, scope store.Scope, runID string, afterSequence int64, limit int) ([]store.AssistantRunEvent, error) {
+	page, err := s.Store.ListAssistantRunEvents(ctx, scope, runID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range page {
+		if page[index].Sequence == 2 {
+			page[index].Sequence++
+		}
+	}
+	return page, nil
+}
+
+func TestReconcileInterruptedExecReceiptRejectsSequenceGaps(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "receipt-sequence-gap")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "receipt-sequence-gap")
+	decision, err := ledger.BeginToolCall(ctx, "gap-call", projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRead}, map[string]any{"component": "workspace", "argv": []string{"go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishToolCall(ctx, decision.Token, `{"status":"succeeded","summary":"Command completed.","exitCode":0}`, nil); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: assistantExecReceiptSequenceGapStore{Store: messageStore}}
+	err = server.forEachSettledProjectAssistantExecReceipt(ctx, scope, "receipt-sequence-gap", func(projectToolCallStreamEvent) error { return nil })
+	if !errors.Is(err, errProjectAssistantRunToolLedgerCorrupt) {
+		t.Fatalf("scan sequence gap error = %v, want ledger corruption", err)
+	}
+}
+
+type assistantExecReceiptDigestCorruptingStore struct {
+	store.Store
+}
+
+func (s assistantExecReceiptDigestCorruptingStore) ListAssistantRunEvents(ctx context.Context, scope store.Scope, runID string, afterSequence int64, limit int) ([]store.AssistantRunEvent, error) {
+	page, err := s.Store.ListAssistantRunEvents(ctx, scope, runID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range page {
+		if page[index].CallID == "corrupt-later-call" && page[index].Type == projectAssistantRunToolCallEventType {
+			page[index].ArgsDigest = "corrupt-digest"
+		}
+	}
+	return page, nil
+}
+
+func TestReconcileInterruptedExecReceiptDoesNotVisitBeforeFullLedgerValidation(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "receipt-later-corruption")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "receipt-later-corruption")
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRead}
+	firstDecision, err := ledger.BeginToolCall(ctx, "valid-earlier-call", spec, map[string]any{"component": "workspace", "argv": []string{"go"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishToolCall(ctx, firstDecision.Token, `{"status":"succeeded","summary":"Command completed.","exitCode":0}`, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.BeginToolCall(ctx, "corrupt-later-call", spec, map[string]any{"component": "workspace", "argv": []string{"go", "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: assistantExecReceiptDigestCorruptingStore{Store: messageStore}}
+	visited := 0
+	err = server.forEachSettledProjectAssistantExecReceipt(ctx, scope, "receipt-later-corruption", func(projectToolCallStreamEvent) error {
+		visited++
+		return nil
+	})
+	if !errors.Is(err, errProjectAssistantRunToolLedgerCorrupt) {
+		t.Fatalf("scan later corruption error = %v, want ledger corruption", err)
+	}
+	if visited != 0 {
+		t.Fatalf("visited %d receipts before the complete ledger validated, want none", visited)
+	}
+}
+
+type assistantExecReceiptRunOverrideStore struct {
+	store.Store
+	run store.AssistantRun
+}
+
+func (s assistantExecReceiptRunOverrideStore) GetAssistantRun(context.Context, store.Scope, string) (store.AssistantRun, error) {
+	return s.run, nil
+}
+
+func TestLoadProjectAssistantExecReceiptTargetRequiresExactStoredScope(t *testing.T) {
+	server, messages, scope, run := newInterruptedExecReceiptFixture(t, "receipt-scope", "request-scope", "request-scope", nil, nil)
+	cases := []struct {
+		name      string
+		project   string
+		projectID string
+	}{
+		{name: "empty project name", projectID: scope.ProjectUID},
+		{name: "empty project uid", project: scope.ProjectName},
+		{name: "mismatched project name", project: "other-project", projectID: scope.ProjectUID},
+		{name: "mismatched project uid", project: scope.ProjectName, projectID: "other-uid"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			stored := run
+			stored.ProjectName = test.project
+			stored.ProjectUID = test.projectID
+			server.store = assistantExecReceiptRunOverrideStore{Store: messages, run: stored}
+			_, _, _, _, eligible, err := server.loadProjectAssistantExecReceiptTarget(context.Background(), scope, run.ID)
+			if err != nil {
+				t.Fatalf("load target: %v", err)
+			}
+			if eligible {
+				t.Fatal("receipt target was accepted with missing or mismatched stored project scope")
+			}
+		})
+	}
+}
+
+func TestProjectAssistantExecReceiptCASRetryBackoffHonorsDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	err := waitProjectAssistantExecReceiptCASRetry(ctx, 2)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("retry backoff error = %v, want context deadline", err)
+	}
+}
+
+func TestAssistantThreadProjectionLockContextExclusionAndCancellationCleanup(t *testing.T) {
+	server := &Server{}
+	scope := store.Scope{OrgUUID: "org-lock-context", WorkspaceUUID: "workspace-lock-context", ProjectName: "project-lock-context", ProjectUID: "uid-lock-context"}
+	firstRelease, err := server.acquireAssistantThreadProjectionLockContext(context.Background(), scope, "thread-lock-context", "turn-lock-context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := assistantThreadProjectionLockKey(scope, "thread-lock-context", "turn-lock-context")
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := server.acquireAssistantThreadProjectionLockContext(canceled, scope, "thread-lock-context", "turn-lock-context"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled lock acquisition error = %v, want context canceled", err)
+	}
+	server.mu.Lock()
+	entry := server.assistantProjectionLocks[key]
+	if entry == nil || entry.refs != 1 {
+		server.mu.Unlock()
+		t.Fatalf("lock entry after canceled waiter = %#v, want one holder reference", entry)
+	}
+	server.mu.Unlock()
+
+	type lockResult struct {
+		release func()
+		err     error
+	}
+	acquired := make(chan lockResult, 1)
+	go func() {
+		release, err := server.acquireAssistantThreadProjectionLockContext(context.Background(), scope, "thread-lock-context", "turn-lock-context")
+		acquired <- lockResult{release: release, err: err}
+	}()
+	select {
+	case result := <-acquired:
+		if result.release != nil {
+			result.release()
+		}
+		t.Fatalf("second projector acquired held lock early: %v", result.err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	firstRelease()
+	select {
+	case result := <-acquired:
+		if result.err != nil {
+			t.Fatalf("second lock acquisition: %v", result.err)
+		}
+		result.release()
+	case <-time.After(time.Second):
+		t.Fatal("second projector did not acquire lock after release")
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.assistantProjectionLocks) != 0 {
+		t.Fatalf("projection lock entries after all releases = %d, want zero", len(server.assistantProjectionLocks))
 	}
 }
 
