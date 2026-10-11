@@ -8,16 +8,14 @@ with an npm alias:
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
   }
 }
 ```
 
-Atlas uses a reviewed local package artifact at
-`api/vendor/railgrid-actions-node-0.2.0.tgz` with
-`"@railgrid/actions-node": "file:vendor/railgrid-actions-node-0.2.0.tgz"`.
-That explicit vendored source keeps the application pinned to the reviewed
-artifact independently of registry availability.
+Publishing a new SDK version does not update an already deployed application's
+manifest or installed dependency. Each application must apply its own manifest
+change through its normal dependency update flow.
 
 App Studio injects `RAILGRID_ACTIONS_BASE_URL` from trusted Project context. It
 has the form
@@ -106,9 +104,8 @@ and `failureKind`.
 ## Development sandboxes
 
 The server component's manifest owns this dependency, so development and
-production use the same declared package source. Atlas uses the reviewed local
-tarball as its declared package source. Infrastructure installs the declared
-dependency through the normal package install and reload flow; the
+production use the same declared package source. Infrastructure installs the
+declared dependency through the normal package install and reload flow; the
 platform-owned `railgrid-dev-agent` supplies the coordinator and runtime
 supervisor only. It does not copy, validate, or mount this SDK.
 

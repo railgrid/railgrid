@@ -584,10 +584,12 @@ identity** (not yours) with a two-minute budget and a 4 MiB response cap;
 forwarded. Only shipped action today: Databricks `query_table/v1` (sync,
 read-only, `columns` ≤ 64, `limit` 1..100).
 
-In-app SDK package: `@crwilhit/railgrid-actions-node@0.2.0`, imported as
-`@railgrid/actions-node`. Public npm publication is pending; Atlas currently
-uses the reviewed vendored tarball with a `file:` dependency. After release,
-install it through the npm alias below.
+In-app SDK package: `@crwilhit/railgrid-actions-node@0.2.1`, imported as
+`@railgrid/actions-node`. Use the dependency alias
+`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"` in the
+server component's `package.json`. A package release does not update an
+already deployed application's manifest; each app applies its own dependency
+change through its normal manifest flow.
 App Studio injects `RAILGRID_ACTIONS_BASE_URL` with the trusted cluster and
 Project path. Use
 `createActionsClient({baseURL: RAILGRID_ACTIONS_BASE_URL, tokenFile: RAILGRID_ACTIONS_TOKEN_FILE})`
@@ -596,7 +598,9 @@ The SDK body carries `action`, `actionVersion`, and `input`; the path carries
 only the saved alias. A successful invoke verifies route and authorization;
 token refresh readiness alone does not. Server-side only; the runtime exchanges
 a projected bootstrap token for a 10-minute workload token whose RBAC is
-exactly the materialized grants.
+exactly the materialized grants. A gateway `401` without a provider error
+envelope can trigger one forced credential refresh; an enveloped provider
+error, including a provider `401`, is returned without replaying the action.
 
 ### Skills
 

@@ -322,7 +322,8 @@ workload exchange and a short-lived workload capability:
    ServiceAccount's lifetime.
 4. The runtime atomically refreshes a mode-`0600` token file. The generated
    server reads that file on each request, or uses a refreshable credential
-   provider; a single `401` triggers one forced refresh.
+   provider. A gateway `401` without a provider error envelope can trigger one
+   forced refresh; an enveloped provider error is not replayed.
 
 The SDK is server-only. App Studio injects `RAILGRID_ACTIONS_BASE_URL` as the
 cluster-qualified
@@ -339,20 +340,22 @@ explicitly supplies the CA.
 
 ## Server-side SDK
 
-The package is `@crwilhit/railgrid-actions-node@0.2.0`; public npm publication
-is pending. Atlas currently uses the reviewed tarball at
-`api/vendor/railgrid-actions-node-0.2.0.tgz` with a local `file:` dependency.
-After registry publication, generated server components can install it under
-the stable consumer name with this npm alias in `package.json`; the package
-name and import name are intentionally different:
+The package is `@crwilhit/railgrid-actions-node@0.2.1`. Generated server
+components declare it under the stable consumer name with this npm alias in
+`package.json`; the package name and import name are intentionally different:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.0"
+    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
   }
 }
 ```
+
+This repository's package release and scaffold pin do not update an already
+deployed application or a manifest maintained outside this repository. Such an
+application must apply its own dependency update through its normal manifest
+flow.
 
 Use the generic `integration(alias).invoke` API with the stable consumer import.
 The SDK never exposes a provider-specific convenience method:
@@ -375,8 +378,10 @@ console.log(result);
 
 `tokenFile` defaults to `RAILGRID_ACTIONS_TOKEN_FILE`; it is read for every
 request. A `getToken`/credential provider receives `{ forceRefresh, signal }`
-and is retried once after an HTTP `401`. The SDK propagates caller aborts and
-local timeouts, rejects browser globals, and reports route, authentication,
+and is refreshed once after a gateway HTTP `401` without a provider error
+envelope. An enveloped provider error, including a provider-originated `401`,
+is propagated without replaying the action. The SDK propagates caller aborts
+and local timeouts, rejects browser globals, and reports route, authentication,
 authorization, contract, upstream, network, credential, and configuration
 failures separately. A successful invocation verifies the saved integration;
 token issuance and freshness alone do not.
