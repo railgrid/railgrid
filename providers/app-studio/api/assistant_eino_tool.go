@@ -605,6 +605,7 @@ func (t projectEinoAssistantTool) Info(context.Context) (*schema.ToolInfo, error
 
 func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
 	t.req = t.req.currentExecutionRequest()
+	ctx = workspace.ContextWithMutationOrigin(ctx, t.req.ThreadID, projectAssistantRunID(t.req))
 	if cause := context.Cause(ctx); cause != nil {
 		return "", cause
 	}

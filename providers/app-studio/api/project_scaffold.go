@@ -51,8 +51,28 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	// README as "content" meant the scaffold was never seeded for exactly the
 	// projects that need it most — no build workflow, so never promotable.
 	existing, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{})
-	if err == nil && !workspaceHoldsOnlyRepositoryBoilerplate(existing.Files) {
+	if err != nil {
+		return 0, fmt.Errorf("listing workspace before scaffold seed: %w", err)
+	}
+	if existing.Truncated || !workspaceHoldsOnlyRepositoryBoilerplate(existing.Files) {
 		return 0, nil
+	}
+	existingPaths := make(map[string]struct{}, len(existing.Files))
+	boilerplateVersions := make(map[string]string, 1)
+	for _, file := range existing.Files {
+		clean := path.Clean(file.Path)
+		existingPaths[clean] = struct{}{}
+		if clean != ".gitignore" {
+			continue
+		}
+		read, err := s.workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: clean, MaxBytes: workspace.MaxWriteBytes})
+		if err != nil {
+			return 0, fmt.Errorf("reading repository .gitignore before scaffold seed: %w", err)
+		}
+		if read.Truncated || read.Binary || strings.TrimSpace(read.Version) == "" {
+			return 0, fmt.Errorf("cannot safely replace repository .gitignore without its complete current version")
+		}
+		boilerplateVersions[clean] = read.Version
 	}
 
 	files, err := scaffold.Fetch(ctx, info.ScaffoldRepo, info.ScaffoldRef)
@@ -62,25 +82,62 @@ func (s *Server) seedProjectScaffold(ctx context.Context, id identity, p *aiv1al
 	if err := scaffold.CheckLayout(info.WorkspacePaths(), files); err != nil {
 		return 0, err
 	}
-	if err := s.workspaces.ApplyFiles(ctx, scope, files); err != nil {
+	// The network fetch can take long enough for the user or another run to
+	// populate this workspace. Recheck before preparing the transaction; its
+	// create-only targets and versioned .gitignore replacement fence races after
+	// this point.
+	current, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("listing workspace after scaffold fetch: %w", err)
+	}
+	if current.Truncated || !workspaceHoldsOnlyRepositoryBoilerplate(current.Files) {
+		return 0, nil
+	}
+
+	changes := make([]workspace.ManagedFileChange, 0, len(files))
+	for _, file := range files {
+		clean := path.Clean(file.Path)
+		if clean == "README.md" || clean == "LICENSE" {
+			continue
+		}
+		if _, exists := existingPaths[clean]; exists {
+			if clean != ".gitignore" {
+				// Repository boilerplate other than .gitignore is preserved.
+				return 0, nil
+			}
+			version := boilerplateVersions[clean]
+			if version == "" {
+				return 0, fmt.Errorf("cannot safely replace repository .gitignore without its complete current version")
+			}
+			changes = append(changes, workspace.ManagedFileChange{
+				Path: clean, Operation: workspace.ManagedFileReplace, Content: file.Content, ExpectedVersion: version,
+			})
+			continue
+		}
+		changes = append(changes, workspace.ManagedFileChange{Path: clean, Operation: workspace.ManagedFileCreate, Content: file.Content})
+	}
+	if len(changes) == 0 {
+		return 0, nil
+	}
+	if _, err := s.workspaces.ApplyManagedTransaction(ctx, scope, changes); err != nil {
 		return 0, fmt.Errorf("seeding workspace: %w", err)
 	}
 	// Register the seeded files as uncommitted so the rest of the workspace
 	// machinery sees them: the Project reconciler's commit convergence lands
 	// them as the FIRST commit (git repo = scaffold), and development sync
-	// pushes them into the sandbox. ApplyFiles writes bytes + bumps the
-	// source revision but does NOT touch the uncommitted-paths ledger, so
-	// without this the scaffold is invisible to both — the symptom being a
+	// pushes them into the sandbox. ApplyManagedTransaction writes bytes and
+	// bumps the source revision but does NOT touch the uncommitted-paths ledger,
+	// so without this the scaffold is invisible to both — the symptom being a
 	// project that "just started working" with an empty repo and no dev sync.
-	paths := make([]string, 0, len(files))
-	for _, f := range files {
-		paths = append(paths, f.Path)
+	paths := make([]string, 0, len(changes))
+	for _, change := range changes {
+		paths = append(paths, change.Path)
 	}
 	if _, err := s.workspaces.AddUncommittedPaths(ctx, scope, paths); err != nil {
 		return 0, fmt.Errorf("tracking seeded files: %w", err)
 	}
 	s.signalProject(id.workspaceUUID, p.Name)
-	return len(files), nil
+	return len(changes), nil
 }
 
 // seedMissingBuildWorkflow writes the template's CI workflow (the one file
@@ -98,6 +155,9 @@ func (s *Server) seedMissingBuildWorkflow(ctx context.Context, id identity, p *a
 	if err != nil {
 		return "", fmt.Errorf("listing workspace: %w", err)
 	}
+	if existing.Truncated {
+		return "", nil
+	}
 	for _, f := range existing.Files {
 		if path.Clean(f.Path) == want {
 			return "", nil
@@ -111,7 +171,24 @@ func (s *Server) seedMissingBuildWorkflow(ctx context.Context, id identity, p *a
 		if path.Clean(f.Path) != want {
 			continue
 		}
-		if err := s.workspaces.ApplyFiles(ctx, scope, []workspace.File{f}); err != nil {
+		// Do not overwrite a file created while the scaffold was fetched. The
+		// transaction's create operation repeats this check under the workspace
+		// mutation lock, closing the race after this read.
+		current, err := s.workspaces.ListFiles(ctx, scope, workspace.ListOptions{})
+		if err != nil {
+			return "", fmt.Errorf("rechecking workspace before seeding %s: %w", want, err)
+		}
+		if current.Truncated {
+			return "", nil
+		}
+		for _, file := range current.Files {
+			if path.Clean(file.Path) == want {
+				return "", nil
+			}
+		}
+		if _, err := s.workspaces.ApplyManagedTransaction(ctx, scope, []workspace.ManagedFileChange{{
+			Path: want, Operation: workspace.ManagedFileCreate, Content: f.Content,
+		}}); err != nil {
 			return "", fmt.Errorf("seeding %s: %w", want, err)
 		}
 		if _, err := s.workspaces.AddUncommittedPaths(ctx, scope, []string{f.Path}); err != nil {

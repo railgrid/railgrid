@@ -546,6 +546,18 @@ func (s *Server) ActionsRuntimeConfig() bindings.ActionsRuntimeConfig {
 //  3. Rewrite spec.template + the development binding; update the Project.
 //  4. Reconcile the new binding (creates the instance in development mode).
 func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string) (*aiv1alpha1.Project, projectTemplateInfo, error) {
+	release, err := s.acquireProjectRuntimeOperation(ctx, projectWorkspaceScope(id, p))
+	if err != nil {
+		return nil, projectTemplateInfo{}, err
+	}
+	defer release()
+	// Another thread may have changed the binding while we waited. Operate on
+	// the current incarnation rather than deleting resources from an old view.
+	current, err := refreshProjectRuntimeOperationProject(ctx, c, p)
+	if err != nil {
+		return nil, projectTemplateInfo{}, err
+	}
+	p = current
 	info, err := fetchProjectTemplate(ctx, c, templateName)
 	if err != nil {
 		return nil, projectTemplateInfo{}, err
@@ -790,12 +802,13 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	ownedCtx := contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, p))
 	var req projectTemplateSelectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
-	updated, info, err := s.selectProjectTemplate(r.Context(), c, id, p, req.Template)
+	updated, info, err := s.selectProjectTemplate(ownedCtx, c, id, p, req.Template)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())

@@ -12,6 +12,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
@@ -37,8 +39,8 @@ import (
 // Reads are token-gated through requireProjectWithClient (the caller must be
 // able to GET the Project). Writes use the same gate as the other
 // project-mutating workspace routes (hydrate-workspace, restore-workspace):
-// requireProjectWithClient plus the project's external-operation reservation,
-// so a write never races an active assistant run (409). Every write marks the
+// requireProjectWithClient plus the project's shared owner fence. Exact file
+// versions protect short source transactions while other threads run. Every write marks the
 // changed paths uncommitted — the project reconciler commits them — and
 // schedules a development sync, exactly like an assistant edit.
 
@@ -143,27 +145,16 @@ func (s *Server) readProjectFileRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scope := projectWorkspaceScope(id, project)
-	meta, err := s.workspaces.InspectFile(r.Context(), scope, filePath)
-	if err != nil {
-		writeProjectFileError(w, err)
-		return
-	}
-	etag := `"` + meta.Version + `"`
-	if match := strings.TrimSpace(r.Header.Get("If-None-Match")); match != "" && projectFileETagMatches(match, meta.Version) {
-		w.Header().Set("ETag", etag)
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	f, info, err := s.workspaces.OpenFile(r.Context(), scope, filePath)
+	f, meta, err := s.workspaces.OpenVersionedFile(r.Context(), scope, filePath)
 	if err != nil {
 		writeProjectFileError(w, err)
 		return
 	}
 	defer func() { _ = f.Close() }()
-	if info.Size() != meta.Size {
-		// The file changed between hashing and opening; let the client retry
-		// rather than serve bytes that do not match the ETag.
-		writeStatus(w, http.StatusConflict, "Conflict", "file changed while it was being read; retry")
+	etag := `"` + meta.Version + `"`
+	if match := strings.TrimSpace(r.Header.Get("If-None-Match")); match != "" && projectFileETagMatches(match, meta.Version) {
+		w.Header().Set("ETag", etag)
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	name := path.Base(meta.Path)
@@ -182,7 +173,19 @@ func (s *Server) readProjectFileRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, f)
+	_, _ = io.Copy(w, projectFileContextReader{ctx: r.Context(), reader: f})
+}
+
+type projectFileContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r projectFileContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
 
 // projectFileExtensionTypes fills common web-asset types missing from Go's
@@ -259,6 +262,11 @@ func (s *Server) writeProjectFile(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "If-Match and If-None-Match cannot be combined")
 		return
 	}
+	expectedVersion := projectFileETagValue(ifMatch)
+	if !createOnly && (ifMatch == "" || ifMatch == "*" || strings.HasPrefix(ifMatch, "W/") || strings.Contains(ifMatch, ",") || strings.TrimSpace(expectedVersion) == "") {
+		writeStatus(w, http.StatusPreconditionRequired, "PreconditionRequired", "Use If-None-Match: * to create a file or If-Match with its exact current version to replace it")
+		return
+	}
 	release, ok := s.beginProjectFileWrite(w, r, id, project)
 	if !ok {
 		return
@@ -278,16 +286,8 @@ func (s *Server) writeProjectFile(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := projectWorkspaceScope(id, project)
 	opts := workspace.PutOptions{Path: filePath, Data: data, CreateOnly: createOnly}
-	if ifMatch == "*" {
-		if exists, err := s.workspaces.FileExists(r.Context(), scope, filePath); err != nil {
-			writeProjectFileError(w, err)
-			return
-		} else if !exists {
-			writeStatus(w, http.StatusPreconditionFailed, "PreconditionFailed", "file does not exist")
-			return
-		}
-	} else if ifMatch != "" {
-		opts.ExpectedVersion = projectFileETagValue(ifMatch)
+	if ifMatch != "" {
+		opts.ExpectedVersion = expectedVersion
 	}
 	result, err := s.workspaces.PutFile(r.Context(), scope, opts)
 	if err != nil {
@@ -305,7 +305,7 @@ func (s *Server) writeProjectFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteProjectFile is DELETE /api/projects/{project}/files/content?path=...
-// with an optional If-Match version. 204 on success, 404 when missing.
+// with a required exact If-Match version. 204 on success, 404 when missing.
 func (s *Server) deleteProjectFile(w http.ResponseWriter, r *http.Request) {
 	_, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -315,21 +315,18 @@ func (s *Server) deleteProjectFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	rawVersion := strings.TrimSpace(r.Header.Get("If-Match"))
+	expected := projectFileETagValue(rawVersion)
+	if expected == "" || expected == "*" || strings.HasPrefix(rawVersion, "W/") || strings.Contains(rawVersion, ",") {
+		writeStatus(w, http.StatusPreconditionRequired, "PreconditionRequired", "If-Match with the exact current file version is required for deletion")
+		return
+	}
 	release, ok := s.beginProjectFileWrite(w, r, id, project)
 	if !ok {
 		return
 	}
 	defer release()
 	scope := projectWorkspaceScope(id, project)
-	expected := projectFileETagValue(strings.TrimSpace(r.Header.Get("If-Match")))
-	if expected == "" || expected == "*" {
-		meta, err := s.workspaces.InspectFile(r.Context(), scope, filePath)
-		if err != nil {
-			writeProjectFileError(w, err)
-			return
-		}
-		expected = meta.Version
-	}
 	result, err := s.workspaces.DeleteFile(r.Context(), scope, workspace.DeleteOptions{Path: filePath, ExpectedVersion: expected})
 	if err != nil {
 		var mutationErr *workspace.MutationError
@@ -346,8 +343,9 @@ func (s *Server) deleteProjectFile(w http.ResponseWriter, r *http.Request) {
 
 // uploadProjectFiles is POST /api/projects/{project}/files/upload: multipart
 // with one or more "file" parts, an optional "dir" target directory ("" is
-// the workspace root), and optional "overwrite=true". Without overwrite an
-// existing target fails the whole upload with 409 before anything is written.
+// the workspace root), optional "overwrite=true", and expectedVersions mapping
+// replaced paths to complete read versions. Every target is created or
+// replaced in one transaction.
 func (s *Server) uploadProjectFiles(w http.ResponseWriter, r *http.Request) {
 	_, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
@@ -389,13 +387,30 @@ func (s *Server) uploadProjectFiles(w http.ResponseWriter, r *http.Request) {
 		}
 		overwrite = parsed
 	}
+	expectedVersions := map[string]string{}
+	versionFields := r.MultipartForm.Value["expectedVersions"]
+	if len(versionFields) > 1 {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedVersions must be supplied once")
+		return
+	}
+	if len(versionFields) == 1 && strings.TrimSpace(versionFields[0]) != "" {
+		if err := json.Unmarshal([]byte(versionFields[0]), &expectedVersions); err != nil || expectedVersions == nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedVersions must map file paths to their previously read versions")
+			return
+		}
+	}
+	if len(expectedVersions) > 0 && !overwrite {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedVersions requires overwrite=true")
+		return
+	}
 	scope := projectWorkspaceScope(id, project)
 
 	// Preflight every target before writing so a rejected upload changes
 	// nothing: path validity, duplicates, per-file bounds, and existence.
 	type plannedUpload struct {
-		path   string
-		header int
+		path            string
+		header          int
+		expectedVersion string
 	}
 	planned := make([]plannedUpload, 0, len(headers))
 	seen := make(map[string]struct{}, len(headers))
@@ -419,18 +434,41 @@ func (s *Server) uploadProjectFiles(w http.ResponseWriter, r *http.Request) {
 			writeStatus(w, http.StatusRequestEntityTooLarge, "RequestEntityTooLarge", fmt.Sprintf("file %q exceeds the %d-byte binary limit", target, workspace.MaxBinaryWriteBytes))
 			return
 		}
-		if !overwrite {
-			exists, err := s.workspaces.FileExists(r.Context(), scope, target)
-			if err != nil {
-				writeProjectFileError(w, err)
-				return
-			}
-			if exists {
-				writeStatus(w, http.StatusConflict, "Conflict", fmt.Sprintf("file %q already exists; upload with overwrite=true to replace it", target))
-				return
-			}
+		exists, err := s.workspaces.FileExists(r.Context(), scope, target)
+		if err != nil {
+			writeProjectFileError(w, err)
+			return
 		}
-		planned = append(planned, plannedUpload{path: target, header: index})
+		expected := strings.TrimSpace(expectedVersions[target])
+		if exists {
+			if !overwrite {
+				writeProjectFileWriteError(w, &workspace.MutationError{Code: workspace.MutationErrorTargetExists, Path: target, ChangedFiles: []string{target}, Message: "file already exists; read its version before replacing it"}, false)
+				return
+			}
+			if expected == "" || expected == "*" {
+				writeStatus(w, http.StatusPreconditionRequired, "PreconditionRequired", "expectedVersions is required for every replaced file")
+				return
+			}
+		} else if expected != "" {
+			writeProjectFileWriteError(w, &workspace.MutationError{Code: workspace.MutationErrorTargetNotFound, Path: target, ChangedFiles: []string{target}, Message: "file was removed since it was read"}, false)
+			return
+		}
+		planned = append(planned, plannedUpload{path: target, header: index, expectedVersion: expected})
+	}
+	plannedPaths := make(map[string]struct{}, len(planned))
+	for _, upload := range planned {
+		plannedPaths[upload.path] = struct{}{}
+	}
+	for rawPath := range expectedVersions {
+		clean, err := workspace.CleanProjectPath(rawPath)
+		if err != nil || clean != rawPath {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedVersions keys must be canonical project file paths")
+			return
+		}
+		if _, ok := plannedPaths[clean]; !ok {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "expectedVersions may include only uploaded file paths")
+			return
+		}
 	}
 	datas := make([][]byte, len(planned))
 	for i, upload := range planned {
@@ -446,28 +484,33 @@ func (s *Server) uploadProjectFiles(w http.ResponseWriter, r *http.Request) {
 		datas[i] = data
 	}
 
-	results := make([]projectFileWriteResult, 0, len(planned))
-	changed := make([]string, 0, len(planned))
-	var writeErr error
+	changes := make([]workspace.ManagedFileChange, 0, len(planned))
 	for i, upload := range planned {
-		result, err := s.workspaces.PutFile(r.Context(), scope, workspace.PutOptions{Path: upload.path, Data: datas[i], CreateOnly: !overwrite})
-		if err != nil {
-			writeErr = err
-			break
+		operation := workspace.ManagedFileCreate
+		if upload.expectedVersion != "" {
+			operation = workspace.ManagedFileReplace
 		}
+		data := datas[i]
+		if data == nil {
+			data = []byte{}
+		}
+		changes = append(changes, workspace.ManagedFileChange{Path: upload.path, Operation: operation, Data: data, ExpectedVersion: upload.expectedVersion})
+	}
+	mutations, err := s.workspaces.ApplyManagedTransaction(r.Context(), scope, changes)
+	if err != nil {
+		writeProjectFileWriteError(w, err, false)
+		return
+	}
+	results := make([]projectFileWriteResult, 0, len(mutations))
+	changed := make([]string, 0, len(mutations))
+	for _, result := range mutations {
 		if result.Changed {
 			changed = append(changed, result.Path)
 		}
 		results = append(results, projectFileWriteResult{Path: result.Path, Size: result.Size, Version: result.Version, Binary: result.Binary})
 	}
-	// Files already written stay written (each write is atomic); record them
-	// before reporting a later failure so they still commit and sync.
 	if len(changed) > 0 {
 		s.recordProjectFileWrites(r.Context(), id, project, changed)
-	}
-	if writeErr != nil {
-		writeProjectFileWriteError(w, writeErr, false)
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": results})
 }
@@ -482,8 +525,8 @@ func readProjectUploadPart(header *multipart.FileHeader) ([]byte, error) {
 }
 
 // beginProjectFileWrite applies the shared write gate: a configured store,
-// a live Project, and the external-operation reservation (409 while an
-// assistant run owns the project). The returned release must be deferred.
+// a live Project, and the project's shared owner. The returned release must
+// be deferred.
 func (s *Server) beginProjectFileWrite(w http.ResponseWriter, r *http.Request, id identity, project *aiv1alpha1.Project) (func(), bool) {
 	if s.workspaces == nil {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")
@@ -493,7 +536,16 @@ func (s *Server) beginProjectFileWrite(w http.ResponseWriter, r *http.Request, i
 		writeStatus(w, http.StatusConflict, "Conflict", "project is being deleted")
 		return nil, false
 	}
-	return s.reserveProjectExternalOperation(w, r.Context(), id, project, "changing project files")
+	release, err := s.projectAssistantSupervisor().ReserveMutation(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, project))
+	if err != nil {
+		if errors.Is(err, store.ErrAssistantRunConflict) {
+			writeStatus(w, http.StatusConflict, "Conflict", "project workspace is reserved by another owner or a project-wide operation")
+		} else {
+			writeProjectFileError(w, err)
+		}
+		return nil, false
+	}
+	return release, true
 }
 
 // recordProjectFileWrites marks written paths uncommitted and schedules a
@@ -539,6 +591,11 @@ func projectFileETagMatches(header, version string) bool {
 }
 
 func writeProjectFileError(w http.ResponseWriter, err error) {
+	var mutationErr *workspace.MutationError
+	if errors.As(err, &mutationErr) && mutationErr.Code == workspace.MutationErrorConflict {
+		writeProjectFileWriteError(w, err, false)
+		return
+	}
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		writeStatus(w, http.StatusNotFound, "NotFound", "file not found")
@@ -567,9 +624,9 @@ func writeProjectFileWriteError(w http.ResponseWriter, err error, conditional bo
 		}
 		switch mutationErr.Code {
 		case workspace.MutationErrorTargetExists, workspace.MutationErrorStale, workspace.MutationErrorTargetNotFound:
-			writeStatus(w, precondition, reason, mutationErr.Message)
+			writeJSON(w, precondition, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": reason, "code": precondition, "message": mutationErr.Message, "conflict": mutationErr})
 		case workspace.MutationErrorConflict:
-			writeStatus(w, http.StatusConflict, "Conflict", mutationErr.Message)
+			writeJSON(w, http.StatusConflict, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Conflict", "code": http.StatusConflict, "message": mutationErr.Message, "conflict": mutationErr})
 		default:
 			writeStatus(w, http.StatusBadRequest, "BadRequest", mutationErr.Message)
 		}

@@ -84,8 +84,8 @@ func projectAssistantImportAttachmentTool(server *Server) projectAssistantTool {
 			Name: projectToolImportAttachment,
 			Description: "Copy a file the user attached to this conversation into the project workspace at a project-relative path — the way to add images, 3D models (.glb/.gltf), fonts, audio, archives, or any other binary the user provides. " +
 				"Use the attachmentID from the attachment notice. For a Vite app, static assets usually belong under public/ (e.g. public/assets/jeep.glb, served at /assets/jeep.glb). " +
-				"Fails if the path exists unless overwrite is true. The file is then committed to git and synced to the development sandbox like any other edit.",
-			Parameters: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"attachmentID":{"type":"string","minLength":1,"maxLength":%d},"path":{"type":"string","minLength":1,"maxLength":%d},"overwrite":{"type":"boolean","description":"Replace an existing file at path."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["attachmentID","path"],"additionalProperties":false}`, projectAssistantAttachmentMaxIDBytes, workspace.MaxProjectPathBytes)),
+				"Fails if the path exists unless overwrite is true. Replacing an existing file requires expectedVersion from a complete read_file result in an earlier response. The file is then committed to git and synced to the development sandbox like any other edit.",
+			Parameters: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"attachmentID":{"type":"string","minLength":1,"maxLength":%d},"path":{"type":"string","minLength":1,"maxLength":%d},"overwrite":{"type":"boolean","description":"Replace an existing file at path; requires expectedVersion from a complete read_file result."},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d,"description":"Required with overwrite=true. Use the version from a complete read_file result shown in an earlier response."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["attachmentID","path"],"additionalProperties":false}`, projectAssistantAttachmentMaxIDBytes, workspace.MaxProjectPathBytes, workspace.MaxFileVersionBytes)),
 			Risk:       projectAssistantToolRiskWrite,
 		},
 		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
@@ -102,6 +102,7 @@ func projectAssistantImportAttachmentTool(server *Server) projectAssistantTool {
 			id, _ := projectToolRawString(req.Arguments["attachmentID"])
 			targetPath, _ := projectToolRawString(req.Arguments["path"])
 			overwrite, _ := req.Arguments["overwrite"].(bool)
+			expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
 			receipt, err := projectAssistantAttachmentReceiptForID(req, id)
 			if err != nil {
 				return "", err
@@ -116,7 +117,7 @@ func projectAssistantImportAttachmentTool(server *Server) projectAssistantTool {
 			if err := projectAssistantValidateAttachmentBytes(receipt, read.Content); err != nil {
 				return "", err
 			}
-			result, err := projectAssistantPlaceBinaryFile(ctx, s, req, targetPath, read.Content, overwrite)
+			result, err := projectAssistantPlaceBinaryFile(ctx, s, req, targetPath, read.Content, overwrite, expectedVersion)
 			if err != nil {
 				return "", err
 			}
@@ -136,8 +137,8 @@ func projectAssistantDownloadFileTool(server *Server) projectAssistantTool {
 			Name: projectToolDownloadFile,
 			Description: "Download one file from a direct http(s) file URL (up to 25 MiB) into the project workspace at a project-relative path — for binary assets such as images, 3D models (.glb), fonts, or audio. " +
 				"The URL must return the file itself: web pages such as marketplace, gallery, or model-listing pages (Sketchfab, TurboSquid, GitHub blob pages, Google Drive previews) are NOT files; find the direct download/raw URL (or ask the user to attach the file) instead. " +
-				"Internal addresses are blocked. Fails if the path exists unless overwrite is true. The file is then committed to git and synced to the development sandbox like any other edit.",
-			Parameters: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"url":{"type":"string","minLength":1,"maxLength":4096,"description":"Direct http(s) URL of the file itself, not a web page about it."},"path":{"type":"string","minLength":1,"maxLength":%d},"overwrite":{"type":"boolean","description":"Replace an existing file at path."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["url","path"],"additionalProperties":false}`, workspace.MaxProjectPathBytes)),
+				"Internal addresses are blocked. Fails if the path exists unless overwrite is true. Replacing an existing file requires expectedVersion from a complete read_file result in an earlier response. The file is then committed to git and synced to the development sandbox like any other edit.",
+			Parameters: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"url":{"type":"string","minLength":1,"maxLength":4096,"description":"Direct http(s) URL of the file itself, not a web page about it."},"path":{"type":"string","minLength":1,"maxLength":%d},"overwrite":{"type":"boolean","description":"Replace an existing file at path; requires expectedVersion from a complete read_file result."},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d,"description":"Required with overwrite=true. Use the version from a complete read_file result shown in an earlier response."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["url","path"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxFileVersionBytes)),
 			Risk:       projectAssistantToolRiskWrite,
 		},
 		call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
@@ -151,6 +152,7 @@ func projectAssistantDownloadFileTool(server *Server) projectAssistantTool {
 			rawURL, _ := projectToolRawString(req.Arguments["url"])
 			targetPath, _ := projectToolRawString(req.Arguments["path"])
 			overwrite, _ := req.Arguments["overwrite"].(bool)
+			expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
 			clean, err := workspace.CleanProjectPath(targetPath)
 			if err != nil {
 				return "", err
@@ -159,7 +161,7 @@ func projectAssistantDownloadFileTool(server *Server) projectAssistantTool {
 			if err != nil {
 				return "", err
 			}
-			result, err := projectAssistantPlaceBinaryFile(ctx, s, req, clean, download.data, overwrite)
+			result, err := projectAssistantPlaceBinaryFile(ctx, s, req, clean, download.data, overwrite, expectedVersion)
 			if err != nil {
 				return "", err
 			}
@@ -204,12 +206,27 @@ func projectAssistantRefuseBinaryInRunSandbox(ctx context.Context, req projectAs
 // projectAssistantPlaceBinaryFile writes bytes create-only (or as an
 // explicit overwrite). Size bounds are the workspace's: 25 MiB for binary
 // content, the ordinary text bound for UTF-8 text.
-func projectAssistantPlaceBinaryFile(ctx context.Context, s *Server, req projectAssistantToolCallRequest, targetPath string, data []byte, overwrite bool) (workspace.MutationResult, error) {
-	result, err := s.workspaces.PutFile(ctx, req.WorkspaceScope, workspace.PutOptions{Path: targetPath, Data: data, CreateOnly: !overwrite})
+func projectAssistantPlaceBinaryFile(ctx context.Context, s *Server, req projectAssistantToolCallRequest, targetPath string, data []byte, overwrite bool, expectedVersion string) (workspace.MutationResult, error) {
+	options := workspace.PutOptions{Path: targetPath, Data: data, CreateOnly: !overwrite}
+	if overwrite {
+		if strings.TrimSpace(expectedVersion) == "" {
+			return workspace.MutationResult{}, errors.New("overwrite=true requires expectedVersion from a complete read_file result")
+		}
+		observedVersion, err := projectAssistantRequireMutationReadAllowBinary(ctx, req, s.workspaces, targetPath, expectedVersion)
+		if err != nil {
+			return workspace.MutationResult{}, err
+		}
+		options.CreateOnly = false
+		options.ExpectedVersion = observedVersion
+	} else if strings.TrimSpace(expectedVersion) != "" {
+		return workspace.MutationResult{}, errors.New("expectedVersion is only valid when overwrite=true")
+	}
+	result, err := s.workspaces.PutFile(ctx, req.WorkspaceScope, options)
 	if err != nil {
 		var mutationErr *workspace.MutationError
 		if errors.As(err, &mutationErr) && mutationErr.Code == workspace.MutationErrorTargetExists {
-			return workspace.MutationResult{}, fmt.Errorf("%s already exists; pass overwrite=true to replace it or choose another path", mutationErr.Path)
+			mutationErr.Message = fmt.Sprintf("%s already exists; pass overwrite=true with expectedVersion from a complete read_file result to replace it, or choose another path", mutationErr.Path)
+			return workspace.MutationResult{}, mutationErr
 		}
 		var tooLarge *workspace.FileTooLargeError
 		if errors.As(err, &tooLarge) && !tooLarge.Binary {

@@ -540,6 +540,60 @@ func (s *FileStore) OpenFile(ctx context.Context, scope Scope, rawPath string) (
 	return f, info, err
 }
 
+// OpenVersionedFile opens a regular workspace file once, computes its whole-file
+// version from that descriptor, and returns the same descriptor rewound to the
+// beginning. The caller must close the file. This keeps an ETag/version paired
+// with the exact bytes later streamed even if an atomic replacement changes the
+// path while the response is being prepared.
+func (s *FileStore) OpenVersionedFile(ctx context.Context, scope Scope, rawPath string) (*os.File, FileMetadata, error) {
+	if s == nil {
+		return nil, FileMetadata{}, errors.New("project workspace store is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	clean, f, pathInfo, err := s.openRegularFile(ctx, scope, rawPath)
+	if err != nil {
+		return nil, FileMetadata{}, err
+	}
+	closeWithError := func(err error) (*os.File, FileMetadata, error) {
+		_ = f.Close()
+		return nil, FileMetadata{}, err
+	}
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return closeWithError(fmt.Errorf("stat %q: %w", clean, err))
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return closeWithError(newMutationError(MutationErrorConflict, clean, "file changed while it was being opened; retry"))
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return closeWithError(fmt.Errorf("seek %q: %w", clean, err))
+	}
+	hash := sha256.New()
+	detector := &textDetector{}
+	if _, err := io.Copy(io.MultiWriter(hash, detector), contextReader{ctx: ctx, r: f}); err != nil {
+		return closeWithError(fmt.Errorf("read %q: %w", clean, err))
+	}
+	afterInfo, err := f.Stat()
+	if err != nil {
+		return closeWithError(fmt.Errorf("stat %q: %w", clean, err))
+	}
+	if afterInfo.Size() != openedInfo.Size() || !afterInfo.ModTime().Equal(openedInfo.ModTime()) {
+		return closeWithError(newMutationError(MutationErrorConflict, clean, "file changed while it was being read; retry"))
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return closeWithError(fmt.Errorf("seek %q: %w", clean, err))
+	}
+	metadata := FileMetadata{
+		Path:    clean,
+		Size:    openedInfo.Size(),
+		Version: "sha256:" + hex.EncodeToString(hash.Sum(nil)),
+		Binary:  !detector.Text(),
+	}
+	return f, metadata, nil
+}
+
 // openRegularFile resolves and opens one regular file without following
 // symlinks anywhere on its path.
 func (s *FileStore) openRegularFile(ctx context.Context, scope Scope, rawPath string) (string, *os.File, fs.FileInfo, error) {

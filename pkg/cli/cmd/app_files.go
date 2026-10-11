@@ -61,12 +61,15 @@ func newAppFilesCommand(target *hubTarget) *cobra.Command {
 		Long: `Work with the project workspace App Studio keeps between git and the dev
 sandbox. A write marks the path uncommitted: the reconciler commits it and
 syncs it to <name>-dev, the same as an assistant edit. Paths are relative to
-the repository root (web/public/logo.png on the application template).
+the repository root (web/public/logo.png on the application template). New
+files are create-only. Replacing or deleting a file requires the exact version
+printed by files get --version-only; a stale version fails without changing it.
 
   railgrid app files ls shop
   railgrid app files get shop api/server.mjs > server.mjs
   railgrid app files put shop web/public/logo.png ./logo.png
-  railgrid app files rm shop web/public/old.png`,
+  railgrid app files get shop web/public/old.png --version-only
+  railgrid app files rm shop web/public/old.png --expected-version <version>`,
 	}
 	cmd.AddCommand(
 		newAppFilesLsCommand(target),
@@ -124,11 +127,15 @@ func newAppFilesLsCommand(target *hubTarget) *cobra.Command {
 
 func newAppFilesGetCommand(target *hubTarget) *cobra.Command {
 	var outPath string
+	var versionOnly bool
 	cmd := &cobra.Command{
 		Use:   "get <name> <path>",
 		Short: "Print a workspace file (text or binary) to stdout or --out",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if versionOnly && outPath != "" {
+				return fmt.Errorf("--version-only and --out cannot be combined")
+			}
 			ctx := cmdContext(cmd)
 			s, err := newHubSession(ctx, *target)
 			if err != nil {
@@ -139,6 +146,14 @@ func newAppFilesGetCommand(target *hubTarget) *cobra.Command {
 				return err
 			}
 			defer resp.Body.Close() //nolint:errcheck
+			if versionOnly {
+				version := strings.Trim(strings.TrimSpace(resp.Header.Get("ETag")), `"`)
+				if version == "" || strings.HasPrefix(version, "W/") {
+					return fmt.Errorf("the server did not return an exact file version")
+				}
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), version)
+				return err
+			}
 			w := cmd.OutOrStdout()
 			if outPath != "" {
 				f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -155,11 +170,13 @@ func newAppFilesGetCommand(target *hubTarget) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&outPath, "out", "", "Write to this local file instead of stdout")
+	cmd.Flags().BoolVar(&versionOnly, "version-only", false, "Print the exact version required to replace or delete this file")
 	return cmd
 }
 
 func newAppFilesPutCommand(target *hubTarget) *cobra.Command {
 	var createOnly bool
+	var expectedVersion string
 	var output string
 	cmd := &cobra.Command{
 		Use:   "put <name> <path> [local-file]",
@@ -168,9 +185,18 @@ func newAppFilesPutCommand(target *hubTarget) *cobra.Command {
 <local-file>, or from stdin when it is omitted or '-'. Limits: 256 KiB for
 text, 25 MiB for binary. The reconciler commits the file and syncs it to the
 dev sandbox; on the application template only files under web/ and api/
-are served.`,
+are served. New paths are create-only. To replace an existing file, pass
+--expected-version with the exact version from files get --version-only; the
+request fails if the file changed after that read.`,
 		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			version := strings.TrimSpace(expectedVersion)
+			if createOnly && version != "" {
+				return fmt.Errorf("--create-only and --expected-version cannot be combined")
+			}
+			if cmd.Flags().Changed("expected-version") && (version == "" || version == "*" || strings.HasPrefix(version, "W/") || strings.Contains(version, ",")) {
+				return fmt.Errorf("--expected-version must be one exact version returned by files get")
+			}
 			if err := validateOutputFormat(output); err != nil {
 				return err
 			}
@@ -191,7 +217,9 @@ are served.`,
 			}
 			header := http.Header{}
 			header.Set("Content-Type", "application/octet-stream")
-			if createOnly {
+			if version != "" {
+				header.Set("If-Match", version)
+			} else {
 				header.Set("If-None-Match", "*")
 			}
 			var raw json.RawMessage
@@ -212,29 +240,38 @@ are served.`,
 			return err
 		},
 	}
-	cmd.Flags().BoolVar(&createOnly, "create-only", false, "Fail (412) when the file already exists")
+	cmd.Flags().BoolVar(&createOnly, "create-only", false, "Create only (the default); fail when the file already exists")
+	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Replace only the exact file version returned by files get")
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: json")
 	return cmd
 }
 
 func newAppFilesRmCommand(target *hubTarget) *cobra.Command {
+	var expectedVersion string
 	cmd := &cobra.Command{
 		Use:     "rm <name> <path>",
 		Aliases: []string{"delete"},
 		Short:   "Delete a workspace file (the reconciler commits the deletion)",
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			version := strings.TrimSpace(expectedVersion)
+			if version == "" || version == "*" || strings.HasPrefix(version, "W/") || strings.Contains(version, ",") {
+				return fmt.Errorf("--expected-version with the exact version returned by files get is required")
+			}
 			ctx := cmdContext(cmd)
 			s, err := newHubSession(ctx, *target)
 			if err != nil {
 				return err
 			}
-			if err := s.do(ctx, http.MethodDelete, projectFileVerbURL(s, args[0], "files-content", args[1]), nil, nil); err != nil {
+			header := http.Header{}
+			header.Set("If-Match", version)
+			if err := s.doWithHeaders(ctx, http.MethodDelete, projectFileVerbURL(s, args[0], "files-content", args[1]), nil, header, nil); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", strings.TrimSpace(args[1]))
 			return err
 		},
 	}
+	cmd.Flags().StringVar(&expectedVersion, "expected-version", "", "Delete only the exact file version returned by files get")
 	return cmd
 }

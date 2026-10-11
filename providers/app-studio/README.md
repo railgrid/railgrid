@@ -359,8 +359,31 @@ repeating the backfill or index swap.
 All threads retain one fenced project workspace owner. Stopping one turn does
 not stop its siblings, while deleting the project stops every active run.
 Project-wide external operations wait for all active threads and reserve the
-workspace before proceeding. Source API version checks, command execution
-changes, and independent composer state are delivered in subsequent slices.
+workspace before proceeding. Command execution changes and independent
+composer state are delivered in subsequent slices.
+
+File API writes can run alongside assistant turns under the same project owner.
+Creating a file requires `If-None-Match: *`; replacing or deleting a file
+requires `If-Match` with its exact version. Missing preconditions are rejected,
+and stale versions return a conflict without overwriting the current file.
+Multipart uploads carry an `expectedVersions` map for replacements and apply
+as one transaction: every file must pass its precondition before any changes
+are applied. Conflict responses identify the changed files so clients can
+reread them and let the user reconcile the edit.
+
+The code explorer retains the version the user inspected for replacements and
+deletions. The CLI creates files by default; use `railgrid app files get
+<project> <path> --version-only` to obtain a version and pass it through
+`--expected-version` when replacing or deleting. Binary assistant tools also
+require an observed version before overwriting an existing file. The code explorer
+keeps deletion disabled for oversized text previews that lack a complete
+version; the raw-file CLI `--version-only` read supports those files.
+
+Runtime replacement and preview activation are serialized per project under
+the existing fenced workspace owner. Waiting on Infrastructure does not hold
+the source transaction lock. Restore and template changes retain their
+exclusive workspace reservation, and operations that wait must revalidate the
+Project incarnation before acting on a refreshed runtime target.
 
 A message submitted while the current run is working is durable steering for
 that same run, not a replacement run. The request names the expected run and is

@@ -33,6 +33,7 @@ import (
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubmcp"
+	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/tenant"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -250,6 +251,7 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer release()
+	r = r.WithContext(contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, p)))
 	lock := s.developmentSyncLock(id, p)
 	lock.Lock()
 	defer lock.Unlock()
@@ -276,6 +278,10 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 // reported as 502 reached clients as a bare "error code: 502" with no hint that
 // a package.json was all that was missing.
 func writeDevelopmentSyncError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errProjectRuntimeOperationTargetChanged) {
+		writeProjectRuntimeOperationConflict(w)
+		return
+	}
 	var precondition *projectDevelopmentSyncPreconditionError
 	if errors.As(err, &precondition) {
 		writeStatus(w, http.StatusUnprocessableEntity, "UnprocessableEntity", err.Error())
@@ -352,8 +358,29 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
 	scope := projectWorkspaceScope(id, p)
+	release, err := s.acquireProjectRuntimeOperation(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if p != nil {
+		current, err := refreshProjectRuntimeOperationProject(ctx, c, p)
+		if err != nil {
+			return nil, err
+		}
+		if p.Spec.Template != nil && current.Spec.Template == nil {
+			return nil, fmt.Errorf("%w: project no longer has a development template", errProjectRuntimeOperationTargetChanged)
+		}
+		if current.Spec.Template != nil {
+			target, err = s.projectDevelopmentTarget(ctx, c, current, id)
+			if err != nil {
+				return nil, err
+			}
+		}
+		p = current
+	}
 	var (
-		err                   error
+		origin                workspace.SourceChange
 		snapshot              projectWorkspaceSyncSnapshot
 		binaryComponents      map[string]bool
 		overBoundsByComponent map[string][]string
@@ -411,6 +438,10 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		}
 		if currentRevision != snapshot.SourceRevision {
 			continue
+		}
+		origin = workspace.SourceChange{SourceRevision: snapshot.SourceRevision}
+		if change, sourceErr := s.workspaces.LastSourceChange(ctx, scope); sourceErr == nil && change != nil && change.SourceRevision == snapshot.SourceRevision {
+			origin = *change
 		}
 		snapshotReady = true
 		break
@@ -482,6 +513,9 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	aggregated, err := json.Marshal(results)
 	if err != nil {
 		return nil, err
+	}
+	if err := s.workspaces.RecordPreviewCheckpoint(ctx, scope, origin); err != nil {
+		return nil, fmt.Errorf("record preview checkpoint: %w", err)
 	}
 	return aggregated, nil
 }
@@ -1284,17 +1318,46 @@ func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
 			}
 			s.mu.Unlock()
 		}()
-		var err error
-		if hook != nil {
-			err = hook(id, project, name)
-		} else {
-			err = s.syncDevelopmentAfterMutation(id, project, name)
-		}
+		err := s.syncDevelopmentAfterMutationWithReservationRetry(id, project, name, hook)
 		if complete != nil {
 			complete(err)
 		}
 	}()
 	return true
+}
+
+// syncDevelopmentAfterMutationWithReservationRetry waits through an exclusive
+// workspace operation that queued this background sync before releasing its
+// lease. Each retry uses the normal fresh context and must acquire the owner
+// again; the request's owner marker must never escape into this worker.
+func (s *Server) syncDevelopmentAfterMutationWithReservationRetry(
+	id identity,
+	p *aiv1alpha1.Project,
+	name string,
+	hook func(identity, *aiv1alpha1.Project, string) error,
+) error {
+	timeout, backoff, maxBackoff := s.developmentSyncReadiness()
+	deadline := time.Now().Add(timeout)
+	for attempt := 1; ; attempt++ {
+		var err error
+		if hook != nil {
+			err = hook(id, p, name)
+		} else {
+			err = s.syncDevelopmentAfterMutation(id, p, name)
+		}
+		if err == nil || !errors.Is(err, store.ErrAssistantRunConflict) {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("project workspace remained reserved for %s after %s: %w", timeout, projectToolBaseName(name), err)
+		}
+		wait := min(backoff, remaining)
+		klog.V(2).Infof("development sync after %s for project %s is waiting for a workspace operation (attempt %d, retrying in %s): %v", projectToolBaseName(name), p.Name, attempt, wait, err)
+		timer := time.NewTimer(wait)
+		<-timer.C
+		backoff = min(backoff*2, maxBackoff)
+	}
 }
 
 func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) error {

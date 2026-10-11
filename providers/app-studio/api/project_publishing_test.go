@@ -57,6 +57,18 @@ func publishingTestDynamic(objects ...runtime.Object) *fake.FakeDynamicClient {
 	)
 }
 
+func publishingTestProjectObject(t *testing.T, project *aiv1alpha1.Project) *unstructured.Unstructured {
+	t.Helper()
+	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(project)
+	if err != nil {
+		t.Fatalf("convert Project to unstructured: %v", err)
+	}
+	resource := &unstructured.Unstructured{Object: object}
+	resource.SetAPIVersion(aiv1alpha1.SchemeGroupVersion.String())
+	resource.SetKind("Project")
+	return resource
+}
+
 func publishingTestServer(t *testing.T, dyn *fake.FakeDynamicClient, members ...publishingMember) *mux.Router {
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)

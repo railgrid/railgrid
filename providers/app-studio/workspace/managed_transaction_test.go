@@ -239,8 +239,8 @@ func TestManagedTransactionPrintableDataUsesNoDiffResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || !results[0].Binary || results[0].Size != int64(len(data)) || results[0].Version != fileVersion(data) {
-		t.Fatalf("printable Data result = %#v, want opaque byte result", results)
+	if len(results) != 1 || results[0].Binary || results[0].Size != int64(len(data)) || results[0].Version != fileVersion(data) {
+		t.Fatalf("printable Data result = %#v, want text-classified byte result", results)
 	}
 	if results[0].Diff != "" || results[0].Additions != 0 || results[0].Deletions != 0 {
 		t.Fatalf("printable Data result generated text diff data: %#v", results[0])

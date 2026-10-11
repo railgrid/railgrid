@@ -162,7 +162,7 @@ func TestSyncProjectDevelopmentTargetRetriesMutationDuringUnsupportedBinaryProbe
 		"kind":       "Instance",
 		"metadata":   map[string]any{"name": "demo-dev"},
 	}}
-	client := asclient.NewFromDynamic(publishingTestDynamic(instance))
+	client := asclient.NewFromDynamic(publishingTestDynamic(publishingTestProjectObject(t, project), instance))
 	target := projectDevelopmentSyncTargetInfo{
 		ResourceName: "demo-dev",
 		Resource:     "instances",
@@ -214,7 +214,7 @@ func TestSyncProjectDevelopmentTargetReportsSkippedFiles(t *testing.T) {
 		"kind":       "Instance",
 		"metadata":   map[string]any{"name": "demo-dev"},
 	}}
-	client := asclient.NewFromDynamic(publishingTestDynamic(instance))
+	client := asclient.NewFromDynamic(publishingTestDynamic(publishingTestProjectObject(t, project), instance))
 	target := projectDevelopmentSyncTargetInfo{
 		ResourceName: "demo-dev",
 		Resource:     "instances",

@@ -12,6 +12,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,6 +24,17 @@ import (
 func (s *Server) restartProjectDevelopment(w http.ResponseWriter, r *http.Request) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
+		return
+	}
+	release, err := s.acquireProjectRuntimeOperation(r.Context(), projectWorkspaceScope(id, p))
+	if err != nil {
+		writeRuntimeTargetError(w, err)
+		return
+	}
+	defer release()
+	p, err = refreshProjectRuntimeOperationProject(r.Context(), c, p)
+	if err != nil {
+		writeRuntimeTargetError(w, err)
 		return
 	}
 	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
@@ -122,6 +134,8 @@ func (s *Server) statusProjectDevelopment(w http.ResponseWriter, r *http.Request
 
 func writeRuntimeTargetError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errProjectRuntimeOperationTargetChanged):
+		writeProjectRuntimeOperationConflict(w)
 	case apierrors.IsNotFound(err):
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 	case apierrors.IsForbidden(err):

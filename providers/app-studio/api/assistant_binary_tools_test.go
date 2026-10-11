@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -45,6 +46,13 @@ func callBinaryTool(t *testing.T, registry projectAssistantToolRegistry, name st
 		t.Fatalf("argument validation: %v", err)
 	}
 	return tool.Call(context.Background(), req)
+}
+
+func recordBinaryVersionReadForToolTest(state *projectEinoAssistantRunState, path, version string) {
+	state.RecordObservedReadFileVersion(path, version)
+	readOrdinal := state.NextModelCallOrdinal()
+	state.RecordModelVisibleReadFileVersion(path, version, true, readOrdinal)
+	state.NextModelCallOrdinal()
 }
 
 func TestImportAttachmentPlacesFileAttachmentInWorkspace(t *testing.T) {
@@ -83,12 +91,112 @@ func TestImportAttachmentPlacesFileAttachmentInWorkspace(t *testing.T) {
 		t.Fatalf("second import error = %v, want exists guidance", err)
 	}
 	req.Arguments["overwrite"] = true
+	if err := projectAssistantValidateWorkspaceMutationArguments(projectToolImportAttachment, req.Arguments); err == nil || !strings.Contains(err.Error(), "requires expectedVersion") {
+		t.Fatalf("overwrite without expectedVersion error = %v", err)
+	}
+	current, err := server.workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "public/assets/jeep.glb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordBinaryVersionReadForToolTest(state, current.Path, current.Version)
+	req.Arguments["expectedVersion"] = current.Version
 	if _, err := callBinaryTool(t, registry, projectToolImportAttachment, req); err != nil {
 		t.Fatalf("overwrite import: %v", err)
 	}
 	req.Arguments["attachmentID"] = "att-unknown"
 	if _, err := callBinaryTool(t, registry, projectToolImportAttachment, req); err == nil || !strings.Contains(err.Error(), "not selected") {
 		t.Fatalf("unknown attachment error = %v", err)
+	}
+}
+
+func TestImportAttachmentOverwriteReturnsStructuredStaleConflict(t *testing.T) {
+	server, scope, registry := binaryToolFixture(t)
+	model := testPNG(1024)
+	receipt := attachmentReceiptForTest("att-image", "image.png", "image/png", model)
+	state := newProjectEinoAssistantRunState()
+	state.SetContentParts([]projectAssistantContentPart{projectAssistantContentPartAttachment(receipt)})
+	req := projectAssistantToolCallRequest{
+		WorkspaceScope:   scope,
+		RunState:         state,
+		AttachmentReader: projectAssistantAttachmentReaderTestDouble{contents: map[string][]byte{"att-image": model}},
+		Arguments:        map[string]any{"attachmentID": "att-image", "path": "public/image.png"},
+	}
+	if _, err := callBinaryTool(t, registry, projectToolImportAttachment, req); err != nil {
+		t.Fatalf("initial create-only import: %v", err)
+	}
+	read, err := server.workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "public/image.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordBinaryVersionReadForToolTest(state, read.Path, read.Version)
+	if _, err := server.workspaces.PutFile(context.Background(), scope, workspace.PutOptions{Path: read.Path, Data: []byte("another writer")}); err != nil {
+		t.Fatalf("simulate concurrent edit: %v", err)
+	}
+	req.Arguments["overwrite"] = true
+	req.Arguments["expectedVersion"] = read.Version
+	_, err = callBinaryTool(t, registry, projectToolImportAttachment, req)
+	var mutationErr *workspace.MutationError
+	if !errors.As(err, &mutationErr) || mutationErr.Code != workspace.MutationErrorStale {
+		t.Fatalf("stale overwrite error = %#v, want typed stale-source conflict", err)
+	}
+	if len(mutationErr.ChangedFiles) != 1 || mutationErr.ChangedFiles[0] != read.Path {
+		t.Fatalf("stale conflict changedFiles = %v, want [%s]", mutationErr.ChangedFiles, read.Path)
+	}
+	got, err := server.workspaces.ReadFileBytes(context.Background(), scope, read.Path, 0)
+	if err != nil || string(got) != "another writer" {
+		t.Fatalf("concurrent winner changed after stale binary overwrite: bytes=%q err=%v", got, err)
+	}
+}
+
+func TestBinaryPlacementToolSchemasDescribeVersionedOverwrite(t *testing.T) {
+	registry := projectAssistantLocalToolRegistry(nil)
+	for _, name := range []string{projectToolImportAttachment, projectToolDownloadFile} {
+		spec, ok := registry.Spec(name)
+		if !ok {
+			t.Fatalf("%s is not registered", name)
+		}
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(spec.Parameters, &schema); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+		if _, ok := schema.Properties["expectedVersion"]; !ok || !strings.Contains(spec.Description, "expectedVersion from a complete read_file result") {
+			t.Fatalf("%s lacks read-version overwrite contract: %s %s", name, spec.Description, spec.Parameters)
+		}
+	}
+}
+
+func TestBinaryPlacementArgumentsRequireVersionedOverwrite(t *testing.T) {
+	for _, name := range []string{projectToolImportAttachment, projectToolDownloadFile} {
+		sourceKey, source := "attachmentID", "att-1"
+		if name == projectToolDownloadFile {
+			sourceKey, source = "url", "https://example.test/file.bin"
+		}
+		base := map[string]any{sourceKey: source, "path": "public/file.bin"}
+		if err := projectAssistantValidateWorkspaceMutationArguments(name, base); err != nil {
+			t.Errorf("%s create-only args: %v", name, err)
+		}
+		withVersion := cloneProjectAssistantToolArguments(base)
+		withVersion["expectedVersion"] = "sha256:v1"
+		if err := projectAssistantValidateWorkspaceMutationArguments(name, withVersion); err == nil {
+			t.Errorf("%s accepted expectedVersion without overwrite", name)
+		}
+		missingVersion := cloneProjectAssistantToolArguments(base)
+		missingVersion["overwrite"] = true
+		if err := projectAssistantValidateWorkspaceMutationArguments(name, missingVersion); err == nil {
+			t.Errorf("%s accepted overwrite without expectedVersion", name)
+		}
+		versioned := cloneProjectAssistantToolArguments(missingVersion)
+		versioned["expectedVersion"] = "sha256:v1"
+		if err := projectAssistantValidateWorkspaceMutationArguments(name, versioned); err != nil {
+			t.Errorf("%s rejected versioned overwrite: %v", name, err)
+		}
+		oversized := cloneProjectAssistantToolArguments(versioned)
+		oversized["expectedVersion"] = strings.Repeat("v", workspace.MaxFileVersionBytes+1)
+		if err := projectAssistantValidateWorkspaceMutationArguments(name, oversized); err == nil {
+			t.Errorf("%s accepted oversized expectedVersion", name)
+		}
 	}
 }
 

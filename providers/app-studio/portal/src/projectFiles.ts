@@ -16,6 +16,8 @@ export interface ProjectFileWriteIntent {
   ifMatch?: string
   /** Multipart upload without overwrite=true. */
   upload?: boolean
+  /** Multipart replacement with per-path expectedVersions. */
+  expectedVersions?: Record<string, string>
 }
 
 /** Human byte size for file metadata ("24.8 MB" style, binary units). */
@@ -112,18 +114,29 @@ export function projectFileSizeError(file: Pick<File, 'name' | 'size'>): string 
  * run reservation and (for uploads) an existing file, so the server message
  * disambiguates; 412 is always a precondition (exists or changed).
  */
-export function classifyProjectFileError(status: number, detail: string, intent: ProjectFileWriteIntent = {}): ProjectFileErrorReason {
+export function classifyProjectFileError(
+  status: number,
+  detail: string,
+  intent: ProjectFileWriteIntent = {},
+  conflict: { code?: string; changedFiles?: string[] } = {},
+): ProjectFileErrorReason {
   const message = detail.toLowerCase()
   if (status === 413) return 'too-large'
   if (status === 404) return 'not-found'
   if (status === 400) return 'invalid'
+  const expectedPaths = new Set(Object.keys(intent.expectedVersions ?? {}))
+  const versionedConflict = conflict.changedFiles?.some((path) => expectedPaths.has(path)) ?? false
+  if (status === 409 && (versionedConflict || ['stale_source', 'workspace_conflict', 'target_not_found'].includes(conflict.code ?? ''))) return 'changed'
+  if (status === 409 && conflict.code === 'target_exists') return 'exists'
+  if (status === 409 && /file changed while/u.test(message)) return 'changed'
   // Match the server's own 409 wording before the busy heuristic: the path in
   // "file \"scripts/run.sh\" already exists" must not read as an active run.
-  if (status === 409 && /already exists/u.test(message)) return 'exists'
-  if (status === 409 && /file changed while/u.test(message)) return 'changed'
+  if (status === 409 && /already exists/u.test(message)) {
+    return 'exists'
+  }
   if (status === 409 && /assistant|run\b/u.test(message)) return 'busy'
   if (status === 412 || (status === 409 && intent.upload)) {
-    if (intent.ifMatch && !intent.createOnly) return 'changed'
+    if ((intent.ifMatch || Object.keys(intent.expectedVersions ?? {}).length > 0) && !intent.createOnly) return 'changed'
     if (/changed|mismatch|version/u.test(message) && !/exist/u.test(message)) return 'changed'
     return 'exists'
   }

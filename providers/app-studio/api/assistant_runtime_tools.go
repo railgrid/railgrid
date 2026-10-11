@@ -123,6 +123,53 @@ func projectAssistantRuntimeCallContext(ctx context.Context, runCtx projectAssis
 	return runCtx.Server, runCtx.Identity, target, nil
 }
 
+// projectAssistantRuntimeMutationCallContext refreshes the Project and its
+// development target after the caller owns the runtime operation lock. A
+// queued mutation uses the current component map and refuses a Project that
+// was deleted or recreated while it waited.
+func projectAssistantRuntimeMutationCallContext(
+	ctx context.Context,
+	runCtx projectAssistantWorkflowRunContext,
+	expected projectAssistantWorkflowRunContext,
+) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
+	current := runCtx.current()
+	unavailable := func(summary string) (projectAssistantWorkflowRunContext, *Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
+		return current, nil, identity{}, projectDevelopmentSyncTargetInfo{}, &projectAssistantRuntimeWorkflowResult{
+			Status:    "unavailable",
+			Summary:   summary,
+			Runtime:   &projectAssistantDeploymentRuntime{Status: "unavailable", Message: summary},
+			Blockers:  []string{summary},
+			NextSteps: []string{"Reload the project and retry the runtime action."},
+		}
+	}
+	if current.Server == nil || current.Client == nil || current.Project == nil {
+		result, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because no runtime client is configured for this run.")
+		return current, nil, identity{}, projectDevelopmentSyncTargetInfo{}, result
+	}
+	if expected.Project == nil || expected.Project.UID == "" ||
+		current.Server != expected.Server || current.Client != expected.Client ||
+		current.Project.Name != expected.Project.Name || current.Project.UID != expected.Project.UID ||
+		current.WorkspaceScope != expected.WorkspaceScope ||
+		current.Identity.clusterID != expected.Identity.clusterID ||
+		current.Identity.orgUUID != expected.Identity.orgUUID ||
+		current.Identity.workspaceUUID != expected.Identity.workspaceUUID ||
+		current.Identity.user != expected.Identity.user {
+		return unavailable("The project context changed while the runtime action was waiting. Reload the project and retry.")
+	}
+
+	project, err := refreshProjectRuntimeOperationProject(ctx, current.Client, expected.Project)
+	if err != nil {
+		return unavailable("Runtime action is unavailable because the current project could not be refreshed: " + err.Error())
+	}
+	current.Project = project
+	// The current Project above was read after the lock was acquired. Keep
+	// projectAssistantRuntimeCallContext from replacing it with the older
+	// execution-context snapshot.
+	current.ExecutionContext = nil
+	server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, current)
+	return current, server, id, target, blocked
+}
+
 // runtimeComponentRefs enumerates the data-plane refs a runtime action fans
 // out to: each declared component for a template-backed target, or the single
 // instance-level ref for the legacy runner. Keys label per-ref results.
@@ -936,7 +983,21 @@ func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) f
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, currentRunCtx)
+		if currentRunCtx.Server == nil || currentRunCtx.Client == nil || currentRunCtx.Project == nil {
+			result, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because no runtime client is configured for this run.")
+			return result, nil
+		}
+		expected := currentRunCtx
+		expected.Project = currentRunCtx.Project.DeepCopy()
+		release, err := currentRunCtx.Server.acquireProjectRuntimeOperation(ctx, currentRunCtx.WorkspaceScope)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		currentRunCtx, server, id, target, blocked := projectAssistantRuntimeMutationCallContext(ctx, runCtx, expected)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if blocked != nil {
 			return blocked, nil
 		}
@@ -1041,7 +1102,21 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 				NextSteps: nextSteps,
 			}, nil
 		}
-		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, currentRunCtx)
+		if currentRunCtx.Server == nil || currentRunCtx.Client == nil || currentRunCtx.Project == nil {
+			result, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because no runtime client is configured for this run.")
+			return result, nil
+		}
+		expected := currentRunCtx
+		expected.Project = currentRunCtx.Project.DeepCopy()
+		release, err := currentRunCtx.Server.acquireProjectRuntimeOperation(ctx, currentRunCtx.WorkspaceScope)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		currentRunCtx, server, id, target, blocked := projectAssistantRuntimeMutationCallContext(ctx, runCtx, expected)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if blocked != nil {
 			return blocked, nil
 		}

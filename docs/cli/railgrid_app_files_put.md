@@ -8,7 +8,9 @@ Upload one file into the project workspace at <path>. The content comes from
 <local-file>, or from stdin when it is omitted or '-'. Limits: 256 KiB for
 text, 25 MiB for binary. The reconciler commits the file and syncs it to the
 dev sandbox; on the application template only files under web/ and api/
-are served.
+are served. New paths are create-only. To replace an existing file, pass
+--expected-version with the exact version from files get --version-only; the
+request fails if the file changed after that read.
 
 ```
 railgrid app files put <name> <path> [local-file] [flags]
@@ -17,9 +19,10 @@ railgrid app files put <name> <path> [local-file] [flags]
 ### Options
 
 ```
-      --create-only     Fail (412) when the file already exists
-  -h, --help            help for put
-  -o, --output string   Output format: json
+      --create-only               Create only (the default); fail when the file already exists
+      --expected-version string   Replace only the exact file version returned by files get
+  -h, --help                      help for put
+  -o, --output string             Output format: json
 ```
 
 ### Options inherited from parent commands

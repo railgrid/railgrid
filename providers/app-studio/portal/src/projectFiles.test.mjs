@@ -66,6 +66,9 @@ test('classifies busy, exists, changed, and too-large responses', () => {
   assert.equal(files.classifyProjectFileError(409, busy, { upload: true }), 'busy')
   assert.equal(files.classifyProjectFileError(409, 'file public/a.png already exists', { upload: true }), 'exists')
   assert.equal(files.classifyProjectFileError(409, 'file "scripts/run.sh" already exists; upload with overwrite=true to replace it', { upload: true }), 'exists')
+  assert.equal(files.classifyProjectFileError(409, 'upload conflict', { expectedVersions: { 'scripts/run.sh': 'sha256:abc' } }, { code: 'target_exists', changedFiles: ['new.md'] }), 'exists')
+  assert.equal(files.classifyProjectFileError(409, 'upload conflict', { expectedVersions: { 'scripts/run.sh': 'sha256:abc' } }, { code: 'target_exists', changedFiles: ['new.md', 'scripts/run.sh'] }), 'changed')
+  assert.equal(files.classifyProjectFileError(409, 'expectedVersion does not match the current file', { expectedVersions: { 'scripts/run.sh': 'sha256:abc' } }, { code: 'stale_source', changedFiles: ['scripts/run.sh'] }), 'changed')
   assert.equal(files.classifyProjectFileError(409, 'file changed while it was being read; retry', {}), 'changed')
   assert.equal(files.classifyProjectFileError(412, 'file already exists', { createOnly: true }), 'exists')
   assert.equal(files.classifyProjectFileError(412, 'precondition failed', { ifMatch: 'sha256:abc' }), 'changed')
@@ -87,7 +90,7 @@ test('file API routes use providerFetch with tenant headers and the agreed wire 
     return jsonResponse(200, { path: 'a.txt', content: 'hi', binary: false })
   })
 
-  const created = await api.putProjectFile(ctx, 'demo', 'notes.md', '', { createOnly: true })
+  const created = await api.putProjectFile(ctx, 'demo', 'notes.md', '')
   assert.deepEqual(created, { path: 'notes.md', size: 0, version: 'sha256:00', binary: false })
   assert.equal(calls[0].url, '/clusters/cluster-1/apis/ai.railgrid.ai/v1alpha1/projects/demo/files-content?path=notes.md')
   assert.equal(calls[0].init.headers['If-None-Match'], '*')
@@ -106,16 +109,30 @@ test('file API routes use providerFetch with tenant headers and the agreed wire 
   assert.equal(calls[2].init.headers['If-Match'], 'sha256:bb')
 
   const glb = new File([new Uint8Array([1, 2, 3])], 'jeep.glb', { type: 'model/gltf-binary' })
-  const uploaded = await api.uploadProjectFiles(ctx, 'demo', [glb], { dir: 'public/assets', overwrite: true })
+  const newFile = new File(['new'], 'new.md')
+  const uploaded = await api.uploadProjectFiles(ctx, 'demo', [glb, newFile], {
+    // The version map contains existing targets only; new paths remain
+    // create-only in the same atomic batch.
+    dir: 'public/assets', overwrite: true, expectedVersions: { 'public/assets/jeep.glb': 'sha256:before' },
+  })
   assert.deepEqual(uploaded, [{ path: 'public/assets/jeep.glb', size: 3, version: 'sha256:01', binary: true }])
   assert.equal(calls[3].init.method, 'POST')
   assert.equal(calls[3].url, '/clusters/cluster-1/apis/ai.railgrid.ai/v1alpha1/projects/demo/files-upload')
   const form = calls[3].init.body
   assert.ok(form instanceof FormData)
-  assert.equal(form.getAll('file').length, 1)
+  assert.equal(form.getAll('file').length, 2)
   assert.equal(form.get('dir'), 'public/assets')
   assert.equal(form.get('overwrite'), 'true')
+  assert.deepEqual(JSON.parse(form.get('expectedVersions')), { 'public/assets/jeep.glb': 'sha256:before' })
   assert.equal(calls[3].init.headers['Content-Type'], undefined, 'multipart boundary must come from the browser')
+
+  const writeCount = calls.length
+  await assert.rejects(api.putProjectFile(ctx, 'demo', 'a.bin', new Blob(['x']), { ifMatch: 'W/"sha256:weak"' }), /exact version/)
+  await assert.rejects(api.deleteProjectFile(ctx, 'demo', 'a.bin', { ifMatch: '' }), /exact version/)
+  await assert.rejects(api.uploadProjectFiles(ctx, 'demo', [glb], {
+    dir: 'public/assets', overwrite: true, expectedVersions: { 'public/assets/jeep.glb': 'W/"sha256:weak"' },
+  }), /exact version/)
+  assert.equal(calls.length, writeCount, 'missing or weak replacement/deletion versions never reach the server')
 
   const blob = await api.fetchProjectFileRaw(ctx, 'demo', 'public/assets/jeep.glb', { download: true })
   assert.equal(blob.size, 3)
@@ -141,6 +158,38 @@ test('file API maps 409, 412, and 413 to recoverable reasons', async () => {
   }
   const { ctx } = stubContext(() => jsonResponse(412, { message: 'precondition failed' }))
   await assert.rejects(api.putProjectFile(ctx, 'demo', 'a.txt', 'x', { ifMatch: 'sha256:aa' }), (error) => error.reason === 'changed')
+
+  const staleConflict = stubContext(() => jsonResponse(412, {
+    message: 'file changed since it was read',
+    reason: 'PreconditionFailed',
+    conflict: { code: 'stale_source', changedFiles: ['public/assets/jeep.glb', null, 42] },
+  }))
+  await assert.rejects(api.uploadProjectFiles(staleConflict.ctx, 'demo', [new File(['x'], 'jeep.glb')], {
+    dir: 'public/assets',
+    overwrite: true,
+    expectedVersions: { 'public/assets/jeep.glb': 'sha256:before' },
+  }), (error) => {
+    assert.equal(error.reason, 'changed')
+    assert.deepEqual(error.changedFiles, ['public/assets/jeep.glb'])
+    return true
+  })
+
+  const createConflict = stubContext(() => jsonResponse(409, {
+    message: 'file "public/assets/new.md" already exists',
+    reason: 'Conflict',
+    conflict: { code: 'target_exists', changedFiles: ['public/assets/new.md'] },
+  }))
+  await assert.rejects(api.uploadProjectFiles(createConflict.ctx, 'demo', [
+    new File(['x'], 'jeep.glb'), new File(['new'], 'new.md'),
+  ], {
+    dir: 'public/assets',
+    overwrite: true,
+    expectedVersions: { 'public/assets/jeep.glb': 'sha256:before' },
+  }), (error) => {
+    assert.equal(error.reason, 'exists')
+    assert.deepEqual(error.changedFiles, ['public/assets/new.md'])
+    return true
+  })
 })
 
 test('code explorer wires upload, drop, new file, delete, download, and binary preview', async () => {
@@ -152,14 +201,18 @@ test('code explorer wires upload, drop, new file, delete, download, and binary p
   assert.match(source, /@drop="handleTreeDrop"/)
   assert.match(source, /:data-drop-dir="row\.node\.dir \? row\.node\.path : projectFileParentDir\(row\.node\.path\)"/)
   assert.match(source, /api\.putProjectFile\(requestContext, projectName, path, '', \{ createOnly: true \}\)/)
-  assert.match(source, /error\.reason === 'exists'[\s\S]*confirmDialog\([\s\S]*confirmLabel: 'Replace'[\s\S]*overwrite: true/)
+  assert.match(source, /api\.readProjectFile\(requestContext, projectName, target\)[\s\S]*confirmLabel: 'Replace'[\s\S]*overwrite: true, expectedVersions: \{ \[target\]: version \}/)
   assert.match(source, /confirmDialog\(\{[\s\S]*title: `Delete \$\{projectFileBaseName\(path\)\}\?`[\s\S]*danger: true/)
+  assert.match(source, /selectedProjectFileDeleteVersion/)
+  assert.match(source, /api\.deleteProjectFile\(requestContext, projectName, path, \{ ifMatch: version \}\)/)
+  assert.match(source, /projectFileFailureMessage\(retryError, `Could not upload/)
   assert.match(source, /api\.fetchProjectFileRaw\(requestContext, projectName, path, \{ download: true \}\)[\s\S]*URL\.createObjectURL\(blob\)/)
   assert.match(source, /URL\.revokeObjectURL\(preview\.value\.url\)/)
   assert.match(source, /onBeforeUnmount\(releasePreview\)/)
   assert.match(source, /projectFileSizeError\(file\)/)
-  assert.match(source, /File changes are paused while the assistant runs\./)
+  assert.doesNotMatch(source, /props\.assistantBusy/)
   assert.match(source, /No preview for this file type\./)
   assert.doesNotMatch(source, /Binary file — not shown\./)
-  assert.match(app, /<CodeExplorer[\s\S]*:assistant-busy="messageStreaming"/)
+  assert.match(app, /<CodeExplorer[\s\S]*:refresh-revision="codeExplorerRefreshRevision"/)
+  assert.doesNotMatch(app, /:assistant-busy="messageStreaming"/)
 })
