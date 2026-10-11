@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -121,7 +122,7 @@ func TestWorkspaceLifecyclePreservesExecEvidence(t *testing.T) {
 		t.Fatalf("mutate response=%+v", mutated)
 	}
 
-	result, err := runPersistentExec(nil, server.config.WorkDir, persistentExecRequest{Argv: []string{"/bin/cat", "src/app.txt"}, SourceRevision: mutated.SourceRevision, SourceDigest: mutated.SourceDigest})
+	result, err := runPersistentExec(context.Background(), server.config.WorkDir, persistentExecRequest{Argv: []string{"/bin/cat", "src/app.txt"}, SourceRevision: mutated.SourceRevision, SourceDigest: mutated.SourceDigest})
 	if err != nil {
 		t.Fatalf("exec after mutation: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestWorkspaceDiffRejectsOutOfBandManagedSourceMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := runPersistentExec(nil, server.config.WorkDir, persistentExecRequest{
+	result, err := runPersistentExec(context.Background(), server.config.WorkDir, persistentExecRequest{
 		Argv:           []string{"/bin/sh", "-c", "printf 'package changed\\n' > main.go"},
 		SourceRevision: seeded.SourceRevision,
 		SourceDigest:   seeded.SourceDigest,

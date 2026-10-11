@@ -145,6 +145,13 @@ type agentConfig struct {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == execWorkerArg {
+		if err := runExecWorker(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) >= 3 && os.Args[1] == "--install" {
 		if err := installSelf(os.Args[2]); err != nil {
 			log.Fatalf("install: %v", err)
@@ -418,6 +425,7 @@ func runStatelessExecutor(ctx context.Context, cfg *agentConfig) error {
 	executor := &statelessExecutor{
 		workspace: cfg.WorkDir,
 		env:       execContext{Port: cfg.Port, Component: cfg.Component},
+		startExec: startPersistentExecHelper,
 		exit:      os.Exit,
 	}
 	srv := &http.Server{Addr: defaultExecutorAddr, Handler: executor, ReadHeaderTimeout: 10 * time.Second}
@@ -1749,6 +1757,10 @@ func (s *agentServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
 	}
+	if s.mutationMu != nil {
+		s.mutationMu.Lock()
+		defer s.mutationMu.Unlock()
+	}
 	if err := s.runtime.Restart(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1768,6 +1780,10 @@ func (s *agentServer) handleEnv(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	if s.mutationMu != nil {
+		s.mutationMu.Lock()
+		defer s.mutationMu.Unlock()
 	}
 	applied, err := s.runtime.SetEnv(r.Context(), req.Env)
 	if err != nil {
@@ -2266,10 +2282,6 @@ func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) e
 		}
 	}
 	return nil
-}
-
-func (s *supervisor) hasCommand() bool {
-	return strings.TrimSpace(s.config.StartCommand) != ""
 }
 
 func (s *supervisor) isRunning() bool {

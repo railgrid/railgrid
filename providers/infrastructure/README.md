@@ -255,6 +255,37 @@ and enforces the 12-hour idle and hard lifetime bounds. Hosted installations
 keep the feature disabled; BYO chart self-hosting values explicitly opt in and
 must provide immutable universal and dev-agent image references.
 
+### Concurrent development commands
+
+The dev-agent admits up to four command trees at a time in a development
+component. Commands share the existing workspace and runtime. The coordinator
+holds the workspace mutation lock through revision/digest validation and process
+start, then releases it while waiting for the command result. The startup phase
+has a 35-second budget that includes executor admission, connection retries, and
+acknowledgement; timing out cancels the request and releases the lock without
+redispatching an ambiguous command. A successful start acknowledgement ends this
+budget without cancelling the running command. Source syncs and
+other commands can proceed during execution; a launch revision does not certify
+that the shared files stayed unchanged throughout the command.
+
+Each command uses a small helper process to own and clean up its descendants.
+Cancelling one command does not target a sibling command's processes. The
+executor retains its admission slot through cleanup, including after an HTTP
+client disconnects. If descendant cleanup cannot be established, the executor
+fails closed and restarts instead of accepting further commands.
+
+Execution records retain their existing caller/idempotency bindings and restart
+behavior: interrupted commands are reported as failed and are not redispatched.
+Only a valid completion receipt supplies an exit code. A cancellation response
+acknowledges cancellation intent; it does not certify that cleanup has finished.
+
+Roll out the updated dev-agent image and restart development components to
+activate parallel execution. During a mixed-version rollout, the new coordinator
+also accepts the older executor's synchronous response, which keeps the mutation
+lock until that command completes. Because older executors do not acknowledge
+startup separately, their complete response must arrive within the 35-second
+startup budget; upgrade the executor before relying on longer commands.
+
 ### Exec cancellation after a lost START response
 
 App Studio can cancel an exec by its request ID when START fails ambiguously or

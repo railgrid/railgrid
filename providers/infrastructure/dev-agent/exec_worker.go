@@ -24,18 +24,28 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 const (
 	execSessionRetention = 10 * time.Minute
 	execSessionCapacity  = 128
+	execDispatchMaxTries = 9
+	// Bound every operation that happens before the executor confirms a launch.
+	// The budget is total across admission, retries, and helper startup.
+	execStartTimeout = 35 * time.Second
+	// Keep the number of simultaneously running command trees small even when
+	// many sessions are accepted into the durable queue.
+	execMaxConcurrentCommands = 4
 )
 
 type workerExecRequest struct {
@@ -57,6 +67,8 @@ type workerExecResult struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+var errExecMissingTerminalReceipt = errors.New("stateless executor response is missing a terminal execution receipt")
+
 type execSessionRecord struct {
 	SessionID           string           `json:"sessionID"`
 	RequestID           string           `json:"requestID"`
@@ -69,41 +81,253 @@ type execSessionRecord struct {
 }
 
 type execDispatcher interface {
-	Execute(context.Context, persistentExecRequest) (execResponse, error)
+	Start(context.Context, persistentExecRequest) (execExecution, error)
+}
+
+// execExecution is a command that has passed validation and started. Waiting
+// for its result is separate from dispatch so workspace sync can proceed
+// while the command is running.
+type execExecution interface {
+	Wait(context.Context) (execResponse, error)
+}
+
+type completedExecExecution struct {
+	response execResponse
+	err      error
+}
+
+func (e completedExecExecution) Wait(context.Context) (execResponse, error) {
+	return e.response, e.err
 }
 
 type httpExecDispatcher struct {
-	url    string
-	client *http.Client
+	url          string
+	client       *http.Client
+	startTimeout time.Duration
 }
 
-func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequest) (execResponse, error) {
+func (d *httpExecDispatcher) Start(ctx context.Context, req persistentExecRequest) (execExecution, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	startTimeout := d.startTimeout
+	if startTimeout <= 0 {
+		startTimeout = execStartTimeout
+	}
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	deadline := time.Now().Add(startTimeout)
+	var startMu sync.Mutex
+	startComplete := false
+	startTimedOut := false
+	startTimer := time.AfterFunc(startTimeout, func() {
+		startMu.Lock()
+		cancel := !startComplete
+		if cancel {
+			startTimedOut = true
+		}
+		startMu.Unlock()
+		if cancel {
+			cancelRequest()
+		}
+	})
+	transferred := false
+	defer func() {
+		startTimer.Stop()
+		if !transferred {
+			cancelRequest()
+		}
+	}()
+
+	startError := func(err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		startMu.Lock()
+		if !startComplete && !startTimedOut && !time.Now().Before(deadline) {
+			startTimedOut = true
+		}
+		timedOut := startTimedOut
+		startMu.Unlock()
+		if timedOut {
+			cancelRequest()
+			return fmt.Errorf("stateless executor start exceeded %s budget: %w", startTimeout, context.DeadlineExceeded)
+		}
+		return err
+	}
+	finishStart := func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		startMu.Lock()
+		if !startTimedOut && !startComplete && !time.Now().Before(deadline) {
+			startTimedOut = true
+		}
+		timedOut := startTimedOut
+		if !timedOut {
+			startComplete = true
+			startTimer.Stop()
+		}
+		startMu.Unlock()
+		if timedOut {
+			cancelRequest()
+			return fmt.Errorf("stateless executor start exceeded %s budget: %w", startTimeout, context.DeadlineExceeded)
+		}
+		return nil
+	}
+
 	raw, err := json.Marshal(req)
 	if err != nil {
-		return execResponse{}, err
+		return nil, startError(err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(raw))
-	if err != nil {
-		return execResponse{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := d.client.Do(httpReq)
-	if err != nil {
-		return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
-	if err != nil {
-		return execResponse{}, err
+	var resp *http.Response
+	for attempt := 1; attempt <= execDispatchMaxTries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodPost, d.url, bytes.NewReader(raw))
+		if err != nil {
+			return nil, startError(err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err = d.client.Do(httpReq)
+		if err == nil {
+			break
+		}
+		if !isExecDialRefused(err) || attempt == execDispatchMaxTries {
+			return nil, startError(fmt.Errorf("dispatch stateless execution: %w", err))
+		}
+		if err := waitExecDispatchRetry(requestCtx, attempt); err != nil {
+			return nil, startError(fmt.Errorf("dispatch stateless execution: %w", err))
+		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return execResponse{}, fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body)))
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
+		if err != nil {
+			return nil, startError(err)
+		}
+		return nil, startError(fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body))))
+	}
+	if resp.Header.Get(execStartedHeader) == "true" {
+		if err := finishStart(); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		transferred = true
+		return &httpExecExecution{response: resp, cancel: cancelRequest}, nil
+	}
+	// Older executor instances return only after completion. Keep that response
+	// shape working during a rolling update; new instances stream a start ack.
+	// The startup budget remains active until this body is completely read and
+	// validated, so a flushed header without an acknowledgement cannot hold the
+	// workspace mutation lock indefinitely.
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, execResponseMaxBytes))
+	if err != nil {
+		return nil, startError(err)
+	}
+	result, err := decodeExecResponse(body)
+	if err != nil {
+		return nil, startError(fmt.Errorf("decode stateless executor response: %w", err))
+	}
+	if err := finishStart(); err != nil {
+		return nil, err
+	}
+	return completedExecExecution{response: result}, nil
+}
+
+// Execute keeps a synchronous convenience for existing callers and tests.
+func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequest) (execResponse, error) {
+	execution, err := d.Start(ctx, req)
+	if err != nil {
+		return execResponse{}, err
+	}
+	return execution.Wait(ctx)
+}
+
+type httpExecExecution struct {
+	response *http.Response
+	cancel   context.CancelFunc
+}
+
+func (e *httpExecExecution) Wait(ctx context.Context) (execResponse, error) {
+	defer func() {
+		_ = e.response.Body.Close()
+		if e.cancel != nil {
+			e.cancel()
+		}
+	}()
+	body, err := io.ReadAll(io.LimitReader(e.response.Body, execResponseMaxBytes))
+	if err != nil {
+		if ctx.Err() != nil {
+			return execResponse{}, ctx.Err()
+		}
+		return execResponse{}, err
+	}
+	result, err := decodeExecResponse(body)
+	if err != nil {
+		return execResponse{}, fmt.Errorf("decode stateless executor response: %w", err)
+	}
+	if !terminalExecPhase(result.Phase) {
+		return execResponse{}, fmt.Errorf("%w (phase %q)", errExecMissingTerminalReceipt, result.Phase)
+	}
+	if result.CleanupUnproven {
+		message := strings.TrimSpace(result.Error)
+		if message == "" {
+			message = errExecCleanupUnproven.Error()
+		}
+		return result, fmt.Errorf("%w: %s", errExecCleanupUnproven, message)
+	}
+	if result.Error != "" {
+		return result, errors.New(result.Error)
+	}
+	return result, nil
+}
+
+func decodeExecResponse(body []byte) (execResponse, error) {
+	// ExitCode is an int on the compatibility-facing response type, so decoding
+	// an empty object would otherwise fabricate a successful zero exit code.
+	var receipt struct {
+		ExitCode *int `json:"exitCode"`
+	}
+	if err := json.Unmarshal(body, &receipt); err != nil {
+		return execResponse{}, err
+	}
+	if receipt.ExitCode == nil {
+		return execResponse{}, fmt.Errorf("%w: exitCode is absent", errExecMissingTerminalReceipt)
 	}
 	var result execResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return execResponse{}, fmt.Errorf("decode stateless executor response: %w", err)
+		return execResponse{}, err
 	}
 	return result, nil
+}
+
+// isExecDialRefused accepts only a connection refusal returned from the dial
+// phase of this POST. Once a connection succeeds, transport errors are
+// ambiguous: the executor may already have launched the command.
+func isExecDialRefused(err error) bool {
+	var requestErr *url.Error
+	if !errors.As(err, &requestErr) || !strings.EqualFold(requestErr.Op, http.MethodPost) {
+		return false
+	}
+	var opErr *net.OpError
+	return errors.As(requestErr.Err, &opErr) && opErr.Op == "dial" && errors.Is(opErr.Err, syscall.ECONNREFUSED)
+}
+
+func waitExecDispatchRetry(ctx context.Context, attempt int) error {
+	delay := 100 * time.Millisecond
+	for retry := 1; retry < attempt && delay < time.Second; retry++ {
+		delay *= 2
+	}
+	if delay > time.Second {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // execCoordinator owns all durable execution authority. The executor receives
@@ -120,6 +344,7 @@ type execCoordinator struct {
 	logf         func(string, ...any)
 	mu           sync.Mutex
 	active       map[string]context.CancelFunc
+	execSlots    chan struct{}
 }
 
 func newExecCoordinator(workspace, stateDir, token string, dispatcher execDispatcher, mutationMu *sync.Mutex) (*execCoordinator, error) {
@@ -139,7 +364,8 @@ func newExecCoordinator(workspace, stateDir, token string, dispatcher execDispat
 	w := &execCoordinator{
 		workspace: workspace, stateDir: prepared, recordDir: filepath.Join(prepared, stateSessionsDir),
 		token: token, dispatcher: dispatcher, mutationMu: mutationMu, active: map[string]context.CancelFunc{},
-		exit: os.Exit, logf: log.Printf,
+		execSlots: make(chan struct{}, execMaxConcurrentCommands),
+		exit:      os.Exit, logf: log.Printf,
 	}
 	w.writeSession = w.writeRecord
 	if err := w.recoverSessions(); err != nil {
@@ -387,26 +613,46 @@ func (w *execCoordinator) boundRecord(req workerExecRequest) (execSessionRecord,
 }
 
 func (w *execCoordinator) run(ctx context.Context, req workerExecRequest) {
-	// One coordinator-owned boundary covers validation in the stateless
-	// executor and the complete command lifetime. Sync holds this same lock
-	// through reload/restart, so neither mutation can interleave.
+	select {
+	case w.execSlots <- struct{}{}:
+		defer func() { <-w.execSlots }()
+	case <-ctx.Done():
+		w.finish(req.SessionID, workerExecResult{State: "canceled"}, ctx.Err())
+		return
+	}
+
+	// Hold the workspace mutation lock until the executor verifies the requested
+	// revision/digest and starts the process. That evidence is a launch precondition;
+	// the command may observe later changes in the shared workspace after sync resumes.
 	w.mutationMu.Lock()
-	defer w.mutationMu.Unlock()
 	if ctx.Err() != nil {
+		w.mutationMu.Unlock()
 		w.finish(req.SessionID, workerExecResult{State: "canceled"}, ctx.Err())
 		return
 	}
 	running, err := w.setRunning(req.SessionID)
 	if err != nil {
+		w.mutationMu.Unlock()
 		w.clearActive(req.SessionID)
 		w.fatalPersistence(req.SessionID, err)
 		return
 	}
 	if !running {
+		w.mutationMu.Unlock()
 		w.clearActive(req.SessionID)
 		return
 	}
-	response, runErr := w.dispatcher.Execute(ctx, req.persistentExecRequest)
+	execution, err := w.dispatcher.Start(ctx, req.persistentExecRequest)
+	w.mutationMu.Unlock()
+	if err != nil {
+		result := workerExecResult{State: "failed"}
+		if errors.Is(err, context.Canceled) {
+			result.State = "canceled"
+		}
+		w.finish(req.SessionID, result, err)
+		return
+	}
+	response, runErr := execution.Wait(ctx)
 	w.finish(req.SessionID, workerResultFromExec(response, runErr), runErr)
 }
 
@@ -478,21 +724,46 @@ func (w *execCoordinator) fatalPersistence(sessionID string, err error) {
 }
 
 func workerResultFromExec(response execResponse, err error) workerExecResult {
+	// Legacy synchronous executors return a response only after completion and
+	// may not include Phase. A streaming executor must provide a known terminal
+	// phase before its exitCode can be treated as a process result.
+	hasTerminalReceipt := !response.CleanupUnproven && !errors.Is(err, errExecCleanupUnproven) &&
+		(terminalExecPhase(response.Phase) || (response.Phase == "" && err == nil))
 	state := "succeeded"
-	if response.Cancelled || errors.Is(err, context.Canceled) {
+	if response.CleanupUnproven || errors.Is(err, errExecCleanupUnproven) {
+		state = "failed"
+	} else if response.Cancelled || response.Phase == "cancelled" || errors.Is(err, context.Canceled) {
 		state = "canceled"
-	} else if response.TimedOut {
+	} else if response.TimedOut || response.Phase == "timed_out" {
 		state = "timed_out"
-	} else if err != nil || response.ExitCode != 0 {
+	} else if err != nil || response.Error != "" || response.Phase == "failed" || response.ExitCode != 0 || !hasTerminalReceipt {
 		state = "failed"
 	}
-	exitCode := int32(response.ExitCode)
-	result := workerExecResult{State: state, ExitCode: &exitCode, Stdout: response.Stdout, Stderr: response.Stderr,
+	result := workerExecResult{State: state, Stdout: response.Stdout, Stderr: response.Stderr,
 		Truncated: response.StdoutTruncated || response.StderrTruncated}
+	if hasTerminalReceipt {
+		exitCode := int32(response.ExitCode)
+		result.ExitCode = &exitCode
+	}
 	if err != nil && result.Stderr == "" {
 		result.Stderr = err.Error()
+	} else if response.Error != "" && result.Stderr == "" {
+		result.Stderr = response.Error
+	} else if response.CleanupUnproven && result.Stderr == "" {
+		result.Stderr = errExecCleanupUnproven.Error()
+	} else if !hasTerminalReceipt && result.Stderr == "" {
+		result.Stderr = errExecMissingTerminalReceipt.Error()
 	}
 	return result
+}
+
+func terminalExecPhase(phase string) bool {
+	switch phase {
+	case "completed", "timed_out", "cancelled", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func workerTerminal(state string) bool {
