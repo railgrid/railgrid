@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createServer } from 'vite'
 
 const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+const draftPolicy = await vite.ssrLoadModule('/src/assistantComposerDraftPolicy.ts')
 const {
   ASSISTANT_COMPOSER_DRAFT_MAX_AGE_MS,
   assistantComposerDraftStorageKey,
@@ -10,6 +11,10 @@ const {
   readAssistantComposerDraft,
   writeAssistantComposerDraft,
 } = await vite.ssrLoadModule('/src/assistantComposerDraft.ts')
+const {
+  assistantComposerDraftMatches,
+  shouldHydrateAssistantComposerDraftForThread,
+} = draftPolicy
 
 test.after(async () => vite.close())
 
@@ -72,6 +77,33 @@ test('stores a complete composer draft only for its exact user, project UID, and
   assert.deepEqual(readAssistantComposerDraft({ ...scope, user: 'user-b' }, storage, 10_100).contentParts, [])
   assert.deepEqual(readAssistantComposerDraft({ ...scope, projectUID: 'project-uid-b' }, storage, 10_100).contentParts, [])
   assert.deepEqual(readAssistantComposerDraft({ ...scope, thread: 'thread-b' }, storage, 10_100).contentParts, [])
+})
+
+test('first-send thread handoff keeps the in-flight composer state and still hydrates independent navigation', () => {
+  const owner = { threadID: 'thread-new', postAccepted: false }
+  assert.equal(shouldHydrateAssistantComposerDraftForThread('thread-new', true, owner), false)
+  assert.equal(shouldHydrateAssistantComposerDraftForThread('thread-other', true, owner), true)
+  assert.equal(shouldHydrateAssistantComposerDraftForThread('thread-new', false, owner), true)
+  assert.equal(shouldHydrateAssistantComposerDraftForThread('thread-new', true, { ...owner, postAccepted: true }), true)
+})
+
+test('composer draft comparisons include selections, response mode, and structured parts', () => {
+  const draft = {
+    content: 'Review this data and screenshot',
+    contentParts: [
+      { type: 'text', text: 'Review this data and screenshot' },
+      { type: 'skill', skillID: 'sql-review' },
+      { type: 'resource', resourceIndex: 0 },
+      attachment,
+    ],
+    skillIDs: ['sql-review'],
+    resources: [resource],
+    responseMode: 'plan',
+  }
+  assert.equal(assistantComposerDraftMatches(draft, structuredClone(draft)), true)
+  assert.equal(assistantComposerDraftMatches(draft, { ...draft, content: 'A newer draft' }), false)
+  assert.equal(assistantComposerDraftMatches(draft, { ...draft, content: '', contentParts: [] }, true), true)
+  assert.equal(assistantComposerDraftMatches(draft, { ...draft, responseMode: 'review' }, true), false)
 })
 
 test('ready receipts persist as content parts while pending upload state is never stored', () => {

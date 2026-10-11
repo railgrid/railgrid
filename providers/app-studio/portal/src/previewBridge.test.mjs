@@ -215,7 +215,14 @@ test('hydrates full composer drafts per active thread and clears only after acce
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   assert.match(appSource, /watch\(activeAssistantComposerDraftScopeKey,[\s\S]*hydrateCurrentAssistantComposerDraft\(\)[\s\S]*\{ flush: 'sync' \}/)
   assert.match(appSource, /startPostAccepted = true\s+submissionOwner\.postAccepted = true\s+const requestedThreadID = thread\.id\s+const canonicalThreadID = canonical\.thread\.id\.trim\(\) \|\| requestedThreadID[\s\S]*?clearStoredAssistantComposerDraft\(projectName, requestedThreadID, sendContext, projectUID\)\s+commitAttachments\(turnContentParts\)[\s\S]*?clearSelectedTurnAttachments\(\)/)
-  assert.match(appSource, /assistantComposerParts\.value = turnContentParts[\s\S]*persistCurrentAssistantComposerDraft\(turnContentParts\)/)
+  const restoreStart = appSource.indexOf('const restoreCapturedComposerDraft = ')
+  const restoreEnd = appSource.indexOf('\n  const clearOwnedPendingSubmission', restoreStart)
+  assert.ok(restoreStart >= 0 && restoreEnd > restoreStart, 'captured draft restore helper should be present')
+  const restoreSource = appSource.slice(restoreStart, restoreEnd)
+  assert.match(restoreSource, /!submissionIsCurrent\(\)/)
+  assert.match(restoreSource, /assistantComposerDraftMatches\(currentDraft, submittingComposerDraft, selectionsOnly\)/)
+  assert.match(restoreSource, /prompt\.value = capturedComposerDraft\.content[\s\S]*assistantComposerParts\.value = \[\.\.\.capturedComposerDraft\.contentParts\][\s\S]*selectedTurnSkills\.value = turnSkills[\s\S]*selectedTurnResources\.value = turnResources[\s\S]*assistantIntent\.value = capturedComposerDraft\.responseMode/)
+  assert.match(restoreSource, /writeAssistantComposerDraft\([\s\S]*assistantComposerDraftScope\(projectName, submissionOwner\.threadID, sendContext, projectUID\)[\s\S]*capturedComposerDraft/)
 })
 
 test('preview provenance attributes source and checkpoint revisions without claiming verification', async () => {

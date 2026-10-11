@@ -128,24 +128,58 @@ func (b *projectAssistantRunSandbox) request(ctx context.Context, req projectAss
 		req.SourceRevision = meta.SourceRevision
 	}
 	req.SourceDigest = meta.RemoteDigest
-	if req.SourceDigest == "" {
+	if meta.RemoteRevision == 0 && req.SourceDigest == "" {
 		req.SourceDigest = meta.SourceDigest
 	}
 	response, err := b.client.Workspace(ctx, b.id, b.target.dataPlaneRefFor("workspace"), req)
 	if err != nil {
 		return response, err
 	}
+	seedRequest := strings.EqualFold(strings.TrimSpace(req.Action), "seed")
+	responseDigest := strings.TrimSpace(response.SourceDigest)
+	staleResponse := false
 	b.mu.Lock()
 	// Keep the durable FileStore fence separate from the remote worker fence;
-	// every remote compare-and-swap advances the latter before checkpoint.
-	if response.SourceRevision != 0 {
+	// every remote compare-and-swap advances the latter before checkpoint. A
+	// response from an earlier request can arrive after a newer mutation, so it
+	// must not roll the remote fence back. Seed is the explicit transition into
+	// a new remote source domain; rematerialized sandboxes start with fresh
+	// metadata and are likewise compared only within their own instance.
+	currentRemoteRevision := b.metadata.RemoteRevision
+	currentRemoteDigest := strings.TrimSpace(b.metadata.RemoteDigest)
+	switch {
+	case !seedRequest && currentRemoteRevision > 0 && response.SourceRevision == 0:
+		// An unversioned response cannot establish that it still describes the
+		// currently known remote source. Revoke its digest while retaining the
+		// last observed revision so later verification cannot certify it.
+		b.metadata.RemoteDigest = ""
+		staleResponse = true
+	case !seedRequest && currentRemoteRevision > 0 && response.SourceRevision < currentRemoteRevision:
+		staleResponse = true
+	case !seedRequest && currentRemoteRevision > 0 && response.SourceRevision > currentRemoteRevision && responseDigest == "":
+		// A newer revision without its digest invalidates the old remote fence.
+		// Keep the observed revision, but require a later response to establish
+		// a digest before any preview can certify this source.
 		b.metadata.RemoteRevision = response.SourceRevision
+		b.metadata.RemoteDigest = ""
+		staleResponse = true
+	case !seedRequest && currentRemoteRevision > 0 && response.SourceRevision == currentRemoteRevision && currentRemoteDigest != "" && responseDigest != "" && !sandboxDigestEqual(responseDigest, currentRemoteDigest):
+		staleResponse = true
 	}
-	if strings.TrimSpace(response.SourceDigest) != "" {
-		b.metadata.RemoteDigest = strings.TrimSpace(response.SourceDigest)
-	}
-	if strings.TrimSpace(response.CheckpointID) != "" {
-		b.metadata.RemoteCheckpointID = strings.TrimSpace(response.CheckpointID)
+	if !staleResponse {
+		if seedRequest {
+			// A seed replaces the remote source domain, including its checkpoint.
+			b.metadata.RemoteCheckpointID = ""
+		}
+		if response.SourceRevision != 0 {
+			b.metadata.RemoteRevision = response.SourceRevision
+		}
+		if responseDigest != "" {
+			b.metadata.RemoteDigest = responseDigest
+		}
+		if checkpointID := strings.TrimSpace(response.CheckpointID); checkpointID != "" {
+			b.metadata.RemoteCheckpointID = checkpointID
+		}
 	}
 	b.metadata.LastActivityAt = time.Now().UTC()
 	b.metadata.IdleExpiresAt = b.metadata.LastActivityAt.Add(projectAssistantRunSandboxIdleTTL)
@@ -155,6 +189,9 @@ func (b *projectAssistantRunSandbox) request(ctx context.Context, req projectAss
 	b.mu.Unlock()
 	if b.runState != nil {
 		b.runState.SetSandboxMetadata(b.metadataSnapshot())
+	}
+	if staleResponse {
+		return response, fmt.Errorf("%w: remote workspace response no longer matches the current source fence", errProjectAssistantRunSandboxConflict)
 	}
 	return response, nil
 }
@@ -777,6 +814,91 @@ func (s *Server) checkpointProjectAssistantRunSandboxIfDirty(ctx context.Context
 		return true, fmt.Errorf("%w: private command snapshot differs from the shared preview source", errProjectAssistantRunSandboxConflict)
 	}
 	return checkpointed, nil
+}
+
+// projectAssistantPreviewSourceFence is captured after checkpointing and before
+// waiting for synchronization. It remains immutable through every observation:
+// rereading mutable sandbox metadata later must not certify a newer snapshot.
+type projectAssistantPreviewSourceFence struct {
+	server   *Server
+	sandbox  *projectAssistantRunSandbox
+	runState *projectEinoAssistantRunState
+	scope    workspace.Scope
+	revision uint64
+	digest   string
+}
+
+func projectAssistantPreviewWorkspaceScope(req projectAssistantToolCallRequest) workspace.Scope {
+	if req.WorkspaceScope.ProjectName != "" {
+		return req.WorkspaceScope
+	}
+	return projectWorkspaceScope(req.Identity, req.Project)
+}
+
+func (s *Server) captureProjectAssistantPreviewSourceFence(ctx context.Context, runState *projectEinoAssistantRunState, scope workspace.Scope) (*projectAssistantPreviewSourceFence, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if runState != nil {
+		if sandbox := runState.Sandbox(); sandbox != nil {
+			metadata := sandbox.metadataSnapshot()
+			return &projectAssistantPreviewSourceFence{
+				server: s, sandbox: sandbox, runState: runState, scope: sandbox.scope,
+				revision: metadata.SourceRevision, digest: metadata.SourceDigest,
+			}, nil
+		}
+	}
+	// Read-only and lazily initialized runs still observe the shared preview.
+	// Pin their FileStore revision even when they have no private sandbox.
+	if s.workspaces == nil {
+		return nil, nil
+	}
+	revision, err := s.workspaces.SourceRevision(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	return &projectAssistantPreviewSourceFence{server: s, scope: scope, runState: runState, revision: revision}, nil
+}
+
+func (f *projectAssistantPreviewSourceFence) validate(ctx context.Context) error {
+	if f == nil {
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.server.workspaces != nil {
+		current, err := f.server.workspaces.SourceRevision(ctx, f.scope)
+		if err != nil {
+			return err
+		}
+		if current != f.revision {
+			return fmt.Errorf("%w: shared source changed during preview verification", errProjectAssistantRunSandboxConflict)
+		}
+	}
+	sandbox := f.sandbox
+	if f.runState != nil {
+		current := f.runState.Sandbox()
+		if sandbox != nil && current != sandbox {
+			return fmt.Errorf("%w: private sandbox changed during preview verification", errProjectAssistantRunSandboxConflict)
+		}
+		sandbox = current
+	}
+	if sandbox != nil {
+		metadata := sandbox.metadataSnapshot()
+		if metadata.RemoteRevision > 0 && strings.TrimSpace(metadata.RemoteDigest) == "" {
+			return fmt.Errorf("%w: private source has a remote revision without a digest", errProjectAssistantRunSandboxConflict)
+		}
+		_, remoteDigest := projectAssistantSandboxRemoteFence(metadata)
+		if metadata.SourceRevision != f.revision || !sandboxDigestEqual(metadata.SourceDigest, remoteDigest) ||
+			(f.sandbox != nil && !sandboxDigestEqual(metadata.SourceDigest, f.digest)) {
+			return fmt.Errorf("%w: private source changed during preview verification", errProjectAssistantRunSandboxConflict)
+		}
+	}
+	return ctx.Err()
 }
 
 func projectAssistantRunSandboxCheckpointFailure(err error) string {

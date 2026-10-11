@@ -256,11 +256,12 @@ func (s *Server) writeProjectFile(w http.ResponseWriter, r *http.Request) {
 		createOnly = true
 	}
 	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
+	expectedVersion := projectFileETagValue(ifMatch)
 	if createOnly && ifMatch != "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "If-Match and If-None-Match cannot be combined")
 		return
 	}
-	if !createOnly && (ifMatch == "" || ifMatch == "*" || strings.HasPrefix(ifMatch, "W/") || strings.Contains(ifMatch, ",")) {
+	if !createOnly && (ifMatch == "" || ifMatch == "*" || strings.HasPrefix(ifMatch, "W/") || strings.Contains(ifMatch, ",") || strings.TrimSpace(expectedVersion) == "") {
 		writeStatus(w, http.StatusPreconditionRequired, "PreconditionRequired", "Use If-None-Match: * to create a file or If-Match with its exact current version to replace it")
 		return
 	}
@@ -284,7 +285,7 @@ func (s *Server) writeProjectFile(w http.ResponseWriter, r *http.Request) {
 	scope := projectWorkspaceScope(id, project)
 	opts := workspace.PutOptions{Path: filePath, Data: data, CreateOnly: createOnly}
 	if ifMatch != "" {
-		opts.ExpectedVersion = projectFileETagValue(ifMatch)
+		opts.ExpectedVersion = expectedVersion
 	}
 	result, err := s.workspaces.PutFile(r.Context(), scope, opts)
 	if err != nil {

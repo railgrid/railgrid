@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -707,6 +708,49 @@ func TestReserveProjectExternalOperationRejectsActiveAssistant(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "active assistant run") {
 		t.Fatalf("conflict body = %q, want active assistant run guidance", recorder.Body.String())
+	}
+}
+
+func TestReserveProjectExternalOperationRejectsOlderPendingThreadRun(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid-demo"}}
+	scope := projectMessageScope("org-a", "ws-1", project)
+	now := time.Now().UTC()
+	createRun := func(id, threadID string, status store.AssistantRunStatus, createdAt time.Time) {
+		t.Helper()
+		run := store.AssistantRun{
+			ID: id, ThreadID: threadID, Mode: store.AssistantRunModeDefault,
+			ApprovalMode: store.AssistantApprovalModeOnRequest, Status: status,
+			ClientRequestID: "request-" + id, UserMessageID: "user-" + id,
+			ActiveMessageID: "assistant-" + id, Revision: 1,
+			CreatedAt: createdAt, UpdatedAt: createdAt,
+		}
+		_, err := messages.CreateAssistantRun(ctx, scope,
+			store.Message{ID: run.UserMessageID, Role: "user", ActorID: "alice", Content: id, CreatedAt: createdAt, UpdatedAt: createdAt},
+			store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: createdAt, UpdatedAt: createdAt}, run,
+		)
+		if err != nil {
+			t.Fatalf("create run %s: %v", id, err)
+		}
+	}
+	createRun("older-pending", "thread-a", store.AssistantRunStatusPendingInput, now)
+	createRun("newer-terminal", "thread-b", store.AssistantRunStatusCompleted, now.Add(time.Second))
+
+	recorder := httptest.NewRecorder()
+	release, ok := server.reserveProjectExternalOperation(
+		recorder,
+		ctx,
+		identity{orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID},
+		project,
+		"restoring project files",
+	)
+	if release != nil {
+		release()
+	}
+	if ok || recorder.Code != http.StatusConflict {
+		t.Fatalf("operation reservation = (%t, %d, %q), want conflict while the older per-thread run is pending", ok, recorder.Code, recorder.Body.String())
 	}
 }
 
