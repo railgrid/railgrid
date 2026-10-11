@@ -64,6 +64,8 @@ type workerExecResult struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+var errExecMissingTerminalReceipt = errors.New("stateless executor response is missing a terminal execution receipt")
+
 type execSessionRecord struct {
 	SessionID           string           `json:"sessionID"`
 	RequestID           string           `json:"requestID"`
@@ -141,8 +143,8 @@ func (d *httpExecDispatcher) Start(ctx context.Context, req persistentExecReques
 	if err != nil {
 		return nil, err
 	}
-	var result execResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	result, err := decodeExecResponse(body)
+	if err != nil {
 		return nil, fmt.Errorf("decode stateless executor response: %w", err)
 	}
 	return completedExecExecution{response: result}, nil
@@ -170,15 +172,37 @@ func (e *httpExecExecution) Wait(ctx context.Context) (execResponse, error) {
 		}
 		return execResponse{}, err
 	}
-	var result execResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	result, err := decodeExecResponse(body)
+	if err != nil {
 		return execResponse{}, fmt.Errorf("decode stateless executor response: %w", err)
+	}
+	if !terminalExecPhase(result.Phase) {
+		return execResponse{}, fmt.Errorf("%w (phase %q)", errExecMissingTerminalReceipt, result.Phase)
 	}
 	if result.Error != "" {
 		if result.CleanupUnproven {
 			return result, fmt.Errorf("%w: %s", errExecCleanupUnproven, result.Error)
 		}
 		return result, errors.New(result.Error)
+	}
+	return result, nil
+}
+
+func decodeExecResponse(body []byte) (execResponse, error) {
+	// ExitCode is an int on the compatibility-facing response type, so decoding
+	// an empty object would otherwise fabricate a successful zero exit code.
+	var receipt struct {
+		ExitCode *int `json:"exitCode"`
+	}
+	if err := json.Unmarshal(body, &receipt); err != nil {
+		return execResponse{}, err
+	}
+	if receipt.ExitCode == nil {
+		return execResponse{}, fmt.Errorf("%w: exitCode is absent", errExecMissingTerminalReceipt)
+	}
+	var result execResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return execResponse{}, err
 	}
 	return result, nil
 }
@@ -528,7 +552,11 @@ func (w *execCoordinator) run(ctx context.Context, req workerExecRequest) {
 	execution, err := w.dispatcher.Start(ctx, req.persistentExecRequest)
 	w.mutationMu.Unlock()
 	if err != nil {
-		w.finish(req.SessionID, workerResultFromExec(execResponse{}, err), err)
+		result := workerExecResult{State: "failed"}
+		if errors.Is(err, context.Canceled) {
+			result.State = "canceled"
+		}
+		w.finish(req.SessionID, result, err)
 		return
 	}
 	response, runErr := execution.Wait(ctx)
@@ -603,21 +631,41 @@ func (w *execCoordinator) fatalPersistence(sessionID string, err error) {
 }
 
 func workerResultFromExec(response execResponse, err error) workerExecResult {
+	// Legacy synchronous executors return a response only after completion and
+	// may not include Phase. A streaming executor must provide a known terminal
+	// phase before its exitCode can be treated as a process result.
+	hasTerminalReceipt := terminalExecPhase(response.Phase) || (response.Phase == "" && err == nil)
 	state := "succeeded"
-	if response.Cancelled || errors.Is(err, context.Canceled) {
+	if response.Cancelled || response.Phase == "cancelled" || errors.Is(err, context.Canceled) {
 		state = "canceled"
-	} else if response.TimedOut {
+	} else if response.TimedOut || response.Phase == "timed_out" {
 		state = "timed_out"
-	} else if err != nil || response.ExitCode != 0 {
+	} else if err != nil || response.Error != "" || response.Phase == "failed" || response.ExitCode != 0 || !hasTerminalReceipt {
 		state = "failed"
 	}
-	exitCode := int32(response.ExitCode)
-	result := workerExecResult{State: state, ExitCode: &exitCode, Stdout: response.Stdout, Stderr: response.Stderr,
+	result := workerExecResult{State: state, Stdout: response.Stdout, Stderr: response.Stderr,
 		Truncated: response.StdoutTruncated || response.StderrTruncated}
+	if hasTerminalReceipt {
+		exitCode := int32(response.ExitCode)
+		result.ExitCode = &exitCode
+	}
 	if err != nil && result.Stderr == "" {
 		result.Stderr = err.Error()
+	} else if response.Error != "" && result.Stderr == "" {
+		result.Stderr = response.Error
+	} else if !hasTerminalReceipt && result.Stderr == "" {
+		result.Stderr = errExecMissingTerminalReceipt.Error()
 	}
 	return result
+}
+
+func terminalExecPhase(phase string) bool {
+	switch phase {
+	case "completed", "timed_out", "cancelled", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func workerTerminal(state string) bool {

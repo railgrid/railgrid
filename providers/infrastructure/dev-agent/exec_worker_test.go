@@ -18,11 +18,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -195,6 +197,217 @@ func TestHTTPExecDispatcherDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
 	}
 }
 
+func TestCoordinatorStreamingExecReceiptsPersistOnlyKnownExitCodes(t *testing.T) {
+	int32ptr := func(value int32) *int32 { return &value }
+	tests := []struct {
+		name               string
+		body               string
+		legacy             bool
+		contentLengthExtra int
+		wantState          string
+		wantExitCode       *int32
+		wantErrorInStderr  string
+	}{
+		{name: "completed zero", body: `{"phase":"completed","exitCode":0}`, wantState: "succeeded", wantExitCode: int32ptr(0)},
+		{name: "completed nonzero", body: `{"phase":"completed","exitCode":7}`, wantState: "failed", wantExitCode: int32ptr(7)},
+		{name: "legacy error receipt without stderr", body: `{"exitCode":2,"error":"legacy execution failed"}`, legacy: true, wantState: "failed", wantExitCode: int32ptr(2), wantErrorInStderr: "legacy execution failed"},
+		{name: "timed out", body: `{"phase":"timed_out","exitCode":-1,"timedOut":true}`, wantState: "timed_out", wantExitCode: int32ptr(-1)},
+		{name: "canceled receipt", body: `{"phase":"cancelled","exitCode":-1,"cancelled":true}`, wantState: "canceled", wantExitCode: int32ptr(-1)},
+		{name: "failed receipt", body: `{"phase":"failed","exitCode":-1,"error":"helper failed"}`, wantState: "failed", wantExitCode: int32ptr(-1), wantErrorInStderr: "helper failed"},
+		{name: "malformed terminal JSON", body: `not json`, wantState: "failed", wantErrorInStderr: "decode stateless executor response"},
+		{name: "truncated HTTP body", body: `{"phase":"completed","exitCode":0}`, contentLengthExtra: 1, wantState: "failed", wantErrorInStderr: "unexpected EOF"},
+		{name: "truncated terminal JSON", body: `{"phase":"completed","exitCode":`, wantState: "failed", wantErrorInStderr: "decode stateless executor response"},
+		{name: "start acknowledgement only", body: `{"phase":"started","exitCode":0}`, wantState: "failed", wantErrorInStderr: "missing a terminal execution receipt"},
+		{name: "empty JSON receipt", body: `{}`, wantState: "failed", wantErrorInStderr: "exitCode is absent"},
+		{name: "missing phase zero", body: `{"exitCode":0}`, wantState: "failed", wantErrorInStderr: "missing a terminal execution receipt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if !tt.legacy {
+					w.Header().Set(execStartedHeader, "true")
+				}
+				if tt.contentLengthExtra != 0 {
+					w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tt.body)+tt.contentLengthExtra))
+				}
+				w.WriteHeader(http.StatusOK)
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			dispatcher := &httpExecDispatcher{url: server.URL + "/internal/exec", client: server.Client()}
+			defer dispatcher.client.CloseIdleConnections()
+
+			coordinator, err := newExecCoordinator(t.TempDir(), t.TempDir(), "token", dispatcher, &sync.Mutex{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := testWorkerRequest()
+			if started, err := coordinator.start(req); err != nil || started.State != "queued" {
+				t.Fatalf("start = %+v, %v", started, err)
+			}
+			poll := req
+			poll.Action = "poll"
+			deadline := time.Now().Add(5 * time.Second)
+			var result workerExecResult
+			for time.Now().Before(deadline) {
+				result, err = coordinator.poll(poll)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if workerTerminal(result.State) {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if result.State != tt.wantState {
+				t.Fatalf("result state = %q, want %q (result: %+v)", result.State, tt.wantState, result)
+			}
+			if tt.wantExitCode == nil {
+				if result.ExitCode != nil {
+					t.Fatalf("result exit code = %d, want omitted", *result.ExitCode)
+				}
+			} else if result.ExitCode == nil || *result.ExitCode != *tt.wantExitCode {
+				t.Fatalf("result exit code = %v, want %d", result.ExitCode, *tt.wantExitCode)
+			}
+			if tt.wantErrorInStderr != "" && !strings.Contains(result.Stderr, tt.wantErrorInStderr) {
+				t.Fatalf("stderr = %q, want %q", result.Stderr, tt.wantErrorInStderr)
+			}
+
+			raw, err := os.ReadFile(coordinator.recordPath(req.SessionID))
+			if err != nil {
+				t.Fatalf("read durable session result: %v", err)
+			}
+			var persisted struct {
+				Result map[string]json.RawMessage `json:"result"`
+			}
+			if err := json.Unmarshal(raw, &persisted); err != nil {
+				t.Fatalf("decode durable session result: %v", err)
+			}
+			durableExitCode, found := persisted.Result["exitCode"]
+			if tt.wantExitCode == nil {
+				if found {
+					t.Fatalf("durable result has fabricated exit code %s: %s", durableExitCode, raw)
+				}
+			} else if !found {
+				t.Fatalf("durable result omitted exit code %d: %s", *tt.wantExitCode, raw)
+			} else {
+				var got int32
+				if err := json.Unmarshal(durableExitCode, &got); err != nil || got != *tt.wantExitCode {
+					t.Fatalf("durable exit code = %s, decode error %v; want %d", durableExitCode, err, *tt.wantExitCode)
+				}
+			}
+
+			duplicate, err := coordinator.start(req)
+			if err != nil || duplicate.State != tt.wantState {
+				t.Fatalf("idempotent duplicate start = %+v, %v", duplicate, err)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("executor requests = %d, want one dispatch after duplicate start", got)
+			}
+		})
+	}
+}
+
+func TestCoordinatorCanceledStreamingWaitDoesNotInventExitCode(t *testing.T) {
+	startAck := make(chan struct{})
+	handlerDone := make(chan struct{})
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(execStartedHeader, "true")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(startAck)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(func() { server.Close() })
+	dispatcher := &httpExecDispatcher{url: server.URL + "/internal/exec", client: server.Client()}
+	defer dispatcher.client.CloseIdleConnections()
+	coordinator, err := newExecCoordinator(t.TempDir(), t.TempDir(), "token", dispatcher, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := testWorkerRequest()
+	// Always cancel a started request before the server cleanup waits for its
+	// handler. This also covers assertion failures before the explicit cancel.
+	t.Cleanup(func() {
+		coordinator.mu.Lock()
+		cancel := coordinator.active[req.SessionID]
+		coordinator.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+	if _, err := coordinator.start(req); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-startAck:
+	case <-time.After(time.Second):
+		t.Fatal("streaming executor did not send its start acknowledgement")
+	}
+
+	coordinator.mu.Lock()
+	cancel := coordinator.active[req.SessionID]
+	coordinator.mu.Unlock()
+	if cancel == nil {
+		t.Fatal("running execution has no cancellation function")
+	}
+	cancel()
+	poll := req
+	poll.Action = "poll"
+	deadline := time.Now().Add(5 * time.Second)
+	var result workerExecResult
+	for time.Now().Before(deadline) {
+		result, err = coordinator.poll(poll)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if workerTerminal(result.State) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if result.State != "canceled" || result.ExitCode != nil {
+		t.Fatalf("canceled streaming wait result = %+v, want canceled with no exit code", result)
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("executor handler did not stop after wait cancellation")
+	}
+	raw, err := os.ReadFile(coordinator.recordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("read durable canceled result: %v", err)
+	}
+	var persisted struct {
+		Result map[string]json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("decode durable canceled result: %v", err)
+	}
+	if _, found := persisted.Result["exitCode"]; found {
+		t.Fatalf("durable canceled result has synthetic exitCode: %s", raw)
+	}
+	if duplicate, err := coordinator.start(req); err != nil || duplicate.State != "canceled" {
+		t.Fatalf("idempotent duplicate start = %+v, %v", duplicate, err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("executor requests = %d, want no redispatch after canceled wait", got)
+	}
+}
+
 type blockingDispatcher struct {
 	started chan struct{}
 	release chan struct{}
@@ -224,6 +437,16 @@ func (e blockingExecution) Wait(ctx context.Context) (execResponse, error) {
 	}
 }
 
+type rejectedStartDispatcher struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (d *rejectedStartDispatcher) Start(context.Context, persistentExecRequest) (execExecution, error) {
+	d.calls.Add(1)
+	return nil, d.err
+}
+
 type parallelDispatcher struct {
 	started  chan string
 	releases map[string]chan struct{}
@@ -243,6 +466,76 @@ func testWorkerRequest() workerExecRequest {
 			Argv: []string{"/bin/true"}, WorkDir: ".", TimeoutMS: 1000,
 			SourceRevision: 1, SourceDigest: strings.Repeat("c", 64),
 		},
+	}
+}
+
+func TestCoordinatorStartRejectionOmitsExitCodeFromDurableResult(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		dispatchErr error
+		wantState   string
+	}{
+		{name: "rejected", dispatchErr: errors.New("stateless executor rejected request: working directory does not exist"), wantState: "failed"},
+		{name: "canceled", dispatchErr: context.Canceled, wantState: "canceled"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			workspace, stateDir := t.TempDir(), t.TempDir()
+			dispatch := &rejectedStartDispatcher{err: tt.dispatchErr}
+			coordinator, err := newExecCoordinator(workspace, stateDir, "token", dispatch, &sync.Mutex{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req := testWorkerRequest()
+			if started, err := coordinator.start(req); err != nil || started.State != "queued" {
+				t.Fatalf("start = %+v, %v", started, err)
+			}
+			poll := req
+			poll.Action = "poll"
+			deadline := time.Now().Add(5 * time.Second)
+			var result workerExecResult
+			for time.Now().Before(deadline) {
+				result, err = coordinator.poll(poll)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if workerTerminal(result.State) {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if result.State != tt.wantState {
+				t.Fatalf("result state = %q, want %q (result: %+v)", result.State, tt.wantState, result)
+			}
+			if result.ExitCode != nil {
+				t.Fatalf("start rejection result has exit code %d; no process completed", *result.ExitCode)
+			}
+			if !strings.Contains(result.Stderr, tt.dispatchErr.Error()) {
+				t.Fatalf("stderr = %q, want dispatch error %q", result.Stderr, tt.dispatchErr)
+			}
+			if got := dispatch.calls.Load(); got != 1 {
+				t.Fatalf("dispatcher start calls = %d, want 1", got)
+			}
+
+			raw, err := os.ReadFile(coordinator.recordPath(req.SessionID))
+			if err != nil {
+				t.Fatalf("read durable session result: %v", err)
+			}
+			var persisted struct {
+				Result map[string]json.RawMessage `json:"result"`
+			}
+			if err := json.Unmarshal(raw, &persisted); err != nil {
+				t.Fatalf("decode durable session result: %v", err)
+			}
+			if _, found := persisted.Result["exitCode"]; found {
+				t.Fatalf("durable start rejection contains exitCode: %s", raw)
+			}
+		})
+	}
+
+	success := workerResultFromExec(execResponse{ExitCode: 0}, nil)
+	if success.ExitCode == nil || *success.ExitCode != 0 {
+		t.Fatalf("successful waited execution lost its real zero exit code: %+v", success)
 	}
 }
 
