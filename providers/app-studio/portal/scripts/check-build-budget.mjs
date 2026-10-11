@@ -84,5 +84,6 @@ enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipByt
 // tighter). Allow under 1 KB raw headroom and 500 bytes of gzip headroom over
 // the CI figure.
 enforce('App Studio page path', pageArtifacts, { rawBytes: 1_229_000, gzipBytes: 342_400 })
-// The shared motion styles also enter the total-assets path.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_302_200, gzipBytes: 367_100 })
+// The same table-cell styles enter the total-assets path: 1,303,057 raw /
+// 367,171 gzip on CI, with the same headroom.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_304_000, gzipBytes: 367_700 })
