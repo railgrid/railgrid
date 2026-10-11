@@ -484,15 +484,25 @@ func redactMap(m map[string]any) {
 	}
 }
 
+// truncationMarker is what safeTruncate appends to a clipped string.
+const truncationMarker = "…[truncated]"
+
 // safeTruncate bounds s to at most n bytes without splitting a UTF-8 rune,
-// appending an honest truncation marker.
+// appending an honest truncation marker. The marker counts against n: the
+// result is never longer than n bytes, so a caller can pass a CRD MaxLength
+// (spec.inputPreview, status.message) and the object still validates. When n
+// cannot even hold the marker, the string is clipped to n bytes bare.
 func safeTruncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	cut := n
+	cut := n - len(truncationMarker)
+	marker := truncationMarker
+	if cut <= 0 {
+		cut, marker = n, ""
+	}
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + "…[truncated]"
+	return s[:cut] + marker
 }
