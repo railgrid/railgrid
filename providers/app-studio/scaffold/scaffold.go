@@ -139,7 +139,7 @@ func fetchArchive(ctx context.Context, archiveURL string) ([]workspace.File, err
 		if name == "" || strings.HasPrefix(name, "..") || skippedPath(name) {
 			continue
 		}
-		if len(files) >= maxFiles || total >= maxTotalBytes || hdr.Size > maxFileBytes {
+		if len(files) >= maxFiles || total >= maxTotalBytes || hdr.Size > maxFileBytes || hdr.Size > int64(maxTotalBytes-total) {
 			continue
 		}
 		data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))

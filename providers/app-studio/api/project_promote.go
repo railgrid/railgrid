@@ -31,6 +31,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -725,6 +726,15 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 // and bypasses the development dirty-workspace guard: its package digests are
 // immutable evidence independent of the current sandbox contents.
 func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, httpReq *http.Request, values map[string]any, selectedCommitSHA string, commitSelected bool, selectedReleaseIDs ...string) (*aiv1alpha1.Project, projectPromoteResponse, error) {
+	release, err := s.acquireProjectRuntimeOperation(ctx, projectWorkspaceScope(id, p))
+	if err != nil {
+		return nil, projectPromoteResponse{}, err
+	}
+	defer release()
+	p, err = refreshProjectRuntimeOperationProject(ctx, c, p)
+	if err != nil {
+		return nil, projectPromoteResponse{}, err
+	}
 	releaseIDEvidenceProvided := len(selectedReleaseIDs) > 0
 	selectedReleaseID := ""
 	if releaseIDEvidenceProvided {
@@ -752,10 +762,7 @@ func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Cl
 		}
 	}
 
-	var (
-		check projectBuildCheckResult
-		err   error
-	)
+	var check projectBuildCheckResult
 	if commitSelected {
 		selectedCommitSHA = strings.TrimSpace(selectedCommitSHA)
 		if _, err = projectRepositoryCommitForSHA(ctx, c, projectLinkedRepositoryRef(p), selectedCommitSHA); err != nil {
@@ -1049,5 +1056,9 @@ func projectObservedRedeployRevision(instance *unstructured.Unstructured) string
 }
 
 func writeProjectPromoteError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errProjectRuntimeOperationTargetChanged) {
+		writeProjectRuntimeOperationConflict(w)
+		return
+	}
 	writeUpstreamError(w, err)
 }

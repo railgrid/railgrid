@@ -1,13 +1,61 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import ts from 'typescript'
 import { createServer } from 'vite'
 
 const source = await readFile(new URL('./CodeExplorer.vue', import.meta.url), 'utf8')
 const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 const { codeExplorerTreeState } = await vite.ssrLoadModule('/src/CodeExplorer.vue')
+const { selectedProjectFileDeleteVersion } = await vite.ssrLoadModule('/src/projectFileControls.ts')
 test.after(async () => vite.close())
+
+const setupScript = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)?.[1]
+const setupAST = ts.createSourceFile('CodeExplorer.ts', setupScript ?? '', ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+
+function componentFunction(name) {
+  for (const statement of setupAST.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement
+  }
+  throw new Error(`CodeExplorer ${name} function was not found`)
+}
+
+function transpileFunction(name) {
+  return ts.transpile(componentFunction(name).getText(setupAST), { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None })
+}
+
+const failureMessageFunction = new Function(
+  'isProjectFileRequestError',
+  'errorMessage',
+  `${transpileFunction('projectFileFailureMessage')}\nreturn projectFileFailureMessage`,
+)((error) => typeof error?.reason === 'string', (error, fallback) => error instanceof Error && error.message ? error.message : fallback)
+
+function uploadHarness({ uploadProjectFiles, readProjectFile, confirm = async () => true }) {
+  const projectContext = {}
+  const notifications = []
+  const refreshed = []
+  const writeBusy = { value: false }
+  const writeStatus = { value: '' }
+  const dependencies = {
+    props: { projectName: 'shop', ctx: projectContext },
+    writeBusy,
+    writeStatus,
+    acceptUploadCandidates: (files) => files,
+    isCurrentProject: (projectName, ctx) => projectName === 'shop' && ctx === projectContext,
+    api: { uploadProjectFiles, readProjectFile },
+    joinProjectFilePath: (dir, name) => dir ? `${dir}/${name}` : name,
+    isProjectFileRequestError: (error) => typeof error?.reason === 'string',
+    errorMessage: (error, fallback) => error instanceof Error && error.message ? error.message : fallback,
+    projectFileFailureMessage: failureMessageFunction,
+    confirmDialog: confirm,
+    toast: (...args) => notifications.push(args),
+    dirLabel: (dir) => dir || 'project root',
+    refreshAndSelect: async (...args) => refreshed.push(args),
+  }
+  const uploadFiles = new Function(...Object.keys(dependencies), `${transpileFunction('uploadFiles')}\nreturn uploadFiles`)(...Object.values(dependencies))
+  return { uploadFiles, notifications, refreshed, writeBusy, writeStatus, projectContext }
+}
 
 test('distinguishes initial tree hydration from refresh and does not show a false empty state', () => {
   assert.match(source, /class="shimmer h-4 rounded bg-surface-overlay"/)
@@ -61,6 +109,59 @@ test('refreshes the tree and selected file after a workspace revision changes', 
   assert.match(source, /async function refreshWorkspaceSnapshot\(\)[\s\S]*const path = selectedPath\.value[\s\S]*await loadTree\(\)[\s\S]*await openFile\(path, projectName, requestContext\)/)
   assert.match(source, /\(\) => props\.refreshRevision[\s\S]*void refreshWorkspaceSnapshot\(\)/)
   assert.match(source, /@click="refreshWorkspaceSnapshot"/)
+})
+
+test('only enables deletion for the loaded version of the selected file', () => {
+  const snapshot = { selectedPath: 'src/main.ts', content: null, loading: true, error: null }
+  assert.equal(selectedProjectFileDeleteVersion(snapshot), undefined)
+  snapshot.loading = false
+  snapshot.content = { path: 'src/main.ts' }
+  assert.equal(selectedProjectFileDeleteVersion(snapshot), undefined)
+  snapshot.content.version = 'sha256:loaded'
+  assert.equal(selectedProjectFileDeleteVersion(snapshot), 'sha256:loaded')
+  snapshot.content = { path: 'README.md', version: 'sha256:other' }
+  assert.equal(selectedProjectFileDeleteVersion(snapshot), undefined)
+  snapshot.content = { path: 'src/main.ts', version: 'sha256:loaded' }
+  snapshot.error = 'The file could not be refreshed.'
+  assert.equal(selectedProjectFileDeleteVersion(snapshot), undefined)
+
+  assert.match(source, /const version = selectedDeleteVersion\.value[\s\S]*selectedPath\.value !== path \|\| selectedDeleteVersion\.value !== version[\s\S]*ifMatch: version/)
+  assert.match(source, /selectedPath\.value !== path \|\| selectedDeleteVersion\.value !== version[\s\S]*toast\('error', `\$\{path\} changed while you were confirming the delete/)
+  assert.match(source, /:disabled="writesDisabled \|\| !selectedDeleteVersion"/)
+})
+
+test('replaces with the read version and surfaces a stale conflict without retrying', async () => {
+  const requests = []
+  const harness = uploadHarness({
+    async uploadProjectFiles(_ctx, _project, files, options) {
+      requests.push({ name: files[0].name, options })
+      if (!options.overwrite) throw { reason: 'exists', message: 'A file already exists at that path.' }
+      throw Object.assign(new Error('The file changed since it was loaded. Refresh and try again.'), {
+        reason: 'changed',
+        changedFiles: ['docs/notes.md'],
+      })
+    },
+    async readProjectFile(_ctx, _project, path) {
+      assert.equal(path, 'docs/notes.md')
+      return { path, version: 'sha256:before-confirmation' }
+    },
+  })
+
+  await harness.uploadFiles([{ name: 'notes.md' }], 'docs')
+
+  assert.equal(requests.length, 2, 'a stale replacement is reported without another write attempt')
+  assert.deepEqual(requests[0], { name: 'notes.md', options: { dir: 'docs' } })
+  assert.deepEqual(requests[1], {
+    name: 'notes.md',
+    options: { dir: 'docs', overwrite: true, expectedVersions: { 'docs/notes.md': 'sha256:before-confirmation' } },
+  })
+  assert.deepEqual(harness.notifications, [[
+    'error',
+    'The file changed since it was loaded. Refresh and try again. Changed: docs/notes.md.',
+  ]])
+  assert.deepEqual(harness.refreshed, [])
+  assert.equal(harness.writeBusy.value, false)
+  assert.equal(harness.writeStatus.value, '')
 })
 
 test('advances the explorer revision only for an accepted terminal workspace mutation', () => {

@@ -65,7 +65,7 @@ func newDevelopmentSyncReadyFixture(t *testing.T, handler func(http.Handler) htt
 		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
 		"kind":       "Instance",
 		"metadata":   map[string]any{"name": "demo-dev"},
-	}})
+	}}, publishingTestProjectObject(t, project))
 	return &developmentSyncReadyFixture{
 		server: &Server{
 			tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,

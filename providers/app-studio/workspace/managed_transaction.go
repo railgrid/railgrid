@@ -586,16 +586,16 @@ func managedTransactionResults(entries []*managedTransactionEntry) []MutationRes
 			afterBytes = nil
 		}
 		var result MutationResult
-		// Data is the bounded binary-upload contract. Even if a byte payload
-		// happens to be valid UTF-8, do not stringify it or build a diff here:
-		// large printable uploads would otherwise allocate another full copy
-		// plus line/diff buffers outside the retained-byte budget.
+		// Data avoids stringifying the payload or building a diff here: even
+		// bounded printable uploads would otherwise allocate another copy plus
+		// line/diff buffers outside the retained-byte budget. Binary still
+		// describes the bytes, not which input field carried them.
 		if entry.change.Data != nil {
 			version := fileVersion(afterBytes)
 			if entry.change.Operation == ManagedFileDelete {
 				version = ""
 			}
-			result = MutationResult{Operation: operation, Path: entry.clean, Size: int64(len(afterBytes)), Version: version, Binary: true}
+			result = MutationResult{Operation: operation, Path: entry.clean, Size: int64(len(afterBytes)), Version: version, Binary: isBinary(afterBytes)}
 		} else {
 			result = mutationResult(operation, entry.clean, entry.before, string(afterBytes), 0)
 		}

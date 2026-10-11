@@ -7,12 +7,15 @@ List, read, write and delete files in a project's workspace
 Work with the project workspace App Studio keeps between git and the dev
 sandbox. A write marks the path uncommitted: the reconciler commits it and
 syncs it to <name>-dev, the same as an assistant edit. Paths are relative to
-the repository root (web/public/logo.png on the application template).
+the repository root (web/public/logo.png on the application template). New
+files are create-only. Replacing or deleting a file requires the exact version
+printed by files get --version-only; a stale version fails without changing it.
 
   railgrid app files ls shop
   railgrid app files get shop api/server.mjs > server.mjs
   railgrid app files put shop web/public/logo.png ./logo.png
-  railgrid app files rm shop web/public/old.png
+  railgrid app files get shop web/public/old.png --version-only
+  railgrid app files rm shop web/public/old.png --expected-version <version>
 
 ```
 railgrid app files [flags]

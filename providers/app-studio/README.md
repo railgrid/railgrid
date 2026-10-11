@@ -359,8 +359,31 @@ repeating the backfill or index swap.
 All threads retain one fenced project workspace owner. Stopping one turn does
 not stop its siblings, while deleting the project stops every active run.
 Project-wide external operations wait for all active threads and reserve the
-workspace before proceeding. Source API version checks, command execution
-changes, and independent composer state are delivered in subsequent slices.
+workspace before proceeding. Command execution changes and independent
+composer state are delivered in subsequent slices.
+
+File API writes can run alongside assistant turns under the same project owner.
+Creating a file requires `If-None-Match: *`; replacing or deleting a file
+requires `If-Match` with its exact version. Missing preconditions are rejected,
+and stale versions return a conflict without overwriting the current file.
+Multipart uploads carry an `expectedVersions` map for replacements and apply
+as one transaction: every file must pass its precondition before any changes
+are applied. Conflict responses identify the changed files so clients can
+reread them and let the user reconcile the edit.
+
+The code explorer retains the version the user inspected for replacements and
+deletions. The CLI creates files by default; use `railgrid app files get
+<project> <path> --version-only` to obtain a version and pass it through
+`--expected-version` when replacing or deleting. Binary assistant tools also
+require an observed version before overwriting an existing file. The code explorer
+keeps deletion disabled for oversized text previews that lack a complete
+version; the raw-file CLI `--version-only` read supports those files.
+
+Runtime replacement and preview activation are serialized per project under
+the existing fenced workspace owner. Waiting on Infrastructure does not hold
+the source transaction lock. Restore and template changes retain their
+exclusive workspace reservation, and operations that wait must revalidate the
+Project incarnation before acting on a refreshed runtime target.
 
 A message submitted while the current run is working is durable steering for
 that same run, not a replacement run. The request names the expected run and is
@@ -527,10 +550,12 @@ flow, application behavior, or acceptance criteria. Verification remains an
 optional model-selected tool; middleware does not force it or rewrite the final
 assistant response.
 
-Mutation syncs are serialized in submission order per Project UID, and their
-revision, status, failure, and one bounded retry are checkpointed across
-permission or follow-up interrupts. Runtime verification and commit both hash
-the complete dirty bundle. Verification remains optional, but when a run
+Mutation syncs are serialized in submission order per Project UID. A worker
+retries runtime-owner contention for a bounded in-process window; queued syncs
+are canceled when the provider shuts down or that Project UID is deleted, and
+this retry state is not durable across provider restarts. Runtime verification
+and commit both hash the complete dirty bundle. Verification remains optional,
+but when a run
 claims both verified and committed state they must refer to the same digest;
 membership or content changes invalidate approval and any stale verification
 binding. While a run
@@ -589,6 +614,28 @@ cd portal \
   && npm run typecheck \
   && npm run build
 ```
+
+## Source file API migration (next release)
+
+This release changes source-file write preconditions. External clients must
+migrate before upgrading the provider:
+
+- New files: send `If-None-Match: *` on `files-content` PUT requests.
+- Replacements: read the file version, then send it as `If-Match` on PUT.
+- Deletions: send that exact version as `If-Match` on DELETE.
+- Multipart replacements: send `overwrite=true` and an `expectedVersions`
+  JSON map from each replaced project-relative path to its read version.
+  New paths in the same upload remain create-only.
+
+Missing exact-write preconditions return HTTP 428. Stale conditional writes
+return HTTP 412; multipart conflicts return HTTP 409 and include
+`conflict.changedFiles`. Reread and reconcile conflicts before submitting a
+new edit; do not automatically replace the expected version and replay it.
+The existing kcp subresource routes are unchanged.
+
+Upgrade the CLI alongside the provider. Bare `railgrid app files put` now
+creates only. Use `files get --version-only` and `--expected-version` for
+replacement or deletion; the old `--create-only` flag is deprecated.
 
 ## Local project files
 

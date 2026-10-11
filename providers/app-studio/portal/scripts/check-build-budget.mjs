@@ -79,11 +79,10 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
 enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// PortalKit's truncating table cells (core style 36) measure 1,228,031 raw on
-// the page path, 341,894 gzip on CI (local zlib compresses about 1.4 KB
-// tighter). Allow under 1 KB raw headroom and 500 bytes of gzip headroom over
-// the CI figure.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_229_000, gzipBytes: 342_400 })
-// The same table-cell styles enter the total-assets path: 1,303,057 raw /
-// 367,171 gzip on CI, with the same headroom.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_304_000, gzipBytes: 367_700 })
+// Baseline 57897281 measures 1,228,846 raw / 342,197 gzip on the page path.
+// The source-version contract adds 1,154 raw / 346 gzip locally; preserve a
+// small 200-byte raw / 257-byte gzip margin over that measured result.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_230_200, gzipBytes: 342_800 })
+// Baseline total assets measure 1,303,872 raw / 367,471 gzip. The same portal
+// change adds 1,600 raw / 546 gzip; keep 128 raw / 283 gzip of local headroom.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_305_600, gzipBytes: 368_300 })

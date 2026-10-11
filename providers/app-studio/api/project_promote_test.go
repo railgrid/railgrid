@@ -56,7 +56,7 @@ func applicationTemplateForPromoteWithAccess() projectTemplateInfo {
 
 func projectForPromote(name string) *aiv1alpha1.Project {
 	return &aiv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: "project-uid"},
 		Spec:       aiv1alpha1.ProjectSpec{Template: &aiv1alpha1.ProjectTemplateSpec{Name: "application"}},
 	}
 }

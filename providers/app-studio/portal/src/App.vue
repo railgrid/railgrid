@@ -10691,7 +10691,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           :ctx="props.ctx"
           :project-name="selected?.name || ''"
           :refresh-revision="codeExplorerRefreshRevision"
-          :assistant-busy="messageStreaming"
         />
       </div>
 

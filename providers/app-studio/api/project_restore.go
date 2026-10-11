@@ -85,6 +85,18 @@ func (s *Server) restoreProjectWorkspace(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer release()
+	r = r.WithContext(contextWithProjectRuntimeOwner(r.Context(), projectWorkspaceScope(id, project)))
+	releaseRuntime, err := s.acquireProjectRuntimeOperation(r.Context(), projectWorkspaceScope(id, project))
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	defer releaseRuntime()
+	project, err = refreshProjectRuntimeOperationProject(r.Context(), c, project)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
 
 	if s.workspaces == nil {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")

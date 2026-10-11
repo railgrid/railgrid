@@ -138,24 +138,31 @@ func TestAppFilesCommands(t *testing.T) {
 	})
 	hub.handle("GET "+appStudioProjects+"/shop/files-raw", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("path") != "web/public/logo.png" {
+			if r.URL.Query().Get("path") == "web/public/no-etag.png" {
+				_, _ = w.Write([]byte("no version"))
+				return
+			}
 			writeTestStatus(w, http.StatusNotFound, "NotFound", "file not found")
 			return
 		}
+		w.Header().Set("ETag", `"sha256:abcdef0123456789"`)
 		_, _ = w.Write([]byte{0x89, 'P', 'N'})
 	})
-	var putPath, putBody, putMatch string
+	var putPath, putBody, putNoneMatch, putIfMatch string
 	hub.handle("PUT "+appStudioProjects+"/shop/files-content", func(w http.ResponseWriter, r *http.Request) {
 		putPath = r.URL.Query().Get("path")
-		putMatch = r.Header.Get("If-None-Match")
+		putNoneMatch = r.Header.Get("If-None-Match")
+		putIfMatch = r.Header.Get("If-Match")
 		b := new(bytes.Buffer)
 		_, _ = b.ReadFrom(r.Body)
 		putBody = b.String()
 		w.WriteHeader(http.StatusCreated)
 		writeTestJSON(w, map[string]any{"path": putPath, "size": len(putBody), "version": "sha256:abcdef0123456789", "binary": true})
 	})
-	var deleted string
+	var deleted, deleteVersion string
 	hub.handle("DELETE "+appStudioProjects+"/shop/files-content", func(w http.ResponseWriter, r *http.Request) {
 		deleted = r.URL.Query().Get("path")
+		deleteVersion = r.Header.Get("If-Match")
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -173,19 +180,115 @@ func TestAppFilesCommands(t *testing.T) {
 	if out != "\x89PN" {
 		t.Fatalf("get output = %q", out)
 	}
+	if version, err := runRoot(t, path, "app", "files", "get", "shop", "web/public/logo.png", "--version-only"); err != nil || version != "sha256:abcdef0123456789\n" {
+		t.Fatalf("file version = %q, %v", version, err)
+	}
+	if _, err := runRoot(t, path, "app", "files", "get", "shop", "web/public/logo.png", "--version-only", "--out", "unused"); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("version-only with --out err = %v", err)
+	}
+	if _, err := runRoot(t, path, "app", "files", "get", "shop", "web/public/no-etag.png", "--version-only"); err == nil || !strings.Contains(err.Error(), "exact file version") {
+		t.Fatalf("missing ETag err = %v", err)
+	}
 	local := filepath.Join(t.TempDir(), "logo.png")
 	if err := os.WriteFile(local, []byte{1, 2, 3}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err = runRoot(t, path, "app", "files", "put", "shop", "web/public/logo.png", local, "--create-only")
+	out, err = runRoot(t, path, "app", "files", "put", "shop", "web/public/logo.png", local)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if putPath != "web/public/logo.png" || putBody != "\x01\x02\x03" || putMatch != "*" || !strings.Contains(out, "wrote web/public/logo.png (3 bytes, binary") {
-		t.Fatalf("put: path=%s body=%q match=%q out=%q", putPath, putBody, putMatch, out)
+	if putPath != "web/public/logo.png" || putBody != "\x01\x02\x03" || putNoneMatch != "*" || putIfMatch != "" || !strings.Contains(out, "wrote web/public/logo.png (3 bytes, binary") {
+		t.Fatalf("default create-only put: path=%s body=%q none-match=%q if-match=%q out=%q", putPath, putBody, putNoneMatch, putIfMatch, out)
 	}
-	if _, err := runRoot(t, path, "app", "files", "rm", "shop", "web/public/old.png"); err != nil || deleted != "web/public/old.png" {
-		t.Fatalf("rm: err=%v deleted=%s", err, deleted)
+	if _, err := runRoot(t, path, "app", "files", "put", "shop", "web/public/logo.png", local, "--create-only"); err != nil || putNoneMatch != "*" || putIfMatch != "" {
+		t.Fatalf("deprecated --create-only put: err=%v none-match=%q if-match=%q", err, putNoneMatch, putIfMatch)
+	}
+	if _, err := runRoot(t, path, "app", "files", "put", "shop", "web/public/logo.png", local, "--expected-version", "sha256:abcdef0123456789"); err != nil {
+		t.Fatalf("versioned put: %v", err)
+	}
+	if putNoneMatch != "" || putIfMatch != "sha256:abcdef0123456789" {
+		t.Fatalf("versioned put headers: none-match=%q if-match=%q", putNoneMatch, putIfMatch)
+	}
+	if flag := newAppFilesPutCommand(&hubTarget{}).Flags().Lookup("create-only"); flag == nil || flag.Deprecated == "" {
+		t.Fatalf("--create-only should remain accepted but deprecated: flag=%v", flag)
+	}
+	if _, err := runRoot(t, path, "app", "files", "rm", "shop", "web/public/old.png"); err == nil || !strings.Contains(err.Error(), "expected-version") || deleted != "" {
+		t.Fatalf("versionless delete: err=%v deleted=%s", err, deleted)
+	}
+	if _, err := runRoot(t, path, "app", "files", "rm", "shop", "web/public/old.png", "--expected-version", "sha256:abcdef0123456789"); err != nil || deleted != "web/public/old.png" || deleteVersion != "sha256:abcdef0123456789" {
+		t.Fatalf("versioned delete: err=%v deleted=%s version=%s", err, deleted, deleteVersion)
+	}
+}
+
+func TestAppFilesVersionGuardsArePreflight(t *testing.T) {
+	missingKubeconfig := filepath.Join(t.TempDir(), "missing-kubeconfig")
+	missingInput := filepath.Join(t.TempDir(), "missing-input")
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "put empty version",
+			args: []string{"app", "files", "put", "shop", "web/public/logo.png", missingInput, "--expected-version="},
+			want: "one exact version",
+		},
+		{
+			name: "put wildcard version",
+			args: []string{"app", "files", "put", "shop", "web/public/logo.png", missingInput, "--expected-version=*"},
+			want: "one exact version",
+		},
+		{
+			name: "put weak version",
+			args: []string{"app", "files", "put", "shop", "web/public/logo.png", missingInput, "--expected-version=W/sha256:abc"},
+			want: "one exact version",
+		},
+		{
+			name: "put multiple versions",
+			args: []string{"app", "files", "put", "shop", "web/public/logo.png", missingInput, "--expected-version=sha256:abc,sha256:def"},
+			want: "one exact version",
+		},
+		{
+			name: "put create-only conflicts with version",
+			args: []string{"app", "files", "put", "shop", "web/public/logo.png", missingInput, "--create-only", "--expected-version=sha256:abc"},
+			want: "--create-only and --expected-version cannot be combined",
+		},
+		{
+			name: "delete missing required version",
+			args: []string{"app", "files", "rm", "shop", "web/public/logo.png"},
+			want: "expected-version",
+		},
+		{
+			name: "delete empty version",
+			args: []string{"app", "files", "rm", "shop", "web/public/logo.png", "--expected-version="},
+			want: "exact version returned by files get is required",
+		},
+		{
+			name: "delete wildcard version",
+			args: []string{"app", "files", "rm", "shop", "web/public/logo.png", "--expected-version=*"},
+			want: "exact version returned by files get is required",
+		},
+		{
+			name: "delete weak version",
+			args: []string{"app", "files", "rm", "shop", "web/public/logo.png", "--expected-version=W/sha256:abc"},
+			want: "exact version returned by files get is required",
+		},
+		{
+			name: "delete multiple versions",
+			args: []string{"app", "files", "rm", "shop", "web/public/logo.png", "--expected-version=sha256:abc,sha256:def"},
+			want: "exact version returned by files get is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := runRoot(t, missingKubeconfig, tt.args...)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), "loading kubeconfig") || strings.Contains(err.Error(), "reading the file to upload") {
+				t.Fatalf("invalid request reached hub or file preflight: %v", err)
+			}
+		})
 	}
 }
 

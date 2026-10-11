@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -318,8 +319,13 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 	}))
 	t.Cleanup(mcp.Close)
 
-	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken}
-	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}, Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	client := newProjectBuildProvenanceClient(p, nil, nil)
+	s := &Server{
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken,
+		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
+	}
 	req := httptest.NewRequest(http.MethodPost, "/rebuild", nil)
 	req = stampTestCaller(req, testUserForToken("caller-token"))
 	if _, err := s.rebuildProject(context.Background(), identity{clusterID: "cluster-a", tenant: "root:tenant-a"}, p, req, "  reviewed-sha  "); err != nil {

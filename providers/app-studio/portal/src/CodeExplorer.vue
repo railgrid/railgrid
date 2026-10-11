@@ -44,6 +44,7 @@ import type { RailgridContext, ProjectFileInfo, ProjectFileContent, ProjectFileW
 import { api, isProjectFileRequestError } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import { toast } from './portalkit/toast'
+import { selectedProjectFileDeleteVersion } from './projectFileControls'
 import {
   dragCarriesFiles,
   droppedFiles,
@@ -61,17 +62,13 @@ import {
 // edits and development sync pushes into the sandbox. Left: a collapsible tree
 // built from the flat path list, with upload, new-file, and drop targets.
 // Right: the selected file's content, or metadata, preview, and download for
-// binary files. Writes are paused while an assistant run owns the project.
+// binary files. Source transactions use exact versions while threads run.
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   ctx: RailgridContext | null
   projectName: string
   refreshRevision: number
-  /** An assistant run owns the workspace; the server answers writes with 409. */
-  assistantBusy?: boolean
-}>(), {
-  assistantBusy: false,
-})
+}>()
 
 const files = ref<ProjectFileInfo[]>([])
 const loadingTree = ref(false)
@@ -188,7 +185,7 @@ const contextDir = computed(() => {
   return directoryPaths.value.has(active) ? active : projectFileParentDir(active)
 })
 
-const writesDisabled = computed(() => !props.projectName || props.assistantBusy || writeBusy.value)
+const writesDisabled = computed(() => !props.projectName || writeBusy.value)
 
 function dirLabel(dir: string): string {
   return dir || 'project root'
@@ -359,6 +356,18 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+function projectFileFailureMessage(error: unknown, fallback: string): string {
+  if (!isProjectFileRequestError(error)) return errorMessage(error, fallback)
+  const changed = error.reason === 'changed'
+    ? [...new Set(error.changedFiles.map((path) => path.trim()).filter(Boolean))]
+    : []
+  if (!changed.length) return error.message || fallback
+  const visible = changed.slice(0, 3).join(', ')
+  const remaining = changed.length - 3
+  const suffix = remaining > 0 ? `, and ${remaining} more` : ''
+  return `${error.message} Changed: ${visible}${suffix}.`
+}
+
 // ── Upload ────────────────────────────────────────────────────────────────
 
 /** Drop oversized files with a friendly message; the rest may upload. */
@@ -418,12 +427,7 @@ const uploadDraftBytes = computed(() => uploadDraft.value?.files.reduce((total, 
 async function uploadFiles(candidates: File[], dir: string) {
   const projectName = props.projectName
   const requestContext = props.ctx
-  if (!projectName) return
-  if (props.assistantBusy) {
-    toast('info', 'Wait for the assistant run to finish, then upload again.')
-    return
-  }
-  if (writeBusy.value) return
+  if (!projectName || writeBusy.value) return
   const pending = acceptUploadCandidates(candidates)
   if (!pending.length) return
   writeBusy.value = true
@@ -432,39 +436,54 @@ async function uploadFiles(candidates: File[], dir: string) {
   let skipped = 0
   try {
     for (const [index, file] of pending.entries()) {
-      if (!isCurrentProject(projectName, requestContext)) return
-      writeStatus.value = pending.length === 1
-        ? `Uploading ${file.name}…`
-        : `Uploading ${index + 1} of ${pending.length}…`
+      if (!isCurrentProject(projectName, requestContext)) break
+      writeStatus.value = pending.length === 1 ? `Uploading ${file.name}…` : `Uploading ${index + 1} of ${pending.length}…`
       const target = joinProjectFilePath(dir, file.name)
       try {
         uploaded.push(...await api.uploadProjectFiles(requestContext, projectName, [file], { dir }))
       } catch (error) {
-        if (isProjectFileRequestError(error) && error.reason === 'exists') {
-          const replace = await confirmDialog({
-            title: `Replace ${file.name}?`,
-            message: `${target} already exists. Uploading replaces it.`,
-            confirmLabel: 'Replace',
-            danger: true,
-          })
-          if (!replace) {
-            skipped += 1
-            continue
-          }
-          if (!isCurrentProject(projectName, requestContext)) return
-          try {
-            uploaded.push(...await api.uploadProjectFiles(requestContext, projectName, [file], { dir, overwrite: true }))
-          } catch (retryError) {
-            failures.push(errorMessage(retryError, `Could not upload ${file.name}.`))
-            if (isProjectFileRequestError(retryError) && retryError.reason === 'busy') break
-          }
+        const requestError = isProjectFileRequestError(error) ? error : null
+        if (requestError?.reason !== 'exists') {
+          failures.push(requestError && requestError.reason !== 'other'
+            ? `${file.name}: ${projectFileFailureMessage(requestError, `Could not upload ${file.name}.`)}`
+            : errorMessage(error, `Could not upload ${file.name}.`))
+          if (requestError?.reason === 'busy') break
           continue
         }
-        failures.push(isProjectFileRequestError(error) && error.reason !== 'other'
-          ? `${file.name}: ${error.message}`
-          : errorMessage(error, `Could not upload ${file.name}.`))
-        // The reservation covers the whole project; later files would fail too.
-        if (isProjectFileRequestError(error) && error.reason === 'busy') break
+
+        let version: string | undefined
+        try {
+          version = (await api.readProjectFile(requestContext, projectName, target)).version
+        } catch (readError) {
+          failures.push(`${target}: ${errorMessage(readError, 'Could not read the current file before replacing it.')}`)
+          continue
+        }
+        if (!isCurrentProject(projectName, requestContext)) break
+        if (!version) {
+          failures.push(`${target}: the current file version could not be read. Refresh and try again.`)
+          continue
+        }
+
+        const replace = await confirmDialog({
+          title: `Replace ${file.name}?`,
+          message: `${target} already exists. Uploading replaces it.`,
+          confirmLabel: 'Replace',
+          danger: true,
+        })
+        if (!isCurrentProject(projectName, requestContext)) break
+        if (!replace) {
+          skipped += 1
+          continue
+        }
+
+        try {
+          uploaded.push(...await api.uploadProjectFiles(requestContext, projectName, [file], {
+            dir, overwrite: true, expectedVersions: { [target]: version },
+          }))
+        } catch (retryError) {
+          failures.push(projectFileFailureMessage(retryError, `Could not upload ${file.name}.`))
+          if (isProjectFileRequestError(retryError) && retryError.reason === 'busy') break
+        }
       }
     }
   } finally {
@@ -521,10 +540,6 @@ function handleTreeDrop(event: DragEvent) {
   const { files: dropped, skippedFolders } = droppedFiles(event.dataTransfer)
   if (skippedFolders) toast('info', skippedFolders === 1 ? 'Folders cannot be uploaded. Drop the files inside it instead.' : `${skippedFolders} folders were skipped. Drop the files inside them instead.`)
   if (!dropped.length) return
-  if (props.assistantBusy) {
-    toast('info', 'Wait for the assistant run to finish, then upload again.')
-    return
-  }
   if (writeBusy.value) {
     toast('info', 'Another file change is still in progress.')
     return
@@ -623,24 +638,32 @@ async function deleteSelected() {
   const projectName = props.projectName
   const requestContext = props.ctx
   const path = selectedPath.value
-  if (!projectName || !path || writesDisabled.value) return
+  const version = selectedDeleteVersion.value
+  if (!projectName || !path || !version || writesDisabled.value) return
   const confirmed = await confirmDialog({
     title: `Delete ${projectFileBaseName(path)}?`,
     message: `${path} will be removed from the workspace.`,
     confirmLabel: 'Delete',
     danger: true,
   })
-  if (!confirmed || !isCurrentProject(projectName, requestContext) || writesDisabled.value) return
-  const version = content.value?.path === path ? content.value.version : undefined
+  if (!confirmed || !isCurrentProject(projectName, requestContext)) return
+  if (writesDisabled.value) {
+    toast('info', 'Another file change is still in progress.')
+    return
+  }
+  if (selectedPath.value !== path || selectedDeleteVersion.value !== version) {
+    toast('error', `${path} changed while you were confirming the delete. Refresh and try again.`)
+    return
+  }
   writeBusy.value = true
   writeStatus.value = `Deleting ${projectFileBaseName(path)}…`
   try {
-    await api.deleteProjectFile(requestContext, projectName, path, version ? { ifMatch: version } : {})
+    await api.deleteProjectFile(requestContext, projectName, path, { ifMatch: version })
     if (!isCurrentProject(projectName, requestContext)) return
     toast('ok', `Deleted ${path}.`)
   } catch (error) {
     if (!isCurrentProject(projectName, requestContext)) return
-    toast('error', errorMessage(error, `Could not delete ${path}.`))
+    toast('error', projectFileFailureMessage(error, `Could not delete ${path}.`))
     return
   } finally {
     if (isCurrentProject(projectName, requestContext)) {
@@ -658,6 +681,12 @@ const treeState = computed(() => codeExplorerTreeState(loadingTree.value, files.
 const selectedIsImage = computed(() => !!content.value && projectFileHasImagePreview(content.value.path))
 const showFilePanel = computed(() => !!content.value && (content.value.binary || (selectedIsImage.value && !showImageSource.value)))
 const selectedSizeLabel = computed(() => formatByteSize(content.value?.size))
+const selectedDeleteVersion = computed(() => selectedProjectFileDeleteVersion({
+  selectedPath: selectedPath.value,
+  content: content.value,
+  loading: loadingFile.value,
+  error: fileError.value,
+}))
 
 const IMAGE_TYPES: Record<string, string> = {
   png: 'image/png',
@@ -747,13 +776,6 @@ watch(
   },
 )
 
-watch(() => props.assistantBusy, (busy) => {
-  if (busy) {
-    uploadDraft.value = null
-    newFileOpen.value = false
-  }
-})
-
 onBeforeUnmount(releasePreview)
 </script>
 
@@ -806,10 +828,7 @@ onBeforeUnmount(releasePreview)
         <input ref="uploadInputRef" type="file" class="hidden" multiple @change="handleUploadInput" />
       </div>
 
-      <p v-if="assistantBusy && projectName" class="border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-muted" role="status">
-        File changes are paused while the assistant runs.
-      </p>
-      <div v-else-if="writeBusy" class="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-secondary" role="status" aria-live="polite">
+      <div v-if="writeBusy" class="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-secondary" role="status" aria-live="polite">
         <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         <span class="truncate">{{ writeStatus || 'Saving…' }}</span>
       </div>
@@ -972,7 +991,7 @@ onBeforeUnmount(releasePreview)
               class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
               title="Delete"
               :aria-label="`Delete ${projectFileBaseName(selectedPath)}`"
-              :disabled="writesDisabled"
+              :disabled="writesDisabled || !selectedDeleteVersion"
               @click="deleteSelected"
             >
               <Trash2 class="h-4 w-4" aria-hidden="true" />

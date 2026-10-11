@@ -61,6 +61,8 @@ type Server struct {
 	integrationDiscoveryOnce   sync.Once
 	integrationDiscoveryBudget *integrationDiscoveryBudget
 	assistantWorkerReadBudget  projectAssistantWorkerReadBudget
+	projectRuntimeOperationsMu sync.Mutex
+	projectRuntimeOperations   map[workspace.Scope]*projectRuntimeOperation
 
 	tenant *tenant.Client
 	store  store.Store
@@ -166,21 +168,34 @@ type Server struct {
 	replicaRouting               *replicaRouting
 	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
 	assistantThreadMirrors       map[string]struct{}
-	developmentSyncLocks         map[string]*sync.Mutex
 	developmentSyncTails         map[string]chan struct{}
 	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string) error
+	// developmentSyncContext bounds background sync workers to this Server's
+	// lifecycle. Individual Project UID workers can also be canceled during
+	// deletion without affecting a replacement Project with the same name.
+	developmentSyncContext   context.Context
+	developmentSyncCancel    context.CancelFunc
+	developmentSyncStopping  bool
+	developmentSyncWorkers   map[string]map[uint64]context.CancelFunc
+	developmentSyncWorkerID  uint64
+	developmentSyncWorkersWG sync.WaitGroup
 	// developmentSyncReadyTimeout / developmentSyncReadyBackoff override how
 	// long, and how often, a post-mutation sync retries while the development
 	// environment is being provisioned. Zero uses the package defaults; tests
 	// shorten them.
 	developmentSyncReadyTimeout time.Duration
 	developmentSyncReadyBackoff time.Duration
-	projectCreatePreflight      projectCreatePreflightGenerator
+	// developmentSyncOperationAcquireWait bounds one background attempt to
+	// acquire the durable runtime owner. Zero uses the package default.
+	developmentSyncOperationAcquireWait time.Duration
+	projectCreatePreflight              projectCreatePreflightGenerator
 	// developmentSyncFailures records the most recent post-mutation sync
-	// failure per project so verify_development_runtime can report it. A
-	// failed background sync means the assistant's edits never reached the
-	// sandbox; logging it alone made that invisible to the user AND to the
-	// model, which would then diagnose a stale runtime as a code bug.
+	// failure per project so verify_development_runtime can report it. Some
+	// failures mean the assistant's edits never reached the sandbox; others
+	// happen after one or more components accepted them, so the recorded stage
+	// tells the assistant whether to retry synchronization or inspect a partial
+	// runtime update. Logging alone would leave either state invisible to the
+	// user and the model.
 	developmentSyncFailures map[string]string
 	// developmentSyncRevisionOffsets holds, per development component, how
 	// far a plain (non-App Studio) sync pushed the agent's applied revision
@@ -260,6 +275,7 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 	}
 	actionsCABundle, actionsCABundleErr := loadActionsCABundleFromEnv()
 	thumbnailContext, thumbnailCancel := context.WithCancel(parent)
+	developmentSyncContext, developmentSyncCancel := context.WithCancel(parent)
 	s := &Server{
 		tenant:                   tenantClient,
 		store:                    msgStore,
@@ -273,6 +289,8 @@ func NewWithWorkspaceContext(parent context.Context, tenantClient *tenant.Client
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 		projectThumbnailContext:  thumbnailContext,
 		projectThumbnailCancel:   thumbnailCancel,
+		developmentSyncContext:   developmentSyncContext,
+		developmentSyncCancel:    developmentSyncCancel,
 	}
 	if attachmentStore, ok := msgStore.(store.AttachmentStore); ok {
 		s.attachments = attachmentStore
@@ -305,6 +323,7 @@ func (s *Server) ConfigureCodingSandbox(config CodingSandboxConfig) {
 }
 
 func (s *Server) Shutdown(ctx context.Context) {
+	s.stopDevelopmentSyncWorkers(ctx)
 	if s.projectThumbnailCancel != nil {
 		s.projectThumbnailCancel()
 	}
@@ -352,21 +371,6 @@ func (s *Server) projectAssistantSandboxManager() *projectAssistantSandboxManage
 		s.runSandboxManager = newProjectAssistantSandboxManager()
 	}
 	return s.runSandboxManager
-}
-
-func (s *Server) developmentSyncLock(id identity, project *aiv1alpha1.Project) *sync.Mutex {
-	key := developmentSyncFailureKey(id, project)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.developmentSyncLocks == nil {
-		s.developmentSyncLocks = map[string]*sync.Mutex{}
-	}
-	lock := s.developmentSyncLocks[key]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		s.developmentSyncLocks[key] = lock
-	}
-	return lock
 }
 
 // MetricsHandler is the assistant's Prometheus surface. It is NOT part of the

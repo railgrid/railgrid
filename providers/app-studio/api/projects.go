@@ -229,6 +229,10 @@ type projectCreationStatusFunc func(string) error
 type projectCreatePreflightGenerator func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error)
 
 func writeProjectError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errProjectRuntimeOperationTargetChanged) {
+		writeProjectRuntimeOperationConflict(w)
+		return
+	}
 	if isProjectAPIInitializingError(err) {
 		w.Header().Set("Retry-After", "2")
 		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", projectAPIInitializingMessage)
@@ -240,6 +244,10 @@ func writeProjectError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, err)
+}
+
+func writeProjectRuntimeOperationConflict(w http.ResponseWriter) {
+	writeStatus(w, http.StatusConflict, "Conflict", "The project changed while this operation was waiting. Reload the project and retry.")
 }
 
 func (s *Server) getProjectCreateReadiness(w http.ResponseWriter, r *http.Request) {

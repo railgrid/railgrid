@@ -459,21 +459,36 @@ func newConflictError(msg string) error {
 	}}
 }
 
+type statusResponse struct {
+	Kind       string         `json:"kind"`
+	APIVersion string         `json:"apiVersion"`
+	Metadata   map[string]any `json:"metadata"`
+	Status     string         `json:"status"`
+	Message    string         `json:"message"`
+	Reason     string         `json:"reason"`
+	Code       int            `json:"code"`
+	Conflict   any            `json:"conflict,omitempty"`
+}
+
 // writeStatus emits a kubernetes-style Status envelope so kubectl-like clients
 // render it nicely.
 func writeStatus(w http.ResponseWriter, code int, reason, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	body := map[string]any{
-		"kind":       "Status",
-		"apiVersion": "v1",
-		"metadata":   map[string]any{},
-		"status":     "Failure",
-		"message":    message,
-		"reason":     reason,
-		"code":       code,
-	}
-	_ = json.NewEncoder(w).Encode(body)
+	writeStatusWithConflict(w, code, reason, message, nil)
+}
+
+// writeStatusWithConflict adds structured mutation details to the shared
+// Status envelope while retaining the same fields as ordinary API errors.
+func writeStatusWithConflict(w http.ResponseWriter, code int, reason, message string, conflict any) {
+	writeJSON(w, code, statusResponse{
+		Kind:       "Status",
+		APIVersion: "v1",
+		Metadata:   map[string]any{},
+		Status:     "Failure",
+		Message:    message,
+		Reason:     reason,
+		Code:       code,
+		Conflict:   conflict,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

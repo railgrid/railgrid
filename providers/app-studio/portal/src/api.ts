@@ -397,7 +397,7 @@ async function requestAssistantAttachmentUpload(
 
 /** A workspace file request failed; reason drives recovery (overwrite, refresh). */
 export class ProjectFileRequestError extends ProjectAPIRequestError {
-  constructor(message: string, status: number, readonly reason: ProjectFileErrorReason, readonly detail: string) {
+  constructor(message: string, status: number, readonly reason: ProjectFileErrorReason, readonly detail: string, readonly changedFiles: string[] = []) {
     super(message, status)
     this.name = 'ProjectFileRequestError'
   }
@@ -411,6 +411,12 @@ function projectFileContentURL(ctx: RailgridContext | null, name: string, path: 
   return `${projectURL(ctx, name, 'files-content')}?path=${encodeURIComponent(path)}`
 }
 
+function exactProjectFileVersion(version: string | undefined): string | null {
+  const exact = version?.trim() ?? ''
+  if (!exact || exact === '*' || exact.startsWith('W/') || exact.includes(',')) return null
+  return exact
+}
+
 async function projectFileResponseError(res: Response, intent: ProjectFileWriteIntent): Promise<Error> {
   let text = ''
   try {
@@ -420,16 +426,20 @@ async function projectFileResponseError(res: Response, intent: ProjectFileWriteI
   }
   let detail = text || res.statusText
   let reason = ''
+  let changedFiles: string[] = []
+  let conflictCode = ''
   try {
-    const parsed = JSON.parse(text) as { message?: string; reason?: string }
+    const parsed = JSON.parse(text) as { message?: string; reason?: string; conflict?: { code?: unknown; changedFiles?: unknown } }
+    if (Array.isArray(parsed.conflict?.changedFiles)) changedFiles = parsed.conflict.changedFiles.filter((path): path is string => typeof path === 'string')
+    if (typeof parsed.conflict?.code === 'string') conflictCode = parsed.conflict.code
     if (parsed.message) detail = parsed.message
     if (parsed.reason) reason = parsed.reason
   } catch {
     // keep raw text
   }
   if (isProjectAPIInitializingResponse(res.status, reason, detail)) return new ProjectAPIInitializingError(detail)
-  const fileReason = classifyProjectFileError(res.status, detail, intent)
-  return new ProjectFileRequestError(projectFileErrorMessage(fileReason, detail), res.status, fileReason, detail)
+  const fileReason = classifyProjectFileError(res.status, detail, intent, { code: conflictCode, changedFiles })
+  return new ProjectFileRequestError(projectFileErrorMessage(fileReason, detail), res.status, fileReason, detail, changedFiles)
 }
 
 function projectFileWriteResult(text: string, path: string): ProjectFileWriteResult {
@@ -839,8 +849,18 @@ export const api = {
     headers['Content-Type'] = typeof body === 'string'
       ? 'text/plain; charset=utf-8'
       : body.type || 'application/octet-stream'
-    if (options.createOnly) headers['If-None-Match'] = '*'
-    else if (options.ifMatch) headers['If-Match'] = options.ifMatch
+    if (options.createOnly && options.ifMatch !== undefined) {
+      throw new Error('Create-only and versioned replacement cannot be combined.')
+    }
+    if (options.ifMatch !== undefined) {
+      const version = exactProjectFileVersion(options.ifMatch)
+      if (!version) throw new Error('Replacing a file requires one exact version returned by the file read.')
+      headers['If-Match'] = version
+    } else {
+      // Missing intent is safe creation: an existing file can only be
+      // replaced after the caller supplies the version it read.
+      headers['If-None-Match'] = '*'
+    }
     const res = await providerFetch(ctx)(projectFileContentURL(ctx, name, path), {
       method: 'PUT',
       credentials: 'same-origin',
@@ -853,9 +873,11 @@ export const api = {
 
   // deleteProjectFile removes one workspace file (204); ifMatch guards against
   // deleting a file that changed since it was loaded.
-  async deleteProjectFile(ctx: RailgridContext | null, name: string, path: string, options: { ifMatch?: string } = {}): Promise<void> {
+  async deleteProjectFile(ctx: RailgridContext | null, name: string, path: string, options: { ifMatch: string }): Promise<void> {
     const headers = tenantHeaders({})
-    if (options.ifMatch) headers['If-Match'] = options.ifMatch
+    const version = exactProjectFileVersion(options.ifMatch)
+    if (!version) throw new Error('Deleting a file requires one exact version returned by the file read.')
+    headers['If-Match'] = version
     const res = await providerFetch(ctx)(projectFileContentURL(ctx, name, path), {
       method: 'DELETE',
       credentials: 'same-origin',
@@ -871,12 +893,20 @@ export const api = {
     ctx: RailgridContext | null,
     name: string,
     files: File[],
-    options: { dir?: string; overwrite?: boolean; signal?: AbortSignal } = {},
+    options: { dir?: string; overwrite?: boolean; expectedVersions?: Record<string, string>; signal?: AbortSignal } = {},
   ): Promise<ProjectFileWriteResult[]> {
+    if (options.overwrite && options.expectedVersions) {
+      for (const [path, expectedVersion] of Object.entries(options.expectedVersions)) {
+        if (!exactProjectFileVersion(expectedVersion)) {
+          throw new Error(`Replacing ${path} requires the exact version returned by the file read.`)
+        }
+      }
+    }
     const form = new FormData()
     for (const file of files) form.append('file', file, file.name || 'upload')
     form.append('dir', options.dir ?? '')
     if (options.overwrite) form.append('overwrite', 'true')
+    if (options.expectedVersions) form.append('expectedVersions', JSON.stringify(options.expectedVersions))
     const res = await providerFetch(ctx)(`${projectURL(ctx, name, 'files-upload')}`, {
       method: 'POST',
       credentials: 'same-origin',
@@ -884,7 +914,10 @@ export const api = {
       body: form,
       signal: options.signal,
     })
-    if (!res.ok) throw await projectFileResponseError(res, { upload: !options.overwrite })
+    if (!res.ok) throw await projectFileResponseError(res, {
+      upload: !options.overwrite,
+      expectedVersions: options.expectedVersions,
+    })
     const text = await res.text()
     let value: unknown
     try {

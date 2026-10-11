@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,37 @@ func TestReadFileClassifiesTruncatedBinaryAndVersionsWholeFile(t *testing.T) {
 	}
 	if !read.Binary || read.Content != "" || read.Truncated || read.Size != int64(len(data)) || read.Version != fileVersion(data) {
 		t.Fatalf("binary read = %#v, want binary with whole-file version", read)
+	}
+}
+
+func TestOpenVersionedFileKeepsMetadataPairedWithOpenedDescriptor(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := binaryTestScope()
+	original := pngBytes(4096)
+	replacement := append([]byte(nil), original...)
+	replacement[len(replacement)-1] ^= 0xff
+	if _, err := store.PutFile(ctx, scope, PutOptions{Path: "public/asset.png", Data: original}); err != nil {
+		t.Fatal(err)
+	}
+	opened, metadata, err := store.OpenVersionedFile(ctx, scope, "public/asset.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = opened.Close() }()
+	if _, err := store.PutFile(ctx, scope, PutOptions{Path: "public/asset.png", Data: replacement}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) || metadata.Version != fileVersion(original) || metadata.Size != int64(len(original)) || !metadata.Binary {
+		t.Fatalf("opened bytes/metadata = %d bytes, %#v; want original descriptor version and size", len(got), metadata)
+	}
+	current, err := store.ReadFileBytes(ctx, scope, "public/asset.png", 0)
+	if err != nil || !bytes.Equal(current, replacement) {
+		t.Fatalf("path after replacement = %d bytes err=%v; want replacement", len(current), err)
 	}
 }
 
