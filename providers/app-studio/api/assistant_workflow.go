@@ -322,7 +322,7 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 		},
 		{
 			Name:         projectToolInspectDevelopmentTemplates,
-			Description:  "Inspect every selectable hosted development/preview infrastructure template available to this project in one read. These templates govern the long-lived app preview/runtime, not the private per-run coding environment. Use this before choosing a hosted preview template; it does not bind or change one.",
+			Description:  "Inspect every selectable hosted development/preview infrastructure template available to this project in one read. These templates provide the shared project runtime used by the hosted preview and default exec_command. Use this before choosing a hosted preview template; it does not bind or change one. An explicitly enabled private coding sandbox remains a separate opt-in mode.",
 			Parameters:   json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:         projectAssistantToolRiskRead,
 			ParallelSafe: true,
@@ -368,8 +368,8 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 		},
 		{
 			Name:        projectToolExecCommand,
-			Description: "Run one user-authorized compiler, test, lint, or read-only diagnostic command only in this run's isolated coding sandbox, pinned to its source snapshot. If this run has no eligible private sandbox, command execution is blocked; it never falls back to the shared development runtime. Use App Studio source-file tools for changes; their versioned writes remain available. Pass argv tokens directly (not as a shell string) in an array of 1-32 non-empty items; each item must contain no NUL and be at most 4096 UTF-8 bytes. Use an existing workspace script instead of embedding longer code in argv. workdir is an optional relative directory of at most 256 UTF-8 bytes. App Studio forwards no credentials or environment overrides, and commands cannot write back to App Studio source. Timeout is bounded.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"component":{"type":"string","minLength":1,"maxLength":64,"description":"The single development component to execute in (for example, backend or frontend)."},"argv":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":4096,"description":"One non-empty UTF-8 argument token, with no NUL and a maximum of 4096 UTF-8 bytes."},"description":"Executable and argument tokens passed directly without an implicit shell; provide 1-32 tokens."},"workdir":{"type":"string","maxLength":256,"description":"Optional relative directory under the selected component workspace, at most 256 UTF-8 bytes; omit to use the component root."},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":120,"description":"Maximum execution time in seconds (default 30)."}},"required":["component","argv"],"additionalProperties":false}`),
+			Description: "Run one user-authorized compiler, test, lint, or read-only diagnostic command in the selected shared project development component, using a snapshot of the current App Studio source after its latest development sync succeeds. Threads and runs for this Project share the development runtime and its installed dependencies. Use App Studio source-file tools for source or manifest changes; commands may prepare runtime-local dependencies but must not edit project source. If the Project's source revision changes while a command runs, its result is marked stale and does not verify the newer revision; inspect the result and do not automatically repeat side-effecting commands. Pass argv tokens directly (not as a shell string) in an array of 1-32 non-empty items; each item must contain no NUL and be at most 4096 UTF-8 bytes. Use an existing workspace script instead of embedding longer code in argv. workdir is an optional relative directory of at most 256 UTF-8 bytes. App Studio forwards no credentials or environment overrides. Timeout is bounded.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"component":{"type":"string","minLength":1,"maxLength":64,"description":"The shared development component to execute in, such as app, backend, or frontend, when declared by the active template."},"argv":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string","minLength":1,"maxLength":4096,"description":"One non-empty UTF-8 argument token, with no NUL and a maximum of 4096 UTF-8 bytes."},"description":"Executable and argument tokens passed directly without an implicit shell; provide 1-32 tokens."},"workdir":{"type":"string","maxLength":256,"description":"Optional relative directory under the selected component workspace, at most 256 UTF-8 bytes; omit to use the component root."},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":120,"description":"Maximum execution time in seconds (default 30)."}},"required":["component","argv"],"additionalProperties":false}`),
 			Risk:        projectAssistantToolRiskRuntime,
 		},
 	}
@@ -392,11 +392,10 @@ func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAs
 		if !policy.AllowsTool(baseSpec) {
 			continue
 		}
-		// The active per-run sandbox is a single-component universal runtime,
-		// while ordinary project runtimes may expose several template-backed
-		// components. Keep the catalog contract static for policy selection, but
-		// make the model-facing exec_command presentation reflect the runtime it
-		// will actually address.
+		// Keep the catalog contract static for policy selection, but make the
+		// model-facing exec_command presentation reflect the runtime it will
+		// actually address: shared project components by default, with a private
+		// single-component sandbox only when explicitly enabled.
 		spec := projectAssistantExecCommandToolSpecForRun(baseSpec, runCtx)
 		graphTool, err := newProjectAssistantGraphWorkflowTool(spec, runCtx)
 		if err != nil {
@@ -880,12 +879,12 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 	if len(candidates) == 0 {
 		return &projectAssistantTemplateInspectionResult{
 			Status:    "empty",
-			Summary:   "No selectable hosted development/preview templates are available in this workspace. This does not describe or disable an active private coding environment.",
+			Summary:   "No selectable hosted development/preview templates are available in this workspace, so there is no shared project runtime for default exec_command. This does not describe or disable an explicitly enabled private coding sandbox.",
 			Templates: candidates,
 		}, nil
 	}
 	truncated := boundProjectAssistantTemplateCandidates(candidates)
-	summary := fmt.Sprintf("Found %d selectable hosted development/preview template(s). These govern the long-lived app runtime and browser preview, not the private per-run coding environment. agent.usage below is each hosted template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template only when a hosted preview is required.", len(candidates))
+	summary := fmt.Sprintf("Found %d selectable hosted development/preview template(s). These govern the shared project runtime and browser preview used by default exec_command; an explicitly enabled private coding sandbox is separate. agent.usage below is each hosted template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template only when a hosted preview is required.", len(candidates))
 	if truncated {
 		summary += " Some agent.usage text was shortened to fit; call infrastructure__describe_template on a candidate for its full contract before writing code against it."
 	}
@@ -1300,7 +1299,7 @@ func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input pr
 		result.Summary = fmt.Sprintf("Project %s needs requirements before runtime verification.", displayName)
 	case "needs_repository":
 		if input.Repository != nil && input.Repository.Status == projectRepositoryStatusProvisioning {
-			result.Summary = fmt.Sprintf("Project %s is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring and coding-environment execution remain available.", displayName)
+			result.Summary = fmt.Sprintf("Project %s is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring remains available, and runtime commands use the shared development component when configured.", displayName)
 		} else {
 			result.Summary = fmt.Sprintf("Project %s needs a ready Git repository before Git handoff can finish; this does not block authorized App Studio workspace authoring.", displayName)
 		}

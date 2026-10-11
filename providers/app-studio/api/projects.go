@@ -1387,7 +1387,7 @@ func finalizeProjectAssistantActionFeed(actions []projectAssistantActionFeedItem
 
 func projectAssistantExecStatusTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "succeeded", "failed", "timed_out", "canceled", "cancelled", "blocked", "error":
+	case "succeeded", "stale", "failed", "timed_out", "canceled", "cancelled", "blocked", "error":
 		return true
 	default:
 		return false

@@ -20,12 +20,180 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func newExecDispatcherForAddress(address string, attempts *atomic.Int32, firstDialErr chan<- error) *httpExecDispatcher {
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		attempts.Add(1)
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if firstDialErr != nil {
+			select {
+			case firstDialErr <- err:
+			default:
+			}
+		}
+		return conn, err
+	}}
+	return &httpExecDispatcher{
+		url:    "http://" + address + "/internal/exec",
+		client: &http.Client{Transport: transport},
+	}
+}
+
+func closedExecListenerAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve executor listener address: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release executor listener address: %v", err)
+	}
+	return address
+}
+
+func TestHTTPExecDispatcherRetriesDelayedExecutorAfterDialRefusal(t *testing.T) {
+	address := closedExecListenerAddress(t)
+	var attempts atomic.Int32
+	firstDialErr := make(chan error, 1)
+	dispatcher := newExecDispatcherForAddress(address, &attempts, firstDialErr)
+	defer dispatcher.client.CloseIdleConnections()
+
+	type dispatchResult struct {
+		response execResponse
+		err      error
+	}
+	resultCh := make(chan dispatchResult, 1)
+	go func() {
+		response, err := dispatcher.Execute(context.Background(), persistentExecRequest{Argv: []string{"/bin/true"}})
+		resultCh <- dispatchResult{response: response, err: err}
+	}()
+
+	if err := <-firstDialErr; !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("first dial error = %v, want connection refused", err)
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("start delayed executor listener: %v", err)
+	}
+	var requests atomic.Int32
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"exitCode":0}`))
+	})}
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = server.Serve(listener)
+	}()
+	defer func() {
+		_ = server.Close()
+		<-serveDone
+	}()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil || result.response.ExitCode != 0 {
+			t.Fatalf("dispatch result = %+v, %v", result.response, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dispatch did not succeed after executor listener started")
+	}
+	if got := attempts.Load(); got < 2 {
+		t.Fatalf("dial attempts = %d, want refusal followed by successful dial", got)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("executor requests = %d, want exactly one dispatched command", got)
+	}
+}
+
+func TestHTTPExecDispatcherRetryWaitHonorsContext(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		want error
+		ctx  func() (context.Context, context.CancelFunc)
+	}{
+		{
+			name: "canceled",
+			want: context.Canceled,
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+		},
+		{
+			name: "deadline",
+			want: context.DeadlineExceeded,
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 50*time.Millisecond)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			address := closedExecListenerAddress(t)
+			var attempts atomic.Int32
+			firstDialErr := make(chan error, 1)
+			dispatcher := newExecDispatcherForAddress(address, &attempts, firstDialErr)
+			defer dispatcher.client.CloseIdleConnections()
+			ctx, cancel := tt.ctx()
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := dispatcher.Execute(ctx, persistentExecRequest{Argv: []string{"/bin/true"}})
+				errCh <- err
+			}()
+			if err := <-firstDialErr; !errors.Is(err, syscall.ECONNREFUSED) {
+				t.Fatalf("first dial error = %v, want connection refused", err)
+			}
+			if tt.name == "canceled" {
+				cancel()
+			}
+			select {
+			case err := <-errCh:
+				if !errors.Is(err, tt.want) {
+					t.Fatalf("dispatch error = %v, want %v", err, tt.want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("dispatch did not stop after context cancellation")
+			}
+			if got := attempts.Load(); got != 1 {
+				t.Fatalf("dial attempts = %d, want 1 after canceled retry wait", got)
+			}
+		})
+	}
+}
+
+func TestHTTPExecDispatcherDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+	dispatcher := &httpExecDispatcher{url: server.URL + "/internal/exec", client: server.Client()}
+
+	_, err := dispatcher.Execute(context.Background(), persistentExecRequest{Argv: []string{"/bin/true"}})
+	if err == nil {
+		t.Fatal("dispatch unexpectedly succeeded after executor closed the connection")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("executor requests = %d, want no replay after ambiguous response failure", got)
+	}
+}
 
 type blockingDispatcher struct {
 	started chan struct{}

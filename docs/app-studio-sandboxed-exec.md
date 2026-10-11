@@ -6,6 +6,14 @@ Normal execution reuses the selected component's persistent development
 workspace, toolchain, dependency installation, and caches. It does not create a
 second source-only executor pod.
 
+Parallel threads in the same Project share that development workspace and its
+installed dependencies. Starting a thread does not require provisioning another
+sandbox. Source edits retain file-version preconditions, and command sessions
+and cancellation remain scoped to the initiating run. If the Project source
+changes while a command runs, its output is retained but cannot verify the newer
+revision; the assistant must report that evidence as stale rather than silently
+rerunning the command.
+
 Infrastructure remains the runtime authority. App Studio never receives a
 runtime kubeconfig and never executes tenant source inside the App Studio
 provider. Calls cross the provider boundary through Infrastructure's published,

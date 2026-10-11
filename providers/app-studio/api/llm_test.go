@@ -606,15 +606,16 @@ func TestProjectPromptSeparatesCodingPreviewAndRepositoryBoundaries(t *testing.T
 		true,
 	)
 	for _, want := range []string{
-		"codingEnvironment field, when present, controls source authoring and command execution",
-		"publicPreview=false means it is never evidence of a hosted browser preview",
+		"default exec_command target is the selected shared component",
+		"Threads and runs for one Project share that runtime and its installed dependencies",
+		"If project source changes while a shared-runtime command runs, the result is stale and unverified",
 		"Repository readiness governs Git commit and CI handoff only",
-		"exec_command is verification-only with respect to source",
-		"gofmt -d rather than gofmt -w",
+		"default exec_command has no shared runtime target",
 		"Hosted development/preview template: NONE",
-		"lack of a hosted template is not an authoring, compiler, or test blocker",
+		"lack of a hosted template is not an authoring blocker",
 		"Repository state prevents commit_project_files only",
-		"successful workspace checkpointing remains durable in App Studio",
+		"the default exec_command requires a shared development component on the selected template",
+		"Successful workspace checkpointing remains durable in App Studio",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("unbound prompt missing %q:\n%s", want, prompt)
@@ -636,9 +637,9 @@ func TestProjectPromptSeparatesCodingPreviewAndRepositoryBoundaries(t *testing.T
 	for _, want := range []string{
 		"Hosted development/preview template: simple-webapp",
 		"ONLY runtime installed in that hosted preview component",
-		"An active codingEnvironment is separate",
-		"source may still be authored, persisted, compiled, and tested there",
-		"do not claim it runs in the hosted preview",
+		"Default exec_command uses the selected shared development component",
+		"An explicitly enabled codingEnvironment/private sandbox is a separate opt-in runtime",
+		"do not claim it is the hosted preview",
 	} {
 		if !strings.Contains(boundPrompt, want) {
 			t.Fatalf("bound prompt missing %q:\n%s", want, boundPrompt)
@@ -781,8 +782,12 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 		"an enveloped provider error, including a provider-originated 401, is returned without replaying the action",
 		"invokes `POST <RAILGRID_ACTIONS_BASE_URL>/<alias>` with `{ action, actionVersion, input }`",
 		"treat a successful invoke as integration access verification",
-		"component automatically installs and reloads dependencies after the manifest synchronizes",
-		"do not manually run npm install, npm exec, npm search, or package discovery",
+		"hosted development component automatically installs and reloads dependencies after its source manifest synchronizes",
+		"Do not manually run npm install, npm exec, npm search, or package discovery for that preview/runtime",
+		"explicitly enabled private per-run coding sandbox is separate and starts without the preview's installed packages",
+		"install from the existing lockfile (for npm, use npm ci)",
+		"without changing package.json or the lockfile, then rerun the original check once",
+		"report the concrete blocker without repeating it",
 		"do not discover the gateway",
 		"Never describe a failed install as still running",
 		"never repeat an identical wait or verification claim without changed evidence",

@@ -24,18 +24,22 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
 const (
 	execSessionRetention = 10 * time.Minute
 	execSessionCapacity  = 128
+	execDispatchMaxTries = 9
 )
 
 type workerExecRequest struct {
@@ -82,14 +86,23 @@ func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequ
 	if err != nil {
 		return execResponse{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(raw))
-	if err != nil {
-		return execResponse{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := d.client.Do(httpReq)
-	if err != nil {
-		return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
+	var resp *http.Response
+	for attempt := 1; attempt <= execDispatchMaxTries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(raw))
+		if err != nil {
+			return execResponse{}, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err = d.client.Do(httpReq)
+		if err == nil {
+			break
+		}
+		if !isExecDialRefused(err) || attempt == execDispatchMaxTries {
+			return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
+		}
+		if err := waitExecDispatchRetry(ctx, attempt); err != nil {
+			return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
+		}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
@@ -104,6 +117,36 @@ func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequ
 		return execResponse{}, fmt.Errorf("decode stateless executor response: %w", err)
 	}
 	return result, nil
+}
+
+// isExecDialRefused accepts only a connection refusal returned from the dial
+// phase of this POST. Once a connection succeeds, transport errors are
+// ambiguous: the executor may already have launched the command.
+func isExecDialRefused(err error) bool {
+	var requestErr *url.Error
+	if !errors.As(err, &requestErr) || !strings.EqualFold(requestErr.Op, http.MethodPost) {
+		return false
+	}
+	var opErr *net.OpError
+	return errors.As(requestErr.Err, &opErr) && opErr.Op == "dial" && errors.Is(opErr.Err, syscall.ECONNREFUSED)
+}
+
+func waitExecDispatchRetry(ctx context.Context, attempt int) error {
+	delay := 100 * time.Millisecond
+	for retry := 1; retry < attempt && delay < time.Second; retry++ {
+		delay *= 2
+	}
+	if delay > time.Second {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // execCoordinator owns all durable execution authority. The executor receives

@@ -47,19 +47,21 @@ const fields = computed<AIExecutionField[] | undefined>(() => {
 const execution = computed<AIExecutionView | undefined>(() => {
   const exec = disclosure.value
   if (!exec) return undefined
+  const unverified = exec.status === 'stale'
   return {
     ...(command.value ? { command: command.value } : {}),
     ...(exec.argv ? { argv: exec.argv } : {}),
     ...(fields.value ? { fields: fields.value } : {}),
     ...(output.value ? { output: output.value } : {}),
-    ...(exec.status ? { status: exec.status } : {}),
+    ...(exec.status ? { status: unverified ? 'blocked' : exec.status } : {}),
+    ...(unverified ? { statusLabel: 'Unverified' } : {}),
     ...(exec.durationMs !== undefined ? {
       duration: formatAssistantExecDuration(exec.durationMs),
       durationMs: exec.durationMs,
     } : {}),
     ...(exec.exitCode !== undefined ? { exitCode: exec.exitCode } : {}),
     ...(exec.outputTruncated !== undefined ? { outputTruncated: exec.outputTruncated } : {}),
-    ...(exec.detail ? { detail: exec.detail } : {}),
+    ...(exec.sourceStale && exec.summary ? { detail: exec.summary } : exec.detail ? { detail: exec.detail } : {}),
     ...(exec.detailURL ? { detailURL: exec.detailURL } : {}),
   }
 })

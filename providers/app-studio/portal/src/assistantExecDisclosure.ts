@@ -11,6 +11,7 @@ const execDisclosureKeys = new Set([
   'writebackPolicy',
   'status',
   'summary',
+  'sourceStale',
   'exitCode',
   'durationMs',
   'stdout',
@@ -19,7 +20,7 @@ const execDisclosureKeys = new Set([
   'detail',
   'detailURL',
 ])
-const execStatuses = new Set(['succeeded', 'failed', 'timed_out', 'canceled', 'cancelled', 'blocked', 'error', 'running', 'permission_required'])
+const execStatuses = new Set(['succeeded', 'stale', 'failed', 'timed_out', 'canceled', 'cancelled', 'blocked', 'error', 'running', 'permission_required'])
 const maxOutputBytes = 1 << 20
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -106,6 +107,9 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
   const summary = value.summary === undefined ? undefined : value.summary
   if (summary !== undefined && !boundedString(summary, 240, true)) return undefined
 
+  const sourceStale = value.sourceStale === undefined ? undefined : value.sourceStale
+  if (sourceStale !== undefined && typeof sourceStale !== 'boolean') return undefined
+
   let exitCode: number | null | undefined
   if (value.exitCode === null) {
     exitCode = null
@@ -134,7 +138,7 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
   if (value.detailURL !== undefined && !detailURL) return undefined
 
   if (component === undefined && argv === undefined && workdir === undefined && timeoutSeconds === undefined
-    && authorityProfile === undefined && networkProfile === undefined && writebackPolicy === undefined && status === undefined && summary === undefined
+    && authorityProfile === undefined && networkProfile === undefined && writebackPolicy === undefined && status === undefined && summary === undefined && sourceStale === undefined
     && exitCode === undefined && durationMs === undefined && stdout === undefined && stderr === undefined
     && outputTruncated === undefined && detail === undefined && detailURL === undefined) return undefined
 
@@ -148,6 +152,7 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
     ...(writebackPolicy !== undefined ? { writebackPolicy } : {}),
     ...(status !== undefined ? { status } : {}),
     ...(summary !== undefined ? { summary } : {}),
+    ...(sourceStale !== undefined ? { sourceStale } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(stdout !== undefined ? { stdout } : {}),
@@ -163,11 +168,11 @@ export function formatAssistantExecCommand(exec?: ProjectAssistantExecDisclosure
   return exec.argv.map((token) => /[\s"'\\]/.test(token) ? JSON.stringify(token) : token).join(' ')
 }
 
-export type AssistantExecDisplayState = 'running' | 'ran' | 'failed' | 'canceled' | 'timed_out' | 'blocked'
+export type AssistantExecDisplayState = 'running' | 'ran' | 'failed' | 'canceled' | 'timed_out' | 'blocked' | 'unverified'
 
 export interface AssistantExecStatusPresentation {
   state: AssistantExecDisplayState
-  label: 'Running' | 'Ran' | 'Failed' | 'Canceled' | 'Timed out' | 'Blocked'
+  label: 'Running' | 'Ran' | 'Failed' | 'Canceled' | 'Timed out' | 'Blocked' | 'Unverified'
   busy: boolean
   error: boolean
   attention: boolean
@@ -201,6 +206,9 @@ export function assistantExecStatusPresentation(
       break
     case 'timed_out':
       state = 'timed_out'
+      break
+    case 'stale':
+      state = 'unverified'
       break
     case 'blocked':
     case 'permission_required':
@@ -237,6 +245,8 @@ export function assistantExecStatusPresentation(
       return { state, label: 'Blocked', busy: false, error: false, attention: true }
     case 'canceled':
       return { state, label: 'Canceled', busy: false, error: false, attention: false }
+    case 'unverified':
+      return { state, label: 'Unverified', busy: false, error: false, attention: true }
     default:
       return { state: 'ran', label: 'Ran', busy: false, error: false, attention: false }
   }

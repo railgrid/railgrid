@@ -23,6 +23,21 @@ test('parses approval disclosures while rejecting unknown statuses and fields', 
   assert.equal(parseAssistantExecDisclosure({ ...exec, rawArguments: 'token=secret' }), undefined)
 })
 
+test('parses stale source evidence and presents it as unverified without hiding failures', async () => {
+  const { parseAssistantExecDisclosure, assistantExecStatusPresentation } = await vite.ssrLoadModule('/src/assistantExecDisclosure.ts')
+  const staleSuccess = { argv: ['npm', 'run', 'build'], status: 'stale', sourceStale: true, exitCode: 0 }
+  assert.deepEqual(parseAssistantExecDisclosure(staleSuccess), staleSuccess)
+  assert.equal(parseAssistantExecDisclosure({ ...staleSuccess, sourceStale: 'yes' }), undefined)
+  const unverified = assistantExecStatusPresentation(staleSuccess)
+  assert.equal(unverified.label, 'Unverified')
+  assert.equal(unverified.attention, true)
+  assert.equal(unverified.error, false)
+
+  const staleFailure = assistantExecStatusPresentation({ ...staleSuccess, status: 'failed', exitCode: 2 })
+  assert.equal(staleFailure.label, 'Failed')
+  assert.equal(staleFailure.error, true)
+})
+
 test('infers failed exec state from a non-zero exit when nested status is absent or unknown', async () => {
   const { assistantExecStatusPresentation } = await vite.ssrLoadModule('/src/assistantExecDisclosure.ts')
   assert.equal(assistantExecStatusPresentation({ argv: ['make', 'test'], exitCode: 2 }, 'succeeded').label, 'Failed')
@@ -80,6 +95,40 @@ test('renders completed activity status, duration, and bounded stdout/stderr', a
   assert.match(html, /Failed · exit 2/)
   assert.match(html, /Output truncated/)
   assert.doesNotMatch(html, /Direct command|Sanitized argv|Relative cwd|Exit status|stdout|stderr|web/)
+})
+
+test('renders successful stale output as unverified and keeps failure stale explanations', async () => {
+  const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
+  const staleSuccess = await renderToString(createSSRApp(AssistantExecDetails, {
+    exec: {
+      component: 'backend',
+      argv: ['npm', 'run', 'build'],
+      status: 'stale',
+      sourceStale: true,
+      exitCode: 0,
+      stdout: ['BUILD_OK'],
+      summary: 'Project source changed from revision 1 to 2 while this command ran; the result is unverified for current source.',
+    },
+  }))
+  assert.match(staleSuccess, /Unverified/)
+  assert.match(staleSuccess, /BUILD_OK/)
+  assert.match(staleSuccess, /changed from revision 1 to 2/)
+  assert.doesNotMatch(staleSuccess, /Success|k-ai-execution-details__status--success/)
+
+  const staleFailure = await renderToString(createSSRApp(AssistantExecDetails, {
+    exec: {
+      argv: ['npm', 'run', 'build'],
+      status: 'failed',
+      sourceStale: true,
+      exitCode: 2,
+      stderr: ['BUILD_FAILED'],
+      summary: 'Command failed. Project source changed from revision 1 to 2 while this command ran; this failure is not evidence about current source.',
+    },
+  }))
+  assert.match(staleFailure, /Failed · exit 2/)
+  assert.match(staleFailure, /BUILD_FAILED/)
+  assert.match(staleFailure, /changed from revision 1 to 2/)
+  assert.doesNotMatch(staleFailure, /Unverified|Success|k-ai-execution-details__status--success/)
 })
 
 test('does not render unknown disclosure fields', async () => {

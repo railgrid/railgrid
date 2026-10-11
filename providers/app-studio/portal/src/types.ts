@@ -320,6 +320,7 @@ export interface ProjectAssistantExecDisclosure {
   writebackPolicy?: string
   status?: string
   summary?: string
+  sourceStale?: boolean
   exitCode?: number | null
   durationMs?: number
   stdout?: string[]

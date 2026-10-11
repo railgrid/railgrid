@@ -2268,10 +2268,6 @@ func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) e
 	return nil
 }
 
-func (s *supervisor) hasCommand() bool {
-	return strings.TrimSpace(s.config.StartCommand) != ""
-}
-
 func (s *supervisor) isRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

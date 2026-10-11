@@ -87,9 +87,10 @@ type projectAssistantExecSnapshotEntry struct {
 }
 
 // projectSandboxExecRequest is the typed infrastructure data-plane protocol.
-// Assistant execution targets the active run's isolated coding workspace.
-// App Studio sends the expected durable source revision/digest, never a
-// second source snapshot or any credentials/environment.
+// Assistant execution targets the shared project development component by
+// default; an explicitly enabled per-run sandbox uses its private workspace.
+// App Studio sends the expected durable source revision/digest, never a second
+// source snapshot or any credentials/environment.
 type projectSandboxExecRequest struct {
 	Action         string   `json:"action"`
 	SessionID      string   `json:"sessionID,omitempty"`
@@ -124,6 +125,7 @@ type projectAssistantExecCommandResult struct {
 	SourceRevision  uint64   `json:"sourceRevision,omitempty"`
 	SourceDigest    string   `json:"sourceDigest,omitempty"`
 	SyncStatus      string   `json:"syncStatus,omitempty"`
+	SourceStale     bool     `json:"sourceStale,omitempty"`
 	Blockers        []string `json:"blockers,omitempty"`
 }
 
@@ -140,6 +142,7 @@ type projectAssistantExecMetadata struct {
 	SourceRevision   uint64   `json:"sourceRevision,omitempty"`
 	SourceDigest     string   `json:"sourceDigest,omitempty"`
 	SyncStatus       string   `json:"syncStatus,omitempty"`
+	SourceStale      bool     `json:"sourceStale,omitempty"`
 	NetworkProfile   string   `json:"networkProfile,omitempty"`
 	AuthorityProfile string   `json:"authorityProfile,omitempty"`
 	WritebackPolicy  string   `json:"writebackPolicy,omitempty"`
@@ -152,18 +155,17 @@ type projectAssistantExecMetadata struct {
 	OutputTruncated  bool     `json:"outputTruncated,omitempty"`
 }
 
-// projectAssistantExecCommandToolSpecForRun tells the model when commands
-// require a private per-run sandbox and, when eligible, narrows the command to
-// that sandbox's canonical single "workspace" component.
+// projectAssistantExecCommandToolSpecForRun documents the selected command
+// runtime. Shared project development components are the default; an explicitly
+// enabled private run sandbox narrows execution to its canonical workspace.
 func projectAssistantExecCommandToolSpecForRun(spec projectAssistantToolSpec, runCtx projectAssistantWorkflowRunContext) projectAssistantToolSpec {
 	if projectToolBaseName(spec.Name) != projectToolExecCommand {
 		return spec
 	}
 	if runCtx.RunState == nil || (!runCtx.RunState.SandboxRemoteEnabled() && runCtx.RunState.Sandbox() == nil) {
-		spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic command only in an isolated per-run coding sandbox pinned to this run's source snapshot. Command execution is unavailable when this run has no eligible private sandbox; it returns a visible blocker and never falls back to the shared development runtime. Use App Studio source-file tools to make changes; their versioned file writes remain available. Pass argv tokens directly, use an existing workspace script for longer commands, and run formatters in check/diff mode only. App Studio forwards no credentials or environment overrides."
 		return spec
 	}
-	spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens directly rather than a shell string: provide 1-32 non-empty items, each at most 4096 UTF-8 bytes. Use an existing workspace script instead of embedding longer code in argv. workdir is an optional relative directory of at most 256 UTF-8 bytes; omit it to use the workspace root. App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
+	spec.Description = "Run one user-authorized compiler, test, lint, or read-only diagnostic argv in the explicitly enabled private per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens directly rather than a shell string: provide 1-32 non-empty items, each at most 4096 UTF-8 bytes. Use an existing workspace script instead of embedding longer code in argv. workdir is an optional relative directory of at most 256 UTF-8 bytes; omit it to use the workspace root. App Studio forwards no credentials or environment overrides. Commands MUST NOT change source files or manifests: use App Studio source tools for edits and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). The private sandbox starts without the hosted preview's installed packages. If a requested check fails because dependencies are missing, install only from the existing lockfile in the private sandbox (for npm, use npm ci) without changing package.json or the lockfile, then rerun the original check once. If the unchanged install or check still fails, report the blocker without repeating it. Dependency setup is disposable sandbox state; direct command writes to source files are not persisted and invalidate the synchronized source evidence required by later commands."
 	spec.Parameters = projectAssistantExecCommandParametersForRun(spec.Parameters)
 	return spec
 }
@@ -246,9 +248,10 @@ func mergeProjectAssistantExecMetadata(existing, next *projectAssistantExecMetad
 	if existing.SourceDigest != "" {
 		out.SourceDigest = existing.SourceDigest
 	}
-	if existing.SyncStatus != "" {
+	if existing.SyncStatus != "" && (!next.SourceStale || existing.SourceStale) {
 		out.SyncStatus = existing.SyncStatus
 	}
+	out.SourceStale = existing.SourceStale || next.SourceStale
 	if out.NetworkProfile == "" {
 		out.NetworkProfile = existing.NetworkProfile
 	}
@@ -261,7 +264,9 @@ func mergeProjectAssistantExecMetadata(existing, next *projectAssistantExecMetad
 	if out.Status == "" {
 		out.Status = existing.Status
 	}
-	if out.Summary == "" {
+	if existing.SourceStale && existing.Summary != "" {
+		out.Summary = existing.Summary
+	} else if out.Summary == "" {
 		out.Summary = existing.Summary
 	}
 	if out.ExitCode == nil && existing.ExitCode != nil {
@@ -279,6 +284,9 @@ func mergeProjectAssistantExecMetadata(existing, next *projectAssistantExecMetad
 	}
 	if !out.OutputTruncated {
 		out.OutputTruncated = existing.OutputTruncated
+	}
+	if out.SourceStale && out.Status == "succeeded" {
+		out.Status = "stale"
 	}
 	// A checkpoint assembled from mixed lifecycle events can fill fields from
 	// either side of the merge. Re-run the public boundary after those
@@ -336,6 +344,7 @@ func projectAssistantExecMetadataForToolArguments(name string, args map[string]a
 	metadata.SourceRevision = commandResult.SourceRevision
 	metadata.SourceDigest = strings.TrimSpace(commandResult.SourceDigest)
 	metadata.SyncStatus = strings.TrimSpace(commandResult.SyncStatus)
+	metadata.SourceStale = commandResult.SourceStale
 	metadata.Summary = trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(commandResult.Summary), 240)
 	metadata.ExitCode = commandResult.ExitCode
 	metadata.DurationMS = commandResult.DurationMS
@@ -592,33 +601,172 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 		if len(blockers) > 0 {
 			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: blockers}, nil
 		}
-		sandbox, sandboxErr := current.RunState.EnsureSandbox(ctx)
-		if sandboxErr != nil {
-			if errors.Is(sandboxErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-				return &projectAssistantExecCommandResult{Status: "canceled", Summary: "Command canceled before the coding sandbox was ready."}, nil
+		if current.RunState != nil && (current.RunState.SandboxRemoteEnabled() || current.RunState.Sandbox() != nil) {
+			sandbox, sandboxErr := current.RunState.EnsureSandbox(ctx)
+			if sandboxErr != nil {
+				if errors.Is(sandboxErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+					return &projectAssistantExecCommandResult{Status: "canceled", Summary: "Command canceled before the private coding sandbox was ready."}, nil
+				}
+				return &projectAssistantExecCommandResult{Status: "failed", Summary: "Private coding sandbox setup failed: " + sandboxErr.Error()}, nil
 			}
-			return &projectAssistantExecCommandResult{Status: "failed", Summary: "Coding sandbox setup failed: " + sandboxErr.Error()}, nil
+			// Once a run explicitly selects the private sandbox, setup failure or
+			// an unavailable sandbox must not silently move this command to the
+			// shared Project runtime.
+			return execProjectAssistantRunSandboxCommand(ctx, current, sandbox, args)
 		}
-		if sandbox == nil {
-			return projectAssistantExecSandboxUnavailableResult(), nil
-		}
-		return execProjectAssistantRunSandboxCommand(ctx, current, sandbox, args)
+		return execProjectAssistantSharedRuntimeCommand(ctx, current, args)
 	}
 }
 
-func projectAssistantExecSandboxUnavailableResult() *projectAssistantExecCommandResult {
-	return &projectAssistantExecCommandResult{
-		Status:  "blocked",
-		Summary: "Command execution requires an isolated per-run coding sandbox, which is unavailable for this run.",
-		Blockers: []string{
-			"This deployment does not provide an eligible private coding sandbox for the current run. Commands are not run in the shared development runtime. Use App Studio source-file tools; versioned file changes remain available.",
-		},
+func execProjectAssistantSharedRuntimeCommand(ctx context.Context, current projectAssistantWorkflowRunContext, args *projectAssistantExecCommandInput) (*projectAssistantExecCommandResult, error) {
+	server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, current)
+	if blocked != nil {
+		return &projectAssistantExecCommandResult{Status: blocked.Status, Summary: blocked.Summary, Blockers: blocked.Blockers}, nil
 	}
+	component, componentInfo, err := projectAssistantExecComponent(target, args.Component)
+	if err != nil {
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: []string{err.Error()}}, nil
+	}
+	var (
+		revision                uint64
+		syncStatus, syncFailure string
+		sourceRevision          uint64
+		digest                  string
+	)
+	for attempt := 0; attempt < projectAssistantExecSnapshotAttempts; attempt++ {
+		revision, syncStatus, syncFailure = projectAssistantExecSyncEvidence(ctx, current)
+		if syncStatus != "succeeded" {
+			break
+		}
+		includeBinary := projectAssistantExecBinaryInclusion(ctx, server, id, target.dataPlaneRefFor(component))
+		digest, sourceRevision, err = projectAssistantExecSnapshot(ctx, current, componentInfo, revision, includeBinary)
+		if !errors.Is(err, errProjectAssistantExecRevisionChanged) {
+			break
+		}
+	}
+	if syncStatus != "succeeded" {
+		if syncFailure == "" {
+			syncFailure = "the latest workspace mutation has not completed development synchronization"
+		}
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked until the exact workspace revision is synchronized.", Component: component, SourceRevision: revision, SyncStatus: syncStatus, Blockers: []string{syncFailure}}, nil
+	}
+	if err != nil {
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked because an exact workspace snapshot could not be prepared.", Component: component, SourceRevision: revision, SyncStatus: syncStatus, Blockers: []string{err.Error()}}, nil
+	}
+	if sourceRevision == 0 {
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was blocked because the durable workspace revision could not be read.", Component: component, SourceRevision: revision, SourceDigest: digest, SyncStatus: syncStatus, Blockers: []string{"project workspace source revision is unavailable"}}, nil
+	}
+	finalize := func(result *projectAssistantExecCommandResult) (*projectAssistantExecCommandResult, error) {
+		return projectAssistantExecMarkSourceStale(ctx, current, result), nil
+	}
+	requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
+	// The agent fences exec on its own applied revision, which plain syncs may
+	// have renumbered ahead of the FileStore's revision.
+	agentRevision := server.developmentSyncRevision(id, target.dataPlaneRefFor(component), sourceRevision)
+	start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: agentRevision, SourceDigest: digest}
+	started, err := retryProjectAssistantExecStart(ctx, start, func(startCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+		return projectAssistantExecCall(startCtx, server, id, target.dataPlaneRefFor(component), request)
+	})
+	if err != nil {
+		if projectAssistantExecStartMayHaveBeenAccepted(err) {
+			projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+				return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
+			})
+		}
+		return finalize(&projectAssistantExecCommandResult{Status: "error", Summary: projectAssistantExecStartFailureSummary(err), Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
+	}
+	if started.SessionID == "" {
+		projectAssistantCancelExecByRequestID(requestID, func(cancelCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+			return projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), request)
+		})
+		return finalize(&projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
+	}
+	startedAt := time.Now()
+	result := started
+	var cancelOnce sync.Once
+	cancelSession := func() {
+		cancelOnce.Do(func() {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecCancelTimeout)
+			defer cancel()
+			_, _ = projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "cancel", SessionID: started.SessionID, RequestID: requestID})
+		})
+	}
+	stopRemoteCancel := context.AfterFunc(ctx, cancelSession)
+	defer stopRemoteCancel()
+	defer func() {
+		// A request can be canceled while the HTTP poll is in flight. Keep
+		// the remote process bounded even when that poll returns ctx.Err before
+		// the select below sends the cancel action.
+		if !projectAssistantExecTerminal(result.State) {
+			cancelSession()
+		}
+	}()
+	deadline := time.NewTimer(projectAssistantExecPollTimeout)
+	defer deadline.Stop()
+	pollImmediately := true
+	for !projectAssistantExecTerminal(result.State) {
+		if pollImmediately {
+			pollImmediately = false
+			if ctx.Err() != nil {
+				cancelSession()
+				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"))
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				cancelSession()
+				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"))
+			case <-deadline.C:
+				cancelSession()
+				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "timed_out"))
+			case <-time.After(projectAssistantExecPollInterval):
+			}
+		}
+		result, err = projectAssistantExecCall(ctx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "poll", SessionID: started.SessionID, RequestID: requestID})
+		if err != nil {
+			if ctx.Err() != nil {
+				cancelSession()
+				return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), "canceled"))
+			}
+			return finalize(&projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus})
+		}
+	}
+	return finalize(projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), ""))
+}
+
+// projectAssistantExecMarkSourceStale compares the current durable project
+// revision with the snapshot pinned at dispatch. The dispatch revision remains
+// the receipt; a later source revision can only invalidate the result.
+func projectAssistantExecMarkSourceStale(ctx context.Context, runCtx projectAssistantWorkflowRunContext, result *projectAssistantExecCommandResult) *projectAssistantExecCommandResult {
+	if result == nil || result.SourceRevision == 0 || runCtx.Workspace == nil {
+		return result
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), projectAssistantExecCancelTimeout)
+	defer cancel()
+	currentRevision, err := runCtx.Workspace.SourceRevision(checkCtx, runCtx.WorkspaceScope)
+	if err == nil && currentRevision == result.SourceRevision {
+		return result
+	}
+	result.SourceStale = true
+	if err != nil {
+		result.SyncStatus = "unknown"
+		result.Summary += " The project source revision could not be checked after execution, so this output is unverified."
+	} else {
+		result.SyncStatus = "stale"
+		result.Summary += fmt.Sprintf(" Project source changed from revision %d to %d while this command ran; the result is unverified for current source.", result.SourceRevision, currentRevision)
+	}
+	if result.Status == "succeeded" {
+		result.Status = "stale"
+	}
+	return result
 }
 
 func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectAssistantWorkflowRunContext, sandbox *projectAssistantRunSandbox, args *projectAssistantExecCommandInput) (*projectAssistantExecCommandResult, error) {
 	if sandbox == nil {
-		return projectAssistantExecSandboxUnavailableResult(), nil
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "The explicitly enabled private coding sandbox is unavailable for this run."}, nil
 	}
 	metadata := sandbox.metadataSnapshot()
 	if strings.TrimSpace(current.AssistantRunID) == "" || strings.TrimSpace(metadata.RunID) == "" || metadata.RunID != strings.TrimSpace(current.AssistantRunID) {
@@ -1114,6 +1262,20 @@ func projectAssistantExecSnapshotEntryFor(snapshot workspace.ReadSnapshot, clean
 		return projectAssistantExecSnapshotEntry{}, false, 0, nil
 	}
 	return projectAssistantExecSnapshotEntry{path: clean, file: projectSandboxExecFile{Path: relative, Content: read.Content}}, true, len([]byte(read.Content)), nil
+}
+
+// projectAssistantExecBinaryInclusion mirrors the development sync capability
+// check so the command's source digest covers exactly the files the component
+// received. The status probe is cached for this one snapshot attempt.
+func projectAssistantExecBinaryInclusion(ctx context.Context, server *Server, id identity, ref dataPlaneRef) func() bool {
+	var decided, include bool
+	return func() bool {
+		if !decided {
+			decided = true
+			include = server != nil && server.developmentAgentSupportsBase64(ctx, id, ref)
+		}
+		return include
+	}
 }
 
 func projectAssistantExecSnapshot(ctx context.Context, runCtx projectAssistantWorkflowRunContext, component projectTemplateComponent, expectedRevision uint64, includeBinary func() bool) (string, uint64, error) {
