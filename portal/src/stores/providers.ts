@@ -258,6 +258,28 @@ export interface CompositionState {
   implicit?: boolean
 }
 
+// ClaimRef mirrors pkg/hub/restapi.ClaimRef: one permission claim by group and
+// resource.
+export interface ClaimRef {
+  group?: string
+  resource: string
+}
+
+// ClaimState mirrors pkg/hub/restapi.ClaimState — how a binding's accepted
+// permission claims stand against what the provider's export declares today.
+// The hub keeps a provider's own requirements accepted on its own; what is
+// left here needs a person.
+export interface ClaimState {
+  // Declared by the export, absent from the binding: a composition nobody
+  // consented to (lasting), or a claim written moments ago (transient).
+  pending?: ClaimRef[]
+  // Listed Rejected on the binding; re-enabling offers them again.
+  rejected?: ClaimRef[]
+  // kcp's explanation when an accepted claim's verbs or selector differ from
+  // the export's. Only disabling and re-enabling applies a narrowed scope.
+  mismatch?: string
+}
+
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
 // APIExport a workspace's binding actually points at.
 export interface EnabledProviderDetail {
@@ -281,6 +303,9 @@ export interface EnabledProviderDetail {
   // that looks enabled cannot create what it is for. Absent when it declares
   // none.
   compositions?: CompositionState
+  // Permission claims that still need a person here. Absent when the binding
+  // matches the export.
+  claims?: ClaimState
 }
 
 // CategoryDTO mirrors pkg/hub/providers.Category — the hub publishes its
@@ -633,6 +658,17 @@ export const useProvidersStore = defineStore('providers', () => {
   // does not do anything".
   function pendingCompositions(name: string): AcceptedComposition[] {
     return bindingsByProvider.value[name]?.compositions?.pending ?? []
+  }
+
+  // Permission claims on an enabled provider's binding that the hub will not
+  // settle on its own: declared but missing, rejected, or scoped differently
+  // from what the export now declares. Re-enabling offers the first two for
+  // acceptance; a scope mismatch needs disable and re-enable.
+  function claimState(name: string): ClaimState | undefined {
+    const c = bindingsByProvider.value[name]?.claims
+    if (!c) return undefined
+    if (!c.pending?.length && !c.rejected?.length && !c.mismatch) return undefined
+    return c
   }
 
   function dependencyLabel(name: string): string {
@@ -1042,6 +1078,7 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsByProvider,
     pendingHubAccess,
     pendingCompositions,
+    claimState,
     hasAnyEnabled,
     isEnabled,
     isSelfManaged,

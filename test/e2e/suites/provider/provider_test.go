@@ -1173,6 +1173,109 @@ func postGreet(t *testing.T, client *http.Client, url, token string) (int, strin
 	return resp.StatusCode, strings.TrimSpace(string(body))
 }
 
+// TestF5ClaimsFollowCatalogEntry is the contract for the hub's binding-claims
+// reconciler (pkg/hub/providerclaims): a provider that grows a requirement does
+// not need every tenant to re-enable it.
+//
+// Two things are asserted, in dependency order:
+//
+//   - The tenant workspace's own `railgrid` binding (to core.railgrid.ai)
+//     accepts apis.kcp.io/apibindings. That claim is what lets the hub see the
+//     tenant's provider bindings through the core export's virtual workspace;
+//     the hub writes it onto bindings created before the claim existed.
+//   - Adding a requirement to quickstart's CatalogEntry puts the matching claim,
+//     Accepted, on the tenant's quickstart binding without anyone touching the
+//     binding; removing the requirement again removes the claim. Only the
+//     CatalogEntry is edited — the claim set is the catalog's, not the export's.
+func TestF5ClaimsFollowCatalogEntry(t *testing.T) {
+	workspace := loginAndGetCluster(t, staticToken)
+	enableQuickstart(t, workspace, staticToken)
+	tenant := kcpDynamic(t, workspace, staticToken)
+
+	claimOn := func(bindingName, group, resource string) (state string, present bool) {
+		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), bindingName, metav1.GetOptions{})
+		if err != nil {
+			return "", false
+		}
+		claims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
+		for _, raw := range claims {
+			pc, _ := raw.(map[string]any)
+			g, _ := pc["group"].(string)
+			r, _ := pc["resource"].(string)
+			if g == group && r == resource {
+				st, _ := pc["state"].(string)
+				return st, true
+			}
+		}
+		return "", false
+	}
+
+	// 1. The hub brings its own binding to the embedded export's claim set.
+	if !waitForCondition(t, 2*time.Minute, func() (bool, string) {
+		st, ok := claimOn("railgrid", "apis.kcp.io", "apibindings")
+		return ok && st == "Accepted", fmt.Sprintf("present=%v state=%q", ok, st)
+	}) {
+		t.Fatal("the tenant's railgrid binding never accepted apis.kcp.io/apibindings")
+	}
+
+	// 2. Grow quickstart's requirements and watch the tenant binding follow.
+	catalog := systemProvidersClient(t).Resource(schema.GroupVersionResource{
+		Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
+	})
+	entry, err := catalog.Get(ctxWithTimeout(t, 10*time.Second), "quickstart", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get quickstart CatalogEntry: %v", err)
+	}
+	originalRequires, _, _ := unstructured.NestedSlice(entry.Object, "spec", "requires")
+	setRequires := func(requires []any) {
+		if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+			cur, err := catalog.Get(ctxWithTimeout(t, 10*time.Second), "quickstart", metav1.GetOptions{})
+			if err != nil {
+				return false, err.Error()
+			}
+			if err := unstructured.SetNestedSlice(cur.Object, requires, "spec", "requires"); err != nil {
+				return false, err.Error()
+			}
+			if _, err := catalog.Update(ctxWithTimeout(t, 10*time.Second), cur, metav1.UpdateOptions{}); err != nil {
+				return false, err.Error()
+			}
+			return true, ""
+		}) {
+			t.Fatal("could not update quickstart CatalogEntry")
+		}
+	}
+	t.Cleanup(func() { setRequires(originalRequires) })
+
+	grown := append(append([]any(nil), originalRequires...), map[string]any{
+		"group": "authentication.k8s.io",
+		"resources": []any{map[string]any{
+			"name":  "tokenreviews",
+			"verbs": []any{"create"},
+		}},
+	})
+	setRequires(grown)
+	if !waitForCondition(t, 2*time.Minute, func() (bool, string) {
+		st, ok := claimOn("quickstart", "authentication.k8s.io", "tokenreviews")
+		return ok && st == "Accepted", fmt.Sprintf("present=%v state=%q", ok, st)
+	}) {
+		t.Fatal("tenant quickstart binding never accepted the claim the CatalogEntry grew")
+	}
+	// The claim the tenant accepted at Enable is untouched by the rewrite.
+	if st, ok := claimOn("quickstart", "authorization.k8s.io", "subjectaccessreviews"); !ok || st != "Accepted" {
+		t.Fatalf("original claim disturbed: present=%v state=%q", ok, st)
+	}
+
+	// 3. Dropping the requirement drops the claim: the target is the current
+	// CatalogEntry, not the union with history.
+	setRequires(originalRequires)
+	if !waitForCondition(t, 2*time.Minute, func() (bool, string) {
+		_, ok := claimOn("quickstart", "authentication.k8s.io", "tokenreviews")
+		return !ok, fmt.Sprintf("present=%v", ok)
+	}) {
+		t.Fatal("tenant quickstart binding kept a claim the CatalogEntry no longer declares")
+	}
+}
+
 func TestGTenantDisableRemovesCR(t *testing.T) {
 	tenantWS := loginStaticTokenAndGetCluster(t)
 	tenant := kcpDynamic(t, tenantWS, staticToken)

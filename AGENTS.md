@@ -248,17 +248,27 @@ routing/heartbeat state; the provider's own `init` creates the kcp side
 > (manifest vs the generated APIExport, including `metadata.name`) and
 > `export-copy` (the chart copy is byte-identical to the generated file).
 >
-> **Existing tenants do NOT auto-migrate.** `init` only touches the provider-side
-> APIExport, never per-tenant `APIBinding`s (they live in tenant workspaces, written
-> by the hub Enable flow). A tenant's binding keeps its old accepted claims until it
-> re-Enables or a migration re-accepts them — and a provider that starts *requiring*
-> a newly-added claim (e.g. delegated `tokenreviews`/`subjectaccessreviews` for
-> data-plane auth) will break every already-enabled tenant on rollout. Ship a
-> migration (re-accept claims on all existing bindings) or a compatibility fallback
-> BEFORE deploying code that depends on the new claim. Symptom of the gap: provider
-> logs `User "system:serviceaccount:default:provider" cannot create <resource>` and
+> **Existing tenants follow the CatalogEntry.** `init` only touches the
+> provider-side APIExport, never per-tenant `APIBinding`s (they live in tenant
+> workspaces, written by the hub Enable flow). The hub's binding-claims
+> reconciler (`pkg/hub/providerclaims`) closes that gap: it watches every tenant
+> binding through the `core.railgrid.ai` virtual workspace (the core export
+> claims `apis.kcp.io/apibindings`) and, whenever a CatalogEntry's
+> `spec.requires` changes or a binding appears, brings the binding's
+> `spec.permissionClaims` to the current declaration — the provider's own
+> requirements Accepted, compositions Accepted only where the workspace's Grant
+> consents, explicit rejections preserved, dropped claims removed. A provider
+> that adds a requirement therefore needs no migration and no re-Enable; the
+> admin `POST /api/admin/providers/{name}/claims/reaccept` remains as a manual
+> retry with counts. Two things still need a person: a **new composition**
+> (consent, offered on the provider card and by re-Enabling) and a **narrowed
+> selector** (kcp makes an accepted selector immutable, so only Disable +
+> Enable applies it; kcp reports it as `PermissionClaimsValid=False`). Symptom
+> of a binding the reconciler has not reached: provider logs
+> `User "system:serviceaccount:default:provider" cannot create <resource>` and
 > the binding's `status.exportPermissionClaims` lists the claim but `spec` /
-> `status.appliedPermissionClaims` do not.
+> `status.appliedPermissionClaims` do not; `GET .../providers/enabled` shows it
+> under `claims.pending`.
 
 > **⚠️ Adding an edges "service" type touches FOUR places (edges provider).**
 > The edges provider turns host/LAN apps (Home Assistant, the *arr apps, UniFi, …)
