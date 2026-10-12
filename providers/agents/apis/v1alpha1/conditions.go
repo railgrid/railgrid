@@ -130,6 +130,21 @@ const (
 	// ReasonInvalidSource is a spec.source the provider has no listener for.
 	ReasonInvalidSource = "InvalidSource"
 
+	// ReasonMissingWebhookRef is a Trigger with no spec.webhookRef: nothing
+	// can ever be routed to it.
+	ReasonMissingWebhookRef = "MissingWebhookRef"
+
+	// ReasonUnknownWebhookRef is a spec.webhookRef naming a Webhook that does
+	// not exist in this workspace, so no delivery reaches the trigger.
+	ReasonUnknownWebhookRef = "UnknownWebhookRef"
+
+	// ReasonUnknownFilterKey is a spec.filter key the matcher does not know.
+	// The matcher ignores such a key rather than failing closed, so a filter
+	// written for a future source never blocks every event — which also means
+	// a typo ("evenType") silently filters nothing. The condition is the
+	// warning the delivery path cannot give.
+	ReasonUnknownFilterKey = "UnknownFilterKey"
+
 	// ReasonSecretMissing is a Connection whose credential Secret does not
 	// exist. The Secret is written by whoever creates the Connection, so this
 	// is a half-finished create rather than a transient state.

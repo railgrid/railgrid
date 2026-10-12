@@ -21,17 +21,18 @@ import (
 // is the fallback when no database URL is configured; production uses Postgres.
 type MemoryStore struct {
 	mu                 sync.Mutex
-	messages           map[string][]Message      // key: scope|session
-	runs               map[string]Run            // key: scope|runID
-	memories           map[string]Memory         // key: scope|memoryID
-	inbox              map[string]InboxItem      // key: scope|itemID
-	toolCalls          map[string][]ToolCall     // key: scope
-	usage              map[string]Usage          // key: scope|agent|windowStart
-	tenants            map[string]TenantRef      // key: clusterID
-	summaries          map[string]SessionSummary // key: scope|session
-	harness            map[string]HarnessSession // key: scope|session
-	idempotencyPrimary map[string]bool           // key: scope|runID; one stable winner per tenant/agent/key
-	artifacts          map[string]runArtifactRow // key: scope|runID|name
+	messages           map[string][]Message         // key: scope|session
+	runs               map[string]Run               // key: scope|runID
+	memories           map[string]Memory            // key: scope|memoryID
+	inbox              map[string]InboxItem         // key: scope|itemID
+	toolCalls          map[string][]ToolCall        // key: scope
+	usage              map[string]Usage             // key: scope|agent|windowStart
+	tenants            map[string]TenantRef         // key: clusterID
+	summaries          map[string]SessionSummary    // key: scope|session
+	harness            map[string]HarnessSession    // key: scope|session
+	idempotencyPrimary map[string]bool              // key: scope|runID; one stable winner per tenant/agent/key
+	artifacts          map[string]runArtifactRow    // key: scope|runID|name
+	deliveries         map[string][]WebhookDelivery // key: scope|webhookUID, oldest first
 	messageSequence    int64
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
 	// mirroring the org/workspace columns the Postgres rows carry.
@@ -52,6 +53,7 @@ func NewMemoryStore() *MemoryStore {
 		harness:            map[string]HarnessSession{},
 		idempotencyPrimary: map[string]bool{},
 		artifacts:          map[string]runArtifactRow{},
+		deliveries:         map[string][]WebhookDelivery{},
 		runScopes:          map[string]Scope{},
 	}
 }
@@ -298,6 +300,14 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		}
 		delete(m.artifacts, key)
 	}
+	for key, rows := range m.deliveries {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		m.deliveries[target] = sortDeliveries(append(m.deliveries[target], rows...))
+		delete(m.deliveries, key)
+	}
 
 	// If both scopes already contain the same idempotency key, retain both run
 	// records but make the oldest run the stable lookup winner. This restores
@@ -324,6 +334,11 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 
 func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 	for key := range m.messages {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.deliveries {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -1118,6 +1133,120 @@ func (m *MemoryStore) ListToolCalls(_ context.Context, scope Scope, runID string
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+// ---- webhook deliveries ----------------------------------------------------
+
+func deliveryKey(s Scope, webhookUID string) string { return tenantKey(s) + "|" + webhookUID }
+
+// sortDeliveries orders oldest first, id as the tie-breaker, which is the
+// order the slice is kept in so pruning is a reslice.
+func sortDeliveries(rows []WebhookDelivery) []WebhookDelivery {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].ReceivedAt.Equal(rows[j].ReceivedAt) {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].ReceivedAt.Before(rows[j].ReceivedAt)
+	})
+	return rows
+}
+
+func (m *MemoryStore) RecordWebhookDelivery(_ context.Context, scope Scope, d WebhookDelivery, retain int) error {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(d.ID) == "" || strings.TrimSpace(d.WebhookUID) == "" {
+		return fmt.Errorf("a webhook delivery needs an id and a webhook uid")
+	}
+	if retain <= 0 {
+		return nil
+	}
+	d.BodySize = len(d.Body)
+	if d.ReceivedAt.IsZero() {
+		d.ReceivedAt = time.Now().UTC()
+	}
+	// Copied so a caller reusing its slice cannot rewrite a stored row, and
+	// never nil so an unrouted row reads back as [] like Postgres's.
+	d.Routes = append(make([]WebhookRoute, 0, len(d.Routes)), d.Routes...)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := deliveryKey(scope, d.WebhookUID)
+	rows := sortDeliveries(append(m.deliveries[k], d))
+	if len(rows) > retain {
+		rows = append([]WebhookDelivery(nil), rows[len(rows)-retain:]...)
+	}
+	m.deliveries[k] = rows
+	return nil
+}
+
+// routedTo reports whether one of a delivery's routes is the named trigger.
+func routedTo(d WebhookDelivery, trigger string) bool {
+	for _, r := range d.Routes {
+		if r.Trigger == trigger {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MemoryStore) ListWebhookDeliveries(_ context.Context, scope Scope, webhookUID string, q WebhookDeliveryQuery) ([]WebhookDelivery, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := m.deliveries[deliveryKey(scope, webhookUID)]
+	out := make([]WebhookDelivery, 0, min(len(rows), limit))
+	for i := len(rows) - 1; i >= 0 && len(out) < limit; i-- {
+		if q.Outcome != "" && rows[i].Outcome != q.Outcome {
+			continue
+		}
+		if q.Trigger != "" && !routedTo(rows[i], q.Trigger) {
+			continue
+		}
+		if q.DeliveryID != "" && rows[i].DeliveryID != q.DeliveryID {
+			continue
+		}
+		row := rows[i]
+		if len(row.Body) > WebhookDeliveryPreviewBytes {
+			row.Body = row.Body[:WebhookDeliveryPreviewBytes]
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) GetWebhookDelivery(_ context.Context, scope Scope, webhookUID, id string) (WebhookDelivery, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return WebhookDelivery{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, row := range m.deliveries[deliveryKey(scope, webhookUID)] {
+		if row.ID == id {
+			return row, true, nil
+		}
+	}
+	return WebhookDelivery{}, false, nil
+}
+
+func (m *MemoryStore) DeleteWebhookDeliveries(_ context.Context, scope Scope, webhookUID string) error {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.deliveries, deliveryKey(m.normalizeScopeLocked(scope), webhookUID))
+	return nil
 }
 
 func (m *MemoryStore) AddUsage(_ context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error) {

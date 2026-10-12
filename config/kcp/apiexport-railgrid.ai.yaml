@@ -52,6 +52,12 @@ spec:
     - create
     - update
     - delete
+  - group: apis.kcp.io
+    resource: apibindings
+    verbs:
+    - get
+    - list
+    - watch
   - group: tenancy.kcp.io
     identityHash: __TENANCY_IDENTITY_HASH__
     resource: workspaces

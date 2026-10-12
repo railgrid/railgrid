@@ -9,30 +9,32 @@
 //   #/agents/<name>/runs/<runID>      agent-scoped run detail
 //   #/activity                        run feed + approvals
 //   #/activity/<runID>                run trace
-//   #/connections #/models
+//   #/connections #/webhooks #/models
 //   #/connections/<name>/edit         connection edit
 //   #/toolsets/<name>/edit            toolset edit
+//   #/webhooks/<name>/edit            webhook detail (URL, routes, deliveries)
 //   #/agents/<name>/schedules/create
 //   #/agents/<name>/schedules/<schedule>/edit
 //   #/agents/<name>/triggers/create
 //   #/agents/<name>/triggers/<trigger>/edit
 //   #/create/agent
 //   #/create/connection[/<type>]
-//   #/create/toolset #/create/model
+//   #/create/toolset #/create/webhook #/create/model
 
-export type MenuKey = 'agents' | 'activity' | 'connections' | 'models'
+export type MenuKey = 'agents' | 'activity' | 'connections' | 'webhooks' | 'models'
 export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs'
-export type CreateResource = 'agent' | 'connection' | 'toolset' | 'model'
+export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
+export type EditResource = 'connection' | 'toolset' | 'webhook'
 export type AutomationResource = 'schedule' | 'trigger'
 
-export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'models']
+export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'webhooks', 'models']
 const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs']
 
 export type Route =
   | { kind: 'menu'; menu: MenuKey }
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
-  | { kind: 'edit'; resource: 'connection' | 'toolset'; name: string }
+  | { kind: 'edit'; resource: EditResource; name: string }
   | { kind: 'create'; resource: CreateResource; type?: string }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'create' }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'edit'; name: string }
@@ -51,7 +53,7 @@ export interface CreateSuccessDetail {
 }
 
 export interface EditSuccessDetail {
-  resource: 'connection' | 'toolset'
+  resource: EditResource
   name: string
   item?: unknown
   store?: unknown
@@ -82,6 +84,7 @@ export function parseHash(hash = location.hash): Route {
       }
     }
     if (second === 'toolset') return { kind: 'create', resource: 'toolset' }
+    if (second === 'webhook') return { kind: 'create', resource: 'webhook' }
     if (second === 'connection') {
       return { kind: 'create', resource: 'connection', ...(third ? { type: decodePart(third) } : {}) }
     }
@@ -107,6 +110,11 @@ export function parseHash(hash = location.hash): Route {
   if (head === 'toolsets' && second && third === 'edit' && parts.length === 3) {
     return { kind: 'edit', resource: 'toolset', name: decodePart(second) }
   }
+  // A bare #/webhooks/<name> is what someone types or shares for "that
+  // webhook"; it opens the same detail page the edit route does.
+  if (head === 'webhooks' && second && ((third === 'edit' && parts.length === 3) || parts.length === 2)) {
+    return { kind: 'edit', resource: 'webhook', name: decodePart(second) }
+  }
   if (head === 'activity' && second) return { kind: 'run', id: decodePart(second) }
   if (head === 'runs' && second) return { kind: 'run', id: decodePart(second) }
   if ((MENUS as string[]).includes(head)) return { kind: 'menu', menu: head as MenuKey }
@@ -126,7 +134,7 @@ export function hashFor(route: Route): string {
     case 'run':
       return `#/activity/${encodeURIComponent(route.id)}`
     case 'edit':
-      return `#/${route.resource === 'connection' ? 'connections' : 'toolsets'}/${encodeURIComponent(route.name)}/edit`
+      return `#/${route.resource}s/${encodeURIComponent(route.name)}/edit`
     case 'create':
       return `#/create/${route.resource}${route.type ? `/${encodeURIComponent(route.type)}` : ''}`
     case 'automation': {
@@ -188,10 +196,11 @@ export function routeForSubPath(subPath: string | undefined | null): MenuKey | n
 export function activeMenu(route: Route): MenuKey {
   if (route.kind === 'agent') return 'agents'
   if (route.kind === 'run') return 'activity'
-  if (route.kind === 'edit') return 'connections'
+  if (route.kind === 'edit') return route.resource === 'webhook' ? 'webhooks' : 'connections'
   if (route.kind === 'automation') return 'agents'
   if (route.kind === 'create') {
     if (route.resource === 'model') return 'models'
+    if (route.resource === 'webhook') return 'webhooks'
     if (route.resource === 'connection' || route.resource === 'toolset') return 'connections'
     return 'agents'
   }

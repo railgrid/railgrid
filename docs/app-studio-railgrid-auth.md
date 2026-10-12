@@ -29,9 +29,12 @@ creates accounts, organization memberships, or workspace memberships.
 The hub's existing-account resolver requires the declared
 `app-auth.users.resolve` workspace capability, a verified human action proof
 bound to the requested user and app ID, and permission to update the exact
-instance. Existing deployments must accept this capability through the normal
-provider Enable flow before approving outside accounts. Existing disabled apps
-and sharing flows remain usable without it.
+instance. This is a hub-access capability, separate from APIBinding permission
+claims. The default platform-provider policy allows an undecided capability;
+an explicit decline blocks it. When that default is disabled, or App Studio is
+organization-owned, an eligible admin must accept it through Review access or
+Enable before approving outside accounts. Existing disabled apps and sharing
+flows remain usable without it.
 
 Sharing and authentication approvals use the hub-owned
 `app-access.grants.manage` workspace capability at
@@ -45,14 +48,15 @@ creates a grant. Authentication approvals additionally require that Railgrid
 Auth is enabled for that same production Instance and that the signed
 `appId` is `<projectUID>/production`. The hub creates only the fixed
 `railgrid-app-access` RBAC shape; providers cannot supply rules or subjects.
-Existing workspaces must have this capability accepted under their normal
-provider Enable policy before the sharing surfaces use the broker.
+The same hub-access decision policy applies to this capability: platform
+defaults can allow it while undecided, but an explicit decline always blocks
+the broker until an eligible admin accepts it.
 
 Managed grants carry Project and Instance ownership. Identity issuance also
 requires `instances/access.<scopeHash>`, where the scope hashes the Project and
 Instance UIDs, in addition to the existing named `instances/access` permission.
-That identity permission
-lives in a separate role bound to the Project and Instance UIDs, so a stale
+That identity permission lives in a separate role bound to the Project and
+Instance UIDs, so a stale
 binding cannot acquire it when an app name is reused. Reusing a deleted
 Project's name does not carry its app approvals into the replacement.
 The broker can migrate grants with the same recorded Project UID when the owner

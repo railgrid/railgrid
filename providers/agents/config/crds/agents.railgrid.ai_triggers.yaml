@@ -20,8 +20,8 @@ spec:
     - jsonPath: .spec.agentRef
       name: Agent
       type: string
-    - jsonPath: .spec.source
-      name: Source
+    - jsonPath: .spec.webhookRef
+      name: Webhook
       type: string
     - jsonPath: .status.lastFired
       name: LastFired
@@ -34,9 +34,10 @@ spec:
       openAPIV3Schema:
         description: |-
           Trigger fires an agent run on an external event — the event-based half
-          of automation, complementing the time-based Schedule. Webhook sources
-          get a hub-routed inbound endpoint; other sources subscribe through a
-          Connection.
+          of automation, complementing the time-based Schedule. Events arrive at a
+          Webhook (spec.webhookRef), which owns the inbound URL and the delivery
+          sink; every Trigger routing from that webhook judges each delivery with its
+          own filter.
         properties:
           apiVersion:
             description: |-
@@ -70,13 +71,6 @@ spec:
                   channel. Lets, e.g., an "incidents" trigger post to a dedicated channel.
                 maxLength: 63
                 type: string
-              connectionRef:
-                description: |-
-                  ConnectionRef is reserved for sources that subscribe to a Connection's
-                  event stream. Neither webhook nor github reads it: both are inbound
-                  HTTP deliveries authenticated by the token in status.webhookPath.
-                maxLength: 253
-                type: string
               filter:
                 additionalProperties:
                   type: string
@@ -89,16 +83,6 @@ spec:
                   payload and "header.<name>" a request header. eventType, action and
                   repository take a comma-separated any-of list.
                 type: object
-              source:
-                description: |-
-                  Source is where events come from: webhook or github. Both provision a
-                  hub-routed webhook endpoint and fire on inbound delivery; github only
-                  records that the sender is GitHub so the portal can offer its event
-                  catalog, the delivery path is the same.
-                enum:
-                - webhook
-                - github
-                type: string
               suspend:
                 description: Suspend halts firing without deleting the trigger.
                 type: boolean
@@ -108,9 +92,16 @@ spec:
                   available to the run as additional input.
                 maxLength: 32768
                 type: string
+              webhookRef:
+                description: |-
+                  WebhookRef names the Webhook this trigger routes from. Many triggers
+                  may name one webhook; each delivery to it is offered to all of them.
+                maxLength: 253
+                minLength: 1
+                type: string
             required:
             - agentRef
-            - source
+            - webhookRef
             type: object
           status:
             description: TriggerStatus is the observed trigger state.
@@ -188,18 +179,47 @@ spec:
                   DisabledReason is set when the provider disables the trigger on a
                   permanent error (deleted agent, revoked connection).
                 type: string
+              lastDelivery:
+                description: LastDelivery summarises the most recent delivery.
+                properties:
+                  deliveryID:
+                    description: |-
+                      DeliveryID is the provider's id for the delivery, the key of its entry
+                      in the webhook's sink (webhooks/{webhookRef}/deliveries/{id}).
+                    type: string
+                  outcome:
+                    description: |-
+                      Outcome is what became of it: fired, filtered, suspended, disabled,
+                      noTask or failed.
+                    type: string
+                  reason:
+                    description: Reason explains a delivery that did not fire (the
+                      failing filter key).
+                    type: string
+                  time:
+                    description: Time is when the delivery arrived.
+                    format: date-time
+                    type: string
+                required:
+                - outcome
+                - time
+                type: object
               lastFired:
                 description: LastFired is the most recent time an event fired a run.
+                format: date-time
+                type: string
+              lastReceived:
+                description: |-
+                  LastReceived is the most recent time a delivery to the trigger's
+                  webhook was routed to it, fired or not. Set together with lastDelivery, and
+                  coalesced: a burst of deliveries with the same outcome updates it at
+                  most once a minute.
                 format: date-time
                 type: string
               lastRunID:
                 description: LastRunID references the Run produced by the most recent
                   event.
                 maxLength: 128
-                type: string
-              webhookPath:
-                description: WebhookPath is the hub-relative inbound endpoint for
-                  webhook sources.
                 type: string
             type: object
         type: object

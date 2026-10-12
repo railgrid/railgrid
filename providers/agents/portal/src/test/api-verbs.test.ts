@@ -10,14 +10,22 @@ const KUBE = `/clusters/${CLUSTER}/apis/agents.railgrid.ai/v1alpha1`
 
 interface Call { url: string; method: string }
 
+// bodies records each request body by call index, apart from `calls`, so the
+// URL assertions stay exact while a verb's payload can still be checked.
+const bodies = new Map<number, unknown>()
+
 // providerFetch falls back to the global fetch when the host exposes no
 // transport, which is what lets the recorder see every call.
 function clientWithRecorder(body: unknown = { items: [] }): { api: ApiClient; calls: Call[] } {
   const calls: Call[] = []
+  bodies.clear()
   const api = new ApiClient()
   api.setContext({ basePath: '/ui/providers/agents', tenant: CLUSTER, orgUUID: 'o', workspaceUUID: 'w', token: 't' } as never)
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(typeof input === 'string' ? input : (input as Request).url ?? input)
+    if (typeof init?.body === 'string') {
+      try { bodies.set(calls.length, JSON.parse(init.body)) } catch { bodies.set(calls.length, init.body) }
+    }
     calls.push({ url, method: init?.method ?? 'GET' })
     return Promise.resolve({
       ok: true, status: 200, statusText: 'OK',
@@ -45,9 +53,23 @@ describe('verbs are kube paths', () => {
     await api.enableSchedule('daily')
     await api.runTrigger('deploys')
     await api.enableTrigger('deploys')
+    await api.evaluateTriggerFilter('deploys', { filter: { eventType: 'push' }, deliveryID: 'd1' })
+    await api.replayTriggerDelivery('deploys', 'd1')
+    await api.listWebhookDeliveries('github-org', { limit: 20, outcome: 'filtered', trigger: 'on-pr' })
+    await api.listWebhookDeliveries('github-org')
+    await api.getWebhookDelivery('github-org', 'd1')
+    await api.runWebhook('github-org', { deliveryID: 'd1' })
+    await api.runWebhook('github-org', { headers: { 'X-GitHub-Event': 'push' }, body: '{}' })
     await api.cancelRun('r1')
     await api.waitRun('r1', 5)
 
+    const bodyOf = (url: string, nth = 0) => {
+      const index = calls.map((c, i) => ({ c, i })).filter(({ c }) => c.method === 'POST' && c.url === url)[nth]?.i
+      return index === undefined ? undefined : bodies.get(index)
+    }
+    expect(bodyOf(`${KUBE}/triggers/deploys/run`, 1)).toEqual({ deliveryID: 'd1' })
+    expect(bodyOf(`${KUBE}/webhooks/github-org/run`, 0)).toEqual({ deliveryID: 'd1' })
+    expect(bodyOf(`${KUBE}/webhooks/github-org/run`, 1)).toEqual({ headers: { 'X-GitHub-Event': 'push' }, body: '{}' })
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       `GET ${KUBE}/agents/scout/sessions`,
       // The session id rides as the verb's one tail segment, unencoded: the
@@ -62,6 +84,16 @@ describe('verbs are kube paths', () => {
       `POST ${KUBE}/schedules/daily/enable`,
       `POST ${KUBE}/triggers/deploys/run`,
       `POST ${KUBE}/triggers/deploys/enable`,
+      `POST ${KUBE}/triggers/deploys/evaluate`,
+      // Replaying one webhook delivery through one trigger is the trigger's
+      // plain run verb with a {deliveryID} body.
+      `POST ${KUBE}/triggers/deploys/run`,
+      // The delivery sink belongs to the Webhook, not to any trigger.
+      `GET ${KUBE}/webhooks/github-org/deliveries?limit=20&outcome=filtered&trigger=on-pr`,
+      `GET ${KUBE}/webhooks/github-org/deliveries`,
+      `GET ${KUBE}/webhooks/github-org/deliveries/d1`,
+      `POST ${KUBE}/webhooks/github-org/run`,
+      `POST ${KUBE}/webhooks/github-org/run`,
       `POST ${KUBE}/runs/r1/cancel`,
       `GET ${KUBE}/runs/r1/wait?timeoutSeconds=5`,
     ])

@@ -37,6 +37,7 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -249,7 +250,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	// nothing to merge: each entry becomes exactly one claim on the binding, and
 	// which of the two consent records answers for it is decided by whether the
 	// requirement names a provider.
-	claims := requiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
+	claims := providerclaims.RequiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
 		key := acceptedKey(coordinate.Group, coordinate.Resource)
 		if coordinate.Provider != "" {
 			return composedAccepted[key]
@@ -273,39 +274,6 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// requiredClaims renders spec.requires as the binding's permission claims, one
-// per declared coordinate, Accepted as isAccepted says. These are the same
-// claims provider-sdk/cmd/apiexportgen puts on the generated APIExport, so the
-// binding lists exactly what the export declares.
-//
-// A verb coordinate ("instances/exec") is claimed whole: the verb IS the
-// capability, and which HTTP method it uses — which is what kcp maps onto an
-// RBAC verb — is the serving provider's transport detail, so the claim spells
-// every verb.
-func requiredClaims(requires []providersv1alpha1.ProviderRequirement, isAccepted func(providersv1alpha1.RequiredCoordinate) bool) []kcp.ProviderClaim {
-	coordinates := providersv1alpha1.RequiredCoordinates(requires)
-	claims := make([]kcp.ProviderClaim, 0, len(coordinates))
-	for _, coordinate := range coordinates {
-		claim := kcp.ProviderClaim{
-			Group:    coordinate.Group,
-			Resource: coordinate.Resource,
-			Verbs:    providersv1alpha1.RequiredVerbStrings(coordinate.Verbs),
-			Accepted: isAccepted(coordinate),
-		}
-		if coordinate.Coordinate {
-			claim.Verbs = []string{"*"}
-		}
-		if coordinate.Selector != nil {
-			// The scope travels with the claim: what the tenant accepts is the
-			// narrowed claim the provider declared, not a blanket one the hub
-			// would then have to walk back.
-			claim.MatchLabels = coordinate.Selector.MatchLabels
-		}
-		claims = append(claims, claim)
-	}
-	return claims
 }
 
 // resolveAcceptedHubAccess validates the capabilities a user accepted against
@@ -548,6 +516,53 @@ type EnabledProviderDetail struct {
 	// never finishes disabling on its own; whoever owns the named finalizer has
 	// to act, and this message is the only place the user learns that.
 	DeletionBlocked string `json:"deletionBlocked,omitempty"`
+	// Claims reports how the binding's accepted permission claims stand
+	// against what the provider's export declares today. The hub keeps a
+	// provider's own requirements accepted automatically, so what shows up
+	// here is what still needs a person: a composition awaiting consent, a
+	// claim the tenant rejected, or a scope kcp will not change in place.
+	// Absent when everything matches.
+	Claims *ClaimState `json:"claims,omitempty"`
+}
+
+// ClaimState is one provider binding's permission-claim standing.
+type ClaimState struct {
+	// Pending are claims the export declares that the binding does not list.
+	// Transient for a provider's own requirements (the reconciler accepts them
+	// moments after the export changes); lasting for a composition nobody has
+	// consented to, which re-enabling offers for acceptance.
+	Pending []ClaimRef `json:"pending,omitempty"`
+	// Rejected are claims the binding lists as Rejected. The hub never
+	// overturns these; re-enabling offers them again.
+	Rejected []ClaimRef `json:"rejected,omitempty"`
+	// Mismatch is kcp's explanation when an accepted claim differs from the
+	// export in verbs or selector — typically a selector the provider
+	// narrowed after this workspace enabled it. kcp makes an accepted claim's
+	// selector immutable, so only disabling and re-enabling applies the
+	// narrower scope.
+	Mismatch string `json:"mismatch,omitempty"`
+}
+
+// ClaimRef names one claim by what identifies it on a binding.
+type ClaimRef struct {
+	Group    string `json:"group,omitempty"`
+	Resource string `json:"resource"`
+}
+
+// claimStateOf projects the bootstrapper's view of a binding's claims onto the
+// DTO, or nil when there is nothing to report.
+func claimStateOf(state kcp.BindingClaimState) *ClaimState {
+	if len(state.Pending) == 0 && len(state.Rejected) == 0 && state.Mismatch == "" {
+		return nil
+	}
+	out := &ClaimState{Mismatch: state.Mismatch}
+	for _, c := range state.Pending {
+		out.Pending = append(out.Pending, ClaimRef{Group: c.Group, Resource: c.Resource})
+	}
+	for _, c := range state.Rejected {
+		out.Rejected = append(out.Rejected, ClaimRef{Group: c.Group, Resource: c.Resource})
+	}
+	return out
 }
 
 // HubAccessState is one provider's hub-access standing in a workspace.
@@ -606,6 +621,7 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 			SelfHosted:      binding.SelfHosted,
 			Terminating:     binding.Terminating,
 			DeletionBlocked: binding.DeletionBlocked,
+			Claims:          claimStateOf(binding.Claims),
 			HubAccess:       h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
 			Compositions:    h.compositionState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
 		}

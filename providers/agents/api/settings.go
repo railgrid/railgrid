@@ -37,7 +37,7 @@ type modelCredential struct {
 // provider points at. It is a default for the objects this code creates, not a
 // convention anything reads back: a ModelCredential says where its key is in
 // spec.secretRef, and a hand-written one may name any Secret it likes.
-func CredentialSecretName(name string) string { return "railgrid-agents-model-" + name }
+func CredentialSecretName(name string) string { return agentsv1alpha1.ModelCredentialSecretName(name) }
 
 // applyCredentialUpsert writes a ModelCredential and the Secret it points at
 // (create-or-update), preserving an existing key when none is supplied.

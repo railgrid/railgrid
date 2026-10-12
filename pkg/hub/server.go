@@ -61,6 +61,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/restapi"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
@@ -1183,6 +1184,16 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			if err := mcpserver.SetupWithManager(coreMgr, kcpConfig, s.opts.HubExternalURL, mcpProviderEnumerator, providerRegistry); err != nil {
 				logger.Error(err, "Setting up mcpserver controller failed")
+				return
+			}
+			// Binding-claims reconciler: keeps every tenant APIBinding's accepted
+			// permission claims in step with the bound export. core.railgrid.ai
+			// claims apis.kcp.io/apibindings, so this manager's virtual workspace
+			// serves every tenant binding, and a CatalogEntry whose spec.requires
+			// changed fans out through the registry's listener. Replaces the
+			// per-rollout `claims/reaccept` call providers used to depend on.
+			if err := providerclaims.SetupWithManager(coreMgr, &coreExportProvider.Clusters, bootstrapper, providerRegistry, hubaccess.NewStore(userClient)); err != nil {
+				logger.Error(err, "Setting up provider binding-claims controller failed")
 				return
 			}
 

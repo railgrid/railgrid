@@ -115,6 +115,62 @@ EOF
 kubectl get modelcredentials
 ```
 
+## Webhooks and triggers
+
+A `Webhook` is one inbound URL (`status.webhookPath`, minted by the provider
+with the token that is its whole credential) and the sink of what arrived at
+it. Any number of `Trigger`s route from it by naming it in `spec.webhookRef`;
+every authenticated POST is offered to each of them, and each judges it with
+its own `suspend`, `filter` and `task`. A trigger written before the Webhook
+kind existed is migrated by the reconciler to a Webhook of its own name, so
+the URL already pasted into GitHub keeps working.
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: agents.railgrid.ai/v1alpha1
+kind: Webhook
+metadata:
+  name: github
+spec:
+  source: github          # or webhook: any sender that POSTs
+  deliveryRetention: 200  # recent deliveries kept in the sink; 0 keeps none
+  recordBodies: true      # false keeps headers and verdicts but no payload
+---
+apiVersion: agents.railgrid.ai/v1alpha1
+kind: Trigger
+metadata:
+  name: review-prs
+spec:
+  agentRef: reviewer
+  webhookRef: github
+  filter:
+    eventType: pull_request
+    action: opened,synchronize
+  task: Review the pull request in the payload.
+EOF
+kubectl get webhook github -o jsonpath='{.status.webhookPath}'
+```
+
+Filter keys are `eventType`, `action`, `repository`, `match` (a substring of
+the payload) and `header.<name>`; the first three take a comma-separated
+any-of list. An unknown key is ignored at delivery time and reported as
+`Validated=False/UnknownFilterKey` on the trigger.
+
+The verbs, all kcp custom subresources on the hub's `/clusters/<id>` path:
+
+| Resource | Verb | What |
+|---|---|---|
+| `webhooks` | `deliveries` (GET) | the sink, newest first (`?limit=&outcome=&trigger=`); `…/deliveries/{id}` one entry whole |
+| `webhooks` | `run` (POST) | `{"deliveryID"}` re-feeds a recorded delivery to every routed trigger; `{"headers","body"}` injects a sample |
+| `triggers` | `evaluate` (POST) | dry-run a candidate filter against a recorded delivery, answered per key |
+| `triggers` | `run` (POST) | fire now; `{"deliveryID"}` replays one delivery through this trigger alone |
+| `triggers` | `enable` (POST) | clear the disabling applied after repeated failed runs |
+
+Anyone who can `get` a Webhook can read its sink, bodies included; set
+`spec.recordBodies: false` on a webhook whose sender posts secrets or personal
+data. A sender's redelivery (same `X-GitHub-Delivery`) does not start a second
+run on a trigger that already fired for it.
+
 ## Dependencies
 
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:

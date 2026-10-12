@@ -12,7 +12,7 @@
 
 import type { ApiClient } from './api'
 import { isChatProvider, isHarnessProvider } from './types'
-import type { Agent, Capabilities, Connection, Credential, Edge, InboxItem, Schedule, Toolset, Trigger } from './types'
+import type { Agent, Capabilities, Connection, Credential, Edge, InboxItem, Schedule, Toolset, Trigger, Webhook } from './types'
 import { CONN_CATEGORY, familiesForConns } from './conn-defs'
 
 export interface Slice<T> {
@@ -31,7 +31,7 @@ function slice<T>(initial: T): Slice<T> {
   return { data: initial, loading: false, error: null, loaded: false, hasSnapshot: false }
 }
 
-export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'credentials' | 'inbox' | 'edges'
+export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'webhooks' | 'credentials' | 'inbox' | 'edges'
 
 // These are the collections whose create response is returned to the shell
 // before the next list response necessarily includes it. The other slices do
@@ -41,6 +41,7 @@ export interface CreateCollectionItems {
   agents: Agent
   connections: Connection
   toolsets: Toolset
+  webhooks: Webhook
   credentials: Credential
 }
 
@@ -54,11 +55,12 @@ interface AdoptedItem {
   item: unknown
 }
 
-const CREATE_COLLECTION_KEYS: CreateCollectionKey[] = ['agents', 'connections', 'toolsets', 'credentials']
+const CREATE_COLLECTION_KEYS: CreateCollectionKey[] = ['agents', 'connections', 'toolsets', 'webhooks', 'credentials']
 
 // ServerEvent mirrors one /api/events push. `run` and `inbox` carry an id;
 // `schedule` and `trigger` (a background job fired) carry the source's name and
-// the run it started.
+// the run it started; `webhook-delivery` carries the webhook, the sink row's id
+// and its rollup outcome, plus what each routed trigger made of it.
 export interface ServerEvent {
   type: string
   data: {
@@ -74,6 +76,9 @@ export interface ServerEvent {
     parentRunID?: string
     tool?: string
     failed?: boolean
+    webhook?: string
+    outcome?: string
+    routes?: { trigger: string; outcome: string; runID?: string }[]
   }
 }
 
@@ -85,6 +90,10 @@ export class AppStore extends EventTarget {
   toolsets = slice<Toolset[]>([])
   schedules = slice<Schedule[]>([])
   triggers = slice<Trigger[]>([])
+  // Workspace-level inbound endpoints triggers route from. Reloaded when a
+  // webhook object is written, not on every delivery: the delivery log
+  // follows the 'webhook-delivery' push itself.
+  webhooks = slice<Webhook[]>([])
   credentials = slice<Credential[]>([])
   inbox = slice<InboxItem[]>([])
   // Host edges a harness-backed agent can run on. A foreign group's objects
@@ -112,12 +121,14 @@ export class AppStore extends EventTarget {
     agents: 0,
     connections: 0,
     toolsets: 0,
+    webhooks: 0,
     credentials: 0,
   }
   private adoptedItems: Record<CreateCollectionKey, Map<string, AdoptedItem>> = {
     agents: new Map(),
     connections: new Map(),
     toolsets: new Map(),
+    webhooks: new Map(),
     credentials: new Map(),
   }
   private nextLoadID = 0
@@ -214,6 +225,7 @@ export class AppStore extends EventTarget {
     void this.load('toolsets')
     void this.load('schedules')
     void this.load('triggers')
+    void this.load('webhooks')
     void this.load('inbox')
     void this.load('edges')
     void this.loadOAuthApps()
@@ -374,6 +386,7 @@ export class AppStore extends EventTarget {
         void this.load('inbox')
         void this.load('schedules')
         void this.load('triggers')
+        void this.load('webhooks')
       }
     }, POLL_MS)
   }
@@ -464,6 +477,7 @@ const LOADERS: Record<SliceKey, (api: ApiClient) => Promise<unknown[]>> = {
   toolsets: (a) => a.listToolsets(),
   schedules: (a) => a.listSchedules(),
   triggers: (a) => a.listTriggers(),
+  webhooks: (a) => a.listWebhooks(),
   credentials: (a) => a.listCredentials(),
   inbox: (a) => a.listInbox(),
   edges: (a) => a.listEdges(),

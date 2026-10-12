@@ -248,17 +248,37 @@ routing/heartbeat state; the provider's own `init` creates the kcp side
 > (manifest vs the generated APIExport, including `metadata.name`) and
 > `export-copy` (the chart copy is byte-identical to the generated file).
 >
-> **Existing tenants do NOT auto-migrate.** `init` only touches the provider-side
-> APIExport, never per-tenant `APIBinding`s (they live in tenant workspaces, written
-> by the hub Enable flow). A tenant's binding keeps its old accepted claims until it
-> re-Enables or a migration re-accepts them — and a provider that starts *requiring*
-> a newly-added claim (e.g. delegated `tokenreviews`/`subjectaccessreviews` for
-> data-plane auth) will break every already-enabled tenant on rollout. Ship a
-> migration (re-accept claims on all existing bindings) or a compatibility fallback
-> BEFORE deploying code that depends on the new claim. Symptom of the gap: provider
-> logs `User "system:serviceaccount:default:provider" cannot create <resource>` and
+> **Existing tenants follow the CatalogEntry.** `init` only touches the
+> provider-side APIExport, never per-tenant `APIBinding`s (they live in tenant
+> workspaces, written by the hub Enable flow). The hub's binding-claims
+> reconciler (`pkg/hub/providerclaims`) closes that gap: it watches every tenant
+> binding through the `core.railgrid.ai` virtual workspace (the core export
+> claims `apis.kcp.io/apibindings`) and, whenever a CatalogEntry's
+> `spec.requires` changes or a binding appears, brings the binding's
+> `spec.permissionClaims` to the current declaration — the provider's own
+> requirements Accepted, compositions Accepted only where the workspace's Grant
+> consents, explicit rejections preserved, dropped claims removed. A provider
+> that adds a requirement therefore needs no migration and no re-Enable; the
+> admin `POST /api/admin/providers/{name}/claims/reaccept` remains as a manual
+> retry with counts. Own requirements are accepted for platform **and**
+> org-owned providers alike: an Org's provider is registered by that Org's
+> admins, who already hold admin in every workspace of the Org, so a claim they
+> declare widens nothing they could not grant directly. Two invariants the
+> design rests on: a tenant binding is rewritten only in the tenant's own
+> workspace with claims the binding's author could have written themselves
+> (compositions stay Grant-gated), and `apiexports/content` on
+> `core.railgrid.ai` in `system:controllers` is hub-only — that virtual
+> workspace already serves every tenant's core-group objects read-write, and
+> the read-only `apibindings` claim adds the binding list to it, nothing more.
+> Two things still need a person: a **new composition**
+> (consent, offered on the provider card and by re-Enabling) and a **narrowed
+> selector** (kcp makes an accepted selector immutable, so only Disable +
+> Enable applies it; kcp reports it as `PermissionClaimsValid=False`). Symptom
+> of a binding the reconciler has not reached: provider logs
+> `User "system:serviceaccount:default:provider" cannot create <resource>` and
 > the binding's `status.exportPermissionClaims` lists the claim but `spec` /
-> `status.appliedPermissionClaims` do not.
+> `status.appliedPermissionClaims` do not; `GET .../providers/enabled` shows it
+> under `claims.pending`.
 
 > **⚠️ Adding an edges "service" type touches FOUR places (edges provider).**
 > The edges provider turns host/LAN apps (Home Assistant, the *arr apps, UniFi, …)
@@ -699,6 +719,9 @@ The hub is the only publicly-reachable component. Key areas:
   (`TokenReconciler`, `RBACReconciler`, `EdgeController` — see DEVELOPERS.md §
   Hub Controller Reference).
 - `providers/` — provider integration (see §5.2).
+- `providerclaims/` — the single claim policy (`Desired`) and the leader-only
+  reconciler that keeps tenant `APIBinding` permission claims in step with each
+  provider's CatalogEntry (see §5.1).
 - `tenant/`, `provider_tenant_resolver.go` — org/workspace middleware + identity
   resolution.
 - `restapi/`, `serviceaccounts/`, `quota/`, `portal*.go` — REST API surface,
@@ -737,6 +760,7 @@ Each suite has a dedicated Make target. Most spin up their own hub on fixed port
 | `make e2e-provider-flags` | `providerflags` | `--providers` flag mechanics (dep validation, filtering) |
 | `make e2e-infra-provider` | `infraprovider` | Infrastructure provider: init/serve split, Template/Instance reconcile, data-plane gates |
 | `make e2e-kuery-provider` | `kueryprovider` | Kuery provider: SavedView, `run` verb gates, engagement via hub identity |
+| `make e2e-agents-provider` | `agentsprovider` | Agents provider: Webhook → Trigger fan-out, delivery sink, evaluate/replay verbs, validation conditions |
 | `make e2e-identity` | `identity` | Hub scoped-identity service: mint, refuse by clause, refresh, GC on owner deletion, composition consent |
 | `make e2e-edges` | `edges` | Edges provider provisioning, claims, data-plane auth boundary |
 | `make e2e-edges-connectivity` | `edgesconn` | Edges data plane over real tunnels: kubectl, SSH, BYO provider probe, kuery aggregation (needs kind) |

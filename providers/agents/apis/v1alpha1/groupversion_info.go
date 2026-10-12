@@ -47,6 +47,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ScheduleList{},
 		&Trigger{},
 		&TriggerList{},
+		&Webhook{},
+		&WebhookList{},
 		&Toolset{},
 		&ToolsetList{},
 		&ModelCredential{},

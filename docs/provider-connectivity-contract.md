@@ -748,16 +748,18 @@ verb in the generated claim. A selector may be set on any plain resource entry;
 a verb coordinate refuses one, because the parent claim already covers the
 object the verb is invoked on.
 
-**Upgrades.** kcp makes an accepted claim's selector **immutable**, and the hub
-only ever creates a tenant `APIBinding` (it no-ops on AlreadyExists). A
-workspace that enabled the provider before its claim was narrowed therefore
-keeps its wider `matchAll` binding until the provider is disabled and
-re-enabled there; kcp reports the gap as `PermissionClaimsValid=False` /
-`PermissionClaimsMismatch` on the binding, which does not stop it being
-`Bound`. Re-accept
-(`POST /api/admin/providers/{name}/claims/reaccept`) does not fix it either,
-for the same reason: it preserves the selector on claims the binding already
-carries.
+**Upgrades.** A claim the provider **adds** reaches every enabled workspace on
+its own: the hub's binding-claims reconciler (`pkg/hub/providerclaims`) brings
+each tenant `APIBinding` to the CatalogEntry's current `spec.requires` as soon
+as the entry changes. A claim the provider **narrows** does not: kcp makes an
+accepted claim's selector **immutable**, so a workspace that enabled the
+provider before the claim was narrowed keeps its wider `matchAll` binding until
+the provider is disabled and re-enabled there. kcp reports the gap as
+`PermissionClaimsValid=False` / `PermissionClaimsMismatch` on the binding,
+which does not stop it being `Bound`; the reconciler and the admin re-accept
+(`POST /api/admin/providers/{name}/claims/reaccept`) both preserve the selector
+on claims the binding already carries, and the portal shows the mismatch on the
+provider card.
 
 ---
 

@@ -11,6 +11,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -20,7 +22,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
-	"github.com/railgrid/provider-agents/internal/webhookpath"
+	"github.com/railgrid/provider-agents/internal/triggerfilter"
 )
 
 // deliverToNotifyChannel best-effort delivers a synchronous run's output to the
@@ -54,79 +56,74 @@ func (s *Server) deliverToNotifyChannel(ctx context.Context, c *agentsclient.Cli
 }
 
 type createTriggerRequest struct {
-	Name          string            `json:"name"`
-	AgentRef      string            `json:"agentRef"`
-	Source        string            `json:"source"` // webhook | channel | github | connection | email
-	ConnectionRef string            `json:"connectionRef,omitempty"`
-	Filter        map[string]string `json:"filter,omitempty"`
-	Task          string            `json:"task,omitempty"`
-	Suspend       bool              `json:"suspend,omitempty"`
+	Name     string `json:"name"`
+	AgentRef string `json:"agentRef"`
+	// WebhookRef names the Webhook the trigger routes from.
+	WebhookRef string            `json:"webhookRef"`
+	Filter     map[string]string `json:"filter,omitempty"`
+	Task       string            `json:"task,omitempty"`
+	Suspend    bool              `json:"suspend,omitempty"`
 	// ChannelRef routes this trigger's output to a named agent channel; empty
 	// means the agent's primary channel.
 	ChannelRef string `json:"channelRef,omitempty"`
 }
 
-// applyTriggerCreate validates the request, creates the trigger, and mints its
-// inbound webhook URL. Shared by the REST handler and the MCP create_trigger
-// tool. clusterID may be empty (no webhook URL is minted then).
-func (s *Server) applyTriggerCreate(ctx context.Context, c *agentsclient.Client, clusterID string, req *createTriggerRequest) (*agentsv1alpha1.Trigger, error) {
+// checkFilterKeys refuses a filter with a key the matcher does not know. The
+// matcher itself ignores such a key (fail-open, so a filter written for a
+// future source never blocks every event), which makes a typo a filter that
+// silently lets everything through; a writer that can answer synchronously
+// says so instead. A kube write cannot be refused this way, so the Trigger
+// reconciler reports the same thing as Validated=False/UnknownFilterKey.
+func checkFilterKeys(filter map[string]string) error {
+	unknown := triggerfilter.UnknownKeys(filter)
+	if len(unknown) == 0 {
+		return nil
+	}
+	return errBadRequest(fmt.Sprintf("unknown filter key %s (known: %s)",
+		strings.Join(unknown, ", "), strings.Join(triggerfilter.KnownKeys, ", ")))
+}
+
+// applyTriggerCreate validates the request and creates the trigger. The
+// trigger owns no URL: it routes from the Webhook it names, whose reconciler
+// mints the inbound path. Used by the MCP create_trigger tool.
+func (s *Server) applyTriggerCreate(ctx context.Context, c *agentsclient.Client, req *createTriggerRequest) (*agentsv1alpha1.Trigger, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.AgentRef = strings.TrimSpace(req.AgentRef)
-	req.Source = strings.TrimSpace(req.Source)
-	if req.Name == "" || req.AgentRef == "" || req.Source == "" {
-		return nil, errBadRequest("name, agentRef, and source are required")
+	req.WebhookRef = strings.TrimSpace(req.WebhookRef)
+	if req.Name == "" || req.AgentRef == "" || req.WebhookRef == "" {
+		return nil, errBadRequest("name, agentRef, and webhookRef are required")
 	}
-	switch req.Source {
-	case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
-	default:
-		return nil, errBadRequest("unsupported source " + req.Source + " (use webhook or github)")
+	if err := checkFilterKeys(req.Filter); err != nil {
+		return nil, err
 	}
 	trig := &agentsv1alpha1.Trigger{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec: agentsv1alpha1.TriggerSpec{
-			AgentRef:      req.AgentRef,
-			Source:        req.Source,
-			ConnectionRef: req.ConnectionRef,
-			Filter:        req.Filter,
-			Task:          req.Task,
-			Suspend:       req.Suspend,
-			ChannelRef:    strings.TrimSpace(req.ChannelRef),
+			AgentRef:   req.AgentRef,
+			WebhookRef: req.WebhookRef,
+			Filter:     req.Filter,
+			Task:       req.Task,
+			Suspend:    req.Suspend,
+			ChannelRef: strings.TrimSpace(req.ChannelRef),
 		},
 	}
-	out, err := c.Triggers().Create(ctx, trig, metav1.CreateOptions{})
-	if err != nil {
-		return nil, err
-	}
-	// Webhook-style sources get a token-guarded inbound URL (HMAC over
-	// cluster/name — no state to store). Best-effort status write; the token
-	// only works once the background executor is running.
-	if clusterID != "" {
-		if token := s.webhookToken(clusterID, req.Name); token != "" {
-			out.Status.WebhookPath = webhookpath.Join(clusterID, req.Name, token)
-			if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
-				out = updated
-			}
-		}
-	}
-	return out, nil
+	return c.Triggers().Create(ctx, trig, metav1.CreateOptions{})
 }
 
 // updateTriggerRequest patches an existing trigger. All fields are optional
 // pointers so callers change only what they send (task edits, pause/resume,
-// rewire the connection, or repoint the source).
+// a new filter, or a move to another webhook).
 type updateTriggerRequest struct {
-	Task          *string            `json:"task,omitempty"`
-	Source        *string            `json:"source,omitempty"`
-	ConnectionRef *string            `json:"connectionRef,omitempty"`
-	Filter        *map[string]string `json:"filter,omitempty"`
-	Suspend       *bool              `json:"suspend,omitempty"`
-	ChannelRef    *string            `json:"channelRef,omitempty"`
+	Task       *string            `json:"task,omitempty"`
+	WebhookRef *string            `json:"webhookRef,omitempty"`
+	Filter     *map[string]string `json:"filter,omitempty"`
+	Suspend    *bool              `json:"suspend,omitempty"`
+	ChannelRef *string            `json:"channelRef,omitempty"`
 }
 
 // applyTriggerUpdate reads the trigger, applies the patch fields that are
-// present, writes it back, and keeps the inbound webhook URL in sync. Shared by
-// the REST handler and the MCP update_trigger tool.
-func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client, clusterID, name string, req *updateTriggerRequest) (*agentsv1alpha1.Trigger, error) {
+// present, and writes it back. Used by the MCP update_trigger tool.
+func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client, name string, req *updateTriggerRequest) (*agentsv1alpha1.Trigger, error) {
 	name = strings.TrimSpace(name)
 	trig, err := c.Triggers().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -135,10 +132,17 @@ func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client,
 	if req.Task != nil {
 		trig.Spec.Task = *req.Task
 	}
-	if req.ConnectionRef != nil {
-		trig.Spec.ConnectionRef = strings.TrimSpace(*req.ConnectionRef)
+	if req.WebhookRef != nil {
+		ref := strings.TrimSpace(*req.WebhookRef)
+		if ref == "" {
+			return nil, errBadRequest("webhookRef cannot be empty: a trigger routes from a webhook")
+		}
+		trig.Spec.WebhookRef = ref
 	}
 	if req.Filter != nil {
+		if err := checkFilterKeys(*req.Filter); err != nil {
+			return nil, err
+		}
 		trig.Spec.Filter = *req.Filter
 	}
 	if req.Suspend != nil {
@@ -147,37 +151,7 @@ func (s *Server) applyTriggerUpdate(ctx context.Context, c *agentsclient.Client,
 	if req.ChannelRef != nil {
 		trig.Spec.ChannelRef = strings.TrimSpace(*req.ChannelRef)
 	}
-	if req.Source != nil {
-		src := strings.TrimSpace(*req.Source)
-		switch src {
-		case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
-			trig.Spec.Source = src
-		default:
-			return nil, errBadRequest("unsupported source " + src + " (use webhook or github)")
-		}
-	}
-	out, err := c.Triggers().Update(ctx, trig, metav1.UpdateOptions{})
-	if err != nil {
-		return nil, err
-	}
-	// Keep the inbound webhook URL in sync: webhook-style sources need one; a
-	// source changed away from them should drop it.
-	wantsWebhook := out.Spec.Source == agentsv1alpha1.TriggerSourceWebhook || out.Spec.Source == agentsv1alpha1.TriggerSourceGitHub
-	switch {
-	case wantsWebhook && out.Status.WebhookPath == "" && clusterID != "":
-		if token := s.webhookToken(clusterID, name); token != "" {
-			out.Status.WebhookPath = webhookpath.Join(clusterID, name, token)
-			if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
-				out = updated
-			}
-		}
-	case !wantsWebhook && out.Status.WebhookPath != "":
-		out.Status.WebhookPath = ""
-		if updated, uerr := c.Triggers().UpdateStatus(ctx, out, metav1.UpdateOptions{}); uerr == nil {
-			out = updated
-		}
-	}
-	return out, nil
+	return c.Triggers().Update(ctx, trig, metav1.UpdateOptions{})
 }
 
 // runTriggerNow fires a trigger's task immediately with an optional payload,
@@ -199,9 +173,24 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		writeResourceError(w, err)
 		return
 	}
-	// Optional test payload appended to the task so the run can react to it.
+	// Two bodies are understood. {"deliveryID": "<id>"} replays a recorded
+	// delivery of the trigger's webhook through this trigger alone, as it
+	// stands — filter included — which is the editor's "run that one again"
+	// after a filter fix. Anything else is
+	// an optional test payload appended to the task so the run can react to
+	// it, bypassing the filter: the caller is firing the trigger, not asking
+	// whether it would fire.
 	var payload map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&payload)
+	_ = json.NewDecoder(io.LimitReader(r.Body, webhookBodyLimit)).Decode(&payload)
+	if raw, ok := payload["deliveryID"].(string); ok && strings.TrimSpace(raw) != "" && len(payload) == 1 {
+		tu, gated, ok := gatedTrigger(r)
+		if !ok {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "the gate resolved no Trigger for this request")
+			return
+		}
+		s.replayTriggerDelivery(w, r, c, id, tu, gated, strings.TrimSpace(raw))
+		return
+	}
 	task := trig.Spec.Task
 	if len(payload) > 0 {
 		if b, err := json.Marshal(payload); err == nil {

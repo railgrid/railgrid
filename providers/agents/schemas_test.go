@@ -22,7 +22,7 @@ import (
 // directory is filled by a copy loop in the root Makefile that names each kind
 // explicitly:
 //
-//	for r in agents connections schedules triggers toolsets runs; do …
+//	for r in agents connections modelcredentials schedules triggers webhooks toolsets runs; do …
 //
 // A kind added to apis/v1alpha1 gets a CRD, an APIResourceSchema and a
 // deepcopy from codegen, and then is silently absent from the APIExport —

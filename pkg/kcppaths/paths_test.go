@@ -86,3 +86,28 @@ func TestSplitOrgProviderPath(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitWorkspacePath(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		path   string
+		org    string
+		ws     string
+		wantOK bool
+	}{
+		{name: "tenant workspace round-trips", path: WorkspacePath("org1", "ws1"), org: "org1", ws: "ws1", wantOK: true},
+		{name: "org workspace is not a tenant workspace", path: OrgPath("org1")},
+		{name: "org providers container is not a tenant workspace", path: OrgProvidersParent("org1")},
+		{name: "org provider is not a tenant workspace", path: OrgProviderPath("org1", "vault")},
+		{name: "platform provider is not a tenant workspace", path: ProviderPath("edges")},
+		{name: "system is not a tenant workspace", path: SystemControllers},
+		{name: "empty", path: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			org, ws, ok := SplitWorkspacePath(tc.path)
+			if ok != tc.wantOK || org != tc.org || ws != tc.ws {
+				t.Fatalf("SplitWorkspacePath(%q) = (%q, %q, %v), want (%q, %q, %v)", tc.path, org, ws, ok, tc.org, tc.ws, tc.wantOK)
+			}
+		})
+	}
+}

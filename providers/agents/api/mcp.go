@@ -54,8 +54,11 @@ func (s *Server) MCPHandler() http.Handler {
 					"settings screens can do. Agents: list_agents / get_agent / create_agent / " +
 					"update_agent / delete_agent (settings, prompts, autonomy, tool grants, " +
 					"channels, budgets, limits). Schedules: list_schedules / create_schedule / " +
-					"update_schedule / delete_schedule / run_schedule. Triggers: list_triggers / " +
-					"create_trigger / update_trigger / delete_trigger / run_trigger. Toolsets, " +
+					"update_schedule / delete_schedule / run_schedule. Webhooks (one inbound URL " +
+					"each, many triggers per webhook): list_webhooks / create_webhook / " +
+					"update_webhook / delete_webhook / list_webhook_deliveries. Triggers: " +
+					"list_triggers / create_trigger / update_trigger / delete_trigger / " +
+					"run_trigger. Toolsets, " +
 					"connections, and model credentials each have list + create/update + delete, " +
 					"plus test_connection and test_model_credential. list_tool_families explains " +
 					"the grantable families. Two rules govern every update tool: only the fields " +

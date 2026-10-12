@@ -53,7 +53,7 @@ func channelWebhookName(conn string) string { return "channel/" + conn }
 func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 	cluster, name, token := r.PathValue("cluster"), r.PathValue("name"), r.PathValue("token")
 	expected := s.webhookToken(cluster, channelWebhookName(name))
-	if expected == "" || s.bg == nil || !s.bg.ready() {
+	if expected == "" || s.bg == nil || !s.bg.readyFor(r.Context()) {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "background executor is not running on this provider")
 		return
 	}

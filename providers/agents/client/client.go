@@ -48,8 +48,10 @@ var (
 	ConnectionGVR = agentsGVR("connections")
 	ScheduleGVR   = agentsGVR("schedules")
 	TriggerGVR    = agentsGVR("triggers")
-	ToolsetGVR    = agentsGVR("toolsets")
-	RunGVR        = agentsGVR("runs")
+	// WebhookGVR is the inbound URL and delivery sink Triggers route from.
+	WebhookGVR = agentsGVR("webhooks")
+	ToolsetGVR = agentsGVR("toolsets")
+	RunGVR     = agentsGVR("runs")
 	// ModelCredentialGVR is the named model endpoint an agent runs on. The
 	// key stays in the Secret spec.secretRef names; this object is what the
 	// portal lists, what a reconciler validates, and what the probe verbs are
@@ -67,6 +69,7 @@ var (
 	connectionRes    = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
 	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
 	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
+	webhookResource  = tenant.Resource{GVR: WebhookGVR, Kind: "Webhook", Plural: "Webhooks", Namespaced: false}
 	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
 	modelCredRes     = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
 	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
@@ -112,6 +115,14 @@ func (c *Client) Triggers() *TypedResource[agentsv1alpha1.Trigger, agentsv1alpha
 	return &TypedResource[agentsv1alpha1.Trigger, agentsv1alpha1.TriggerList]{
 		scope: c.scope, res: triggerResource,
 		gvk: TriggerGVR.GroupVersion().WithKind("Trigger"),
+	}
+}
+
+// Webhooks returns a typed interface for Webhook resources.
+func (c *Client) Webhooks() *TypedResource[agentsv1alpha1.Webhook, agentsv1alpha1.WebhookList] {
+	return &TypedResource[agentsv1alpha1.Webhook, agentsv1alpha1.WebhookList]{
+		scope: c.scope, res: webhookResource,
+		gvk: WebhookGVR.GroupVersion().WithKind("Webhook"),
 	}
 }
 

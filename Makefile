@@ -2,7 +2,7 @@
 .PHONY: build-access-proxy docker-build-access-proxy load-access-proxy-image
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
 .PHONY: build-app-studio-provider-go
-.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
+.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider e2e-agents-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -495,7 +495,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@for r in agents connections modelcredentials schedules triggers toolsets runs; do \
+	@for r in agents connections modelcredentials schedules triggers webhooks toolsets runs; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
@@ -1344,6 +1344,24 @@ e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e sui
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Agents provider e2e (embedded kcp + agents-provider init/serve subprocesses,
+## in-memory store). Covers Webhook -> Trigger routing end to end: tenant Enable
+## through the hub (infrastructure and edges registered as API-only stand-ins to
+## satisfy the declared dependencies), the Webhook reconciler minting the
+## inbound URL and routes, fan-out of an anonymous inbound POST to several
+## triggers with per-route outcomes and a recorded Run, the delivery sink
+## (webhooks/deliveries), the evaluate and replay verbs, Validated conditions,
+## retention, deletion and Disable. Runs are recorded, not executed (no model
+## credential). Shares the embedded-kcp etcd port 2380 with the other subprocess
+## suites — do not run them concurrently.
+E2E_AGENTS_PROVIDER_TIMEOUT ?= 15m
+e2e-agents-provider: build-hub build-agents-provider ## Run agents provider (webhook/trigger routing) e2e suite
+	@test -z "$$(lsof -ti :19513 :16513 :18138 :2380 2>/dev/null)" || { \
+		echo "ports 19513/16513/18138/2380 are in use; stop any running railgrid-hub/agents-provider first"; \
+		exit 1; \
+	}
+	go test -count=1 ./test/e2e/suites/agentsprovider/... -v -timeout $(E2E_AGENTS_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:

@@ -9,27 +9,19 @@
 // Package trigger reconciles Trigger CRs — the event-driven half of agent
 // automation.
 //
-// status.webhookPath is the point of this reconciler. A Trigger is useless
-// until it has one: the path is the trigger's whole inbound interface and its
-// only credential (an HMAC over cluster/name, so there is no token to store
-// and none to leak from the CR). It used to be minted by the REST create
-// handler, api/triggers.go applyTriggerCreate, as a side effect of the write —
-// which meant a Trigger that arrived any other way was born inert, with no
-// URL, and nothing to tell its author why nothing ever fired. The portal now
-// creates Triggers with a kube client, so that "any other way" is the normal
-// way, and the mint moved here where it happens for every writer.
+// A Trigger owns no URL any more: it routes from a Webhook (spec.webhookRef),
+// which owns the inbound path and the delivery sink, so this reconciler
+// validates — and migrates a trigger from before the Webhook kind to a
+// Webhook of its own name (migrateToWebhook), since its URL is already in
+// use. What it reports is the Validated condition, not an enforcement: a
+// trigger with a bad spec is left to fail visibly rather than refused.
 //
-// The two mints must agree exactly, because a trigger's URL is pasted into
-// somebody else's system the day it is created and every later reconcile has
-// to re-derive the same string or break it. Both go through
-// internal/webhookpath, whose golden vectors pin the derivation.
-// api/triggers.go still stamps the path on its own writes; converging on the
-// same value is not a fight.
-//
-// The rest is validation, reported as the Validated condition rather than
-// enforced: spec.source must be one the provider actually listens for, and
-// spec.agentRef must name an Agent that exists — a dangling ref means the
-// event arrives, finds no agent, and is dropped silently.
+// Each check is a way for a trigger to look configured and never fire:
+// spec.agentRef naming no Agent (the event arrives, finds no agent, and is
+// dropped), spec.webhookRef naming no Webhook (nothing is ever routed to it),
+// a channelRef the agent does not have (it fires, but answers elsewhere), and
+// a spec.filter key the matcher does not know — ignored at delivery time, by
+// design, so a typo silently filters nothing.
 package trigger
 
 import (
@@ -54,31 +46,24 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
-	"github.com/railgrid/provider-agents/internal/webhookpath"
+	"github.com/railgrid/provider-agents/internal/triggerfilter"
 )
 
-// Reconciler mints and maintains a Trigger's inbound webhook path and reports
-// spec validity.
+// Reconciler reports a Trigger's spec validity.
 type Reconciler struct {
 	Manager mcmanager.Manager
-	// WebhookKey signs inbound trigger URLs. It is the same key the HTTP
-	// layer signs with (see internal/webhookpath.Key). Empty means the
-	// provider has no key configured: no URL can be minted, and — crucially —
-	// a path already stored is left alone rather than cleared, so a
-	// misconfigured replica cannot revoke every existing trigger URL.
-	WebhookKey []byte
 }
 
 // SetupWithManager wires the reconciler into the multicluster manager. Agents
-// are watched so that creating the missing Agent clears an UnknownAgentRef
-// without the Trigger being touched.
+// and Webhooks are watched so that creating the missing one clears an
+// UnknownAgentRef or UnknownWebhookRef without the Trigger being touched.
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("agents-trigger").
 		For(&agentsv1alpha1.Trigger{}).
 		Watches(&agentsv1alpha1.Agent{}, triggersForAgent).
-		Watches(&agentsv1alpha1.Connection{}, triggersForConnection).
+		Watches(&agentsv1alpha1.Webhook{}, triggersForWebhook).
 		Complete(r)
 }
 
@@ -101,16 +86,19 @@ func triggersForAgent(clusterName multicluster.ClusterName, cl cluster.Cluster) 
 	}))(clusterName, cl)
 }
 
-// triggersForConnection enqueues Triggers whose connectionRef names the
-// Connection that changed. A trigger with a dangling connectionRef otherwise
-// stays marked invalid after the missing Connection is created.
-func triggersForConnection(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+// triggersForWebhook enqueues the Triggers whose webhookRef names the Webhook
+// that changed. A trigger with a dangling webhookRef otherwise stays marked
+// invalid after the missing Webhook is created.
+func triggersForWebhook(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
 	return mchandler.Lift(handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-		return triggerRequestsForConnection(ctx, cl.GetClient(), obj.GetName())
+		return TriggerRequestsForWebhook(ctx, cl.GetClient(), obj.GetName())
 	}))(clusterName, cl)
 }
 
-func triggerRequestsForConnection(ctx context.Context, c client.Reader, connectionName string) []reconcile.Request {
+// TriggerRequestsForWebhook lists the Triggers routing from the named Webhook,
+// as reconcile requests. Exported because the Webhook reconciler maps Trigger
+// events the other way and both must agree on what "routes from" means.
+func TriggerRequestsForWebhook(ctx context.Context, c client.Reader, webhookName string) []reconcile.Request {
 	var list agentsv1alpha1.TriggerList
 	if err := c.List(ctx, &list); err != nil {
 		klog.FromContext(ctx).Error(err, "listing triggers to re-validate")
@@ -118,7 +106,7 @@ func triggerRequestsForConnection(ctx context.Context, c client.Reader, connecti
 	}
 	var reqs []reconcile.Request
 	for i := range list.Items {
-		if strings.TrimSpace(list.Items[i].Spec.ConnectionRef) == connectionName {
+		if strings.TrimSpace(list.Items[i].Spec.WebhookRef) == webhookName {
 			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
 		}
 	}
@@ -144,13 +132,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	if strings.TrimSpace(trig.Spec.WebhookRef) == "" {
+		migrated, err := r.migrateToWebhook(ctx, c, &trig)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if migrated {
+			// The spec write re-delivers the object; validation runs on the
+			// fresh copy with the reference in place.
+			return ctrl.Result{}, nil
+		}
+	}
+
 	reason, message, err := r.validate(ctx, c, &trig)
 	if err != nil {
 		// A failed read is not a verdict.
 		return ctrl.Result{}, err
 	}
 
-	changed := r.reconcileWebhookPath(req.ClusterName.String(), &trig)
 	cond := metav1.Condition{
 		Type:               agentsv1alpha1.ConditionValidated,
 		Status:             metav1.ConditionTrue,
@@ -161,10 +160,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if reason != "" {
 		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reason, message
 	}
-	if meta.SetStatusCondition(&trig.Status.Conditions, cond) {
-		changed = true
-	}
-	if !changed {
+	if !meta.SetStatusCondition(&trig.Status.Conditions, cond) {
 		return ctrl.Result{}, nil
 	}
 	if err := c.Status().Update(ctx, &trig); err != nil {
@@ -173,52 +169,60 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 		return ctrl.Result{}, err
 	}
-	klog.FromContext(ctx).V(2).Info("trigger status written", "trigger", req.Name, "cluster", req.ClusterName, "webhook", trig.Status.WebhookPath != "")
+	klog.FromContext(ctx).V(2).Info("trigger status written", "trigger", req.Name, "cluster", req.ClusterName, "validated", cond.Status)
 	return ctrl.Result{}, nil
 }
 
-// reconcileWebhookPath makes status.webhookPath match the spec, and reports
-// whether it changed.
+// migrateToWebhook gives a Trigger written before the Webhook kind existed the
+// Webhook its URL now belongs to. Such a trigger owned its URL — derived from
+// the cluster and ITS name — and that URL is already pasted into GitHub, so
+// the Webhook is created under the trigger's name (webhookpath keys the path
+// by name: same URL) and spec.webhookRef is pointed at it. Until this runs the
+// trigger's URL answers 404 and every delivery sent to it is lost, which is
+// why the reconciler does it rather than a release note asking the tenant to.
 //
-// Both supported sources are delivered over the same hub-routed inbound
-// endpoint (github events arrive as a webhook like any other), so both want a
-// path; a source outside that set wants none, and a path left behind from a
-// previous source must go — it would keep firing the trigger from an endpoint
-// the spec no longer describes.
-func (r *Reconciler) reconcileWebhookPath(clusterID string, trig *agentsv1alpha1.Trigger) bool {
-	wantsWebhook := trig.Spec.Source == agentsv1alpha1.TriggerSourceWebhook || trig.Spec.Source == agentsv1alpha1.TriggerSourceGitHub
-	if !wantsWebhook {
-		if trig.Status.WebhookPath == "" {
-			return false
+// Idempotent: a Webhook already there (this reconciler's earlier pass, or the
+// tenant's own) is adopted as it stands, and only the reference is written.
+// The sender flavour is not knowable any more — the legacy spec.source is
+// pruned from the stored object — so the Webhook is created as a generic
+// webhook; a github one is a one-field edit in the portal and changes only
+// which event catalog the filter editor offers. Reports whether the trigger's
+// spec was written.
+func (r *Reconciler) migrateToWebhook(ctx context.Context, c client.Client, trig *agentsv1alpha1.Trigger) (bool, error) {
+	wh := agentsv1alpha1.Webhook{ObjectMeta: metav1.ObjectMeta{Name: trig.Name}}
+	switch err := c.Get(ctx, types.NamespacedName{Name: trig.Name}, &wh); {
+	case apierrors.IsNotFound(err):
+		wh.Spec.Source = agentsv1alpha1.WebhookSourceWebhook
+		wh.Spec.DisplayName = trig.Name
+		if err := c.Create(ctx, &wh); err != nil && !apierrors.IsAlreadyExists(err) {
+			return false, fmt.Errorf("creating webhook %q for trigger %q: %w", trig.Name, trig.Name, err)
 		}
-		trig.Status.WebhookPath = ""
-		return true
+	case err != nil:
+		return false, err
 	}
-	want := webhookpath.For(r.WebhookKey, clusterID, trig.Name)
-	// No key: say nothing rather than clearing a path that still works for
-	// whoever holds the URL.
-	if want == "" || want == trig.Status.WebhookPath {
-		return false
+	trig.Spec.WebhookRef = trig.Name
+	if err := c.Update(ctx, trig); err != nil {
+		if apierrors.IsConflict(err) {
+			return true, nil // the watch re-delivers the newer object
+		}
+		return false, fmt.Errorf("pointing trigger %q at webhook %q: %w", trig.Name, trig.Name, err)
 	}
-	trig.Status.WebhookPath = want
-	return true
+	klog.FromContext(ctx).Info("trigger migrated to a webhook of its own name", "trigger", trig.Name)
+	return true, nil
 }
 
 // validate returns the first problem with the trigger, as (reason, message).
-// An error is a failed read, not a verdict. Mirrors what applyTriggerCreate /
-// applyTriggerUpdate rejected at the door.
+// An error is a failed read, not a verdict.
 func (r *Reconciler) validate(ctx context.Context, c client.Client, trig *agentsv1alpha1.Trigger) (reason, message string, err error) {
 	agentRef := strings.TrimSpace(trig.Spec.AgentRef)
 	if agentRef == "" {
 		return agentsv1alpha1.ReasonInvalidSpec, "spec.agentRef is required", nil
 	}
-	switch strings.TrimSpace(trig.Spec.Source) {
-	case agentsv1alpha1.TriggerSourceWebhook, agentsv1alpha1.TriggerSourceGitHub:
-	case "":
-		return agentsv1alpha1.ReasonInvalidSpec, "spec.source is required", nil
-	default:
-		return agentsv1alpha1.ReasonInvalidSource,
-			fmt.Sprintf("spec.source %q is not supported (use webhook or github)", trig.Spec.Source), nil
+	webhookRef := strings.TrimSpace(trig.Spec.WebhookRef)
+	if webhookRef == "" {
+		// Reached only when migrateToWebhook could not write the reference
+		// (a conflict, say); the re-delivered object gets another pass.
+		return agentsv1alpha1.ReasonMissingWebhookRef, "spec.webhookRef is required: name the Webhook this trigger routes from", nil
 	}
 
 	var agent agentsv1alpha1.Agent
@@ -230,15 +234,13 @@ func (r *Reconciler) validate(ctx context.Context, c client.Client, trig *agents
 		return "", "", err
 	}
 
-	if ref := strings.TrimSpace(trig.Spec.ConnectionRef); ref != "" {
-		var conn agentsv1alpha1.Connection
-		switch err := c.Get(ctx, types.NamespacedName{Name: ref}, &conn); {
-		case apierrors.IsNotFound(err):
-			return agentsv1alpha1.ReasonUnknownConnectionRef,
-				fmt.Sprintf("spec.connectionRef names connection %q, which does not exist", ref), nil
-		case err != nil:
-			return "", "", err
-		}
+	var webhook agentsv1alpha1.Webhook
+	switch err := c.Get(ctx, types.NamespacedName{Name: webhookRef}, &webhook); {
+	case apierrors.IsNotFound(err):
+		return agentsv1alpha1.ReasonUnknownWebhookRef,
+			fmt.Sprintf("spec.webhookRef names webhook %q, which does not exist", webhookRef), nil
+	case err != nil:
+		return "", "", err
 	}
 
 	// A channelRef must name one of the agent's channels. Unlike the refs
@@ -257,6 +259,14 @@ func (r *Reconciler) validate(ctx context.Context, c client.Client, trig *agents
 			return agentsv1alpha1.ReasonInvalidSpec,
 				fmt.Sprintf("spec.channelRef %q is not a channel of agent %q; output falls back to the primary channel", role, agentRef), nil
 		}
+	}
+
+	// Unknown filter keys last: the trigger works, it just filters less than
+	// its author thinks.
+	if unknown := triggerfilter.UnknownKeys(trig.Spec.Filter); len(unknown) > 0 {
+		return agentsv1alpha1.ReasonUnknownFilterKey,
+			fmt.Sprintf("spec.filter key(s) %s are not filter keys and are ignored (known: %s)",
+				strings.Join(unknown, ", "), strings.Join(triggerfilter.KnownKeys, ", ")), nil
 	}
 	return "", "", nil
 }

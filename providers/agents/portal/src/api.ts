@@ -1,7 +1,7 @@
 // ApiClient is the agents micro-frontend's single data entry point.
 //
 // It has two halves. Tenant OBJECTS — Agent, Schedule, Connection, Toolset,
-// Trigger, the model-credential Secrets and the workspace's MCPServer — are
+// Webhook, Trigger, the model-credential Secrets and the workspace's MCPServer — are
 // bound APIs in the tenant's own workspace, so they are read and written
 // straight against kcp through portalkit's kube client; that half lives in
 // resources.ts and is delegated to below. Everything else is a VERB the
@@ -70,18 +70,29 @@ import type {
   TranscriptMessage,
   Trigger,
   TriggerCreate,
+  TriggerFilterEvaluateBody,
+  TriggerFilterVerdict,
+  TriggerReplayResult,
   KubeRun,
   RunPhase,
   TriggerPatch,
   UsageBucket,
   UsagePoint,
   UsageResponse,
+  Webhook,
+  WebhookCreate,
+  WebhookDelivery,
+  WebhookDeliveryPage,
+  WebhookDeliveryQuery,
+  WebhookPatch,
+  WebhookRunBody,
+  WebhookRunResult,
 } from './types'
 
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
-import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS } from './resources'
+import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS } from './resources'
 import { presentRequestFailure } from './request-errors'
 
 export type { Tenant }
@@ -517,6 +528,49 @@ export class ApiClient {
     this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'))
   enableTrigger = (name: string): Promise<Trigger> =>
     this.sendVerb('POST', this.verb(TRIGGERS, name, 'enable'))
+  /**
+   * Dry-run a candidate filter against a delivery from the trigger's webhook
+   * sink (or a spelled-out request) with the matcher the webhook uses.
+   * Changes nothing.
+   */
+  evaluateTriggerFilter = (name: string, body: TriggerFilterEvaluateBody): Promise<TriggerFilterVerdict> =>
+    this.sendVerb('POST', this.verb(TRIGGERS, name, 'evaluate'), body)
+  /**
+   * Re-feed one delivery from the trigger's webhook sink through this trigger
+   * only, as it stands now, filter included; the answer is this route's
+   * outcome (and the run, when it fired).
+   */
+  replayTriggerDelivery = (name: string, deliveryID: string): Promise<TriggerReplayResult> =>
+    this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'), { deliveryID })
+
+  listWebhooks = (): Promise<Webhook[]> => this.resources.listWebhooks()
+  createWebhook = (body: WebhookCreate): Promise<Webhook> => this.resources.createWebhook(body)
+  patchWebhook = (name: string, body: WebhookPatch): Promise<Webhook> => this.resources.patchWebhook(name, body)
+  deleteWebhook = (name: string): Promise<void> => this.resources.deleteWebhook(name)
+  /**
+   * The webhook's delivery sink: every authenticated POST to its URL, newest
+   * first, with bodies previewed and each routed trigger's outcome. `outcome`
+   * narrows to one rollup outcome, `trigger` to deliveries routed to it.
+   */
+  listWebhookDeliveries = (name: string, opts: WebhookDeliveryQuery = {}): Promise<WebhookDeliveryPage> =>
+    this.getVerb<{ items?: WebhookDelivery[]; retention?: number }>(this.verb(WEBHOOKS, name, 'deliveries', {
+      query: { limit: opts.limit, outcome: opts.outcome || undefined, trigger: opts.trigger || undefined },
+    })).then((res) => ({
+      items: (res.items ?? []).map((item) => ({ ...item, routes: item.routes ?? [] })),
+      retention: res.retention ?? 0,
+    }))
+  /** One delivery whole: full body and recorded headers. */
+  getWebhookDelivery = (name: string, id: string): Promise<WebhookDelivery> =>
+    this.getVerb<WebhookDelivery>(this.verbTail(this.verb(WEBHOOKS, name, 'deliveries'), id))
+      .then((item) => ({ ...item, routes: item.routes ?? [] }))
+  /**
+   * Replay a recorded delivery to every trigger the webhook routes to now
+   * ({deliveryID}), or inject a sample as if the sender had POSTed it
+   * ({headers, body}). Either way the result lands in the sink as a new row.
+   */
+  runWebhook = (name: string, body: WebhookRunBody): Promise<WebhookRunResult> =>
+    this.sendVerb<WebhookRunResult>('POST', this.verb(WEBHOOKS, name, 'run'), body)
+      .then((res) => ({ ...res, routes: res.routes ?? [] }))
 
   listInbox = async (): Promise<InboxItem[]> => {
     const pages = await this.settleAll((agent) =>

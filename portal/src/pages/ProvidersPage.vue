@@ -916,6 +916,39 @@ function dependencyNotice(p: ProviderDTO): string {
             </button>
           </div>
 
+          <!-- Permission claims the hub will not settle on its own. The hub
+               accepts a provider's own requirements as its catalog entry
+               changes; what remains is a composition awaiting consent, a claim
+               the tenant rejected, or a scope kcp will not change in place. -->
+          <div
+            v-if="providers.isEnabled(p.name) && providers.claimState(p.name)"
+            class="mt-3 rounded-md border border-border-subtle bg-surface-overlay/40 p-2.5"
+          >
+            <p
+              v-if="providers.claimState(p.name)?.pending?.length || providers.claimState(p.name)?.rejected?.length"
+              class="text-[10px] leading-relaxed text-text-muted"
+            >
+              Permissions not in force here:
+              {{
+                [...(providers.claimState(p.name)?.pending ?? []), ...(providers.claimState(p.name)?.rejected ?? [])]
+                  .map((c) => (c.group ? `${c.group}/${c.resource}` : c.resource))
+                  .join(', ')
+              }}.
+            </p>
+            <p v-if="providers.claimState(p.name)?.mismatch" class="text-[10px] leading-relaxed text-text-muted">
+              The provider narrowed what it asks for since it was enabled here. Disable and re-enable to apply the
+              new scope.
+            </p>
+            <button
+              v-if="providers.claimState(p.name)?.pending?.length || providers.claimState(p.name)?.rejected?.length"
+              type="button"
+              class="k-btn k-btn--ghost mt-1 px-1.5 py-0.5 text-[10px] text-accent"
+              @click="openEnableDialog(p)"
+            >
+              Review access
+            </button>
+          </div>
+
           <!-- A pending composition is the visible cause of "enabled, but it
                never builds anything": the provider's reconciler is refused the
                identity rules for these kinds until an admin accepts them. -->

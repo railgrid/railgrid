@@ -360,10 +360,12 @@ The app-access broker accepts only a fixed operation and a Project-managed
 Infrastructure Instance identity. Its action proof binds the Project UID,
 Instance UID, source action, and requested user or grant name. The hub checks
 the human's `get` or `update` permission on that exact Project and Instance,
-then writes only the named `railgrid-app-access` ClusterRole and
-ClusterRoleBinding shape. It does not accept RBAC rules, subjects, groups, or
-other workspace objects from the provider. Grant creation requires an existing
-platform User; App Studio completes any invite or membership flow first.
+then writes only the fixed app-access ClusterRole and ClusterRoleBinding
+policies. Identity issuance uses a separate role scoped to both the Project
+and Instance UIDs, so stale bindings cannot approve a replacement app. The
+broker does not accept RBAC rules, subjects, groups, or other workspace objects
+from the provider. Grant creation requires an existing platform User; App
+Studio completes any invite or membership flow first.
 
 Membership removals, role changes, workspace membership writes and org or
 workspace management are not in the set and are refused for delegated tokens.
@@ -1660,43 +1662,73 @@ Rotation is not revocation: it schedules the old credential's death, it does not
 hasten it. For a leaked credential, delete the retired Secret in the provider
 workspace by hand.
 
-### Re-accepting permission claims
+### Keeping permission claims in step with the CatalogEntry
+
+Editing `manifest.yaml`, re-running `make codegen-<name>-provider` and
+mirroring the chart's `catalogentry.yaml` updates the provider-side `APIExport`
+and the `CatalogEntry`. What the provider is actually allowed to touch in a
+tenant's workspace is the claim set on that tenant's own `APIBinding`, which
+the Enable flow wrote once. kcp records the export's current claims on every
+binding (`status.exportPermissionClaims`) but applies only the ones the
+binding's `spec` accepts, so a claim added after Enable would otherwise never
+take effect and the provider would 403 in every already-enabled workspace.
+
+The hub's **binding-claims reconciler** (`pkg/hub/providerclaims`, on the
+leader-only `core.railgrid.ai` multicluster manager) closes that gap without
+a per-rollout step:
+
+- The `core.railgrid.ai` export claims `apis.kcp.io/apibindings`, so its
+  virtual workspace serves every `APIBinding` in every tenant workspace. The
+  reconciler watches them there and writes them back by logical cluster with
+  the hub's own credential (the virtual workspace is read-only for bindings).
+  Invariant: reaching that virtual workspace needs `apiexports/content` on
+  `core.railgrid.ai` in `root:railgrid:system:controllers`, which only the hub
+  holds — the same virtual workspace already serves every tenant's Secrets,
+  ConfigMaps, ServiceAccounts, RBAC and Workspaces read-write through the
+  core export's existing claims, so the read-only `apibindings` claim exposes
+  nothing new to anyone who could not already read far more.
+- Own requirements are accepted for platform and org-owned providers alike. An
+  org-owned provider's CatalogEntry is written by that Org's admins, who already
+  hold admin in every workspace of the Org, so a claim they declare widens
+  nothing they could not grant directly; compositions still need the
+  workspace's consent either way.
+- A `CatalogEntry` whose `spec.requires` changed fans out, through the
+  provider registry, to every binding of that export the manager sees; a
+  binding that appears or changes reconciles itself. There is no timer and no
+  fleet walk.
+- The target is one policy, shared with the Enable flow and the admin
+  endpoint below: every requirement the provider declares, with the provider's
+  own requirements **Accepted**, compositions (requirements naming another
+  provider) Accepted only where the workspace's Grant records consent and
+  **Rejected** otherwise, a claim the tenant explicitly Rejected left Rejected,
+  an existing claim's selector kept, and undeclared claims dropped.
+- The hub's own `railgrid` binding in each tenant workspace is reconciled the
+  same way to the embedded core export's claims, which is also how the
+  `apibindings` claim reaches workspaces created before it existed.
+
+What the reconciler deliberately does **not** do, and what the portal shows
+instead (`GET .../providers/enabled` → `claims`):
+
+- **Consent to a new composition.** It is written Rejected until a workspace
+  or organization admin accepts it; the provider card shows it under
+  "Permissions not in force here" with a *Review access* button that re-runs
+  Enable.
+- **Narrow a selector.** kcp makes an accepted claim's selector immutable, so
+  a workspace that enabled the provider before a `secrets` claim was narrowed
+  keeps the wider scope. kcp reports `PermissionClaimsValid=False`
+  (`PermissionClaimsMismatch`); the card says so, and only Disable + Enable
+  applies the new scope.
+
+#### Manual retry: re-accepting on demand
 
 ```
 POST /api/admin/providers/{name}/claims/reaccept             platform admin
 ```
 
-Ships the migration AGENTS.md §5.1 demands whenever a provider **adds** a
-permission claim. Editing `manifest.yaml`, re-running
-`make codegen-<name>-provider` and mirroring the chart's `catalogentry.yaml`
-updates the provider-side `APIExport` and nothing else: what the provider is actually allowed to touch in
-a tenant's workspace is the claim set on that tenant's own `APIBinding`, which
-the Enable flow wrote once and nobody revisits. Deploy code that *requires* the
-new claim without this step and every already-enabled tenant 403s, with the
-claim visible in the binding's `status.exportPermissionClaims` but absent from
-its `spec`.
-
-The endpoint walks every `APIBinding` in the tenant fleet whose
-`spec.reference.export` is this provider's export — across all Orgs and all
-their workspaces, including bindings that are not `Bound`, since a binding held
-out of Bound by a missing claim is exactly the one to fix — and rewrites
-`spec.permissionClaims` to the claims generated from the `spec.requires` the
-provider's `CatalogEntry` declares today, each `Accepted`.
-
-Two things it will not do:
-
-- **It does not overturn a rejection.** A claim the tenant explicitly set to
-  `Rejected` stays `Rejected`. The migration propagates what the provider
-  declares; it does not manufacture consent.
-- **It does not re-scope a claim.** A claim already on the binding keeps its
-  selector; only genuinely new claims take their scope from the export, because
-  kcp makes an accepted claim's selector immutable.
-
-Matching is on the export, not the provider name, so an Org self-hosting a
-provider of the same name is untouched — migrate that copy by re-Enabling it,
-or run the endpoint against the platform copy only. Claims the provider no
-longer declares are dropped: the target is the current `CatalogEntry`, not the
-union with history.
+Applies the same policy to every `APIBinding` of the platform provider's
+export across all Orgs and workspaces, synchronously, and reports what it did.
+Use it to confirm a rollout or to repair a binding the reconciler could not
+reach (its log names the binding and the error).
 
 ```bash
 curl -sS -X POST -H "Authorization: Bearer $RAILGRID_TOKEN" \
@@ -1704,12 +1736,15 @@ curl -sS -X POST -H "Authorization: Bearer $RAILGRID_TOKEN" \
 # {"provider":"agents","claims":[...],"updated":12,"unchanged":3,"failed":[]}
 ```
 
-`updated` counts bindings rewritten, `unchanged` those already correct, and
-`failed` names each `{org, workspace, binding, error}` that could not be
-migrated. A failing workspace does not abort the run — re-run the endpoint as
-the retry; a second pass over a migrated fleet reports everything `unchanged`.
-It refuses outright (400) when the provider declares no requirements at all,
-rather than stripping every tenant's grants.
+`claims` echoes the provider's own requirements as applied, `updated` counts
+bindings rewritten, `unchanged` those already correct, and `failed` names each
+`{org, workspace, binding, error}` that could not be written. A failing
+workspace does not abort the run; a second pass over a correct fleet reports
+everything `unchanged`. It refuses (400) when the provider declares no
+requirements at all, rather than stripping every tenant's grants. Matching is
+on the export, so an Org self-hosting a provider of the same name is untouched
+(the reconciler covers those bindings too, keyed by the Org's own
+CatalogEntry).
 
 ## Security considerations
 

@@ -153,6 +153,16 @@ func (s *Server) routes() map[string]resourceRoutes {
 		"triggers": {gvr: agentsclient.TriggerGVR, verbs: map[string]verbRoute{
 			"run":    {methods: post, handler: s.runTriggerNow},
 			"enable": {methods: post, handler: s.enableTrigger},
+			// A read with a body (the candidate filter and the delivery to
+			// judge it against), hence POST on a readOnly verb.
+			"evaluate": {methods: post, handler: s.evaluateTriggerFilter, readOnly: true},
+		}},
+		// The webhook owns the URL and the sink, so reading what arrived and
+		// re-feeding it to every routed trigger are verbs on IT.
+		"webhooks": {gvr: agentsclient.WebhookGVR, verbs: map[string]verbRoute{
+			// The sink: no tail lists it, one segment reads one entry.
+			"deliveries": {methods: get, tail: tailFree, handler: s.listWebhookDeliveries, readOnly: true},
+			"run":        {methods: post, handler: s.runWebhook},
 		}},
 	}
 }
@@ -320,11 +330,12 @@ func (s *Server) ListOAuthProviders(w http.ResponseWriter, r *http.Request) {
 	s.listOAuthProviders(w, r)
 }
 
-// WebhookTrigger serves POST /webhooks/triggers/{cluster}/{name}/{token} —
-// class (g). The HMAC token in the path is the entire credential: an external
-// sender reaches this through the hub's anonymous forwarding and carries no
-// tenant identity at all.
-func (s *Server) WebhookTrigger(w http.ResponseWriter, r *http.Request) { s.webhookTrigger(w, r) }
+// WebhookInbound serves POST /webhooks/triggers/{cluster}/{name}/{token} —
+// class (g) — where {name} is a Webhook (the "triggers" segment is the URL
+// shape a webhook inherited from when a URL belonged to one trigger). The HMAC
+// token in the path is the entire credential: an external sender reaches this
+// through the hub's anonymous forwarding and carries no tenant identity at all.
+func (s *Server) WebhookInbound(w http.ResponseWriter, r *http.Request) { s.webhookInbound(w, r) }
 
 // WebhookChannel serves POST /webhooks/channels/{cluster}/{name}/{token} —
 // class (g), the inbound half of chat from Telegram/Slack/Discord.

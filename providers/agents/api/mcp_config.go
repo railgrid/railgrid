@@ -19,6 +19,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -108,18 +109,16 @@ type deletedOutput struct {
 // --- triggers ---
 
 type triggerSummary struct {
-	Name          string            `json:"name"`
-	AgentRef      string            `json:"agentRef"`
-	Source        string            `json:"source"`
-	ConnectionRef string            `json:"connectionRef,omitempty"`
-	Filter        map[string]string `json:"filter,omitempty"`
-	Task          string            `json:"task,omitempty"`
-	ChannelRef    string            `json:"channelRef,omitempty"`
-	Suspend       bool              `json:"suspend"`
-	// WebhookPath is the inbound URL a webhook/github trigger listens on. It
-	// embeds the trigger's shared secret, so treat it as a credential.
-	WebhookPath string `json:"webhookPath,omitempty"`
-	LastFired   string `json:"lastFired,omitempty"`
+	Name     string `json:"name"`
+	AgentRef string `json:"agentRef"`
+	// WebhookRef is the Webhook the trigger routes from; its inbound URL is
+	// on the webhook (list_webhooks).
+	WebhookRef string            `json:"webhookRef"`
+	Filter     map[string]string `json:"filter,omitempty"`
+	Task       string            `json:"task,omitempty"`
+	ChannelRef string            `json:"channelRef,omitempty"`
+	Suspend    bool              `json:"suspend"`
+	LastFired  string            `json:"lastFired,omitempty"`
 }
 
 type listTriggersOutput struct {
@@ -127,42 +126,139 @@ type listTriggersOutput struct {
 }
 
 type createTriggerInput struct {
-	Name          string            `json:"name" jsonschema:"Lowercase trigger name, e.g. deploy-failed"`
-	AgentRef      string            `json:"agentRef" jsonschema:"Name of the agent this trigger runs (see list_agents)"`
-	Source        string            `json:"source" jsonschema:"webhook (any HTTP POST) or github (GitHub webhook deliveries)"`
-	ConnectionRef string            `json:"connectionRef,omitempty" jsonschema:"Connection this trigger is wired to, for sources that need one"`
-	Filter        map[string]string `json:"filter,omitempty" jsonschema:"Conditions every delivery must pass: eventType (event header or body type/action), action (body action), repository (body repository.full_name owner/repo), match (payload substring), header.<name>. eventType/action/repository take a comma-separated any-of list, e.g. {\"eventType\":\"pull_request\",\"action\":\"opened,synchronize\"}"`
-	Task          string            `json:"task,omitempty" jsonschema:"The prompt the agent runs when the trigger fires; the event payload is appended"`
-	Suspend       bool              `json:"suspend,omitempty" jsonschema:"Create the trigger paused"`
-	ChannelRef    string            `json:"channelRef,omitempty" jsonschema:"Agent channel this trigger's output goes to; empty means the primary channel"`
+	Name       string            `json:"name" jsonschema:"Lowercase trigger name, e.g. deploy-failed"`
+	AgentRef   string            `json:"agentRef" jsonschema:"Name of the agent this trigger runs (see list_agents)"`
+	WebhookRef string            `json:"webhookRef" jsonschema:"Name of the webhook this trigger routes from (see list_webhooks; create one with create_webhook). Many triggers may share one webhook"`
+	Filter     map[string]string `json:"filter,omitempty" jsonschema:"Conditions every delivery must pass: eventType (event header or body type/action), action (body action), repository (body repository.full_name owner/repo), match (payload substring), header.<name>. eventType/action/repository take a comma-separated any-of list, e.g. {\"eventType\":\"pull_request\",\"action\":\"opened,synchronize\"}. Any other key is rejected"`
+	Task       string            `json:"task,omitempty" jsonschema:"The prompt the agent runs when the trigger fires; the event payload is appended"`
+	Suspend    bool              `json:"suspend,omitempty" jsonschema:"Create the trigger paused"`
+	ChannelRef string            `json:"channelRef,omitempty" jsonschema:"Agent channel this trigger's output goes to; empty means the primary channel"`
 }
 
 type updateTriggerInput struct {
-	Name          string             `json:"name" jsonschema:"Name of the trigger to update (see list_triggers)"`
-	Task          *string            `json:"task,omitempty" jsonschema:"New prompt to run when the trigger fires"`
-	Source        *string            `json:"source,omitempty" jsonschema:"New source: webhook or github"`
-	ConnectionRef *string            `json:"connectionRef,omitempty" jsonschema:"Rewire the trigger to another connection; empty string unwires it"`
-	Filter        *map[string]string `json:"filter,omitempty" jsonschema:"Replacement filter map (same keys as create_trigger); replaces the whole map"`
-	Suspend       *bool              `json:"suspend,omitempty" jsonschema:"true pauses the trigger without deleting it, false resumes it"`
-	ChannelRef    *string            `json:"channelRef,omitempty" jsonschema:"Agent channel for this trigger's output; empty string means the primary channel"`
+	Name       string             `json:"name" jsonschema:"Name of the trigger to update (see list_triggers)"`
+	Task       *string            `json:"task,omitempty" jsonschema:"New prompt to run when the trigger fires"`
+	WebhookRef *string            `json:"webhookRef,omitempty" jsonschema:"Move the trigger to another webhook (see list_webhooks)"`
+	Filter     *map[string]string `json:"filter,omitempty" jsonschema:"Replacement filter map (same keys as create_trigger); replaces the whole map"`
+	Suspend    *bool              `json:"suspend,omitempty" jsonschema:"true pauses the trigger without deleting it, false resumes it"`
+	ChannelRef *string            `json:"channelRef,omitempty" jsonschema:"Agent channel for this trigger's output; empty string means the primary channel"`
 }
 
 func triggerView(t *agentsv1alpha1.Trigger) triggerSummary {
 	row := triggerSummary{
-		Name:          t.Name,
-		AgentRef:      t.Spec.AgentRef,
-		Source:        t.Spec.Source,
-		ConnectionRef: t.Spec.ConnectionRef,
-		Filter:        t.Spec.Filter,
-		Task:          t.Spec.Task,
-		ChannelRef:    t.Spec.ChannelRef,
-		Suspend:       t.Spec.Suspend,
-		WebhookPath:   t.Status.WebhookPath,
+		Name:       t.Name,
+		AgentRef:   t.Spec.AgentRef,
+		WebhookRef: t.Spec.WebhookRef,
+		Filter:     t.Spec.Filter,
+		Task:       t.Spec.Task,
+		ChannelRef: t.Spec.ChannelRef,
+		Suspend:    t.Spec.Suspend,
 	}
 	if t.Status.LastFired != nil {
 		row.LastFired = t.Status.LastFired.UTC().Format("2006-01-02T15:04:05Z")
 	}
 	return row
+}
+
+// --- webhooks ---
+
+type webhookSummary struct {
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	DisplayName string `json:"displayName,omitempty"`
+	// DeliveryRetention is the webhook's own cap; Retention is what applies.
+	DeliveryRetention *int32 `json:"deliveryRetention,omitempty"`
+	Retention         int    `json:"retention"`
+	// WebhookPath is the hub-relative inbound URL to register with the
+	// sender. It embeds the webhook's secret, so treat it as a credential.
+	WebhookPath string `json:"webhookPath,omitempty"`
+	// Routes names the triggers routing from this webhook.
+	Routes       []string `json:"routes"`
+	LastReceived string   `json:"lastReceived,omitempty"`
+	LastOutcome  string   `json:"lastOutcome,omitempty"`
+}
+
+type listWebhooksOutput struct {
+	Webhooks []webhookSummary `json:"webhooks"`
+}
+
+type createWebhookInput struct {
+	Name              string `json:"name" jsonschema:"Lowercase webhook name, e.g. github-railgrid"`
+	Source            string `json:"source" jsonschema:"webhook (any HTTP POST) or github (GitHub webhook deliveries; the portal offers GitHub's event catalog)"`
+	DisplayName       string `json:"displayName,omitempty" jsonschema:"Human-readable label"`
+	DeliveryRetention *int32 `json:"deliveryRetention,omitempty" jsonschema:"How many recent deliveries to keep (0 to 1000); unset means the provider default, 0 keeps none"`
+	RecordBodies      *bool  `json:"recordBodies,omitempty" jsonschema:"Whether the sink keeps each delivery's payload (default true). false keeps headers, event coordinates and every route's verdict but no body: for a sender whose payloads carry secrets or personal data, since anyone who can read the webhook can read its sink"`
+}
+
+type updateWebhookInput struct {
+	Name              string  `json:"name" jsonschema:"Name of the webhook to update (see list_webhooks)"`
+	DisplayName       *string `json:"displayName,omitempty" jsonschema:"New human-readable label"`
+	DeliveryRetention *int32  `json:"deliveryRetention,omitempty" jsonschema:"New delivery cap (0 to 1000); 0 keeps none"`
+	RecordBodies      *bool   `json:"recordBodies,omitempty" jsonschema:"Whether the sink keeps each delivery's payload from now on; false keeps headers and verdicts only"`
+}
+
+type listWebhookDeliveriesInput struct {
+	Name    string `json:"name" jsonschema:"Name of the webhook (see list_webhooks)"`
+	Outcome string `json:"outcome,omitempty" jsonschema:"Keep only deliveries with this rollup outcome: fired, filtered, unrouted or failed. Empty keeps all"`
+	Trigger string `json:"trigger,omitempty" jsonschema:"Keep only deliveries routed to this trigger"`
+	Limit   int    `json:"limit,omitempty" jsonschema:"How many recent deliveries to return, newest first (default 20, max 200)"`
+}
+
+// webhookDeliverySummary is one sink entry as the MCP tool reports it: the
+// metadata, the routes and a body preview, never the recorded headers (they
+// may name a redacted credential header, which a model has no use for).
+type webhookDeliverySummary struct {
+	ID         string               `json:"id"`
+	ReceivedAt string               `json:"receivedAt"`
+	Outcome    string               `json:"outcome"`
+	Reason     string               `json:"reason,omitempty"`
+	DeliveryID string               `json:"deliveryID,omitempty"`
+	EventType  string               `json:"eventType,omitempty"`
+	Action     string               `json:"action,omitempty"`
+	Repository string               `json:"repository,omitempty"`
+	ReplayOf   string               `json:"replayOf,omitempty"`
+	Routes     []store.WebhookRoute `json:"routes"`
+	// BodyPreview is the opening of the payload; BodySize is its full length.
+	BodyPreview string `json:"bodyPreview,omitempty"`
+	BodySize    int    `json:"bodySize"`
+}
+
+type listWebhookDeliveriesOutput struct {
+	Webhook string `json:"webhook"`
+	// Retention is how many deliveries the provider keeps for this webhook.
+	Retention  int                      `json:"retention"`
+	Deliveries []webhookDeliverySummary `json:"deliveries"`
+}
+
+func (s *Server) webhookView(w *agentsv1alpha1.Webhook) webhookSummary {
+	row := webhookSummary{
+		Name:              w.Name,
+		Source:            w.Spec.Source,
+		DisplayName:       w.Spec.DisplayName,
+		DeliveryRetention: w.Spec.DeliveryRetention,
+		Retention:         s.webhookRetention(w),
+		WebhookPath:       w.Status.WebhookPath,
+		Routes:            make([]string, 0, len(w.Status.Routes)),
+	}
+	for _, r := range w.Status.Routes {
+		row.Routes = append(row.Routes, r.Name)
+	}
+	if w.Status.LastReceived != nil {
+		row.LastReceived = w.Status.LastReceived.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	if w.Status.LastDelivery != nil {
+		row.LastOutcome = w.Status.LastDelivery.Outcome
+	}
+	return row
+}
+
+// checkWebhookRetention refuses a retention outside what the schema allows,
+// with a message that names the bounds instead of the schema's.
+func checkWebhookRetention(n *int32) error {
+	if n != nil && (*n < 0 || *n > MaxTriggerDeliveryRetention) {
+		return errBadRequest(fmt.Sprintf("deliveryRetention must be between 0 and %d", MaxTriggerDeliveryRetention))
+	}
+	return nil
 }
 
 // --- toolsets / connections / credentials ---
@@ -323,7 +419,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_triggers",
 		Title:       "List triggers",
-		Description: "List the event triggers that run agents on inbound webhooks or GitHub deliveries, with their filters and inbound URLs.",
+		Description: "List the event triggers that run agents on deliveries to a webhook, with the webhook each routes from and its filter.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listTriggersOutput, error) {
 		c, err := s.mcpClient(r)
@@ -344,8 +440,8 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "create_trigger",
 		Title: "Create a trigger",
-		Description: "Create an event trigger that runs an agent when something arrives: source \"webhook\" for any HTTP POST, \"github\" for GitHub webhook deliveries (same endpoint; filter on eventType such as pull_request or issues, plus action and repository). " +
-			"The response carries the inbound webhookPath to register with the sender — it embeds a secret, so share it carefully.",
+		Description: "Create an event trigger that runs an agent on deliveries to a webhook (webhookRef, from list_webhooks or create_webhook). Several triggers can route from one webhook, each with its own filter: " +
+			"for a github webhook filter on eventType such as pull_request or issues, plus action and repository. Unknown filter keys are rejected.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createTriggerInput) (*mcp.CallToolResult, triggerSummary, error) {
 		c, err := s.mcpClient(r)
@@ -355,7 +451,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		// Field-for-field mirror of createTriggerRequest (only the jsonschema
 		// tags differ), so the conversion keeps the two in lockstep.
 		req := createTriggerRequest(in)
-		t, err := s.applyTriggerCreate(ctx, c, s.mcpIdentity(ctx, r).clusterID, &req)
+		t, err := s.applyTriggerCreate(ctx, c, &req)
 		if err != nil {
 			return nil, triggerSummary{}, err
 		}
@@ -365,7 +461,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "update_trigger",
 		Title:       "Update a trigger",
-		Description: "Edit an existing trigger in place: rewrite its task, change its filter, rewire its connection, or pause/resume it with suspend. Only the fields you pass change.",
+		Description: "Edit an existing trigger in place: rewrite its task, change its filter, move it to another webhook, or pause/resume it with suspend. Only the fields you pass change.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateTriggerInput) (*mcp.CallToolResult, triggerSummary, error) {
 		c, err := s.mcpClient(r)
@@ -373,10 +469,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			return nil, triggerSummary{}, err
 		}
 		req := updateTriggerRequest{
-			Task: in.Task, Source: in.Source, ConnectionRef: in.ConnectionRef,
-			Filter: in.Filter, Suspend: in.Suspend, ChannelRef: in.ChannelRef,
+			Task: in.Task, WebhookRef: in.WebhookRef, Filter: in.Filter, Suspend: in.Suspend, ChannelRef: in.ChannelRef,
 		}
-		t, err := s.applyTriggerUpdate(ctx, c, s.mcpIdentity(ctx, r).clusterID, in.Name, &req)
+		t, err := s.applyTriggerUpdate(ctx, c, in.Name, &req)
 		if err != nil {
 			return nil, triggerSummary{}, err
 		}
@@ -386,7 +481,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "delete_trigger",
 		Title:       "Delete a trigger",
-		Description: "Permanently delete a trigger and invalidate its inbound URL. To stop it temporarily, prefer update_trigger with suspend=true.",
+		Description: "Permanently delete a trigger. Its webhook keeps its URL and its other triggers. To stop it temporarily, prefer update_trigger with suspend=true.",
 		Annotations: destructive,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in nameInput) (*mcp.CallToolResult, deletedOutput, error) {
 		c, err := s.mcpClient(r)
@@ -398,6 +493,153 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			return nil, deletedOutput{}, err
 		}
 		return nil, deletedOutput{Deleted: name}, nil
+	})
+
+	// --- webhooks ---
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "list_webhooks",
+		Title:       "List webhooks",
+		Description: "List the inbound webhooks: each one URL (webhookPath — it embeds a secret, so share it carefully) that triggers route from, with the triggers routing from it and its most recent delivery.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listWebhooksOutput, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, listWebhooksOutput{}, err
+		}
+		list, err := c.Webhooks().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, listWebhooksOutput{}, err
+		}
+		out := listWebhooksOutput{Webhooks: make([]webhookSummary, 0, len(list.Items))}
+		for i := range list.Items {
+			out.Webhooks = append(out.Webhooks, s.webhookView(&list.Items[i]))
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:  "create_webhook",
+		Title: "Create a webhook",
+		Description: "Create an inbound webhook: one URL to register with a sender (source \"webhook\" for any HTTP POST, \"github\" for GitHub). Triggers then route from it by webhookRef. " +
+			"The provider mints the URL a moment after creation; read it back with list_webhooks (webhookPath).",
+		Annotations: mutating,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createWebhookInput) (*mcp.CallToolResult, webhookSummary, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, webhookSummary{}, err
+		}
+		name, source := strings.TrimSpace(in.Name), strings.TrimSpace(in.Source)
+		if name == "" || source == "" {
+			return nil, webhookSummary{}, errBadRequest("name and source are required")
+		}
+		if source != agentsv1alpha1.WebhookSourceWebhook && source != agentsv1alpha1.WebhookSourceGitHub {
+			return nil, webhookSummary{}, errBadRequest("unsupported source " + source + " (use webhook or github)")
+		}
+		if err := checkWebhookRetention(in.DeliveryRetention); err != nil {
+			return nil, webhookSummary{}, err
+		}
+		wh, err := c.Webhooks().Create(ctx, &agentsv1alpha1.Webhook{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: agentsv1alpha1.WebhookSpec{
+				Source: source, DisplayName: strings.TrimSpace(in.DisplayName), DeliveryRetention: in.DeliveryRetention,
+				RecordBodies: in.RecordBodies,
+			},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return nil, webhookSummary{}, err
+		}
+		return nil, s.webhookView(wh), nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "update_webhook",
+		Title:       "Update a webhook",
+		Description: "Edit a webhook's label, delivery retention or whether payloads are recorded. Only the fields you pass change; the URL and the source stay as they are.",
+		Annotations: mutating,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateWebhookInput) (*mcp.CallToolResult, webhookSummary, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, webhookSummary{}, err
+		}
+		if err := checkWebhookRetention(in.DeliveryRetention); err != nil {
+			return nil, webhookSummary{}, err
+		}
+		wh, err := c.Webhooks().Get(ctx, strings.TrimSpace(in.Name), metav1.GetOptions{})
+		if err != nil {
+			return nil, webhookSummary{}, err
+		}
+		if in.DisplayName != nil {
+			wh.Spec.DisplayName = strings.TrimSpace(*in.DisplayName)
+		}
+		if in.DeliveryRetention != nil {
+			wh.Spec.DeliveryRetention = in.DeliveryRetention
+		}
+		if in.RecordBodies != nil {
+			wh.Spec.RecordBodies = in.RecordBodies
+		}
+		out, err := c.Webhooks().Update(ctx, wh, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, webhookSummary{}, err
+		}
+		return nil, s.webhookView(out), nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_webhook",
+		Title:       "Delete a webhook",
+		Description: "Permanently delete a webhook: its URL stops answering and its recorded deliveries are discarded. Triggers routing from it stay, but receive nothing until pointed at another webhook.",
+		Annotations: destructive,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in nameInput) (*mcp.CallToolResult, deletedOutput, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, deletedOutput{}, err
+		}
+		name := strings.TrimSpace(in.Name)
+		if err := c.Webhooks().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			return nil, deletedOutput{}, err
+		}
+		return nil, deletedOutput{Deleted: name}, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:  "list_webhook_deliveries",
+		Title: "List a webhook's recent deliveries",
+		Description: "The webhook's inbound delivery sink, newest first: every authenticated POST to its URL and what each routed trigger made of it — fired (with the run it started), filtered (with the filter key that rejected it), or refused while paused/disabled. " +
+			"This is how to tell \"the filter drops everything\" from \"nobody calls the URL\". Narrow to one trigger with trigger. Bodies are previewed; the portal shows them whole.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listWebhookDeliveriesInput) (*mcp.CallToolResult, listWebhookDeliveriesOutput, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, listWebhookDeliveriesOutput{}, err
+		}
+		wh, err := c.Webhooks().Get(ctx, strings.TrimSpace(in.Name), metav1.GetOptions{})
+		if err != nil {
+			return nil, listWebhookDeliveriesOutput{}, err
+		}
+		id := s.mcpIdentity(ctx, r)
+		if id.workspaceUUID == "" {
+			return nil, listWebhookDeliveriesOutput{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
+		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 20
+		}
+		rows, err := s.store.ListWebhookDeliveries(ctx, id.scope(""), string(wh.UID), store.WebhookDeliveryQuery{
+			Outcome: strings.TrimSpace(in.Outcome), Trigger: strings.TrimSpace(in.Trigger), Limit: min(limit, maxDeliveriesPage),
+		})
+		if err != nil {
+			return nil, listWebhookDeliveriesOutput{}, err
+		}
+		out := listWebhookDeliveriesOutput{Webhook: wh.Name, Retention: s.webhookRetention(wh), Deliveries: make([]webhookDeliverySummary, 0, len(rows))}
+		for _, d := range rows {
+			out.Deliveries = append(out.Deliveries, webhookDeliverySummary{
+				ID: d.ID, ReceivedAt: d.ReceivedAt.UTC().Format("2006-01-02T15:04:05Z"), Outcome: d.Outcome, Reason: d.Reason,
+				DeliveryID: d.DeliveryID, EventType: d.EventType, Action: d.Action, Repository: d.Repository,
+				ReplayOf: d.ReplayOf, Routes: d.Routes, BodyPreview: d.Body, BodySize: d.BodySize,
+			})
+		}
+		return nil, out, nil
 	})
 
 	// --- toolsets ---

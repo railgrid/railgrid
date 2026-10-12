@@ -10,7 +10,7 @@ package main
 
 // Multicluster controller manager — reconciles the agents provider's
 // tenant-authored CRs (Schedule / Connection / Agent / Toolset / Trigger /
-// ModelCredential) across EVERY tenant workspace that has bound this provider's APIExport.
+// Webhook / ModelCredential) across EVERY tenant workspace that has bound this provider's APIExport.
 //
 // The CRs live in tenant workspaces, so we use the kcp apiexport multicluster
 // provider (provider-sdk/apiexportprovider): it watches the provider's
@@ -62,6 +62,7 @@ import (
 	"github.com/railgrid/provider-agents/controller/schedule"
 	"github.com/railgrid/provider-agents/controller/toolset"
 	"github.com/railgrid/provider-agents/controller/trigger"
+	"github.com/railgrid/provider-agents/controller/webhook"
 	"github.com/railgrid/provider-agents/internal/webhookpath"
 	agentsscheme "github.com/railgrid/provider-agents/scheme"
 )
@@ -171,20 +172,23 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	if err := newRunReconciler(deps).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("run controller: %w", err)
 	}
-	// The Trigger reconciler mints inbound webhook URLs, so it needs the same
-	// signing key the HTTP layer signs with. It is read from the environment
-	// rather than passed through ControllerDeps because the key is
-	// configuration, not a dependency: both halves of the provider derive it
-	// from the same two variables main.go reads, and internal/webhookpath's
-	// golden vectors keep the derivation itself honest. An empty key is not
-	// fatal — the reconciler then leaves existing paths alone instead of
-	// minting or revoking anything.
+	if err := (&trigger.Reconciler{}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("trigger controller: %w", err)
+	}
+	// The Webhook reconciler mints inbound URLs, so it needs the same signing
+	// key the HTTP layer checks with. It is read from the environment rather
+	// than passed through ControllerDeps because the key is configuration,
+	// not a dependency: both halves of the provider derive it from the same
+	// two variables main.go reads, and internal/webhookpath's golden vectors
+	// keep the derivation itself honest. An empty key is not fatal — the
+	// reconciler then leaves existing paths alone instead of minting or
+	// revoking anything.
 	webhookKey := webhookpath.Key(os.Getenv("AGENTS_WEBHOOK_KEY"), os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"))
 	if len(webhookKey) == 0 {
-		log.Printf("controller manager: WARNING no webhook signing key (AGENTS_WEBHOOK_KEY / RAILGRID_PROVIDER_KUBECONFIG); triggers will not be given inbound URLs")
+		log.Printf("controller manager: WARNING no webhook signing key (AGENTS_WEBHOOK_KEY / RAILGRID_PROVIDER_KUBECONFIG); webhooks will not be given inbound URLs")
 	}
-	if err := (&trigger.Reconciler{WebhookKey: webhookKey}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("trigger controller: %w", err)
+	if err := (&webhook.Reconciler{WebhookKey: webhookKey, PurgeDeliveries: webhookTeardown(deps)}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("webhook controller: %w", err)
 	}
 
 	log.Printf("agents controller manager starting (endpointSlice=%s)", endpointSliceName)
@@ -268,4 +272,22 @@ func agentTeardown(deps api.ControllerDeps) (
 		return nil, nil
 	}
 	return teardown.PurgeAgentData, teardown.ReleaseAgentIdentity
+}
+
+// webhookPurger is the provider-store teardown the Webhook reconciler performs
+// on delete: the webhook's delivery sink. Discovered on the executor for the
+// same reason storeTeardown is — the store and the cluster→tenant mapping that
+// scopes the delete live behind the HTTP half of the provider.
+type webhookPurger interface {
+	PurgeWebhookDeliveries(ctx context.Context, clusterID, webhookUID string) error
+}
+
+// webhookTeardown returns what the Webhook finalizer does on delete, or nil
+// when the executor cannot purge — which disables the finalizer rather than
+// adding one nothing would ever clear.
+func webhookTeardown(deps api.ControllerDeps) func(ctx context.Context, clusterID, webhookUID string) error {
+	if p, ok := deps.Submit.(webhookPurger); ok {
+		return p.PurgeWebhookDeliveries
+	}
+	return nil
 }

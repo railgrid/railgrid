@@ -45,6 +45,14 @@ store:
   # managed Postgres with encryption enabled). Application-level encryption is
   # planned but not implemented.
 
+# Event triggers and the webhooks they route from. deliveryRetention is the
+# default for how many recent inbound deliveries the provider keeps per
+# Webhook — with what each routed trigger made of them — for the portal's
+# delivery sink and filter tester. A Webhook's own spec.deliveryRetention
+# overrides it (0 keeps nothing); 1000 is the ceiling.
+triggers:
+  deliveryRetention: 200
+
 hub:
   url: "http://railgrid-hub.railgrid.svc.cluster.local:8080"
   insecure: false

@@ -115,6 +115,25 @@ type ChatRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// DeliveriesRequest is the payload of the "deliveries" custom subresource on webhooks.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=deliveries,scope=Cluster
+type DeliveriesRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // DiscoverRequest is the payload of the "discover" custom subresource on modelcredentials.
 //
 // +kubebuilder:object:root=true
@@ -159,6 +178,25 @@ type EnableInboundRequest struct {
 // +kubebuilder:storageversion
 // +kubebuilder:resource:path=events,scope=Cluster
 type EventsRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// EvaluateRequest is the payload of the "evaluate" custom subresource on triggers.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=evaluate,scope=Cluster
+type EvaluateRequest struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
@@ -248,7 +286,7 @@ type EnableRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
-// RunRequest is the payload of the "run" custom subresource on agents, schedules, triggers.
+// RunRequest is the payload of the "run" custom subresource on agents, schedules, triggers, webhooks.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
