@@ -1876,6 +1876,13 @@ type ProviderClaim struct {
 	// whose object does not match (stamping the matchLabels when they are
 	// simply absent). See docs/cross-provider-simplification.md X-4.
 	MatchLabels map[string]string
+	// Consented marks a composition claim whose acceptance is recorded in the
+	// workspace's Grant. The hub writes an unconsented composition Rejected as
+	// a placeholder, and that Rejected must not stick once consent arrives by
+	// any path — so the merge lets a Consented claim replace a held Rejected,
+	// while a provider's own claim (never Consented) keeps the tenant's
+	// rejection.
+	Consented bool
 }
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
@@ -2412,7 +2419,8 @@ func reacceptClaimsOnBinding(ctx context.Context, wsClient dynamic.Interface, bi
 // mergeBindingClaims computes the claim list a binding should carry given what
 // it carries now and what the provider declares: one entry per declared claim,
 // in declaration order, Accepted unless the declaration says otherwise or the
-// binding already holds that claim Rejected; existing claims keep their
+// binding already holds that claim Rejected (a Consented composition overrides
+// a held Rejected, see ProviderClaim.Consented); existing claims keep their
 // selector; undeclared claims are dropped.
 func mergeBindingClaims(current []apisv1alpha2.AcceptablePermissionClaim, claims []ProviderClaim) []apisv1alpha2.AcceptablePermissionClaim {
 	key := func(group, resource string) string { return group + "/" + resource }
@@ -2437,7 +2445,7 @@ func mergeBindingClaims(current []apisv1alpha2.AcceptablePermissionClaim, claims
 		}
 		if prev, ok := existing[key(c.Group, c.Resource)]; ok {
 			entry.Selector = prev.Selector
-			if prev.State == apisv1alpha2.ClaimRejected {
+			if prev.State == apisv1alpha2.ClaimRejected && !c.Consented {
 				entry.State = apisv1alpha2.ClaimRejected
 			}
 		}

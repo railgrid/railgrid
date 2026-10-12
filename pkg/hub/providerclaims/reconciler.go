@@ -61,7 +61,7 @@ type BindingOps interface {
 type ProviderLookup interface {
 	Get(name string) (providers.Provider, bool)
 	GetForOrg(orgUUID, name string) (providers.Provider, bool)
-	OnRequirementsChange(fn providers.RequirementsListener)
+	OnRequirementsChange(fn providers.RequirementsListener) (unregister func())
 }
 
 // GrantReader reads the consent a workspace recorded for a provider.
@@ -128,7 +128,6 @@ func SetupWithManager(mgr mcmanager.Manager, clusters ClusterNamer, ops BindingO
 		paths:    map[string]string{},
 	}
 	r.fanout = &requirementsSource{r: r}
-	registry.OnRequirementsChange(r.fanout.notify)
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("provider-binding-claims").
 		For(&apisv1alpha2.APIBinding{}).
@@ -188,8 +187,11 @@ func (r *Reconciler) reconcileBinding(ctx context.Context, clusterName string, b
 		logger.V(4).Info("No registered provider behind export reference; leaving binding alone", "exportPath", export.Path, "exportName", export.Name)
 		return ctrl.Result{}, nil
 	}
-	if len(prov.Requires) == 0 {
-		// Never clear a tenant's claims on the strength of an empty list.
+	if prov.CatalogEntryCluster == "" {
+		// A registry record not yet backed by an observed CatalogEntry has no
+		// declaration to hold the binding to; an observed entry that declares
+		// nothing is a declaration, and the binding follows it to empty.
+		logger.V(4).Info("Provider CatalogEntry not observed yet; leaving binding alone", "provider", prov.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -266,18 +268,17 @@ func (r *Reconciler) clusterPath(ctx context.Context, clusterName string) (strin
 }
 
 // requirementsSource is the controller's raw source for CatalogEntry changes.
-// It holds the controller's queue once started and, for every provider whose
-// requirements the registry reports changed, enqueues each binding of that
-// provider's export in every engaged cluster. Notifications that arrive before
-// the controller starts are kept and replayed on Start, so a provider observed
-// during hub startup is not missed.
+// Started once per leadership term with the controller's queue, it subscribes
+// to the registry's requirements listener for exactly as long as it runs, and
+// for every provider whose requirements changed enqueues each binding of that
+// provider's export in every engaged cluster. Changes before Start need no
+// replay: the informer's initial list reconciles every binding anyway.
 type requirementsSource struct {
 	r *Reconciler
 
-	mu      sync.Mutex
-	ctx     context.Context
-	queue   workqueue.TypedRateLimitingInterface[mcreconcile.Request]
-	pending []providers.Provider
+	mu    sync.Mutex
+	ctx   context.Context
+	queue workqueue.TypedRateLimitingInterface[mcreconcile.Request]
 }
 
 // Start implements controller-runtime's source.TypedSource.
@@ -285,12 +286,15 @@ func (s *requirementsSource) Start(ctx context.Context, q workqueue.TypedRateLim
 	s.mu.Lock()
 	s.ctx = ctx
 	s.queue = q
-	pending := s.pending
-	s.pending = nil
 	s.mu.Unlock()
-	for _, p := range pending {
-		go s.enqueueProvider(ctx, p)
-	}
+	unregister := s.r.registry.OnRequirementsChange(s.notify)
+	go func() {
+		<-ctx.Done()
+		unregister()
+		s.mu.Lock()
+		s.queue = nil
+		s.mu.Unlock()
+	}()
 	return nil
 }
 
@@ -298,19 +302,17 @@ func (s *requirementsSource) Start(ctx context.Context, q workqueue.TypedRateLim
 // goroutine, so the fan-out itself is pushed to a goroutine.
 func (s *requirementsSource) notify(p providers.Provider) {
 	s.mu.Lock()
-	if s.queue == nil {
-		s.pending = append(s.pending, p)
-		s.mu.Unlock()
+	ctx, q := s.ctx, s.queue
+	s.mu.Unlock()
+	if q == nil {
 		return
 	}
-	ctx := s.ctx
-	s.mu.Unlock()
-	go s.enqueueProvider(ctx, p)
+	go s.enqueueProvider(ctx, q, p)
 }
 
 // enqueueProvider lists, from each engaged cluster's cache, the bindings that
 // reference p's export and enqueues them.
-func (s *requirementsSource) enqueueProvider(ctx context.Context, p providers.Provider) {
+func (s *requirementsSource) enqueueProvider(ctx context.Context, q workqueue.TypedRateLimitingInterface[mcreconcile.Request], p providers.Provider) {
 	if p.APIExportPath == "" || p.APIExportName == "" || ctx.Err() != nil {
 		return
 	}
@@ -330,12 +332,6 @@ func (s *requirementsSource) enqueueProvider(ctx context.Context, p providers.Pr
 			ref := list.Items[i].Spec.Reference.Export
 			if ref == nil || ref.Path != p.APIExportPath || ref.Name != p.APIExportName {
 				continue
-			}
-			s.mu.Lock()
-			q := s.queue
-			s.mu.Unlock()
-			if q == nil {
-				return
 			}
 			q.Add(mcreconcile.Request{
 				Request:     reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}},

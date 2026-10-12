@@ -260,7 +260,17 @@ routing/heartbeat state; the provider's own `init` creates the kcp side
 > consents, explicit rejections preserved, dropped claims removed. A provider
 > that adds a requirement therefore needs no migration and no re-Enable; the
 > admin `POST /api/admin/providers/{name}/claims/reaccept` remains as a manual
-> retry with counts. Two things still need a person: a **new composition**
+> retry with counts. Own requirements are accepted for platform **and**
+> org-owned providers alike: an Org's provider is registered by that Org's
+> admins, who already hold admin in every workspace of the Org, so a claim they
+> declare widens nothing they could not grant directly. Two invariants the
+> design rests on: a tenant binding is rewritten only in the tenant's own
+> workspace with claims the binding's author could have written themselves
+> (compositions stay Grant-gated), and `apiexports/content` on
+> `core.railgrid.ai` in `system:controllers` is hub-only — that virtual
+> workspace already serves every tenant's core-group objects read-write, and
+> the read-only `apibindings` claim adds the binding list to it, nothing more.
+> Two things still need a person: a **new composition**
 > (consent, offered on the provider card and by re-Enabling) and a **narrowed
 > selector** (kcp makes an accepted selector immutable, so only Disable +
 > Enable applies it; kcp reports it as `PermissionClaimsValid=False`). Symptom
@@ -709,6 +719,9 @@ The hub is the only publicly-reachable component. Key areas:
   (`TokenReconciler`, `RBACReconciler`, `EdgeController` — see DEVELOPERS.md §
   Hub Controller Reference).
 - `providers/` — provider integration (see §5.2).
+- `providerclaims/` — the single claim policy (`Desired`) and the leader-only
+  reconciler that keeps tenant `APIBinding` permission claims in step with each
+  provider's CatalogEntry (see §5.1).
 - `tenant/`, `provider_tenant_resolver.go` — org/workspace middleware + identity
   resolution.
 - `restapi/`, `serviceaccounts/`, `quota/`, `portal*.go` — REST API surface,

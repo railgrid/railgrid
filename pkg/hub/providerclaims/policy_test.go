@@ -32,9 +32,10 @@ import (
 // claim, two platform builtins, a composition on code, and a verb coordinate.
 func agentsProvider() providers.Provider {
 	return providers.Provider{
-		Name:          "agents",
-		APIExportPath: kcppaths.ProviderPath("agents"),
-		APIExportName: "agents.railgrid.ai",
+		Name:                "agents",
+		APIExportPath:       kcppaths.ProviderPath("agents"),
+		APIExportName:       "agents.railgrid.ai",
+		CatalogEntryCluster: "providers-agents-cluster",
 		Requires: []providersv1alpha1.ProviderRequirement{{
 			Resources: []providersv1alpha1.ProviderRequiredResource{{
 				Name:     "secrets",
@@ -89,6 +90,12 @@ func TestDesired_AcceptsOwnRequirementsAndOnlyConsentedCompositions(t *testing.T
 		}
 		if !byKey["code.railgrid.ai/repositories"] {
 			t.Fatalf("consented composition not accepted: %+v", got)
+		}
+		for _, c := range got {
+			wantConsented := c.Group == "code.railgrid.ai" && c.Resource == "repositories"
+			if c.Consented != wantConsented {
+				t.Fatalf("claim %s/%s Consented=%v, want %v (only a grant-backed composition is Consented)", c.Group, c.Resource, c.Consented, wantConsented)
+			}
 		}
 		if byKey["code.railgrid.ai/repositories/sync"] {
 			t.Fatalf("unconsented verb coordinate accepted: %+v", got)

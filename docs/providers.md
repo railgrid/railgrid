@@ -1665,6 +1665,17 @@ a per-rollout step:
   virtual workspace serves every `APIBinding` in every tenant workspace. The
   reconciler watches them there and writes them back by logical cluster with
   the hub's own credential (the virtual workspace is read-only for bindings).
+  Invariant: reaching that virtual workspace needs `apiexports/content` on
+  `core.railgrid.ai` in `root:railgrid:system:controllers`, which only the hub
+  holds — the same virtual workspace already serves every tenant's Secrets,
+  ConfigMaps, ServiceAccounts, RBAC and Workspaces read-write through the
+  core export's existing claims, so the read-only `apibindings` claim exposes
+  nothing new to anyone who could not already read far more.
+- Own requirements are accepted for platform and org-owned providers alike. An
+  org-owned provider's CatalogEntry is written by that Org's admins, who already
+  hold admin in every workspace of the Org, so a claim they declare widens
+  nothing they could not grant directly; compositions still need the
+  workspace's consent either way.
 - A `CatalogEntry` whose `spec.requires` changed fans out, through the
   provider registry, to every binding of that export the manager sees; a
   binding that appears or changes reconciles itself. There is no timer and no

@@ -81,14 +81,30 @@ func RequiredClaims(requires []providersv1alpha1.ProviderRequirement, isAccepted
 // export: every requirement the provider declares, with the provider's own
 // requirements Accepted and compositions Accepted only where grant records the
 // workspace's consent. grant may be nil (no consent recorded).
+//
+// Own requirements are accepted for platform and org-owned providers alike: an
+// org-owned provider is registered by the Org's own admins, who already hold
+// admin in every workspace of that Org, so a claim they declare widens nothing
+// they could not grant directly. AGENTS.md §5.1 records that decision.
+//
+// A composition the grant consents to is marked Consented, so the merge in
+// pkg/hub/kcp knows the Rejected it may be replacing was the hub's own
+// placeholder, not a tenant's decision.
 func Desired(prov providers.Provider, grant *tenancyv1alpha1.Grant) []kcp.ProviderClaim {
 	consented := ConsentedCompositions(grant)
-	return RequiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
+	claims := RequiredClaims(prov.Requires, func(coordinate providersv1alpha1.RequiredCoordinate) bool {
 		if coordinate.Provider == "" {
 			return true
 		}
 		return consented[Key(coordinate.Group, coordinate.Resource)]
 	})
+	coordinates := providersv1alpha1.RequiredCoordinates(prov.Requires)
+	for i := range claims {
+		if coordinates[i].Provider != "" && claims[i].Accepted {
+			claims[i].Consented = true
+		}
+	}
+	return claims
 }
 
 // ConsentedCompositions reads the compositions a Grant records as accepted,

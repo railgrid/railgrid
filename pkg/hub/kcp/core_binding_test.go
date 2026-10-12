@@ -123,6 +123,32 @@ func TestMergeBindingClaims(t *testing.T) {
 	}
 }
 
+// A Rejected the hub wrote as a consent placeholder must give way once the
+// Grant records consent, by whatever path consent arrived; a Rejected on a
+// provider's own claim is the tenant's and stays.
+func TestMergeBindingClaimsConsentOverridesHeldRejection(t *testing.T) {
+	held := []apisv1alpha2.AcceptablePermissionClaim{
+		{ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+			PermissionClaim: apisv1alpha2.PermissionClaim{GroupResource: apisv1alpha2.GroupResource{Group: "code.railgrid.ai", Resource: "repositories"}, Verbs: []string{"get"}},
+			Selector:        apisv1alpha2.PermissionClaimSelector{MatchAll: true},
+		}, State: apisv1alpha2.ClaimRejected},
+		{ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+			PermissionClaim: apisv1alpha2.PermissionClaim{GroupResource: apisv1alpha2.GroupResource{Resource: "configmaps"}, Verbs: []string{"get"}},
+			Selector:        apisv1alpha2.PermissionClaimSelector{MatchAll: true},
+		}, State: apisv1alpha2.ClaimRejected},
+	}
+	got := mergeBindingClaims(held, []ProviderClaim{
+		{Group: "code.railgrid.ai", Resource: "repositories", Verbs: []string{"get"}, Accepted: true, Consented: true},
+		{Resource: "configmaps", Verbs: []string{"get"}, Accepted: true},
+	})
+	if got[0].State != apisv1alpha2.ClaimAccepted {
+		t.Fatalf("consented composition stayed %s", got[0].State)
+	}
+	if got[1].State != apisv1alpha2.ClaimRejected {
+		t.Fatalf("tenant's rejection of an own claim was overturned: %s", got[1].State)
+	}
+}
+
 func TestReacceptClaimsOnBindingWritesOnlyWhenNeeded(t *testing.T) {
 	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
 	existing := &unstructured.Unstructured{Object: map[string]interface{}{

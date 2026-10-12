@@ -20,9 +20,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/workqueue"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
@@ -223,19 +226,37 @@ func TestReconcileBinding_LeavesAloneWhatItDoesNotOwn(t *testing.T) {
 	})
 }
 
-func TestReconcileBinding_NeverClearsOnEmptyRequirements(t *testing.T) {
-	reg := providers.NewRegistry()
+func TestReconcileBinding_EmptyRequirementsClearOnlyOnceObserved(t *testing.T) {
 	prov := agentsProvider()
 	prov.Requires = nil
-	reg.Upsert(prov)
-	ops := &fakeOps{paths: map[string]string{"c1": kcppaths.WorkspacePath("org-a", "ws-1")}}
-	r := newReconciler(ops, reg, nil)
-	if _, err := r.reconcileBinding(context.Background(), "c1", binding("agents", prov.APIExportPath, prov.APIExportName)); err != nil {
-		t.Fatal(err)
-	}
-	if len(ops.providerCalls) != 0 {
-		t.Fatalf("binding rewritten from an empty declaration: %+v", ops.providerCalls)
-	}
+
+	t.Run("observed CatalogEntry declaring nothing clears the binding", func(t *testing.T) {
+		reg := providers.NewRegistry()
+		reg.Upsert(prov)
+		ops := &fakeOps{paths: map[string]string{"c1": kcppaths.WorkspacePath("org-a", "ws-1")}}
+		r := newReconciler(ops, reg, nil)
+		if _, err := r.reconcileBinding(context.Background(), "c1", binding("agents", prov.APIExportPath, prov.APIExportName)); err != nil {
+			t.Fatal(err)
+		}
+		if len(ops.providerCalls) != 1 || len(ops.providerCalls[0].claims) != 0 {
+			t.Fatalf("expected one write with an empty claim set, got %+v", ops.providerCalls)
+		}
+	})
+
+	t.Run("registry record without an observed CatalogEntry is left alone", func(t *testing.T) {
+		unobserved := prov
+		unobserved.CatalogEntryCluster = ""
+		reg := providers.NewRegistry()
+		reg.Upsert(unobserved)
+		ops := &fakeOps{paths: map[string]string{"c1": kcppaths.WorkspacePath("org-a", "ws-1")}}
+		r := newReconciler(ops, reg, nil)
+		if _, err := r.reconcileBinding(context.Background(), "c1", binding("agents", prov.APIExportPath, prov.APIExportName)); err != nil {
+			t.Fatal(err)
+		}
+		if len(ops.providerCalls) != 0 {
+			t.Fatalf("binding rewritten from an unobserved declaration: %+v", ops.providerCalls)
+		}
+	})
 }
 
 func TestReconcileBinding_RetriesWhenConsentCannotBeRead(t *testing.T) {
@@ -255,7 +276,7 @@ func TestReconcileBinding_RetriesWhenConsentCannotBeRead(t *testing.T) {
 func TestRegistryNotifiesOnRequirementsChangeOnly(t *testing.T) {
 	reg := providers.NewRegistry()
 	var seen []string
-	reg.OnRequirementsChange(func(p providers.Provider) { seen = append(seen, p.Name) })
+	unregister := reg.OnRequirementsChange(func(p providers.Provider) { seen = append(seen, p.Name) })
 
 	prov := agentsProvider()
 	reg.Upsert(prov) // first observation
@@ -267,5 +288,45 @@ func TestRegistryNotifiesOnRequirementsChangeOnly(t *testing.T) {
 
 	if len(seen) != 2 {
 		t.Fatalf("listener calls = %v, want exactly two (first observation and the change)", seen)
+	}
+
+	unregister()
+	prov.Requires = nil
+	reg.Upsert(prov)
+	if len(seen) != 2 || reg.RequirementsListeners() != 0 {
+		t.Fatalf("unregistered listener still called (%v) or still registered (%d)", seen, reg.RequirementsListeners())
+	}
+}
+
+// The fan-out source subscribes for exactly one leadership term: Start
+// registers, the term's context ending unregisters. A hub that flaps
+// leadership must not accumulate dead listeners on the process-wide registry.
+func TestRequirementsSourceSubscribesForOneTerm(t *testing.T) {
+	reg := providers.NewRegistry()
+	r := newReconciler(&fakeOps{}, reg, nil)
+	src := &requirementsSource{r: r}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[mcreconcile.Request]())
+	defer q.ShutDown()
+	if err := src.Start(ctx, q); err != nil {
+		t.Fatal(err)
+	}
+	if reg.RequirementsListeners() != 1 {
+		t.Fatalf("listeners after Start = %d, want 1", reg.RequirementsListeners())
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for reg.RequirementsListeners() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reg.RequirementsListeners() != 0 {
+		t.Fatalf("listener survived the end of the term: %d registered", reg.RequirementsListeners())
+	}
+	// A notification after the term must be a no-op, not a goroutine on a
+	// dead queue.
+	src.notify(agentsProvider())
+	if q.Len() != 0 {
+		t.Fatalf("queue received work after the term ended: %d", q.Len())
 	}
 }

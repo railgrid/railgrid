@@ -132,12 +132,13 @@ func (b *Bootstrapper) EnsureCoreBindingClaims(ctx context.Context, clusterName,
 // by logical cluster instead of by (org, workspace) path: the binding-claims
 // reconciler learns of a tenant binding through the core.railgrid.ai virtual
 // workspace, where the cluster ID is all it has. Same policy, same writer.
+//
+// Unlike the admin entry point it accepts an empty claim set: the reconciler
+// only calls it for a provider whose CatalogEntry the hub has observed, so an
+// empty list is the provider declaring nothing, and the binding follows.
 func (b *Bootstrapper) ReconcileProviderBindingClaims(ctx context.Context, clusterName, bindingName string, claims []ProviderClaim) (bool, error) {
 	if clusterName == "" || bindingName == "" {
 		return false, fmt.Errorf("ReconcileProviderBindingClaims: clusterName and bindingName are required")
-	}
-	if len(claims) == 0 {
-		return false, fmt.Errorf("ReconcileProviderBindingClaims: refusing to clear every permission claim on %s in %s", bindingName, clusterName)
 	}
 	wsClient, err := dynamic.NewForConfig(configForPath(b.config, clusterName))
 	if err != nil {
