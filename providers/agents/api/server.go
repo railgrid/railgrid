@@ -61,13 +61,14 @@ type Config struct {
 	// autonomous schedule firing + trigger webhooks via the APIExport virtual
 	// workspace. Empty → per-request execution only.
 	ProviderKubeconfig string
-	// WebhookKey signs trigger webhook URLs. Empty → derived from the provider
+	// WebhookKey signs Webhook inbound URLs. Empty → derived from the provider
 	// kubeconfig contents.
 	WebhookKey string
 	// TriggerDeliveryRetention is how many recent inbound deliveries are kept
-	// per Trigger for the delivery log (triggers/{name}/deliveries) when the
-	// trigger's spec.deliveryRetention does not say. Zero means the default,
-	// DefaultTriggerDeliveryRetention.
+	// per Webhook in its sink (webhooks/{name}/deliveries) when the webhook's
+	// spec.deliveryRetention does not say. Zero means the default,
+	// DefaultTriggerDeliveryRetention. The name predates the Webhook kind; the
+	// env var it is read from (AGENTS_TRIGGER_DELIVERY_RETENTION) is unchanged.
 	TriggerDeliveryRetention int
 	// OAuthApps holds platform-wide OAuth app credentials by provider
 	// (github/google/slack), configured once by the operator via env. When a
@@ -77,8 +78,8 @@ type Config struct {
 	OAuthApps map[string]OAuthApp
 }
 
-// DefaultTriggerDeliveryRetention is the delivery-log cap per Trigger when
-// neither the operator (AGENTS_TRIGGER_DELIVERY_RETENTION) nor the trigger
+// DefaultTriggerDeliveryRetention is the delivery-sink cap per Webhook when
+// neither the operator (AGENTS_TRIGGER_DELIVERY_RETENTION) nor the webhook
 // (spec.deliveryRetention) chose one.
 const DefaultTriggerDeliveryRetention = 200
 

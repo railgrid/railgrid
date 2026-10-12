@@ -137,3 +137,24 @@ func TestEvaluateEmptyFilterMatches(t *testing.T) {
 		t.Fatalf("extracted eventType = %q, want ping from the body", v.Extracted.EventType)
 	}
 }
+
+// UnknownKeys is the warning the fail-open matcher cannot give at delivery
+// time: the reconciler and the MCP write tools use it to say a key is ignored.
+func TestUnknownKeys(t *testing.T) {
+	got := UnknownKeys(map[string]string{
+		"eventType": "push", "action": "opened", "repository": "a/b", "match": "x",
+		"header.X-Foo": "1", "evenType": "push", "Branch": "main", "repo": "a/b",
+	})
+	want := []string{"Branch", "evenType", "repo"}
+	if len(got) != len(want) {
+		t.Fatalf("UnknownKeys = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("UnknownKeys = %v, want %v", got, want)
+		}
+	}
+	if keys := UnknownKeys(nil); len(keys) != 0 {
+		t.Fatalf("a nil filter has no unknown keys, got %v", keys)
+	}
+}

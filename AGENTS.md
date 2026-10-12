@@ -737,6 +737,7 @@ Each suite has a dedicated Make target. Most spin up their own hub on fixed port
 | `make e2e-provider-flags` | `providerflags` | `--providers` flag mechanics (dep validation, filtering) |
 | `make e2e-infra-provider` | `infraprovider` | Infrastructure provider: init/serve split, Template/Instance reconcile, data-plane gates |
 | `make e2e-kuery-provider` | `kueryprovider` | Kuery provider: SavedView, `run` verb gates, engagement via hub identity |
+| `make e2e-agents-provider` | `agentsprovider` | Agents provider: Webhook → Trigger fan-out, delivery sink, evaluate/replay verbs, validation conditions |
 | `make e2e-identity` | `identity` | Hub scoped-identity service: mint, refuse by clause, refresh, GC on owner deletion, composition consent |
 | `make e2e-edges` | `edges` | Edges provider provisioning, claims, data-plane auth boundary |
 | `make e2e-edges-connectivity` | `edgesconn` | Edges data plane over real tunnels: kubectl, SSH, BYO provider probe, kuery aggregation (needs kind) |

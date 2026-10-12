@@ -115,7 +115,7 @@ type ChatRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
-// DeliveriesRequest is the payload of the "deliveries" custom subresource on triggers.
+// DeliveriesRequest is the payload of the "deliveries" custom subresource on webhooks.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
@@ -286,7 +286,7 @@ type EnableRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
-// RunRequest is the payload of the "run" custom subresource on agents, schedules, triggers.
+// RunRequest is the payload of the "run" custom subresource on agents, schedules, triggers, webhooks.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion

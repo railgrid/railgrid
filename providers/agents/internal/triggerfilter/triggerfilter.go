@@ -136,6 +136,37 @@ func Evaluate(filter map[string]string, headers http.Header, body []byte) Verdic
 	return v
 }
 
+// KnownKeys names the filter keys the matcher understands, for messages that
+// list them. "header.<name>" stands for every header key.
+var KnownKeys = []string{"eventType", "action", "repository", "match", "header.<name>"}
+
+// Known reports whether the matcher understands a filter key. It is the same
+// rule Evaluate's switch applies, so the warning and the matcher agree.
+func Known(key string) bool {
+	switch key {
+	case "eventType", "action", "repository", "match":
+		return true
+	}
+	return strings.HasPrefix(key, "header.")
+}
+
+// UnknownKeys returns the keys of filter the matcher does not understand,
+// sorted. The matcher ignores them at delivery time — fail-open, so a filter
+// written for a future source never blocks every event — which is exactly why
+// everything that writes a filter asks this first: a typo is otherwise a
+// filter that silently lets everything through. An entry with a blank value
+// counts too; Evaluate skips it, but the key is still not one anybody meant.
+func UnknownKeys(filter map[string]string) []string {
+	var out []string
+	for key := range filter {
+		if !Known(key) {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Allows is the webhook handler's question: does this delivery fire? It
 // returns the reason when it does not.
 func Allows(filter map[string]string, headers http.Header, body []byte) (string, bool) {

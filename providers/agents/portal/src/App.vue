@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { Bot, Cpu, Gauge, Plug, RefreshCw } from 'lucide-vue-next'
+import { Bot, Cpu, Gauge, Plug, RefreshCw, Webhook as WebhookIcon } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
@@ -22,7 +22,7 @@ import {
   type Route,
 } from './router'
 import { clearToasts } from './ui/toast'
-import { isHarnessProvider, type Agent, type Connection, type Credential, type RailgridContext, type Toolset } from './types'
+import { isHarnessProvider, type Agent, type Connection, type Credential, type RailgridContext, type Toolset, type Webhook } from './types'
 import { withCreatedCredential, type AgentCreateDraft, type AgentCredentialFamily } from './agent-create-draft'
 import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
@@ -34,6 +34,7 @@ import Connections from './views/Connections.vue'
 import Toolsets from './views/Toolsets.vue'
 import Models from './views/Models.vue'
 import Automation from './views/Automation.vue'
+import Webhooks from './views/Webhooks.vue'
 
 const props = defineProps<{ ctx: RailgridContext | null; host: HTMLElement }>()
 
@@ -88,13 +89,14 @@ const menuCounts = computed<Record<MenuKey, number>>(() => {
     agents: store.value.agents.data.length,
     activity: store.value.pendingInbox().length,
     connections: store.value.connections.data.length + store.value.toolsets.data.length,
+    webhooks: store.value.webhooks.data.length,
     models: store.value.credentials.data.length,
   }
 })
 const live = computed(() => { storeRevision.value; return store.value.live })
 const tabs = computed<PortalTabItem[]>(() => {
-  const icons = { agents: Bot, activity: Gauge, connections: Plug, models: Cpu }
-  const labels = { agents: 'Agents', activity: 'Activity', connections: 'Connections', models: 'Models' }
+  const icons = { agents: Bot, activity: Gauge, connections: Plug, webhooks: WebhookIcon, models: Cpu }
+  const labels = { agents: 'Agents', activity: 'Activity', connections: 'Connections', webhooks: 'Webhooks', models: 'Models' }
   return MENUS.map(menu => ({ id: menu, label: labels[menu], icon: icons[menu], count: menuCounts.value[menu] || undefined }))
 })
 
@@ -103,7 +105,7 @@ const routeSurfaceKey = computed(() => {
   if (current.kind === 'agent') return `${authorityEpoch.value}:agent:${current.name}`
   if (current.kind === 'run') return `${authorityEpoch.value}:run:${current.id}`
   if (current.kind === 'create') return `${authorityEpoch.value}:create:${createSession.value}`
-  if (current.kind === 'edit') return `${authorityEpoch.value}:edit:${current.name}`
+  if (current.kind === 'edit') return `${authorityEpoch.value}:edit:${current.resource}:${current.name}`
   if (current.kind === 'automation') return `${authorityEpoch.value}:automation:${current.agent}:${current.resource}:${current.action}:${current.action === 'edit' ? current.name : ''}`
   return `${authorityEpoch.value}:menu:${current.menu}`
 })
@@ -319,6 +321,9 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
   switch (detail.resource) {
     case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'chat' }
     case 'model': return { kind: 'menu', menu: 'models' }
+    // A webhook owns its URL and its delivery log: land on it, so the URL the
+    // sender needs is the first thing the person sees.
+    case 'webhook': return { kind: 'edit', resource: 'webhook', name: detail.name || '' }
     case 'connection':
     case 'toolset': return { kind: 'menu', menu: 'connections' }
   }
@@ -327,6 +332,7 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
 function createOwnerRoute(current: Extract<Route, { kind: 'create' }>): Route {
   if (current.resource === 'model') return { kind: 'menu', menu: 'models' }
   if (current.resource === 'agent') return { kind: 'menu', menu: 'agents' }
+  if (current.resource === 'webhook') return { kind: 'menu', menu: 'webhooks' }
   return { kind: 'menu', menu: 'connections' }
 }
 
@@ -341,6 +347,9 @@ function adoptCreateResult(detail: CreateSuccessDetail): void {
   } else if (detail.resource === 'toolset') {
     const item = detail.item as Toolset
     if (item.metadata?.name) store.value.adopt('toolsets', item)
+  } else if (detail.resource === 'webhook') {
+    const item = detail.item as Webhook
+    if (item.metadata?.name) store.value.adopt('webhooks', item)
   } else {
     const item = detail.item as Credential
     if (item.name) store.value.adopt('credentials', item)
@@ -407,6 +416,10 @@ function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEp
 
 function onEditCancel(detail: EditCancelDetail): void {
   if (!sourceIsCurrent(detail) || route.value.kind !== 'edit' || detail.resource !== route.value.resource || detail.name !== route.value.name) return
+  if (detail.resource === 'webhook') {
+    go({ kind: 'menu', menu: 'webhooks' }, 'replace')
+    return
+  }
   focusCollectionAfterEdit = detail.resource === 'toolset' ? 'toolsets' : 'connections'
   go({ kind: 'menu', menu: 'connections' }, 'replace')
   scheduleCollectionFocus()
@@ -414,6 +427,13 @@ function onEditCancel(detail: EditCancelDetail): void {
 
 function onEditSuccess(detail: EditSuccessDetail): void {
   if (!sourceIsCurrent(detail) || route.value.kind !== 'edit' || detail.resource !== route.value.resource || detail.name !== route.value.name) return
+  if (detail.resource === 'webhook') {
+    // The webhook page is a detail page as much as a form: its URL, routes
+    // and delivery log stay useful after a settings save, so it stays put.
+    const item = detail.item as Webhook | undefined
+    if (item?.metadata?.name) store.value.adopt('webhooks', item)
+    return
+  }
   if (detail.resource === 'connection') {
     const item = detail.item as Connection | undefined
     if (item?.metadata?.name) store.value.adopt('connections', item)
@@ -510,6 +530,15 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         @edit-success="onEditSuccess"
         @edit-cancel="onEditCancel"
       />
+      <Webhooks
+        v-else-if="route.kind === 'menu' && route.menu === 'webhooks'"
+        :key="routeSurfaceKey"
+        :store="store"
+        :api="api"
+        :authority-epoch="authorityEpoch"
+        :create-session="createSession"
+        @navigate="go"
+      />
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
         :key="routeSurfaceKey"
@@ -583,6 +612,18 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         @create-success="onCreateSuccess"
         @create-cancel="onCreateCancel"
       />
+      <Webhooks
+        v-else-if="route.kind === 'create' && route.resource === 'webhook'"
+        :key="routeSurfaceKey"
+        :store="store"
+        :api="api"
+        :create-route="true"
+        :authority-epoch="authorityEpoch"
+        :create-session="createSession"
+        @navigate="go"
+        @create-success="onCreateSuccess"
+        @create-cancel="onCreateCancel"
+      />
       <Models
         v-else-if="route.kind === 'create' && route.resource === 'model'"
         :key="routeSurfaceKey"
@@ -617,6 +658,19 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :store="store"
         :api="api"
         :route-owned="true"
+        :edit-route="true"
+        :edit-name="route.name"
+        :authority-epoch="authorityEpoch"
+        :create-session="createSession"
+        @navigate="go"
+        @edit-success="onEditSuccess"
+        @edit-cancel="onEditCancel"
+      />
+      <Webhooks
+        v-else-if="route.kind === 'edit' && route.resource === 'webhook'"
+        :key="routeSurfaceKey"
+        :store="store"
+        :api="api"
         :edit-route="true"
         :edit-name="route.name"
         :authority-epoch="authorityEpoch"

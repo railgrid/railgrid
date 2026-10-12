@@ -18,7 +18,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: DeliveriesRequest is the payload of the "deliveries" custom subresource
-          on triggers.
+          on webhooks.
         properties:
           apiVersion:
             description: |-

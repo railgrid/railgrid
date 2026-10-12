@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261012-abf3b713.deliveries.agents.railgrid.ai
+  name: v261012-77f29a8e.deliveries.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -14,7 +14,7 @@ spec:
   - name: v1alpha1
     schema:
       description: DeliveriesRequest is the payload of the "deliveries" custom subresource
-        on triggers.
+        on webhooks.
       properties:
         apiVersion:
           description: |-

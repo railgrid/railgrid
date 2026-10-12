@@ -314,6 +314,9 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q needs the label %s=%s; without it this provider cannot read the key on an unattended run",
 			name, claimscope.OwnerLabel, agentsclient.ProviderName), nil
 	}
+	if err := adoptSecret(ctx, c, cred, &sec); err != nil {
+		return "", "", "", err
+	}
 	// A harness identity is a different shape and a different check: which key
 	// is present decides how the harness is handed the credential, so "exactly
 	// one of oauthToken/apiKey" and "auth.json parses" are the verdict here
@@ -335,6 +338,38 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q has no %q key; spec.secretKey names the key holding the API key", name, llm.SecretKey(cred.Spec)), nil
 	}
 	return key, "", "", nil
+}
+
+// adoptSecret makes the credential an owner of its Secret, so deleting the
+// credential — from the portal, an MCP tool, kubectl, anything — garbage
+// collects the Secret with it. Without this a Secret outlived its credential
+// whenever the deleter was not the portal, and the next credential created
+// under the same name inherited its keys: a claude-code credential found both
+// an apiKey and an oauthToken waiting for it and was refused as two
+// identities. Only a labelled Secret is adopted (the label is what puts it in
+// this provider's claim), the reference is added rather than replacing any
+// other owner so a Secret two credentials share lives until both are gone,
+// and a reference already present costs no write.
+func adoptSecret(ctx context.Context, c client.Client, cred *agentsv1alpha1.ModelCredential, sec *corev1.Secret) error {
+	if cred.UID == "" {
+		return nil
+	}
+	for _, owner := range sec.OwnerReferences {
+		if owner.UID == cred.UID {
+			return nil
+		}
+	}
+	patch := client.MergeFrom(sec.DeepCopy())
+	sec.OwnerReferences = append(sec.OwnerReferences, metav1.OwnerReference{
+		APIVersion: agentsv1alpha1.SchemeGroupVersion.String(),
+		Kind:       "ModelCredential",
+		Name:       cred.Name,
+		UID:        cred.UID,
+	})
+	if err := c.Patch(ctx, sec, patch); err != nil {
+		return fmt.Errorf("adopting secret %q: %w", sec.Name, err)
+	}
+	return nil
 }
 
 // readyMessageFor is the True message for Ready. A harness identity never had

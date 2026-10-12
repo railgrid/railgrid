@@ -232,16 +232,21 @@ var agentsSchema = []string{
 		ON agents_tool_calls (org_uuid, workspace_uuid, agent_name, created_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS agents_tool_calls_run_idx
 		ON agents_tool_calls (org_uuid, workspace_uuid, run_id, created_at ASC)`,
-	// Inbound trigger deliveries, fired or not: the log behind
-	// triggers/{name}/deliveries. Keyed by trigger UID so a recreated trigger
-	// starts clean, capped per trigger on insert (RecordTriggerDelivery).
-	`CREATE TABLE IF NOT EXISTS agents_trigger_deliveries (
+	// The per-trigger delivery log never shipped; the sink moved to the
+	// Webhook (agents_webhook_deliveries). Dropped so a dev database that ran
+	// the interim schema sheds it.
+	`DROP TABLE IF EXISTS agents_trigger_deliveries`,
+	// Inbound webhook deliveries, fired or not: the sink behind
+	// webhooks/{name}/deliveries. Keyed by webhook UID so a recreated webhook
+	// starts clean, capped per webhook on insert (RecordWebhookDelivery).
+	// routes holds each routed Trigger's verdict, a JSONB array so a listing
+	// can be narrowed to one trigger with a containment test.
+	`CREATE TABLE IF NOT EXISTS agents_webhook_deliveries (
 		id TEXT PRIMARY KEY,
 		org_uuid TEXT NOT NULL,
 		workspace_uuid TEXT NOT NULL,
-		agent_name TEXT NOT NULL,
-		trigger_name TEXT NOT NULL,
-		trigger_uid TEXT NOT NULL,
+		webhook_name TEXT NOT NULL,
+		webhook_uid TEXT NOT NULL,
 		delivery_id TEXT NOT NULL DEFAULT '',
 		received_at TIMESTAMPTZ NOT NULL,
 		outcome TEXT NOT NULL,
@@ -253,11 +258,11 @@ var agentsSchema = []string{
 		headers JSONB NOT NULL DEFAULT '{}'::jsonb,
 		body TEXT NOT NULL DEFAULT '',
 		body_truncated BOOLEAN NOT NULL DEFAULT FALSE,
-		run_id TEXT NOT NULL DEFAULT '',
-		replay_of TEXT NOT NULL DEFAULT ''
+		replay_of TEXT NOT NULL DEFAULT '',
+		routes JSONB NOT NULL DEFAULT '[]'::jsonb
 	)`,
-	`CREATE INDEX IF NOT EXISTS agents_trigger_deliveries_trigger_idx
-		ON agents_trigger_deliveries (org_uuid, workspace_uuid, trigger_uid, received_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS agents_webhook_deliveries_webhook_idx
+		ON agents_webhook_deliveries (org_uuid, workspace_uuid, webhook_uid, received_at DESC, id DESC)`,
 	`CREATE TABLE IF NOT EXISTS agents_usage (
 		org_uuid TEXT NOT NULL,
 		workspace_uuid TEXT NOT NULL,
@@ -1422,15 +1427,15 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 	return out, rows.Err()
 }
 
-// ---- trigger deliveries ----------------------------------------------------
+// ---- webhook deliveries ----------------------------------------------------
 
-const triggerDeliveryColumns = `id, agent_name, trigger_name, trigger_uid, delivery_id, received_at, outcome, reason,
-		event_type, action, repository, content_type, headers, body_truncated, run_id, replay_of`
+const webhookDeliveryColumns = `id, webhook_name, webhook_uid, delivery_id, received_at, outcome, reason,
+		event_type, action, repository, content_type, headers, body_truncated, replay_of, routes`
 
-func scanTriggerDelivery(scanner interface{ Scan(...any) error }, d *TriggerDelivery) error {
-	var headers []byte
-	if err := scanner.Scan(&d.ID, &d.AgentName, &d.TriggerName, &d.TriggerUID, &d.DeliveryID, &d.ReceivedAt, &d.Outcome, &d.Reason,
-		&d.EventType, &d.Action, &d.Repository, &d.ContentType, &headers, &d.BodyTruncated, &d.RunID, &d.ReplayOf,
+func scanWebhookDelivery(scanner interface{ Scan(...any) error }, d *WebhookDelivery) error {
+	var headers, routes []byte
+	if err := scanner.Scan(&d.ID, &d.WebhookName, &d.WebhookUID, &d.DeliveryID, &d.ReceivedAt, &d.Outcome, &d.Reason,
+		&d.EventType, &d.Action, &d.Repository, &d.ContentType, &headers, &d.BodyTruncated, &d.ReplayOf, &routes,
 		&d.Body, &d.BodySize); err != nil {
 		return err
 	}
@@ -1438,12 +1443,18 @@ func scanTriggerDelivery(scanner interface{ Scan(...any) error }, d *TriggerDeli
 	if len(headers) > 0 {
 		_ = json.Unmarshal(headers, &d.Headers)
 	}
+	if len(routes) > 0 {
+		_ = json.Unmarshal(routes, &d.Routes)
+	}
+	if d.Routes == nil {
+		d.Routes = []WebhookRoute{}
+	}
 	return nil
 }
 
-func (p *PostgresStore) RecordTriggerDelivery(ctx context.Context, scope Scope, d TriggerDelivery, retain int) error {
-	if strings.TrimSpace(d.ID) == "" || strings.TrimSpace(d.TriggerUID) == "" {
-		return fmt.Errorf("a trigger delivery needs an id and a trigger uid")
+func (p *PostgresStore) RecordWebhookDelivery(ctx context.Context, scope Scope, d WebhookDelivery, retain int) error {
+	if strings.TrimSpace(d.ID) == "" || strings.TrimSpace(d.WebhookUID) == "" {
+		return fmt.Errorf("a webhook delivery needs an id and a webhook uid")
 	}
 	if retain <= 0 {
 		return nil
@@ -1454,42 +1465,62 @@ func (p *PostgresStore) RecordTriggerDelivery(ctx context.Context, scope Scope, 
 	}
 	defer mutation.rollback()
 	scope = mutation.scope
-	if err := scope.withAgent(); err != nil {
+	if err := scope.validate(); err != nil {
 		return err
 	}
 	if d.ReceivedAt.IsZero() {
 		d.ReceivedAt = time.Now().UTC()
 	}
-	headers, err := json.Marshal(d.Headers)
-	if err != nil {
-		return fmt.Errorf("encode delivery headers: %w", err)
+	headers := []byte("{}")
+	if d.Headers != nil {
+		if headers, err = json.Marshal(d.Headers); err != nil {
+			return fmt.Errorf("encode delivery headers: %w", err)
+		}
 	}
-	if d.Headers == nil {
-		headers = []byte("{}")
+	routes := []byte("[]")
+	if len(d.Routes) > 0 {
+		if routes, err = json.Marshal(d.Routes); err != nil {
+			return fmt.Errorf("encode delivery routes: %w", err)
+		}
 	}
-	if _, err := mutation.executor.ExecContext(ctx, `
-		INSERT INTO agents_trigger_deliveries (id, org_uuid, workspace_uuid, agent_name, trigger_name, trigger_uid, delivery_id, received_at,
-			outcome, reason, event_type, action, repository, content_type, headers, body, body_truncated, run_id, replay_of)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
-		d.ID, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, d.TriggerName, d.TriggerUID, d.DeliveryID, d.ReceivedAt.UTC(),
-		d.Outcome, d.Reason, d.EventType, d.Action, d.Repository, d.ContentType, headers, d.Body, d.BodyTruncated, d.RunID, d.ReplayOf); err != nil {
+	// The prune needs its own transaction even for a mapped scope (which
+	// beginScopedMutation leaves on the bare pool), so the cap holds under
+	// concurrent deliveries: insert and trim commit together or not at all.
+	exec := mutation.executor
+	var tx *sql.Tx
+	if mutation.tx == nil {
+		if tx, err = p.db.BeginTx(ctx, nil); err != nil {
+			return fmt.Errorf("begin webhook delivery write: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		exec = tx
+	}
+	if _, err := exec.ExecContext(ctx, `
+		INSERT INTO agents_webhook_deliveries (id, org_uuid, workspace_uuid, webhook_name, webhook_uid, delivery_id, received_at,
+			outcome, reason, event_type, action, repository, content_type, headers, body, body_truncated, replay_of, routes)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		d.ID, scope.OrgUUID, scope.WorkspaceUUID, d.WebhookName, d.WebhookUID, d.DeliveryID, d.ReceivedAt.UTC(),
+		d.Outcome, d.Reason, d.EventType, d.Action, d.Repository, d.ContentType, headers, d.Body, d.BodyTruncated, d.ReplayOf, routes); err != nil {
 		return err
 	}
-	// Keep the newest retain rows of this trigger; the rest go in the same
-	// transaction so the cap holds under concurrent deliveries.
-	if _, err := mutation.executor.ExecContext(ctx, `
-		DELETE FROM agents_trigger_deliveries
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND trigger_uid=$3 AND id NOT IN (
-			SELECT id FROM agents_trigger_deliveries
-			WHERE org_uuid=$1 AND workspace_uuid=$2 AND trigger_uid=$3
+	if _, err := exec.ExecContext(ctx, `
+		DELETE FROM agents_webhook_deliveries
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND webhook_uid=$3 AND id NOT IN (
+			SELECT id FROM agents_webhook_deliveries
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND webhook_uid=$3
 			ORDER BY received_at DESC, id DESC LIMIT $4)`,
-		scope.OrgUUID, scope.WorkspaceUUID, d.TriggerUID, retain); err != nil {
+		scope.OrgUUID, scope.WorkspaceUUID, d.WebhookUID, retain); err != nil {
 		return err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	return mutation.commit()
 }
 
-func (p *PostgresStore) ListTriggerDeliveries(ctx context.Context, scope Scope, triggerUID string, q TriggerDeliveryQuery) ([]TriggerDelivery, error) {
+func (p *PostgresStore) ListWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string, q WebhookDeliveryQuery) ([]WebhookDelivery, error) {
 	scope = p.normalizeScope(ctx, scope)
 	if err := scope.validate(); err != nil {
 		return nil, err
@@ -1498,20 +1529,32 @@ func (p *PostgresStore) ListTriggerDeliveries(ctx context.Context, scope Scope, 
 	if limit <= 0 {
 		limit = 50
 	}
+	// A trigger filter is a containment test on the routes array: the row
+	// holds an element whose "trigger" is the name. An empty filter is the
+	// empty array, which every array contains.
+	routeFilter := []byte("[]")
+	if q.Trigger != "" {
+		b, err := json.Marshal([]map[string]string{{"trigger": q.Trigger}})
+		if err != nil {
+			return nil, err
+		}
+		routeFilter = b
+	}
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT `+triggerDeliveryColumns+`, left(body, $5), length(body)
-		FROM agents_trigger_deliveries
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND trigger_uid=$3 AND ($4 = '' OR outcome = $4)
+		SELECT `+webhookDeliveryColumns+`, left(body, $5), length(body)
+		FROM agents_webhook_deliveries
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND webhook_uid=$3 AND ($4 = '' OR outcome = $4)
+			AND routes @> $7::jsonb
 		ORDER BY received_at DESC, id DESC LIMIT $6`,
-		scope.OrgUUID, scope.WorkspaceUUID, triggerUID, q.Outcome, TriggerDeliveryPreviewBytes, limit)
+		scope.OrgUUID, scope.WorkspaceUUID, webhookUID, q.Outcome, WebhookDeliveryPreviewBytes, limit, string(routeFilter))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	out := []TriggerDelivery{}
+	out := []WebhookDelivery{}
 	for rows.Next() {
-		var d TriggerDelivery
-		if err := scanTriggerDelivery(rows, &d); err != nil {
+		var d WebhookDelivery
+		if err := scanWebhookDelivery(rows, &d); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -1519,24 +1562,42 @@ func (p *PostgresStore) ListTriggerDeliveries(ctx context.Context, scope Scope, 
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) GetTriggerDelivery(ctx context.Context, scope Scope, triggerUID, id string) (TriggerDelivery, bool, error) {
+func (p *PostgresStore) GetWebhookDelivery(ctx context.Context, scope Scope, webhookUID, id string) (WebhookDelivery, bool, error) {
 	scope = p.normalizeScope(ctx, scope)
 	if err := scope.validate(); err != nil {
-		return TriggerDelivery{}, false, err
+		return WebhookDelivery{}, false, err
 	}
-	var d TriggerDelivery
-	err := scanTriggerDelivery(p.db.QueryRowContext(ctx, `
-		SELECT `+triggerDeliveryColumns+`, body, length(body)
-		FROM agents_trigger_deliveries
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND trigger_uid=$3 AND id=$4`,
-		scope.OrgUUID, scope.WorkspaceUUID, triggerUID, id), &d)
+	var d WebhookDelivery
+	err := scanWebhookDelivery(p.db.QueryRowContext(ctx, `
+		SELECT `+webhookDeliveryColumns+`, body, length(body)
+		FROM agents_webhook_deliveries
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND webhook_uid=$3 AND id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, webhookUID, id), &d)
 	if errors.Is(err, sql.ErrNoRows) {
-		return TriggerDelivery{}, false, nil
+		return WebhookDelivery{}, false, nil
 	}
 	if err != nil {
-		return TriggerDelivery{}, false, err
+		return WebhookDelivery{}, false, err
 	}
 	return d, true, nil
+}
+
+func (p *PostgresStore) DeleteWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string) error {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if _, err := mutation.executor.ExecContext(ctx, `
+		DELETE FROM agents_webhook_deliveries WHERE org_uuid=$1 AND workspace_uuid=$2 AND webhook_uid=$3`,
+		scope.OrgUUID, scope.WorkspaceUUID, webhookUID); err != nil {
+		return err
+	}
+	return mutation.commit()
 }
 
 func (p *PostgresStore) AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error) {
@@ -1668,7 +1729,7 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 			EXISTS (SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
-			EXISTS (SELECT 1 FROM agents_trigger_deliveries WHERE org_uuid=$1 AND workspace_uuid=$2)`,
+			EXISTS (SELECT 1 FROM agents_webhook_deliveries WHERE org_uuid=$1 AND workspace_uuid=$2)`,
 		fromOrg, fromWorkspace).Scan(&hasSource); err != nil {
 		return fmt.Errorf("check legacy scope for cluster %s: %w", clusterID, err)
 	}
@@ -1695,7 +1756,7 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 		WHERE runs.id=candidates.id`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
 		return fmt.Errorf("choose idempotency winners for cluster %s: %w", clusterID, err)
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_trigger_deliveries"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_webhook_deliveries"} {
 		query := "UPDATE " + table + " SET org_uuid=$3, workspace_uuid=$4 WHERE org_uuid=$1 AND workspace_uuid=$2"
 		if _, err := tx.ExecContext(ctx, query, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
 			return fmt.Errorf("migrate %s for cluster %s: %w", table, clusterID, err)
@@ -1968,7 +2029,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions", "agents_run_artifacts", "agents_trigger_deliveries"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions", "agents_run_artifacts"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {

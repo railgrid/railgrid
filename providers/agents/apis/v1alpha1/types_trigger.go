@@ -20,31 +20,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Trigger source types.
-const (
-	// TriggerSourceWebhook fires on an inbound HTTP call to the trigger's
-	// hub-routed endpoint.
-	TriggerSourceWebhook = "webhook"
-	// TriggerSourceGitHub fires on a GitHub event delivered through a github
-	// Connection.
-	TriggerSourceGitHub = "github"
-)
-
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=triggers,singular=trigger,scope=Cluster,shortName=trig
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=".spec.agentRef"
-// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=".spec.source"
+// +kubebuilder:printcolumn:name="Webhook",type=string,JSONPath=".spec.webhookRef"
 // +kubebuilder:printcolumn:name="LastFired",type=date,JSONPath=".status.lastFired"
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=".spec.suspend"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Trigger fires an agent run on an external event — the event-based half
-// of automation, complementing the time-based Schedule. Webhook sources
-// get a hub-routed inbound endpoint; other sources subscribe through a
-// Connection.
+// of automation, complementing the time-based Schedule. Events arrive at a
+// Webhook (spec.webhookRef), which owns the inbound URL and the delivery
+// sink; every Trigger routing from that webhook judges each delivery with its
+// own filter.
 type Trigger struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -61,20 +52,12 @@ type TriggerSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	AgentRef string `json:"agentRef"`
 
-	// Source is where events come from: webhook or github. Both provision a
-	// hub-routed webhook endpoint and fire on inbound delivery; github only
-	// records that the sender is GitHub so the portal can offer its event
-	// catalog, the delivery path is the same.
+	// WebhookRef names the Webhook this trigger routes from. Many triggers
+	// may name one webhook; each delivery to it is offered to all of them.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=webhook;github
-	Source string `json:"source"`
-
-	// ConnectionRef is reserved for sources that subscribe to a Connection's
-	// event stream. Neither webhook nor github reads it: both are inbound
-	// HTTP deliveries authenticated by the token in status.webhookPath.
-	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	ConnectionRef string `json:"connectionRef,omitempty"`
+	WebhookRef string `json:"webhookRef"`
 
 	// Filter narrows which deliveries fire the trigger; every key must pass.
 	// "eventType" matches the event header (X-GitHub-Event, X-Event-Type) or
@@ -102,20 +85,11 @@ type TriggerSpec struct {
 	// Suspend halts firing without deleting the trigger.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
-
-	// DeliveryRetention is how many recent inbound deliveries the provider
-	// keeps for this trigger — every authenticated POST to its webhook URL,
-	// whether it fired a run, was filtered out, or arrived while the trigger
-	// was paused — so the portal can show what came in and why it did not
-	// fire, and the filter editor can test a candidate filter against real
-	// traffic. Unset means the provider default (200). 0 keeps nothing.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1000
-	DeliveryRetention *int32 `json:"deliveryRetention,omitempty"`
 }
 
-// Trigger delivery outcomes: what became of one inbound webhook POST.
+// Trigger delivery outcomes: what one routed trigger made of one delivery to
+// its webhook — the route outcome recorded in the webhook's sink and in the
+// trigger's status.lastDelivery.
 const (
 	// TriggerDeliveryFired means the delivery passed the filter and a Run was
 	// recorded for it.
@@ -137,9 +111,10 @@ const (
 	TriggerDeliveryFailed = "failed"
 )
 
-// TriggerDeliverySummary is the most recent inbound delivery, as status
-// reports it: enough to tell "nobody calls this URL" from "traffic arrives
-// but the filter drops it" without opening the delivery log.
+// TriggerDeliverySummary is the most recent delivery routed to this trigger,
+// as its status reports it: enough to tell "the webhook gets nothing" from
+// "traffic arrives but this trigger's filter drops it" without opening the
+// webhook's sink.
 type TriggerDeliverySummary struct {
 	// Time is when the delivery arrived.
 	Time metav1.Time `json:"time"`
@@ -150,17 +125,13 @@ type TriggerDeliverySummary struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 	// DeliveryID is the provider's id for the delivery, the key of its entry
-	// in the delivery log (triggers/{name}/deliveries/{id}).
+	// in the webhook's sink (webhooks/{webhookRef}/deliveries/{id}).
 	// +optional
 	DeliveryID string `json:"deliveryID,omitempty"`
 }
 
 // TriggerStatus is the observed trigger state.
 type TriggerStatus struct {
-	// WebhookPath is the hub-relative inbound endpoint for webhook sources.
-	// +optional
-	WebhookPath string `json:"webhookPath,omitempty"`
-
 	// LastFired is the most recent time an event fired a run.
 	// +optional
 	LastFired *metav1.Time `json:"lastFired,omitempty"`
@@ -170,8 +141,8 @@ type TriggerStatus struct {
 	// +kubebuilder:validation:MaxLength=128
 	LastRunID string `json:"lastRunID,omitempty"`
 
-	// LastReceived is the most recent time an authenticated delivery reached
-	// the webhook URL, fired or not. Set together with lastDelivery, and
+	// LastReceived is the most recent time a delivery to the trigger's
+	// webhook was routed to it, fired or not. Set together with lastDelivery, and
 	// coalesced: a burst of deliveries with the same outcome updates it at
 	// most once a minute.
 	// +optional

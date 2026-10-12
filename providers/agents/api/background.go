@@ -166,10 +166,10 @@ func (s *Server) StartBackground(ctx context.Context) {
 
 // webhookKeyBytes and webhookToken bind this Server's configuration to the
 // shared derivation in internal/webhookpath. The derivation itself lives there
-// because the Trigger reconciler mints the same URLs for writers that never
-// reach this layer, and the URL IS the credential: two copies that disagree by
-// a byte mint two different URLs for one trigger, and the one already pasted
-// into GitHub silently stops working. One implementation, one set of golden
+// because the Webhook reconciler mints the URLs this layer checks, and the URL
+// IS the credential: two copies that disagree by a byte mint two different
+// URLs for one webhook, and the one already pasted into GitHub silently stops
+// working. One implementation, one set of golden
 // vectors.
 //
 // These stay as methods rather than being inlined at the ~6 call sites because
@@ -179,7 +179,7 @@ func (s *Server) webhookKeyBytes() []byte {
 	return webhookpath.Key(s.cfg.WebhookKey, s.cfg.ProviderKubeconfig)
 }
 
-// webhookToken returns the HMAC token guarding a trigger's inbound URL.
+// webhookToken returns the HMAC token guarding a webhook's inbound URL.
 func (s *Server) webhookToken(clusterID, name string) string {
 	return webhookpath.Token(s.webhookKeyBytes(), clusterID, name)
 }
@@ -281,6 +281,30 @@ func (b *background) ready() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.shards) > 0
+}
+
+// readyFor is ready for a request path: when no endpoint is known it tries
+// to discover one first, and only then says no.
+//
+// The endpoint slice is empty until the first tenant binds the export, so a
+// provider that started before anyone enabled it learned nothing at startup.
+// The on-demand rediscovery lives in shardFor, but the inbound webhook, the
+// channel webhook and the OAuth callback gated on ready() before they ever
+// reached it, which left them answering 503 until the process was restarted —
+// the e2e suite's first delivery after Enable found exactly that. Discovery
+// here is one slice read, and the caller is about to need the shard anyway.
+func (b *background) readyFor(ctx context.Context) bool {
+	if b == nil {
+		return false
+	}
+	if b.ready() {
+		return true
+	}
+	if err := b.ensureVW(ctx); err != nil {
+		log.Printf("background: virtual workspace still not discoverable: %v", err)
+		return false
+	}
+	return b.ready()
 }
 
 // snapshotShards returns the current shard set for lock-free iteration.
@@ -569,7 +593,7 @@ func (b *background) Submit(ctx context.Context, job executor.Job) error {
 }
 
 // submitRun is Submit that also says which run it recorded, for a producer
-// that keeps its own record of the submission (the trigger delivery log).
+// that keeps its own record of the submission (the webhook delivery sink).
 func (b *background) submitRun(ctx context.Context, job executor.Job) (string, error) {
 	if job.RunID != "" {
 		// Already a run of its own — the producer pre-recorded it. Nothing to
@@ -979,6 +1003,15 @@ func (b *background) PurgeAgentData(ctx context.Context, clusterID, agentName st
 	return b.server.store.DeleteAgentData(ctx, b.scopeFor(ctx, clusterID, agentName), agentName)
 }
 
+// PurgeWebhookDeliveries empties one webhook's delivery sink. It is what the
+// Webhook reconciler's finalizer calls, so deleting a webhook takes the
+// traffic recorded against its UID with it. Scoped through scopeFor with no
+// agent — a delivery belongs to the webhook, not to any agent — for the same
+// reason PurgeAgentData is: it is how the rows were written.
+func (b *background) PurgeWebhookDeliveries(ctx context.Context, clusterID, webhookUID string) error {
+	return b.server.store.DeleteWebhookDeliveries(ctx, b.scopeFor(ctx, clusterID, ""), webhookUID)
+}
+
 // PurgeRunData removes one run's rows from the provider store: its transcript,
 // its tool-call trace and the run record itself. It is what the Run
 // reconciler's finalizer calls, so deleting a Run object — directly, or by
@@ -1108,5 +1141,5 @@ func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Inter
 	}
 }
 
-// The inbound trigger webhook, the delivery log it writes and the filter
-// matcher it runs live in trigger_deliveries.go.
+// The inbound webhook, its routing to triggers and the delivery sink it
+// writes live in webhook_deliveries.go.

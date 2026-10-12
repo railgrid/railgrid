@@ -24,7 +24,7 @@
 //     forwards, gated on the stamped caller and run as the provider — see
 //     api/dataplane.go. This is the only way a verb is reached.
 //   - /oauth/…                          the browser OAuth popup flow
-//   - /webhooks/…                       signed inbound trigger and channel hooks
+//   - /webhooks/…                       signed inbound webhook and channel hooks
 //   - everything else                   the portal micro-frontend, mounted in
 //     the portal under /ui/providers/agents/.
 package main
@@ -113,8 +113,8 @@ func runServe() {
 		ProviderKubeconfig: os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
 		OAuthApps:          oauthAppsFromEnv(),
-		// How many inbound deliveries the log keeps per trigger when the
-		// trigger does not say (spec.deliveryRetention). Default 200.
+		// How many inbound deliveries the sink keeps per Webhook when the
+		// webhook does not say (spec.deliveryRetention). Default 200.
 		TriggerDeliveryRetention: intEnv("AGENTS_TRIGGER_DELIVERY_RETENTION"),
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS, subresour
 	// external sender reaches these through the hub's anonymous forwarding, and
 	// the HMAC in the path is the whole credential.
 	webhookRoutes := http.NewServeMux()
-	webhookRoutes.HandleFunc("POST "+triggerWebhookPattern, srv.WebhookTrigger)
+	webhookRoutes.HandleFunc("POST "+triggerWebhookPattern, srv.WebhookInbound)
 	webhookRoutes.HandleFunc("POST "+channelWebhookPattern, srv.WebhookChannel)
 
 	return serve.New(serve.Options{
@@ -241,7 +241,7 @@ func buildHandler(srv *api.Server, readiness http.Handler, dist fs.FS, subresour
 const (
 	oauthCallbackPath  = "/oauth/callback"
 	oauthProvidersPath = "/oauth/providers"
-	// The cluster and name are the addressing; the token is an HMAC this
+	// The cluster and name (a Webhook) are the addressing; the token is an HMAC this
 	// provider keys (internal/webhookpath), and it is the whole credential.
 	triggerWebhookPattern = "/webhooks/triggers/{cluster}/{name}/{token}"
 	channelWebhookPattern = "/webhooks/channels/{cluster}/{name}/{token}"

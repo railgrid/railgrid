@@ -307,7 +307,7 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 func TestExportResourcesBindEveryVerbToItsKind(t *testing.T) {
 	wantKind := map[string]string{
 		"agents": "Agent", "connections": "Connection", "modelcredentials": "ModelCredential",
-		"runs": "Run", "schedules": "Schedule", "triggers": "Trigger",
+		"runs": "Run", "schedules": "Schedule", "triggers": "Trigger", "webhooks": "Webhook",
 	}
 	declared := parseExportResources(readSpecBlock(t, "../manifest.yaml", "export"))
 	if len(declared) != len(wantKind) {

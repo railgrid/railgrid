@@ -373,14 +373,18 @@ describe('schedules and triggers', () => {
     expect(kcp.lastOf('PATCH').body).toEqual({ spec: { runAt: null } })
   })
 
-  it('refuses a trigger source the provider cannot deliver', async () => {
-    await expect(resources.createTrigger({ name: 't', agentRef: 'a', source: 'email' })).rejects.toMatchObject({ status: 400 })
+  it('requires the webhook a trigger routes from and writes no source or retention of its own', async () => {
+    await expect(resources.createTrigger({ name: 't', agentRef: 'a', webhookRef: ' ' })).rejects.toMatchObject({ status: 400 })
+    await resources.createTrigger({ name: 't', agentRef: 'a', webhookRef: ' github-org ' })
+    expect(kcp.lastOf('POST').body).toMatchObject({ kind: 'Trigger', spec: { agentRef: 'a', webhookRef: 'github-org' } })
+    const spec = (kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec
+    expect(Object.keys(spec).sort()).toEqual(['agentRef', 'webhookRef'])
   })
 
   it('writes a trimmed spec.filter on create and omits an empty one', async () => {
-    await resources.createTrigger({ name: 't', agentRef: 'a', source: 'github', filter: { eventType: ' pull_request ', match: '', stale: null } })
+    await resources.createTrigger({ name: 't', agentRef: 'a', webhookRef: 'gh', filter: { eventType: ' pull_request ', match: '', stale: null } })
     expect((kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec.filter).toEqual({ eventType: 'pull_request' })
-    await resources.createTrigger({ name: 't', agentRef: 'a', source: 'github', filter: {} })
+    await resources.createTrigger({ name: 't', agentRef: 'a', webhookRef: 'gh', filter: {} })
     expect(JSON.stringify(kcp.lastOf('POST').body)).not.toContain('filter')
   })
 
@@ -391,9 +395,38 @@ describe('schedules and triggers', () => {
     expect(kcp.lastOf('PATCH').body).toEqual({ spec: { task: 'x' } })
   })
 
-  it('never writes a webhook path, because the token is the provider’s to mint', async () => {
-    await resources.createTrigger({ name: 't', agentRef: 'a', source: 'webhook' })
-    expect(JSON.stringify(kcp.lastOf('POST').body)).not.toContain('webhookPath')
+  it('retargets a trigger at another webhook and refuses an empty one', async () => {
+    await resources.patchTrigger('t', { webhookRef: 'deploys' })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { webhookRef: 'deploys' } })
+    await expect(resources.patchTrigger('t', { webhookRef: '' })).rejects.toMatchObject({ status: 400 })
+  })
+})
+
+describe('webhooks', () => {
+  it('creates a cluster-scoped Webhook and never writes its path, because the token is the provider’s to mint', async () => {
+    await resources.createWebhook({ name: 'github-org', source: 'github', displayName: ' GitHub org ', deliveryRetention: 50 })
+    const post = kcp.lastOf('POST')
+    expect(post.url).toContain('/apis/agents.railgrid.ai/v1alpha1/webhooks')
+    expect(post.body).toEqual({
+      apiVersion: 'agents.railgrid.ai/v1alpha1',
+      kind: 'Webhook',
+      metadata: { name: 'github-org' },
+      spec: { source: 'github', displayName: 'GitHub org', deliveryRetention: 50 },
+    })
+    expect(JSON.stringify(post.body)).not.toContain('webhookPath')
+  })
+
+  it('refuses a source the provider cannot receive and a retention out of bounds', async () => {
+    await expect(resources.createWebhook({ name: 'w', source: 'email' })).rejects.toMatchObject({ status: 400 })
+    await expect(resources.createWebhook({ name: 'w', source: 'webhook', deliveryRetention: 1001 })).rejects.toMatchObject({ status: 400 })
+    await expect(resources.patchWebhook('w', { deliveryRetention: -1 })).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('merge-patches settings, where null restores the default retention and an empty name drops it', async () => {
+    await resources.patchWebhook('w', { displayName: '', deliveryRetention: null })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { displayName: null, deliveryRetention: null } })
+    await resources.patchWebhook('w', { source: 'github', deliveryRetention: 0 })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { source: 'github', deliveryRetention: 0 } })
   })
 })
 
@@ -638,8 +671,11 @@ describe('model credentials', () => {
       name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'oauthToken', value: 'sk-ant-oat01-x' },
     })
     const secret = kcp.last('/secrets')
-    expect(secret.contentType).toBe('application/apply-patch+yaml')
-    expect((secret.body as { data: Record<string, string> }).data).toEqual({ oauthToken: btoa('sk-ant-oat01-x') })
+    expect(secret.method).toBe('PATCH')
+    expect(secret.contentType).toBe('application/merge-patch+json')
+    // The other kind this provider knows is nulled in the same write, so the
+    // Secret ends up with exactly one identity whatever it held before.
+    expect((secret.body as { data: Record<string, string | null> }).data).toEqual({ oauthToken: btoa('sk-ant-oat01-x'), apiKey: null })
     expect(secret.body).not.toHaveProperty('stringData')
     expect((secret.body as { metadata: { labels: Record<string, string> } }).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
     const created = kcp.lastOf('POST').body as { spec: Record<string, unknown> }
@@ -651,12 +687,24 @@ describe('model credentials', () => {
     expect(order[1]).toContain('/modelcredentials')
   })
 
-  it('replaces a claude-code key instead of accumulating one, which is why it writes data and not stringData', async () => {
-    // Server-side apply removes a field this manager declared last time and
-    // does not declare now, so one key in `data` REPLACES the other. stringData
-    // cannot say that — the apiserver folds it into `data` and the old key
-    // survives, which llm.ReadHarnessSecret then refuses as two identities in
-    // one Secret.
+  it('creates the harness Secret when there is none yet', async () => {
+    kcp.fail('GET /modelcredentials/my-claude', 404, 'NotFound')
+    kcp.fail('PATCH /secrets/railgrid-agents-model-my-claude', 404, 'NotFound')
+    await resources.saveCredential({
+      name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'oauthToken', value: 'sk-ant-oat01-x' },
+    })
+    const secret = kcp.last('/secrets')
+    expect(secret.method).toBe('POST')
+    expect((secret.body as { data: Record<string, string> }).data).toEqual({ oauthToken: btoa('sk-ant-oat01-x') })
+    expect((secret.body as { metadata: { labels: Record<string, string> } }).metadata.labels).toEqual({ 'railgrid.ai/owner': 'agents' })
+  })
+
+  it('replaces a claude-code key instead of accumulating one, whoever wrote the old one', async () => {
+    // This used to rely on server-side apply dropping the key this manager
+    // declared last time, which left a key written by anyone else in place —
+    // and llm.ReadHarnessSecret refuses a Secret with both as two identities.
+    // The merge patch removes the other kind explicitly, so field ownership
+    // cannot leave a stale identity behind.
     kcp.reply('GET /modelcredentials/my-claude', {
       metadata: { name: 'my-claude' },
       spec: { provider: 'claude-code', secretRef: { name: 'railgrid-agents-model-my-claude' }, secretKey: 'apiKey' },
@@ -665,8 +713,8 @@ describe('model credentials', () => {
       name: 'my-claude', provider: 'claude-code', harnessSecret: { key: 'apiKey', value: 'sk-ant-api03-x' },
     })
     const secret = kcp.last('/secrets')
-    expect(Object.keys((secret.body as { data: Record<string, string> }).data)).toEqual(['apiKey'])
-    expect(secret.url).toContain('force=true')
+    expect(secret.method).toBe('PATCH')
+    expect((secret.body as { data: Record<string, string | null> }).data).toEqual({ apiKey: btoa('sk-ant-api03-x'), oauthToken: null })
     // spec.secretKey is left exactly as the apiserver defaulted it and is never
     // declared by this writer, so it cannot become a rival declaration.
     const patched = kcp.last('/modelcredentials/my-claude').body as { spec: Record<string, unknown> }

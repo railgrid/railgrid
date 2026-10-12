@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
-import type { Agent, Connection, Credential, RailgridContext, Toolset } from '../types'
+import type { Agent, Connection, Credential, RailgridContext, Toolset, Webhook } from '../types'
 import { agentFixture } from './helpers'
 import { settleVue, text } from './vue-helper'
 
@@ -309,6 +309,37 @@ describe('public Agents shell routing', () => {
     expect(document.activeElement).toBe(element.querySelector('[data-toolsets-heading]'))
   })
 
+  it('adds a Webhooks menu, and lands a created webhook on its own page where the URL is', async () => {
+    const created: Webhook = { metadata: { name: 'github-org' }, spec: { source: 'github' }, status: { webhookPath: '/services/providers/agents/webhooks/c/github-org/t' } }
+    const element = await mountShell('#/webhooks')
+    const store = element.store!
+    store.webhooks.loaded = store.webhooks.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue(4, 120)
+    expect(text(element.querySelector('.agents-nav-wrap'))).toContain('Webhooks')
+    expect(text(element.querySelector('[data-webhooks-heading]'))).toContain('Webhooks')
+
+    const createWebhook = vi.fn().mockResolvedValue(created)
+    element.api!.createWebhook = createWebhook as ApiClient['createWebhook']
+    element.api!.listWebhooks = vi.fn().mockResolvedValue([created])
+    element.api!.listWebhookDeliveries = vi.fn().mockResolvedValue({ items: [], retention: 200 }) as ApiClient['listWebhookDeliveries']
+    buttonWithText(element, 'Create webhook').click()
+    await settleVue()
+    expect(location.hash).toBe('#/create/webhook')
+    expect(element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/webhooks')
+
+    const name = element.querySelector<HTMLInputElement>('input[name="name"]')!
+    name.value = 'github-org'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    element.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue(7, 120)
+
+    expect(createWebhook).toHaveBeenCalledWith(expect.objectContaining({ name: 'github-org', source: 'webhook' }))
+    expect(location.hash).toBe('#/webhooks/github-org/edit')
+    expect(text(element.querySelector('.k-resource-page__kind'))).toBe('Webhook')
+    expect(text(element.querySelector('[data-testid="webhook-url"]'))).toContain('/webhooks/c/github-org/t')
+  })
+
   it('opens automation forms on agent-owned routes and replaces back to Config', async () => {
     const element = await mountShell('#/agents/scout/config')
     const store = element.store!
@@ -355,10 +386,10 @@ describe('public Agents shell routing', () => {
     store.connections.loaded = store.connections.hasSnapshot = true
     store.toolsets.loaded = store.toolsets.hasSnapshot = true
     store.schedules.loaded = store.schedules.hasSnapshot = true
-    store.triggers.data = [{ metadata: { name: 'on/issue' }, spec: { agentRef: 'scout', source: 'webhook', task: 'old task' } }]
+    store.triggers.data = [{ metadata: { name: 'on/issue' }, spec: { agentRef: 'scout', webhookRef: 'hooks', task: 'old task' } }]
     store.triggers.loaded = store.triggers.hasSnapshot = true
     store.dispatchEvent(new Event('change'))
-    const updated = { metadata: { name: 'on/issue' }, spec: { agentRef: 'scout', source: 'webhook', task: 'new task' } }
+    const updated = { metadata: { name: 'on/issue' }, spec: { agentRef: 'scout', webhookRef: 'hooks', task: 'new task' } }
     element.api!.patchTrigger = vi.fn().mockResolvedValue(updated)
     element.api!.listTriggers = vi.fn().mockResolvedValue([updated])
     const replace = vi.spyOn(history, 'replaceState')

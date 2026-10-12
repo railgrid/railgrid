@@ -2,18 +2,18 @@
 // Tests the filter being edited against real traffic, live. The verdict comes
 // from the provider's `evaluate` verb — the same matcher the webhook runs — so
 // what reads green here is what fires on the wire; the portal never re-implements
-// the matching. Pick a recorded delivery (or paste a sample) and every change to
-// the filter re-evaluates after a short pause.
+// the matching. Pick a delivery the trigger's webhook recorded (or paste a
+// sample) and every change to the filter re-evaluates after a short pause.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, RotateCcw, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
-import { fmtTime, type Trigger, type TriggerDelivery, type TriggerFilterVerdict } from '../types'
+import { fmtTime, type Trigger, type TriggerFilterVerdict, type WebhookDelivery } from '../types'
 import FormSelect from '../portalkit/FormSelect.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
 import type { Route } from '../router'
-import { deliveryOptionLabel, deliveryOutcomeLabel, parseHeaderLines } from './trigger-deliveries'
+import { deliveryOptionLabel, deliveryOutcomeLabel, parseHeaderLines } from './webhook-deliveries'
 
 const props = withDefaults(defineProps<{
   api: ApiClient
@@ -23,17 +23,21 @@ const props = withDefaults(defineProps<{
   filter: Record<string, string>
   /** A form-level error in the filter text; evaluation waits until it clears. */
   filterError?: string
-  /** A delivery to start with (from the log's "Test filter"). */
-  preselect?: string
+  /**
+   * The webhook the form currently routes from. The recorded deliveries are
+   * the SAVED webhook's (evaluate resolves a deliveryID against the trigger's
+   * own webhook sink), so a different pick here is called out, not followed.
+   */
+  draftWebhook?: string
   /** Debounce before a change is evaluated, in ms. */
   debounceMS?: number
-}>(), { filterError: '', preselect: '', debounceMS: 300 })
+}>(), { filterError: '', draftWebhook: '', debounceMS: 300 })
 
 const emit = defineEmits<{ navigate: [route: Route] }>()
 
 type Source = 'delivery' | 'sample'
 const source = ref<Source>('delivery')
-const deliveries = ref<TriggerDelivery[]>([])
+const deliveries = ref<WebhookDelivery[]>([])
 const deliveriesError = ref('')
 const deliveriesLoaded = ref(false)
 const selected = ref('')
@@ -47,19 +51,28 @@ let timer = 0
 let generation = 0
 
 const name = computed(() => props.trigger.metadata.name)
-const options = computed(() => deliveries.value.map(d => ({ value: d.id, label: deliveryOptionLabel(d, fmtTime) })))
+const webhook = computed(() => props.trigger.spec.webhookRef)
+const webhookChanged = computed(() => !!props.draftWebhook && props.draftWebhook !== webhook.value)
+const options = computed(() => deliveries.value.map(d => ({ value: d.id, label: deliveryOptionLabel(d, fmtTime, name.value) })))
 const selectedDelivery = computed(() => deliveries.value.find(d => d.id === selected.value))
+// What this trigger made of the picked delivery when it arrived; absent when
+// the delivery predates the trigger routing from this webhook.
+const selectedRoute = computed(() => selectedDelivery.value?.routes.find(r => r.trigger === name.value))
 const filterKey = computed(() => JSON.stringify(Object.entries(props.filter).sort(([a], [b]) => a.localeCompare(b))))
 const hasInput = computed(() => source.value === 'delivery' ? !!selected.value : sampleBody.value.trim() !== '' || sampleHeaders.value.trim() !== '')
 const emptyFilter = computed(() => Object.keys(props.filter).length === 0)
 
 async function loadDeliveries(): Promise<void> {
+  if (!webhook.value) {
+    deliveries.value = []
+    deliveriesLoaded.value = true
+    return
+  }
   try {
-    const page = await props.api.listTriggerDeliveries(name.value, { limit: 50 })
+    const page = await props.api.listWebhookDeliveries(webhook.value, { limit: 50 })
     deliveries.value = page.items
     deliveriesError.value = ''
-    if (props.preselect && page.items.some(d => d.id === props.preselect)) selected.value = props.preselect
-    else if (!selected.value || !page.items.some(d => d.id === selected.value)) selected.value = page.items[0]?.id ?? ''
+    if (!selected.value || !page.items.some(d => d.id === selected.value)) selected.value = page.items[0]?.id ?? ''
   } catch (e) {
     deliveriesError.value = (e as Error).message
   } finally {
@@ -126,12 +139,6 @@ onMounted(async () => {
   await loadDeliveries()
   schedule()
 })
-watch(() => props.preselect, (id) => {
-  if (id && deliveries.value.some(d => d.id === id)) {
-    source.value = 'delivery'
-    selected.value = id
-  }
-})
 watch([filterKey, () => props.filterError, selected, source, sampleHeaders, sampleBody], schedule)
 onBeforeUnmount(() => {
   if (timer) window.clearTimeout(timer)
@@ -144,7 +151,7 @@ onBeforeUnmount(() => {
     <header class="agents-tester-head">
       <div>
         <strong id="agents-tester-title">Test the filter against real traffic</strong>
-        <span class="agents-hint">Pick a delivery this webhook has received, or paste a sample. The verdict comes from the provider’s matcher, re-run as you type, and nothing fires until you replay.</span>
+        <span class="agents-hint">Pick a delivery webhook <code>{{ webhook }}</code> has received, or paste a sample. The verdict comes from the provider’s matcher, re-run as you type, and nothing fires until you replay.</span>
       </div>
       <div class="agents-seg" role="group" aria-label="What to test against">
         <button type="button" :class="{ on: source === 'delivery' }" :aria-pressed="source === 'delivery'" @click="source = 'delivery'">Recorded delivery</button>
@@ -152,14 +159,16 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <p v-if="webhookChanged" class="agents-hint" role="status">The recorded deliveries are still <code>{{ webhook }}</code>’s; save to test against <code>{{ draftWebhook }}</code>’s traffic.</p>
     <div v-if="source === 'delivery'" class="agents-tester-pick">
       <p v-if="deliveriesError" class="agents-fielderr" role="alert">Could not load deliveries. {{ deliveriesError }}</p>
       <p v-else-if="!deliveriesLoaded" class="muted" role="status">Loading deliveries…</p>
       <p v-else-if="options.length === 0" class="muted" role="status">Nothing has reached this webhook URL yet. Once a delivery arrives it can be picked here; until then, test with a pasted sample.</p>
       <label v-else><span id="agents-tester-delivery-label">Delivery</span><FormSelect v-model="selected" :options="options" :labelledby="'agents-tester-delivery-label'" name="testDelivery" /></label>
-      <p v-if="selectedDelivery" class="agents-hint">
-        Recorded as <strong>{{ deliveryOutcomeLabel(selectedDelivery.outcome).toLowerCase() }}</strong><template v-if="selectedDelivery.reason"> ({{ selectedDelivery.reason }})</template> with the filter in force at the time.
+      <p v-if="selectedDelivery && selectedRoute" class="agents-hint">
+        This trigger recorded it as <strong>{{ deliveryOutcomeLabel(selectedRoute.outcome).toLowerCase() }}</strong><template v-if="selectedRoute.reason"> ({{ selectedRoute.reason }})</template> with the filter in force at the time.
       </p>
+      <p v-else-if="selectedDelivery" class="agents-hint">This trigger was not routed from the webhook when the delivery arrived.</p>
     </div>
     <div v-else class="agents-grid2 agents-tester-sample">
       <label>Headers<textarea v-model="sampleHeaders" class="k-input mono" name="sampleHeaders" rows="3" placeholder="X-GitHub-Event: pull_request"></textarea><span class="agents-hint">One Name: value per line.</span></label>

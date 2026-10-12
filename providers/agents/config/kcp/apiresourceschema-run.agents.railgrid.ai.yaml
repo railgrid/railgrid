@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260924-87f1980f.run.agents.railgrid.ai
+  name: v261012-77f29a8e.run.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -14,7 +14,7 @@ spec:
   - name: v1alpha1
     schema:
       description: RunRequest is the payload of the "run" custom subresource on agents,
-        schedules, triggers.
+        schedules, triggers, webhooks.
       properties:
         apiVersion:
           description: |-

@@ -373,53 +373,101 @@ export interface Trigger {
   metadata: { name: string; uid?: string }
   spec: {
     agentRef: string
-    source: string
-    connectionRef?: string
+    // webhookRef names the workspace Webhook this trigger routes from. One
+    // Webhook (one inbound URL) feeds many triggers, each with its own filter.
+    webhookRef: string
     filter?: Record<string, string>
     task?: string
     suspend?: boolean
     channelRef?: string
-    // deliveryRetention is how many recent inbound deliveries the provider
-    // keeps for the delivery log; unset means the provider default, 0 none.
-    deliveryRetention?: number
   }
-  // webhookPath embeds the trigger's secret token; the portal shows it so the
-  // operator can paste the full URL into GitHub (or any webhook sender).
-  // lastReceived/lastDelivery summarise the newest inbound delivery, fired or
-  // not, so a trigger whose filter drops everything can be told from one
-  // nobody calls without opening the log.
+  // lastReceived/lastDelivery summarise the newest delivery the trigger's
+  // webhook routed to it, fired or not, so a trigger whose filter drops
+  // everything can be told from one nobody calls without opening the log.
   status?: {
     lastFired?: string
     lastRunID?: string
-    webhookPath?: string
     disabledReason?: string
     lastReceived?: string
     lastDelivery?: TriggerDeliverySummary
+    conditions?: KubeCondition[]
   }
 }
 
-export type TriggerDeliveryOutcome = 'fired' | 'filtered' | 'suspended' | 'disabled' | 'noTask' | 'failed'
+/** What became of one delivery for one routed trigger. */
+export type TriggerRouteOutcome = 'fired' | 'filtered' | 'suspended' | 'disabled' | 'noTask' | 'failed'
 
 export interface TriggerDeliverySummary {
   time: string
-  outcome: TriggerDeliveryOutcome | string
+  outcome: TriggerRouteOutcome | string
   reason?: string
   deliveryID?: string
 }
 
+export type WebhookSource = 'webhook' | 'github'
+
 /**
- * TriggerDelivery is one entry of a trigger's delivery log (the `deliveries`
- * verb): an authenticated POST to its webhook URL and what became of it. A
- * list entry carries the first bytes of the body as `body` with `bodySize`
- * saying how long the stored body is; reading one by id returns it whole.
+ * Webhook is a workspace-level inbound endpoint: one URL and one delivery
+ * sink. Triggers route from it by spec.webhookRef, so the URL is configured on
+ * the sender once however many agents react to what it sends.
  */
-export interface TriggerDelivery {
+export interface Webhook {
+  metadata: { name: string; uid?: string }
+  spec: {
+    // source says who sends: `github` makes the trigger form offer GitHub's
+    // event catalog, `webhook` is any sender that POSTs JSON.
+    source: WebhookSource | string
+    displayName?: string
+    // deliveryRetention is how many recent deliveries the sink keeps; unset
+    // means the provider default, 0 keeps none.
+    deliveryRetention?: number
+  }
+  // webhookPath embeds the webhook's secret token; the portal shows it so the
+  // operator can paste the full URL into GitHub (or any webhook sender).
+  status?: {
+    webhookPath?: string
+    lastReceived?: string
+    lastDelivery?: WebhookDeliverySummary
+    routes?: { name: string }[]
+    conditions?: KubeCondition[]
+  }
+}
+
+export interface WebhookDeliverySummary {
+  time: string
+  outcome: WebhookDeliveryOutcome | string
+  reason?: string
+  deliveryID?: string
+  routed: number
+  fired: number
+}
+
+/**
+ * The rollup over a delivery's routes: fired if any route fired, failed if any
+ * failed, unrouted when no trigger routes from the webhook, else filtered.
+ */
+export type WebhookDeliveryOutcome = 'fired' | 'filtered' | 'unrouted' | 'failed'
+
+export interface WebhookDeliveryRoute {
+  trigger: string
+  outcome: TriggerRouteOutcome | string
+  reason?: string
+  runID?: string
+}
+
+/**
+ * WebhookDelivery is one entry of a webhook's delivery sink (the `deliveries`
+ * verb): an authenticated POST to its URL and what each routed trigger made
+ * of it. A list entry carries the first bytes of the body as `body` with
+ * `bodySize` saying how long the stored body is; reading one by id returns it
+ * whole.
+ */
+export interface WebhookDelivery {
   id: string
-  triggerName: string
-  agentName: string
+  webhookName: string
   deliveryID?: string
   receivedAt: string
-  outcome: TriggerDeliveryOutcome | string
+  outcome: WebhookDeliveryOutcome | string
   reason?: string
   eventType?: string
   action?: string
@@ -429,14 +477,35 @@ export interface TriggerDelivery {
   body?: string
   bodySize: number
   bodyTruncated?: boolean
-  runID?: string
   replayOf?: string
+  routes: WebhookDeliveryRoute[]
 }
 
-export interface TriggerDeliveryPage {
-  items: TriggerDelivery[]
-  // retention is the log cap in effect for this trigger.
+export interface WebhookDeliveryPage {
+  items: WebhookDelivery[]
+  // retention is the sink cap in effect for this webhook.
   retention: number
+}
+
+export interface WebhookDeliveryQuery {
+  limit?: number
+  outcome?: string
+  trigger?: string
+}
+
+/**
+ * The webhook `run` verb: replay a recorded delivery to every routed trigger,
+ * or inject a spelled-out sample as if the sender had POSTed it.
+ */
+export type WebhookRunBody =
+  | { deliveryID: string }
+  | { headers?: Record<string, string>; body?: string }
+
+export interface WebhookRunResult {
+  deliveryID: string
+  status: WebhookDeliveryOutcome | string
+  reason?: string
+  routes: WebhookDeliveryRoute[]
 }
 
 /** One filter key's verdict from the `evaluate` verb. */
@@ -461,14 +530,15 @@ export interface TriggerFilterVerdict {
 
 export interface TriggerFilterEvaluateBody {
   filter?: Record<string, string>
+  // deliveryID names a row of the trigger's webhook sink.
   deliveryID?: string
   request?: { headers?: Record<string, string>; body?: string }
 }
 
-/** The `run` verb's answer when replaying a recorded delivery. */
+/** The trigger `run` verb's answer when replaying one webhook delivery through it. */
 export interface TriggerReplayResult {
   deliveryID?: string
-  status: TriggerDeliveryOutcome | string
+  status: TriggerRouteOutcome | string
   reason?: string
   runID?: string
 }
@@ -913,21 +983,30 @@ export interface ScheduleCreate extends SchedulePatch {
 }
 
 export interface TriggerPatch {
-  source?: string
-  connectionRef?: string
+  webhookRef?: string
   // filter is sent as a JSON merge patch fragment: a null value removes that
   // key from spec.filter, so an edit can drop a key without a full replace.
   filter?: Record<string, string | null>
   task?: string
   suspend?: boolean
   channelRef?: string
-  // deliveryRetention: a number sets the log cap, null restores the provider
-  // default (removes the field).
-  deliveryRetention?: number | null
 }
 export interface TriggerCreate extends TriggerPatch {
   name: string
   agentRef: string
+  webhookRef: string
+}
+
+export interface WebhookPatch {
+  source?: string
+  displayName?: string
+  // deliveryRetention: a number sets the sink cap, null restores the provider
+  // default (removes the field).
+  deliveryRetention?: number | null
+}
+export interface WebhookCreate extends WebhookPatch {
+  name: string
+  source: string
 }
 
 export interface ToolsetWrite {

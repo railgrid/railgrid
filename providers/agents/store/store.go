@@ -551,33 +551,39 @@ type ToolCall struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
-// TriggerDeliveryPreviewBytes is how much of a delivery's body a list row
+// WebhookDeliveryPreviewBytes is how much of a delivery's body a list row
 // carries. The full body is read one delivery at a time.
-const TriggerDeliveryPreviewBytes = 512
+const WebhookDeliveryPreviewBytes = 512
 
-// TriggerDelivery is one authenticated POST to a Trigger's webhook URL and
-// what became of it — the delivery log behind triggers/{name}/deliveries.
+// WebhookDeliveryUnrouted is the rollup outcome of a delivery that reached a
+// Webhook no Trigger routes from. The other rollups reuse the route outcome
+// strings (fired, filtered, failed); see WebhookDeliveryRollup.
+const WebhookDeliveryUnrouted = "unrouted"
+
+// WebhookDelivery is one authenticated POST to a Webhook's URL and what each
+// Trigger routing from it made of it — the sink behind
+// webhooks/{name}/deliveries.
 //
-// Every delivery is recorded, not only the ones that fired: a trigger whose
-// filter drops everything looks identical, from its status alone, to one
-// nobody calls, and the log is what tells them apart. Rows are kept per
-// trigger UID rather than name so a trigger deleted and recreated under the
-// same name starts with an empty log, and are capped per trigger
-// (RecordTriggerDelivery's retain) so a noisy organization webhook cannot
+// Every delivery is recorded, not only the ones that fired: a webhook whose
+// triggers' filters drop everything looks identical, from status alone, to
+// one nobody calls, and the sink is what tells them apart. Rows are kept per
+// webhook UID rather than name so a webhook deleted and recreated under the
+// same name starts with an empty sink, and are capped per webhook
+// (RecordWebhookDelivery's retain) so a noisy organization webhook cannot
 // grow the table without bound.
-type TriggerDelivery struct {
+type WebhookDelivery struct {
 	ID          string `json:"id"`
-	TriggerName string `json:"triggerName"`
-	TriggerUID  string `json:"triggerUID"`
-	AgentName   string `json:"agentName"`
+	WebhookName string `json:"webhookName"`
+	WebhookUID  string `json:"webhookUID"`
 	// DeliveryID is the sender's own id for the event (GitHub's
 	// X-GitHub-Delivery), when it gave one.
 	DeliveryID string    `json:"deliveryID,omitempty"`
 	ReceivedAt time.Time `json:"receivedAt"`
-	// Outcome is fired, filtered, suspended, disabled, noTask or failed.
+	// Outcome is the rollup over Routes: fired, failed, unrouted or filtered
+	// (WebhookDeliveryRollup).
 	Outcome string `json:"outcome"`
-	// Reason explains an outcome other than fired: the failing filter key, or
-	// why the run could not be recorded.
+	// Reason explains a rollup other than fired, when one route's reason says
+	// it best (the failing route's error, say).
 	Reason string `json:"reason,omitempty"`
 	// EventType, Action and Repository are what the filter matcher read off
 	// the delivery, stored so a list can show them without the body.
@@ -590,22 +596,62 @@ type TriggerDelivery struct {
 	// api.recordedHeaders).
 	Headers map[string]string `json:"headers,omitempty"`
 	// Body is the payload, up to the webhook handler's read limit. A list
-	// carries only the first TriggerDeliveryPreviewBytes of it, with BodySize
+	// carries only the first WebhookDeliveryPreviewBytes of it, with BodySize
 	// saying how long the stored body is.
 	Body          string `json:"body,omitempty"`
 	BodySize      int    `json:"bodySize"`
 	BodyTruncated bool   `json:"bodyTruncated,omitempty"`
-	// RunID is the Run the delivery fired, when it did.
-	RunID string `json:"runID,omitempty"`
-	// ReplayOf is the recorded delivery this one re-fed through the trigger,
-	// when it was a replay rather than a fresh POST.
+	// ReplayOf is the recorded delivery this one re-fed, when it was a replay
+	// rather than a fresh POST.
 	ReplayOf string `json:"replayOf,omitempty"`
+	// Routes is what each routed Trigger made of the delivery, one entry per
+	// trigger whose spec.webhookRef named the webhook when it arrived.
+	Routes []WebhookRoute `json:"routes"`
 }
 
-// TriggerDeliveryQuery narrows a delivery listing.
-type TriggerDeliveryQuery struct {
-	// Outcome keeps only deliveries with this outcome; empty keeps all.
+// WebhookRoute is one Trigger's verdict on one delivery.
+type WebhookRoute struct {
+	// Trigger is the Trigger's name.
+	Trigger string `json:"trigger"`
+	// Outcome is fired, filtered, suspended, disabled, noTask or failed.
+	Outcome string `json:"outcome"`
+	// Reason explains an outcome other than fired.
+	Reason string `json:"reason,omitempty"`
+	// RunID is the Run the route fired, when it did.
+	RunID string `json:"runID,omitempty"`
+}
+
+// WebhookDeliveryRollup folds a delivery's routes into the one outcome the
+// sink row and the sender's response carry. Fired wins because one run is
+// what the sender wanted; a failure comes next because it is the only
+// outcome worth a redelivery; no routes at all is its own answer, since
+// "nobody listens" and "everybody declined" need different fixes.
+func WebhookDeliveryRollup(routes []WebhookRoute) string {
+	failed := false
+	for _, r := range routes {
+		switch r.Outcome {
+		case "fired":
+			return "fired"
+		case "failed":
+			failed = true
+		}
+	}
+	switch {
+	case failed:
+		return "failed"
+	case len(routes) == 0:
+		return WebhookDeliveryUnrouted
+	default:
+		return "filtered"
+	}
+}
+
+// WebhookDeliveryQuery narrows a delivery listing.
+type WebhookDeliveryQuery struct {
+	// Outcome keeps only deliveries with this rollup outcome; empty keeps all.
 	Outcome string
+	// Trigger keeps only deliveries routed to this Trigger; empty keeps all.
+	Trigger string
 	// Limit caps the result (newest first). Zero means the store default.
 	Limit int
 }
@@ -770,17 +816,21 @@ type Store interface {
 	// ListToolCalls returns one run's tool calls in execution order.
 	ListToolCalls(ctx context.Context, scope Scope, runID string) ([]ToolCall, error)
 
-	// Trigger deliveries: the inbound log behind triggers/{name}/deliveries.
-	// RecordTriggerDelivery appends one and prunes the trigger's log to its
-	// newest retain rows; retain <= 0 records nothing. Scope must name the
-	// agent, which is what DeleteAgentData purges by.
-	RecordTriggerDelivery(ctx context.Context, scope Scope, d TriggerDelivery, retain int) error
-	// ListTriggerDeliveries returns one trigger's deliveries newest first,
-	// each with its body cut to TriggerDeliveryPreviewBytes.
-	ListTriggerDeliveries(ctx context.Context, scope Scope, triggerUID string, q TriggerDeliveryQuery) ([]TriggerDelivery, error)
-	// GetTriggerDelivery returns one delivery whole; ok=false when the trigger
-	// has no such delivery.
-	GetTriggerDelivery(ctx context.Context, scope Scope, triggerUID, id string) (TriggerDelivery, bool, error)
+	// Webhook deliveries: the inbound sink behind webhooks/{name}/deliveries.
+	// RecordWebhookDelivery appends one and prunes the webhook's sink to its
+	// newest retain rows in the same write; retain <= 0 records nothing.
+	// Scope is org+workspace: a delivery belongs to the webhook, not to any
+	// one agent, so DeleteAgentData leaves it alone.
+	RecordWebhookDelivery(ctx context.Context, scope Scope, d WebhookDelivery, retain int) error
+	// ListWebhookDeliveries returns one webhook's deliveries newest first,
+	// each with its body cut to WebhookDeliveryPreviewBytes.
+	ListWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string, q WebhookDeliveryQuery) ([]WebhookDelivery, error)
+	// GetWebhookDelivery returns one delivery whole; ok=false when the
+	// webhook has no such delivery.
+	GetWebhookDelivery(ctx context.Context, scope Scope, webhookUID, id string) (WebhookDelivery, bool, error)
+	// DeleteWebhookDeliveries empties one webhook's sink — the Webhook
+	// finalizer's teardown.
+	DeleteWebhookDeliveries(ctx context.Context, scope Scope, webhookUID string) error
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
 	GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error)
 
