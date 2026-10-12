@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1487,7 +1488,10 @@ func projectEinoAssistantCompleteReadFileReceiptKey(value string) (projectEinoAs
 	}
 	allowed := map[string]struct{}{
 		"path": {}, "content": {}, "size": {}, "version": {}, "complete": {},
-		"truncated": {}, "binary": {}, "offset": {}, "limit": {},
+		"truncated": {}, "binary": {}, "offset": {}, "limit": {}, "missing": {}, "conflictProposal": {},
+	}
+	if !projectEinoAssistantValidateStructuredReadFileExtras(fields) {
+		return projectEinoAssistantCompleteReadFileKey{}, false
 	}
 	for name := range fields {
 		if _, ok := allowed[name]; !ok {
@@ -1525,7 +1529,20 @@ func projectEinoAssistantCompleteReadFileReceiptKey(value string) (projectEinoAs
 }
 
 func projectEinoAssistantDecodeUniqueReadFileReceiptFields(value string) (map[string]json.RawMessage, bool) {
-	decoder := json.NewDecoder(strings.NewReader(value))
+	if len(value) > projectEinoAssistantReadFileInputMaxBytes {
+		return nil, false
+	}
+	return projectEinoAssistantDecodeUniqueReadFileReceiptFieldsWithDecoder(json.NewDecoder(strings.NewReader(value)))
+}
+
+func projectEinoAssistantDecodeUniqueReadFileReceiptFieldsBytes(value []byte) (map[string]json.RawMessage, bool) {
+	if len(value) > projectEinoAssistantReadFileInputMaxBytes {
+		return nil, false
+	}
+	return projectEinoAssistantDecodeUniqueReadFileReceiptFieldsWithDecoder(json.NewDecoder(bytes.NewReader(value)))
+}
+
+func projectEinoAssistantDecodeUniqueReadFileReceiptFieldsWithDecoder(decoder *json.Decoder) (map[string]json.RawMessage, bool) {
 	token, err := decoder.Token()
 	delim, ok := token.(json.Delim)
 	if err != nil || !ok || delim != '{' {

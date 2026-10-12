@@ -135,3 +135,18 @@ users, set `sandbox.runtimeClassName` to a hardened RuntimeClass (`gvisor` or
 optional, for that use. Quota defaults, image provenance controls, and
 restrictive network policy remain additional work. File sync remains
 text-file oriented and skips binary or oversized App Studio workspace files.
+
+## Recovering interrupted synchronization
+
+The development agent persists pending reload commands and restart intent in
+its workspace manifest before invoking the runtime supervisor. A later eligible
+sync retries pending work; `never` defers it, and `auto` waits for a configured
+runtime. Status does not certify the source revision while these effects remain
+pending. For `auto`, supervisor status is checked before source files change.
+
+Only a refused supervisor connection is classified as a retryable 503. A timeout
+or a command failure does not prove that the effect never ran. Failed or
+unacknowledged work retains its durable intent, and successful effects clear it.
+This is recovery through replay, not an exactly-once guarantee across a crash
+between the runtime effect and the manifest update. Deploy the updated dev-agent
+image to development components to enable this recovery behavior.

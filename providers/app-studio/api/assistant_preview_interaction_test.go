@@ -159,13 +159,20 @@ func TestInteractProjectDevelopmentPreviewCheckpointsDirtySandboxBeforeBrowser(t
 			t.Fatalf("sync action = %q, want %q", name, projectActionWorkspaceSync)
 		}
 		syncCalls++
-		return nil
+		current, err := files.SourceRevision(ctx, scope)
+		if err != nil {
+			return err
+		}
+		return files.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: current})
 	}
 	sandbox := &projectAssistantRunSandbox{
 		server: server, client: fakeSandbox, id: id, project: project, scope: scope, runState: state,
 		metadata: projectAssistantRunSandboxMetadata{
 			Status: "active", SourceRevision: revision, SourceDigest: oldDigest,
 			RemoteRevision: revision + 1, RemoteDigest: newDigest, RemoteCheckpointID: "baseline",
+			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
+				"main.go": {Version: projectAssistantSandboxContentVersion("new\n")},
+			},
 		},
 	}
 	state.SetSandbox(sandbox)

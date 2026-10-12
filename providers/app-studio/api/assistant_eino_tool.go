@@ -926,6 +926,13 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		}
 		result, err = t.req.ToolPort.Invoke(ctx, t.tool, callRequest)
 	}
+	if err == nil && projectEinoAssistantSuccessfulWorkspaceMutationResult(spec.Name, result) &&
+		projectAssistantRunSandboxForRequest(callRequest) != nil {
+		// Keep the private mutation receipt distinct from shared writeback.
+		// Checkpoint the batch at the existing command, verification, commit,
+		// and terminal boundaries instead of scanning the whole project per edit.
+		result = projectEinoAssistantPrivateMutationResult(result)
+	}
 	// recoveryOf is presentation-only. Accept it only when this run previously
 	// issued the referenced failed action, then carry it into the typed mutation
 	// result and subsequent event projection without affecting the workspace
@@ -1332,6 +1339,22 @@ func projectEinoAssistantWorkspaceMutationResultHasChanges(name, result string) 
 		}
 	}
 	return false
+}
+
+// projectEinoAssistantPrivateMutationResult preserves the applied private edit
+// and reports its pending shared writeback. A later checkpoint failure belongs
+// to that checkpoint, not to a successful edit that the model might replay.
+func projectEinoAssistantPrivateMutationResult(result string) string {
+	var decoded map[string]json.RawMessage
+	if json.Unmarshal([]byte(result), &decoded) != nil || decoded == nil {
+		return result
+	}
+	decoded["writeback"] = json.RawMessage(`{"status":"pending","scope":"private","message":"The edit is applied in this run's private workspace. Shared-project writeback is pending a version-checked checkpoint before commands, verification, commit, or turn completion. Do not repeat this edit; if checkpointing reports a conflict, reread and reconcile the affected files."}`)
+	raw, err := json.Marshal(decoded)
+	if err != nil {
+		return result
+	}
+	return string(raw)
 }
 
 func projectEinoAssistantPartialMutationResult(result string, invokeErr error) string {

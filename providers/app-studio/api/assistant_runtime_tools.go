@@ -280,6 +280,7 @@ type projectAssistantRuntimeVerificationContext struct {
 	DevelopmentSyncStatus    string
 	DevelopmentSyncFailure   string
 	SandboxCheckpointFailure string
+	SourceFence              *projectAssistantPreviewSourceFence
 	Readiness                *projectAssistantReadinessWorkflowResult
 	RunContext               projectAssistantWorkflowRunContext
 	RuntimeInput             projectAssistantRuntimeWorkflowInput
@@ -304,13 +305,43 @@ func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkfl
 		developmentSyncFailure := ""
 		sandboxCheckpointFailure := ""
 		checkpointed := false
+		var sourceFence *projectAssistantPreviewSourceFence
 		if currentRunCtx.Server != nil && currentRunCtx.RunState != nil {
 			var checkpointErr error
 			checkpointed, checkpointErr = currentRunCtx.Server.checkpointProjectAssistantRunSandboxIfDirty(ctx, currentRunCtx.RunState)
 			if checkpointErr != nil {
+				if errors.Is(checkpointErr, context.Canceled) || errors.Is(checkpointErr, context.DeadlineExceeded) {
+					return nil, checkpointErr
+				}
 				developmentSyncStatus = "unknown"
 				developmentSyncFailure = projectAssistantRunSandboxCheckpointFailure(checkpointErr)
 				sandboxCheckpointFailure = developmentSyncFailure
+			}
+		}
+		if currentRunCtx.Server != nil && sandboxCheckpointFailure == "" {
+			var fenceErr error
+			sourceFence, fenceErr = currentRunCtx.Server.captureProjectAssistantPreviewSourceFence(ctx, currentRunCtx.RunState, projectAssistantPreviewWorkspaceScope(projectAssistantToolCallRequest{
+				Identity: currentRunCtx.Identity, Project: currentRunCtx.Project, WorkspaceScope: currentRunCtx.WorkspaceScope,
+			}))
+			if fenceErr != nil {
+				if errors.Is(fenceErr, context.Canceled) || errors.Is(fenceErr, context.DeadlineExceeded) {
+					return nil, fenceErr
+				}
+				var stale *projectAssistantSharedPreviewSourceStaleError
+				if checkedMutationRevision > 0 && errors.As(fenceErr, &stale) && stale.workspaceRevision > 0 {
+					// This run may still be waiting for its own sync below. Pin the
+					// source now, then require that exact preview checkpoint when
+					// observations finish; a later source revision cannot replace it.
+					sourceFence = &projectAssistantPreviewSourceFence{
+						server: currentRunCtx.Server, runState: currentRunCtx.RunState,
+						scope: projectAssistantPreviewWorkspaceScope(projectAssistantToolCallRequest{
+							Identity: currentRunCtx.Identity, Project: currentRunCtx.Project, WorkspaceScope: currentRunCtx.WorkspaceScope,
+						}),
+						revision: stale.workspaceRevision, requiresSharedPreviewCheckpoint: true,
+					}
+				} else {
+					sandboxCheckpointFailure = projectAssistantRunSandboxCheckpointFailure(fenceErr)
+				}
 			}
 		}
 		if checkedMutationRevision > 0 && currentRunCtx.RunState != nil {
@@ -365,6 +396,7 @@ func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkfl
 			DevelopmentSyncStatus:    developmentSyncStatus,
 			DevelopmentSyncFailure:   developmentSyncFailure,
 			SandboxCheckpointFailure: sandboxCheckpointFailure,
+			SourceFence:              sourceFence,
 			RunContext:               currentRunCtx,
 			RequireProcessEvidence:   requireProcessEvidence,
 		}, nil
@@ -545,8 +577,17 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 	}
 	if reason := strings.TrimSpace(input.SandboxCheckpointFailure); reason != "" {
 		result.Status = "not_ready"
-		result.Summary = "The latest workspace mutation is not current because the run sandbox checkpoint could not be applied."
+		result.Summary = "The workspace source could not be verified as current for runtime verification."
 		result.Blockers = []string{reason}
+		return result, nil
+	}
+	if err := input.SourceFence.validate(ctx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		result.Status = "not_ready"
+		result.Summary = "Source changed during runtime verification, so these observations cannot verify the requested source version."
+		result.Blockers = []string{projectAssistantRunSandboxCheckpointFailure(err)}
 		return result, nil
 	}
 	if input.CheckedMutationRevision > 0 {

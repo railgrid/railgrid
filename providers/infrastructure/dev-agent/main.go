@@ -864,6 +864,11 @@ type workspaceManifest struct {
 	SourceDigest          string   `json:"sourceDigest"`
 	Files                 []string `json:"files"`
 	PendingReloadCommands []string `json:"pendingReloadCommands,omitempty"`
+	// PendingRestart records a restart decision before it is sent to the
+	// runtime supervisor. A later eligible sync replays the effect until it is
+	// acknowledged and this bit is cleared; a request that defers restart keeps
+	// the intent without performing the effect.
+	PendingRestart bool `json:"pendingRestart,omitempty"`
 }
 
 type envRequest struct {
@@ -1035,11 +1040,30 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			case req.SourceRevision == previous.SourceRevision && normalizeSourceDigest(previous.SourceDigest) != gotDigest:
 				http.Error(w, "workspace sync revision was already applied with a different digest", http.StatusConflict)
 				return
-			case req.SourceRevision == previous.SourceRevision && len(previous.PendingReloadCommands) == 0 && verifyWorkspaceManifest(root, previous) == nil:
+			case req.SourceRevision == previous.SourceRevision && len(previous.PendingReloadCommands) == 0 && !previous.PendingRestart && verifyWorkspaceManifest(root, previous) == nil:
 				writeJSON(w, http.StatusOK, syncResponse{Phase: "Synced", SourceRevision: previous.SourceRevision, SourceDigest: previous.SourceDigest})
 				return
 			}
 		}
+	}
+	// Auto policy needs runtime status to decide whether the update requires a
+	// restart. Read it before mutating source files: if the supervisor is not
+	// listening yet, the caller can retry the original request and its changed
+	// paths and reload rules will still be visible.
+	priorRestartPending := found && previous.PendingRestart
+	var autoStatus processStatusResponse
+	autoStatusKnown := false
+	if strings.EqualFold(strings.TrimSpace(req.Restart), "auto") {
+		autoStatus, err = s.runtime.Status(r.Context())
+		if err != nil {
+			status := http.StatusBadGateway
+			if isRuntimeUnavailable(err) {
+				status = http.StatusServiceUnavailable
+			}
+			http.Error(w, "runtime status: "+err.Error(), status)
+			return
+		}
+		autoStatusKnown = true
 	}
 
 	changed := make([]string, 0, len(files))
@@ -1111,8 +1135,8 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	// stampPlain records the plain sync's result as a new applied revision so
 	// exec (and /status) keep working after plain syncs. See
 	// stampPlainSyncManifest for the App Studio revision caveat.
-	stampPlain := func(pendingCommands []string) error {
-		manifest, stamped, err := stampPlainSyncManifest(root, previous, found, written, cleanDeletePaths, pendingCommands)
+	stampPlain := func(pendingCommands []string, pendingRestart bool) error {
+		manifest, stamped, err := stampPlainSyncManifest(root, previous, found, written, cleanDeletePaths, pendingCommands, pendingRestart)
 		if err != nil {
 			return err
 		}
@@ -1121,17 +1145,64 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
+	clearPendingRestart := func() error {
+		if authoritative {
+			appliedManifest.PendingRestart = false
+			return writeWorkspaceManifest(root, appliedManifest)
+		}
+		manifest, found, err := readWorkspaceManifest(root)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		manifest.PendingRestart = false
+		return writeWorkspaceManifest(root, manifest)
+	}
+	// Keep durable restart intent separate from whether this request may run it.
+	// A no-restart request preserves earlier intent without executing it, while
+	// an auto retry checks that the runtime is configured before replaying it.
+	restartPending := priorRestartPending
+	restartNeeded := false
+	if priorRestartPending {
+		switch strings.ToLower(strings.TrimSpace(req.Restart)) {
+		case "always":
+			restartNeeded = true
+		case "auto":
+			restartNeeded = autoStatusKnown && autoStatus.Configured
+		}
+	} else {
+		if autoStatusKnown {
+			restartNeeded = shouldRestartAfterSyncStatus(autoStatus, len(ruleCommands) > 0, len(s.config.ReloadRules) > 0, touched)
+		} else {
+			restartNeeded, err = s.shouldRestartAfterSync(r.Context(), req.Restart, len(ruleCommands) > 0, len(s.config.ReloadRules) > 0, touched)
+		}
+		if err != nil {
+			status := http.StatusBadGateway
+			if isRuntimeUnavailable(err) {
+				status = http.StatusServiceUnavailable
+			}
+			http.Error(w, "runtime status: "+err.Error(), status)
+			return
+		}
+		restartPending = restartNeeded
+	}
 	if authoritative {
 		appliedManifest.PendingReloadCommands = append([]string(nil), ruleCommands...)
+		appliedManifest.PendingRestart = restartPending
 		if err := writeWorkspaceManifest(root, appliedManifest); err != nil {
 			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-	}
-	restartNeeded, err := s.shouldRestartAfterSync(r.Context(), req.Restart, len(ruleCommands) > 0, len(s.config.ReloadRules) > 0, touched)
-	if err != nil {
-		http.Error(w, "runtime status: "+err.Error(), http.StatusBadGateway)
-		return
+	} else if restartPending {
+		// Plain syncs need the same write-ahead intent as authoritative syncs.
+		// This occurs before reload hooks or the restart effect can run, and
+		// retains an earlier intent when the current request defers it.
+		if err := stampPlain(pending, true); err != nil {
+			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if restartNeeded && len(ruleCommands) > 0 {
 		resp.ReloadRuns = ruleCommands
@@ -1165,10 +1236,17 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			// authoritative source has already been restored above.
 			resp.ReloadError = reloadErr.Error()
 			if !authoritative {
-				if err := stampPlain(pending); err != nil {
+				// A plain reload hook may have changed managed files before it
+				// failed. Re-hash that resulting workspace while retaining the
+				// durable reload and restart intents written before the hook ran.
+				if err := stampPlain(pending, restartPending); err != nil {
 					http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
+			}
+			if isRuntimeUnavailable(reloadErr) {
+				http.Error(w, "reload: "+reloadErr.Error(), http.StatusServiceUnavailable)
+				return
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return
@@ -1187,7 +1265,7 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 		// Hashed after reload hooks ran: for a plain sync the disk is the
 		// source of truth, so hook output to managed files (a regenerated
 		// lockfile) is part of the applied revision.
-		if err := stampPlain(pending); err != nil {
+		if err := stampPlain(pending, restartPending); err != nil {
 			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1197,18 +1275,34 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			// The runtime supervisor lives in the app container. Ask that narrow
 			// internal authority to exit; the coordinator must remain available.
 			if err := s.runtime.ExitContainer(r.Context()); err != nil {
-				http.Error(w, "restart container: "+err.Error(), http.StatusBadGateway)
+				status := http.StatusBadGateway
+				if isRuntimeUnavailable(err) {
+					status = http.StatusServiceUnavailable
+				}
+				http.Error(w, "restart container: "+err.Error(), status)
 				return
 			}
 			resp.Restarted = true
+			if err := clearPendingRestart(); err != nil {
+				http.Error(w, "clear completed workspace restart: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 		if err := s.runtime.Restart(r.Context()); err != nil {
-			http.Error(w, "restart: "+err.Error(), http.StatusInternalServerError)
+			status := http.StatusInternalServerError
+			if isRuntimeUnavailable(err) {
+				status = http.StatusServiceUnavailable
+			}
+			http.Error(w, "restart: "+err.Error(), status)
 			return
 		}
 		resp.Restarted = true
+		if err := clearPendingRestart(); err != nil {
+			http.Error(w, "clear completed workspace restart: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1522,23 +1616,34 @@ func (s *agentServer) shouldRestartAfterSync(ctx context.Context, policy string,
 		if err != nil {
 			return false, err
 		}
-		if !status.Configured {
-			return false, nil
-		}
-		if !status.Running || ruleFired {
-			return true, nil
-		}
-		if !rulesDeclared {
-			for _, p := range touched {
-				if isStartupAffectingPath(p) {
-					return true, nil
-				}
-			}
-		}
-		return false, nil
+		return shouldRestartAfterSyncStatus(status, ruleFired, rulesDeclared, touched), nil
 	default:
 		return false, nil
 	}
+}
+
+func shouldRestartAfterSyncStatus(status processStatusResponse, ruleFired, rulesDeclared bool, touched []string) bool {
+	if !status.Configured {
+		return false
+	}
+	if !status.Running || ruleFired {
+		return true
+	}
+	if !rulesDeclared {
+		for _, p := range touched {
+			if isStartupAffectingPath(p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isRuntimeUnavailable recognizes only connection refusal from the runtime
+// supervisor. It is safe for callers to retry because the supervisor never
+// accepted the request; timeouts and command failures remain non-retryable.
+func isRuntimeUnavailable(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
 func openWorkspaceRoot(workdir string) (*os.Root, error) {
@@ -1661,7 +1766,7 @@ func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceMan
 // rejected with 409 ("older than the applied revision"). Writers that mix
 // both kinds of sync must adopt the sourceRevision returned by /sync (or read
 // from /status) and continue numbering from it.
-func stampPlainSyncManifest(root *os.Root, previous workspaceManifest, found bool, written, deletedPaths, pending []string) (workspaceManifest, bool, error) {
+func stampPlainSyncManifest(root *os.Root, previous workspaceManifest, found bool, written, deletedPaths, pending []string, pendingRestart bool) (workspaceManifest, bool, error) {
 	managed := make(map[string]struct{}, len(previous.Files)+len(written))
 	if found {
 		for _, clean := range previous.Files {
@@ -1711,7 +1816,7 @@ func stampPlainSyncManifest(root *os.Root, previous workspaceManifest, found boo
 		}
 		files = append(files, clean)
 	}
-	if !found && len(files) == 0 {
+	if !found && len(files) == 0 && !pendingRestart {
 		return workspaceManifest{}, false, nil
 	}
 	digest := digester.sum()
@@ -1733,6 +1838,7 @@ func stampPlainSyncManifest(root *os.Root, previous workspaceManifest, found boo
 	}
 	manifest.Files = append(manifest.Files, files...)
 	manifest.PendingReloadCommands = append([]string(nil), pending...)
+	manifest.PendingRestart = pendingRestart
 	if err := writeWorkspaceManifest(root, manifest); err != nil {
 		return workspaceManifest{}, false, err
 	}
@@ -2077,7 +2183,7 @@ func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	root, manifestErr := openWorkspaceRoot(s.config.WorkDir)
 	if manifestErr == nil {
 		manifest, found, readErr := readWorkspaceManifest(root)
-		current := readErr == nil && found && len(manifest.PendingReloadCommands) == 0 && verifyWorkspaceManifest(root, manifest) == nil
+		current := readErr == nil && found && len(manifest.PendingReloadCommands) == 0 && !manifest.PendingRestart && verifyWorkspaceManifest(root, manifest) == nil
 		_ = root.Close()
 		if current {
 			status.SourceRevision = manifest.SourceRevision

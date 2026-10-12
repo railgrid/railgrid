@@ -78,7 +78,13 @@ func newSourceFencePreviewFixture(t *testing.T) (*Server, projectAssistantToolCa
 	id := identity{orgUUID: "org", workspaceUUID: "ws"}
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "", false)
 	server.tenantWorkspaces, server.tenantActors = defaultTestWorkspaces.lookup, defaultTestActors.lookup
-	server.developmentSyncAfterMutation = func(identity, *aiv1alpha1.Project, string) error { return nil }
+	server.developmentSyncAfterMutation = func(identity, *aiv1alpha1.Project, string) error {
+		revision, err := files.SourceRevision(ctx, scope)
+		if err != nil {
+			return err
+		}
+		return files.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: revision})
+	}
 	inspector := &sourceFencePreviewInspector{}
 	server.previewInspector = inspector
 	server.previewInspectionResolveURL = func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
@@ -91,6 +97,9 @@ func newSourceFencePreviewFixture(t *testing.T) (*Server, projectAssistantToolCa
 			Status: "active", SourceRevision: revision, SourceDigest: oldDigest,
 			RemoteRevision: revision + 1, RemoteDigest: newDigest, RemoteCheckpointID: "baseline",
 			RunID: "run", HardExpiresAt: time.Now().Add(time.Hour),
+			ApprovedMutations: map[string]projectAssistantSandboxMutationReceipt{
+				"main.go": {Version: projectAssistantSandboxContentVersion("new\n")},
+			},
 		},
 	})
 	mutate := func() {
@@ -311,5 +320,175 @@ func TestNativeBrowserCancellationDuringSafetyPreflightIsNotSuccess(t *testing.T
 	}
 	if state.toolCalls["browser_click"] != 0 {
 		t.Fatalf("canceled safety preflight dispatched a click %d times", state.toolCalls["browser_click"])
+	}
+}
+
+func TestRuntimeVerificationFencesSourceWithoutPrivateSandbox(t *testing.T) {
+	server, request, _, mutate := newSourceFencePreviewFixture(t)
+	runCtx := projectAssistantWorkflowRunContext{Server: server, Identity: request.Identity, Project: request.Project, WorkspaceScope: request.WorkspaceScope}
+	input, err := initializeProjectAssistantRuntimeVerification(runCtx)(context.Background(), &projectAssistantRuntimeVerificationToolInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate()
+	input.Runtime = &projectAssistantRuntimeWorkflowResult{Status: "ready", PreviewURL: "https://demo.preview.example/"}
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "not_ready" || len(result.Blockers) == 0 {
+		t.Fatalf("runtime without a private sandbox certified a different snapshot: %#v", result)
+	}
+}
+
+func TestRuntimeVerificationRejectsSourceChangedAfterInitialization(t *testing.T) {
+	server, request, _, mutate := newSourceFencePreviewFixture(t)
+	runCtx := projectAssistantWorkflowRunContext{Server: server, Identity: request.Identity, Project: request.Project, RunState: request.RunState}
+	input, err := initializeProjectAssistantRuntimeVerification(runCtx)(context.Background(), &projectAssistantRuntimeVerificationToolInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate()
+	input.Runtime = &projectAssistantRuntimeWorkflowResult{Status: "ready", PreviewURL: "https://demo.preview.example/"}
+	result, err := formatProjectAssistantRuntimeVerification(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "not_ready" || len(result.Blockers) == 0 {
+		t.Fatalf("runtime certified a different snapshot: %#v", result)
+	}
+}
+
+func TestRuntimeVerificationSourceFenceLifecycle(t *testing.T) {
+	for _, phase := range []string{"unchanged", "stale-before-initialization", "canceled-before-initialization", "canceled-before-format"} {
+		t.Run(phase, func(t *testing.T) {
+			server, request, _, mutate := newSourceFencePreviewFixture(t)
+			runCtx := projectAssistantWorkflowRunContext{Server: server, Identity: request.Identity, Project: request.Project, WorkspaceScope: request.WorkspaceScope}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if phase == "stale-before-initialization" {
+				mutate()
+			}
+			if phase == "canceled-before-initialization" {
+				cancel()
+			}
+			input, err := initializeProjectAssistantRuntimeVerification(runCtx)(ctx, &projectAssistantRuntimeVerificationToolInput{})
+			if phase == "canceled-before-initialization" {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("initialization cancellation = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			input.Runtime = &projectAssistantRuntimeWorkflowResult{Status: "ready", PreviewURL: "https://demo.preview.example/"}
+			if phase == "canceled-before-format" {
+				cancel()
+			}
+			result, err := formatProjectAssistantRuntimeVerification(ctx, input)
+			if phase == "canceled-before-format" {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("format cancellation = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if phase == "stale-before-initialization" {
+				if result.Status != "not_ready" || len(result.Blockers) == 0 {
+					t.Fatalf("stale shared preview was certified: %#v", result)
+				}
+			} else if result.Status != "ready" {
+				t.Fatalf("unchanged source was rejected: %#v", result)
+			}
+		})
+	}
+}
+
+func TestRuntimeVerificationAcceptsRetriedSyncOnlyForPinnedSource(t *testing.T) {
+	for _, changeDuringSync := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same-source", true: "sibling-change"}[changeDuringSync], func(t *testing.T) {
+			server, request, _, mutate := newSourceFencePreviewFixture(t)
+			mutate() // Shared preview is behind the mutation being verified.
+			state := newProjectEinoAssistantRunState()
+			state.RecordSourceMutation()
+			revision := state.BeginDevelopmentSyncForCurrentMutation()
+			state.CompleteDevelopmentSync(revision, errors.New("temporary sync failure"))
+			server.developmentSyncAfterMutation = func(identity, *aiv1alpha1.Project, string) error {
+				if changeDuringSync {
+					_, err := server.workspaces.CreateFile(context.Background(), request.WorkspaceScope, workspace.CreateOptions{Path: "other.txt", Content: "sibling edit"})
+					if err != nil {
+						return err
+					}
+				}
+				current, err := server.workspaces.SourceRevision(context.Background(), request.WorkspaceScope)
+				if err != nil {
+					return err
+				}
+				return server.workspaces.RecordPreviewCheckpoint(context.Background(), request.WorkspaceScope, workspace.SourceChange{SourceRevision: current})
+			}
+			runCtx := projectAssistantWorkflowRunContext{Server: server, Identity: request.Identity, Project: request.Project, WorkspaceScope: request.WorkspaceScope, RunState: state}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			input, err := initializeProjectAssistantRuntimeVerification(runCtx)(ctx, &projectAssistantRuntimeVerificationToolInput{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if input.DevelopmentSyncStatus != "succeeded" {
+				t.Fatalf("retry did not complete: %#v", input)
+			}
+			input.Runtime = &projectAssistantRuntimeWorkflowResult{Status: "ready", PreviewURL: "https://demo.preview.example/"}
+			ready := true
+			input.Logs = &projectAssistantRuntimeLogsResult{ProcessEvidenceComplete: &ready}
+			result, err := formatProjectAssistantRuntimeVerification(ctx, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "ready"
+			if changeDuringSync {
+				want = "not_ready"
+			}
+			if result.Status != want {
+				t.Fatalf("verification = %#v, want %s", result, want)
+			}
+		})
+	}
+}
+
+func TestPrivateSandboxSourceFenceRequiresSharedPreviewCheckpoint(t *testing.T) {
+	server, request, _, mutate := newSourceFencePreviewFixture(t)
+	mutate()
+	current, err := server.workspaces.SourceRevision(context.Background(), request.WorkspaceScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := request.RunState.Sandbox()
+	sandbox.mu.Lock()
+	sandbox.metadata.SourceRevision = current
+	sandbox.metadata.RemoteDigest = sandbox.metadata.SourceDigest
+	sandbox.mu.Unlock()
+	fence, err := server.captureProjectAssistantPreviewSourceFence(context.Background(), request.RunState, request.WorkspaceScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fence.validate(context.Background()); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
+		t.Fatalf("private sandbox certified stale shared preview: %v", err)
+	}
+	if err := server.workspaces.RecordPreviewCheckpoint(context.Background(), request.WorkspaceScope, workspace.SourceChange{SourceRevision: current}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fence.validate(context.Background()); err != nil {
+		t.Fatalf("current shared checkpoint rejected: %v", err)
+	}
+	for _, refreshing := range []bool{false, true} {
+		sandbox.mu.Lock()
+		sandbox.metadata.ExecutionUnresolved = !refreshing
+		sandbox.metadata.RemoteFenceNeedsRefresh = refreshing
+		sandbox.mu.Unlock()
+		if err := fence.validate(context.Background()); !errors.Is(err, errProjectAssistantRunSandboxConflict) {
+			t.Fatalf("private execution bypassed captured fence (refresh=%v): %v", refreshing, err)
+		}
 	}
 }

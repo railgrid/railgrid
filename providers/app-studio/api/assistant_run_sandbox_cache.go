@@ -64,10 +64,10 @@ func newProjectAssistantSandboxManager() *projectAssistantSandboxManager {
 	return &projectAssistantSandboxManager{active: map[string]map[string]projectAssistantSandboxLease{}}
 }
 
-// acquire serializes use of a cached project environment inside App Studio's
+// acquire serializes claims on run-scoped sandbox Instances inside App Studio's
 // enforced single-writer deployment. The Instance annotations are a durable
 // recovery/eviction fence, but the production apply path is an upsert, not a
-// compare-and-swap primitive; multi-replica cache ownership must move to the
+// compare-and-swap primitive; multi-replica ownership must move to the
 // provider's durable execution-claim store before the deployment is scaled.
 func (m *projectAssistantSandboxManager) acquire(tenantKey, cacheKey, runID string) (func(), error) {
 	return m.acquireUntil(tenantKey, cacheKey, runID, time.Now().UTC().Add(projectAssistantRunSandboxHardTTL))
@@ -219,9 +219,9 @@ func projectAssistantRunSandboxTenantKey(id identity, scope workspace.Scope) str
 }
 
 func projectAssistantRunSandboxName(scope workspace.Scope, project *aiv1alpha1.Project, runID string) string {
-	// runID is intentionally ignored. The Instance is a project-scoped cache;
-	// run ownership is a durable annotation claim, while this name keeps every
-	// new chat/follow-up on the same workspace volume for up to the hard TTL.
+	// Each durable run has its own command workspace. Sharing a project cache
+	// would let a parallel turn reseed files underneath an executing command.
+	// Continuations retain the run ID and therefore retain their pinned volume.
 	projectName := strings.TrimSpace(scope.ProjectName)
 	projectUID := strings.TrimSpace(scope.ProjectUID)
 	if project != nil {
@@ -232,7 +232,7 @@ func projectAssistantRunSandboxName(scope workspace.Scope, project *aiv1alpha1.P
 			projectUID = string(project.UID)
 		}
 	}
-	material := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, projectName, projectUID}, "\x00")
+	material := strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, projectName, projectUID, strings.TrimSpace(runID)}, "\x00")
 	sum := sha256.Sum256([]byte(material))
 	base := dnsSafeSandboxName(projectName)
 	name := projectAssistantRunSandboxNamePrefix + base + "-" + hex.EncodeToString(sum[:projectAssistantRunSandboxHashBytes])
@@ -246,11 +246,10 @@ func projectAssistantRunSandboxName(scope workspace.Scope, project *aiv1alpha1.P
 	return name
 }
 
-// ensureProjectAssistantRunSandboxOwner makes the cached coding environment a
-// real child of its Project. Terminal turns deliberately retain this Instance,
-// so run-lifecycle cleanup is no longer sufficient; the owner reference is the
-// durable deletion contract for API, kubectl, and controller-driven Project
-// deletion alike.
+// ensureProjectAssistantRunSandboxOwner makes a run-scoped sandbox a child of
+// its Project. Safe terminal turns can retain this Instance through durable
+// run settlement, so the owner reference is the deletion contract for API,
+// kubectl, and controller-driven Project deletion alike.
 func ensureProjectAssistantRunSandboxOwner(instance *unstructured.Unstructured, project *aiv1alpha1.Project) (bool, error) {
 	if instance == nil {
 		return false, errors.New("run sandbox instance is nil")
@@ -537,13 +536,9 @@ func (s *Server) ensureProjectAssistantRunSandboxInstance(ctx context.Context, c
 	return true, nil
 }
 
-// The project-scoped coding-environment cache is NOT deleted by hand any
-// more. It carries an ownerReference to its Project
+// Each run sandbox carries an ownerReference to its Project
 // (ensureProjectAssistantRunSandboxOwner), so kcp's garbage collector removes
-// it when the Project is deleted — which is the CR-native answer, and the only
-// one that also covers `kubectl delete project`. The delete VERB that used to
-// reconstruct the deterministic name and remove it is gone with Cut D.4
-// (controller/project/teardown.go).
+// it when the Project is deleted, including through kubectl.
 
 func (s *Server) enforceProjectAssistantRunSandboxQuota(ctx context.Context, c *asclient.Client, currentName string) error {
 	if c == nil {
@@ -561,11 +556,12 @@ func (s *Server) enforceProjectAssistantRunSandboxQuota(ctx context.Context, c *
 	if active < projectAssistantRunSandboxMaxActive {
 		return nil
 	}
-	// Successful terminals retain an unclaimed project cache. Make room for a
-	// new project by evicting the least-recently-used cached Instance, but only
-	// after a visible state transition to "evicting". The single-writer manager
-	// excludes locally claimed caches; durable annotations exclude a suspended
-	// cache recovered after coordinator restart.
+	// Safe terminals retain an unclaimed, run-scoped Instance through durable
+	// terminal settlement. Make room for another run by evicting the
+	// least-recently-used cached Instance, but only after a visible state
+	// transition to "evicting". The single-writer manager excludes locally
+	// claimed caches; durable annotations exclude a suspended run recovered
+	// after coordinator restart.
 	candidates := make([]*unstructured.Unstructured, 0, len(list.Items))
 	for i := range list.Items {
 		instance := &list.Items[i]
