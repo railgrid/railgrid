@@ -102,6 +102,57 @@ type TriggerSpec struct {
 	// Suspend halts firing without deleting the trigger.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+
+	// DeliveryRetention is how many recent inbound deliveries the provider
+	// keeps for this trigger — every authenticated POST to its webhook URL,
+	// whether it fired a run, was filtered out, or arrived while the trigger
+	// was paused — so the portal can show what came in and why it did not
+	// fire, and the filter editor can test a candidate filter against real
+	// traffic. Unset means the provider default (200). 0 keeps nothing.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000
+	DeliveryRetention *int32 `json:"deliveryRetention,omitempty"`
+}
+
+// Trigger delivery outcomes: what became of one inbound webhook POST.
+const (
+	// TriggerDeliveryFired means the delivery passed the filter and a Run was
+	// recorded for it.
+	TriggerDeliveryFired = "fired"
+	// TriggerDeliveryFiltered means spec.filter rejected the delivery; it was
+	// acked so the sender does not retry.
+	TriggerDeliveryFiltered = "filtered"
+	// TriggerDeliverySuspended means the delivery arrived while spec.suspend
+	// was set.
+	TriggerDeliverySuspended = "suspended"
+	// TriggerDeliveryDisabled means the delivery arrived while the provider
+	// had disabled the trigger (status.disabledReason).
+	TriggerDeliveryDisabled = "disabled"
+	// TriggerDeliveryNoTask means the trigger has no task to run, so there was
+	// nothing to fire.
+	TriggerDeliveryNoTask = "noTask"
+	// TriggerDeliveryFailed means the delivery passed every check but the run
+	// could not be recorded; the sender was told to retry.
+	TriggerDeliveryFailed = "failed"
+)
+
+// TriggerDeliverySummary is the most recent inbound delivery, as status
+// reports it: enough to tell "nobody calls this URL" from "traffic arrives
+// but the filter drops it" without opening the delivery log.
+type TriggerDeliverySummary struct {
+	// Time is when the delivery arrived.
+	Time metav1.Time `json:"time"`
+	// Outcome is what became of it: fired, filtered, suspended, disabled,
+	// noTask or failed.
+	Outcome string `json:"outcome"`
+	// Reason explains a delivery that did not fire (the failing filter key).
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// DeliveryID is the provider's id for the delivery, the key of its entry
+	// in the delivery log (triggers/{name}/deliveries/{id}).
+	// +optional
+	DeliveryID string `json:"deliveryID,omitempty"`
 }
 
 // TriggerStatus is the observed trigger state.
@@ -118,6 +169,17 @@ type TriggerStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	LastRunID string `json:"lastRunID,omitempty"`
+
+	// LastReceived is the most recent time an authenticated delivery reached
+	// the webhook URL, fired or not. Set together with lastDelivery, and
+	// coalesced: a burst of deliveries with the same outcome updates it at
+	// most once a minute.
+	// +optional
+	LastReceived *metav1.Time `json:"lastReceived,omitempty"`
+
+	// LastDelivery summarises the most recent delivery.
+	// +optional
+	LastDelivery *TriggerDeliverySummary `json:"lastDelivery,omitempty"`
 
 	// ConsecutiveFailures counts back-to-back failed runs from this trigger.
 	// +optional

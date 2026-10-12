@@ -150,6 +150,12 @@ spec:
             description: "Fire the trigger now with an empty event."
           - name: enable
             description: "Re-enable a trigger the provider disabled after repeated failures, resetting its failure count."
+          - name: deliveries
+            description: "The trigger's inbound delivery log, newest first: every authenticated POST to its webhook URL and whether it fired, was filtered, or arrived while paused. GET …/deliveries lists (query: limit, outcome); GET …/deliveries/{id} reads one whole."
+            readOnly: true
+          - name: evaluate
+            description: "Dry-run a candidate filter against a recorded delivery (or a spelled-out request) with the matcher the webhook uses; answers per key. POST {\"filter\": {…}, \"deliveryID\": \"<id>\"}."
+            readOnly: true
 
   # Everything this provider needs that it does not own, keyed by API group:
   # another provider's kinds and verbs, and the platform builtins its own

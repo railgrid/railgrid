@@ -38,6 +38,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -79,6 +81,21 @@ func main() {
 	runServe()
 }
 
+// intEnv reads a non-negative integer from the environment; unset, blank or
+// malformed reads as 0, which every caller treats as "use the default".
+func intEnv(name string) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		log.Printf("%s=%q is not a non-negative integer; using the default", name, raw)
+		return 0
+	}
+	return n
+}
+
 func runServe() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -96,6 +113,9 @@ func runServe() {
 		ProviderKubeconfig: os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
 		OAuthApps:          oauthAppsFromEnv(),
+		// How many inbound deliveries the log keeps per trigger when the
+		// trigger does not say (spec.deliveryRetention). Default 200.
+		TriggerDeliveryRetention: intEnv("AGENTS_TRIGGER_DELIVERY_RETENTION"),
 	})
 	if err != nil {
 		log.Fatalf("build server: %v", err)

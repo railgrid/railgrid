@@ -803,6 +803,7 @@ export class Resources {
           task: body.task,
           suspend: body.suspend,
           channelRef: (body.channelRef ?? '').trim() || undefined,
+          deliveryRetention: typeof body.deliveryRetention === 'number' ? body.deliveryRetention : undefined,
         }),
       } as unknown as Trigger & KubeObject)
     })
@@ -824,6 +825,8 @@ export class Resources {
       if (body.task !== undefined) spec.task = body.task
       if (body.suspend !== undefined) spec.suspend = body.suspend
       if (body.channelRef !== undefined) spec.channelRef = body.channelRef.trim()
+      // null removes the field, which puts the provider default back in force.
+      if (body.deliveryRetention !== undefined) spec.deliveryRetention = body.deliveryRetention
       return client.patch<Trigger & KubeObject>(TRIGGERS, name, { spec }, { type: 'merge' })
     })
 

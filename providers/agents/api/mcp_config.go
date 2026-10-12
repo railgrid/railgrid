@@ -126,6 +126,38 @@ type listTriggersOutput struct {
 	Triggers []triggerSummary `json:"triggers"`
 }
 
+type listTriggerDeliveriesInput struct {
+	Name    string `json:"name" jsonschema:"Name of the trigger (see list_triggers)"`
+	Outcome string `json:"outcome,omitempty" jsonschema:"Keep only deliveries with this outcome: fired, filtered, suspended, disabled, noTask or failed. Empty keeps all"`
+	Limit   int    `json:"limit,omitempty" jsonschema:"How many recent deliveries to return, newest first (default 20, max 200)"`
+}
+
+// triggerDeliverySummary is one delivery-log entry as the MCP tool reports it:
+// the metadata and a body preview, never the recorded headers (they may name a
+// redacted credential header, which a model has no use for).
+type triggerDeliverySummary struct {
+	ID         string `json:"id"`
+	ReceivedAt string `json:"receivedAt"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason,omitempty"`
+	DeliveryID string `json:"deliveryID,omitempty"`
+	EventType  string `json:"eventType,omitempty"`
+	Action     string `json:"action,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	RunID      string `json:"runID,omitempty"`
+	ReplayOf   string `json:"replayOf,omitempty"`
+	// BodyPreview is the opening of the payload; BodySize is its full length.
+	BodyPreview string `json:"bodyPreview,omitempty"`
+	BodySize    int    `json:"bodySize"`
+}
+
+type listTriggerDeliveriesOutput struct {
+	Trigger string `json:"trigger"`
+	// Retention is how many deliveries the provider keeps for this trigger.
+	Retention  int                      `json:"retention"`
+	Deliveries []triggerDeliverySummary `json:"deliveries"`
+}
+
 type createTriggerInput struct {
 	Name          string            `json:"name" jsonschema:"Lowercase trigger name, e.g. deploy-failed"`
 	AgentRef      string            `json:"agentRef" jsonschema:"Name of the agent this trigger runs (see list_agents)"`
@@ -337,6 +369,45 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		out := listTriggersOutput{Triggers: make([]triggerSummary, 0, len(list.Items))}
 		for i := range list.Items {
 			out.Triggers = append(out.Triggers, triggerView(&list.Items[i]))
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:  "list_trigger_deliveries",
+		Title: "List a trigger's recent deliveries",
+		Description: "The trigger's inbound delivery log, newest first: every authenticated POST to its webhook URL and what became of it — fired (with the run it started), filtered (with the filter key that rejected it), or refused while paused/disabled. " +
+			"This is how to tell \"the filter drops everything\" from \"nobody calls the URL\". Bodies are previewed; the portal's Deliveries drawer shows them whole.",
+		Annotations: readOnly,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in listTriggerDeliveriesInput) (*mcp.CallToolResult, listTriggerDeliveriesOutput, error) {
+		c, err := s.mcpClient(r)
+		if err != nil {
+			return nil, listTriggerDeliveriesOutput{}, err
+		}
+		trig, err := c.Triggers().Get(ctx, strings.TrimSpace(in.Name), metav1.GetOptions{})
+		if err != nil {
+			return nil, listTriggerDeliveriesOutput{}, err
+		}
+		id := s.mcpIdentity(ctx, r)
+		if id.workspaceUUID == "" {
+			return nil, listTriggerDeliveriesOutput{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
+		}
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 20
+		}
+		rows, err := s.store.ListTriggerDeliveries(ctx, id.scope(trig.Spec.AgentRef), string(trig.UID),
+			store.TriggerDeliveryQuery{Outcome: strings.TrimSpace(in.Outcome), Limit: min(limit, maxDeliveriesPage)})
+		if err != nil {
+			return nil, listTriggerDeliveriesOutput{}, err
+		}
+		out := listTriggerDeliveriesOutput{Trigger: trig.Name, Retention: s.deliveryRetention(trig), Deliveries: make([]triggerDeliverySummary, 0, len(rows))}
+		for _, d := range rows {
+			out.Deliveries = append(out.Deliveries, triggerDeliverySummary{
+				ID: d.ID, ReceivedAt: d.ReceivedAt.UTC().Format("2006-01-02T15:04:05Z"), Outcome: d.Outcome, Reason: d.Reason,
+				DeliveryID: d.DeliveryID, EventType: d.EventType, Action: d.Action, Repository: d.Repository,
+				RunID: d.RunID, ReplayOf: d.ReplayOf, BodyPreview: d.Body, BodySize: d.BodySize,
+			})
 		}
 		return nil, out, nil
 	})

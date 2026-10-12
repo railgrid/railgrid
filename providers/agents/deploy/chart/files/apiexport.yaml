@@ -108,7 +108,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: triggers
-    schema: v261011-078db7f4.triggers.agents.railgrid.ai
+    schema: v261012-abf3b713.triggers.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -292,8 +292,26 @@ spec:
           kind: DataPlaneEndpointSlice
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
+    name: triggers/deliveries
+    schema: v261012-abf3b713.deliveries.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: triggers/enable
     schema: v261011-8364154c.enable.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: triggers/evaluate
+    schema: v261012-abf3b713.evaluate.agents.railgrid.ai
     storage:
       virtual:
         reference:

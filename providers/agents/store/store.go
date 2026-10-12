@@ -551,6 +551,65 @@ type ToolCall struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+// TriggerDeliveryPreviewBytes is how much of a delivery's body a list row
+// carries. The full body is read one delivery at a time.
+const TriggerDeliveryPreviewBytes = 512
+
+// TriggerDelivery is one authenticated POST to a Trigger's webhook URL and
+// what became of it — the delivery log behind triggers/{name}/deliveries.
+//
+// Every delivery is recorded, not only the ones that fired: a trigger whose
+// filter drops everything looks identical, from its status alone, to one
+// nobody calls, and the log is what tells them apart. Rows are kept per
+// trigger UID rather than name so a trigger deleted and recreated under the
+// same name starts with an empty log, and are capped per trigger
+// (RecordTriggerDelivery's retain) so a noisy organization webhook cannot
+// grow the table without bound.
+type TriggerDelivery struct {
+	ID          string `json:"id"`
+	TriggerName string `json:"triggerName"`
+	TriggerUID  string `json:"triggerUID"`
+	AgentName   string `json:"agentName"`
+	// DeliveryID is the sender's own id for the event (GitHub's
+	// X-GitHub-Delivery), when it gave one.
+	DeliveryID string    `json:"deliveryID,omitempty"`
+	ReceivedAt time.Time `json:"receivedAt"`
+	// Outcome is fired, filtered, suspended, disabled, noTask or failed.
+	Outcome string `json:"outcome"`
+	// Reason explains an outcome other than fired: the failing filter key, or
+	// why the run could not be recorded.
+	Reason string `json:"reason,omitempty"`
+	// EventType, Action and Repository are what the filter matcher read off
+	// the delivery, stored so a list can show them without the body.
+	EventType   string `json:"eventType,omitempty"`
+	Action      string `json:"action,omitempty"`
+	Repository  string `json:"repository,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+	// Headers are the request headers as recorded: hop-by-hop and platform
+	// headers dropped, credential-looking values redacted (see
+	// api.recordedHeaders).
+	Headers map[string]string `json:"headers,omitempty"`
+	// Body is the payload, up to the webhook handler's read limit. A list
+	// carries only the first TriggerDeliveryPreviewBytes of it, with BodySize
+	// saying how long the stored body is.
+	Body          string `json:"body,omitempty"`
+	BodySize      int    `json:"bodySize"`
+	BodyTruncated bool   `json:"bodyTruncated,omitempty"`
+	// RunID is the Run the delivery fired, when it did.
+	RunID string `json:"runID,omitempty"`
+	// ReplayOf is the recorded delivery this one re-fed through the trigger,
+	// when it was a replay rather than a fresh POST.
+	ReplayOf string `json:"replayOf,omitempty"`
+}
+
+// TriggerDeliveryQuery narrows a delivery listing.
+type TriggerDeliveryQuery struct {
+	// Outcome keeps only deliveries with this outcome; empty keeps all.
+	Outcome string
+	// Limit caps the result (newest first). Zero means the store default.
+	Limit int
+}
+
 // Usage is a rolling-window accounting row per agent for budget enforcement.
 type Usage struct {
 	AgentName    string    `json:"agentName"`
@@ -710,6 +769,18 @@ type Store interface {
 	AppendToolCall(ctx context.Context, scope Scope, tc ToolCall) error
 	// ListToolCalls returns one run's tool calls in execution order.
 	ListToolCalls(ctx context.Context, scope Scope, runID string) ([]ToolCall, error)
+
+	// Trigger deliveries: the inbound log behind triggers/{name}/deliveries.
+	// RecordTriggerDelivery appends one and prunes the trigger's log to its
+	// newest retain rows; retain <= 0 records nothing. Scope must name the
+	// agent, which is what DeleteAgentData purges by.
+	RecordTriggerDelivery(ctx context.Context, scope Scope, d TriggerDelivery, retain int) error
+	// ListTriggerDeliveries returns one trigger's deliveries newest first,
+	// each with its body cut to TriggerDeliveryPreviewBytes.
+	ListTriggerDeliveries(ctx context.Context, scope Scope, triggerUID string, q TriggerDeliveryQuery) ([]TriggerDelivery, error)
+	// GetTriggerDelivery returns one delivery whole; ok=false when the trigger
+	// has no such delivery.
+	GetTriggerDelivery(ctx context.Context, scope Scope, triggerUID, id string) (TriggerDelivery, bool, error)
 	AddUsage(ctx context.Context, scope Scope, agentName string, in, out, usdMicros int64, now time.Time, window time.Duration) (Usage, error)
 	GetUsage(ctx context.Context, scope Scope, agentName string, now time.Time, window time.Duration) (Usage, error)
 

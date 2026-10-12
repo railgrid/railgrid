@@ -101,7 +101,7 @@ func TestMCPToolsList(t *testing.T) {
 		// schedules
 		"list_schedules", "create_schedule", "update_schedule", "delete_schedule", "run_schedule",
 		// triggers
-		"list_triggers", "create_trigger", "update_trigger", "delete_trigger", "run_trigger",
+		"list_triggers", "list_trigger_deliveries", "create_trigger", "update_trigger", "delete_trigger", "run_trigger",
 		// toolsets
 		"list_toolsets", "create_toolset", "update_toolset", "delete_toolset",
 		// connections

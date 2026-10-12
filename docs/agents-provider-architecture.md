@@ -102,6 +102,33 @@ and tools are edited inside the agent, next to a live chat playground.
   2MiB limit. After five consecutive failed runs the provider sets
   `status.disabledReason` and refuses deliveries; the Automation tab's Enable
   action (the `enable` verb) clears it once the cause is fixed.
+- **Trigger delivery log** — every authenticated POST to a trigger's webhook
+  URL is recorded (`agents_trigger_deliveries`), whatever became of it:
+  `fired` (with the Run it produced), `filtered` (with the failing filter key),
+  `suspended`, `disabled`, `noTask` or `failed`. A bad token is not recorded —
+  it is unauthenticated traffic. The log is keyed by the trigger's UID (a
+  recreated trigger starts clean) and capped per trigger by
+  `spec.deliveryRetention`, defaulting to the operator's
+  `AGENTS_TRIGGER_DELIVERY_RETENTION` (200); `0` keeps nothing. Headers are
+  kept minus hub/transport plumbing, with credential-looking values
+  (`X-Hub-Signature-256`, anything named key/token/secret/auth) stored as
+  `[redacted]`; the body is kept up to the 64 KiB read limit. `status.lastReceived`
+  and `status.lastDelivery {time, outcome, reason, deliveryID}` summarise the
+  newest one, written coalesced (at most once a minute for a run of
+  deliveries with the same outcome and reason), so a trigger whose filter
+  drops everything no longer looks like one nobody calls. Read through the
+  `deliveries` verb (list, or one entry whole by id) and shown in the
+  Automation tab's per-trigger **Deliveries** drawer, which refreshes on the
+  `trigger-delivery` push event.
+- **Filter tester** — the `evaluate` verb dry-runs a candidate filter against
+  a recorded delivery (or a spelled-out request) with the one matcher the
+  webhook uses (`internal/triggerfilter`), answering per key: wanted, what
+  the delivery carried, matched or not, and whether the key is one the matcher
+  knows. The trigger edit form re-evaluates the filter being typed against a
+  picked delivery after a short debounce and paints each key green or red.
+  `run` with `{"deliveryID": "<id>"}` replays a recorded delivery through the
+  trigger — pause switch and filter included — and logs the result as a new
+  delivery pointing at the one it replayed.
 
 - **Tool loop** — agents call tools mid-conversation via a real tool-call loop
   in the engine (bind → call → observe → continue, bounded by
@@ -166,10 +193,12 @@ and tools are edited inside the agent, next to a live chat playground.
   (platform header or body `type`/`action`), `action` (body `action`),
   `repository` (body `repository.full_name`), `match` (payload substring), and
   `header.<name>`; the first three take a comma-separated any-of list.
-  Filtered deliveries are acked, not run. The portal offers two flavours of
-  the same webhook trigger: a generic one edited as `key=value` lines, and a
-  GitHub one with an event catalog, action and repository fields that write
-  those keys.
+  Filtered deliveries are acked, not run — and recorded in the delivery log
+  with the failing key (see "Trigger delivery log" above). The portal offers
+  two flavours of the same webhook trigger: a generic one edited as
+  `key=value` lines, and a GitHub one with an event catalog, action and
+  repository fields that write those keys; both re-evaluate the filter
+  against a recorded delivery as it is edited.
 - **Sub-agent delegation** — the `delegate` tool: agents listed in
   `spec.delegates` can be handed a scoped task; the child runs through the
   same execution path with `parentRunID` lineage, its usage rolls into the
@@ -193,7 +222,7 @@ and tools are edited inside the agent, next to a live chat playground.
   | --- | --- |
   | Agents | `list_agents`, `get_agent`, `create_agent`, `update_agent`, `delete_agent` |
   | Schedules | `list_schedules`, `create_schedule`, `update_schedule`, `delete_schedule`, `run_schedule` |
-  | Triggers | `list_triggers`, `create_trigger`, `update_trigger`, `delete_trigger`, `run_trigger` |
+  | Triggers | `list_triggers`, `list_trigger_deliveries`, `create_trigger`, `update_trigger`, `delete_trigger`, `run_trigger` |
   | Toolsets | `list_toolsets`, `create_toolset`, `update_toolset`, `delete_toolset` |
   | Connections | `list_connections`, `create_connection`, `update_connection`, `delete_connection`, `test_connection` |
   | Model credentials | `list_model_credentials`, `save_model_credential`, `delete_model_credential`, `test_model_credential` |
@@ -500,6 +529,8 @@ part.
 | `schedules` | `enable` | POST | clear `status.disabledReason` and the failure count after repeated failures disabled it |
 | `triggers` | `run` | POST | fire now |
 | `triggers` | `enable` | POST | clear `status.disabledReason` and the failure count after repeated failures disabled it |
+| `triggers` | `deliveries` | GET | the delivery log, newest first (`?limit=&outcome=`); `…/deliveries/{id}` one entry whole |
+| `triggers` | `evaluate` | POST | dry-run a filter against a recorded delivery or a spelled-out request, per key |
 
 Every one of them is declared under `spec.export.resources[].verbs` on the
 CatalogEntry — on the resource it is served on — in
@@ -600,6 +631,11 @@ plaintext; at-rest encryption is the database's responsibility today
 - `agents_tool_calls` — **audit log**: every tool invocation (agent, run,
   trigger, tool, arguments digest, outcome, duration). Multi-tenant table
   stakes, and the debugging surface for unattended runs.
+- `agents_trigger_deliveries` — **trigger delivery log**: every authenticated
+  inbound webhook POST per trigger (UID-keyed), its outcome and reason, the
+  extracted eventType/action/repository, redacted headers, the body, and the
+  Run it fired. Capped per trigger on insert (`spec.deliveryRetention`,
+  default 200); purged with the agent.
 - `agents_usage` — per-agent rolling usage for budget enforcement (tokens,
   cost, window).
 

@@ -153,6 +153,11 @@ func (s *Server) routes() map[string]resourceRoutes {
 		"triggers": {gvr: agentsclient.TriggerGVR, verbs: map[string]verbRoute{
 			"run":    {methods: post, handler: s.runTriggerNow},
 			"enable": {methods: post, handler: s.enableTrigger},
+			// The delivery log: no tail lists it, one segment reads one entry.
+			"deliveries": {methods: get, tail: tailFree, handler: s.listTriggerDeliveries, readOnly: true},
+			// A read with a body (the candidate filter and the delivery to
+			// judge it against), hence POST on a readOnly verb.
+			"evaluate": {methods: post, handler: s.evaluateTriggerFilter, readOnly: true},
 		}},
 	}
 }

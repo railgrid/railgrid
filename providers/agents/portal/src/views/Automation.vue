@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { Check, Copy, Pause, Play, Plus, Power } from 'lucide-vue-next'
+import { Check, Copy, Inbox, Pause, Play, Plus, Power } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { hashFor, type Route } from '../router'
@@ -24,6 +24,9 @@ import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vu
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import TriggerDeliveryLog from './TriggerDeliveryLog.vue'
+import TriggerFilterTester from './TriggerFilterTester.vue'
+import { deliveryOutcomeLabel } from './trigger-deliveries'
 
 export type AutomationKind = 'schedule' | 'trigger'
 type Automation = Schedule | Trigger
@@ -56,7 +59,15 @@ interface Draft {
   task: string
   channelRef: string
   suspend: boolean
+  /** spec.deliveryRetention as typed ('' means the provider default); a
+   *  number once the numeric input has cast it. */
+  deliveryRetention: string | number
 }
+
+// The provider's own cap when a trigger does not set one, and the schema's
+// ceiling; both are stated by the provider (DefaultTriggerDeliveryRetention).
+const DEFAULT_DELIVERY_RETENTION = 200
+const MAX_DELIVERY_RETENTION = 1000
 
 const META: Record<AutomationKind, Meta> = {
   schedule: {
@@ -94,6 +105,7 @@ const EMPTY: Draft = {
   task: '',
   channelRef: '',
   suspend: false,
+  deliveryRetention: '',
 }
 
 const props = withDefaults(defineProps<{
@@ -113,7 +125,13 @@ const editing = ref<string | null>(null)
 const draft = reactive<Draft>({ ...EMPTY })
 const nameError = ref('')
 const filterError = ref('')
+const retentionError = ref('')
 const copied = ref(false)
+// deliveriesFor is the trigger whose delivery log is open under the table;
+// testDelivery is the delivery the edit form's tester starts on (from the
+// log's "Test filter").
+const deliveriesFor = ref<string | null>(null)
+const testDelivery = ref('')
 const formBusy = ref(false)
 const actionBusy = ref('')
 
@@ -129,6 +147,10 @@ const rows = computed<Automation[]>(() => {
   return all.filter(row => row.spec.agentRef === props.agent)
 })
 const currentEdit = computed(() => rows.value.find(row => row.metadata.name === props.editName))
+const deliveriesRow = computed(() => props.kind === 'trigger' ? rows.value.find(row => row.metadata.name === deliveriesFor.value) as Trigger | undefined : undefined)
+// liveFilter is the filter the form currently describes, for the tester: it
+// re-evaluates as the lines and the GitHub fields change.
+const liveFilter = computed(() => draftFilter())
 const tableRows = computed(() => rows.value.map(row => ({
   name: row.metadata.name,
   when: whenText(row),
@@ -326,7 +348,41 @@ function statusText(row: Automation): string {
   if (status?.disabledReason) return status.disabledReason
   if (spec.suspend) return 'paused'
   if (props.kind === 'schedule') return status?.nextRun ? `next ${fmtTime(status.nextRun)}` : 'armed'
-  return status?.lastFired ? `last ${fmtTime(status.lastFired)}` : 'armed'
+  const fired = status?.lastFired ? `last fired ${fmtTime(status.lastFired)}` : 'armed'
+  // A delivery that arrived and did not fire is the thing status used to
+  // hide: say so on the row, so "armed" is never read as "nothing arrived".
+  const last = status?.lastDelivery
+  if (last && last.outcome !== 'fired') {
+    const when = status?.lastReceived || last.time
+    return `${fired} · last delivery ${fmtTime(when)} ${deliveryOutcomeLabel(last.outcome).toLowerCase()}${last.reason ? `: ${last.reason}` : ''}`
+  }
+  return fired
+}
+
+function toggleDeliveries(name: string): void {
+  deliveriesFor.value = deliveriesFor.value === name ? null : name
+}
+
+// From the log's "Test filter": open the trigger's edit form with the tester
+// pointed at that delivery.
+function openEditWithDelivery(deliveryID: string): void {
+  const name = deliveriesFor.value
+  if (!name) return
+  testDelivery.value = deliveryID
+  emit('navigate', { kind: 'automation', resource: props.kind, agent: props.agent, action: 'edit', name })
+}
+
+// parseRetention reads the "keep last N deliveries" field: '' is the provider
+// default, otherwise an integer within the schema's bounds.
+function parseRetention(input: string | number): { value: number | undefined; error: string } {
+  // v-model on a type="number" input hands back a number, or '' when cleared.
+  const trimmed = String(input ?? '').trim()
+  if (!trimmed) return { value: undefined, error: '' }
+  const n = Number(trimmed)
+  if (!Number.isInteger(n) || n < 0 || n > MAX_DELIVERY_RETENTION) {
+    return { value: undefined, error: `Keep between 0 and ${MAX_DELIVERY_RETENTION} deliveries, or leave empty for the default (${DEFAULT_DELIVERY_RETENTION}).` }
+  }
+  return { value: n, error: '' }
 }
 
 function resetDraft(values: Draft = EMPTY): void {
@@ -360,9 +416,11 @@ function hydrateEdit(row: Automation): void {
     task: spec.task || spec.checklist || '',
     channelRef: spec.channelRef || '',
     suspend: !!spec.suspend,
+    deliveryRetention: spec.deliveryRetention === undefined ? '' : String(spec.deliveryRetention),
   })
   nameError.value = ''
   filterError.value = ''
+  retentionError.value = ''
   copied.value = false
   editing.value = row.metadata.name
 }
@@ -394,6 +452,12 @@ function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
   }
   const filter = filterPatch(currentEdit.value ? automationSpec(currentEdit.value).filter : undefined, draftFilter().filter)
   if (filter) body.filter = filter
+  // deliveryRetention: a number sets it, '' on an edit that had one removes it
+  // (null in the merge patch) so the provider default is back in force.
+  const retention = parseRetention(draft.deliveryRetention).value
+  const before = currentEdit.value ? automationSpec(currentEdit.value).deliveryRetention : undefined
+  if (retention !== before) body.deliveryRetention = retention === undefined ? (currentEdit.value ? null : undefined) : retention
+  if (body.deliveryRetention === undefined) delete body.deliveryRetention
   return body
 }
 
@@ -412,6 +476,11 @@ async function save(): Promise<void> {
     const built = draftFilter()
     if (built.error) {
       filterError.value = built.error
+      return
+    }
+    const retention = parseRetention(draft.deliveryRetention)
+    if (retention.error) {
+      retentionError.value = retention.error
       return
     }
   }
@@ -536,8 +605,11 @@ async function runNow(name: string): Promise<void> {
 
 watch(() => [props.kind, props.agent] as const, () => {
   editing.value = null
+  deliveriesFor.value = null
+  testDelivery.value = ''
   nameError.value = ''
   filterError.value = ''
+  retentionError.value = ''
   copied.value = false
   formBusy.value = false
   actionBusy.value = ''
@@ -547,6 +619,7 @@ watch(() => [props.kind, props.agent] as const, () => {
 watch([() => props.createRoute, () => props.editName, () => revision.value], () => {
 	if (!formRoute.value) {
 		editing.value = null
+		testDelivery.value = ''
 		return
 	}
 	if (props.createRoute) {
@@ -599,6 +672,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </template>
         <template #actions="{ row }">
           <ResourceTableActionButton v-if="webhookURLFor(row.resource as Automation)" :icon="Copy" :label="`Copy webhook URL for ${row.name}`" :disabled="!!actionBusy" @click="copyWebhookURL(webhookURLFor(row.resource as Automation))" />
+          <ResourceTableActionButton v-if="kind === 'trigger'" :icon="Inbox" :tone="deliveriesFor === row.name ? 'accent' : undefined" :label="`${deliveriesFor === row.name ? 'Hide' : 'Show'} deliveries for ${row.name}`" :disabled="!!actionBusy" @click="toggleDeliveries(String(row.name))" />
           <ResourceTableActionButton v-if="automationStatus(row.resource as Automation)?.disabledReason" :icon="Power" tone="accent" :label="`Enable ${row.name}`" :busy-label="`Enabling ${row.name}…`" :busy="actionBusy === `enable:${row.name}`" :disabled="!!actionBusy" @click="enable(row.resource as Automation)" />
           <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
           <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
@@ -607,6 +681,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         </template>
       </ResourceTable>
     </div>
+    <TriggerDeliveryLog v-if="deliveriesRow" :api="api" :store="store" :trigger="deliveriesRow" @navigate="emit('navigate', $event)" @test="openEditWithDelivery" />
   </ResourceSectionCard>
 
   <div v-else class="k-create-page">
@@ -626,7 +701,10 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       <button v-if="slice.error && !slice.hasSnapshot" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
-    <form v-else class="agents-obj-form agents-guided-form k-create-surface" novalidate :aria-busy="formBusy" @submit.prevent="save">
+    <!-- The trigger form carries the GitHub event grid, the filter tester and
+         the delivery picker, so it takes the wide surface; a schedule is a
+         handful of fields and keeps the default width. -->
+    <form v-else class="agents-obj-form agents-guided-form k-create-surface" :class="{ 'k-create-surface--wide': kind === 'trigger' }" novalidate :aria-busy="formBusy" @submit.prevent="save">
       <div class="k-create-body">
         <label v-if="!editing" :for="`automation-${kind}-name`">Name *
           <input :id="`automation-${kind}-name`" v-model="draft.name" class="k-input" name="name" aria-label="Name" required aria-required="true" :placeholder="meta.namePlaceholder" autocomplete="off" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" />
@@ -671,6 +749,12 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           </section>
           <p v-else-if="editing && wantsWebhook" class="agents-hint" role="status">The webhook URL has not been minted yet — the provider stamps it shortly after the trigger is created. Reload to pick it up.</p>
           <p v-else-if="!editing && wantsWebhook" class="agents-hint">The inbound webhook URL appears here, and on the trigger row, once the trigger is created.</p>
+          <TriggerFilterTester v-if="editing && currentEdit" :api="api" :store="store" :trigger="currentEdit as Trigger" :filter="liveFilter.filter" :filter-error="liveFilter.error || filterError" :preselect="testDelivery" @navigate="emit('navigate', $event)" />
+          <label :for="`automation-${kind}-retention`">Keep last N deliveries
+            <input :id="`automation-${kind}-retention`" v-model="draft.deliveryRetention" class="k-input" name="deliveryRetention" type="number" inputmode="numeric" min="0" :max="MAX_DELIVERY_RETENTION" step="1" :placeholder="String(DEFAULT_DELIVERY_RETENTION)" :disabled="formBusy" :aria-invalid="retentionError ? 'true' : undefined" :aria-describedby="retentionError ? `automation-${kind}-retention-error` : `automation-${kind}-retention-hint`" @input="retentionError = ''" />
+            <span v-if="retentionError" :id="`automation-${kind}-retention-error`" class="agents-fielderr" role="alert">{{ retentionError }}</span>
+            <span v-else :id="`automation-${kind}-retention-hint`" class="agents-hint">How many recent deliveries the provider keeps for the log and the tester above — fired, filtered or refused. Empty uses the provider default ({{ DEFAULT_DELIVERY_RETENTION }}); 0 keeps none.</span>
+          </label>
         </template>
         <label>Task{{ kind === 'trigger' ? ' on fire' : '' }}<textarea v-model="draft.task" class="k-input" name="task" rows="3" :placeholder="meta.taskPlaceholder" :disabled="formBusy"></textarea></label>
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" :describedby="`automation-${kind}-channel-hint`" /><span :id="`automation-${kind}-channel-hint`" class="agents-hint">Where output is delivered</span></label>

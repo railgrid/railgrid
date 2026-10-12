@@ -70,6 +70,11 @@ import type {
   TranscriptMessage,
   Trigger,
   TriggerCreate,
+  TriggerDelivery,
+  TriggerDeliveryPage,
+  TriggerFilterEvaluateBody,
+  TriggerFilterVerdict,
+  TriggerReplayResult,
   KubeRun,
   RunPhase,
   TriggerPatch,
@@ -517,6 +522,28 @@ export class ApiClient {
     this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'))
   enableTrigger = (name: string): Promise<Trigger> =>
     this.sendVerb('POST', this.verb(TRIGGERS, name, 'enable'))
+  /**
+   * The trigger's delivery log: every authenticated POST to its webhook URL,
+   * newest first, with bodies previewed. `outcome` narrows to one outcome.
+   */
+  listTriggerDeliveries = (name: string, opts: { limit?: number; outcome?: string } = {}): Promise<TriggerDeliveryPage> =>
+    this.getVerb<{ items?: TriggerDelivery[]; retention?: number }>(this.verb(TRIGGERS, name, 'deliveries', { query: { limit: opts.limit, outcome: opts.outcome || undefined } }))
+      .then((res) => ({ items: res.items ?? [], retention: res.retention ?? 0 }))
+  /** One delivery whole: full body and recorded headers. */
+  getTriggerDelivery = (name: string, id: string): Promise<TriggerDelivery> =>
+    this.getVerb<TriggerDelivery>(this.verbTail(this.verb(TRIGGERS, name, 'deliveries'), id))
+  /**
+   * Dry-run a candidate filter against a recorded delivery (or a spelled-out
+   * request) with the matcher the webhook uses. Changes nothing.
+   */
+  evaluateTriggerFilter = (name: string, body: TriggerFilterEvaluateBody): Promise<TriggerFilterVerdict> =>
+    this.sendVerb('POST', this.verb(TRIGGERS, name, 'evaluate'), body)
+  /**
+   * Re-feed a recorded delivery through the trigger as it stands now, filter
+   * included; the answer says whether it fired.
+   */
+  replayTriggerDelivery = (name: string, deliveryID: string): Promise<TriggerReplayResult> =>
+    this.sendVerb('POST', this.verb(TRIGGERS, name, 'run'), { deliveryID })
 
   listInbox = async (): Promise<InboxItem[]> => {
     const pages = await this.settleAll((agent) =>

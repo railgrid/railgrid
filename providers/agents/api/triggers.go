@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -199,9 +200,23 @@ func (s *Server) runTriggerNow(w http.ResponseWriter, r *http.Request) {
 		writeResourceError(w, err)
 		return
 	}
-	// Optional test payload appended to the task so the run can react to it.
+	// Two bodies are understood. {"deliveryID": "<id>"} replays a recorded
+	// delivery through the trigger as it stands — filter included — which is
+	// the editor's "run that one again" after a filter fix. Anything else is
+	// an optional test payload appended to the task so the run can react to
+	// it, bypassing the filter: the caller is firing the trigger, not asking
+	// whether it would fire.
 	var payload map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&payload)
+	_ = json.NewDecoder(io.LimitReader(r.Body, webhookBodyLimit)).Decode(&payload)
+	if raw, ok := payload["deliveryID"].(string); ok && strings.TrimSpace(raw) != "" && len(payload) == 1 {
+		tu, gated, ok := gatedTrigger(r)
+		if !ok {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "the gate resolved no Trigger for this request")
+			return
+		}
+		s.replayTriggerDelivery(w, r, id, tu, gated, strings.TrimSpace(raw))
+		return
+	}
 	task := trig.Spec.Task
 	if len(payload) > 0 {
 		if b, err := json.Marshal(payload); err == nil {

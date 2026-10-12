@@ -45,6 +45,10 @@ describe('verbs are kube paths', () => {
     await api.enableSchedule('daily')
     await api.runTrigger('deploys')
     await api.enableTrigger('deploys')
+    await api.listTriggerDeliveries('deploys', { limit: 20, outcome: 'filtered' })
+    await api.getTriggerDelivery('deploys', 'd1')
+    await api.evaluateTriggerFilter('deploys', { filter: { eventType: 'push' }, deliveryID: 'd1' })
+    await api.replayTriggerDelivery('deploys', 'd1')
     await api.cancelRun('r1')
     await api.waitRun('r1', 5)
 
@@ -62,6 +66,10 @@ describe('verbs are kube paths', () => {
       `POST ${KUBE}/schedules/daily/enable`,
       `POST ${KUBE}/triggers/deploys/run`,
       `POST ${KUBE}/triggers/deploys/enable`,
+      `GET ${KUBE}/triggers/deploys/deliveries?limit=20&outcome=filtered`,
+      `GET ${KUBE}/triggers/deploys/deliveries/d1`,
+      `POST ${KUBE}/triggers/deploys/evaluate`,
+      `POST ${KUBE}/triggers/deploys/run`,
       `POST ${KUBE}/runs/r1/cancel`,
       `GET ${KUBE}/runs/r1/wait?timeoutSeconds=5`,
     ])

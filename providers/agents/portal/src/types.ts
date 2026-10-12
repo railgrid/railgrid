@@ -370,11 +370,107 @@ export interface Schedule {
 }
 
 export interface Trigger {
-  metadata: { name: string }
-  spec: { agentRef: string; source: string; connectionRef?: string; filter?: Record<string, string>; task?: string; suspend?: boolean; channelRef?: string }
+  metadata: { name: string; uid?: string }
+  spec: {
+    agentRef: string
+    source: string
+    connectionRef?: string
+    filter?: Record<string, string>
+    task?: string
+    suspend?: boolean
+    channelRef?: string
+    // deliveryRetention is how many recent inbound deliveries the provider
+    // keeps for the delivery log; unset means the provider default, 0 none.
+    deliveryRetention?: number
+  }
   // webhookPath embeds the trigger's secret token; the portal shows it so the
   // operator can paste the full URL into GitHub (or any webhook sender).
-  status?: { lastFired?: string; lastRunID?: string; webhookPath?: string; disabledReason?: string }
+  // lastReceived/lastDelivery summarise the newest inbound delivery, fired or
+  // not, so a trigger whose filter drops everything can be told from one
+  // nobody calls without opening the log.
+  status?: {
+    lastFired?: string
+    lastRunID?: string
+    webhookPath?: string
+    disabledReason?: string
+    lastReceived?: string
+    lastDelivery?: TriggerDeliverySummary
+  }
+}
+
+export type TriggerDeliveryOutcome = 'fired' | 'filtered' | 'suspended' | 'disabled' | 'noTask' | 'failed'
+
+export interface TriggerDeliverySummary {
+  time: string
+  outcome: TriggerDeliveryOutcome | string
+  reason?: string
+  deliveryID?: string
+}
+
+/**
+ * TriggerDelivery is one entry of a trigger's delivery log (the `deliveries`
+ * verb): an authenticated POST to its webhook URL and what became of it. A
+ * list entry carries the first bytes of the body as `body` with `bodySize`
+ * saying how long the stored body is; reading one by id returns it whole.
+ */
+export interface TriggerDelivery {
+  id: string
+  triggerName: string
+  agentName: string
+  deliveryID?: string
+  receivedAt: string
+  outcome: TriggerDeliveryOutcome | string
+  reason?: string
+  eventType?: string
+  action?: string
+  repository?: string
+  contentType?: string
+  headers?: Record<string, string>
+  body?: string
+  bodySize: number
+  bodyTruncated?: boolean
+  runID?: string
+  replayOf?: string
+}
+
+export interface TriggerDeliveryPage {
+  items: TriggerDelivery[]
+  // retention is the log cap in effect for this trigger.
+  retention: number
+}
+
+/** One filter key's verdict from the `evaluate` verb. */
+export interface TriggerFilterKeyVerdict {
+  key: string
+  want: string
+  got?: string
+  matched: boolean
+  // known is false for a key the matcher ignores (a typo, or a future source).
+  known: boolean
+  reason?: string
+}
+
+export interface TriggerFilterVerdict {
+  matched: boolean
+  reason?: string
+  keys: TriggerFilterKeyVerdict[]
+  extracted: { eventType?: string; action?: string; repository?: string }
+  deliveryID?: string
+  filter: Record<string, string>
+}
+
+export interface TriggerFilterEvaluateBody {
+  filter?: Record<string, string>
+  deliveryID?: string
+  request?: { headers?: Record<string, string>; body?: string }
+}
+
+/** The `run` verb's answer when replaying a recorded delivery. */
+export interface TriggerReplayResult {
+  deliveryID?: string
+  status: TriggerDeliveryOutcome | string
+  reason?: string
+  runID?: string
 }
 
 export interface Connection {
@@ -825,6 +921,9 @@ export interface TriggerPatch {
   task?: string
   suspend?: boolean
   channelRef?: string
+  // deliveryRetention: a number sets the log cap, null restores the provider
+  // default (removes the field).
+  deliveryRetention?: number | null
 }
 export interface TriggerCreate extends TriggerPatch {
   name: string
