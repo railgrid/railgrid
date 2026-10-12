@@ -425,3 +425,30 @@ func TestReconcileDoesNotAdoptAnUnlabelledSecret(t *testing.T) {
 		t.Errorf("unlabelled secret gained owners: %+v", got.OwnerReferences)
 	}
 }
+
+// A Secret the tenant brought and pointed spec.secretRef at carries the owner
+// label too (the claim needs it), so the label cannot mark it as ours. Only
+// the provider-named Secret is adopted; a differently named one is left
+// un-owned, whatever its label.
+func TestReconcileDoesNotAdoptATenantNamedSecret(t *testing.T) {
+	cred := credential()
+	cred.UID = "cred-uid-1"
+	cred.Spec.SecretRef.Name = "my-own-openai-key"
+	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
+	sec.Name = "my-own-openai-key"
+	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+		return []string{"gpt-4o"}, time.Millisecond, nil
+	}
+	r, c := newReconciler(t, probe, cred, sec)
+	reconcileOnce(t, r)
+	var got corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: sec.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("tenant-named secret gained owners: %+v", got.OwnerReferences)
+	}
+	if cond := condition(t, read(t, c), agentsv1alpha1.ConditionReady); cond.Status != metav1.ConditionTrue {
+		t.Errorf("a tenant-named secret must still resolve: Ready = %+v", cond)
+	}
+}

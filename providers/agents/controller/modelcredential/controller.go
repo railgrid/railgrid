@@ -346,12 +346,20 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 // whenever the deleter was not the portal, and the next credential created
 // under the same name inherited its keys: a claude-code credential found both
 // an apiKey and an oauthToken waiting for it and was refused as two
-// identities. Only a labelled Secret is adopted (the label is what puts it in
-// this provider's claim), the reference is added rather than replacing any
-// other owner so a Secret two credentials share lives until both are gone,
-// and a reference already present costs no write.
+// identities. Only the Secret the provider's own writers named for this
+// credential is adopted (a labelled Secret the tenant brought is theirs), the
+// reference is added rather than replacing any other owner, and a reference
+// already present costs no write.
 func adoptSecret(ctx context.Context, c client.Client, cred *agentsv1alpha1.ModelCredential, sec *corev1.Secret) error {
 	if cred.UID == "" {
+		return nil
+	}
+	// The owner label is not enough to call a Secret ours: every Secret the
+	// provider can read has to carry it, including one the tenant created and
+	// pointed spec.secretRef at, and adopting that would delete the tenant's
+	// Secret with the credential. The name the provider's own writers mint is
+	// the marker; anything else stays un-owned.
+	if sec.Name != agentsv1alpha1.ModelCredentialSecretName(cred.Name) {
 		return nil
 	}
 	for _, owner := range sec.OwnerReferences {

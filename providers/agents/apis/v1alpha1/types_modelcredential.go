@@ -53,6 +53,14 @@ const (
 // written (portal/src/resources.ts saveCredential).
 const DefaultModelSecretKey = "apiKey"
 
+// ModelCredentialSecretName is the Secret this provider's own writers (portal,
+// REST, MCP) create for a ModelCredential of the given name. It is a default
+// for what they create, not a rule anything enforces on spec.secretRef — a
+// hand-written credential may name any Secret. The reconciler uses it to tell
+// a Secret the provider minted, which it may own and garbage-collect with the
+// credential, from one the tenant brought, which it must leave alone.
+func ModelCredentialSecretName(name string) string { return "railgrid-agents-model-" + name }
+
 // Secret keys a harness identity is carried in. They are keys rather than
 // spec.secretKey values because which key is present IS the kind of identity:
 // an oauthToken and an apiKey are injected into Claude Code differently, so the
