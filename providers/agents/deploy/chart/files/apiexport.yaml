@@ -108,7 +108,12 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: triggers
-    schema: v261011-078db7f4.triggers.agents.railgrid.ai
+    schema: v261012-77f29a8e.triggers.agents.railgrid.ai
+    storage:
+      crd: {}
+  - group: agents.railgrid.ai
+    name: webhooks
+    schema: v261012-7d05d6c4.webhooks.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -158,7 +163,7 @@ spec:
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
     name: agents/run
-    schema: v260924-87f1980f.run.agents.railgrid.ai
+    schema: v261012-77f29a8e.run.agents.railgrid.ai
     storage:
       virtual:
         reference:
@@ -284,7 +289,7 @@ spec:
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
     name: schedules/run
-    schema: v260924-87f1980f.run.agents.railgrid.ai
+    schema: v261012-77f29a8e.run.agents.railgrid.ai
     storage:
       virtual:
         reference:
@@ -301,8 +306,35 @@ spec:
           kind: DataPlaneEndpointSlice
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
+    name: triggers/evaluate
+    schema: v261012-abf3b713.evaluate.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: triggers/run
-    schema: v260924-87f1980f.run.agents.railgrid.ai
+    schema: v261012-77f29a8e.run.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: webhooks/deliveries
+    schema: v261012-77f29a8e.deliveries.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: webhooks/run
+    schema: v261012-77f29a8e.run.agents.railgrid.ai
     storage:
       virtual:
         reference:

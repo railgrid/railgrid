@@ -41,13 +41,9 @@ package api
 
 import (
 	"context"
-	"crypto/hmac"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -170,10 +166,10 @@ func (s *Server) StartBackground(ctx context.Context) {
 
 // webhookKeyBytes and webhookToken bind this Server's configuration to the
 // shared derivation in internal/webhookpath. The derivation itself lives there
-// because the Trigger reconciler mints the same URLs for writers that never
-// reach this layer, and the URL IS the credential: two copies that disagree by
-// a byte mint two different URLs for one trigger, and the one already pasted
-// into GitHub silently stops working. One implementation, one set of golden
+// because the Webhook reconciler mints the URLs this layer checks, and the URL
+// IS the credential: two copies that disagree by a byte mint two different
+// URLs for one webhook, and the one already pasted into GitHub silently stops
+// working. One implementation, one set of golden
 // vectors.
 //
 // These stay as methods rather than being inlined at the ~6 call sites because
@@ -183,7 +179,7 @@ func (s *Server) webhookKeyBytes() []byte {
 	return webhookpath.Key(s.cfg.WebhookKey, s.cfg.ProviderKubeconfig)
 }
 
-// webhookToken returns the HMAC token guarding a trigger's inbound URL.
+// webhookToken returns the HMAC token guarding a webhook's inbound URL.
 func (s *Server) webhookToken(clusterID, name string) string {
 	return webhookpath.Token(s.webhookKeyBytes(), clusterID, name)
 }
@@ -285,6 +281,30 @@ func (b *background) ready() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.shards) > 0
+}
+
+// readyFor is ready for a request path: when no endpoint is known it tries
+// to discover one first, and only then says no.
+//
+// The endpoint slice is empty until the first tenant binds the export, so a
+// provider that started before anyone enabled it learned nothing at startup.
+// The on-demand rediscovery lives in shardFor, but the inbound webhook, the
+// channel webhook and the OAuth callback gated on ready() before they ever
+// reached it, which left them answering 503 until the process was restarted —
+// the e2e suite's first delivery after Enable found exactly that. Discovery
+// here is one slice read, and the caller is about to need the shard anyway.
+func (b *background) readyFor(ctx context.Context) bool {
+	if b == nil {
+		return false
+	}
+	if b.ready() {
+		return true
+	}
+	if err := b.ensureVW(ctx); err != nil {
+		log.Printf("background: virtual workspace still not discoverable: %v", err)
+		return false
+	}
+	return b.ready()
 }
 
 // snapshotShards returns the current shard set for lock-free iteration.
@@ -568,10 +588,17 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 // A cancel requested while the run is still queued is honoured the same way it
 // always was: the claim path checks the row before starting.
 func (b *background) Submit(ctx context.Context, job executor.Job) error {
+	_, err := b.submitRun(ctx, job)
+	return err
+}
+
+// submitRun is Submit that also says which run it recorded, for a producer
+// that keeps its own record of the submission (the webhook delivery sink).
+func (b *background) submitRun(ctx context.Context, job executor.Job) (string, error) {
 	if job.RunID != "" {
 		// Already a run of its own — the producer pre-recorded it. Nothing to
 		// enqueue: the object exists and the reconciler will claim it.
-		return nil
+		return job.RunID, nil
 	}
 	// The Run object and the Postgres row are the durable queue. Record the
 	// effective transcript session on that first write so later status updates
@@ -593,9 +620,9 @@ func (b *background) Submit(ctx context.Context, job executor.Job) error {
 		// a retry path — an inbound webhook answers 503 and the platform
 		// redelivers, a schedule is re-fired by its reconciler — and all of
 		// them are better than a fire that is silently swallowed.
-		return fmt.Errorf("recording the run for %s/%s: %w", job.Kind, job.SourceName, err)
+		return "", fmt.Errorf("recording the run for %s/%s: %w", job.Kind, job.SourceName, err)
 	}
-	return nil
+	return runID, nil
 }
 
 // DispatchRun executes a run the Run reconciler has claimed for this process.
@@ -976,6 +1003,15 @@ func (b *background) PurgeAgentData(ctx context.Context, clusterID, agentName st
 	return b.server.store.DeleteAgentData(ctx, b.scopeFor(ctx, clusterID, agentName), agentName)
 }
 
+// PurgeWebhookDeliveries empties one webhook's delivery sink. It is what the
+// Webhook reconciler's finalizer calls, so deleting a webhook takes the
+// traffic recorded against its UID with it. Scoped through scopeFor with no
+// agent — a delivery belongs to the webhook, not to any agent — for the same
+// reason PurgeAgentData is: it is how the rows were written.
+func (b *background) PurgeWebhookDeliveries(ctx context.Context, clusterID, webhookUID string) error {
+	return b.server.store.DeleteWebhookDeliveries(ctx, b.scopeFor(ctx, clusterID, ""), webhookUID)
+}
+
 // PurgeRunData removes one run's rows from the provider store: its transcript,
 // its tool-call trace and the run record itself. It is what the Run
 // reconciler's finalizer calls, so deleting a Run object — directly, or by
@@ -1105,170 +1141,5 @@ func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Inter
 	}
 }
 
-// triggerFilterAllows evaluates a Trigger's filter against an inbound webhook
-// delivery. Supported keys:
-//
-//	eventType      — the platform's event header (X-GitHub-Event /
-//	                 X-Event-Type / X-Event-Key) or a top-level "type"/
-//	                 "action" field in the JSON body
-//	action         — the top-level "action" field in the JSON body (GitHub's
-//	                 opened / synchronize / closed / …)
-//	repository     — the "repository.full_name" field in the JSON body
-//	                 (owner/repo, as GitHub sends it)
-//	match          — substring that must appear in the raw payload
-//	header.<name>  — exact match on a request header
-//
-// eventType, action and repository take a comma-separated list and pass when
-// any entry matches, case-insensitively, so one trigger can listen to several
-// events. Unknown keys are ignored rather than failing closed, so a filter
-// written for a future source never silently blocks every event.
-func triggerFilterAllows(filter map[string]string, r *http.Request, body []byte) (string, bool) {
-	if len(filter) == 0 {
-		return "", true
-	}
-	for key, want := range filter {
-		want = strings.TrimSpace(want)
-		if want == "" {
-			continue
-		}
-		switch {
-		case key == "eventType":
-			if !anyOf(want, webhookEventType(r, body)) {
-				return "eventType does not match " + want, false
-			}
-		case key == "action":
-			if !anyOf(want, webhookBodyField(body, "action")) {
-				return "action does not match " + want, false
-			}
-		case key == "repository":
-			if !anyOf(want, webhookBodyField(body, "repository", "full_name")) {
-				return "repository does not match " + want, false
-			}
-		case key == "match":
-			if !strings.Contains(string(body), want) {
-				return "payload does not contain " + want, false
-			}
-		case strings.HasPrefix(key, "header."):
-			if !strings.EqualFold(r.Header.Get(strings.TrimPrefix(key, "header.")), want) {
-				return key + " does not match", false
-			}
-		}
-	}
-	return "", true
-}
-
-// anyOf reports whether got equals any comma-separated entry of want,
-// ignoring case and surrounding whitespace. Blank entries never match, so a
-// trailing comma does not turn the filter into a wildcard.
-func anyOf(want, got string) bool {
-	for _, entry := range strings.Split(want, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry != "" && strings.EqualFold(entry, got) {
-			return true
-		}
-	}
-	return false
-}
-
-// webhookEventType resolves the delivery's event type from the conventional
-// platform headers, falling back to a "type"/"action" field in the JSON body.
-func webhookEventType(r *http.Request, body []byte) string {
-	for _, h := range []string{"X-GitHub-Event", "X-Event-Type", "X-Event-Key"} {
-		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
-			return v
-		}
-	}
-	if v := webhookBodyField(body, "type"); v != "" {
-		return v
-	}
-	return webhookBodyField(body, "action")
-}
-
-// webhookBodyField reads one string at the given path of the JSON payload;
-// a missing field, a non-string or a non-JSON body all read as "".
-func webhookBodyField(body []byte, path ...string) string {
-	var doc map[string]any
-	if json.Unmarshal(body, &doc) != nil {
-		return ""
-	}
-	var cur any = doc
-	for _, key := range path {
-		obj, ok := cur.(map[string]any)
-		if !ok {
-			return ""
-		}
-		cur = obj[key]
-	}
-	s, _ := cur.(string)
-	return strings.TrimSpace(s)
-}
-
-// ---- inbound webhooks --------------------------------------------------------
-
-// webhookTrigger fires an event trigger from an external POST. The URL embeds
-// an HMAC token (no tenant headers required): the hub forwards anonymous
-// calls to the provider with identity headers stripped, so the token is the
-// auth. Responds 202 and executes asynchronously.
-func (s *Server) webhookTrigger(w http.ResponseWriter, r *http.Request) {
-	cluster, name, token := r.PathValue("cluster"), r.PathValue("name"), r.PathValue("token")
-	expected := s.webhookToken(cluster, name)
-	if expected == "" || s.bg == nil || !s.bg.ready() {
-		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "background executor is not running on this provider")
-		return
-	}
-	if !hmac.Equal([]byte(expected), []byte(token)) {
-		writeStatus(w, http.StatusForbidden, "Forbidden", "invalid webhook token")
-		return
-	}
-	dyn, err := s.bg.scoped(r.Context(), cluster)
-	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
-		return
-	}
-	tu, err := dyn.Resource(agentsclient.TriggerGVR).Get(r.Context(), name, metav1.GetOptions{})
-	if err != nil {
-		writeStatus(w, http.StatusNotFound, "NotFound", "trigger not found")
-		return
-	}
-	trig, err := fromU[agentsv1alpha1.Trigger](tu)
-	if err != nil || trig.Spec.Suspend || trig.Status.DisabledReason != "" {
-		writeStatus(w, http.StatusConflict, "Suspended", "trigger is suspended or disabled")
-		return
-	}
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	// spec.filter narrows which deliveries actually fire a run. A filtered-out
-	// event is acked (202) so the sender does not retry.
-	if reason, ok := triggerFilterAllows(trig.Spec.Filter, r, body); !ok {
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "filtered", "reason": reason})
-		return
-	}
-	task := trig.Spec.Task
-	if len(strings.TrimSpace(string(body))) > 0 {
-		// The payload is whatever the sender chose to POST. It is evidence for
-		// the task, never part of it — quarantine it so an embedded "ignore your
-		// instructions and ..." reads as data to the model.
-		task += "\n\n" + quarantinePayload("webhook trigger "+name, map[string]string{
-			"eventType":   webhookEventType(r, body),
-			"contentType": r.Header.Get("Content-Type"),
-		}, string(body))
-	}
-	if strings.TrimSpace(task) == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "trigger has no task")
-		return
-	}
-	if err := s.bg.Submit(r.Context(), executor.Job{
-		ID:            fmt.Sprintf("%s/%s/%d", cluster, name, time.Now().UnixNano()),
-		Kind:          executor.KindTrigger,
-		ClusterID:     cluster,
-		SourceName:    name,
-		AgentRef:      trig.Spec.AgentRef,
-		Task:          task,
-		Trigger:       agentsv1alpha1.RunTriggerEvent,
-		SessionID:     triggerSessionID(name, r.Header.Get("X-GitHub-Delivery")),
-		NotifyChannel: trig.Spec.ChannelRef,
-	}); err != nil {
-		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
-}
+// The inbound webhook, its routing to triggers and the delivery sink it
+// writes live in webhook_deliveries.go.

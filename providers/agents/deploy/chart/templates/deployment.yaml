@@ -103,6 +103,12 @@ spec:
             - name: AGENTS_IN_MEMORY_STORE
               value: "true"
             {{- end }}
+            {{- with .Values.triggers }}
+            {{- if .deliveryRetention }}
+            - name: AGENTS_TRIGGER_DELIVERY_RETENTION
+              value: {{ .deliveryRetention | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.hub.insecure }}
             - name: RAILGRID_HUB_INSECURE
               value: "true"

@@ -159,6 +159,17 @@ func (s *Scope) Apply(ctx context.Context, obj *unstructured.Unstructured) (*uns
 	desired := obj.DeepCopy()
 	desired.SetResourceVersion(current.GetResourceVersion())
 	desired.SetUID(current.GetUID())
+	// A wholesale replace would also erase what reconcilers hung on the live
+	// object: the owner reference the ModelCredential reconciler adds to its
+	// Secret so it is garbage-collected with the credential, and finalizers.
+	// A caller that says nothing about them means "leave them", not "remove
+	// them" — nothing written through here ever intends to un-own an object.
+	if len(desired.GetOwnerReferences()) == 0 {
+		desired.SetOwnerReferences(current.GetOwnerReferences())
+	}
+	if len(desired.GetFinalizers()) == 0 {
+		desired.SetFinalizers(current.GetFinalizers())
+	}
 	return ri.Update(ctx, desired, metav1.UpdateOptions{})
 }
 

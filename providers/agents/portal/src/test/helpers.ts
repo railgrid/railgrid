@@ -23,6 +23,7 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     listToolsets: empty,
     listSchedules: empty,
     listTriggers: empty,
+    listWebhooks: empty,
     listCredentials: empty,
     listEdges: empty,
     listInbox: empty,

@@ -19,6 +19,7 @@ describe('create routes', () => {
     ['#/create/connection', { kind: 'create', resource: 'connection' }],
     ['#/create/connection/github', { kind: 'create', resource: 'connection', type: 'github' }],
     ['#/create/toolset', { kind: 'create', resource: 'toolset' }],
+    ['#/create/webhook', { kind: 'create', resource: 'webhook' }],
     ['#/create/model', { kind: 'create', resource: 'model' }],
     ['#/create/model/harness', { kind: 'create', resource: 'model', type: 'harness' }],
   ])('parses and formats %s', (hash, route) => {
@@ -30,6 +31,7 @@ describe('create routes', () => {
     expect(activeMenu({ kind: 'create', resource: 'agent' })).toBe('agents')
     expect(activeMenu({ kind: 'create', resource: 'connection' })).toBe('connections')
     expect(activeMenu({ kind: 'create', resource: 'toolset' })).toBe('connections')
+    expect(activeMenu({ kind: 'create', resource: 'webhook' })).toBe('webhooks')
     expect(activeMenu({ kind: 'create', resource: 'model' })).toBe('models')
   })
 })
@@ -47,6 +49,16 @@ describe('edit routes', () => {
     expect(hashFor(route)).toBe('#/toolsets/research%20tools/edit')
     expect(parseHash('#/toolsets/research%20tools/edit')).toEqual(route)
     expect(activeMenu(route)).toBe('connections')
+  })
+
+  it('parses, formats, and highlights a webhook detail route, bare or with /edit', () => {
+    const route: Route = { kind: 'edit', resource: 'webhook', name: 'github org' }
+    expect(hashFor(route)).toBe('#/webhooks/github%20org/edit')
+    expect(parseHash('#/webhooks/github%20org/edit')).toEqual(route)
+    expect(parseHash('#/webhooks/github%20org')).toEqual(route)
+    expect(activeMenu(route)).toBe('webhooks')
+    expect(parseHash('#/webhooks')).toEqual({ kind: 'menu', menu: 'webhooks' })
+    expect(parseHash('#/webhooks/x/edit/extra')).toEqual({ kind: 'menu', menu: 'webhooks' })
   })
 
   it('rejects extra path segments after a connection edit route', () => {

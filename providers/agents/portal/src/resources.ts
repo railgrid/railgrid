@@ -1,6 +1,6 @@
 // Tenant resources, read and written straight against kcp.
 //
-// Agent, Schedule, Connection, Toolset and Trigger are bound APIs in the
+// Agent, Schedule, Connection, Toolset, Webhook and Trigger are bound APIs in the
 // tenant's own workspace, and the model-credential Secrets sit beside them. The
 // portal therefore talks to kcp through portalkit's kube client rather than
 // asking the provider backend to relay CRUD for it (provider contract Pillar 3,
@@ -69,6 +69,9 @@ import type {
   Trigger,
   TriggerCreate,
   TriggerPatch,
+  Webhook,
+  WebhookCreate,
+  WebhookPatch,
 } from './types'
 
 const GROUP = 'agents.railgrid.ai'
@@ -83,6 +86,7 @@ export const SCHEDULES: KubeResourceRef = { group: GROUP, version: VERSION, reso
 export const CONNECTIONS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'connections' }
 const TOOLSETS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'toolsets' }
 export const TRIGGERS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'triggers' }
+export const WEBHOOKS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'webhooks' }
 const SECRETS: KubeResourceRef = { group: '', version: 'v1', resource: 'secrets', namespaced: true }
 // The workspace's aggregate MCP endpoint, owned by the hub and bound here. Its
 // status already says which providers it federates and whether each answered,
@@ -176,7 +180,17 @@ const CONNECTION_TYPES = [
 ]
 
 const SCHEDULE_TYPES = ['cron', 'wakeup', 'heartbeat']
-const TRIGGER_SOURCES = ['webhook', 'github']
+const WEBHOOK_SOURCES = ['webhook', 'github']
+// The schema's ceiling on Webhook spec.deliveryRetention.
+const MAX_DELIVERY_RETENTION = 1000
+
+// checkRetention mirrors the schema's bounds on spec.deliveryRetention so a
+// typo is refused before the request rather than by a 422 from kcp.
+function checkRetention(value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_DELIVERY_RETENTION) {
+    throw validationError(`deliveryRetention must be an integer between 0 and ${MAX_DELIVERY_RETENTION}`)
+  }
+}
 
 // createFilter keeps only the non-empty string entries of a create body's
 // filter (a null there means "remove", which has nothing to remove yet) and
@@ -784,21 +798,18 @@ export class Resources {
     this.run((client) => {
       const name = (body.name ?? '').trim()
       const agentRef = (body.agentRef ?? '').trim()
-      const source = (body.source ?? '').trim()
-      if (!name || !agentRef || !source) throw validationError('name, agentRef, and source are required')
-      if (!TRIGGER_SOURCES.includes(source)) {
-        throw validationError(`unsupported source ${source} (use webhook or github)`)
-      }
-      // status.webhookPath is minted by the Trigger reconciler, not here: the
-      // token is an HMAC the provider keys, which the browser must not hold.
+      const webhookRef = (body.webhookRef ?? '').trim()
+      if (!name || !agentRef || !webhookRef) throw validationError('name, agentRef, and webhookRef are required')
+      // Whether the named Webhook exists is the reconciler's Validated
+      // condition (UnknownWebhookRef), not a read here: the webhook can be
+      // created after the trigger that routes from it.
       return client.create<Trigger & KubeObject>(TRIGGERS, {
         apiVersion: API_VERSION,
         kind: 'Trigger',
         metadata: { name },
         spec: defined({
           agentRef,
-          source,
-          connectionRef: body.connectionRef,
+          webhookRef,
           filter: createFilter(body.filter),
           task: body.task,
           suspend: body.suspend,
@@ -810,14 +821,11 @@ export class Resources {
   patchTrigger = (name: string, body: TriggerPatch): Promise<Trigger> =>
     this.run((client) => {
       const spec: Record<string, unknown> = {}
-      if (body.source !== undefined) {
-        const source = body.source.trim()
-        if (!TRIGGER_SOURCES.includes(source)) {
-          throw validationError(`unsupported source ${source} (use webhook or github)`)
-        }
-        spec.source = source
+      if (body.webhookRef !== undefined) {
+        const webhookRef = body.webhookRef.trim()
+        if (!webhookRef) throw validationError('webhookRef is required')
+        spec.webhookRef = webhookRef
       }
-      if (body.connectionRef !== undefined) spec.connectionRef = body.connectionRef
       // Merge-patch semantics: keys the caller nulled are removed from
       // spec.filter, the rest are set; an empty map is a no-op, not a clear.
       if (body.filter !== undefined && Object.keys(body.filter).length > 0) spec.filter = body.filter
@@ -830,6 +838,59 @@ export class Resources {
   deleteTrigger = (name: string): Promise<void> =>
     this.run(async (client) => {
       await client.delete(TRIGGERS, name)
+    })
+
+  // ---- webhooks ------------------------------------------------------------
+
+  listWebhooks = (): Promise<Webhook[]> => this.run((c) => c.listAll<Webhook & KubeObject>(WEBHOOKS))
+
+  createWebhook = (body: WebhookCreate): Promise<Webhook> =>
+    this.run((client) => {
+      const name = (body.name ?? '').trim()
+      const source = (body.source ?? '').trim()
+      if (!name || !source) throw validationError('name and source are required')
+      if (!WEBHOOK_SOURCES.includes(source)) {
+        throw validationError(`unsupported source ${source} (use webhook or github)`)
+      }
+      const retention = body.deliveryRetention
+      if (typeof retention === 'number') checkRetention(retention)
+      // status.webhookPath is minted by the Webhook reconciler, not here: the
+      // token is an HMAC the provider keys, which the browser must not hold.
+      return client.create<Webhook & KubeObject>(WEBHOOKS, {
+        apiVersion: API_VERSION,
+        kind: 'Webhook',
+        metadata: { name },
+        spec: defined({
+          source,
+          displayName: (body.displayName ?? '').trim() || undefined,
+          deliveryRetention: typeof retention === 'number' ? retention : undefined,
+        }),
+      } as unknown as Webhook & KubeObject)
+    })
+
+  patchWebhook = (name: string, body: WebhookPatch): Promise<Webhook> =>
+    this.run((client) => {
+      const spec: Record<string, unknown> = {}
+      if (body.source !== undefined) {
+        const source = body.source.trim()
+        if (!WEBHOOK_SOURCES.includes(source)) {
+          throw validationError(`unsupported source ${source} (use webhook or github)`)
+        }
+        spec.source = source
+      }
+      // An empty display name removes the field rather than storing "".
+      if (body.displayName !== undefined) spec.displayName = body.displayName.trim() || null
+      // null removes the field, which puts the provider default back in force.
+      if (body.deliveryRetention !== undefined) {
+        if (body.deliveryRetention !== null) checkRetention(body.deliveryRetention)
+        spec.deliveryRetention = body.deliveryRetention
+      }
+      return client.patch<Webhook & KubeObject>(WEBHOOKS, name, { spec }, { type: 'merge' })
+    })
+
+  deleteWebhook = (name: string): Promise<void> =>
+    this.run(async (client) => {
+      await client.delete(WEBHOOKS, name)
     })
 
   // ---- toolsets ------------------------------------------------------------
@@ -1212,25 +1273,42 @@ export class Resources {
 
       if (harness) {
         if (harnessSecret) {
-          // `data`, base64, one key — NOT stringData, and that is the whole
-          // mechanism for "switching credential type replaces rather than
-          // accumulates". Server-side apply removes a field this manager
-          // declared last time and does not declare now, so re-applying with
-          // only `data.apiKey` drops the `data.oauthToken` it wrote before.
-          // stringData cannot express that: the apiserver folds it into `data`
-          // and the old key survives, which the reconciler then refuses as two
-          // identities in one Secret (llm.ReadHarnessSecret).
-          await client.apply(
-            SECRETS,
-            {
-              apiVersion: 'v1',
-              kind: 'Secret',
-              metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
-              type: 'Opaque',
-              data: { [harnessSecret.key]: base64UTF8(harnessSecret.value) },
-            } as KubeObject,
-            { namespace: SECRET_NAMESPACE, force: true },
-          )
+          // Switching credential type must REPLACE, not accumulate: the
+          // reconciler refuses a Secret carrying both oauthToken and apiKey as
+          // two identities in one (llm.ReadHarnessSecret). This used to lean
+          // on server-side apply dropping the key this manager declared last
+          // time, which only holds for keys THIS manager owns — a key written
+          // by an earlier version, another writer or a different manager name
+          // survived the apply, and a credential recreated over such a Secret
+          // was born unusable. A merge patch spells the removal out: the kind
+          // being saved gets its value, every other kind this provider knows
+          // is nulled, and field ownership never enters into it. The Secret
+          // is created on 404 — a fresh credential has none yet.
+          const data: Record<string, string | null> = {}
+          for (const key of harnessSecretKeys(provider)) {
+            data[key] = key === harnessSecret.key ? base64UTF8(harnessSecret.value) : null
+          }
+          try {
+            await client.patch(
+              SECRETS,
+              secretName,
+              { metadata: { labels: { ...OWNER_LABELS } }, type: 'Opaque', data },
+              { namespace: SECRET_NAMESPACE, type: 'merge' },
+            )
+          } catch (error) {
+            if (!isKubeNotFound(error)) throw error
+            await client.create(
+              SECRETS,
+              {
+                apiVersion: 'v1',
+                kind: 'Secret',
+                metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
+                type: 'Opaque',
+                data: { [harnessSecret.key]: base64UTF8(harnessSecret.value) },
+              } as KubeObject,
+              { namespace: SECRET_NAMESPACE },
+            )
+          }
         } else if (!existing) {
           throw validationError('a harness identity needs its credential')
         }

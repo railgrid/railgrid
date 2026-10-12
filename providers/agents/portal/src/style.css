@@ -809,3 +809,66 @@ railgrid-provider-agents .agents-visualization__data { margin-top: .75rem; }
 railgrid-provider-agents .agents-visualization__data summary { cursor: pointer; color: var(--color-text-secondary); }
 railgrid-provider-agents .agents-visualization__table { overflow: auto; max-height: 24rem; margin-top: .5rem; }
 railgrid-provider-agents .agents-visualization__table caption { text-align: left; color: var(--color-text-secondary); padding: .5rem; }
+
+/* --- webhook delivery log (Webhooks page) + trigger filter tester (Automation) --- */
+railgrid-provider-agents .agents-deliveries, railgrid-provider-agents .agents-tester { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; margin-top: 12px; }
+railgrid-provider-agents .agents-deliveries-head, railgrid-provider-agents .agents-tester-head { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-start; justify-content: space-between; }
+railgrid-provider-agents .agents-deliveries-head > div:first-child, railgrid-provider-agents .agents-tester-head > div:first-child { display: flex; flex-direction: column; gap: 3px; flex: 1 1 18rem; min-width: 0; }
+railgrid-provider-agents .agents-deliveries-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+railgrid-provider-agents .agents-deliveries-empty { margin: 0; }
+railgrid-provider-agents .agents-deliveries-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-delivery { border-bottom: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-delivery-row { display: grid; grid-template-columns: auto minmax(5rem, 7rem) minmax(8rem, 1.4fr) minmax(8rem, 2fr) auto; gap: 8px 12px; align-items: center; padding: 8px 0; font-size: 13px; }
+railgrid-provider-agents .agents-delivery-toggle { border: 0; background: transparent; color: var(--color-text-muted); padding: 2px; display: inline-flex; cursor: pointer; border-radius: 4px; }
+railgrid-provider-agents .agents-delivery-toggle svg { width: 16px; height: 16px; }
+railgrid-provider-agents .agents-delivery-time { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
+railgrid-provider-agents .agents-delivery-what { min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-delivery-outcome { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; min-width: 0; }
+railgrid-provider-agents .agents-delivery-reason { font-size: 12px; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-delivery-actions { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; justify-content: flex-end; }
+railgrid-provider-agents .agents-delivery-action { display: inline-flex; align-items: center; gap: 4px; }
+railgrid-provider-agents .agents-delivery-actions svg { width: 14px; height: 14px; }
+railgrid-provider-agents .agents-delivery-detail { display: flex; flex-direction: column; gap: 10px; padding: 2px 0 12px 28px; }
+railgrid-provider-agents .agents-delivery-meta { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; font-size: 12px; }
+railgrid-provider-agents .agents-delivery-meta dt { color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-delivery-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-delivery-headers summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+railgrid-provider-agents .agents-delivery-headers dl { margin-top: 6px; }
+railgrid-provider-agents .agents-delivery-body { display: flex; flex-direction: column; gap: 6px; }
+railgrid-provider-agents .agents-delivery-body-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12px; }
+railgrid-provider-agents .agents-delivery-pre { margin: 0; max-height: 18rem; overflow: auto; padding: 10px 12px; border-radius: 4px; font-family: var(--agents-mono, var(--font-mono, monospace)); font-size: 12px; line-height: 1.45; background: var(--color-surface); border: 1px solid var(--color-border-subtle); white-space: pre-wrap; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-tester-pick { display: flex; flex-direction: column; gap: 6px; }
+railgrid-provider-agents .agents-tester-pick > p { margin: 0; }
+railgrid-provider-agents .agents-verdict { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 4px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-verdict > p { margin: 0; }
+railgrid-provider-agents .agents-verdict-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 13px; }
+railgrid-provider-agents .agents-verdict-refreshing { font-size: 12px; }
+railgrid-provider-agents .agents-verdict-extracted { margin: 0; }
+railgrid-provider-agents .agents-verdict code, railgrid-provider-agents .agents-verdict-keys code { font-family: var(--agents-mono, var(--font-mono, monospace)); font-size: 12px; }
+railgrid-provider-agents .agents-verdict-keys { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+railgrid-provider-agents .agents-verdict-keys li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+railgrid-provider-agents .agents-verdict-mark { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 12px; font-weight: 700; }
+railgrid-provider-agents .agents-verdict-mark svg { width: 12px; height: 12px; }
+railgrid-provider-agents .agents-verdict-keys li.ok .agents-verdict-mark { background: var(--color-success-subtle); color: var(--color-success); }
+railgrid-provider-agents .agents-verdict-keys li.bad .agents-verdict-mark { background: var(--color-danger-subtle); color: var(--color-danger); }
+railgrid-provider-agents .agents-verdict-keys li.unknown .agents-verdict-mark { background: var(--color-warning-subtle); color: var(--color-warning); }
+railgrid-provider-agents .agents-verdict-got { font-size: 12px; }
+railgrid-provider-agents .agents-verdict-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-top: 2px; }
+railgrid-provider-agents .agents-deliveries-route { min-width: 11rem; }
+railgrid-provider-agents .agents-delivery-routes { list-style: none; margin: 0; padding: 0 0 8px 28px; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+railgrid-provider-agents .agents-delivery-routes--none { color: var(--color-text-muted); }
+railgrid-provider-agents .agents-delivery-route { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; min-width: 0; }
+railgrid-provider-agents .agents-delivery-route-fired { color: var(--color-success); font-weight: 600; }
+railgrid-provider-agents .agents-webhook-detail { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+railgrid-provider-agents .agents-webhook-detail .agents-deliveries { margin-top: 0; }
+railgrid-provider-agents .agents-webhook-routes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+railgrid-provider-agents .agents-webhook-routes li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+railgrid-provider-agents .agents-webhook-sample { display: flex; flex-direction: column; gap: 10px; }
+railgrid-provider-agents .agents-webhook-last { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; min-width: 0; }
+railgrid-provider-agents .agents-webhook-links { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0; }
+railgrid-provider-agents .agents-webhook-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+@media (max-width: 720px) {
+  railgrid-provider-agents .agents-delivery-row { grid-template-columns: auto 1fr; }
+  railgrid-provider-agents .agents-delivery-what, railgrid-provider-agents .agents-delivery-outcome, railgrid-provider-agents .agents-delivery-actions { grid-column: 2; justify-content: flex-start; }
+  railgrid-provider-agents .agents-delivery-detail, railgrid-provider-agents .agents-delivery-routes { padding-left: 0; }
+}

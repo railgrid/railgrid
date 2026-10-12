@@ -93,15 +93,77 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Background notify** — output/failure of background runs is delivered to the
   agent channel named by the schedule/trigger's `channelRef`, else the agent's
   primary channel (`spec.channels[]`).
-- **Trigger webhooks (inbound)** — webhook/github triggers get an HMAC-tokenized
-  URL (shown in the Triggers tab): external `POST`s fire the agent with the
-  event payload, no tenant auth needed. Every delivery runs in its own session
+- **Webhooks (inbound)** — a `Webhook` owns one HMAC-tokenized URL
+  (`status.webhookPath`, minted by the Webhook reconciler with the same
+  derivation and `/services/providers/agents/webhooks/triggers/` prefix a
+  trigger URL used to have, so a Webhook created under an old trigger's name
+  answers the URL already pasted into GitHub). External `POST`s need no tenant
+  auth. Any number of `Trigger`s route from one webhook by naming it in
+  `spec.webhookRef`; every delivery is offered to each of them, and each
+  judges it with its own pause switch, filter and task — one ROUTE per
+  trigger, outcome `fired` (with its Run), `filtered` (with the failing key),
+  `suspended`, `disabled`, `noTask` or `failed`. The sender gets 202 with
+  `{deliveryID, status, reason?, routes}` unless a route failed (503, the
+  only case a redelivery recovers anything); a delivery nobody routes from is
+  `unrouted` and still acked. The webhook's `status.routes` lists the
+  triggers naming it. Every fired route runs in its own session
   (`trigger:<name>/<delivery id>`, GitHub's `X-GitHub-Delivery` when present):
   events are independent work, and one session per trigger made each firing
   replay every earlier payload until the harness request outgrew the runner's
-  2MiB limit. After five consecutive failed runs the provider sets
-  `status.disabledReason` and refuses deliveries; the Automation tab's Enable
-  action (the `enable` verb) clears it once the cause is fixed.
+  2MiB limit. After five consecutive failed runs the provider sets the
+  trigger's `status.disabledReason` and its route answers `disabled`; the
+  Automation tab's Enable action (the `enable` verb) clears it once the cause
+  is fixed.
+- **Webhook delivery sink** — every authenticated POST to a webhook's URL is
+  recorded ONCE (`agents_webhook_deliveries`) with all of its routes and a
+  rollup outcome: `fired` if any route fired, else `failed` if any failed,
+  else `unrouted` if there were no routes, else `filtered`. A bad token is not
+  recorded — it is unauthenticated traffic. The sink is keyed by the
+  webhook's UID (a recreated webhook starts clean, and the Webhook finalizer
+  `agents.railgrid.ai/webhook-deliveries` purges it on delete), scoped to the
+  workspace rather than an agent, and capped per webhook by the Webhook's
+  `spec.deliveryRetention`, defaulting to the operator's
+  `AGENTS_TRIGGER_DELIVERY_RETENTION` (200); `0` keeps nothing. Headers are
+  kept minus hub/transport plumbing, with credential-looking values
+  (`X-Hub-Signature-256`, anything named key/token/secret/auth) stored as
+  `[redacted]`; the body is kept up to the 64 KiB read limit unless the
+  Webhook says `spec.recordBodies: false`, which keeps headers, the extracted
+  coordinates and every route's verdict but no payload. Anyone who passes the
+  data-plane gate for the Webhook (`get`) can read its sink, bodies included;
+  that is the switch for a sender whose payloads carry secrets or personal
+  data. The inbound POST routes from the Webhook's reconciled `status.routes`
+  (one GET per routed trigger, not a LIST of the workspace's triggers), and
+  before routing it looks the sender's delivery id up in the sink: a route
+  that already fired for that id — a redelivery after a 503 from another
+  route failing — is carried forward with its earlier Run instead of fired
+  again. `status.lastReceived` and `status.lastDelivery` summarise the newest
+  delivery on the webhook (`{time, outcome, reason, deliveryID, routed,
+  fired}`) and on each routed trigger (its own route outcome), written after
+  the sender was answered as a merge patch of those two fields on the status
+  subresource (so a reconciler writing `routes` or `Validated` at the same
+  moment is not reverted) and coalesced (at most once a minute for a run of
+  deliveries with the same outcome and reason), so "the filter drops
+  everything" no longer looks like "nobody calls the URL". Read through
+  `webhooks/{name}/deliveries` (list,
+  narrowed by `outcome` or `trigger`, or one entry whole by id) and shown on
+  the portal's Webhooks page, which refreshes on the `webhook-delivery` push
+  event (published once per agent whose trigger was routed, carrying only
+  that agent's routes, since every event stream is per agent).
+- **Filter tester and replay** — `triggers/{name}/evaluate` dry-runs a
+  candidate filter against a delivery recorded on the trigger's webhook (or a
+  spelled-out request) with the one matcher the webhook uses
+  (`internal/triggerfilter`), answering per key: wanted, what the delivery
+  carried, matched or not, and whether the key is one the matcher knows. The
+  trigger edit form re-evaluates the filter being typed against a picked
+  delivery after a short debounce and paints each key green or red.
+  `webhooks/{name}/run` re-feeds a recorded delivery (`{"deliveryID"}`) to
+  every routed trigger, or injects a sample (`{"headers", "body"}`), and
+  records it as a fresh delivery (`replayOf` set on a replay). A replayed
+  route runs in a session of its own rather than continuing the original
+  run's transcript: it is "run it again", not "carry on".
+  `triggers/{name}/run` with `{"deliveryID"}` replays it through that one
+  trigger only — pause switch and filter included — recorded as a sink row
+  whose only route is that trigger.
 
 - **Tool loop** — agents call tools mid-conversation via a real tool-call loop
   in the engine (bind → call → observe → continue, bounded by
@@ -166,10 +228,15 @@ and tools are edited inside the agent, next to a live chat playground.
   (platform header or body `type`/`action`), `action` (body `action`),
   `repository` (body `repository.full_name`), `match` (payload substring), and
   `header.<name>`; the first three take a comma-separated any-of list.
-  Filtered deliveries are acked, not run. The portal offers two flavours of
-  the same webhook trigger: a generic one edited as `key=value` lines, and a
-  GitHub one with an event catalog, action and repository fields that write
-  those keys.
+  Filtered deliveries are acked, not run — and recorded in the webhook's sink
+  with the failing key (see "Webhook delivery sink" above). Any other key is
+  ignored by the matcher (fail-open, so a filter written for a future source
+  never blocks every event); the Trigger reconciler reports it as
+  `Validated=False/UnknownFilterKey` and the MCP write tools refuse it. The
+  portal offers two flavours: a generic filter edited as `key=value` lines,
+  and, on a `github` webhook, an event catalog with action and repository
+  fields that write those keys; both re-evaluate the filter against a
+  recorded delivery as it is edited.
 - **Sub-agent delegation** — the `delegate` tool: agents listed in
   `spec.delegates` can be handed a scoped task; the child runs through the
   same execution path with `parentRunID` lineage, its usage rolls into the
@@ -194,6 +261,7 @@ and tools are edited inside the agent, next to a live chat playground.
   | Agents | `list_agents`, `get_agent`, `create_agent`, `update_agent`, `delete_agent` |
   | Schedules | `list_schedules`, `create_schedule`, `update_schedule`, `delete_schedule`, `run_schedule` |
   | Triggers | `list_triggers`, `create_trigger`, `update_trigger`, `delete_trigger`, `run_trigger` |
+  | Webhooks | `list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`, `list_webhook_deliveries` |
   | Toolsets | `list_toolsets`, `create_toolset`, `update_toolset`, `delete_toolset` |
   | Connections | `list_connections`, `create_connection`, `update_connection`, `delete_connection`, `test_connection` |
   | Model credentials | `list_model_credentials`, `save_model_credential`, `delete_model_credential`, `test_model_credential` |
@@ -343,9 +411,10 @@ The [Milestones](#milestones) section lists the full plan.
 |---|---|
 | `Agent` | The persistent assistant: persona/system prompt, model profile refs (per purpose: `chat`, `background`, `compaction`), memory policy, tool grants (connection refs + toolset refs + built-in families) with per-trigger policy, limits (max tool turns, per-run timeout), **budget** (rolling token/USD cap), **`channels`** (named messaging bindings, one primary), **`autonomy`** (`suggest`/`ask`/`auto` — enforced at toolset assembly), and **`delegates`** (agent names this agent may spawn as sub-agents) |
 | `Connection` | A named credential to an external system: `type` (`github`, `mcp`, `websearch`, `http`, `telegram`, `slack`, `smtp`), **`auth`** (`secret` default, or `oauth`), `secretRef` to a tenant-workspace Secret, non-secret config (base URL, allowed hosts, channel/chat IDs). For `auth: oauth`, an `oauth` block (provider, scopes) and a provider-run callback mint + refresh the token into the Secret. Connections turn tool families and channels on per agent |
-| `ModelCredential` | A named model endpoint an agent runs on: `provider` (`openai-compatible` / `openai`), `baseURL`, a default `model` id, `secretRef` → the tenant Secret holding the API key, and `secretKey` (default `apiKey`). Status is the source of truth: `SecretResolved` (the Secret exists, carries the key, and is labelled `railgrid.ai/owner: agents`), `Reachable` (`GET {baseURL}/models` answered), `Ready` (both), plus `models` (the ids the endpoint served, ≤500), `lastProbeTime` and a bounded `lastProbeError`. Agents name one in `spec.models[purpose]` and `spec.modelFallbacks` |
+| `ModelCredential` | A named model endpoint an agent runs on: `provider` (`openai-compatible` / `openai`), `baseURL`, a default `model` id, `secretRef` → the tenant Secret holding the API key, and `secretKey` (default `apiKey`). Status is the source of truth: `SecretResolved` (the Secret exists, carries the key, and is labelled `railgrid.ai/owner: agents`), `Reachable` (`GET {baseURL}/models` answered), `Ready` (both), plus `models` (the ids the endpoint served, ≤500), `lastProbeTime` and a bounded `lastProbeError`. The reconciler also makes the credential an owner of the labelled Secret it resolves, so deleting the credential — from the portal, MCP or kubectl — garbage-collects the Secret instead of leaving stale keys for the next credential of that name to inherit. Agents name one in `spec.models[purpose]` and `spec.modelFallbacks` |
 | `AgentSchedule` | Time-based firing. `type: cron \| wakeup \| heartbeat`; cron spec (5-field) + **`timeZone`** (IANA name, like `CronJob.spec.timeZone`; default UTC) + task prompt (cron) or standing checklist ref (heartbeat) + `agentRef` + retry policy + `suspend`. Status: `nextRun`, `lastRun`, `consecutiveFailures`, `disabledReason` |
-| `AgentTrigger` | Event-based firing — the non-time half of automation. `spec.source` (`webhook`, `channel`, `email`, `github`, `connection`) + `connectionRef` + `filter` (source-specific match: header/signature, message regex, event type, label) + `task` + `agentRef` + `suspend`. Webhook sources get a hub-routed inbound endpoint; connection sources subscribe to a Connection's event stream. Status: `lastFired`, `consecutiveFailures`, `disabledReason` |
+| `Trigger` | Event-based firing — the non-time half of automation. `spec.webhookRef` (the Webhook it routes from) + `filter` (`eventType`, `action`, `repository`, `match`, `header.<name>`) + `task` + `agentRef` + `channelRef` + `suspend`. Status: `lastFired`, `lastRunID`, `consecutiveFailures`, `disabledReason`, `lastReceived` / `lastDelivery` (its own route outcome), and `Validated` (reasons include `MissingWebhookRef`, `UnknownWebhookRef`, `UnknownAgentRef`, `UnknownFilterKey`) |
+| `Webhook` | One inbound URL and its delivery sink, routed 1:n to Triggers. `spec.source` (`webhook` / `github`, the sender flavour) + `displayName` + `deliveryRetention` + `recordBodies`. A Trigger from before this kind existed (no `webhookRef`) is migrated by the Trigger reconciler to a Webhook of its own name, so its URL — keyed by name — keeps answering. Status: `webhookPath` (the hub-relative URL, minted by the provider), `routes` (`[{name}]`, the triggers naming it), `lastReceived` / `lastDelivery` (rollup with `routed` / `fired` counts), `Validated`. A finalizer purges the sink on delete |
 | `Toolset` | A shareable bundle of tool grants (families, connections, approval rules) many agents can link, so wiring is written once |
 | `AgentSkill` *(post-v1)* | Markdown instructions + required connection types + tool grants, attachable to agents. Later: shareable across tenants via the catalog — the ClawHub analog, which a single-user OpenClaw cannot do |
 
@@ -498,8 +567,11 @@ part.
 | `connections` | `authorize` | POST | start the OAuth flow |
 | `schedules` | `run` | POST | fire now |
 | `schedules` | `enable` | POST | clear `status.disabledReason` and the failure count after repeated failures disabled it |
-| `triggers` | `run` | POST | fire now |
+| `triggers` | `run` | POST | fire now (an arbitrary JSON payload bypasses the filter); `{"deliveryID"}` replays a delivery of its webhook through this trigger only |
 | `triggers` | `enable` | POST | clear `status.disabledReason` and the failure count after repeated failures disabled it |
+| `triggers` | `evaluate` | POST | dry-run a filter against a delivery recorded on the trigger's webhook, or a spelled-out request, per key |
+| `webhooks` | `deliveries` | GET | the sink, newest first (`?limit=&outcome=&trigger=`); `…/deliveries/{id}` one entry whole |
+| `webhooks` | `run` | POST | feed a recorded delivery (`{"deliveryID"}`) or a sample (`{"headers", "body"}`) to every routed trigger; answers like the inbound POST |
 
 Every one of them is declared under `spec.export.resources[].verbs` on the
 CatalogEntry — on the resource it is served on — in
@@ -600,6 +672,12 @@ plaintext; at-rest encryption is the database's responsibility today
 - `agents_tool_calls` — **audit log**: every tool invocation (agent, run,
   trigger, tool, arguments digest, outcome, duration). Multi-tenant table
   stakes, and the debugging surface for unattended runs.
+- `agents_webhook_deliveries` — **webhook delivery sink**: every
+  authenticated inbound POST per Webhook (UID-keyed, workspace-scoped), its
+  rollup outcome and reason, the extracted eventType/action/repository,
+  redacted headers, the body, and `routes` (JSONB: each routed trigger's
+  outcome, reason and Run). Capped per webhook on insert
+  (`spec.deliveryRetention`, default 200); purged by the Webhook finalizer.
 - `agents_usage` — per-agent rolling usage for budget enforcement (tokens,
   cost, window).
 

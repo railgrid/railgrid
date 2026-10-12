@@ -314,6 +314,9 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q needs the label %s=%s; without it this provider cannot read the key on an unattended run",
 			name, claimscope.OwnerLabel, agentsclient.ProviderName), nil
 	}
+	if err := adoptSecret(ctx, c, cred, &sec); err != nil {
+		return "", "", "", err
+	}
 	// A harness identity is a different shape and a different check: which key
 	// is present decides how the harness is handed the credential, so "exactly
 	// one of oauthToken/apiKey" and "auth.json parses" are the verdict here
@@ -335,6 +338,52 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q has no %q key; spec.secretKey names the key holding the API key", name, llm.SecretKey(cred.Spec)), nil
 	}
 	return key, "", "", nil
+}
+
+// adoptSecret makes the credential an owner of its Secret, so deleting the
+// credential — from the portal, an MCP tool, kubectl, anything — garbage
+// collects the Secret with it. Without this a Secret outlived its credential
+// whenever the deleter was not the portal, and the next credential created
+// under the same name inherited its keys: a claude-code credential found both
+// an apiKey and an oauthToken waiting for it and was refused as two
+// identities. Only the Secret the provider's own writers named for this
+// credential is adopted (a labelled Secret the tenant brought is theirs), the
+// reference is added rather than replacing any other owner, and a reference
+// already present costs no write.
+func adoptSecret(ctx context.Context, c client.Client, cred *agentsv1alpha1.ModelCredential, sec *corev1.Secret) error {
+	if cred.UID == "" {
+		return nil
+	}
+	// The owner label is not enough to call a Secret ours: every Secret the
+	// provider can read has to carry it, including one the tenant created and
+	// pointed spec.secretRef at, and adopting that would delete the tenant's
+	// Secret with the credential. The name the provider's own writers mint is
+	// the marker; anything else stays un-owned.
+	if sec.Name != agentsv1alpha1.ModelCredentialSecretName(cred.Name) {
+		return nil
+	}
+	for _, owner := range sec.OwnerReferences {
+		if owner.UID == cred.UID {
+			return nil
+		}
+	}
+	sec.OwnerReferences = append(sec.OwnerReferences, metav1.OwnerReference{
+		APIVersion: agentsv1alpha1.SchemeGroupVersion.String(),
+		Kind:       "ModelCredential",
+		Name:       cred.Name,
+		UID:        cred.UID,
+	})
+	// Update, not Patch: the secrets claim in manifest.yaml grants get, list,
+	// watch, create, update and delete, and the export virtual workspace
+	// enforces exactly that list, so a patch is forbidden against real kcp
+	// (the fake client in the unit tests knows nothing of claims). Granting
+	// the verb would be a claim change every enabled tenant has to re-accept.
+	// The Secret was read a moment ago, so its resourceVersion guards the
+	// write; a conflict is retried by the next reconcile.
+	if err := c.Update(ctx, sec); err != nil {
+		return fmt.Errorf("adopting secret %q: %w", sec.Name, err)
+	}
+	return nil
 }
 
 // readyMessageFor is the True message for Ready. A harness identity never had

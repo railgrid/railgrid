@@ -223,7 +223,7 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 // stores tokens in the connection Secret via the virtual workspace (this
 // route is anonymous — the signed state is the auth).
 func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	if s.bg == nil || !s.bg.ready() {
+	if s.bg == nil || !s.bg.readyFor(r.Context()) {
 		http.Error(w, "background executor is not running on this provider", http.StatusServiceUnavailable)
 		return
 	}

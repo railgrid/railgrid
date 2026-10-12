@@ -372,3 +372,83 @@ func TestReconcileNeverStoresTheUpstreamBody(t *testing.T) {
 		t.Fatalf("lastProbeError = %q, want the HTTP status", got.Status.LastProbeError)
 	}
 }
+
+// Deleting a credential must take its Secret with it whoever deletes it, so
+// the reconciler makes the credential an owner of the Secret it resolves. The
+// reference is added once, beside any owner already there, and only to a
+// Secret that carries the provider's label.
+func TestReconcileAdoptsItsSecret(t *testing.T) {
+	cred := credential()
+	cred.UID = "cred-uid-1"
+	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
+	sec.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}}
+	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+		return []string{"gpt-4o"}, time.Millisecond, nil
+	}
+	r, c := newReconciler(t, probe, cred, sec)
+	reconcileOnce(t, r)
+	reconcileOnce(t, r)
+	var got corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: sec.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	owners := map[string]int{}
+	for _, o := range got.OwnerReferences {
+		owners[string(o.UID)]++
+	}
+	if owners["other-uid"] != 1 {
+		t.Errorf("the pre-existing owner was lost: %+v", got.OwnerReferences)
+	}
+	if owners["cred-uid-1"] != 1 {
+		t.Errorf("want exactly one reference to the credential after two reconciles, got %+v", got.OwnerReferences)
+	}
+	for _, o := range got.OwnerReferences {
+		if o.UID == "cred-uid-1" && (o.Kind != "ModelCredential" || o.APIVersion != agentsv1alpha1.SchemeGroupVersion.String() || o.Name != cred.Name) {
+			t.Errorf("owner reference is not the credential: %+v", o)
+		}
+	}
+}
+
+// An unlabelled Secret is outside the provider's claim and is not adopted.
+func TestReconcileDoesNotAdoptAnUnlabelledSecret(t *testing.T) {
+	cred := credential()
+	cred.UID = "cred-uid-1"
+	sec := secret(false, map[string][]byte{"apiKey": []byte("k")})
+	probe := func(context.Context, string, string) ([]string, time.Duration, error) { return nil, 0, nil }
+	r, c := newReconciler(t, probe, cred, sec)
+	reconcileOnce(t, r)
+	var got corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: sec.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("unlabelled secret gained owners: %+v", got.OwnerReferences)
+	}
+}
+
+// A Secret the tenant brought and pointed spec.secretRef at carries the owner
+// label too (the claim needs it), so the label cannot mark it as ours. Only
+// the provider-named Secret is adopted; a differently named one is left
+// un-owned, whatever its label.
+func TestReconcileDoesNotAdoptATenantNamedSecret(t *testing.T) {
+	cred := credential()
+	cred.UID = "cred-uid-1"
+	cred.Spec.SecretRef.Name = "my-own-openai-key"
+	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
+	sec.Name = "my-own-openai-key"
+	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+		return []string{"gpt-4o"}, time.Millisecond, nil
+	}
+	r, c := newReconciler(t, probe, cred, sec)
+	reconcileOnce(t, r)
+	var got corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: sec.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("tenant-named secret gained owners: %+v", got.OwnerReferences)
+	}
+	if cond := condition(t, read(t, c), agentsv1alpha1.ConditionReady); cond.Status != metav1.ConditionTrue {
+		t.Errorf("a tenant-named secret must still resolve: Ready = %+v", cond)
+	}
+}

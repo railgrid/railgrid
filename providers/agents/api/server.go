@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -61,9 +62,15 @@ type Config struct {
 	// autonomous schedule firing + trigger webhooks via the APIExport virtual
 	// workspace. Empty → per-request execution only.
 	ProviderKubeconfig string
-	// WebhookKey signs trigger webhook URLs. Empty → derived from the provider
+	// WebhookKey signs Webhook inbound URLs. Empty → derived from the provider
 	// kubeconfig contents.
 	WebhookKey string
+	// TriggerDeliveryRetention is how many recent inbound deliveries are kept
+	// per Webhook in its sink (webhooks/{name}/deliveries) when the webhook's
+	// spec.deliveryRetention does not say. Zero means the default,
+	// DefaultTriggerDeliveryRetention. The name predates the Webhook kind; the
+	// env var it is read from (AGENTS_TRIGGER_DELIVERY_RETENTION) is unchanged.
+	TriggerDeliveryRetention int
 	// OAuthApps holds platform-wide OAuth app credentials by provider
 	// (github/google/slack), configured once by the operator via env. When a
 	// provider has an app here, connections of that provider Connect with no
@@ -71,6 +78,15 @@ type Config struct {
 	// users bring their own OAuth app credentials per connection.
 	OAuthApps map[string]OAuthApp
 }
+
+// DefaultTriggerDeliveryRetention is the delivery-sink cap per Webhook when
+// neither the operator (AGENTS_TRIGGER_DELIVERY_RETENTION) nor the webhook
+// (spec.deliveryRetention) chose one.
+const DefaultTriggerDeliveryRetention = 200
+
+// MaxTriggerDeliveryRetention bounds spec.deliveryRetention and the operator
+// default alike; the API schema enforces the same ceiling.
+const MaxTriggerDeliveryRetention = 1000
 
 // OAuthApp is one platform-wide OAuth application's credentials.
 type OAuthApp struct {
@@ -87,6 +103,9 @@ type Server struct {
 	bg       *background
 	events   *eventBus
 	liveRuns *runRegistry
+	// stamps counts the status writes a webhook delivery left running after
+	// its sender was answered (see deliverWebhookEvent); tests wait on it.
+	stamps sync.WaitGroup
 	// callers is the data-plane caller factory. On a verb it acts AS THE
 	// PROVIDER through the APIExport virtual workspace (Gate needs
 	// AsProvider); on the MCP class, the one route that still carries the

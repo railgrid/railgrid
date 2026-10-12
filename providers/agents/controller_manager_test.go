@@ -18,7 +18,7 @@ import (
 
 // submitterWithPurge is an executor that also knows how to tear an agent's
 // store data down — the shape api's *background has.
-type submitterWithPurge struct{ called, released bool }
+type submitterWithPurge struct{ called, released, webhookPurged bool }
 
 func (s *submitterWithPurge) Submit(context.Context, executor.Job) error { return nil }
 
@@ -29,6 +29,11 @@ func (s *submitterWithPurge) PurgeAgentData(_ context.Context, _, _ string) erro
 
 func (s *submitterWithPurge) ReleaseAgentIdentity(_ context.Context, _, _ string) error {
 	s.released = true
+	return nil
+}
+
+func (s *submitterWithPurge) PurgeWebhookDeliveries(_ context.Context, _, _ string) error {
+	s.webhookPurged = true
 	return nil
 }
 
@@ -71,5 +76,21 @@ func TestAgentTeardownIsNilWithoutOne(t *testing.T) {
 	}
 	if purge, release := agentTeardown(api.ControllerDeps{}); purge != nil || release != nil {
 		t.Fatal("a missing executor must yield no teardown functions")
+	}
+}
+
+// The Webhook finalizer is found on the executor the same way, and is absent —
+// so no finalizer is added — when the executor cannot purge.
+func TestWebhookTeardownIsDiscovered(t *testing.T) {
+	exec := &submitterWithPurge{}
+	purge := webhookTeardown(api.ControllerDeps{Submit: exec})
+	if purge == nil {
+		t.Fatal("an executor that exposes the webhook purge must be discovered")
+	}
+	if err := purge(context.Background(), "tenant-a", "uid-1"); err != nil || !exec.webhookPurged {
+		t.Fatalf("the discovered purge must be the executor's own (err=%v purged=%v)", err, exec.webhookPurged)
+	}
+	if webhookTeardown(api.ControllerDeps{Submit: submitterOnly{}}) != nil || webhookTeardown(api.ControllerDeps{}) != nil {
+		t.Fatal("an executor with no purge must yield none")
 	}
 }

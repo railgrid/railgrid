@@ -57,6 +57,8 @@ helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-prov
 | `store.databaseURLSecretRef.name` | `""` |  |
 | `store.databaseURLSecretRef.key` | `database-url` |  |
 | `store.inMemoryStore` | `false` |  |
+| `triggers` |  | Event triggers and the webhooks they route from. |
+| `triggers.deliveryRetention` | `200` | The default for how many recent inbound deliveries the provider keeps per Webhook — every authenticated POST to its URL, with what each routed trigger made of it — for the portal's delivery sink and filter tester (`AGENTS_TRIGGER_DELIVERY_RETENTION`). A Webhook's own `spec.deliveryRetention` overrides it; `0` keeps nothing; `1000` is the ceiling. |
 | `hub` |  |  |
 | `hub.url` | `"http://railgrid-hub.railgrid.svc.cluster.local:8080"` |  |
 | `hub.insecure` | `false` |  |

@@ -102,6 +102,7 @@ func TestMCPToolsList(t *testing.T) {
 		"list_schedules", "create_schedule", "update_schedule", "delete_schedule", "run_schedule",
 		// triggers
 		"list_triggers", "create_trigger", "update_trigger", "delete_trigger", "run_trigger",
+		"list_webhooks", "create_webhook", "update_webhook", "delete_webhook", "list_webhook_deliveries",
 		// toolsets
 		"list_toolsets", "create_toolset", "update_toolset", "delete_toolset",
 		// connections
@@ -138,7 +139,8 @@ func TestMCPToolInputSchemas(t *testing.T) {
 	wantRequired := map[string][]string{
 		"update_schedule": {"name"},
 		"create_schedule": {"name", "agentRef", "type"},
-		"create_trigger":  {"name", "agentRef", "source"},
+		"create_trigger":  {"name", "agentRef", "webhookRef"},
+		"create_webhook":  {"name", "source"},
 		"delete_trigger":  {"name"},
 		"create_agent":    {"name"},
 	}

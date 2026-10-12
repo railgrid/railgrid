@@ -121,6 +121,18 @@ spec:
             description: "Fire the trigger now with an empty event."
           - name: enable
             description: "Re-enable a trigger the provider disabled after repeated failures, resetting its failure count."
+          - name: evaluate
+            description: "Dry-run a candidate filter against a recorded delivery of the trigger's webhook (or a spelled-out request) with the matcher the webhook uses; answers per key. POST {\"filter\": {…}, \"deliveryID\": \"<id>\"}."
+            readOnly: true
+      - name: webhooks
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: Webhook
+        verbs:
+          - name: deliveries
+            description: "The webhook's inbound delivery sink, newest first: every authenticated POST to its URL and what each routed trigger made of it (fired, filtered, paused, …). GET …/deliveries lists (query: limit, outcome, trigger); GET …/deliveries/{id} reads one whole."
+            readOnly: true
+          - name: run
+            description: "Feed a delivery to every trigger routing from the webhook: POST {\"deliveryID\": \"<id>\"} replays a recorded one, POST {\"headers\": {…}, \"body\": \"…\"} injects a sample. Answers like the inbound POST."
 
   # Everything this provider needs that it does not own, keyed by API group:
   # another provider's kinds and verbs, and the platform builtins its own
@@ -252,7 +264,8 @@ spec:
       #
       # Schedules and triggers are deliberately absent: they are edited on an
       # agent's Automation tab, not as a workspace-level collection, so there is
-      # no route to point at.
+      # no route to point at. Webhooks are a workspace-level collection (one
+      # URL, many triggers across agents), so they get an entry.
       children:
         - displayName: Agents
           builtinRoute: agents
@@ -260,6 +273,8 @@ spec:
           builtinRoute: activity
         - displayName: Connections
           builtinRoute: connections
+        - displayName: Webhooks
+          builtinRoute: webhooks
     backend:
       # The hub backend proxy forwards /services/providers/agents/* here for the
       # route classes that are not kcp API traffic: /mcp, /oauth/, /webhooks/ and

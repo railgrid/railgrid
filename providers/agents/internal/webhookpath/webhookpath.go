@@ -6,28 +6,26 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package webhookpath derives the inbound URL a Trigger listens on.
+// Package webhookpath derives the inbound URL a Webhook listens on.
 //
 // The URL is the credential: there is no stored token, only an HMAC over
-// cluster/name under a provider-wide key, so anybody holding the URL can fire
-// the trigger and nobody can guess one. That makes the derivation itself
+// cluster/name under a provider-wide key, so anybody holding the URL can feed
+// the webhook and nobody can guess one. That makes the derivation itself
 // load-bearing — two writers that disagree by a byte mint two different URLs
-// for the same trigger, and the one already pasted into GitHub stops working.
+// for the same webhook, and the one already pasted into GitHub stops working.
 //
-// Two writers exist. The HTTP layer (api/triggers.go, still serving the MCP
-// create_trigger/update_trigger tools) stamps status.webhookPath on the write
-// it performs. The Trigger reconciler stamps it for every other writer —
-// notably the portal, which creates Triggers with a kube client and never
-// passes through the API layer at all. Both reach the derivation here — the
-// api layer through Server.webhookKeyBytes / Server.webhookToken, which are
-// now thin binds onto Key and Token — so "byte-identical" is the compiler's
-// problem rather than a convention anyone has to remember.
+// Two sides use it. The Webhook reconciler mints status.webhookPath for every
+// Webhook, whoever wrote it. The HTTP layer re-derives the token to check an
+// inbound POST (Server.webhookKeyBytes / Server.webhookToken are thin binds
+// onto Key and Token), so "byte-identical" is the compiler's problem rather
+// than a convention anyone has to remember.
 //
-// The golden vectors in TestDerivationIsStable guard the other half of it:
-// not that the two callers agree (they cannot disagree now), but that neither
-// this package nor a future refactor CHANGES the derivation. Every trigger URL
-// already pasted into a GitHub webhook config depends on it staying put, and
-// nothing else in the system would notice if it moved.
+// The path prefix still says "triggers": a URL used to belong to one Trigger,
+// and the Webhook kind took over the same derivation and the same prefix so
+// that a Webhook created under an old trigger's name answers the URL already
+// pasted into the sender. The golden vectors in TestDerivationIsStable guard
+// that: not that the two sides agree (they cannot disagree now), but that
+// neither this package nor a future refactor CHANGES the derivation.
 package webhookpath
 
 import (
@@ -37,7 +35,8 @@ import (
 	"os"
 )
 
-// PathPrefix is the hub route every trigger webhook lands on.
+// PathPrefix is the hub route every webhook lands on. It keeps its historical
+// "triggers" segment; see the package comment.
 const PathPrefix = "/services/providers/agents/webhooks/triggers/"
 
 // kubeconfigSalt separates the key derived from the provider kubeconfig from
@@ -62,7 +61,7 @@ func Key(explicit, providerKubeconfig string) []byte {
 	return nil
 }
 
-// Token is the HMAC guarding one trigger's inbound URL. Empty when there is
+// Token is the HMAC guarding one webhook's inbound URL. Empty when there is
 // no key.
 func Token(key []byte, clusterID, name string) string {
 	if len(key) == 0 {
@@ -78,7 +77,7 @@ func Join(clusterID, name, token string) string {
 	return PathPrefix + clusterID + "/" + name + "/" + token
 }
 
-// For returns the full inbound path for a trigger, or "" when no key is
+// For returns the full inbound path for a webhook, or "" when no key is
 // configured.
 func For(key []byte, clusterID, name string) string {
 	token := Token(key, clusterID, name)

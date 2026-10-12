@@ -94,6 +94,9 @@ jobs:
       - name: Run kuery provider e2e
         run: make e2e-kuery-provider
 
+      - name: Run agents provider e2e
+        run: make e2e-agents-provider
+
       - name: Run edges provider e2e
         run: make e2e-edges
 
