@@ -170,3 +170,29 @@ func TestProviderActionProofBridgeStripsUntrustedProofs(t *testing.T) {
 		}
 	}
 }
+
+func TestActionProofAppAuthGrantBindsProjectUIDAudienceFromBody(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost,
+		"/clusters/cluster-id/apis/ai.railgrid.ai/v1alpha1/projects/project-name/authentication-grants",
+		strings.NewReader(`{"user":"existing-user","appId":"project-uid/production"}`))
+	user, appID, err := actionProofAppAuthGrant(request)
+	if err != nil {
+		t.Fatalf("authentication-grant action with stable Project UID audience failed: %v", err)
+	}
+	if user != "existing-user" || appID != "project-uid/production" {
+		t.Fatalf("parsed intent = %q/%q", user, appID)
+	}
+}
+
+func TestActionProofAppAuthGrantRejectsMalformedBody(t *testing.T) {
+	for _, body := range []string{
+		`{"user":"existing-user","appId":"project-uid/production"}{}`,
+		`{"user":"existing-user","appId":"project-uid/production","extra":true}`,
+		`{"user":"existing-user","appId":" "}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/unused", strings.NewReader(body))
+		if _, _, err := actionProofAppAuthGrant(request); err == nil {
+			t.Errorf("accepted malformed authentication-grant body %q", body)
+		}
+	}
+}

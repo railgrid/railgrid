@@ -40,8 +40,6 @@ import (
 
 var (
 	publishingTestTargetGVR = schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
-	clusterRoleGVR          = clusterRoleResource.GVR
-	clusterRoleBindingGVR   = clusterRoleBindingResource.GVR
 )
 
 func publishingTestDynamic(objects ...runtime.Object) *fake.FakeDynamicClient {
@@ -50,8 +48,6 @@ func publishingTestDynamic(objects ...runtime.Object) *fake.FakeDynamicClient {
 		map[schema.GroupVersionResource]string{
 			asclient.ProjectGVR:     "ProjectList",
 			publishingTestTargetGVR: "InstanceList",
-			clusterRoleGVR:          "ClusterRoleList",
-			clusterRoleBindingGVR:   "ClusterRoleBindingList",
 		},
 		objects...,
 	)
@@ -70,18 +66,67 @@ func publishingTestProjectObject(t *testing.T, project *aiv1alpha1.Project) *uns
 }
 
 func publishingTestServer(t *testing.T, dyn *fake.FakeDynamicClient, members ...publishingMember) *mux.Router {
+	router, _ := publishingTestServerWithBroker(t, dyn, members...)
+	return router
+}
+
+func publishingTestServerWithBroker(t *testing.T, dyn *fake.FakeDynamicClient, members ...publishingMember) (*mux.Router, *publishingAppAccessBrokerFake) {
 	t.Helper()
 	client := asclient.NewFromDynamic(dyn)
+	broker := &publishingAppAccessBrokerFake{grants: map[string][]projectPublishingGrantView{}}
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
 		publishingMembershipFetcher: func(context.Context, identity) ([]publishingMember, error) {
 			return members, nil
 		},
+		appAccessBroker: broker.call,
 	}
 	router := mux.NewRouter()
 	server.Register(router)
-	return router
+	return router, broker
+}
+
+type publishingAppAccessBrokerFake struct {
+	requests []appAccessBrokerRequest
+	grants   map[string][]projectPublishingGrantView
+}
+
+func (b *publishingAppAccessBrokerFake) call(_ context.Context, _ identity, req appAccessBrokerRequest) ([]projectPublishingGrantView, error) {
+	b.requests = append(b.requests, req)
+	items := b.grants[req.Name]
+	switch req.Operation {
+	case appAccessBrokerList:
+		return append([]projectPublishingGrantView(nil), items...), nil
+	case appAccessBrokerCreate:
+		for _, item := range items {
+			if item.User == req.User {
+				return append([]projectPublishingGrantView(nil), items...), nil
+			}
+		}
+		grant := projectPublishingGrantView{
+			Name:        "grant-" + req.Name + "-" + req.User,
+			UID:         "uid-" + req.User,
+			User:        req.User,
+			Publication: req.Name,
+			Phase:       "Active",
+		}
+		b.grants[req.Name] = append(items, grant)
+		return append([]projectPublishingGrantView(nil), b.grants[req.Name]...), nil
+	case appAccessBrokerRevoke:
+		for i, item := range items {
+			if item.Name == req.Grant {
+				b.grants[req.Name] = append(items[:i], items[i+1:]...)
+				return append([]projectPublishingGrantView(nil), b.grants[req.Name]...), nil
+			}
+		}
+		return nil, &hubStatusError{Status: http.StatusConflict, Message: "grant does not belong to this app"}
+	case appAccessBrokerReset:
+		delete(b.grants, req.Name)
+		return []projectPublishingGrantView{}, nil
+	default:
+		return nil, &hubStatusError{Status: http.StatusBadRequest, Message: "unsupported operation"}
+	}
 }
 
 func publishingTestProjectTyped(name, uid, access string) *aiv1alpha1.Project {
@@ -138,6 +183,7 @@ func setPublishingIdentity(r *http.Request) *http.Request {
 	r.Header.Set("X-Railgrid-Tenant", "cluster-a")
 	r.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	r.Header.Set("X-Railgrid-User", "alice")
+	r.Header.Set(dataplane.HeaderActionProof, "hub-signed-action-proof")
 	return stampTestCaller(r, testUserForToken("alice-token"))
 }
 
@@ -335,12 +381,12 @@ func TestUnpublishedProjectReportsNotPublished(t *testing.T) {
 	}
 }
 
-func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
+func TestGrantLifecycleUsesHubBroker(t *testing.T) {
 	dyn := publishingTestDynamic(
 		publishingTestProject("demo", "project-uid", "private"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
 	)
-	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "railgrid:bob@example.com", Role: "member"})
+	router, broker := publishingTestServerWithBroker(t, dyn, publishingMember{User: "bob", RBACIdentity: "railgrid:bob@example.com", Role: "member"})
 
 	// Email identities are rejected.
 	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"bob@example.com"}`)
@@ -365,41 +411,14 @@ func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
 		t.Fatalf("grants = %+v, want one active grant for bob", grants.Items)
 	}
 
-	// The grant is exactly one ClusterRole + one ClusterRoleBinding carrying
-	// the access-subresource tuple the hub SAR checks.
-	role, err := dyn.Resource(clusterRoleGVR).Get(context.Background(), appAccessRoleName("demo-prod"), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get ClusterRole: %v", err)
+	if len(broker.requests) != 1 {
+		t.Fatalf("broker requests = %+v, want one create after membership validation", broker.requests)
 	}
-	rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
-	if len(rules) != 2 {
-		t.Fatalf("ClusterRole rules = %#v, want access tuple + workspace access", rules)
-	}
-	rule, _ := rules[0].(map[string]any)
-	resources, _ := rule["resources"].([]any)
-	names, _ := rule["resourceNames"].([]any)
-	if len(resources) != 1 || resources[0] != "instances/access" || len(names) != 1 || names[0] != "demo-prod" {
-		t.Fatalf("ClusterRole rule = %#v, want instances/access on demo-prod", rule)
-	}
-	// kcp's workspace content authorizer requires `access` on "/" before any
-	// RBAC rule applies — without this, invited outsiders are denied even
-	// with a perfect grant.
-	wsRule, _ := rules[1].(map[string]any)
-	wsURLs, _ := wsRule["nonResourceURLs"].([]any)
-	wsVerbs, _ := wsRule["verbs"].([]any)
-	if len(wsURLs) != 1 || wsURLs[0] != "/" || len(wsVerbs) != 1 || wsVerbs[0] != "access" {
-		t.Fatalf("ClusterRole workspace rule = %#v, want access on /", wsRule)
-	}
-	binding, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName("demo-prod", "bob"), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get ClusterRoleBinding: %v", err)
-	}
-	subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
-	subject, _ := subjects[0].(map[string]any)
-	// The subject must be the kcp RBAC identity — the username kcp actually
-	// evaluates — never the User CR name (no kcp binding references it).
-	if subject["kind"] != "User" || subject["name"] != "railgrid:bob@example.com" {
-		t.Fatalf("binding subject = %#v, want User railgrid:bob@example.com", subject)
+	request := broker.requests[0]
+	if request.Operation != appAccessBrokerCreate || request.Group != "infrastructure.railgrid.ai" || request.Resource != "instances" ||
+		request.Name != "demo-prod" || request.UID != "runtime-uid-1" || request.ProjectName != "demo" || request.ProjectUID != "project-uid" ||
+		request.User != "bob" || request.Grant != "" {
+		t.Fatalf("broker create request = %+v, want the exact project, Instance, and stable User tuple", request)
 	}
 
 	// Idempotent re-grant.
@@ -408,22 +427,27 @@ func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
 		t.Fatalf("re-grant status = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Revoke deletes the binding.
-	rec = publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants/"+appAccessBindingName("demo-prod", "bob"), "")
+	// Revoke delegates the exact binding name to the hub broker.
+	rec = publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants/grant-demo-prod-bob", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("revoke status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if _, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName("demo-prod", "bob"), metav1.GetOptions{}); !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("binding survived revoke: %v", err)
+	if len(broker.grants["demo-prod"]) != 0 {
+		t.Fatalf("broker grants after revoke = %+v, want empty", broker.grants["demo-prod"])
+	}
+	last := broker.requests[len(broker.requests)-1]
+	if last.Operation != appAccessBrokerRevoke || last.Grant != "grant-demo-prod-bob" || last.Name != "demo-prod" || last.UID != "runtime-uid-1" {
+		t.Fatalf("broker revoke request = %+v", last)
 	}
 }
 
-func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
+func TestGrantInviteByEmailProvisionsThroughHubAndUsesGrantBroker(t *testing.T) {
 	dyn := publishingTestDynamic(
 		publishingTestProject("demo", "project-uid", "private"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
 	)
 	client := asclient.NewFromDynamic(dyn)
+	broker := &publishingAppAccessBrokerFake{grants: map[string][]projectPublishingGrantView{}}
 	var invitedEmail string
 	server := &Server{
 		tenantWorkspaces: staticWorkspaces{"cluster-a": testWorkspace("cluster-a", "org-a", "ws-1")}.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
@@ -435,6 +459,7 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 			invitedEmail = email
 			return publishingMember{User: "user-carol", RBACIdentity: "railgrid:carol@example.com"}, nil
 		},
+		appAccessBroker: broker.call,
 	}
 	router := mux.NewRouter()
 	server.Register(router)
@@ -461,8 +486,8 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 	if len(grants.Items) != 1 || grants.Items[0].User != "user-carol" {
 		t.Fatalf("grants = %+v, want one active grant for user-carol", grants.Items)
 	}
-	if _, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName("demo-prod", "user-carol"), metav1.GetOptions{}); err != nil {
-		t.Fatalf("invited grant binding missing: %v", err)
+	if len(broker.requests) != 1 || broker.requests[0].Operation != appAccessBrokerCreate || broker.requests[0].User != "user-carol" {
+		t.Fatalf("invited user broker request = %+v, want one create for the pending User name", broker.requests)
 	}
 }
 
@@ -483,10 +508,10 @@ func TestRevokeIsAllowedInAnyMode(t *testing.T) {
 	dyn := publishingTestDynamic(
 		publishingTestProject("demo", "project-uid", "public"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "public", "https://demo-prod-abc.apps.test"),
-		staleGrantBinding("demo-prod", "bob"),
 	)
-	router := publishingTestServer(t, dyn)
-	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants/"+appAccessBindingName("demo-prod", "bob"), "")
+	router, broker := publishingTestServerWithBroker(t, dyn)
+	broker.grants["demo-prod"] = []projectPublishingGrantView{{Name: "grant-demo-prod-bob", User: "bob", Publication: "demo-prod", Phase: "Active"}}
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants/grant-demo-prod-bob", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("revoke status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -496,15 +521,15 @@ func TestRevokeRejectsForeignBinding(t *testing.T) {
 	dyn := publishingTestDynamic(
 		publishingTestProject("demo", "project-uid", "private"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
-		staleGrantBinding("other-app", "bob"),
 	)
-	router := publishingTestServer(t, dyn)
-	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants/"+appAccessBindingName("other-app", "bob"), "")
+	router, broker := publishingTestServerWithBroker(t, dyn)
+	broker.grants["other-app"] = []projectPublishingGrantView{{Name: "grant-other-app-bob", User: "bob", Publication: "other-app", Phase: "Active"}}
+	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants/grant-other-app-bob", "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("foreign revoke status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if _, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName("other-app", "bob"), metav1.GetOptions{}); err != nil {
-		t.Fatalf("foreign binding was deleted: %v", err)
+	if len(broker.grants["other-app"]) != 1 {
+		t.Fatalf("foreign broker grant changed: %+v", broker.grants["other-app"])
 	}
 }
 
@@ -512,9 +537,9 @@ func TestUnpublishGoesPrivateAndRemovesGrants(t *testing.T) {
 	dyn := publishingTestDynamic(
 		publishingTestProject("demo", "project-uid", "public"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "public", "https://demo-prod-abc.apps.test"),
-		staleGrantBinding("demo-prod", "bob"),
 	)
-	router := publishingTestServer(t, dyn)
+	router, broker := publishingTestServerWithBroker(t, dyn)
+	broker.grants["demo-prod"] = []projectPublishingGrantView{{Name: "grant-demo-prod-bob", User: "bob", Publication: "demo-prod", Phase: "Active"}}
 	rec := publishingDo(t, router, http.MethodDelete, "/api/projects/demo/publishing", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unpublish status = %d: %s", rec.Code, rec.Body.String())
@@ -546,29 +571,13 @@ func TestUnpublishGoesPrivateAndRemovesGrants(t *testing.T) {
 	if values["access"] != "private" {
 		t.Fatalf("binding access after unpublish = %#v, want private", values["access"])
 	}
-	if _, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName("demo-prod", "bob"), metav1.GetOptions{}); err == nil {
-		t.Fatal("grants survived unpublish")
+	if len(broker.grants["demo-prod"]) != 0 {
+		t.Fatalf("broker grants survived unpublish: %+v", broker.grants["demo-prod"])
 	}
 	// The production instance itself is untouched.
 	if _, err := dyn.Resource(publishingTestTargetGVR).Get(context.Background(), "demo-prod", metav1.GetOptions{}); err != nil {
 		t.Fatalf("production instance was touched by unpublish: %v", err)
 	}
-}
-
-func staleGrantBinding(instance, user string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRoleBinding",
-		"metadata": map[string]any{
-			"name": appAccessBindingName(instance, user),
-			"labels": map[string]any{
-				appAccessLabel:     instance,
-				appAccessUserLabel: user,
-			},
-		},
-		"subjects": []any{map[string]any{"kind": "User", "apiGroup": "rbac.authorization.k8s.io", "name": user}},
-		"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": appAccessRoleName(instance)},
-	}}
 }
 
 // publishingHubStub stands in for the hub membership API: it records the
@@ -581,6 +590,10 @@ type publishingHubStub struct {
 	invitePath      string
 	inviteHeader    http.Header
 	inviteBody      []byte
+	brokerMethod    string
+	brokerPath      string
+	brokerHeader    http.Header
+	brokerBody      []byte
 	orgRosterHeader http.Header
 	wsRosterHeader  http.Header
 }
@@ -602,6 +615,22 @@ func newPublishingHubStub(t *testing.T, inviteStatus int, inviteBody string, org
 		case r.Method == http.MethodGet && r.URL.Path == "/api/orgs/org-a/workspaces/ws-1/memberships":
 			stub.wsRosterHeader = r.Header.Clone()
 			writeJSON(w, http.StatusOK, publishingMembersResponse{Items: wsRoster})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/orgs/org-a/workspaces/ws-1/app-auth/grants":
+			stub.brokerMethod, stub.brokerPath, stub.brokerHeader = r.Method, r.URL.Path, r.Header.Clone()
+			stub.brokerBody, _ = io.ReadAll(r.Body)
+			var request appAccessBrokerRequest
+			if err := json.Unmarshal(stub.brokerBody, &request); err != nil {
+				http.Error(w, "bad broker request", http.StatusBadRequest)
+				return
+			}
+			items := []projectPublishingGrantView{}
+			if request.Operation == appAccessBrokerCreate {
+				items = append(items, projectPublishingGrantView{
+					Name: "grant-" + request.Name + "-" + request.User, UID: "grant-uid",
+					User: request.User, Publication: request.Name, Phase: "Active",
+				})
+			}
+			writeJSON(w, http.StatusOK, appAccessBrokerResponse{Items: items})
 		default:
 			http.NotFound(w, r)
 		}
@@ -635,26 +664,8 @@ func publishingInviteDynamic() *fake.FakeDynamicClient {
 	)
 }
 
-func publishingBindingSubject(t *testing.T, dyn *fake.FakeDynamicClient, instance, user string) string {
-	t.Helper()
-	binding, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName(instance, user), metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("grant binding for %s missing: %v", user, err)
-	}
-	subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
-	if len(subjects) != 1 {
-		t.Fatalf("binding subjects = %v, want one", subjects)
-	}
-	subject, _ := subjects[0].(map[string]any)
-	name, _ := subject["name"].(string)
-	return name
-}
-
-// The invite is one POST to the hub's org membership route, scoped to the
-// caller's workspace as well as the org (a delegated token can only be
-// verified there), with the hub's invite semantics: pre-provision a pending
-// User for the email and make it an org member. The grant then binds the
-// identity the hub reports.
+// The invite first uses the hub's membership route, then sends a separate
+// signed exact-project grant operation to the hub-owned app-access broker.
 func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 	hub := newPublishingHubStub(t, http.StatusCreated,
 		`{"user":"user-carol","rbacIdentity":"railgrid:carol@example.com","email":"carol@example.com","role":"member","orgUUID":"org-a"}`,
@@ -691,8 +702,48 @@ func TestInviteByEmailPostsOrgMembershipScopedToWorkspace(t *testing.T) {
 	if body["user"] != "carol@example.com" || body["role"] != "member" || body["invite"] != true || len(body) != 3 {
 		t.Fatalf("invite body = %v, want user/role=member/invite=true", body)
 	}
-	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "railgrid:carol@example.com" {
-		t.Fatalf("grant bound %q, want the hub-reported RBAC identity", subject)
+	if hub.brokerMethod != http.MethodPost || hub.brokerPath != "/api/orgs/org-a/workspaces/ws-1/app-auth/grants" {
+		t.Fatalf("broker call = %s %s, want the workspace-scoped app-auth grants route", hub.brokerMethod, hub.brokerPath)
+	}
+	if got := hub.brokerHeader.Get(dataplane.HeaderActionProof); got != "hub-signed-action-proof" {
+		t.Fatalf("broker action proof = %q, want the inbound hub-signed proof", got)
+	}
+	var brokerRequest appAccessBrokerRequest
+	if err := json.Unmarshal(hub.brokerBody, &brokerRequest); err != nil {
+		t.Fatalf("decode broker request: %v", err)
+	}
+	if brokerRequest.Operation != appAccessBrokerCreate || brokerRequest.Group != "infrastructure.railgrid.ai" ||
+		brokerRequest.Resource != "instances" || brokerRequest.Name != "demo-prod" || brokerRequest.UID != "runtime-uid-1" ||
+		brokerRequest.ProjectName != "demo" || brokerRequest.ProjectUID != "project-uid" || brokerRequest.User != "user-carol" || brokerRequest.Grant != "" {
+		t.Fatalf("broker DTO = %+v, want exact managed target and stable invited user", brokerRequest)
+	}
+}
+
+func TestPublishingReadCallsHubBrokerWithExactTargetAndProof(t *testing.T) {
+	hub := newPublishingHubStub(t, http.StatusCreated, `{"items":[]}`, nil, nil)
+	router := publishingServerAgainstHub(t, publishingInviteDynamic(), hub.URL)
+
+	rec := publishingDo(t, router, http.MethodGet, "/api/projects/demo/publishing", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publishing read status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if hub.brokerMethod != http.MethodPost || hub.brokerPath != "/api/orgs/org-a/workspaces/ws-1/app-auth/grants" {
+		t.Fatalf("broker call = %s %s, want workspace app-auth grants route", hub.brokerMethod, hub.brokerPath)
+	}
+	if got := hub.brokerHeader.Get("Authorization"); got != "Bearer provider-hub-token" {
+		t.Fatalf("broker authorization = %q, want provider hub credential", got)
+	}
+	if got := hub.brokerHeader.Get(dataplane.HeaderActionProof); got != "hub-signed-action-proof" {
+		t.Fatalf("broker action proof = %q, want the inbound signed proof", got)
+	}
+	var request appAccessBrokerRequest
+	if err := json.Unmarshal(hub.brokerBody, &request); err != nil {
+		t.Fatalf("decode broker DTO: %v", err)
+	}
+	if request.Operation != appAccessBrokerList || request.Group != "infrastructure.railgrid.ai" ||
+		request.Resource != "instances" || request.Name != "demo-prod" || request.UID != "runtime-uid-1" ||
+		request.ProjectName != "demo" || request.ProjectUID != "project-uid" || request.User != "" || request.Grant != "" {
+		t.Fatalf("broker DTO = %+v, want list scoped to the exact project and managed Instance", request)
 	}
 }
 
@@ -745,12 +796,8 @@ func TestInviteForbiddenByHubAnswersForbidden(t *testing.T) {
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "this endpoint requires admin role") {
 		t.Fatalf("status = %d: %s, want 403 with the hub's message", rec.Code, rec.Body.String())
 	}
-	list, err := dyn.Resource(clusterRoleBindingGVR).List(context.Background(), metav1.ListOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Items) != 0 {
-		t.Fatalf("a refused invite still wrote a grant: %v", list.Items)
+	if hub.brokerPath != "" {
+		t.Fatalf("broker was called after the hub refused membership invite: %s", hub.brokerPath)
 	}
 }
 
@@ -768,8 +815,12 @@ func TestInviteConflictProceedsWithExistingMember(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("invite status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if subject := publishingBindingSubject(t, dyn, "demo-prod", "user-carol"); subject != "railgrid:carol@example.com" {
-		t.Fatalf("grant bound %q, want the roster's RBAC identity", subject)
+	var request appAccessBrokerRequest
+	if err := json.Unmarshal(hub.brokerBody, &request); err != nil {
+		t.Fatalf("decode broker request: %v", err)
+	}
+	if request.Operation != appAccessBrokerCreate || request.User != "user-carol" {
+		t.Fatalf("broker request = %+v, want create for the resolved stable User", request)
 	}
 }
 
@@ -816,8 +867,12 @@ func TestGrantExistingMemberKeepsHubRBACIdentity(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("grant status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if subject := publishingBindingSubject(t, dyn, "demo-prod", "bob"); subject != "railgrid:bob@example.com" {
-		t.Fatalf("grant bound %q, want the org roster's RBAC identity", subject)
+	var request appAccessBrokerRequest
+	if err := json.Unmarshal(hub.brokerBody, &request); err != nil {
+		t.Fatalf("decode broker request: %v", err)
+	}
+	if request.Operation != appAccessBrokerCreate || request.User != "bob" {
+		t.Fatalf("broker request = %+v, want create for bob's stable User", request)
 	}
 	if hub.inviteMethod != "" {
 		t.Fatal("granting an existing member must not invite")

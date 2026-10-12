@@ -188,18 +188,35 @@ func Rules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	return rules
 }
 
+type providerReferenceResource struct {
+	group    string
+	resource string
+}
+
 type providerReferenceCoordinate struct {
 	group    string
 	resource string
 	name     string
 }
 
+type providerReferenceActionSet struct {
+	resource providerReferenceResource
+	key      string
+}
+
+type providerReferenceActionSetRules struct {
+	actions []string
+	names   map[string]struct{}
+}
+
 func providerReferenceRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 	if p == nil {
 		return nil
 	}
-	reads := map[providerReferenceCoordinate]struct{}{}
-	actions := map[providerReferenceCoordinate]map[string]struct{}{}
+	// First derive the active, audited action set for each object. Then merge
+	// names only when the group, resource, and complete action set match. This
+	// preserves each object's exact capabilities without a rule per action.
+	grants := map[providerReferenceCoordinate]map[string]struct{}{}
 	for _, env := range p.Spec.Environments {
 		for _, binding := range env.Bindings {
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference || strings.TrimSpace(binding.Provider) == "" || binding.ResourceRef == nil {
@@ -216,47 +233,78 @@ func providerReferenceRules(p *aiv1alpha1.Project) []rbacv1.PolicyRule {
 				if action.Revoked || !validPersistedGrant(action) || !validSubresourceName(action.Name) {
 					continue
 				}
-				if actions[coordinate] == nil {
-					actions[coordinate] = map[string]struct{}{}
+				if grants[coordinate] == nil {
+					grants[coordinate] = map[string]struct{}{}
 				}
-				actions[coordinate][strings.TrimSpace(action.Name)] = struct{}{}
-				reads[coordinate] = struct{}{}
+				grants[coordinate][strings.TrimSpace(action.Name)] = struct{}{}
 			}
 		}
 	}
 
-	keys := make([]providerReferenceCoordinate, 0, len(reads))
-	for coordinate := range reads {
-		keys = append(keys, coordinate)
+	reads := map[providerReferenceResource]map[string]struct{}{}
+	actionGroups := map[providerReferenceActionSet]*providerReferenceActionSetRules{}
+	for coordinate, actions := range grants {
+		resource := providerReferenceResource{group: coordinate.group, resource: coordinate.resource}
+		if reads[resource] == nil {
+			reads[resource] = map[string]struct{}{}
+		}
+		reads[resource][coordinate.name] = struct{}{}
+
+		actionNames := sortedKeys(actions)
+		// Action names cannot contain NUL, so this is an unambiguous key for
+		// their already-sorted set.
+		key := providerReferenceActionSet{resource: resource, key: strings.Join(actionNames, "\x00")}
+		group := actionGroups[key]
+		if group == nil {
+			group = &providerReferenceActionSetRules{actions: actionNames, names: map[string]struct{}{}}
+			actionGroups[key] = group
+		}
+		group.names[coordinate.name] = struct{}{}
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		left, right := keys[i], keys[j]
+
+	resourceKeys := make([]providerReferenceResource, 0, len(reads))
+	for coordinate := range reads {
+		resourceKeys = append(resourceKeys, coordinate)
+	}
+	sort.Slice(resourceKeys, func(i, j int) bool {
+		left, right := resourceKeys[i], resourceKeys[j]
 		if left.group != right.group {
 			return left.group < right.group
 		}
-		if left.resource != right.resource {
-			return left.resource < right.resource
-		}
-		return left.name < right.name
+		return left.resource < right.resource
 	})
 
-	rules := make([]rbacv1.PolicyRule, 0, len(keys)*2)
-	for _, coordinate := range keys {
+	rules := make([]rbacv1.PolicyRule, 0, len(resourceKeys)+len(actionGroups))
+	for _, coordinate := range resourceKeys {
 		rules = append(rules, rbacv1.PolicyRule{
 			APIGroups: []string{coordinate.group}, Resources: []string{coordinate.resource},
-			ResourceNames: []string{coordinate.name}, Verbs: []string{"get"},
+			ResourceNames: sortedKeys(reads[coordinate]), Verbs: []string{"get"},
 		})
-		verbs := sortedKeys(actions[coordinate])
-		if len(verbs) == 0 {
-			continue
+	}
+
+	actionKeys := make([]providerReferenceActionSet, 0, len(actionGroups))
+	for coordinate := range actionGroups {
+		actionKeys = append(actionKeys, coordinate)
+	}
+	sort.Slice(actionKeys, func(i, j int) bool {
+		left, right := actionKeys[i], actionKeys[j]
+		if left.resource.group != right.resource.group {
+			return left.resource.group < right.resource.group
 		}
-		subresources := make([]string, 0, len(verbs))
-		for _, verb := range verbs {
-			subresources = append(subresources, coordinate.resource+"/"+verb)
+		if left.resource.resource != right.resource.resource {
+			return left.resource.resource < right.resource.resource
+		}
+		return left.key < right.key
+	})
+	for _, coordinate := range actionKeys {
+		group := actionGroups[coordinate]
+		subresources := make([]string, 0, len(group.actions))
+		for _, action := range group.actions {
+			subresources = append(subresources, coordinate.resource.resource+"/"+action)
 		}
 		rules = append(rules, rbacv1.PolicyRule{
-			APIGroups: []string{coordinate.group}, Resources: subresources,
-			ResourceNames: []string{coordinate.name}, Verbs: []string{"create"},
+			APIGroups: []string{coordinate.resource.group}, Resources: subresources,
+			ResourceNames: sortedKeys(group.names), Verbs: []string{"create"},
 		})
 	}
 	return rules

@@ -230,6 +230,26 @@ spec:
         type: string
         default: pending
         description: "Computed by the platform — do NOT set. Tenant workspace cluster ID the embedded access gate presents to the hub for sign-in authorization."
+      railgridAuth:
+        type: boolean
+        default: false
+        readOnly: true
+        description: "Computed by the platform from the project's Railgrid Auth setting. When true, the access gate offers a hub-backed user session to the API."
+      railgridAuthAppID:
+        type: string
+        default: ""
+        readOnly: true
+        description: "Computed by the platform as <ProjectUID>/<environment>; binds this app's signed identity assertions to one project environment."
+      railgridAuthEnvironment:
+        type: string
+        default: ""
+        readOnly: true
+        description: "Computed by the platform from the persisted project environment; checked against the signed app identity assertion."
+      railgridAuthInstanceUID:
+        type: string
+        default: ""
+        readOnly: true
+        description: "Computed by the platform from this tenant Application instance UID; checked against the signed app identity assertion."
       access:
         type: string
         enum: ["public", "private"]
@@ -708,6 +728,18 @@ spec:
                           secretKeyRef:
                             name: ${dbCredentials.metadata.name}
                             key: uri
+                      # The verifier metadata remains available to the SDK
+                      # after the gate toggle is disabled. Empty app ID or
+                      # instance UID keeps never-configured instances opt-in;
+                      # these entries override same-named apiEnv values.
+                      - name: RAILGRID_AUTH_ISSUER
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "${railgrid.hubPublicUrl}/auth/apps/identity" : ""}'
+                      - name: RAILGRID_AUTH_AUDIENCE
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthAppID : ""}'
+                      - name: RAILGRID_AUTH_ORIGIN
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://" + schema.spec.expose.fqdn + "${railgrid.appPublicPort}" : ""}'
+                      - name: RAILGRID_AUTH_INSTANCE_UID
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthInstanceUID : ""}'
                     envFrom:
                       - configMapRef:
                           name: ${apiEnvMap.metadata.name}
@@ -981,10 +1013,10 @@ spec:
             namespace: default
           spec:
             replicas: 1
-            # Recreate: a public gate pod and a private gate pod must never
-            # serve behind the Service at once (a rolling flip would bounce
-            # the browser between contradictory auth behaviours), and the
-            # gate's sessions/states are in-memory anyway.
+            # Recreate prevents a public gate pod and a private gate pod from
+            # serving behind the Service at once. Legacy private sessions and
+            # in-flight state are process-local; Railgrid Auth assertions are
+            # hub-signed and work across gate restarts and replicas.
             strategy:
               type: Recreate
             selector:
@@ -1003,9 +1035,12 @@ spec:
                 containers:
                   - name: gate
                     image: ${railgrid.accessProxyImage}
+                    imagePullPolicy: ${railgrid.accessProxyImagePullPolicy}
                     env:
                       - name: RAILGRID_ACCESS_PROXY_MODE
                         value: ${schema.spec.access}
+                      - name: RAILGRID_ACCESS_PROXY_RAILGRID_AUTH
+                        value: '${schema.spec.railgridAuth ? "true" : "false"}'
                       - name: RAILGRID_ACCESS_PROXY_HOST
                         # The exact external host, including the local
                         # Gateway's forwarded port when one is configured
@@ -1025,6 +1060,19 @@ spec:
                         value: ${railgrid.hubUrl}
                       - name: RAILGRID_HUB_PUBLIC_URL
                         value: ${railgrid.hubPublicUrl}
+                      # Trusted verifier metadata can remain configured while
+                      # Railgrid Auth is disabled; the explicit gate boolean
+                      # above remains the sole SSO and identity-forwarding switch.
+                      - name: RAILGRID_AUTH_ISSUER
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "${railgrid.hubPublicUrl}/auth/apps/identity" : ""}'
+                      - name: RAILGRID_AUTH_AUDIENCE
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthAppID : ""}'
+                      - name: RAILGRID_AUTH_ENVIRONMENT
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthEnvironment : ""}'
+                      - name: RAILGRID_AUTH_ORIGIN
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://" + schema.spec.expose.fqdn + "${railgrid.appPublicPort}" : ""}'
+                      - name: RAILGRID_AUTH_INSTANCE_UID
+                        value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthInstanceUID : ""}'
                       - name: RAILGRID_HUB_INSECURE_SKIP_TLS_VERIFY
                         value: ${railgrid.hubInsecure}
                     ports:

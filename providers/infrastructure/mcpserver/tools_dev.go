@@ -68,7 +68,7 @@ type devSyncFile struct {
 }
 
 type devSyncInput struct {
-	Instance string        `json:"instance" jsonschema:"Development-mode instance name (provisioned with values.railgridMode=development)"`
+	Instance string        `json:"instance" jsonschema:"KRM Instance metadata.name (for example, my-app-dev), not the preview URL or hostname; must be a development-mode Instance in this workspace"`
 	Files    []devSyncFile `json:"files" jsonschema:"Files to sync, paths relative to the workspace root; each is routed to the component whose workspacePath prefixes it"`
 	Restart  string        `json:"restart,omitempty" jsonschema:"auto (default) restarts the dev process when needed per the template's reload rules; none only writes files"`
 }
@@ -89,7 +89,7 @@ type devSyncOutput struct {
 }
 
 type devLogsInput struct {
-	Instance  string `json:"instance" jsonschema:"Development-mode instance name"`
+	Instance  string `json:"instance" jsonschema:"KRM Instance metadata.name (for example, my-app-dev), not the preview URL or hostname; must be a development-mode Instance in this workspace"`
 	Component string `json:"component" jsonschema:"Development component to read logs from (see the template's development.components)"`
 	MaxBytes  int    `json:"maxBytes,omitempty" jsonschema:"Response byte cap; default 65536, max 262144"`
 }
@@ -102,7 +102,7 @@ type devLogsOutput struct {
 }
 
 type devRestartInput struct {
-	Instance  string `json:"instance" jsonschema:"Development-mode instance name"`
+	Instance  string `json:"instance" jsonschema:"KRM Instance metadata.name (for example, my-app-dev), not the preview URL or hostname; must be a development-mode Instance in this workspace"`
 	Component string `json:"component" jsonschema:"Development component whose dev process to restart"`
 }
 
@@ -113,7 +113,7 @@ type devRestartOutput struct {
 }
 
 type devExecInput struct {
-	Instance       string   `json:"instance" jsonschema:"Development-mode instance name"`
+	Instance       string   `json:"instance" jsonschema:"KRM Instance metadata.name (for example, my-app-dev), not the preview URL or hostname; must be a development-mode Instance in this workspace"`
 	Component      string   `json:"component,omitempty" jsonschema:"Development component to run in; may be omitted when the template has exactly one"`
 	Argv           []string `json:"argv" jsonschema:"Command and arguments, executed directly with no shell (use [\"sh\",\"-c\",\"...\"] for pipes, redirects, globbing, or $VAR expansion)"`
 	Workdir        string   `json:"workdir,omitempty" jsonschema:"Working directory relative to the component directory; default is the component root"`
@@ -334,10 +334,6 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	if err != nil {
 		return devTarget{}, err
 	}
-	templates, err := listTemplates(ctx, dyn)
-	if err != nil {
-		return devTarget{}, fmt.Errorf("list templates: %w", err)
-	}
 	inst, err := getInstance(ctx, dyn, instanceName)
 	if err != nil {
 		if err == kro.ErrInstanceNotFound {
@@ -345,12 +341,20 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 		}
 		return devTarget{}, fmt.Errorf("get instance: %w", err)
 	}
-	var tmpl *kro.Template
-	for i := range templates {
-		if templates[i].Name == inst.Template {
-			tmpl = &templates[i]
-			break
+	// Resolve the one referenced Template by name. A dev-loop identity is
+	// scoped to the named instance and may have get permission for that
+	// template without the catalog-wide list permission. Listing the whole
+	// catalog here needlessly broadens the required capability and makes a
+	// restart fail for an otherwise authorized instance.
+	if strings.TrimSpace(inst.Template) == "" {
+		return devTarget{}, fmt.Errorf("instance %q has no template reference", instanceName)
+	}
+	tmpl, err := getTemplate(ctx, dyn, inst.Template)
+	if err != nil {
+		if err == kro.ErrTemplateNotFound {
+			return devTarget{}, fmt.Errorf("instance %q references template %q which is no longer in the catalog", instanceName, inst.Template)
 		}
+		return devTarget{}, fmt.Errorf("get template %q: %w", inst.Template, err)
 	}
 	if tmpl == nil {
 		return devTarget{}, fmt.Errorf("instance %q references template %q which is no longer in the catalog", instanceName, inst.Template)

@@ -173,6 +173,27 @@ func (b *providerActionProofBridge) claims(r *http.Request, route dataplane.Subr
 			return claims, err
 		}
 	}
+	if r.Method == http.MethodPost && route.Resource == "projects" && route.Tail == "" && route.Verb == "authentication-grants" {
+		claims.AppAuthUser, claims.AppAuthAppID, err = actionProofAppAuthGrant(r)
+		if err != nil {
+			return claims, err
+		}
+	}
+	if route.Resource == "projects" {
+		if operation, user, grant, ok, intentErr := actionProofAppAccessIntent(r, route); intentErr != nil {
+			return claims, intentErr
+		} else if ok {
+			claims.AppAccessOperation = operation
+			claims.AppAccessUser = user
+			claims.AppAccessGrant = grant
+			claims.AppAccessProject = route.Name
+			claims.AppAccessGroup = "infrastructure.railgrid.ai"
+			claims.AppAccessResource = "instances"
+			if err := bindAppAccessTarget(r.Context(), dyn, route, &claims); err != nil {
+				return claims, err
+			}
+		}
+	}
 	identity, err := b.caller(r.Context(), r, route.ClusterID)
 	if err != nil || identity.Username == "" || identity.Username != person.RBACIdentity {
 		return claims, fmt.Errorf("kcp did not confirm the caller identity")
@@ -186,6 +207,186 @@ func (b *providerActionProofBridge) claims(r *http.Request, route dataplane.Subr
 		return claims, err
 	}
 	return claims, nil
+}
+
+// actionProofAppAccessIntent recognizes only the Project actions that back
+// app-access grants. The target itself is resolved from the persisted Project
+// below, so a caller cannot choose an arbitrary workspace RBAC object.
+func actionProofAppAccessIntent(r *http.Request, route dataplane.SubresourceRequest) (operation, user, grant string, matched bool, err error) {
+	if route.Resource != "projects" || route.Name == "" {
+		return "", "", "", false, nil
+	}
+	switch route.Verb {
+	case "publishing-grants", "preview-grants", "authentication-grants":
+		if route.Tail == "" {
+			switch r.Method {
+			case http.MethodGet:
+				return "list", "", "", true, nil
+			case http.MethodPost:
+				user, err = actionProofRequestedAppAccessUser(r)
+				return "create", user, "", true, err
+			}
+			return "", "", "", false, nil
+		}
+		if (route.Verb == "authentication-grants" && r.Method == http.MethodDelete) ||
+			((route.Verb == "publishing-grants" || route.Verb == "preview-grants") && r.Method == http.MethodPost) {
+			return "revoke", "", route.Tail, true, nil
+		}
+	case "publishing", "preview":
+		if route.Tail == "" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
+			return "list", "", "", true, nil
+		}
+		if route.Tail == "" && r.Method == http.MethodDelete {
+			return "reset", "", "", true, nil
+		}
+	}
+	return "", "", "", false, nil
+}
+
+func actionProofRequestedAppAccessUser(r *http.Request) (string, error) {
+	if r == nil || r.Body == nil {
+		return "", fmt.Errorf("app-access grant request is empty")
+	}
+	const maxAppAccessIntentBytes = 16 << 10
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAppAccessIntentBytes+1))
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) > maxAppAccessIntentBytes {
+		return "", fmt.Errorf("app-access grant request could not be read")
+	}
+	var intent struct {
+		User   string `json:"user"`
+		Invite bool   `json:"invite"`
+		AppID  string `json:"appId"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&intent) != nil || decoder.Decode(new(any)) != io.EOF ||
+		intent.User == "" || intent.User != strings.TrimSpace(intent.User) {
+		return "", fmt.Errorf("app-access grant request is invalid")
+	}
+	return intent.User, nil
+}
+
+// bindAppAccessTarget follows the fixed Project binding selected by the
+// source action, then signs the persisted Project and Infrastructure object
+// identities. Instance owner references make a deleted/recreated Project UID
+// unable to inherit grants through a same-name resource.
+func bindAppAccessTarget(ctx context.Context, client dynamic.Interface, route dataplane.SubresourceRequest, claims *actionproof.Claims) error {
+	if client == nil || claims == nil {
+		return fmt.Errorf("app-access target lookup is unavailable")
+	}
+	environment, bindingName := "", ""
+	switch route.Verb {
+	case "publishing-grants", "authentication-grants", "publishing":
+		environment, bindingName = "production", "prod"
+	case "preview-grants", "preview":
+		environment, bindingName = "development", "dev"
+	default:
+		return fmt.Errorf("unsupported app-access Project action")
+	}
+	projectGVR := schema.GroupVersionResource{Group: "ai.railgrid.ai", Version: route.APIVersion, Resource: "projects"}
+	project, err := client.Resource(projectGVR).Get(ctx, route.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading the addressed App Studio Project: %w", err)
+	}
+	if string(project.GetUID()) == "" {
+		return fmt.Errorf("the addressed App Studio Project has no persisted UID")
+	}
+	target, version, err := projectAppAccessTarget(project, environment, bindingName)
+	if err != nil {
+		return err
+	}
+	instanceGVR := schema.GroupVersionResource{Group: claims.AppAccessGroup, Version: version, Resource: claims.AppAccessResource}
+	instance, err := client.Resource(instanceGVR).Get(ctx, target, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading the Project-managed Infrastructure Instance: %w", err)
+	}
+	if !projectOwnsAppAccessInstance(project, instance) || string(instance.GetUID()) == "" {
+		return fmt.Errorf("the Infrastructure Instance is not owned by the addressed Project")
+	}
+	claims.AppAccessName = instance.GetName()
+	claims.AppAccessUID = string(instance.GetUID())
+	claims.AppAccessProjectUID = string(project.GetUID())
+	return nil
+}
+
+func projectAppAccessTarget(project *unstructured.Unstructured, environment, bindingName string) (string, string, error) {
+	environments, found, err := unstructured.NestedSlice(project.Object, "spec", "environments")
+	if err != nil || !found {
+		return "", "", fmt.Errorf("project has no persisted environments")
+	}
+	var selected map[string]any
+	for _, rawEnv := range environments {
+		env, ok := rawEnv.(map[string]any)
+		if !ok || env["name"] != environment {
+			continue
+		}
+		bindings, _, _ := unstructured.NestedSlice(env, "bindings")
+		for _, rawBinding := range bindings {
+			candidate, ok := rawBinding.(map[string]any)
+			if ok && candidate["name"] == bindingName {
+				selected = candidate
+				break
+			}
+		}
+	}
+	if selected == nil || selected["provider"] != "app-studio" || selected["kind"] != "providerResource" {
+		return "", "", fmt.Errorf("project has no supported %s app Instance binding", environment)
+	}
+	ref, ok := selected["resourceRef"].(map[string]any)
+	if !ok || ref["kind"] != "Instance" || ref["resource"] != "instances" {
+		return "", "", fmt.Errorf("project app binding does not name an Infrastructure Instance")
+	}
+	gv, err := schema.ParseGroupVersion(stringValue(ref["apiVersion"]))
+	if err != nil || gv.Group != "infrastructure.railgrid.ai" {
+		return "", "", fmt.Errorf("project app binding does not name the Infrastructure API")
+	}
+	name := strings.TrimSpace(stringValue(ref["name"]))
+	if name == "" {
+		values, _, _ := unstructured.NestedMap(selected, "values")
+		name = strings.TrimSpace(stringValue(values["name"]))
+	}
+	if name == "" {
+		name = project.GetName() + "-" + bindingName
+	}
+	if !actionproofValidResourceName(name) {
+		return "", "", fmt.Errorf("project app binding has an invalid Instance name")
+	}
+	return name, gv.Version, nil
+}
+
+func projectOwnsAppAccessInstance(project, instance *unstructured.Unstructured) bool {
+	if project == nil || instance == nil || project.GetUID() == "" || project.GetName() == "" || instance.GetName() == "" {
+		return false
+	}
+	if instance.GetLabels()["app-studio.railgrid.ai/project"] != project.GetName() {
+		return false
+	}
+	for _, owner := range instance.GetOwnerReferences() {
+		if owner.APIVersion == "ai.railgrid.ai/v1alpha1" && owner.Kind == "Project" &&
+			owner.Name == project.GetName() && owner.UID == project.GetUID() {
+			return true
+		}
+	}
+	return false
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func actionproofValidResourceName(value string) bool {
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return value[0] != '-' && value[0] != '.' && value[len(value)-1] != '-' && value[len(value)-1] != '.'
 }
 
 // actionProofInviteUser binds the one invitation requested by the human. The
@@ -214,6 +415,35 @@ func actionProofInviteUser(r *http.Request) (string, error) {
 		return "", nil
 	}
 	return user, nil
+}
+
+// actionProofAppAuthGrant binds the authentication-grants action to one
+// existing platform account and the production audience represented by the
+// addressed Project. The request body is restored for the provider handler.
+func actionProofAppAuthGrant(r *http.Request) (string, string, error) {
+	if r.Body == nil {
+		return "", "", fmt.Errorf("authentication grant request is empty")
+	}
+	const maxAuthenticationGrantBodyBytes = 16 << 10
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAuthenticationGrantBodyBytes+1))
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) > maxAuthenticationGrantBodyBytes {
+		return "", "", fmt.Errorf("authentication grant request could not be read")
+	}
+	var intent struct {
+		User  string `json:"user"`
+		AppID string `json:"appId"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&intent) != nil || decoder.Decode(new(any)) != io.EOF {
+		return "", "", fmt.Errorf("authentication grant request is invalid")
+	}
+	if intent.User == "" || intent.User != strings.TrimSpace(intent.User) || intent.AppID == "" || intent.AppID != strings.TrimSpace(intent.AppID) {
+		return "", "", fmt.Errorf("authentication grant must name an existing user and this project's production audience")
+	}
+	return intent.User, intent.AppID, nil
 }
 
 func (b *providerActionProofBridge) validateScope(ctx context.Context, c actionproof.Claims) error {

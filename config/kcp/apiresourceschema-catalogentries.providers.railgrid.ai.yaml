@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260925-e0e27f03.catalogentries.providers.railgrid.ai
+  name: v261012-c8c5a3f0.catalogentries.providers.railgrid.ai
 spec:
   group: providers.railgrid.ai
   names:
@@ -410,6 +410,8 @@ spec:
                         enum:
                         - memberships.read
                         - memberships.invite
+                        - app-auth.users.resolve
+                        - app-access.grants.manage
                         type: string
                       maxRole:
                         description: |-
@@ -440,6 +442,12 @@ spec:
                     - message: memberships.invite is org-scoped
                       rule: self.capability != 'memberships.invite' || self.scope
                         == 'org'
+                    - message: app-auth.users.resolve is workspace-scoped
+                      rule: self.capability != 'app-auth.users.resolve' || self.scope
+                        == 'workspace'
+                    - message: app-access.grants.manage is workspace-scoped
+                      rule: self.capability != 'app-access.grants.manage' || self.scope
+                        == 'workspace'
                     - message: maxRole and allowInvite apply to memberships.invite
                         only
                       rule: self.capability == 'memberships.invite' || (!has(self.maxRole)

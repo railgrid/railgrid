@@ -67,17 +67,22 @@ type projectPreviewAccessResponse struct {
 }
 
 func (s *Server) getProjectPreviewAccess(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.projectPreviewAccessResponse(r.Context(), c, p))
+	response, err := s.projectPreviewAccessResponse(r.Context(), id, c, p)
+	if err != nil {
+		writeAppAccessBrokerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // setProjectPreviewAccess is POST /preview. It records the policy on the
 // Project; the reconciler converges the instance.
 func (s *Server) setProjectPreviewAccess(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -98,7 +103,12 @@ func (s *Server) setProjectPreviewAccess(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.projectPreviewAccessResponse(r.Context(), c, updated))
+	response, err := s.projectPreviewAccessResponse(r.Context(), id, c, updated)
+	if err != nil {
+		writeAppAccessBrokerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // resetProjectPreviewAccess is DELETE /preview: the preview goes back to
@@ -107,7 +117,7 @@ func (s *Server) setProjectPreviewAccess(w http.ResponseWriter, r *http.Request)
 // flips the mode; the grants it leaves behind would keep the invited people
 // in, which is not what "reset to private" promises.
 func (s *Server) resetProjectPreviewAccess(w http.ResponseWriter, r *http.Request) {
-	c, _, p, ok := s.requireProjectWithClient(w, r)
+	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -119,13 +129,20 @@ func (s *Server) resetProjectPreviewAccess(w http.ResponseWriter, r *http.Reques
 	// A project without a development environment has no grants to drop; the
 	// mode reset above is the whole story for it, so an unresolvable runtime
 	// is not an error here.
+	var grants []projectPublishingGrantView
 	if runtime, err := s.previewRuntime(r.Context(), c, updated); err == nil {
-		if err := s.deleteAllAppAccessGrants(r.Context(), c, runtime.target.Name); err != nil {
-			writeError(w, err)
+		grants, err = s.resetAppAccessGrants(r.Context(), id, p, runtime.target)
+		if err != nil {
+			writeAppAccessBrokerError(w, err)
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, s.projectPreviewAccessResponse(r.Context(), c, updated))
+	response, err := s.projectPreviewAccessResponseWithGrants(r.Context(), id, c, updated, grants)
+	if err != nil {
+		writeAppAccessBrokerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // requestedPreviewMode normalizes the portal vocabulary. An empty body
@@ -164,7 +181,11 @@ func (s *Server) setPreviewSharingMode(ctx context.Context, c *asclient.Client, 
 // applied one from the live development instance, so the portal can show a
 // pending state rather than claiming a preview is private the moment the
 // request returns.
-func (s *Server) projectPreviewAccessResponse(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) projectPreviewAccessResponse {
+func (s *Server) projectPreviewAccessResponse(ctx context.Context, id identity, c *asclient.Client, p *aiv1alpha1.Project) (projectPreviewAccessResponse, error) {
+	return s.projectPreviewAccessResponseWithGrants(ctx, id, c, p, nil)
+}
+
+func (s *Server) projectPreviewAccessResponseWithGrants(ctx context.Context, id identity, c *asclient.Client, p *aiv1alpha1.Project, knownGrants []projectPublishingGrantView) (projectPreviewAccessResponse, error) {
 	desired := bindings.PreviewAccess(p)
 	resp := projectPreviewAccessResponse{
 		Mode: portalModeString(desired),
@@ -173,23 +194,25 @@ func (s *Server) projectPreviewAccessResponse(ctx context.Context, c *asclient.C
 	observed, supported := s.observedPreviewAccess(ctx, c, p)
 	resp.Supported = supported
 	resp.Converged = supported && observed == desired
-	// Grants are advisory in this response: a lookup failure must not fail the
-	// visibility read the toggle depends on.
 	if supported {
 		if runtime, err := s.previewRuntime(ctx, c, p); err == nil {
-			if grants, err := s.appAccessGrantViews(ctx, c, runtime.target.Name); err == nil {
+			if knownGrants != nil {
+				resp.Grants = knownGrants
+			} else {
+				grants, err := s.listAppAccessGrantsForTarget(ctx, id, p, runtime.target)
+				if err != nil {
+					return resp, err
+				}
 				resp.Grants = grants
 			}
 		}
 	}
-	return resp
+	return resp, nil
 }
 
-// previewRuntime resolves the development instance as a sharing channel, so the
-// grant machinery in project_publishing.go serves the preview unchanged: same
-// per-app ClusterRole, same per-member ClusterRoleBinding, same invite-by-email
-// path. The instance names differ ("-dev" vs "-prod"), so the deterministic
-// role and binding names never collide between the two channels.
+// previewRuntime resolves the development instance as a sharing channel, so
+// the hub-owned grant broker can serve the preview and production channels
+// through the same narrowly scoped request contract.
 //
 // desiredAccess comes from the Project's sharing policy rather than the binding
 // values, because the policy is the authority the reconciler overlays onto the

@@ -735,6 +735,38 @@ type PromotionRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// AuthenticationRequest is the payload of the "authentication" Project custom subresource.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=authentication,scope=Cluster
+type AuthenticationRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// AuthenticationGrantsRequest is the payload of the "authentication-grants" Project custom subresource.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=authentication-grants,scope=Cluster
+type AuthenticationGrantsRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // PublishingRequest is the payload of the "publishing" custom subresource on projects.
 //
 // +kubebuilder:object:root=true
@@ -1230,6 +1262,8 @@ func init() {
 			&PreviewGrantsRequest{},
 			&PromoteRequest{},
 			&PromotionRequest{},
+			&AuthenticationRequest{},
+			&AuthenticationGrantsRequest{},
 			&PublishingRequest{},
 			&PublishingGrantsRequest{},
 			&PublishingMembersRequest{},

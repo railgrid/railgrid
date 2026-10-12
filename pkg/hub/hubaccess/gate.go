@@ -118,8 +118,9 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 				writeStatus(w, http.StatusUnauthorized, "invalid hub action proof")
 				return
 			}
-			if !actionProofAllowsMembershipRoute(claims, r) {
-				writeStatus(w, http.StatusForbidden, "the App Studio action proof does not authorize this membership request")
+			if !actionProofAllowsMembershipRoute(claims, r) && !actionProofAllowsAppAuthUserRoute(claims, r) &&
+				!actionProofAllowsAppAccessGrantRoute(claims, r) {
+				writeStatus(w, http.StatusForbidden, "the App Studio action proof does not authorize this hub request")
 				return
 			}
 			caller := Caller{
@@ -140,6 +141,26 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			call.ActionProof = true
+			call.RBACIdentity = claims.RBACIdentity
+			call.Groups = append([]string(nil), claims.Groups...)
+			call.Extra = make(map[string][]string, len(claims.Extra))
+			for key, values := range claims.Extra {
+				call.Extra[key] = append([]string(nil), values...)
+			}
+			call.ActionUser = claims.AppAuthUser
+			call.ActionAppID = claims.AppAuthAppID
+			call.AppAccessOperation = claims.AppAccessOperation
+			call.AppAccessGroup = claims.AppAccessGroup
+			call.AppAccessResource = claims.AppAccessResource
+			call.AppAccessName = claims.AppAccessName
+			call.AppAccessUID = claims.AppAccessUID
+			call.AppAccessProject = claims.AppAccessProject
+			call.AppAccessProjectUID = claims.AppAccessProjectUID
+			call.AppAccessUser = claims.AppAccessUser
+			call.AppAccessGrant = claims.AppAccessGrant
+			call.AppAccessSourceVerb = claims.Verb
+			call.AppAccessSourceMethod = claims.Method
+			call.AppAccessInviteUser = claims.InviteUser
 			logger.V(2).Info("Action-proof hub access", "capability", call.Capability, "scope", call.Scope)
 			next.ServeHTTP(w, r.WithContext(tenant.WithDelegatedCall(r.Context(), call)))
 			return
@@ -177,6 +198,146 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(tenant.WithDelegatedCall(r.Context(), call)))
 	})
+}
+
+// actionProofAllowsAppAuthUserRoute binds the existing-account lookup to the
+// exact App Studio authentication-grant action and the existing user named by
+// that action. It does not authorize arbitrary user lookup or enumeration.
+func actionProofAllowsAppAuthUserRoute(claims actionproof.Claims, r *http.Request) bool {
+	if r == nil || claims.Provider != "app-studio" || claims.Group != "ai.railgrid.ai" ||
+		claims.Version != "v1alpha1" || claims.Resource != "projects" ||
+		claims.Verb != "authentication-grants" || claims.Method != http.MethodPost ||
+		claims.ParentName == "" || claims.AppAuthUser == "" || claims.AppAuthAppID == "" ||
+		claims.AppAccessOperation != "create" || claims.AppAccessUser != claims.AppAuthUser ||
+		claims.AppAccessProject != claims.ParentName || claims.AppAccessProjectUID == "" ||
+		claims.AppAccessGroup != "infrastructure.railgrid.ai" || claims.AppAccessResource != "instances" ||
+		claims.AppAccessName == "" || claims.AppAccessUID == "" ||
+		claims.AppAuthAppID != claims.AppAccessProjectUID+"/production" ||
+		r.URL.RawQuery != "" || r.URL.EscapedPath() != r.URL.Path {
+		return false
+	}
+	requirement, ok := Match(r.Method, r.URL.Path)
+	if !ok || requirement.Capability != providersv1alpha1.ProviderHubCapability("app-auth.users.resolve") ||
+		requirement.Scope != providersv1alpha1.HubAccessScopeWorkspace {
+		return false
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) != 7 || r.URL.Path != "/"+strings.Join(parts, "/") ||
+		parts[0] != "api" || parts[1] != "orgs" || parts[2] != claims.OrgUUID ||
+		parts[3] != "workspaces" || parts[4] != claims.WorkspaceUUID || parts[5] != "app-auth" || parts[6] != "user" {
+		return false
+	}
+	return actionProofAppAuthUserBodyMatches(claims, r)
+}
+
+type appAccessGrantIntent struct {
+	Operation  string `json:"operation"`
+	Group      string `json:"group"`
+	Resource   string `json:"resource"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	Project    string `json:"projectName"`
+	ProjectUID string `json:"projectUID"`
+	User       string `json:"user,omitempty"`
+	Grant      string `json:"grant,omitempty"`
+}
+
+// actionProofAllowsAppAccessGrantRoute binds the provider's broker request to
+// the exact Project action proof. The proof carries the Project and Instance
+// UIDs resolved from persisted KRM at the hub front door; the body cannot
+// choose another workspace object or operation.
+func actionProofAllowsAppAccessGrantRoute(claims actionproof.Claims, r *http.Request) bool {
+	if r == nil || r.Method != http.MethodPost || r.URL.RawQuery != "" || r.URL.EscapedPath() != r.URL.Path ||
+		claims.Provider != "app-studio" || claims.Group != "ai.railgrid.ai" || claims.Version != "v1alpha1" ||
+		claims.Resource != "projects" || claims.ParentName == "" || claims.AppAccessOperation == "" ||
+		claims.AppAccessProject != claims.ParentName || claims.AppAccessProjectUID == "" ||
+		claims.AppAccessGroup != "infrastructure.railgrid.ai" || claims.AppAccessResource != "instances" ||
+		claims.AppAccessName == "" || claims.AppAccessUID == "" {
+		return false
+	}
+	requirement, ok := Match(r.Method, r.URL.Path)
+	if !ok || requirement.Capability != providersv1alpha1.HubCapabilityAppAccessGrantsManage ||
+		requirement.Scope != providersv1alpha1.HubAccessScopeWorkspace {
+		return false
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) != 7 || r.URL.Path != "/"+strings.Join(parts, "/") ||
+		parts[0] != "api" || parts[1] != "orgs" || parts[2] != claims.OrgUUID ||
+		parts[3] != "workspaces" || parts[4] != claims.WorkspaceUUID || parts[5] != "app-auth" || parts[6] != "grants" {
+		return false
+	}
+	intent, ok := readAppAccessGrantIntent(r)
+	if !ok || intent.Operation != claims.AppAccessOperation || intent.Group != claims.AppAccessGroup ||
+		intent.Resource != claims.AppAccessResource || intent.Name != claims.AppAccessName ||
+		intent.UID != claims.AppAccessUID || intent.Project != claims.AppAccessProject ||
+		intent.ProjectUID != claims.AppAccessProjectUID || intent.Grant != claims.AppAccessGrant {
+		return false
+	}
+	switch claims.AppAccessOperation {
+	case "list", "reset":
+		return intent.User == ""
+	case "create":
+		if intent.User == "" {
+			return false
+		}
+		if strings.Contains(claims.AppAccessUser, "@") {
+			return claims.InviteUser == claims.AppAccessUser
+		}
+		return claims.AppAccessUser != "" && intent.User == claims.AppAccessUser
+	case "revoke":
+		return intent.User == "" && intent.Grant != ""
+	default:
+		return false
+	}
+}
+
+func readAppAccessGrantIntent(r *http.Request) (appAccessGrantIntent, bool) {
+	if r == nil || r.Body == nil {
+		return appAccessGrantIntent{}, false
+	}
+	const maxAppAccessGrantRequestBytes = 16 << 10
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAppAccessGrantRequestBytes+1))
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) == 0 || len(body) > maxAppAccessGrantRequestBytes {
+		return appAccessGrantIntent{}, false
+	}
+	var intent appAccessGrantIntent
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&intent) != nil || decoder.Decode(new(any)) != io.EOF {
+		return appAccessGrantIntent{}, false
+	}
+	return intent, true
+}
+
+func actionProofAppAuthUserBodyMatches(claims actionproof.Claims, r *http.Request) bool {
+	if r == nil || r.Body == nil || claims.AppAuthUser == "" || claims.AppAuthAppID == "" {
+		return false
+	}
+	const maxAppAuthUserBodyBytes = 16 << 10
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAppAuthUserBodyBytes+1))
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) > maxAppAuthUserBodyBytes {
+		return false
+	}
+	var intent struct {
+		User     string `json:"user"`
+		Group    string `json:"group"`
+		Resource string `json:"resource"`
+		Name     string `json:"name"`
+		AppID    string `json:"appId"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&intent) != nil || decoder.Decode(new(any)) != io.EOF {
+		return false
+	}
+	return intent.User == claims.AppAuthUser && intent.User == strings.TrimSpace(intent.User) &&
+		intent.Group == claims.AppAccessGroup && intent.Resource == claims.AppAccessResource &&
+		intent.Name == claims.AppAccessName && intent.Name == strings.TrimSpace(intent.Name) &&
+		intent.AppID == claims.AppAuthAppID
 }
 
 // actionProofAllowsMembershipRoute binds the narrow hub-access route to the

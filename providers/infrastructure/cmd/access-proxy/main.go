@@ -45,6 +45,12 @@ func main() {
 	hubURL := flag.String("hub-url", envOr("RAILGRID_HUB_URL", ""), "in-cluster hub origin for the code exchange (private mode)")
 	hubPublicURL := flag.String("hub-public-url", envOr("RAILGRID_HUB_PUBLIC_URL", ""), "browser-reachable hub origin for authorize redirects (defaults to --hub-url)")
 	hubInsecure := flag.Bool("hub-insecure-skip-tls-verify", envBool("RAILGRID_HUB_INSECURE_SKIP_TLS_VERIFY"), "skip TLS verification for hub calls (development only)")
+	railgridAuth := flag.Bool("railgrid-auth", envBool("RAILGRID_ACCESS_PROXY_RAILGRID_AUTH"), "enable signed Railgrid Auth sessions for the app")
+	authIssuer := flag.String("auth-issuer", envOr("RAILGRID_AUTH_ISSUER", ""), "exact hub identity issuer configured for this app")
+	authAudience := flag.String("auth-audience", envOr("RAILGRID_AUTH_AUDIENCE", ""), "ProjectUID/environment audience configured for this app")
+	authEnvironment := flag.String("auth-environment", envOr("RAILGRID_AUTH_ENVIRONMENT", ""), "trusted environment name bound to the app identity")
+	authInstanceUID := flag.String("auth-instance-uid", envOr("RAILGRID_AUTH_INSTANCE_UID", ""), "tenant Application instance UID bound to the app identity")
+	authOrigin := flag.String("auth-origin", envOr("RAILGRID_AUTH_ORIGIN", ""), "exact public origin of this app")
 	flag.Parse()
 
 	config := accessproxy.Config{
@@ -58,10 +64,16 @@ func main() {
 			Resource: *resource,
 			Name:     *name,
 		},
-		HubURL:       *hubURL,
-		HubPublicURL: *hubPublicURL,
-		HubInsecure:  *hubInsecure,
-		PublicScheme: *publicScheme,
+		HubURL:          *hubURL,
+		HubPublicURL:    *hubPublicURL,
+		HubInsecure:     *hubInsecure,
+		PublicScheme:    *publicScheme,
+		RailgridAuth:    *railgridAuth,
+		AuthIssuer:      *authIssuer,
+		AuthAudience:    *authAudience,
+		AuthEnvironment: *authEnvironment,
+		AuthInstanceUID: *authInstanceUID,
+		AuthOrigin:      *authOrigin,
 	}
 
 	proxy, err := accessproxy.New(config)

@@ -497,11 +497,12 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
-				Name:         projectToolGetBuildLogs,
-				Description:  "Inspect the project's latest CI build run to see WHY it failed: the run status and conclusion, each component job's outcome, and a log tail for any failed job. Use this when check_project_build reports \"none\" or \"incomplete\" to diagnose the failure before fixing it. Optionally pass a commit SHA to inspect that commit's run.",
-				Parameters:   json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Commit SHA to inspect; defaults to the most recent run."}}}`),
-				Risk:         projectAssistantToolRiskRead,
-				ParallelSafe: true,
+				Name:                       projectToolGetBuildLogs,
+				Description:                "Inspect the project's latest CI build run to see WHY it failed: the run status and conclusion, each component job's outcome, and a log tail for any failed job. Use this when check_project_build reports \"none\" or \"incomplete\" to diagnose the failure before fixing it. Optionally pass a commit SHA to inspect that commit's run.",
+				Parameters:                 json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Commit SHA to inspect; defaults to the most recent run."}}}`),
+				Risk:                       projectAssistantToolRiskRead,
+				RequiresProjectMCPIdentity: true,
+				ParallelSafe:               true,
 			},
 			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
 				s, err := projectAssistantToolServer(server)
@@ -516,10 +517,11 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
-				Name:        projectToolRebuildProject,
-				Description: "Re-run the project's build workflow without a code change, to retry a flaky or failed build. Use this only when the build failed for a transient reason (not a code problem — fix code problems by committing a fix, which rebuilds automatically). Optionally pass a branch to re-run on.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Branch to re-run on; defaults to the repository default branch."}}}`),
-				Risk:        projectAssistantToolRiskRuntime,
+				Name:                       projectToolRebuildProject,
+				Description:                "Re-run the project's build workflow without a code change, to retry a flaky or failed build. Use this only when the build failed for a transient reason (not a code problem — fix code problems by committing a fix, which rebuilds automatically). Optionally pass a branch to re-run on.",
+				Parameters:                 json.RawMessage(`{"type":"object","properties":{"ref":{"type":"string","description":"Branch to re-run on; defaults to the repository default branch."}}}`),
+				Risk:                       projectAssistantToolRiskRuntime,
+				RequiresProjectMCPIdentity: true,
 			},
 			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
 				s, err := projectAssistantToolServer(server)
@@ -635,6 +637,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 			},
 		},
 	)
+	tools = append(tools, projectAuthenticationTools(server)...)
 	return newProjectAssistantToolRegistry(tools...)
 }
 

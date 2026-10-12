@@ -129,6 +129,8 @@ func New(runtime dynamic.Interface) *Backend {
 // gate fronts every published app.
 const DefaultAccessProxyImage = "ghcr.io/railgrid/railgrid-access-proxy:latest"
 
+var accessProxyDigestRE = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
+
 // accessGateTokens resolves the access-gate token family (see rgd.go). The
 // hub URLs may legitimately be empty on hubs that never publish privately;
 // the gate only requires them in private mode, so empty substitution renders
@@ -138,6 +140,10 @@ func accessGateTokens() map[string]string {
 	if image == "" {
 		image = DefaultAccessProxyImage
 	}
+	imagePullPolicy := "Always"
+	if accessProxyDigestRE.MatchString(image) {
+		imagePullPolicy = "IfNotPresent"
+	}
 	hubURL := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_URL"))
 	if hubURL == "" {
 		hubURL = strings.TrimSpace(os.Getenv("RAILGRID_HUB_URL"))
@@ -146,15 +152,20 @@ func accessGateTokens() map[string]string {
 	if hubPublicURL == "" {
 		hubPublicURL = hubURL
 	}
+	// This origin feeds both the gate's browser redirects and the app SDK's
+	// issuer URL. Remove a configured trailing slash once here so app templates
+	// can append fixed endpoint paths without producing a double slash.
+	hubPublicURL = strings.TrimRight(hubPublicURL, "/")
 	hubInsecure := "false"
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_INSECURE")), "true") {
 		hubInsecure = "true"
 	}
 	return map[string]string{
-		accessProxyImageToken: image,
-		hubURLToken:           hubURL,
-		hubPublicURLToken:     hubPublicURL,
-		hubInsecureToken:      hubInsecure,
+		accessProxyImageToken:           image,
+		accessProxyImagePullPolicyToken: imagePullPolicy,
+		hubURLToken:                     hubURL,
+		hubPublicURLToken:               hubPublicURL,
+		hubInsecureToken:                hubInsecure,
 	}
 }
 

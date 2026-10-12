@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261011-915f868b.projects.ai.railgrid.ai
+  name: v261012-6f27bf89.projects.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -51,6 +51,16 @@ spec:
         spec:
           description: ProjectSpec defines user-authored Project state.
           properties:
+            authentication:
+              description: |-
+                Authentication enables first-party Railgrid identity inside the application.
+                It is independent of sharing and never grants platform membership.
+              properties:
+                enabled:
+                  description: Enabled configures Railgrid Auth in development and
+                    production.
+                  type: boolean
+              type: object
             description:
               description: Description is a short project summary.
               maxLength: 2048

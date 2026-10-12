@@ -93,6 +93,10 @@ spec:
             readOnly: true
           - name: files-upload
             description: "Upload files into the working tree."
+          - name: authentication
+            description: "Read or configure first-party Railgrid Auth independently of sharing."
+          - name: authentication-grants
+            description: "List, approve or revoke existing production app users without creating membership."
           - name: preview
             description: "Read, set or reset who may reach the development preview."
           - name: preview-grants
@@ -414,6 +418,12 @@ spec:
     # (docs/providers.md, "Hub access"). Keep
     # deploy/chart/templates/catalogentry.yaml in sync.
     access:
+      - capability: app-access.grants.manage
+        scope: workspace
+        reason: "Manage one invite-only app's user grants through the hub after it verifies the Project, production or preview Instance, and caller."
+      - capability: app-auth.users.resolve
+        scope: workspace
+        reason: "Resolve an existing account for an app-only authentication grant without adding membership."
       - capability: memberships.read
         scope: org
         reason: "Check that people you share an app with belong to your organization."

@@ -212,6 +212,12 @@ import {
 import NewProjectWizard from './NewProjectWizard.vue'
 import FirstTimeSetup from './FirstTimeSetup.vue'
 import GitConnectionSettings from './GitConnectionSettings.vue'
+const ProjectAuthentication = defineAsyncComponent({
+  loader: () => import('./ProjectAuthentication.vue'),
+  delay: 0,
+  loadingComponent: { render: () => h('div', { role: 'status', class: 'text-[12px] text-text-muted' }, 'Loading authentication settings…') },
+  errorComponent: { render: () => h('div', { role: 'alert', class: 'text-[12px] text-danger' }, 'Could not load authentication settings. Reload this page to retry.') },
+})
 import { useGitOnboarding } from './useGitOnboarding'
 import { useProjectCreationSubmit } from './useProjectCreationSubmit'
 import GitRecommendationBanner from './GitRecommendationBanner.vue'
@@ -11283,6 +11289,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
             </div>
           </form>
+          <ProjectAuthentication v-if="settingsProject" :key="settingsProject.uid || settingsProject.name" :ctx="props.ctx" :project="settingsProject" />
           <GitConnectionSettings
             v-if="settingsProject" :key="settingsProject.name"
             :ctx="props.ctx" :project="settingsProject"

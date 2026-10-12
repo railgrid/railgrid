@@ -578,18 +578,19 @@ RUN chmod 0755 /tmp/railgrid-hub
 
 docker_build(
     access_proxy_image,
-    context='providers/infrastructure',
+    context='.',
     dockerfile='providers/infrastructure/Dockerfile.access-proxy',
     # Tilt deploys an immutable :tilt-<digest> tag into the image-cache pod.
     # Keep the stable :dev tag too because gate Deployments are rendered by
     # template graphs (kro) after Tilt's object graph and reference that tag.
     extra_tag=access_proxy_image,
     only=[
-        'cmd/access-proxy',
-        'accessproxy',
-        'Dockerfile.access-proxy',
-        'go.mod',
-        'go.sum',
+        'provider-sdk',
+        'providers/infrastructure/cmd/access-proxy',
+        'providers/infrastructure/accessproxy',
+        'providers/infrastructure/Dockerfile.access-proxy',
+        'providers/infrastructure/go.mod',
+        'providers/infrastructure/go.sum',
     ],
 )
 
@@ -657,6 +658,7 @@ kubectl --context %s delete pods -A -l app.kubernetes.io/name=railgrid-access-pr
     # both, Docker gets a new :dev tag but kind can retain the previous stable
     # tag used by controller-authored PublishedApp Deployments.
     deps=[
+        'provider-sdk',
         'providers/infrastructure/cmd/access-proxy',
         'providers/infrastructure/accessproxy',
         'providers/infrastructure/Dockerfile.access-proxy',

@@ -48,6 +48,105 @@ func TestProjectAssistantActionFeedReadHidesExecutionMechanics(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedPresentsAuthenticationToolsWithoutDetails(t *testing.T) {
+	tests := []struct {
+		name      string
+		tool      string
+		status    string
+		kind      string
+		title     string
+		feedState string
+	}{
+		{name: "inspect running", tool: projectAssistantToolGetProjectAuthentication, status: "running", kind: projectAssistantActionFeedItemInspect, title: "Checking authentication", feedState: projectAssistantActionFeedStatusRunning},
+		{name: "inspect succeeded", tool: projectAssistantToolGetProjectAuthentication, status: "completed", kind: projectAssistantActionFeedItemInspect, title: "Checked authentication", feedState: projectAssistantActionFeedStatusSucceeded},
+		{name: "inspect failed", tool: projectAssistantToolGetProjectAuthentication, status: "failed", kind: projectAssistantActionFeedItemInspect, title: "Authentication check failed", feedState: projectAssistantActionFeedStatusFailed},
+		{name: "configure running", tool: projectAssistantToolConfigureProjectAuthentication, status: "running", kind: projectAssistantActionFeedItemRun, title: "Configuring authentication", feedState: projectAssistantActionFeedStatusRunning},
+		{name: "configure succeeded", tool: projectAssistantToolConfigureProjectAuthentication, status: "completed", kind: projectAssistantActionFeedItemRun, title: "Authentication configured", feedState: projectAssistantActionFeedStatusSucceeded},
+		{name: "configure failed", tool: projectAssistantToolConfigureProjectAuthentication, status: "failed", kind: projectAssistantActionFeedItemRun, title: "Authentication configuration failed", feedState: projectAssistantActionFeedStatusFailed},
+	}
+	const privateDetails = `account-user-482 private@example.test private-auth-result private-tool-error /private/runtime/path`
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "auth-action-" + tc.name
+			event := projectToolCallStreamEvent{
+				ID:        id,
+				Name:      tc.tool,
+				Status:    tc.status,
+				Arguments: `{"user":"account-user-482","enabled":true,"credential":"private-auth-result"}`,
+				Summary:   privateDetails,
+				Error:     privateDetails,
+				Exec:      &projectAssistantExecMetadata{},
+				Sequence:  7,
+				FailureDiagnostic: &projectAssistantActionDiagnostic{
+					Category: "runtime", Message: privateDetails, ReferenceID: "account-user-482",
+				},
+			}
+			item := projectAssistantActionFeedItemFromToolCall(event)
+			assertBoundedAuthenticationAction(t, item, tc.kind, tc.title, tc.feedState, privateDetails)
+			if item.Sequence != 7 {
+				t.Fatalf("authentication action sequence = %d, want 7", item.Sequence)
+			}
+
+			assistantCall := projectAssistantToolCall{
+				ID:                id,
+				Name:              tc.tool,
+				Status:            tc.status,
+				Arguments:         event.Arguments,
+				Summary:           event.Summary,
+				Error:             event.Error,
+				Input:             json.RawMessage(event.Arguments),
+				Result:            json.RawMessage(`{"user":"account-user-482","message":"private-auth-result"}`),
+				Exec:              &projectAssistantExecMetadata{},
+				FailureDiagnostic: event.FailureDiagnostic,
+			}
+			assistantItem := projectAssistantActionFeedItemFromAssistantToolCall(assistantCall)
+			assertBoundedAuthenticationAction(t, assistantItem, tc.kind, tc.title, tc.feedState, privateDetails)
+
+			permissionItem := projectAssistantActionFeedItemFromPermission(projectAssistantPermission{
+				ID: "permission-" + id, ToolCallID: id, ToolName: tc.tool, Reason: privateDetails,
+				Input: json.RawMessage(event.Arguments), Exec: &projectAssistantExecMetadata{},
+			})
+			_, permissionTitle, _ := projectAssistantAuthenticationActionPresentation(tc.tool, projectAssistantActionFeedStatusWaiting)
+			assertBoundedAuthenticationAction(t, permissionItem, tc.kind, permissionTitle, projectAssistantActionFeedStatusWaiting, privateDetails)
+
+			metadata := projectAssistantMessageMetadata("Working", []projectToolCallStreamEvent{
+				{ID: id, Name: tc.tool, Status: "running", Arguments: event.Arguments, Summary: privateDetails},
+				event,
+			})
+			feed := projectAssistantActionFeedFromMetadata(metadata[projectMessageMetadataAssistantActionFeed])
+			if len(feed) != 1 {
+				t.Fatalf("persisted feed = %#v, want one bounded authentication receipt", feed)
+			}
+			assertBoundedAuthenticationAction(t, feed[0], tc.kind, tc.title, tc.feedState, privateDetails)
+			if feed[0].Sequence != 7 {
+				t.Fatalf("persisted authentication action sequence = %d, want 7", feed[0].Sequence)
+			}
+		})
+	}
+}
+
+func assertBoundedAuthenticationAction(t *testing.T, item projectAssistantActionFeedItem, kind, title, status, privateDetails string) {
+	t.Helper()
+	if item.Kind != kind || item.Title != title || item.Status != status {
+		t.Fatalf("authentication action = %#v, want kind=%q title=%q status=%q", item, kind, title, status)
+	}
+	if item.Target != "" || item.Outcome != "" || item.Count != 0 || item.Diagnostic != nil || item.Exec != nil || item.RecoveryOf != "" {
+		t.Fatalf("authentication action exposes details: %#v", item)
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		"account-user-482", "private@example.test", "private-auth-result", "private-tool-error", "/private/runtime/path",
+	} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("authentication action JSON = %s, must not expose %q", raw, forbidden)
+		}
+	}
+}
+
 func TestProjectAssistantActionFeedTreatsStaleCommandAsFailed(t *testing.T) {
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
 		ID:     "exec-stale-status",

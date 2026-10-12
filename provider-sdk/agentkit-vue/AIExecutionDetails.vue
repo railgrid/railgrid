@@ -31,13 +31,14 @@ const detailURL = computed(() => safeExecutionURL(view.value?.detailURL))
 const status = computed(() => executionStatusPresentation(view.value?.status, view.value?.exitCode))
 const statusLabel = computed(() => {
   const current = view.value
-  const suffix = current?.exitCode !== undefined && current?.exitCode !== null
-    && (status.value.state === 'failed' || status.value.state === 'timed_out')
+  const label = status.value.known && current?.statusLabel ? current.statusLabel : status.value.label
+  const suffix = current?.exitCode !== undefined && current?.exitCode !== null && !status.value.busy
     ? ` · exit ${current.exitCode}`
     : ''
-  // A caller label is safe to display only when the status is one AgentKit
-  // understands; future values must stay visibly neutral.
-  return status.value.known && current?.statusLabel ? current.statusLabel : `${status.value.label}${suffix}`
+  // The exit code is a receipt even when the provider's status is unverified
+  // (for example, stale source). Keep that status label and show the code only
+  // when one was reported for a non-running execution.
+  return suffix && !label.endsWith(suffix) ? `${label}${suffix}` : label
 })
 const statusIcon = computed(() => {
   switch (status.value.state) {

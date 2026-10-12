@@ -86,4 +86,9 @@ enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipByt
 enforce('App Studio page path', pageArtifacts, { rawBytes: 1_249_500, gzipBytes: 348_700 })
 // Baseline total assets measure 1,305,524 raw / 368,042 gzip. The same change
 // adds 18,852 raw / 5,745 gzip; keep 624 raw / 413 gzip bytes of headroom.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_325_000, gzipBytes: 374_200 })
+// Authentication settings load only when the settings panel opens. Bound
+// this new chunk separately and add only its explicit allowance to the total.
+const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthentication', 'authentication settings')
+const authArtifact = await artifact(manifest[authKey].file)
+enforce('App Studio authentication settings', [authArtifact], { rawBytes: 6_500, gzipBytes: 2_500 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_331_500, gzipBytes: 376_700 })

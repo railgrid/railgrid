@@ -1,5 +1,5 @@
 .PHONY: sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual test-terminal-dock-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
-.PHONY: build-access-proxy docker-build-access-proxy
+.PHONY: build-access-proxy docker-build-access-proxy load-access-proxy-image
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
 .PHONY: build-app-studio-provider-go
 .PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider
@@ -570,6 +570,16 @@ test-app-studio-mcp-access: ## Verify MCP workload authorization and App Studio 
 lint-app-studio-mcp-access: $(GOLANGCI_LINT) ## Lint the MCP authorization integration across both modules
 	$(GOLANGCI_LINT) run ./pkg/hub/mcpaggregate
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./controller/project ./hubmcp
+
+.PHONY: test-app-studio-tool-identity fix-lint-app-studio-tool-identity lint-app-studio-tool-identity
+test-app-studio-tool-identity: ## Verify local tool dispatch and Project identity permissions
+	cd providers/app-studio && go test -count=1 ./api ./internal/projectidentity ./internal/scopedidentity ./controller/project
+
+fix-lint-app-studio-tool-identity: $(GOLANGCI_LINT) ## Format and auto-fix App Studio tool and identity packages
+	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./api ./internal/projectidentity ./internal/scopedidentity ./controller/project
+
+lint-app-studio-tool-identity: $(GOLANGCI_LINT) ## Lint App Studio tool and identity packages
+	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./internal/projectidentity ./internal/scopedidentity ./controller/project
 
 .PHONY: test-auth fmt-auth lint-auth
 test-auth: ## Verify standalone auth and status-page surfaces
@@ -2791,7 +2801,11 @@ docker-build-agent: ## Build railgrid-agent container image
 docker-build-access-proxy: ## Build published-app access-proxy container image (infrastructure module)
 	docker build -f providers/infrastructure/Dockerfile.access-proxy \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) providers/infrastructure
+		-t ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) .
+
+load-access-proxy-image: docker-build-access-proxy ## Load the published-app access-proxy image into the local kind runtime cluster
+	@echo ">>> loading ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) --name $(KRO_KIND_NAME)
 
 docker-push-hub: docker-build-hub ## Build and push railgrid-hub container image
 	docker push ghcr.io/railgrid/railgrid-hub:$(VERSION)
@@ -2987,3 +3001,32 @@ fix-lint-app-studio-harness: $(GOLANGCI_LINT) ## Auto-fix all App Studio API/sto
 
 app-studio-harness-report: ## Analyze saved benchmark receipts; ARGS='<directory> [--acceptance <manifest> --require-acceptance]'
 	python3 hack/scripts/app-studio-harness-report.py $(ARGS)
+
+.PHONY: test-railgrid-auth test-railgrid-auth-sdk fix-lint-railgrid-auth lint-railgrid-auth pack-railgrid-auth-sdk
+
+test-railgrid-auth-sdk: ## Verify the Railgrid Auth SDK and packaged installation
+	cd provider-sdk/auth-node && npm test && npm run test:install
+
+pack-railgrid-auth-sdk: ## Pack the Railgrid Auth SDK locally without publishing
+	mkdir -p $(BINDIR)/sdk
+	cd provider-sdk/auth-node && npm pack --pack-destination $(abspath $(BINDIR))/sdk
+
+test-railgrid-auth: test-railgrid-auth-sdk ## Verify first-party app authentication across hub and providers
+	go test -count=1 ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	cd providers/infrastructure && go test -count=1 ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver
+	cd providers/app-studio && go test -count=1 ./api ./bindings ./controller/project ./skills
+
+fix-lint-railgrid-auth: $(GOLANGCI_LINT) ## Format and auto-fix app authentication packages
+	$(GOLANGCI_LINT) run --fix ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver
+	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./api ./bindings ./controller/project ./skills
+
+lint-railgrid-auth: $(GOLANGCI_LINT) ## Lint app authentication packages
+	$(GOLANGCI_LINT) run ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver
+	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./bindings ./controller/project ./skills
+
+.PHONY: test-railgrid-auth-configuration
+test-railgrid-auth-configuration: ## Verify App Studio authentication settings, grants, and runtime identities
+	cd providers/app-studio && go test -count=1 ./api -run 'Authentication|ToolRegistryListsLocalToolsInOrder|RetiredRouteFixture'
+	cd providers/app-studio && go test -count=1 ./bindings ./controller/project

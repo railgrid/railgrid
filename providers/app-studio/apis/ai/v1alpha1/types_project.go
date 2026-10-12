@@ -113,11 +113,23 @@ type ProjectSpec struct {
 	// +optional
 	Sharing ProjectSharingSpec `json:"sharing,omitempty"`
 
+	// Authentication enables first-party Railgrid identity inside the application.
+	// It is independent of sharing and never grants platform membership.
+	// +optional
+	Authentication ProjectAuthenticationSpec `json:"authentication,omitempty"`
+
 	// Environments describe provider-backed runtime capabilities for this
 	// Project. App Studio owns the binding contract; providers own runtime
 	// implementation details.
 	// +optional
 	Environments []ProjectEnvironmentSpec `json:"environments,omitempty"`
+}
+
+// ProjectAuthenticationSpec is an opt-in capability for supported application templates.
+type ProjectAuthenticationSpec struct {
+	// Enabled configures Railgrid Auth in development and production.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 type ProjectSharingMode string

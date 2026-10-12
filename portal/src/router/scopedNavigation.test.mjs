@@ -30,7 +30,7 @@ const { useProvidersStore } = await vite.ssrLoadModule('/src/stores/providers.ts
 const { default: RouteContextState } = await vite.ssrLoadModule('/src/components/RouteContextState.vue')
 const { scopedPath, parsePortalScope, portalHref, portalRoutePath } = await vite.ssrLoadModule('/src/portalkit/navigation.ts')
 const { readTenant } = await vite.ssrLoadModule('/src/portalkit/tenant.ts')
-const { validPortalNext, consumePortalNext } = await vite.ssrLoadModule('/src/auth/portalNext.ts')
+const { validPortalNext, rememberPortalNext, consumePortalNext } = await vite.ssrLoadModule('/src/auth/portalNext.ts')
 const { consumeAppAccessNext, rememberAppAccessNext } = await vite.ssrLoadModule('/src/auth/appAccessNext.ts')
 test.after(() => vite.close())
 const O = '11111111-1111-4111-8111-111111111111'
@@ -69,6 +69,54 @@ function setup({ authenticated = true } = {}) {
     return response({}, 404)
   }
   return { router, calls, auth, tenant: useTenantStore(), context: useRouteContextStore() }
+}
+function mountedCallback(source, endMarker, scope) {
+  const start = source.indexOf('onMounted(')
+  assert.notEqual(start, -1, 'component should register its mounted flow')
+  const bodyStart = start + 'onMounted('.length
+  const end = source.indexOf(endMarker, bodyStart)
+  assert.notEqual(end, -1, 'mounted flow should have its expected boundary')
+  const callback = source.slice(bodyStart, end + 2).trim()
+  const code = ts.transpileModule(`const mounted = ${callback}; mounted()`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText
+  return runInNewContext(code, scope)
+}
+function tokenLoginHandler(source, scope) {
+  const start = source.indexOf('function resumeAfterLogin()')
+  const end = source.indexOf('\nfunction handleOIDCLogin', start)
+  assert.ok(start >= 0 && end > start, 'login page should expose its post-login continuation flow')
+  const code = ts.transpileModule(`${source.slice(start, end)}\nhandleTokenLogin`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText
+  return runInNewContext(code, scope)
+}
+async function prepareLoginPage({ next, returnTo = null } = {}) {
+  const source = readFileSync(new URL('../pages/LoginPage.vue', import.meta.url), 'utf8')
+  const query = new URLSearchParams()
+  if (next !== undefined) query.set('next', next)
+  if (returnTo !== null) query.set('returnTo', returnTo)
+  const assigned = []
+  const routed = []
+  const scope = {
+    URLSearchParams,
+    window: { location: { search: `?${query}`, assign: path => assigned.push(path) } },
+    auth: { token: null, loading: false, detectAuthMode: async () => {}, loginStatic: async () => {} },
+    router: { replace: path => routed.push(path) },
+    tokenInput: { value: 'fixture-only' },
+    loginError: { value: null },
+    rememberAppAccessNext,
+    rememberPortalNext,
+    consumeAppAccessNext,
+    consumePortalNext,
+    sessionStorage: globalThis.sessionStorage,
+  }
+  await mountedCallback(source, '\n})\n\nfunction resumeAfterLogin', scope)
+  return {
+    assigned,
+    routed,
+    submitToken: tokenLoginHandler(source, scope),
+  }
 }
 
 test('canonical routes resolve exact IDs and preserve provider suffix, query and fragment', async () => {
@@ -251,6 +299,91 @@ test('unauthenticated deep links survive a per-tab single-use login continuation
   for (const unsafe of ['https://evil.test', '//evil.test', '/\\evil.test', '/login', '/auth/callback', '/%5cevil.test', '/a\nb']) assert.equal(validPortalNext(unsafe), null, unsafe)
   rememberAppAccessNext('/auth/apps/authorize?app=example')
   assert.equal(consumeAppAccessNext(), '/auth/apps/authorize?app=example')
+})
+
+test('anonymous token login resumes Railgrid Auth authorize before the app callback', async () => {
+  setup()
+  const identityAuthorize = '/auth/apps/identity/authorize?cluster=abc123cluster&group=infrastructure.railgrid.ai&resource=instances&name=shop&app_id=project-1%2Fproduction&redirect_uri=https%3A%2F%2Fapps.example.test%2F__railgrid%2Fauth%2Fidentity%2Fcallback&state=abc_123&railgrid_retried=1'
+  const login = await prepareLoginPage({ next: identityAuthorize })
+  assert.equal(sessionStorage.getItem('railgrid.app-access-next'), identityAuthorize)
+  await login.submitToken()
+  assert.deepEqual(login.assigned, [identityAuthorize])
+  assert.deepEqual(login.routed, [], 'successful app continuation must not fall through to the portal root')
+  assert.equal(consumeAppAccessNext(), null, 'the authorize continuation is single-use')
+
+  // The OIDC callback shares the same app continuation. Run its mounted flow
+  // against the state saved by LoginPage, as if the user completed SSO.
+  setup()
+  const oidcLogin = await prepareLoginPage({ next: identityAuthorize })
+  const authCallbackSource = readFileSync(new URL('../pages/AuthCallback.vue', import.meta.url), 'utf8')
+  const callbackURL = new URLSearchParams({
+    response: Buffer.from(JSON.stringify({ idToken: 'fixture-only', email: '', userId: '', kubeconfig: '' })).toString('base64'),
+  })
+  let callbackCompleted = false
+  const oidcAssigned = []
+  const oidcRouted = []
+  mountedCallback(authCallbackSource, '\n})\n</script>', {
+    URLSearchParams,
+    atob: value => Buffer.from(value, 'base64').toString('binary'),
+    window: { location: { search: `?${callbackURL}`, assign: path => oidcAssigned.push(path) } },
+    sessionStorage: globalThis.sessionStorage,
+    parseClusterName: () => 'fixture-cluster',
+    auth: { loginFromOIDCResponse: () => { callbackCompleted = true } },
+    consumeAppAccessNext,
+    consumePortalNext,
+    router: { replace: path => oidcRouted.push(path) },
+    error: { value: null },
+  })
+  assert.equal(callbackCompleted, true)
+  assert.deepEqual(oidcAssigned, [identityAuthorize])
+  assert.deepEqual(oidcRouted, [], 'OIDC app sign-in must not land on the portal dashboard')
+  assert.deepEqual(oidcLogin.assigned, [])
+
+  // The legacy app-access authorize flow remains supported as well.
+  const legacyAuthorize = '/auth/apps/authorize?cluster=abc&name=shop&state=legacy&railgrid_retried=1'
+  setup()
+  rememberAppAccessNext(legacyAuthorize)
+  assert.equal(consumeAppAccessNext(), legacyAuthorize)
+})
+
+test('app authorize continuations reject open redirects and malformed routes', () => {
+  setup()
+  const unsafe = [
+    'https://evil.test/auth/apps/identity/authorize?state=x',
+    '//evil.test/auth/apps/identity/authorize?state=x',
+    '/\\\\evil.test/auth/apps/identity/authorize?state=x',
+    '/auth/apps/identity/authorize/extra?state=x',
+    '/auth/apps/identity/authorize#https://evil.test',
+    '/auth/apps/identity/authorize?state=x#https://evil.test',
+    '/auth/apps/identity/authorize?state=x\n',
+    '/auth/apps/identity/authorize?state=x\u0000',
+    '/auth/apps/identity/authorize?state=bad\\value',
+    '/auth/apps/%69dentity/authorize?state=x',
+    '/auth/apps/identity%2Fauthorize?state=x',
+    '/auth/identity/authorize?state=x',
+  ]
+
+  for (const next of unsafe) {
+    rememberAppAccessNext(next)
+    assert.equal(consumeAppAccessNext(), null, next)
+  }
+
+  sessionStorage.setItem('railgrid.app-access-next', 'https://evil.test')
+  assert.equal(consumeAppAccessNext(), null, 'tampered stored continuation must be rejected when consumed')
+})
+
+test('invalid app authorize next preserves the outer portal return', async () => {
+  setup()
+  const login = await prepareLoginPage({ next: 'https://evil.test', returnTo: resource })
+  await login.submitToken()
+  assert.deepEqual(login.assigned, [], 'invalid next must never reach location.assign')
+  assert.deepEqual(login.routed, [resource], 'an outer-gate portal return must survive invalid app next')
+
+  setup()
+  const noReturn = await prepareLoginPage({ next: 'https://evil.test' })
+  await noReturn.submitToken()
+  assert.deepEqual(noReturn.assigned, [])
+  assert.deepEqual(noReturn.routed, ['/'], 'invalid app next with no portal return falls back to the portal root')
 })
 
 test('cross-tab storage changes cannot retarget a hosted page or native link', async () => {

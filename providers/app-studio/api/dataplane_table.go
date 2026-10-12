@@ -75,6 +75,15 @@ var projectVerbs = []verbRoute{
 	{verb: "files-upload", handlers: post(func(s *Server) http.HandlerFunc { return s.uploadProjectFiles })},
 
 	// Preview and publishing.
+	{verb: "authentication", handlers: map[string]func(*Server) http.HandlerFunc{
+		http.MethodGet:  func(s *Server) http.HandlerFunc { return s.getProjectAuthentication },
+		http.MethodPost: func(s *Server) http.HandlerFunc { return s.setProjectAuthentication },
+	}},
+	{verb: "authentication-grants", tailVars: []string{"grant"}, handlers: map[string]func(*Server) http.HandlerFunc{
+		http.MethodGet:    func(s *Server) http.HandlerFunc { return s.listProjectAuthenticationGrants },
+		http.MethodPost:   func(s *Server) http.HandlerFunc { return s.createProjectAuthenticationGrant },
+		http.MethodDelete: func(s *Server) http.HandlerFunc { return s.revokeProjectAuthenticationGrant },
+	}},
 	{verb: "preview", handlers: map[string]func(*Server) http.HandlerFunc{
 		http.MethodGet:    func(s *Server) http.HandlerFunc { return s.getProjectPreviewAccess },
 		http.MethodPost:   func(s *Server) http.HandlerFunc { return s.setProjectPreviewAccess },

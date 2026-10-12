@@ -2642,10 +2642,11 @@ func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec,
 		params = json.RawMessage(`{"type":"object"}`)
 	}
 	return projectAssistantToolSpec{
-		Name:        name,
-		Description: description,
-		Parameters:  params,
-		Risk:        risk,
+		Name:                       name,
+		Description:                description,
+		Parameters:                 params,
+		Risk:                       risk,
+		RequiresProjectMCPIdentity: true,
 	}, true
 }
 

@@ -53,6 +53,8 @@ func (actionProofGrantReader) Get(_ context.Context, _ GrantKey) (*tenancyv1alph
 		{Capability: "memberships.read", Scope: "org"},
 		{Capability: "memberships.read", Scope: "workspace"},
 		{Capability: "memberships.invite", Scope: "org", MaxRole: "member", AllowInvite: true},
+		{Capability: "app-auth.users.resolve", Scope: "workspace"},
+		{Capability: "app-access.grants.manage", Scope: "workspace"},
 	}}}, nil
 }
 
@@ -70,6 +72,7 @@ func TestActionProofGateBindsMembershipCallsToAppStudioAction(t *testing.T) {
 		{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeOrg},
 		{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeWorkspace},
 		{Capability: providersv1alpha1.HubCapabilityMembershipsInvite, Scope: providersv1alpha1.HubAccessScopeOrg, MaxRole: "member", AllowInvite: true},
+		{Capability: providersv1alpha1.ProviderHubCapability("app-auth.users.resolve"), Scope: providersv1alpha1.HubAccessScopeWorkspace},
 	}
 	human := tenant.UserResolverFunc(func(*http.Request) (string, error) { return "", errors.New("provider token is not a human credential") })
 	gate := &Gate{
@@ -157,6 +160,202 @@ func TestActionProofGateBindsMembershipCallsToAppStudioAction(t *testing.T) {
 			}
 			if tc.method == http.MethodPost && string(gotBody) != tc.body {
 				t.Fatalf("forwarded POST body = %q, want unchanged %q", gotBody, tc.body)
+			}
+		})
+	}
+}
+
+func TestActionProofGateBindsExistingAppAccountLookup(t *testing.T) {
+	key := serviceaccounts.StaticProofKeySource(strings.Repeat("a", 32))
+	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	claims := actionproof.Claims{
+		UserID: "user-alice", RBACIdentity: "railgrid:alice@example.com", Groups: []string{"system:authenticated"},
+		OrgUUID: "org", WorkspaceUUID: "workspace", ClusterID: "cluster-id",
+		Provider: "app-studio", Group: "ai.railgrid.ai", Version: "v1alpha1",
+		Resource: "projects", ParentName: "project-1", Verb: "authentication-grants", Method: http.MethodPost,
+		AppAuthUser: "user-bob", AppAuthAppID: "project-uid/production",
+		AppAccessOperation: "create", AppAccessUser: "user-bob", AppAccessGroup: "infrastructure.railgrid.ai",
+		AppAccessResource: "instances", AppAccessName: "instance-1", AppAccessUID: "instance-uid",
+		AppAccessProject: "project-1", AppAccessProjectUID: "project-uid",
+	}
+	providerToken := actionProofServiceAccountToken()
+	capability := providersv1alpha1.ProviderHubAccess{
+		Capability: providersv1alpha1.ProviderHubCapability("app-auth.users.resolve"),
+		Scope:      providersv1alpha1.HubAccessScopeWorkspace,
+	}
+	hubAccess := []providersv1alpha1.ProviderHubAccess{capability}
+	human := tenant.UserResolverFunc(func(*http.Request) (string, error) { return "", errors.New("provider token is not human auth") })
+	gate := &Gate{
+		Human: human,
+		ActionProof: &actionproof.Verifier{
+			Keys: key,
+			Authenticate: func(_ context.Context, r *http.Request, c actionproof.Claims) error {
+				if r.Header.Get("Authorization") != "Bearer "+providerToken || c.Provider != "app-studio" {
+					return errors.New("wrong provider credential")
+				}
+				return nil
+			},
+			ValidateScope: func(_ context.Context, c actionproof.Claims) error {
+				if c.OrgUUID != "org" || c.WorkspaceUUID != "workspace" {
+					return errors.New("wrong tenant")
+				}
+				return nil
+			},
+			Now: func() time.Time { return now.Add(time.Second) },
+		},
+		Providers: actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: hubAccess}},
+		Grants:    actionProofGrantReader{},
+	}
+
+	for _, tc := range []struct {
+		name, path, body string
+		mutate           func(*actionproof.Claims)
+		wantStatus       int
+	}{
+		{name: "matching account and production audience", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`},
+		{name: "different account", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-eve","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`, wantStatus: http.StatusForbidden},
+		{name: "different audience", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-2/production"}`, wantStatus: http.StatusForbidden},
+		{name: "different target name", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"other-instance","appId":"project-uid/production"}`, wantStatus: http.StatusForbidden},
+		{name: "unknown field", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production","extra":true}`, wantStatus: http.StatusForbidden},
+		{name: "trailing JSON", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}{}`, wantStatus: http.StatusForbidden},
+		{name: "wrong workspace", path: "/api/orgs/org/workspaces/other/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`, wantStatus: http.StatusForbidden},
+		{name: "non-canonical path", path: "/api//orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`, wantStatus: http.StatusForbidden},
+		{name: "query string", path: "/api/orgs/org/workspaces/workspace/app-auth/user?x=1", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`, wantStatus: http.StatusForbidden},
+		{name: "wrong source action", path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`, mutate: func(c *actionproof.Claims) { c.Verb = "publishing-grants"; c.AppAuthUser = ""; c.AppAuthAppID = "" }, wantStatus: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caseClaims := claims
+			if tc.mutate != nil {
+				tc.mutate(&caseClaims)
+			}
+			token, err := actionproof.Sign(context.Background(), key, caseClaims, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			request.Header.Set("Authorization", "Bearer "+providerToken)
+			request.Header.Set(actionproof.Header, token)
+			request.Header.Set("X-Railgrid-Org", claims.OrgUUID)
+			request.Header.Set("X-Railgrid-Workspace", claims.WorkspaceUUID)
+			request.Header.Set("X-Railgrid-Tenant", claims.ClusterID)
+			request.Header.Set("X-Railgrid-Cluster", claims.ClusterID)
+			var gotCall tenant.DelegatedCall
+			reached := false
+			handler := gate.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				gotCall, _ = tenant.DelegatedCallFrom(r.Context())
+			}))
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if tc.wantStatus != 0 {
+				if reached || recorder.Code != tc.wantStatus {
+					t.Fatalf("status=%d reached=%v body=%s, want %d", recorder.Code, reached, recorder.Body.String(), tc.wantStatus)
+				}
+				return
+			}
+			if !reached || !gotCall.ActionProof || gotCall.User != claims.UserID || gotCall.RBACIdentity != claims.RBACIdentity ||
+				gotCall.Capability != "app-auth.users.resolve" || gotCall.Scope != "workspace" ||
+				gotCall.AppAccessName != claims.AppAccessName || gotCall.AppAccessUID != claims.AppAccessUID {
+				t.Fatalf("reached=%v call=%+v status=%d; want proof-backed existing-account lookup", reached, gotCall, recorder.Code)
+			}
+		})
+	}
+}
+
+func TestActionProofGateBindsAppAccessBrokerBodyAndLegacyReads(t *testing.T) {
+	key := serviceaccounts.StaticProofKeySource(strings.Repeat("a", 32))
+	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	providerToken := actionProofServiceAccountToken()
+	capability := providersv1alpha1.ProviderHubAccess{
+		Capability: "app-access.grants.manage", Scope: providersv1alpha1.HubAccessScopeWorkspace,
+	}
+	human := tenant.UserResolverFunc(func(*http.Request) (string, error) { return "", errors.New("provider token is not human auth") })
+	gate := &Gate{
+		Human: human,
+		ActionProof: &actionproof.Verifier{
+			Keys: key,
+			Authenticate: func(_ context.Context, r *http.Request, c actionproof.Claims) error {
+				if r.Header.Get("Authorization") != "Bearer "+providerToken || c.Provider != "app-studio" {
+					return errors.New("wrong provider credential")
+				}
+				return nil
+			},
+			ValidateScope: func(_ context.Context, c actionproof.Claims) error {
+				if c.OrgUUID != "org" || c.WorkspaceUUID != "workspace" {
+					return errors.New("wrong tenant")
+				}
+				return nil
+			},
+			Now: func() time.Time { return now.Add(time.Second) },
+		},
+		Providers: actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: []providersv1alpha1.ProviderHubAccess{capability}}},
+		Grants:    actionProofGrantReader{},
+	}
+	baseClaims := actionproof.Claims{
+		UserID: "user-alice", RBACIdentity: "railgrid:alice@example.com",
+		OrgUUID: "org", WorkspaceUUID: "workspace", ClusterID: "cluster-id",
+		Provider: "app-studio", Group: "ai.railgrid.ai", Version: "v1alpha1",
+		Resource: "projects", ParentName: "project-1", Verb: "publishing", Method: http.MethodGet,
+		AppAccessOperation: "list", AppAccessGroup: "infrastructure.railgrid.ai", AppAccessResource: "instances",
+		AppAccessName: "app-demo-prod", AppAccessUID: "instance-uid", AppAccessProject: "project-1", AppAccessProjectUID: "project-uid",
+	}
+	listBody := `{"operation":"list","group":"infrastructure.railgrid.ai","resource":"instances","name":"app-demo-prod","uid":"instance-uid","projectName":"project-1","projectUID":"project-uid"}`
+	createClaims := baseClaims
+	createClaims.Verb = "authentication-grants"
+	createClaims.Method = http.MethodPost
+	createClaims.AppAccessOperation = "create"
+	createClaims.AppAccessUser = "user-bob"
+	createClaims.AppAuthUser = "user-bob"
+	createClaims.AppAuthAppID = "project-uid/production"
+	createBody := `{"operation":"create","group":"infrastructure.railgrid.ai","resource":"instances","name":"app-demo-prod","uid":"instance-uid","projectName":"project-1","projectUID":"project-uid","user":"user-bob"}`
+
+	for _, tc := range []struct {
+		name       string
+		claims     actionproof.Claims
+		method     string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{name: "legacy GET publishing read", claims: baseClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: listBody},
+		{name: "publish mode response may only list", claims: func() actionproof.Claims { c := baseClaims; c.Method = http.MethodPost; return c }(), method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: listBody},
+		{name: "current authentication grant binds stable user", claims: createClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: createBody},
+		{name: "different project UID", claims: baseClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: strings.Replace(listBody, "project-uid", "replacement-project", 1), wantStatus: http.StatusForbidden},
+		{name: "different target UID", claims: baseClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: strings.Replace(listBody, "instance-uid", "replacement-instance", 1), wantStatus: http.StatusForbidden},
+		{name: "different operation", claims: baseClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: strings.Replace(listBody, `"operation":"list"`, `"operation":"reset"`, 1), wantStatus: http.StatusForbidden},
+		{name: "wrong workspace", claims: baseClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/other/app-auth/grants", body: listBody, wantStatus: http.StatusForbidden},
+		{name: "arbitrary RBAC input", claims: baseClaims, method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: strings.TrimSuffix(listBody, "}") + `,"subjects":[{"kind":"Group","name":"system:authenticated"}]}`, wantStatus: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token, err := actionproof.Sign(context.Background(), key, tc.claims, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			request.Header.Set("Authorization", "Bearer "+providerToken)
+			request.Header.Set(actionproof.Header, token)
+			request.Header.Set("X-Railgrid-Org", "org")
+			request.Header.Set("X-Railgrid-Workspace", "workspace")
+			request.Header.Set("X-Railgrid-Tenant", "cluster-id")
+			request.Header.Set("X-Railgrid-Cluster", "cluster-id")
+			reached := false
+			var gotCall tenant.DelegatedCall
+			handler := gate.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				gotCall, _ = tenant.DelegatedCallFrom(r.Context())
+			}))
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if tc.wantStatus != 0 {
+				if reached || recorder.Code != tc.wantStatus {
+					t.Fatalf("status=%d reached=%v body=%s, want %d", recorder.Code, reached, recorder.Body.String(), tc.wantStatus)
+				}
+				return
+			}
+			if !reached || !gotCall.ActionProof || gotCall.Capability != "app-access.grants.manage" ||
+				gotCall.AppAccessOperation != tc.claims.AppAccessOperation || gotCall.AppAccessProjectUID != "project-uid" ||
+				gotCall.AppAccessUID != "instance-uid" {
+				t.Fatalf("reached=%v call=%+v status=%d", reached, gotCall, recorder.Code)
 			}
 		})
 	}

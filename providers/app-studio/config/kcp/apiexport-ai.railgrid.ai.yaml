@@ -136,7 +136,7 @@ spec:
   resources:
   - group: ai.railgrid.ai
     name: projects
-    schema: v261011-915f868b.projects.ai.railgrid.ai
+    schema: v261012-6f27bf89.projects.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai
@@ -170,6 +170,24 @@ spec:
   - group: ai.railgrid.ai
     name: projects/attachments
     schema: v260924-87f1980f.attachments.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/authentication
+    schema: v261012-6f27bf89.authentication.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: projects/authentication-grants
+    schema: v261012-6f27bf89.authentication-grants.ai.railgrid.ai
     storage:
       virtual:
         reference:

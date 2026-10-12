@@ -232,6 +232,32 @@ func testTokens() map[string]string {
 	return tokens
 }
 
+func TestAccessProxyImagePullPolicyUsesIfNotPresentOnlyForDigestReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		image    string
+		wantPull string
+	}{
+		{name: "default mutable latest", image: "", wantPull: "Always"},
+		{name: "mutable tag", image: "ghcr.io/example/access-proxy:dev", wantPull: "Always"},
+		{name: "valid sha256 digest", image: "ghcr.io/example/access-proxy@sha256:" + strings.Repeat("a", 64), wantPull: "IfNotPresent"},
+		{name: "malformed digest", image: "ghcr.io/example/access-proxy@sha256:bad", wantPull: "Always"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RAILGRID_ACCESS_PROXY_IMAGE", tc.image)
+			tokens := accessGateTokens()
+			if got := tokens[accessProxyImagePullPolicyToken]; got != tc.wantPull {
+				t.Fatalf("access-proxy image pull policy for %q = %q, want %q", tc.image, got, tc.wantPull)
+			}
+			if tc.image == "" {
+				if got := tokens[accessProxyImageToken]; got != DefaultAccessProxyImage {
+					t.Fatalf("default access-proxy image = %q, want %q", got, DefaultAccessProxyImage)
+				}
+			}
+		})
+	}
+}
+
 func TestDevImageTokensIncludeUniversalDefaultAndDigestOverride(t *testing.T) {
 	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
 	tokens := devImageTokens()

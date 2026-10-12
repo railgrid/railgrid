@@ -36,3 +36,16 @@ func OrgMembershipsPath(orgUUID string) string {
 func WorkspaceMembershipsPath(orgUUID, workspaceUUID string) string {
 	return "/api" + "/orgs/" + url.PathEscape(orgUUID) + "/workspaces/" + url.PathEscape(workspaceUUID) + "/memberships"
 }
+
+// AppAuthenticationUserPath resolves one existing account for an app-only grant.
+func AppAuthenticationUserPath(orgUUID, workspaceUUID string) string {
+	return "/api" + "/orgs/" + url.PathEscape(orgUUID) + "/workspaces/" + url.PathEscape(workspaceUUID) + "/app-auth/user"
+}
+
+// AppAccessGrantsPath is the hub-owned broker for the narrow, per-app
+// authorization grants used by production, preview, and Railgrid Auth. The
+// hub validates the caller's signed App Studio action and authors the
+// workspace RBAC objects; App Studio never reads or writes those objects.
+func AppAccessGrantsPath(orgUUID, workspaceUUID string) string {
+	return "/api" + "/orgs/" + url.PathEscape(orgUUID) + "/workspaces/" + url.PathEscape(workspaceUUID) + "/app-auth/grants"
+}

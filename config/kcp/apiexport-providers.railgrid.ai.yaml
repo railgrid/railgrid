@@ -6,7 +6,7 @@ spec:
   resources:
   - group: providers.railgrid.ai
     name: catalogentries
-    schema: v260925-e0e27f03.catalogentries.providers.railgrid.ai
+    schema: v261012-c8c5a3f0.catalogentries.providers.railgrid.ai
     storage:
       crd: {}
 status: {}

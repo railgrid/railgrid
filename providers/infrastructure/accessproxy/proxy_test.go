@@ -538,6 +538,8 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	r.Header.Set("Via", "evil")
 	r.Header.Set("X-Custom-App", "keep-me")
 	r.AddCookie(&http.Cookie{Name: returnCookieName("in-flight"), Value: "platform-state"})
+	r.AddCookie(&http.Cookie{Name: identityReturnCookieName("in-flight"), Value: "identity-state"})
+	r.AddCookie(&http.Cookie{Name: legacyIdentityReturnCookiePrefix + "-in-flight", Value: "legacy-identity-state"})
 	r.AddCookie(&http.Cookie{Name: "app-cookie", Value: "keep-me"})
 	rec := doRequest(p, r)
 	if rec.Code != http.StatusOK {
@@ -564,6 +566,8 @@ func TestUpstreamSetCookieDomainIsStripped(t *testing.T) {
 		w.Header().Add("Set-Cookie", "appsession=1; Domain=apps.test.railgrid; Path=/; Secure")
 		w.Header().Add("Set-Cookie", SessionCookieName+"=forged; Path=/")
 		w.Header().Add("Set-Cookie", returnCookieName("forged")+"=forged; Path=/")
+		w.Header().Add("Set-Cookie", identityReturnCookieName("forged")+"=forged; Path=/; Secure")
+		w.Header().Add("Set-Cookie", legacyIdentityReturnCookiePrefix+"-forged=forged; Path=/; Secure")
 		_, _ = w.Write([]byte("ok"))
 	})
 	p := newProxy(t, publicConfig(upstream.URL))

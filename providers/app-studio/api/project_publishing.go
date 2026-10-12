@@ -26,12 +26,11 @@ package api
 //   - visibility: the instance's `access` value (public|private), stored in
 //     the production binding values and reconciled onto the live instance by
 //     the Project reconciler like every other binding value; and
-//   - invitations: plain kcp RBAC in the tenant workspace. A member may open
-//     a private app when they hold `get` on the instance's `access`
-//     subresource; the share dialog writes one ClusterRole per app plus one
-//     ClusterRoleBinding per invited member, and revoking is deleting the
-//     binding. The hub evaluates this with a SubjectAccessReview at sign-in
-//     time; the access gate never re-checks per request.
+//   - invitations: a fixed per-app grant in the tenant workspace. The hub's
+//     app-access broker writes the narrow RBAC record a member needs to open
+//     one private app and checks that access with a SubjectAccessReview at
+//     sign-in time. App Studio supplies the signed Project action and exact
+//     managed Instance identity; it never reads or writes workspace RBAC.
 //
 // No PublishedApp/AppAccessGrant records exist. The API below is a thin
 // veneer that keeps the portal's publishing vocabulary (public/restricted)
@@ -39,9 +38,7 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,11 +49,9 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -70,30 +65,6 @@ const (
 	// accessPublic / accessPrivate are the template access vocabulary.
 	accessPublic  = "public"
 	accessPrivate = "private"
-	// appAccessRolePrefix names the per-app ClusterRole and its bindings.
-	appAccessRolePrefix = "railgrid-app-access"
-	// appAccessLabel marks every RBAC object this API manages with the
-	// instance it grants access to, so grants are enumerable by selector.
-	appAccessLabel = "railgrid.ai/app-access"
-	// appAccessProjectLabel traces the grant back to its App Studio project.
-	appAccessProjectLabel = "app-studio.railgrid.ai/project"
-	// appAccessUserLabel records the granted platform User name.
-	appAccessUserLabel = "app-studio.railgrid.ai/user"
-)
-
-var (
-	clusterRoleResource = tenant.Resource{
-		GVR: schema.GroupVersionResource{
-			Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles",
-		},
-		Kind: "ClusterRole", Plural: "ClusterRoles", Namespaced: false,
-	}
-	clusterRoleBindingResource = tenant.Resource{
-		GVR: schema.GroupVersionResource{
-			Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings",
-		},
-		Kind: "ClusterRoleBinding", Plural: "ClusterRoleBindings", Namespaced: false,
-	}
 )
 
 type publishingMember struct {
@@ -200,10 +171,9 @@ func (s *Server) getProjectPublishing(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_ = id
-	response, err := s.projectPublishingResponse(r.Context(), c, p)
+	response, err := s.projectPublishingResponse(r.Context(), id, c, p)
 	if err != nil {
-		writeError(w, err)
+		writeAppAccessBrokerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -217,7 +187,6 @@ func (s *Server) publishProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_ = id
 	var req projectPublishingRequest
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -235,9 +204,9 @@ func (s *Server) publishProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	response, err := s.projectPublishingResponse(r.Context(), c, updated)
+	response, err := s.projectPublishingResponse(r.Context(), id, c, updated)
 	if err != nil {
-		writeError(w, err)
+		writeAppAccessBrokerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -253,22 +222,23 @@ func (s *Server) unpublishProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_ = id
 	updated, err := s.setProductionAccess(r.Context(), c, p, accessPrivate, aiv1alpha1.ProjectSharingModePrivate)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	runtime, err := s.productionRuntime(r.Context(), c, updated)
+	var grants []projectPublishingGrantView
 	if err == nil {
-		if err := s.deleteAllAppAccessGrants(r.Context(), c, runtime.target.Name); err != nil {
-			writeError(w, err)
+		grants, err = s.resetAppAccessGrants(r.Context(), id, p, runtime.target)
+		if err != nil {
+			writeAppAccessBrokerError(w, err)
 			return
 		}
 	}
-	response, err := s.projectPublishingResponse(r.Context(), c, updated)
+	response, err := s.projectPublishingResponseWithGrants(r.Context(), id, c, updated, grants)
 	if err != nil {
-		writeError(w, err)
+		writeAppAccessBrokerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -293,33 +263,29 @@ func (s *Server) listProjectPublishingGrants(w http.ResponseWriter, r *http.Requ
 }
 
 // listAppAccessGrants serves one channel's grant list. resolve picks the
-// channel; everything downstream is identical, because a grant is a
-// ClusterRoleBinding against an instance name and nothing about it knows
-// whether that instance is production or a preview.
+// exact managed Instance; the hub broker checks the signed caller and target
+// before returning that app's grants.
 func (s *Server) listAppAccessGrants(w http.ResponseWriter, r *http.Request, resolve appAccessRuntimeResolver) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	_ = id
 	runtime, err := resolve(s, r.Context(), c, p)
 	if err != nil {
 		// No production yet — an empty grant list, not an error.
 		writeJSON(w, http.StatusOK, ListResponse[projectPublishingGrantView]{Items: nil})
 		return
 	}
-	grants, err := s.appAccessGrantViews(r.Context(), c, runtime.target.Name)
+	grants, err := s.listAppAccessGrantsForTarget(r.Context(), id, p, runtime.target)
 	if err != nil {
-		writeError(w, err)
+		writeAppAccessBrokerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ListResponse[projectPublishingGrantView]{Items: grants})
 }
 
-// createProjectPublishingGrant invites one workspace/org member: it ensures
-// the per-app ClusterRole and creates the member's ClusterRoleBinding. The
-// caller's own workspace RBAC authorizes the write — App Studio adds only the
-// membership validation and naming convention.
+// createProjectPublishingGrant invites one workspace/org member and asks the
+// hub broker to add a grant for this exact production Instance.
 func (s *Server) createProjectPublishingGrant(w http.ResponseWriter, r *http.Request) {
 	s.createAppAccessGrant(w, r, (*Server).productionRuntime)
 }
@@ -410,38 +376,27 @@ func (s *Server) createAppAccessGrant(w http.ResponseWriter, r *http.Request, re
 			"the platform did not report the member's RBAC identity; update the railgrid hub")
 		return
 	}
-	if err := s.ensureAppAccessRole(r.Context(), c, p, runtime.target); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.ensureAppAccessBinding(r.Context(), c, p, runtime.target.Name, user, subject); err != nil {
-		writeError(w, err)
-		return
-	}
-	grants, err := s.appAccessGrantViews(r.Context(), c, runtime.target.Name)
+	grants, err := s.brokerCreateAppAccessGrant(r.Context(), id, p, runtime.target, user)
 	if err != nil {
-		writeError(w, err)
+		writeAppAccessBrokerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ListResponse[projectPublishingGrantView]{Items: grants})
 }
 
 // revokeProjectPublishingGrant is POST /publishing/grants/{grant}. Revoking
-// is deleting the member's ClusterRoleBinding; it is allowed in every access
-// mode so a stale grant can always be cleaned up.
+// remains allowed in every access mode so a stale grant can be cleaned up.
 func (s *Server) revokeProjectPublishingGrant(w http.ResponseWriter, r *http.Request) {
 	s.revokeAppAccessGrant(w, r, (*Server).productionRuntime)
 }
 
-// revokeAppAccessGrant deletes one grant from whichever channel resolve names.
-// The label check below is what keeps a preview revoke from touching a
-// production grant and vice versa.
+// revokeAppAccessGrant revokes one grant from whichever channel resolve
+// names. The hub verifies that the grant belongs to that exact Instance.
 func (s *Server) revokeAppAccessGrant(w http.ResponseWriter, r *http.Request, resolve appAccessRuntimeResolver) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	_ = id
 	grantName := strings.TrimSpace(mux.Vars(r)["grant"])
 	if grantName == "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "grant name is required")
@@ -452,22 +407,9 @@ func (s *Server) revokeAppAccessGrant(w http.ResponseWriter, r *http.Request, re
 		writeError(w, err)
 		return
 	}
-	binding, err := c.Resource(clusterRoleBindingResource, "").Get(r.Context(), grantName, metav1.GetOptions{})
+	grants, err := s.brokerRevokeAppAccessGrant(r.Context(), id, p, runtime.target, grantName)
 	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if binding.GetLabels()[appAccessLabel] != runtime.target.Name {
-		writeStatus(w, http.StatusConflict, "Conflict", "grant does not belong to this project's app")
-		return
-	}
-	if err := c.Resource(clusterRoleBindingResource, "").Delete(r.Context(), grantName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		writeError(w, err)
-		return
-	}
-	grants, err := s.appAccessGrantViews(r.Context(), c, runtime.target.Name)
-	if err != nil {
-		writeError(w, err)
+		writeAppAccessBrokerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, ListResponse[projectPublishingGrantView]{Items: grants})
@@ -475,15 +417,26 @@ func (s *Server) revokeAppAccessGrant(w http.ResponseWriter, r *http.Request, re
 
 // --- view assembly ---
 
-func (s *Server) projectPublishingResponse(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (projectPublishingResponse, error) {
+func (s *Server) projectPublishingResponse(ctx context.Context, id identity, c *asclient.Client, p *aiv1alpha1.Project) (projectPublishingResponse, error) {
 	runtime, err := s.productionRuntime(ctx, c, p)
 	if err != nil {
 		// Not promoted yet: nothing is published and there is nothing to show.
 		return projectPublishingResponse{Published: false}, nil
 	}
-	grants, err := s.appAccessGrantViews(ctx, c, runtime.target.Name)
+	grants, err := s.listAppAccessGrantsForTarget(ctx, id, p, runtime.target)
 	if err != nil {
 		return projectPublishingResponse{}, err
+	}
+	published, mode := publishingState(p, runtime, grants)
+	view := publicationViewFromRuntime(runtime)
+	view.Mode = mode
+	return projectPublishingResponse{Published: published, Publication: &view, Grants: grants}, nil
+}
+
+func (s *Server) projectPublishingResponseWithGrants(ctx context.Context, id identity, c *asclient.Client, p *aiv1alpha1.Project, grants []projectPublishingGrantView) (projectPublishingResponse, error) {
+	runtime, err := s.productionRuntime(ctx, c, p)
+	if err != nil {
+		return projectPublishingResponse{Published: false}, nil
 	}
 	published, mode := publishingState(p, runtime, grants)
 	view := publicationViewFromRuntime(runtime)
@@ -656,164 +609,38 @@ func requestedPublishingMode(requested string, p *aiv1alpha1.Project) (string, a
 	}
 }
 
-// --- RBAC grant objects ---
+// --- hub-owned app access grants ---
 
-// appAccessRoleName is the deterministic per-app ClusterRole name.
-func appAccessRoleName(instance string) string {
-	return appAccessRolePrefix + "." + instance
-}
-
-// appAccessBindingName is the deterministic per-member grant name. The user
-// segment is hashed so arbitrary-length User names stay within the 253-char
-// object name bound while remaining stable for lookups.
-func appAccessBindingName(instance, user string) string {
-	name := appAccessRolePrefix + "." + instance + "." + user
-	if len(name) <= 253 {
-		return name
-	}
-	sum := sha256.Sum256([]byte(user))
-	return appAccessRolePrefix + "." + instance + "." + hex.EncodeToString(sum[:])[:16]
-}
-
-func (s *Server) ensureAppAccessRole(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, target projectPublishingTargetView) error {
-	group := strings.SplitN(target.APIVersion, "/", 2)[0]
-	rules := []any{
-		map[string]any{
-			"apiGroups":     []any{group},
-			"resources":     []any{target.Resource + "/access"},
-			"resourceNames": []any{target.Name},
-			"verbs":         []any{"get"},
-		},
-		// kcp's workspace content authorizer requires the `access` verb on
-		// nonResourceURL "/" before ANY RBAC rule in the workspace is even
-		// evaluated. Workspace members have it via their admin binding;
-		// invited outsiders get it here — it only lets their requests enter
-		// the authorizer chain, where everything except the app-access tuple
-		// above is still denied. Without this rule every invited grant is
-		// dead on arrival ("App access denied" for users who were granted).
-		map[string]any{
-			"nonResourceURLs": []any{"/"},
-			"verbs":           []any{"access"},
-		},
-	}
-	role := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRole",
-		"metadata": map[string]any{
-			"name": appAccessRoleName(target.Name),
-			"labels": map[string]any{
-				appAccessLabel:        target.Name,
-				appAccessProjectLabel: p.Name,
-			},
-		},
-		"rules": rules,
-	}}
-	_, err := c.Resource(clusterRoleResource, "").Create(ctx, role, metav1.CreateOptions{})
-	if !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	// Reconcile pre-existing roles so grants created before a rule change
-	// (e.g. the workspace-access addition) heal on the next share action.
-	existing, getErr := c.Resource(clusterRoleResource, "").Get(ctx, appAccessRoleName(target.Name), metav1.GetOptions{})
-	if getErr != nil {
-		return getErr
-	}
-	existing.Object["rules"] = rules
-	_, updateErr := c.Resource(clusterRoleResource, "").Update(ctx, existing, metav1.UpdateOptions{})
-	return updateErr
-}
-
-// ensureAppAccessBinding writes the member's grant. The binding is NAMED and
-// LABELED by the stable User CR name (display/dedup key), but its SUBJECT is
-// the kcp RBAC identity — the username kcp actually evaluates.
-func (s *Server) ensureAppAccessBinding(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, instance, user, subject string) error {
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "rbac.authorization.k8s.io/v1",
-		"kind":       "ClusterRoleBinding",
-		"metadata": map[string]any{
-			"name": appAccessBindingName(instance, user),
-			"labels": map[string]any{
-				appAccessLabel:        instance,
-				appAccessProjectLabel: p.Name,
-				appAccessUserLabel:    user,
-			},
-		},
-		"subjects": []any{map[string]any{
-			"kind":     "User",
-			"apiGroup": "rbac.authorization.k8s.io",
-			"name":     subject,
-		}},
-		"roleRef": map[string]any{
-			"apiGroup": "rbac.authorization.k8s.io",
-			"kind":     "ClusterRole",
-			"name":     appAccessRoleName(instance),
-		},
-	}}
-	_, err := c.Resource(clusterRoleBindingResource, "").Create(ctx, binding, metav1.CreateOptions{})
-	if apierrors.IsAlreadyExists(err) {
-		return nil
-	}
-	return err
-}
-
-func (s *Server) appAccessGrantViews(ctx context.Context, c *asclient.Client, instance string) ([]projectPublishingGrantView, error) {
-	list, err := c.Resource(clusterRoleBindingResource, "").List(ctx, metav1.ListOptions{
-		LabelSelector: appAccessLabel + "=" + instance,
-	})
+func (s *Server) listAppAccessGrantsForTarget(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectPublishingTargetView) ([]projectPublishingGrantView, error) {
+	req, err := newAppAccessBrokerRequest(appAccessBrokerList, p, target, "", "")
 	if err != nil {
 		return nil, err
 	}
-	views := make([]projectPublishingGrantView, 0, len(list.Items))
-	for i := range list.Items {
-		binding := &list.Items[i]
-		// Re-check the label client-side: transports that ignore selectors
-		// must not leak unrelated bindings into the view.
-		if binding.GetLabels()[appAccessLabel] != instance {
-			continue
-		}
-		user := binding.GetLabels()[appAccessUserLabel]
-		if user == "" {
-			user = subjectUserName(binding)
-		}
-		if user == "" {
-			continue
-		}
-		views = append(views, projectPublishingGrantView{
-			Name:        binding.GetName(),
-			UID:         string(binding.GetUID()),
-			User:        user,
-			Publication: instance,
-			Revoked:     false,
-			Phase:       "Active",
-		})
-	}
-	sort.Slice(views, func(i, j int) bool { return views[i].User < views[j].User })
-	return views, nil
+	return s.callAppAccessBroker(ctx, id, req)
 }
 
-func (s *Server) deleteAllAppAccessGrants(ctx context.Context, c *asclient.Client, instance string) error {
-	grants, err := s.appAccessGrantViews(ctx, c, instance)
+func (s *Server) brokerCreateAppAccessGrant(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectPublishingTargetView, user string) ([]projectPublishingGrantView, error) {
+	req, err := newAppAccessBrokerRequest(appAccessBrokerCreate, p, target, user, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, grant := range grants {
-		if err := c.Resource(clusterRoleBindingResource, "").Delete(ctx, grant.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
+	return s.callAppAccessBroker(ctx, id, req)
 }
 
-func subjectUserName(binding *unstructured.Unstructured) string {
-	subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
-	for _, rawSubject := range subjects {
-		subject, _ := rawSubject.(map[string]any)
-		if subject["kind"] == "User" {
-			name, _ := subject["name"].(string)
-			return name
-		}
+func (s *Server) brokerRevokeAppAccessGrant(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectPublishingTargetView, grant string) ([]projectPublishingGrantView, error) {
+	req, err := newAppAccessBrokerRequest(appAccessBrokerRevoke, p, target, "", grant)
+	if err != nil {
+		return nil, err
 	}
-	return ""
+	return s.callAppAccessBroker(ctx, id, req)
+}
+
+func (s *Server) resetAppAccessGrants(ctx context.Context, id identity, p *aiv1alpha1.Project, target projectPublishingTargetView) ([]projectPublishingGrantView, error) {
+	req, err := newAppAccessBrokerRequest(appAccessBrokerReset, p, target, "", "")
+	if err != nil {
+		return nil, err
+	}
+	return s.callAppAccessBroker(ctx, id, req)
 }
 
 // --- hub membership lookup (unchanged mechanism) ---

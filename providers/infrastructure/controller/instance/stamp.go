@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -277,4 +278,68 @@ func nestedString(u *unstructured.Unstructured, fields ...string) string {
 func nestedBool(u *unstructured.Unstructured, fields ...string) bool {
 	b, _, _ := unstructured.NestedBool(u.Object, fields...)
 	return b
+}
+
+// authInstanceUIDValue derives the identity audience's instance binding from
+// the tenant-visible Instance, never from the separate runtime CR. The
+// application template opts in by carrying railgridAuth; other templates do
+// not have this field and are left untouched. Once an AppID has been assigned,
+// keep the trusted UID stamped even when railgridAuth is false: that boolean
+// controls the access gate, while the API SDK may still load its verifier
+// configuration eagerly. An unconfigured legacy instance keeps the UID empty.
+func authInstanceUIDValue(inst *unstructured.Unstructured) (string, bool, error) {
+	values, found, err := unstructured.NestedMap(inst.Object, "spec", "values")
+	if err != nil {
+		return "", false, fmt.Errorf("read spec.values for Railgrid Auth: %w", err)
+	}
+	if !found {
+		return "", false, nil
+	}
+	rawEnabled, enabledDeclared := values[infrav1alpha1.RailgridAuthEnabledField]
+	enabled := false
+	if enabledDeclared {
+		var ok bool
+		enabled, ok = rawEnabled.(bool)
+		if !ok {
+			return "", false, fmt.Errorf("spec.values.%s must be a boolean", infrav1alpha1.RailgridAuthEnabledField)
+		}
+	}
+	appID := ""
+	rawAppID, appIDDeclared := values[infrav1alpha1.RailgridAuthAppIDField]
+	if appIDDeclared {
+		var ok bool
+		appID, ok = rawAppID.(string)
+		if !ok {
+			return "", false, fmt.Errorf("spec.values.%s must be a string", infrav1alpha1.RailgridAuthAppIDField)
+		}
+	}
+	if !enabled && strings.TrimSpace(appID) == "" {
+		return "", enabledDeclared || appIDDeclared, nil
+	}
+	uid := strings.TrimSpace(string(inst.GetUID()))
+	if uid == "" {
+		return "", false, fmt.Errorf("railgrid auth requires the persisted tenant Instance UID")
+	}
+	return uid, true, nil
+}
+
+// stampAuthInstanceUID converges the trusted Instance UID into values before
+// the runtime graph is synchronized. App Studio never supplies this value;
+// its merge preserves the provider-computed field observed from this object.
+func (c *Controller) stampAuthInstanceUID(ctx context.Context, tenantClient client.Client, inst *unstructured.Unstructured) (bool, error) {
+	want, configured, err := authInstanceUIDValue(inst)
+	if err != nil || !configured {
+		return false, err
+	}
+	got := nestedString(inst, "spec", "values", infrav1alpha1.RailgridAuthInstanceUIDField)
+	if got == want {
+		return false, nil
+	}
+	if err := unstructured.SetNestedField(inst.Object, want, "spec", "values", infrav1alpha1.RailgridAuthInstanceUIDField); err != nil {
+		return false, fmt.Errorf("set spec.values.%s: %w", infrav1alpha1.RailgridAuthInstanceUIDField, err)
+	}
+	if err := tenantClient.Update(ctx, inst); err != nil {
+		return false, fmt.Errorf("stamping tenant Instance UID for Railgrid Auth: %w", err)
+	}
+	return true, nil
 }

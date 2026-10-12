@@ -89,16 +89,13 @@ const execution = computed<AIExecutionView | undefined>(() => {
   const exec = disclosure.value
   if (!exec) return undefined
   const status = assistantExecStatusPresentation(exec)
-  const statusLabel = status.state === 'failed' || status.state === 'timed_out'
-    ? `${status.label}${exec.exitCode !== undefined && exec.exitCode !== null ? ` · exit ${exec.exitCode}` : ''}`
-    : status.label
   return {
     ...(command.value ? { command: command.value } : {}),
     ...(exec.argv ? { argv: exec.argv } : {}),
     ...(fields.value ? { fields: fields.value } : {}),
     ...(output.value ? { output: output.value } : {}),
     status: executionStatusFor(status.state),
-    statusLabel,
+    statusLabel: status.label,
     ...(exec.durationMs !== undefined ? {
       duration: formatAssistantExecDuration(exec.durationMs),
       durationMs: exec.durationMs,

@@ -38,14 +38,16 @@ var projectAssistantToolDisclosureMinimal = strings.EqualFold(
 	strings.TrimSpace(os.Getenv("APP_STUDIO_TOOL_DISCLOSURE")), "minimal")
 
 const (
-	projectAssistantActionFeedItemInspect = "inspect"
-	projectAssistantActionFeedItemClarify = "clarify"
-	projectAssistantActionFeedItemEdit    = "edit"
-	projectAssistantActionFeedItemRun     = "run"
-	projectAssistantActionFeedItemCommit  = "commit"
-	projectAssistantActionFeedItemPlan    = "plan"
-	projectAssistantActionFeedItemOther   = "other"
-	projectAssistantActionFeedMediaImage  = "image"
+	projectAssistantActionFeedItemInspect              = "inspect"
+	projectAssistantActionFeedItemClarify              = "clarify"
+	projectAssistantActionFeedItemEdit                 = "edit"
+	projectAssistantActionFeedItemRun                  = "run"
+	projectAssistantActionFeedItemCommit               = "commit"
+	projectAssistantActionFeedItemPlan                 = "plan"
+	projectAssistantActionFeedItemOther                = "other"
+	projectAssistantActionFeedMediaImage               = "image"
+	projectAssistantToolGetProjectAuthentication       = "get_project_authentication"
+	projectAssistantToolConfigureProjectAuthentication = "configure_project_authentication"
 )
 
 const (
@@ -258,6 +260,10 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		toolCall.Summary,
 		toolCall.Error,
 	)
+	item.Sequence = toolCall.Sequence
+	if projectAssistantAuthenticationTool(toolCall.Name) {
+		return item
+	}
 	var permissionExec *projectAssistantExecMetadata
 	if toolCall.Permission != nil {
 		permissionExec = toolCall.Permission.Exec
@@ -311,6 +317,9 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 		toolCall.Summary,
 		toolCall.Error,
 	)
+	if projectAssistantAuthenticationTool(toolCall.Name) {
+		return item
+	}
 	item.Exec = cloneProjectAssistantExecMetadata(toolCall.Exec)
 	if isApprovedBrowserTool {
 		// Browser receipts are application-controlled and are intentionally not
@@ -350,6 +359,9 @@ func projectAssistantActionFeedItemFromPermission(permission projectAssistantPer
 		permission.Reason,
 		"",
 	)
+	if projectAssistantAuthenticationTool(permission.ToolName) {
+		return item
+	}
 	item.Exec = cloneProjectAssistantExecMetadata(permission.Exec)
 	return item
 }
@@ -375,6 +387,12 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 		Status:   status,
 		Title:    projectAssistantActionFeedItemTitle(kind, status),
 		Severity: projectAssistantActionFeedItemSeverity(status),
+	}
+	if _, title, ok := projectAssistantAuthenticationActionPresentation(name, status); ok {
+		// Authentication tool results can contain account and runtime details.
+		// Keep their public receipt to a server-owned lifecycle label only.
+		item.Title = title
+		return item
 	}
 	if isApprovedBrowserTool {
 		item.Title = projectAssistantBrowserActionLifecycleTitle(status, browserPresentation)
@@ -824,6 +842,9 @@ func projectAssistantActionFeedItemKind(name string) string {
 	if browserPresentation, ok := projectAssistantBrowserActionFeedPresentationForTool(name); ok {
 		return browserPresentation.kind
 	}
+	if kind, _, ok := projectAssistantAuthenticationActionPresentation(name, projectAssistantActionFeedStatusRunning); ok {
+		return kind
+	}
 	switch projectToolBaseName(name) {
 	case projectToolAskFollowUp:
 		return projectAssistantActionFeedItemClarify
@@ -845,6 +866,30 @@ func projectAssistantActionFeedItemKind(name string) string {
 	default:
 		return projectAssistantActionFeedItemOther
 	}
+}
+
+func projectAssistantAuthenticationTool(name string) bool {
+	_, _, ok := projectAssistantAuthenticationActionPresentation(name, projectAssistantActionFeedStatusRunning)
+	return ok
+}
+
+func projectAssistantAuthenticationActionPresentation(name, status string) (string, string, bool) {
+	var kind, active, succeeded, failed string
+	switch projectToolBaseName(name) {
+	case projectAssistantToolGetProjectAuthentication:
+		kind = projectAssistantActionFeedItemInspect
+		active = "Checking authentication"
+		succeeded = "Checked authentication"
+		failed = "Authentication check failed"
+	case projectAssistantToolConfigureProjectAuthentication:
+		kind = projectAssistantActionFeedItemRun
+		active = "Configuring authentication"
+		succeeded = "Authentication configured"
+		failed = "Authentication configuration failed"
+	default:
+		return "", "", false
+	}
+	return kind, projectAssistantActionLifecycleTitle(status, active, succeeded, failed), true
 }
 
 func projectAssistantActionFeedItemStatus(status string) string {

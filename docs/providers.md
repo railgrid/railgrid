@@ -340,6 +340,9 @@ spec:
         maxRole: member                # the only role a provider can grant
         allowInvite: true              # may pre-provision an unknown email
         reason: "Invite the people you share an app with."
+      - capability: app-access.grants.manage # manage grants for one app
+        scope: workspace
+        reason: "Manage access to this Project's production and preview apps."
 ```
 
 The capability set is closed and owned by the hub (`pkg/hub/hubaccess`); a
@@ -350,9 +353,20 @@ provider never names routes. Today it maps to:
 | `memberships.read` | `org` | `GET /api/orgs/{org}/memberships` |
 | `memberships.read` | `workspace` | `GET /api/orgs/{org}/workspaces/{ws}/memberships` |
 | `memberships.invite` | `org` | `POST /api/orgs/{org}/memberships` |
+| `app-auth.users.resolve` | `workspace` | `POST /api/orgs/{org}/workspaces/{ws}/app-auth/user` |
+| `app-access.grants.manage` | `workspace` | `POST /api/orgs/{org}/workspaces/{ws}/app-auth/grants` |
 
-Removals, role changes, workspace membership writes and org or workspace
-management are not in the set and are refused for delegated tokens.
+The app-access broker accepts only a fixed operation and a Project-managed
+Infrastructure Instance identity. Its action proof binds the Project UID,
+Instance UID, source action, and requested user or grant name. The hub checks
+the human's `get` or `update` permission on that exact Project and Instance,
+then writes only the named `railgrid-app-access` ClusterRole and
+ClusterRoleBinding shape. It does not accept RBAC rules, subjects, groups, or
+other workspace objects from the provider. Grant creation requires an existing
+platform User; App Studio completes any invite or membership flow first.
+
+Membership removals, role changes, workspace membership writes and org or
+workspace management are not in the set and are refused for delegated tokens.
 
 **Consent.** The Enable dialog lists each requested capability with its
 reason. Accepting an org-scoped one needs an org admin; a workspace-scoped one

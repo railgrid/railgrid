@@ -380,6 +380,14 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if proceed.stampedSpec {
 		return ctrl.Result{}, nil // our own spec update re-queues with fresh values
 	}
+	// Railgrid Auth assertions are scoped to the tenant Instance UID. This is
+	// deliberately stamped on the source Instance (not the materialized runtime
+	// CR) so deleting and recreating that runtime cannot carry sessions forward.
+	if stamped, err := c.stampAuthInstanceUID(ctx, tenantClient, inst); err != nil {
+		return ctrl.Result{}, fmt.Errorf("stamping Railgrid Auth instance UID: %w", err)
+	} else if stamped {
+		return ctrl.Result{}, nil // the tenant spec update re-queues with the trusted UID
+	}
 
 	// Bridge the Secrets this instance REFERENCES: the registry pull Secret
 	// named by spec.imagePullSecretRef, and the BYO OIDC client secret named

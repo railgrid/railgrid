@@ -18,10 +18,12 @@ limitations under the License.
 // one published template instance. Templates render it as a component of
 // their own graph; the shared-Gateway HTTPRoute always points here.
 //
-// The proxy has two modes and a hard availability contract:
+// The proxy has two reachability modes and a hard availability contract:
 //
-//   - public:  pure passthrough. No auth code runs on the request path and
-//     the hub is NEVER contacted. A hub outage cannot affect a public app.
+//   - public: ordinary app requests are passthrough. The hub is not contacted
+//     unless the separate Railgrid Auth option is enabled and one of its
+//     reserved identity endpoints is used. A hub outage cannot affect
+//     anonymous public requests or valid cached identity sessions.
 //   - private: requests need a proxy-local session. A browser without one is
 //     redirected to the hub's login-time authorize endpoint exactly once;
 //     the proxy exchanges the returned one-use code server-to-server and
@@ -34,10 +36,10 @@ limitations under the License.
 //     bearer.go). Raw hub tokens are refused locally and never relayed; the
 //     app never sees any Authorization header.
 //
-// An in-flight sign-in carries its own state in the browser's return cookie, so
-// it completes against any pod — including one that started after the redirect
-// was issued. Established sessions are still process-local: a restart signs
-// users out and they sign back in, it does not strand them mid-flow.
+// Both sign-in flows carry their state in short-lived browser cookies, so they
+// complete against any pod. Legacy private-mode sessions are process-local;
+// Railgrid Auth sessions are hub-signed assertions, so they survive gate
+// restarts and replica changes until their bounded expiry.
 //
 // The proxy holds no credentials of its own: no service-account token, no
 // kubeconfig, no signing keys (a caller's app access token is relayed to the
@@ -60,6 +62,10 @@ const (
 	// SessionCookieName is intentionally a __Host cookie: Secure, Path=/, and
 	// no Domain attribute are mandatory.  The app proxy never forwards it.
 	SessionCookieName = "__Host-railgrid-app-session"
+	// IdentitySessionCookieName carries the hub-signed, short-lived identity
+	// assertion for Railgrid Auth. The browser never exposes it to JavaScript,
+	// and the gate never forwards it to an upstream.
+	IdentitySessionCookieName = "__Host-railgrid-app-auth"
 	// ReturnCookieName is the prefix for the short-lived cookies that carry the
 	// whole sign-in state — nonce, clean return path and expiry — while the
 	// browser completes the hub flow. Each authorization attempt gets a suffix
@@ -79,6 +85,12 @@ const (
 	// CallbackPath is the reserved platform path on the app host. It must stay
 	// in lockstep with the hub's appauth.CallbackPath.
 	CallbackPath = "/__railgrid/auth/callback"
+	// Identity endpoints are reserved only when Railgrid Auth is enabled for
+	// this instance. Disabled apps keep their existing public/private routing.
+	IdentityLoginPath    = "/__railgrid/auth/login"
+	IdentityLogoutPath   = "/__railgrid/auth/logout"
+	IdentitySessionPath  = "/__railgrid/auth/session"
+	IdentityCallbackPath = "/__railgrid/auth/identity/callback"
 
 	// hubAuthorizePath / hubExchangePath mirror pkg/hub/appauth. The contract
 	// is intentionally tiny (two endpoints, standard redirect + JSON), so the
@@ -87,7 +99,11 @@ const (
 	hubExchangePath  = "/auth/apps/exchange"
 	// hubVerifyPath authorizes a bearer-carrying (non-browser) request; see
 	// bearer.go and pkg/hub/appauth/verify.go.
-	hubVerifyPath = "/auth/apps/verify"
+	hubVerifyPath         = "/auth/apps/verify"
+	identityIssuerPath    = "/auth/apps/identity"
+	identityAuthorizePath = identityIssuerPath + "/authorize"
+	identityExchangePath  = identityIssuerPath + "/exchange"
+	identityJWKSPath      = identityIssuerPath + "/jwks"
 
 	// clusterLocalSuffix confines upstream targets to in-cluster Services as
 	// defense in depth; the template contract already renders only
@@ -159,14 +175,27 @@ type Config struct {
 	// Instance identifies the published instance for hub authorization.
 	// Required in private mode; unused in public mode.
 	Instance InstanceRef
-	// HubURL is the in-cluster hub origin used for the server-to-server code
-	// exchange. Required in private mode.
+	// HubURL is the in-cluster hub origin used for server-to-server identity
+	// exchanges and, in private mode, access authorization. Required whenever
+	// either feature is enabled.
 	HubURL string
-	// HubPublicURL is the browser-reachable hub origin used only for the
-	// authorize redirect. Empty defaults to HubURL.
+	// HubPublicURL is the browser-reachable hub origin used for authorize
+	// redirects and as the identity issuer's origin. Empty defaults to HubURL
+	// for legacy private mode; Railgrid Auth requires it explicitly.
 	HubPublicURL string
 	HubInsecure  bool
 	PublicScheme string
+
+	// RailgridAuth enables the signed app-identity session endpoints. It is
+	// independent of ModePrivate: the existing private access gate still
+	// controls who may open the app, while this session identifies users to
+	// the app API.
+	RailgridAuth    bool
+	AuthIssuer      string
+	AuthAudience    string
+	AuthEnvironment string
+	AuthInstanceUID string
+	AuthOrigin      string
 
 	// AllowNonClusterTargets disables the cluster-local target confinement.
 	// Test seam only; production configuration must never set it.
@@ -197,6 +226,8 @@ type normalizedConfig struct {
 	hubURL       string
 	hubPublicURL string
 	publicScheme string
+	authIssuer   string
+	authOrigin   string
 	routes       []normalizedRoute
 	hubClient    *http.Client
 	hubTimeout   time.Duration
@@ -218,6 +249,14 @@ func normalizeConfig(config Config) (normalizedConfig, error) {
 	}
 	if mode != ModePublic && mode != ModePrivate {
 		return normalizedConfig{}, fmt.Errorf("invalid mode %q: want public or private", mode)
+	}
+
+	publicScheme := strings.ToLower(strings.TrimSpace(config.PublicScheme))
+	if publicScheme == "" {
+		publicScheme = defaultPublicScheme
+	}
+	if publicScheme != "http" && publicScheme != "https" {
+		return normalizedConfig{}, fmt.Errorf("public scheme must be http or https")
 	}
 
 	hubURLString := ""
@@ -245,13 +284,75 @@ func normalizeConfig(config Config) (normalizedConfig, error) {
 		hubPublicURLString = hubPublicURL
 	}
 
-	publicScheme := strings.ToLower(strings.TrimSpace(config.PublicScheme))
-	if publicScheme == "" {
-		publicScheme = defaultPublicScheme
+	authIssuer := ""
+	authOrigin := ""
+	if config.RailgridAuth {
+		if err := config.Instance.validate(); err != nil {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: %w", err)
+		}
+		if !isOriginOnly(config.HubURL) {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: hub URL must be an origin without a path, query, or fragment")
+		}
+		if !isOriginOnly(config.HubPublicURL) {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: public hub URL must be an origin without a path, query, or fragment")
+		}
+		if strings.TrimSpace(config.HubURL) == "" {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: hub URL is required")
+		}
+		if strings.TrimSpace(config.HubPublicURL) == "" {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: public hub URL is required")
+		}
+		if hubURLString == "" {
+			hubURL, err := parseHTTPOrigin(config.HubURL)
+			if err != nil {
+				return normalizedConfig{}, fmt.Errorf("invalid hub URL: %w", err)
+			}
+			hubURLString = hubURL
+		}
+		if hubPublicURLString == "" {
+			hubPublicURL, err := parseHTTPOrigin(config.HubPublicURL)
+			if err != nil {
+				return normalizedConfig{}, fmt.Errorf("invalid public hub URL: %w", err)
+			}
+			hubPublicURLString = hubPublicURL
+		}
+		audienceParts := strings.Split(config.AuthAudience, "/")
+		if strings.TrimSpace(config.AuthAudience) != config.AuthAudience || len(audienceParts) != 2 || audienceParts[0] == "" || audienceParts[1] == "" || strings.ContainsAny(config.AuthAudience, " \t\r\n") || strings.Contains(config.AuthAudience, "\\") {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: audience must be <ProjectUID>/<environment>")
+		}
+		if strings.TrimSpace(config.AuthEnvironment) == "" || strings.ContainsAny(config.AuthEnvironment, "\r\n") || strings.ContainsAny(config.AuthEnvironment, "/\\") || audienceParts[1] != config.AuthEnvironment {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: environment is required and must be a single path segment")
+		}
+		if strings.TrimSpace(config.AuthInstanceUID) == "" || strings.TrimSpace(config.AuthInstanceUID) != config.AuthInstanceUID || strings.ContainsAny(config.AuthInstanceUID, "\r\n") {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: tenant instance UID is required")
+		}
+		if publicScheme != "https" {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: exact app origin must use https")
+		}
+		issuer := config.AuthIssuer
+		if strings.TrimSpace(issuer) != issuer || issuer == "" {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: issuer is required")
+		}
+		expectedIssuer := hubPublicURLString + identityIssuerPath
+		parsedIssuer, err := url.Parse(issuer)
+		if err != nil || !strings.EqualFold(parsedIssuer.Scheme, "https") || parsedIssuer.User != nil || parsedIssuer.RawQuery != "" || parsedIssuer.Fragment != "" || issuer != expectedIssuer {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: issuer must exactly match configured public hub issuer %q", expectedIssuer)
+		}
+		origin := config.AuthOrigin
+		if strings.TrimSpace(origin) != origin || origin == "" {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: exact app origin is required")
+		}
+		parsedOrigin, err := url.Parse(origin)
+		if err != nil || parsedOrigin.Scheme == "" || parsedOrigin.Host == "" || parsedOrigin.User != nil || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: origin must be an exact origin without path, query, or fragment")
+		}
+		if parsedOrigin.Scheme != "https" || publicScheme != "https" || !strings.EqualFold(parsedOrigin.Host, host) || origin != "https://"+host {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: origin must match configured app scheme and host")
+		}
+		authOrigin = origin
+		authIssuer = issuer
 	}
-	if publicScheme != "http" && publicScheme != "https" {
-		return normalizedConfig{}, fmt.Errorf("public scheme must be http or https")
-	}
+
 	if len(config.Routes) == 0 {
 		return normalizedConfig{}, fmt.Errorf("at least one proxy route is required")
 	}
@@ -309,6 +410,8 @@ func normalizeConfig(config Config) (normalizedConfig, error) {
 		hubURL:       hubURLString,
 		hubPublicURL: hubPublicURLString,
 		publicScheme: publicScheme,
+		authIssuer:   authIssuer,
+		authOrigin:   authOrigin,
 		routes:       routes,
 		hubClient:    hubClient,
 		hubTimeout:   hubTimeout,
@@ -324,6 +427,14 @@ func parseHTTPOrigin(raw string) (string, error) {
 		return "", fmt.Errorf("origin must use http or https")
 	}
 	return strings.TrimRight(u.String(), "/"), nil
+}
+
+// isOriginOnly keeps configured hub URLs from accidentally changing the
+// issuer and fixed identity endpoint paths through a base path or query.
+// A trailing slash is accepted because parseHTTPOrigin canonicalizes it away.
+func isOriginOnly(raw string) bool {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
+	return err == nil && u.Scheme != "" && u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == ""
 }
 
 func normalizePrefix(raw string) (string, error) {

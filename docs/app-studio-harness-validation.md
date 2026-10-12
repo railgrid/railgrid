@@ -110,6 +110,14 @@ make verify-tilt-browser-deployment
 
 `test-app-studio-harness-scripts` covers the host-health and evidence-report scripts. `test-app-studio-harness` also runs App Studio API/store tests, the nested infrastructure development-agent tests, portal execution/progress/trace tests, and Tilt sequence/sandbox checks. These local checks do not exercise a live browser, a deployed provider, or benchmark performance. `verify-tilt-browser-deployment` checks the managed Browser image and isolation wiring. `make verify` includes the aggregate harness checks and lint. `fix-lint-app-studio-harness` is an explicit whole-package formatter for API/store and dev-agent files; it is not limited to the current diff and is not run by CI. In CI, script tests have a dedicated gate; the existing Go module and provider-portal matrices cover the Go/npm suites, and the full-mode lint job also runs harness lint.
 
+For changes to tool authentication or Project permission generation, also run
+`make test-app-studio-tool-identity lint-app-studio-tool-identity`. These cover
+local tool dispatch, Project rule compaction, the scoped credential cache, and
+the Project controller. Local workspace tools must remain usable when an
+unrelated MCP identity cannot be obtained; tools that call MCP must still fail
+closed. Compacted rules must preserve the exact named permissions, including
+revocations and different action sets on otherwise similar resources.
+
 ## Live regression protocol
 
 These are manual checks for an owned development environment; they are not implied to have been run by the local targets above. Use authenticated App Studio turns and the application's private preview authorization. Do not bypass the gateway or replay a write whose result is uncertain. Record the commit, effective sandbox mode, provider replica/capacity settings, project UID, source revision, component source digests, run and call IDs, and relevant application state before and after each case. Store redacted logs and screenshots beside the JSON inputs.

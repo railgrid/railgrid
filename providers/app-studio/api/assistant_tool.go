@@ -55,6 +55,11 @@ type projectAssistantToolSpec struct {
 	Description string
 	Parameters  json.RawMessage
 	Risk        projectAssistantToolRisk
+	// RequiresProjectMCPIdentity marks tools whose server-owned implementation
+	// makes an aggregate MCP call. The tool port mints the Project credential
+	// only for these tools; remote sandbox data-plane calls use their own
+	// provider transport and do not set this flag.
+	RequiresProjectMCPIdentity bool
 	// ParallelSafe is an explicit server-owned contract. The zero value is
 	// exclusive, and effectful tools remain exclusive even if misconfigured.
 	ParallelSafe bool

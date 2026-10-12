@@ -299,3 +299,33 @@ func TestAppCodeMintedOnOneReplicaRedeemsOnAnother(t *testing.T) {
 		t.Fatal("code was redeemable twice")
 	}
 }
+
+func TestIdentityCodePurposeAndAppBindingSurviveReplicaHandoff(t *testing.T) {
+	clientset := kubefake.NewClientset()
+	writer := newTestAppCodeStore(clientset)
+	reader := newTestAppCodeStore(clientset)
+	ctx := context.Background()
+	now := time.Now().Add(time.Minute)
+	ref := appauth.InstanceRef{Cluster: "cluster-1", Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-1"}
+	record := appauth.CodeRecord{
+		Purpose: appauth.IdentityPurpose, Ref: ref, RedirectOrigin: "https://app.example.test",
+		AppID: "project-1/production", Environment: "production", InstanceUID: "instance-uid",
+		Identity:  browsersession.Identity{UserID: "user-1", Email: "one@example.test", Name: "One", RBACIdentity: "railgrid:one@example.test"},
+		ExpiresAt: now,
+	}
+	if err := writer.Put(ctx, "i1.identity-code", record); err != nil {
+		t.Fatalf("put identity code: %v", err)
+	}
+	got, ok := reader.Take(ctx, "i1.identity-code")
+	if !ok {
+		t.Fatal("identity code did not resolve on the second replica")
+	}
+	if got.Purpose != appauth.IdentityPurpose || got.RedirectOrigin != record.RedirectOrigin || got.AppID != record.AppID ||
+		got.Environment != record.Environment || got.InstanceUID != record.InstanceUID || got.Ref != ref ||
+		got.Identity.UserID != "user-1" || got.Identity.RBACIdentity != "railgrid:one@example.test" {
+		t.Fatalf("identity code = %+v, want full purpose and descriptor binding", got)
+	}
+	if _, ok := writer.Take(ctx, "i1.identity-code"); ok {
+		t.Fatal("identity code was redeemable twice across replicas")
+	}
+}

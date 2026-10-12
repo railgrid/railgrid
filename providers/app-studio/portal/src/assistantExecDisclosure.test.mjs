@@ -258,6 +258,50 @@ test('renders completed activity status, duration, and bounded stdout/stderr', a
   assert.doesNotMatch(html, /Direct command|Sanitized argv|Relative cwd|Exit status|stdout|stderr|web/)
 })
 
+test('renders reported exit codes without upgrading unknown or stale-source outcomes', async () => {
+  const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
+  const render = (exec) => renderToString(createSSRApp(AssistantExecDetails, { exec }))
+
+  const succeeded = await render({
+    component: 'api', argv: ['npm', 'run', 'check'], status: 'succeeded', exitCode: 0,
+    sourceRevision: 26, sourceDigest: 'a'.repeat(64), syncStatus: 'succeeded',
+  })
+  assert.match(succeeded, /Ran · exit 0/)
+  assert.match(succeeded, /k-ai-execution-details__status--success/)
+  assert.match(succeeded, /Source revision/)
+  assert.match(succeeded, />26</)
+  assert.match(succeeded, /Source digest/)
+  assert.match(succeeded, /Sync status/)
+
+  const failed = await render({ argv: ['npm', 'test'], status: 'failed', exitCode: 7 })
+  assert.match(failed, /Failed · exit 7/)
+  assert.doesNotMatch(failed, /Failed · exit 7.*exit 7/)
+
+  const canceled = await render({ argv: ['npm', 'test'], status: 'canceled' })
+  assert.match(canceled, /Canceled/)
+  assert.doesNotMatch(canceled, /exit\s+-?\d+/)
+
+  const running = await render({ argv: ['npm', 'test'], status: 'running' })
+  assert.match(running, /Running/)
+  assert.doesNotMatch(running, /exit\s+-?\d+/)
+
+  const unknown = await render({ argv: ['npm', 'test'], status: 'outcome_unknown', exitCode: null })
+  assert.match(unknown, /Unverified/)
+  assert.doesNotMatch(unknown, /exit\s+-?\d+/)
+
+  const stale = await render({
+    argv: ['npm', 'run', 'check'], status: 'stale', sourceStale: true, exitCode: 0,
+    sourceRevision: 26, sourceDigest: 'b'.repeat(64), syncStatus: 'succeeded',
+    summary: 'Project source changed during execution; this result is unverified for current source.',
+  })
+  assert.match(stale, /Unverified · exit 0/)
+  assert.match(stale, /changed during execution/)
+  assert.match(stale, /Source revision/)
+  assert.match(stale, /Source digest/)
+  assert.match(stale, /Sync status/)
+  assert.doesNotMatch(stale, /k-ai-execution-details__status--success|Success/)
+})
+
 test('preserves failure and blocked details while adding stale source context', async () => {
   const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
   const staleSuccess = await renderToString(createSSRApp(AssistantExecDetails, {

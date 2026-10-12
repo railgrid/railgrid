@@ -243,11 +243,17 @@ type Server struct {
 	// current org/workspace membership through hubBase as the provider
 	// (hubToken); App Studio never treats an email address as a grant identity.
 	publishingMembershipFetcher func(context.Context, identity) ([]publishingMember, error)
+	// appAccessBroker is a test seam for the hub-owned per-app authorization
+	// broker. Production sends signed, request-scoped operations to the hub;
+	// App Studio never reads or writes workspace RBAC objects itself.
+	appAccessBroker func(context.Context, identity, appAccessBrokerRequest) ([]projectPublishingGrantView, error)
 	// publishingMemberInviter is the matching test seam for invite-by-email:
 	// production POSTs the hub org-membership endpoint with invite semantics
 	// and returns the pending User's stable name.
-	publishingMemberInviter func(context.Context, identity, string) (publishingMember, error)
-	publishingHTTPClient    *http.Client
+	publishingMemberInviter    func(context.Context, identity, string) (publishingMember, error)
+	authenticationServiceProbe func(context.Context) error
+	authenticationUserResolver func(context.Context, identity, projectPublishingTargetView, string) (publishingMember, error)
+	publishingHTTPClient       *http.Client
 	// sessionSignals / projectSignals wake the Session and Project
 	// reconcilers on store and workspace transitions (reconcile_signals.go);
 	// workspaceClusters maps a workspace UUID to the kcp cluster the signals

@@ -185,6 +185,94 @@ func TestInviteUserClaimIsLimitedToAppStudioSharingInvites(t *testing.T) {
 	}
 }
 
+func TestAppAuthClaimsAreLimitedToOneProductionAuthenticationGrant(t *testing.T) {
+	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	claims := testClaims()
+	claims.Method = http.MethodPost
+	claims.Verb = "authentication-grants"
+	claims.AppAuthUser = "user-bob"
+	claims.AppAuthAppID = "project-1/production"
+	if _, err := Sign(context.Background(), testKey, claims, now); err != nil {
+		t.Fatalf("Sign valid app-auth proof: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Claims){
+		"development audience": func(c *Claims) { c.AppAuthAppID = "project-1/development" },
+		"wrong source action":  func(c *Claims) { c.Verb = "publishing-grants" },
+		"read source method":   func(c *Claims) { c.Method = http.MethodGet },
+		"different provider":   func(c *Claims) { c.Provider = "other-provider" },
+		"invalid user name":    func(c *Claims) { c.AppAuthUser = "../other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			caseClaims := claims
+			mutate(&caseClaims)
+			if _, err := Sign(context.Background(), testKey, caseClaims, now); err == nil {
+				t.Fatal("Sign accepted app-auth claims outside the authentication-grant action")
+			}
+		})
+	}
+	claims.AppAuthAppID = "app-studio-project-uid/production"
+	if _, err := Sign(context.Background(), testKey, claims, now); err != nil {
+		t.Fatalf("Sign app audience bound to Project UID instead of name: %v", err)
+	}
+}
+
+func TestAppAccessClaimsBindLegacyReadsAndAuthenticationGrantAudience(t *testing.T) {
+	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	claims := testClaims()
+	claims.ParentName = "project-1"
+	claims.Verb = "publishing"
+	claims.Method = http.MethodGet
+	claims.AppAccessOperation = "list"
+	claims.AppAccessGroup = "infrastructure.railgrid.ai"
+	claims.AppAccessResource = "instances"
+	claims.AppAccessName = "demo-prod"
+	claims.AppAccessUID = "instance-uid"
+	claims.AppAccessProject = "project-1"
+	claims.AppAccessProjectUID = "project-uid"
+	if _, err := Sign(context.Background(), testKey, claims, now); err != nil {
+		t.Fatalf("Sign legacy publishing read: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Claims){
+		"unbound project":             func(c *Claims) { c.AppAccessProject = "other-project" },
+		"missing instance UID":        func(c *Claims) { c.AppAccessUID = "" },
+		"unrelated source action":     func(c *Claims) { c.Verb = "publishing-members" },
+		"grant list from source POST": func(c *Claims) { c.Verb = "publishing-grants"; c.Method = http.MethodPost },
+	} {
+		t.Run(name, func(t *testing.T) {
+			caseClaims := claims
+			mutate(&caseClaims)
+			if _, err := Sign(context.Background(), testKey, caseClaims, now); err == nil {
+				t.Fatal("Sign accepted app-access proof outside its source action")
+			}
+		})
+	}
+
+	authClaims := claims
+	authClaims.Verb = "authentication-grants"
+	authClaims.Method = http.MethodPost
+	authClaims.AppAccessOperation = "create"
+	authClaims.AppAccessUser = "user-bob"
+	authClaims.AppAuthUser = "user-bob"
+	authClaims.AppAuthAppID = "project-uid/production"
+	if _, err := Sign(context.Background(), testKey, authClaims, now); err != nil {
+		t.Fatalf("Sign authentication grant bound to production AppID: %v", err)
+	}
+	for name, mutate := range map[string]func(*Claims){
+		"different account":  func(c *Claims) { c.AppAuthUser = "user-eve" },
+		"different audience": func(c *Claims) { c.AppAuthAppID = "replacement-project/production" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			caseClaims := authClaims
+			mutate(&caseClaims)
+			if _, err := Sign(context.Background(), testKey, caseClaims, now); err == nil {
+				t.Fatal("Sign accepted authentication grant for a different user or audience")
+			}
+		})
+	}
+}
+
 func httptestNewRequest() *http.Request {
 	return httptest.NewRequest(http.MethodGet, "https://hub.example/api/orgs/org/memberships", nil)
 }

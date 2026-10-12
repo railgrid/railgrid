@@ -136,7 +136,7 @@ const studioResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1a
 // INSIDE the object — an integration alias, a grant id, a skill package —
 // which stays out of the verb so one grant covers the set. Callers that need
 // a query string append it: a verb path carries none of its own.
-function projectURL(ctx: RailgridContext | null, name: string, verb: string, ...tail: string[]): string {
+export function projectURL(ctx: RailgridContext | null, name: string, verb: string, ...tail: string[]): string {
   return kubeVerbPath(verbCluster(ctx), projectResource, name, verb, { tail: tail.join('/') })
 }
 
@@ -262,7 +262,7 @@ export interface ProjectAssistantThreadItemPage {
   nextCursor: string
 }
 
-async function request<T>(ctx: RailgridContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
+export async function request<T>(ctx: RailgridContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ json: body !== undefined })
   Object.assign(headers, options.headers)
   const controller = options.timeoutMS ? new AbortController() : null
@@ -664,6 +664,7 @@ function normalizeExportPackage(value: unknown, fallback?: Record<string, unknow
 }
 
 export const api = {
+
   async listProviders(ctx: RailgridContext | null): Promise<ProviderItem[]> {
     const body = await request<ListResponse<ProviderItem>>(ctx, 'GET', '/api/providers')
     return body.items ?? []

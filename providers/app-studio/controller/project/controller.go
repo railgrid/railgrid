@@ -408,6 +408,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					continue
 				}
 			}
+			effectiveBinding, err = bindings.ApplyAuthentication(&p, env.spec.Name, effectiveBinding)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("configure application authentication: %w", err)
+			}
 			obj, err := r.ensureInstance(ctx, c, &p, effectiveBinding)
 			switch {
 			case apierrors.IsInvalid(err) || bindings.IsInvalidBinding(err):
