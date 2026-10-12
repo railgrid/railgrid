@@ -87,6 +87,7 @@ type storedCode struct {
 	AppID          string    `json:"appId,omitempty"`
 	Environment    string    `json:"environment,omitempty"`
 	InstanceUID    string    `json:"instanceUid,omitempty"`
+	CodeChallenge  string    `json:"codeChallenge,omitempty"`
 	UserID         string    `json:"userID"`
 	Email          string    `json:"email,omitempty"`
 	DisplayName    string    `json:"displayName,omitempty"`
@@ -111,6 +112,7 @@ func (s *AppCodeStore) Put(ctx context.Context, code string, record appauth.Code
 		AppID:          record.AppID,
 		Environment:    record.Environment,
 		InstanceUID:    record.InstanceUID,
+		CodeChallenge:  record.CodeChallenge,
 		UserID:         record.Identity.UserID,
 		Email:          record.Identity.Email,
 		DisplayName:    record.Identity.Name,
@@ -155,6 +157,7 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 		AppID:          stored.AppID,
 		Environment:    stored.Environment,
 		InstanceUID:    stored.InstanceUID,
+		CodeChallenge:  stored.CodeChallenge,
 		Identity: browsersession.Identity{
 			UserID:       stored.UserID,
 			Email:        stored.Email,

@@ -3030,18 +3030,18 @@ pack-railgrid-auth-sdk: ## Pack the Railgrid Auth SDK locally without publishing
 	cd provider-sdk/auth-node && npm pack --pack-destination $(abspath $(BINDIR))/sdk
 
 test-railgrid-auth: test-railgrid-auth-sdk ## Verify first-party app authentication across hub and providers
-	go test -count=1 ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
-	cd providers/infrastructure && go test -count=1 ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver
+	go test -count=1 ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	cd providers/infrastructure && go test -count=1 ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver ./internal/huborigin
 	cd providers/app-studio && go test -count=1 ./api ./bindings ./controller/project ./skills
 
 fix-lint-railgrid-auth: $(GOLANGCI_LINT) ## Format and auto-fix app authentication packages
-	$(GOLANGCI_LINT) run --fix ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
-	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver
+	$(GOLANGCI_LINT) run --fix ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver ./internal/huborigin
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./api ./bindings ./controller/project ./skills
 
 lint-railgrid-auth: $(GOLANGCI_LINT) ## Lint app authentication packages
-	$(GOLANGCI_LINT) run ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
-	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver
+	$(GOLANGCI_LINT) run ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver ./internal/huborigin
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./bindings ./controller/project ./skills
 
 .PHONY: test-railgrid-auth-configuration

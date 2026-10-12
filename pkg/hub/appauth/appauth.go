@@ -267,8 +267,12 @@ type Config struct {
 	// invalid credential.
 	IdentityUnavailable error
 	// IdentityIssuer is the absolute issuer URL for Railgrid Auth assertions.
-	// It should be HubExternalURL + IdentityIssuerPath.
+	// NormalizeIdentityIssuer derives it from the public HTTPS hub origin.
 	IdentityIssuer string
+	// IdentityKeys returns a coherent signing, subject and public-key snapshot.
+	// Production uses this instead of the individual callbacks below, so a
+	// rotation cannot split a single response across two Secret versions.
+	IdentityKeys func(context.Context) (IdentityKeySnapshot, error)
 	// IdentitySigningKey returns the current Ed25519 private signing key.
 	// The matching public key is exposed by IdentityJWKSPath.
 	IdentitySigningKey func(context.Context) (ed25519.PrivateKey, error)
@@ -309,6 +313,7 @@ type Handler struct {
 	tokenKey                 func(context.Context) ([]byte, error)
 	identityUnavailable      error
 	identityIssuer           string
+	identityKeys             func(context.Context) (IdentityKeySnapshot, error)
 	identitySigningKey       func(context.Context) (ed25519.PrivateKey, error)
 	identityPublicKeys       func(context.Context) ([]ed25519.PublicKey, error)
 	identitySubjectKeySource func(context.Context) ([]byte, error)
@@ -326,6 +331,7 @@ type CodeRecord struct {
 	AppID          string
 	Environment    string
 	InstanceUID    string
+	CodeChallenge  string
 	Identity       browsersession.Identity
 	ExpiresAt      time.Time
 }
@@ -351,9 +357,10 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.InstanceHost == nil {
 		return nil, fmt.Errorf("appauth: instance host resolver is required")
 	}
-	identityConfigured := cfg.IdentityApp != nil || cfg.IdentityIssuer != "" || cfg.IdentitySigningKey != nil || cfg.IdentityPublicKeys != nil || cfg.IdentitySubjectKey != nil
+	identityConfigured := cfg.IdentityApp != nil || cfg.IdentityIssuer != "" || cfg.IdentityKeys != nil || cfg.IdentitySigningKey != nil || cfg.IdentityPublicKeys != nil || cfg.IdentitySubjectKey != nil
 	if identityConfigured {
-		if cfg.IdentityApp == nil || cfg.IdentityAccountLookup == nil || cfg.IdentityIssuer == "" || cfg.IdentitySigningKey == nil || cfg.IdentityPublicKeys == nil || cfg.IdentitySubjectKey == nil {
+		hasKeys := cfg.IdentityKeys != nil || (cfg.IdentitySigningKey != nil && cfg.IdentityPublicKeys != nil && cfg.IdentitySubjectKey != nil)
+		if cfg.IdentityApp == nil || cfg.IdentityAccountLookup == nil || cfg.IdentityIssuer == "" || !hasKeys {
 			return nil, fmt.Errorf("appauth: identity app and account resolvers, issuer, signing key, public keys, and subject key are required together")
 		}
 		if err := validateIdentityIssuer(cfg.IdentityIssuer); err != nil {
@@ -379,6 +386,7 @@ func New(cfg Config) (*Handler, error) {
 		tokenKey:                 cfg.TokenKey,
 		identityUnavailable:      cfg.IdentityUnavailable,
 		identityIssuer:           cfg.IdentityIssuer,
+		identityKeys:             cfg.IdentityKeys,
 		identitySigningKey:       cfg.IdentitySigningKey,
 		identityPublicKeys:       cfg.IdentityPublicKeys,
 		identitySubjectKeySource: cfg.IdentitySubjectKey,
@@ -431,7 +439,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router, limit func(http.HandlerFunc
 	}
 	router.HandleFunc(AuthorizePath, wrap(h.HandleAuthorize)).Methods("GET")
 	router.HandleFunc(ExchangePath, wrap(h.HandleExchange)).Methods("POST")
-	if h.identityApp != nil && h.identityIssuer != "" && h.identitySigningKey != nil && h.identityPublicKeys != nil && h.identitySubjectKeySource != nil {
+	if h.identityApp != nil && h.identityIssuer != "" && (h.identityKeys != nil || (h.identitySigningKey != nil && h.identityPublicKeys != nil && h.identitySubjectKeySource != nil)) {
 		router.HandleFunc(IdentityAuthorizePath, wrap(h.HandleIdentityAuthorize)).Methods("GET")
 		router.HandleFunc(IdentityExchangePath, wrap(h.HandleIdentityExchange)).Methods("POST")
 		router.HandleFunc(IdentityJWKSPath, wrap(h.HandleIdentityJWKS)).Methods("GET")

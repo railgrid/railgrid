@@ -56,6 +56,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/railgrid/provider-infrastructure/internal/huborigin"
 )
 
 const (
@@ -419,14 +421,7 @@ func normalizeConfig(config Config) (normalizedConfig, error) {
 }
 
 func parseHTTPOrigin(raw string) (string, error) {
-	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
-		return "", fmt.Errorf("malformed origin")
-	}
-	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
-		return "", fmt.Errorf("origin must use http or https")
-	}
-	return strings.TrimRight(u.String(), "/"), nil
+	return huborigin.Normalize(raw)
 }
 
 // isOriginOnly keeps configured hub URLs from accidentally changing the

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -42,6 +43,8 @@ const (
 	identityJWKSRefreshBackoff = time.Second
 	identityClockSkew          = 30 * time.Second
 	maxIdentityCodeBytes       = 4096
+	identityPKCEVerifierMin    = 43
+	identityPKCEVerifierMax    = 128
 	identityReturnCookiePrefix = "__Host-railgrid-app-auth-return"
 	// legacyIdentityReturnCookiePrefix is retained for upstream cookie
 	// stripping only. Identity callbacks accept only identityReturnCookiePrefix.
@@ -104,13 +107,14 @@ type identityJWK struct {
 }
 
 type identityExchangeRequest struct {
-	Code     string `json:"code"`
-	Origin   string `json:"origin"`
-	Cluster  string `json:"cluster"`
-	Group    string `json:"group"`
-	Resource string `json:"resource"`
-	Name     string `json:"name"`
-	AppID    string `json:"app_id"`
+	Code         string `json:"code"`
+	Origin       string `json:"origin"`
+	Cluster      string `json:"cluster"`
+	Group        string `json:"group"`
+	Resource     string `json:"resource"`
+	Name         string `json:"name"`
+	AppID        string `json:"app_id"`
+	CodeVerifier string `json:"code_verifier"`
 }
 
 type identityExchangeResponse struct {
@@ -226,12 +230,36 @@ func identityReturnCookieName(state string) string {
 	return identityReturnCookiePrefix + "-" + digest
 }
 
+func validIdentityCodeVerifier(verifier string) bool {
+	if len(verifier) < identityPKCEVerifierMin || len(verifier) > identityPKCEVerifierMax {
+		return false
+	}
+	for i := 0; i < len(verifier); i++ {
+		c := verifier[i]
+		if ('A' > c || c > 'Z') && ('a' > c || c > 'z') && ('0' > c || c > '9') &&
+			c != '-' && c != '.' && c != '_' && c != '~' {
+			return false
+		}
+	}
+	return true
+}
+
+func identityCodeChallenge(verifier string) string {
+	digest := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
 func sha256Sum(value string) string {
 	return sessionKey(value)[:32]
 }
 
 func (p *Proxy) redirectIdentityToAuthorize(w http.ResponseWriter, r *http.Request, path string, partitioned bool) {
-	state, value, err := p.newReturnState(path, partitioned)
+	verifier, err := p.randomString(32)
+	if err != nil {
+		http.Error(w, "app identity state unavailable", http.StatusInternalServerError)
+		return
+	}
+	state, value, err := p.newReturnStateWithVerifier(path, partitioned, verifier)
 	if err != nil {
 		http.Error(w, "app identity state unavailable", http.StatusInternalServerError)
 		return
@@ -255,6 +283,8 @@ func (p *Proxy) redirectIdentityToAuthorize(w http.ResponseWriter, r *http.Reque
 	query.Set("app_id", p.config.AuthAudience)
 	query.Set("redirect_uri", callbackURL)
 	query.Set("state", state)
+	query.Set("code_challenge", identityCodeChallenge(verifier))
+	query.Set("code_challenge_method", "S256")
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, p.config.hubPublicURL+identityAuthorizePath+"?"+query.Encode(), http.StatusFound)
 }
@@ -277,13 +307,14 @@ func (p *Proxy) handleIdentityCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := json.Marshal(identityExchangeRequest{
-		Code:     code,
-		Origin:   p.config.authOrigin,
-		Cluster:  p.config.Instance.Cluster,
-		Group:    p.config.Instance.Group,
-		Resource: p.config.Instance.Resource,
-		Name:     p.config.Instance.Name,
-		AppID:    p.config.AuthAudience,
+		Code:         code,
+		Origin:       p.config.authOrigin,
+		Cluster:      p.config.Instance.Cluster,
+		Group:        p.config.Instance.Group,
+		Resource:     p.config.Instance.Resource,
+		Name:         p.config.Instance.Name,
+		AppID:        p.config.AuthAudience,
+		CodeVerifier: outcome.CodeVerifier,
 	})
 	if err != nil {
 		p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
@@ -371,6 +402,11 @@ func (p *Proxy) consumeIdentityReturnState(w http.ResponseWriter, r *http.Reques
 		p.logf("app identity callback rejected: state does not match its cookie (host=%s)", p.config.host)
 		return returnStateOutcome{}
 	}
+	if !validIdentityCodeVerifier(payload.CodeVerifier) {
+		p.clearIdentityReturnCookie(w, cookieName, payload.Partitioned)
+		p.logf("app identity callback rejected: PKCE verifier is missing or malformed (host=%s)", p.config.host)
+		return returnStateOutcome{}
+	}
 	if !p.now().Before(time.Unix(payload.ExpiresAt, 0)) {
 		p.clearIdentityReturnCookie(w, cookieName, payload.Partitioned)
 		return returnStateOutcome{Restart: true, RestartPath: cleanIdentityReturnPath(payload.Path), Partitioned: payload.Partitioned}
@@ -384,7 +420,7 @@ func (p *Proxy) consumeIdentityReturnState(w http.ResponseWriter, r *http.Reques
 	if path == "" {
 		path = "/"
 	}
-	return returnStateOutcome{OK: true, Path: path, CookieName: cookieName, Partitioned: payload.Partitioned}
+	return returnStateOutcome{OK: true, Path: path, CookieName: cookieName, Partitioned: payload.Partitioned, CodeVerifier: payload.CodeVerifier}
 }
 
 func (p *Proxy) clearIdentityReturnCookie(w http.ResponseWriter, name string, partitioned bool) {

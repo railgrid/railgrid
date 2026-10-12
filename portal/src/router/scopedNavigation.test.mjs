@@ -303,7 +303,7 @@ test('unauthenticated deep links survive a per-tab single-use login continuation
 
 test('anonymous token login resumes Railgrid Auth authorize before the app callback', async () => {
   setup()
-  const identityAuthorize = '/auth/apps/identity/authorize?cluster=abc123cluster&group=infrastructure.railgrid.ai&resource=instances&name=shop&app_id=project-1%2Fproduction&redirect_uri=https%3A%2F%2Fapps.example.test%2F__railgrid%2Fauth%2Fidentity%2Fcallback&state=abc_123&railgrid_retried=1'
+  const identityAuthorize = '/auth/apps/identity/authorize?cluster=abc123cluster&group=infrastructure.railgrid.ai&resource=instances&name=shop&app_id=project-1%2Fproduction&redirect_uri=https%3A%2F%2Fapps.example.test%2F__railgrid%2Fauth%2Fidentity%2Fcallback&state=abc_123&railgrid_retried=1&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256'
   const login = await prepareLoginPage({ next: identityAuthorize })
   assert.equal(sessionStorage.getItem('railgrid.app-access-next'), identityAuthorize)
   await login.submitToken()

@@ -151,13 +151,15 @@ func (f *identityFixture) authorizeRequest(t *testing.T, redirect string, appID 
 		t.Fatalf("issue session: %v", err)
 	}
 	query := url.Values{
-		"cluster":      {"abc123cluster"},
-		"group":        {"infrastructure.railgrid.ai"},
-		"resource":     {"instances"},
-		"name":         {"shop"},
-		"app_id":       {appID},
-		"redirect_uri": {redirect},
-		"state":        {"state_123"},
+		"cluster":               {"abc123cluster"},
+		"group":                 {"infrastructure.railgrid.ai"},
+		"resource":              {"instances"},
+		"name":                  {"shop"},
+		"app_id":                {appID},
+		"redirect_uri":          {redirect},
+		"state":                 {"state_123"},
+		"code_challenge":        {identityCodeChallengeForTest(fIdentityCodeVerifier)},
+		"code_challenge_method": {identityPKCEMethodS256},
 	}
 	req := httptest.NewRequest(http.MethodGet, IdentityAuthorizePath+"?"+query.Encode(), nil)
 	for _, cookie := range rec.Result().Cookies() {
@@ -182,14 +184,21 @@ func (f *identityFixture) authorize(t *testing.T) (string, *url.URL) {
 	if code == "" || redirect.Query().Get("state") != "state_123" {
 		t.Fatalf("callback redirect = %q", redirect.String())
 	}
+	if redirect.Query().Has("code_challenge") || redirect.Query().Has("code_verifier") {
+		t.Fatalf("callback redirect exposed PKCE material: %q", redirect.String())
+	}
 	return code, redirect
 }
 
 func (f *identityFixture) exchange(t *testing.T, code, origin, appID string) (*httptest.ResponseRecorder, IdentityExchangeResponse) {
+	return f.exchangeWithVerifier(t, code, origin, appID, fIdentityCodeVerifier)
+}
+
+func (f *identityFixture) exchangeWithVerifier(t *testing.T, code, origin, appID, verifier string) (*httptest.ResponseRecorder, IdentityExchangeResponse) {
 	t.Helper()
 	body, err := json.Marshal(identityExchangeRequest{
 		Code: code, Origin: origin, Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai",
-		Resource: "instances", Name: "shop", AppID: appID,
+		Resource: "instances", Name: "shop", AppID: appID, CodeVerifier: verifier,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,11 +214,23 @@ func (f *identityFixture) exchange(t *testing.T, code, origin, appID string) (*h
 	return recorder, response
 }
 
+func identityCodeChallengeForTest(verifier string) string {
+	digest := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
 func TestIdentityAuthorizeExchangeSignsBoundShortLivedAssertion(t *testing.T) {
 	f := newIdentityFixture(t)
 	code, redirect := f.authorize(t)
 	if !strings.HasPrefix(code, identityAppCodePrefix) {
 		t.Fatalf("identity code = %q", code)
+	}
+	store := f.codeStore.(*memoryCodeStore)
+	store.mu.Lock()
+	stored, found := store.codes[code]
+	store.mu.Unlock()
+	if !found || stored.CodeChallenge != identityCodeChallengeForTest(fIdentityCodeVerifier) {
+		t.Fatalf("stored identity code challenge = %q (found=%v), want S256 challenge", stored.CodeChallenge, found)
 	}
 	if len(f.sars) != 2 {
 		t.Fatalf("authorize SARs=%d, want base and UID-fenced checks", len(f.sars))
@@ -261,6 +282,88 @@ func TestIdentityAuthorizeExchangeSignsBoundShortLivedAssertion(t *testing.T) {
 	if replay.Code != http.StatusGone {
 		t.Fatalf("replay status=%d, want 410", replay.Code)
 	}
+}
+
+func TestIdentityAuthorizeRequiresS256Challenge(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(url.Values)
+	}{
+		{name: "missing challenge", edit: func(q url.Values) { q.Del("code_challenge") }},
+		{name: "missing method", edit: func(q url.Values) { q.Del("code_challenge_method") }},
+		{name: "plain method", edit: func(q url.Values) { q.Set("code_challenge_method", "plain") }},
+		{name: "malformed challenge", edit: func(q url.Values) { q.Set("code_challenge", "not-a-sha256-challenge") }},
+		{name: "duplicate challenge", edit: func(q url.Values) { q.Add("code_challenge", identityCodeChallengeForTest(fIdentityCodeVerifier)) }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newIdentityFixture(t)
+			request := f.authorizeRequest(t, fIdentityOrigin+IdentityCallbackPath, f.app.AppID)
+			query := request.URL.Query()
+			tc.edit(query)
+			request.URL.RawQuery = query.Encode()
+			recorder := httptest.NewRecorder()
+			f.handler.HandleIdentityAuthorize(recorder, request)
+			if recorder.Code != http.StatusBadRequest || len(f.sars) != 0 {
+				t.Fatalf("status=%d SARs=%d body=%s; malformed PKCE input must fail before authorization", recorder.Code, len(f.sars), recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestIdentityExchangeVerifierValidationAndOneUse(t *testing.T) {
+	t.Run("missing and malformed verifier do not redeem", func(t *testing.T) {
+		f := newIdentityFixture(t)
+		code, _ := f.authorize(t)
+		for _, verifier := range []string{"", strings.Repeat("v", 42), strings.Repeat("v", 43) + "="} {
+			recorder, response := f.exchangeWithVerifier(t, code, fIdentityOrigin, f.app.AppID, verifier)
+			if recorder.Code != http.StatusBadRequest || response.Assertion != "" {
+				t.Fatalf("verifier length=%d status=%d assertion=%t body=%s; want malformed request", len(verifier), recorder.Code, response.Assertion != "", recorder.Body.String())
+			}
+		}
+		recorder, response := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
+		if recorder.Code != http.StatusOK || response.Assertion == "" {
+			t.Fatalf("valid verifier after malformed attempts status=%d assertion=%t body=%s", recorder.Code, response.Assertion != "", recorder.Body.String())
+		}
+	})
+
+	t.Run("wrong valid verifier consumes code", func(t *testing.T) {
+		f := newIdentityFixture(t)
+		code, _ := f.authorize(t)
+		wrongVerifier := strings.Repeat("z", 43)
+		recorder, response := f.exchangeWithVerifier(t, code, fIdentityOrigin, f.app.AppID, wrongVerifier)
+		if recorder.Code != http.StatusGone || response.Assertion != "" {
+			t.Fatalf("wrong verifier status=%d assertion=%t body=%s; want consumed code", recorder.Code, response.Assertion != "", recorder.Body.String())
+		}
+		replay, _ := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
+		if replay.Code != http.StatusGone {
+			t.Fatalf("wrong-verifier attempt left code redeemable: replay=%d body=%s", replay.Code, replay.Body.String())
+		}
+	})
+
+	t.Run("legacy code without challenge fails closed and is consumed", func(t *testing.T) {
+		f := newIdentityFixture(t)
+		code := identityAppCodePrefix + "legacy-code"
+		err := f.codeStore.Put(context.Background(), code, CodeRecord{
+			Purpose:        IdentityPurpose,
+			Ref:            InstanceRef{Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "shop"},
+			RedirectOrigin: fIdentityOrigin, AppID: f.app.AppID, Environment: f.app.Environment,
+			InstanceUID: f.app.InstanceUID,
+			Identity:    browsersession.Identity{UserID: "user-abc", RBACIdentity: "railgrid:abc@example.test"},
+			ExpiresAt:   f.now.Add(time.Minute),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder, response := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
+		if recorder.Code != http.StatusGone || response.Assertion != "" {
+			t.Fatalf("legacy code status=%d assertion=%t body=%s; want fail-closed gone", recorder.Code, response.Assertion != "", recorder.Body.String())
+		}
+		replay, _ := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
+		if replay.Code != http.StatusGone {
+			t.Fatalf("legacy code replay=%d, want 410", replay.Code)
+		}
+	})
 }
 
 func TestIdentityAuthorizeRevalidatesTheLiveBrowserAccount(t *testing.T) {
@@ -386,6 +489,7 @@ func TestIdentityAuthorizeRequiresExactCallbackAndPublishedOrigin(t *testing.T) 
 }
 
 const fIdentityOrigin = "https://shop.example.test"
+const fIdentityCodeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
 
 func TestIdentityExchangeRejectsOriginAudienceAndDescriptorChanges(t *testing.T) {
 	for _, tc := range []struct {

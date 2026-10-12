@@ -20,6 +20,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -49,6 +50,7 @@ type identityFakeHub struct {
 	public                ed25519.PublicKey
 	kid                   string
 	code                  string
+	codeChallenge         string
 	used                  bool
 	fail                  error
 	assertion             string
@@ -112,10 +114,16 @@ func (f *identityFakeHub) RoundTrip(r *http.Request) (*http.Response, error) {
 			return jsonResponse(http.StatusBadRequest, map[string]string{}), nil
 		}
 		f.exchanges = append(f.exchanges, request)
+		if !validIdentityCodeVerifier(request.CodeVerifier) {
+			return jsonResponse(http.StatusBadRequest, map[string]string{}), nil
+		}
 		if request.Code != f.code || f.used || request.Origin != testAuthOrigin || request.Cluster != testCluster || request.Group != testGroup || request.Resource != testRes || request.Name != testName || request.AppID != testAuthAppID {
 			return jsonResponse(http.StatusGone, map[string]string{}), nil
 		}
 		f.used = true
+		if f.codeChallenge != "" && subtle.ConstantTimeCompare([]byte(identityCodeChallenge(request.CodeVerifier)), []byte(f.codeChallenge)) != 1 {
+			return jsonResponse(http.StatusGone, map[string]string{}), nil
+		}
 		return jsonResponse(http.StatusOK, map[string]any{"assertion": f.assertion, "expiresIn": 900, "user": map[string]string{"name": "Riley"}}), nil
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{}), nil
@@ -346,6 +354,22 @@ func identityReturnCookieAndState(t *testing.T, response *httptest.ResponseRecor
 	return nil, ""
 }
 
+func identityStateCookieWithVerifier(t *testing.T, cookie *http.Cookie, verifier string) *http.Cookie {
+	t.Helper()
+	payload, ok := decodeReturnState(cookie.Value)
+	if !ok {
+		t.Fatal("decode identity state cookie")
+	}
+	payload.CodeVerifier = verifier
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := *cookie
+	copy.Value = base64.RawURLEncoding.EncodeToString(encoded)
+	return &copy
+}
+
 func completeIdentityLogin(t *testing.T, p *Proxy, code string, path string) *http.Cookie {
 	t.Helper()
 	_, stateCookie, state := startIdentityLogin(t, p, path)
@@ -375,14 +399,30 @@ func TestIdentityLoginUsesExactHubContractAndReturnsProfileWithoutAssertion(t *t
 	if got := location.Scheme + "://" + location.Host + location.Path; got != testHubPub+identityAuthorizePath {
 		t.Fatalf("authorize URL = %q", got)
 	}
+	statePayload, ok := decodeReturnState(stateCookie.Value)
+	if !ok || !validIdentityCodeVerifier(statePayload.CodeVerifier) {
+		t.Fatalf("identity state cookie has no valid PKCE verifier: %#v", statePayload)
+	}
+	challenge := location.Query().Get("code_challenge")
+	if location.Query().Get("code_challenge_method") != "S256" || challenge != identityCodeChallenge(statePayload.CodeVerifier) {
+		t.Fatalf("authorize PKCE parameters do not match cookie verifier: method=%q challenge=%q", location.Query().Get("code_challenge_method"), challenge)
+	}
+	if location.Query().Has("code_verifier") {
+		t.Fatal("identity authorize URL exposed the PKCE verifier")
+	}
+	hub.mu.Lock()
+	hub.codeChallenge = challenge
+	hub.mu.Unlock()
 	for key, want := range map[string]string{
-		"cluster":      testCluster,
-		"group":        testGroup,
-		"resource":     testRes,
-		"name":         testName,
-		"app_id":       testAuthAppID,
-		"redirect_uri": testAuthOrigin + IdentityCallbackPath,
-		"state":        state,
+		"cluster":               testCluster,
+		"group":                 testGroup,
+		"resource":              testRes,
+		"name":                  testName,
+		"app_id":                testAuthAppID,
+		"redirect_uri":          testAuthOrigin + IdentityCallbackPath,
+		"state":                 state,
+		"code_challenge":        challenge,
+		"code_challenge_method": "S256",
 	} {
 		if got := location.Query().Get(key); got != want {
 			t.Errorf("authorize query %s = %q, want %q", key, got, want)
@@ -424,7 +464,8 @@ func TestIdentityLoginUsesExactHubContractAndReturnsProfileWithoutAssertion(t *t
 	if user.ID != "opaque-user-123" || user.DisplayName != "Riley" || strings.Contains(profile.Body.String(), hub.assertion) {
 		t.Fatalf("session profile = %+v body=%q", user, profile.Body.String())
 	}
-	if len(hub.exchanges) != 1 || hub.exchanges[0].Origin != testAuthOrigin || hub.exchanges[0].AppID != testAuthAppID {
+	if len(hub.exchanges) != 1 || hub.exchanges[0].Origin != testAuthOrigin || hub.exchanges[0].AppID != testAuthAppID ||
+		hub.exchanges[0].CodeVerifier != statePayload.CodeVerifier {
 		t.Fatalf("identity exchange requests = %+v", hub.exchanges)
 	}
 }
@@ -507,6 +548,72 @@ func TestIdentityCallbackRejectsMissingAndMismatchedStateCookies(t *testing.T) {
 	if got := hub.exchangeCount(); got != 1 {
 		t.Fatalf("valid signed callback exchange count = %d, want 1", got)
 	}
+}
+
+func TestIdentityCallbackRequiresCookieVerifierAndRejectsWrongVerifier(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		verifier string
+	}{
+		{name: "missing verifier"},
+		{name: "malformed verifier", verifier: "not-a-verifier"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream, _ := newUpstream(t, nil)
+			now := time.Now().UTC().Truncate(time.Second)
+			hub := newIdentityFakeHub(t, now)
+			p := newIdentityProxy(t, identityConfig(upstream.URL, hub))
+			p.now = func() time.Time { return now }
+			p.identityVerifier.now = p.now
+			_, stateCookie, state := startIdentityLogin(t, p, "/dashboard")
+			mutated := identityStateCookieWithVerifier(t, stateCookie, tc.verifier)
+			callback := doRequest(p, appRequest(IdentityCallbackPath+"?code="+url.QueryEscape(hub.code)+"&state="+url.QueryEscape(state), mutated))
+			if callback.Code != http.StatusBadRequest {
+				t.Fatalf("callback with %s = %d body=%q, want 400", tc.name, callback.Code, callback.Body.String())
+			}
+			if got := hub.exchangeCount(); got != 0 {
+				t.Fatalf("invalid cookie verifier triggered %d exchange requests", got)
+			}
+		})
+	}
+
+	t.Run("wrong valid verifier is rejected and restarts", func(t *testing.T) {
+		upstream, _ := newUpstream(t, nil)
+		now := time.Now().UTC().Truncate(time.Second)
+		hub := newIdentityFakeHub(t, now)
+		p := newIdentityProxy(t, identityConfig(upstream.URL, hub))
+		p.now = func() time.Time { return now }
+		p.identityVerifier.now = p.now
+		first, stateCookie, state := startIdentityLogin(t, p, "/dashboard")
+		location, err := url.Parse(first.Header().Get("Location"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		challenge := location.Query().Get("code_challenge")
+		if location.Query().Get("code_challenge_method") != "S256" || challenge == "" {
+			t.Fatalf("identity authorize omitted S256 challenge: %q", first.Header().Get("Location"))
+		}
+		hub.mu.Lock()
+		hub.codeChallenge = challenge
+		hub.mu.Unlock()
+		wrongVerifier := strings.Repeat("z", 43)
+		if identityCodeChallenge(wrongVerifier) == challenge {
+			t.Fatal("test verifier unexpectedly matches the authorize challenge")
+		}
+		mutated := identityStateCookieWithVerifier(t, stateCookie, wrongVerifier)
+		callback := doRequest(p, appRequest(IdentityCallbackPath+"?code="+url.QueryEscape(hub.code)+"&state="+url.QueryEscape(state), mutated))
+		if callback.Code != http.StatusFound || !strings.Contains(callback.Header().Get("Location"), identityAuthorizePath) {
+			t.Fatalf("callback with wrong verifier = %d location=%q body=%q; want fresh authorize", callback.Code, callback.Header().Get("Location"), callback.Body.String())
+		}
+		if got := hub.exchangeCount(); got != 1 || len(hub.exchanges) != 1 || hub.exchanges[0].CodeVerifier != wrongVerifier || !hub.used {
+			t.Fatalf("wrong verifier exchange state count=%d requests=%+v used=%v", got, hub.exchanges, hub.used)
+		}
+		for _, cookie := range callback.Result().Cookies() {
+			if cookie.Name == IdentitySessionCookieName && cookie.MaxAge >= 0 {
+				t.Fatal("wrong-verifier response established an identity session")
+			}
+		}
+	})
 }
 
 func TestIdentityAssertionOnlyReachesAPIAndReplacesSpoofedHeader(t *testing.T) {

@@ -744,19 +744,16 @@ func (s *Server) Run(ctx context.Context) error {
 				IdentityApp:             identityAppResolver,
 				IdentityAccountLookup:   accountLookup,
 				IdentityWorkspaceMember: identityWorkspaceMember,
-				IdentityIssuer:          strings.TrimRight(s.opts.HubExternalURL, "/") + appauth.IdentityIssuerPath,
-				IdentitySigningKey:      appIdentityKeys.CurrentAppIdentitySigningKey,
-				IdentitySubjectKey:      appIdentityKeys.AppIdentitySubjectKey,
-				IdentityPublicKeys: func(ctx context.Context) ([]ed25519.PublicKey, error) {
-					stored, err := appIdentityKeys.AppIdentityPublicKeys(ctx)
+				IdentityKeys: func(ctx context.Context) (appauth.IdentityKeySnapshot, error) {
+					stored, err := appIdentityKeys.Snapshot(ctx)
 					if err != nil {
-						return nil, err
+						return appauth.IdentityKeySnapshot{}, err
 					}
-					keys := make([]ed25519.PublicKey, 0, len(stored))
-					for _, key := range stored {
+					keys := make([]ed25519.PublicKey, 0, len(stored.PublicKeys))
+					for _, key := range stored.PublicKeys {
 						keys = append(keys, key.Key)
 					}
-					return keys, nil
+					return appauth.IdentityKeySnapshot{SigningKey: stored.SigningKey, SubjectKey: stored.SubjectKey, PublicKeys: keys}, nil
 				},
 				// POST /auth/apps/token authenticates hub bearers with the same
 				// validator that mints browser sessions from a bearer.
@@ -764,6 +761,9 @@ func (s *Server) Run(ctx context.Context) error {
 				IdentityUnavailable: proxy.ErrUserRecordUnavailable,
 				TokenKey:            appTokenKeys.DelegatedProofKey,
 				ClientIP:            func(r *http.Request) string { return proxy.ClientIP(r, trustedProxies) },
+			}
+			if err := configureAppIdentityIssuer(&appAuthCfg, s.opts.HubExternalURL); err != nil {
+				logger.Error(err, "Railgrid Auth disabled: hub external URL is not usable as an HTTPS issuer")
 			}
 			if appCodeStore != nil {
 				// authorize and exchange are separate requests that a scaled hub
@@ -1278,14 +1278,28 @@ func (s *Server) Run(ctx context.Context) error {
 				go sharedstore.RunGC(ctx, sharedStoreGCInterval, sharedStores...)
 			}
 
-			var wg sync.WaitGroup
-			for name, mgr := range map[string]interface{ Start(context.Context) error }{
+			managers := map[string]interface{ Start(context.Context) error }{
 				"core multicluster (mcpserver)": coreMgr,
 				"admin multicluster":            adminMgr,
 				"organization bootstrap":        orgMgr,
 				"soft-delete":                   softdeleteMgr,
 				"membership-index invariants":   umiMgr,
-			} {
+			}
+			if appAccessGrantHandler != nil {
+				// Reads never migrate grants. A separate leader-only catalog
+				// manager discovers each Infrastructure export and replays its
+				// managed Instances through an idempotent migration reconciler.
+				// Keep this optional manager's setup failures independent of
+				// the core and tenancy controllers above.
+				migrationMgr, err := newAppAccessGrantMigrationManager(ctx, providersConfig, kcpConfig, scheme, appAccessGrantHandler)
+				if err != nil {
+					logger.Error(err, "App-access grant migration controller unavailable")
+				} else {
+					managers["app-access grant migration"] = migrationMgr
+				}
+			}
+			var wg sync.WaitGroup
+			for name, mgr := range managers {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()

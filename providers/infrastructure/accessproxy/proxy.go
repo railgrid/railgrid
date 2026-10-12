@@ -87,10 +87,11 @@ type Proxy struct {
 // absolute expiry. Keeping it in the cookie rather than a server-side map is
 // what lets a sign-in survive a gate restart or land on a different replica.
 type returnStatePayload struct {
-	Nonce       string `json:"n"`
-	Path        string `json:"p"`
-	ExpiresAt   int64  `json:"e"`
-	Partitioned bool   `json:"c,omitempty"`
+	Nonce        string `json:"n"`
+	Path         string `json:"p"`
+	ExpiresAt    int64  `json:"e"`
+	Partitioned  bool   `json:"c,omitempty"`
+	CodeVerifier string `json:"v,omitempty"`
 }
 
 type appSession struct {
@@ -561,9 +562,10 @@ func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state
 // was leaving the tab open past stateTTL.
 type returnStateOutcome struct {
 	// Path is the sanitised return path. Meaningful only when OK.
-	Path       string
-	CookieName string
-	OK         bool
+	Path         string
+	CookieName   string
+	CodeVerifier string
+	OK           bool
 	// Restart reports that beginning a fresh sign-in can plausibly succeed.
 	// It is set ONLY when a cookie actually came back, because that is the
 	// evidence the browser round-trips ours — without it a restart loops.
@@ -581,8 +583,15 @@ type returnStateOutcome struct {
 // newReturnState mints the nonce echoed to the hub and the cookie value that
 // carries the whole state back to the callback.
 func (p *Proxy) newReturnState(path string, partitioned bool) (nonce, cookieValue string, err error) {
+	return p.newReturnStateWithVerifier(path, partitioned, "")
+}
+
+func (p *Proxy) newReturnStateWithVerifier(path string, partitioned bool, codeVerifier string) (nonce, cookieValue string, err error) {
 	if path == "" {
 		return "", "", errors.New("empty return path")
+	}
+	if codeVerifier != "" && !validIdentityCodeVerifier(codeVerifier) {
+		return "", "", errors.New("invalid identity code verifier")
 	}
 	if len(path) > maxReturnPathBytes {
 		path = "/"
@@ -592,10 +601,11 @@ func (p *Proxy) newReturnState(path string, partitioned bool) (nonce, cookieValu
 		return "", "", err
 	}
 	raw, err := json.Marshal(returnStatePayload{
-		Nonce:       nonce,
-		Path:        path,
-		ExpiresAt:   p.now().Add(stateTTL).Unix(),
-		Partitioned: partitioned,
+		Nonce:        nonce,
+		Path:         path,
+		ExpiresAt:    p.now().Add(stateTTL).Unix(),
+		Partitioned:  partitioned,
+		CodeVerifier: codeVerifier,
 	})
 	if err != nil {
 		return "", "", err

@@ -20,12 +20,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 func TestAppIdentityKeyRingIsSharedAndRotationOverlapsVerification(t *testing.T) {
@@ -37,68 +44,191 @@ func TestAppIdentityKeyRingIsSharedAndRotationOverlapsVerification(t *testing.T)
 		bytes.Repeat([]byte{0x03}, ed25519.SeedSize),
 	}, nil)
 	client := fake.NewClientset()
+	reads := countAppIdentitySecretGets(client)
 	first := newKCPAppIdentityKeyRingWithClient(client, proofTestNamespace, func() time.Time { return now }, bytes.NewReader(randomMaterial))
 
-	firstSigningKey, err := first.CurrentAppIdentitySigningKey(ctx)
+	firstSnapshot, err := first.Snapshot(ctx)
 	if err != nil {
-		t.Fatalf("initial signing key: %v", err)
+		t.Fatalf("initial key snapshot: %v", err)
 	}
-	firstSubjectKey, err := first.AppIdentitySubjectKey(ctx)
-	if err != nil {
-		t.Fatalf("initial subject key: %v", err)
-	}
-	firstPublicKeys, err := first.AppIdentityPublicKeys(ctx)
-	if err != nil || len(firstPublicKeys) != 1 {
-		t.Fatalf("initial public keys = %+v, %v; want current only", firstPublicKeys, err)
+	if len(firstSnapshot.PublicKeys) != 1 {
+		t.Fatalf("initial public keys = %+v; want current only", firstSnapshot.PublicKeys)
 	}
 
 	// A new hub replica reads the same persisted keys, including the stable
 	// subject key used to keep app-local account IDs consistent.
 	second := newKCPAppIdentityKeyRingWithClient(client, proofTestNamespace, func() time.Time { return now }, bytes.NewReader(nil))
-	secondSigningKey, err := second.CurrentAppIdentitySigningKey(ctx)
+	secondSnapshot, err := second.Snapshot(ctx)
 	if err != nil {
-		t.Fatalf("second replica signing key: %v", err)
+		t.Fatalf("second replica snapshot: %v", err)
 	}
-	secondSubjectKey, err := second.AppIdentitySubjectKey(ctx)
-	if err != nil {
-		t.Fatalf("second replica subject key: %v", err)
-	}
-	if !bytes.Equal(firstSigningKey, secondSigningKey) || !bytes.Equal(firstSubjectKey, secondSubjectKey) {
+	if !bytes.Equal(firstSnapshot.SigningKey, secondSnapshot.SigningKey) || !bytes.Equal(firstSnapshot.SubjectKey, secondSnapshot.SubjectKey) {
 		t.Fatal("replicas read different app identity keys")
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("replica snapshots caused %d Secret reads; want one read per replica", reads.Load())
 	}
 
 	if err := first.RotateAppIdentitySigningKey(ctx); err != nil {
 		t.Fatalf("rotate signing key: %v", err)
 	}
-	rotatedSigningKey, err := second.CurrentAppIdentitySigningKey(ctx)
+	rotationTime := now
+	firstRotated, err := first.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("read rotated key from same replica: %v", err)
+	}
+	if bytes.Equal(firstSnapshot.SigningKey, firstRotated.SigningKey) || !bytes.Equal(firstSnapshot.SubjectKey, firstRotated.SubjectKey) {
+		t.Fatal("local rotation did not replace the signing key while preserving the subject key")
+	}
+
+	// Another replica may serve its cached snapshot until the short cache TTL
+	// expires, then observes the rotated key and overlap window from one read.
+	now = now.Add(appIdentityKeySnapshotTTL)
+	secondRotated, err := second.Snapshot(ctx)
 	if err != nil {
 		t.Fatalf("read rotated key from second replica: %v", err)
 	}
-	rotatedSubjectKey, err := second.AppIdentitySubjectKey(ctx)
-	if err != nil {
-		t.Fatalf("read subject key after rotation: %v", err)
-	}
-	if bytes.Equal(firstSigningKey, rotatedSigningKey) {
+	if bytes.Equal(firstSnapshot.SigningKey, secondRotated.SigningKey) {
 		t.Fatal("signing-key rotation kept the previous private key")
 	}
-	if !bytes.Equal(firstSubjectKey, rotatedSubjectKey) {
+	if !bytes.Equal(firstSnapshot.SubjectKey, secondRotated.SubjectKey) {
 		t.Fatal("signing-key rotation changed the stable subject key")
 	}
-
-	rotatedPublicKeys, err := second.AppIdentityPublicKeys(ctx)
-	if err != nil || len(rotatedPublicKeys) != 2 {
-		t.Fatalf("public keys after rotation = %+v, %v; want current and overlap key", rotatedPublicKeys, err)
+	if len(secondRotated.PublicKeys) != 2 {
+		t.Fatalf("public keys after rotation = %+v; want current and overlap key", secondRotated.PublicKeys)
 	}
-	if !bytes.Equal(rotatedPublicKeys[0].Key, rotatedSigningKey.Public().(ed25519.PublicKey)) ||
-		!bytes.Equal(rotatedPublicKeys[1].Key, firstSigningKey.Public().(ed25519.PublicKey)) ||
-		!rotatedPublicKeys[1].ExpiresAt.Equal(now.Add(appIdentityKeyRotationGrace)) {
-		t.Fatalf("unexpected public keys after rotation: %+v", rotatedPublicKeys)
+	if !bytes.Equal(secondRotated.PublicKeys[0].Key, secondRotated.SigningKey.Public().(ed25519.PublicKey)) ||
+		!bytes.Equal(secondRotated.PublicKeys[1].Key, firstSnapshot.SigningKey.Public().(ed25519.PublicKey)) ||
+		!secondRotated.PublicKeys[1].ExpiresAt.Equal(rotationTime.Add(appIdentityKeyRotationGrace)) {
+		t.Fatalf("unexpected public keys after rotation: %+v", secondRotated.PublicKeys)
 	}
 
-	now = now.Add(appIdentityKeyRotationGrace)
-	expiredPublicKeys, err := second.AppIdentityPublicKeys(ctx)
-	if err != nil || len(expiredPublicKeys) != 1 || !bytes.Equal(expiredPublicKeys[0].Key, rotatedSigningKey.Public().(ed25519.PublicKey)) {
-		t.Fatalf("public keys after overlap expiry = %+v, %v; want current only", expiredPublicKeys, err)
+	if reads.Load() != 5 {
+		t.Fatalf("reads after rotation = %d; want 5 (two snapshots, rotation, two refreshed snapshots)", reads.Load())
+	}
+
+	now = rotationTime.Add(appIdentityKeyRotationGrace)
+	expiredSnapshot, err := second.Snapshot(ctx)
+	if err != nil || len(expiredSnapshot.PublicKeys) != 1 || !bytes.Equal(expiredSnapshot.PublicKeys[0].Key, secondRotated.SigningKey.Public().(ed25519.PublicKey)) {
+		t.Fatalf("public keys after overlap expiry = %+v, %v; want current only", expiredSnapshot.PublicKeys, err)
+	}
+	if reads.Load() != 6 {
+		t.Fatalf("reads after overlap expiry = %d; want 6", reads.Load())
+	}
+}
+
+func TestAppIdentityKeySnapshotCacheCoalescesConcurrentRequests(t *testing.T) {
+	client := fake.NewClientset(appIdentityKeyRingSecretForTest(t, proofTestNamespace,
+		bytes.Repeat([]byte{0x04}, ed25519.SeedSize),
+		bytes.Repeat([]byte{0x05}, delegatedProofKeyLength), nil))
+	reads := countAppIdentitySecretGets(client)
+	readStarted := make(chan struct{})
+	allowRead := make(chan struct{})
+	var blockOnce sync.Once
+	client.PrependReactor("get", "secrets", func(clienttesting.Action) (bool, runtime.Object, error) {
+		blockOnce.Do(func() {
+			close(readStarted)
+			<-allowRead
+		})
+		return false, nil, nil
+	})
+	ring := newKCPAppIdentityKeyRingWithClient(client, proofTestNamespace, time.Now, bytes.NewReader(nil))
+
+	const callers = 24
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(callers)
+	done.Add(callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			_, err := ring.Snapshot(context.Background())
+			errs <- err
+		}()
+	}
+	ready.Wait()
+	close(start)
+	<-readStarted
+	close(allowRead)
+	done.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent snapshot: %v", err)
+		}
+	}
+	if got := reads.Load(); got != 1 {
+		t.Fatalf("concurrent snapshots caused %d Secret reads; want 1", got)
+	}
+}
+
+func TestAppIdentityKeySnapshotExpiresAtKeyOverlapAndCacheTTL(t *testing.T) {
+	now := time.Date(2026, time.October, 12, 10, 0, 0, 0, time.UTC)
+	previousKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x07}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	secret := appIdentityKeyRingSecretForTest(t, proofTestNamespace,
+		bytes.Repeat([]byte{0x06}, ed25519.SeedSize),
+		bytes.Repeat([]byte{0x08}, delegatedProofKeyLength),
+		[]storedAppIdentityPublicKey{{Key: previousKey, ExpiresAt: now.Add(4 * time.Second)}})
+	client := fake.NewClientset(secret)
+	reads := countAppIdentitySecretGets(client)
+	ring := newKCPAppIdentityKeyRingWithClient(client, proofTestNamespace, func() time.Time { return now }, bytes.NewReader(nil))
+
+	first, err := ring.Snapshot(context.Background())
+	if err != nil || len(first.PublicKeys) != 2 {
+		t.Fatalf("initial overlapping snapshot = %+v, %v; want two keys", first.PublicKeys, err)
+	}
+	first.SigningKey[0] ^= 0xff
+	first.SubjectKey[0] ^= 0xff
+	first.PublicKeys[0].Key[0] ^= 0xff
+	if _, err := ring.Snapshot(context.Background()); err != nil {
+		t.Fatalf("cached snapshot: %v", err)
+	}
+	if reads.Load() != 1 {
+		t.Fatalf("cached snapshot caused %d reads; want 1", reads.Load())
+	}
+
+	now = now.Add(4 * time.Second)
+	afterOverlap, err := ring.Snapshot(context.Background())
+	if err != nil || len(afterOverlap.PublicKeys) != 1 {
+		t.Fatalf("snapshot after key overlap expiry = %+v, %v; want current only", afterOverlap.PublicKeys, err)
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("key overlap expiry caused %d reads; want 2", reads.Load())
+	}
+
+	now = now.Add(appIdentityKeySnapshotTTL)
+	if _, err := ring.Snapshot(context.Background()); err != nil {
+		t.Fatalf("snapshot after cache TTL: %v", err)
+	}
+	if reads.Load() != 3 {
+		t.Fatalf("cache TTL expiry caused %d reads; want 3", reads.Load())
+	}
+}
+
+func TestAppIdentityKeySnapshotDoesNotCacheReadErrors(t *testing.T) {
+	client := fake.NewClientset(appIdentityKeyRingSecretForTest(t, proofTestNamespace,
+		bytes.Repeat([]byte{0x09}, ed25519.SeedSize),
+		bytes.Repeat([]byte{0x0a}, delegatedProofKeyLength), nil))
+	var reads atomic.Int32
+	client.PrependReactor("get", "secrets", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if reads.Add(1) == 1 {
+			return true, nil, errors.New("temporary kcp read failure")
+		}
+		return false, nil, nil
+	})
+	ring := newKCPAppIdentityKeyRingWithClient(client, proofTestNamespace, time.Now, bytes.NewReader(nil))
+	if _, err := ring.Snapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "temporary kcp read failure") {
+		t.Fatalf("first snapshot error = %v; want temporary read failure", err)
+	}
+	if _, err := ring.Snapshot(context.Background()); err != nil {
+		t.Fatalf("snapshot after a transient error: %v", err)
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("snapshot reads after transient failure = %d; want 2", reads.Load())
 	}
 }
 
@@ -116,4 +246,31 @@ func TestAppIdentityKeyRingRejectsMalformedPersistedKeys(t *testing.T) {
 	if _, err := ring.CurrentAppIdentitySigningKey(context.Background()); err == nil {
 		t.Fatal("accepted malformed persisted signing key")
 	}
+}
+
+func appIdentityKeyRingSecretForTest(t *testing.T, namespace string, signingSeed, subjectKey []byte, previous []storedAppIdentityPublicKey) *corev1.Secret {
+	t.Helper()
+	encodedPrevious, err := json.Marshal(previous)
+	if err != nil {
+		t.Fatalf("encode previous test keys: %v", err)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: appIdentityKeyRingSecretName, Namespace: namespace},
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"version":                    []byte(appIdentityKeyRingVersion),
+			appIdentitySigningKeyField:   ed25519.NewKeyFromSeed(signingSeed),
+			appIdentitySubjectKeyField:   append([]byte(nil), subjectKey...),
+			appIdentityPreviousKeysField: encodedPrevious,
+		},
+	}
+}
+
+func countAppIdentitySecretGets(client *fake.Clientset) *atomic.Int32 {
+	count := &atomic.Int32{}
+	client.PrependReactor("get", "secrets", func(clienttesting.Action) (bool, runtime.Object, error) {
+		count.Add(1)
+		return false, nil, nil
+	})
+	return count
 }

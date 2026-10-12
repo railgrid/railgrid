@@ -107,6 +107,8 @@ func main() {
 	cmd.Flags().StringVar(&opts.KCPTLSCertFile, "kcp-tls-cert-file", "", "TLS certificate file for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPTLSKeyFile, "kcp-tls-key-file", "", "TLS key file for embedded kcp API server")
 
+	cmd.AddCommand(newAppIdentityKeyRotationCommand())
+
 	// Add klog flags (provides -v for log verbosity, shared with embedded kcp)
 	goFlags := flag.NewFlagSet("", flag.ContinueOnError)
 	klog.InitFlags(goFlags)

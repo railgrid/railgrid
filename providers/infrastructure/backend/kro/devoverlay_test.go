@@ -399,10 +399,10 @@ func TestApplicationAuthEnvironmentSurvivesDevelopmentOverlay(t *testing.T) {
 	}
 	tmpl := decodeTemplate(t, raw)
 	t.Setenv("RAILGRID_ACCESS_HUB_URL", "https://hub.internal.auth-test.example")
-	t.Setenv("RAILGRID_ACCESS_HUB_PUBLIC_URL", "https://console.auth-test.example/")
+	t.Setenv("RAILGRID_ACCESS_HUB_PUBLIC_URL", "HTTPS://Console.Auth-Test.Example:443/")
 	tokens := testTokens()
 	if got := tokens[hubPublicURLToken]; got != "https://console.auth-test.example" {
-		t.Fatalf("normalized public hub URL token = %q, want no trailing slash", got)
+		t.Fatalf("normalized public hub URL token = %q, want lowercase host without default port or trailing slash", got)
 	}
 	tokens[appPublicPortToken] = ":10443"
 	rgd, err := buildRGD(tmpl, tokens)

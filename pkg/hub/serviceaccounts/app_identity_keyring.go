@@ -21,10 +21,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,13 +44,25 @@ const (
 	appIdentitySubjectKeyField   = "subject-pseudonym-key"
 	appIdentityPreviousKeysField = "previous-public-keys"
 	appIdentityKeyRotationGrace  = 15 * time.Minute
+	appIdentityKeySnapshotTTL    = 10 * time.Second
 )
+
+var errAppIdentityKeySnapshotInvalidated = errors.New("app identity key snapshot was invalidated")
 
 // AppIdentityPublicKey carries a verification key and the time through which
 // it remains valid. ExpiresAt is zero for the current key.
 type AppIdentityPublicKey struct {
 	Key       ed25519.PublicKey
 	ExpiresAt time.Time
+}
+
+// AppIdentityKeySnapshot is one coherent view of the durable Railgrid Auth
+// key ring. The signing key, subject key, and public verification keys all
+// come from the same Secret read.
+type AppIdentityKeySnapshot struct {
+	SigningKey ed25519.PrivateKey
+	SubjectKey []byte
+	PublicKeys []AppIdentityPublicKey
 }
 
 type storedAppIdentityPublicKey struct {
@@ -64,6 +80,12 @@ type AppIdentityKeyRing struct {
 	namespace string
 	now       func() time.Time
 	random    io.Reader
+
+	cacheMu         sync.Mutex
+	cachedSnapshot  *AppIdentityKeySnapshot
+	cacheExpiresAt  time.Time
+	cacheGeneration uint64
+	snapshotLoads   singleflight.Group
 }
 
 // NewKCPAppIdentityKeyRing builds a key ring against the hub-internal kcp
@@ -89,61 +111,158 @@ func newKCPAppIdentityKeyRingWithClient(client kubernetes.Interface, namespace s
 	return &AppIdentityKeyRing{client: client, namespace: namespace, now: now, random: random}
 }
 
+// Snapshot returns the current signing key, stable subject key, and current
+// plus overlapping public keys from one Secret read. The snapshot is cached
+// briefly to avoid a kcp Secret read for every app-auth request. Rotation
+// invalidates this replica's cache immediately; other replicas observe it
+// within the cache lifetime.
+func (r *AppIdentityKeyRing) Snapshot(ctx context.Context) (AppIdentityKeySnapshot, error) {
+	if r == nil || r.client == nil || r.namespace == "" {
+		return AppIdentityKeySnapshot{}, fmt.Errorf("app identity key ring is unavailable")
+	}
+	for {
+		r.cacheMu.Lock()
+		generation := r.cacheGeneration
+		if r.cachedSnapshot != nil && r.now().Before(r.cacheExpiresAt) {
+			snapshot := cloneAppIdentityKeySnapshot(*r.cachedSnapshot)
+			r.cacheMu.Unlock()
+			return snapshot, nil
+		}
+		r.cacheMu.Unlock()
+
+		result := r.snapshotLoads.DoChan(strconv.FormatUint(generation, 10), func() (any, error) {
+			r.cacheMu.Lock()
+			if generation != r.cacheGeneration {
+				r.cacheMu.Unlock()
+				return nil, errAppIdentityKeySnapshotInvalidated
+			}
+			if r.cachedSnapshot != nil && r.now().Before(r.cacheExpiresAt) {
+				snapshot := cloneAppIdentityKeySnapshot(*r.cachedSnapshot)
+				r.cacheMu.Unlock()
+				return snapshot, nil
+			}
+			r.cacheMu.Unlock()
+
+			secret, err := r.getOrCreate(ctx)
+			if err != nil {
+				return nil, err
+			}
+			snapshot, expiresAt, err := r.snapshotFromSecret(secret, r.now())
+			if err != nil {
+				return nil, err
+			}
+
+			r.cacheMu.Lock()
+			defer r.cacheMu.Unlock()
+			if generation != r.cacheGeneration {
+				return nil, errAppIdentityKeySnapshotInvalidated
+			}
+			cached := cloneAppIdentityKeySnapshot(snapshot)
+			r.cachedSnapshot = &cached
+			r.cacheExpiresAt = expiresAt
+			return cloneAppIdentityKeySnapshot(snapshot), nil
+		})
+
+		select {
+		case loaded := <-result:
+			if errors.Is(loaded.Err, errAppIdentityKeySnapshotInvalidated) {
+				continue
+			}
+			if loaded.Err != nil {
+				return AppIdentityKeySnapshot{}, loaded.Err
+			}
+			r.cacheMu.Lock()
+			invalidated := generation != r.cacheGeneration
+			r.cacheMu.Unlock()
+			if invalidated {
+				continue
+			}
+			snapshot, ok := loaded.Val.(AppIdentityKeySnapshot)
+			if !ok {
+				return AppIdentityKeySnapshot{}, fmt.Errorf("app identity key ring returned an invalid snapshot")
+			}
+			return cloneAppIdentityKeySnapshot(snapshot), nil
+		case <-ctx.Done():
+			return AppIdentityKeySnapshot{}, ctx.Err()
+		}
+	}
+}
+
+func (r *AppIdentityKeyRing) snapshotFromSecret(secret *corev1.Secret, now time.Time) (AppIdentityKeySnapshot, time.Time, error) {
+	if err := validateAppIdentityKeyRingSecret(secret); err != nil {
+		return AppIdentityKeySnapshot{}, time.Time{}, err
+	}
+	privateKey := append(ed25519.PrivateKey(nil), secret.Data[appIdentitySigningKeyField]...)
+	snapshot := AppIdentityKeySnapshot{
+		SigningKey: privateKey,
+		SubjectKey: append([]byte(nil), secret.Data[appIdentitySubjectKeyField]...),
+		PublicKeys: []AppIdentityPublicKey{{
+			Key: append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...),
+		}},
+	}
+	expiresAt := now.Add(appIdentityKeySnapshotTTL)
+	previous, err := decodeAppIdentityPreviousKeys(secret.Data[appIdentityPreviousKeysField])
+	if err != nil {
+		return AppIdentityKeySnapshot{}, time.Time{}, err
+	}
+	for _, entry := range previous {
+		if !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		snapshot.PublicKeys = append(snapshot.PublicKeys, AppIdentityPublicKey{
+			Key:       append(ed25519.PublicKey(nil), entry.Key...),
+			ExpiresAt: entry.ExpiresAt,
+		})
+		if entry.ExpiresAt.Before(expiresAt) {
+			expiresAt = entry.ExpiresAt
+		}
+	}
+	return snapshot, expiresAt, nil
+}
+
+func cloneAppIdentityKeySnapshot(snapshot AppIdentityKeySnapshot) AppIdentityKeySnapshot {
+	clone := AppIdentityKeySnapshot{
+		SigningKey: append(ed25519.PrivateKey(nil), snapshot.SigningKey...),
+		SubjectKey: append([]byte(nil), snapshot.SubjectKey...),
+		PublicKeys: make([]AppIdentityPublicKey, len(snapshot.PublicKeys)),
+	}
+	for i, key := range snapshot.PublicKeys {
+		clone.PublicKeys[i] = AppIdentityPublicKey{
+			Key:       append(ed25519.PublicKey(nil), key.Key...),
+			ExpiresAt: key.ExpiresAt,
+		}
+	}
+	return clone
+}
+
 // CurrentAppIdentitySigningKey returns the current Ed25519 private key.
 func (r *AppIdentityKeyRing) CurrentAppIdentitySigningKey(ctx context.Context) (ed25519.PrivateKey, error) {
-	secret, err := r.getOrCreate(ctx)
+	snapshot, err := r.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	privateKey := append(ed25519.PrivateKey(nil), secret.Data[appIdentitySigningKeyField]...)
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("app identity key ring %s/%s has an invalid signing key", r.namespace, appIdentityKeyRingSecretName)
-	}
-	return privateKey, nil
+	return snapshot.SigningKey, nil
 }
 
 // AppIdentitySubjectKey returns the stable key used to derive app-scoped
 // pseudonymous subjects. It is independent of the signing key and never
 // changes when the signing key rotates.
 func (r *AppIdentityKeyRing) AppIdentitySubjectKey(ctx context.Context) ([]byte, error) {
-	secret, err := r.getOrCreate(ctx)
+	snapshot, err := r.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	key := append([]byte(nil), secret.Data[appIdentitySubjectKeyField]...)
-	if len(key) < delegatedProofKeyMinLength {
-		return nil, fmt.Errorf("app identity key ring %s/%s has an invalid subject key", r.namespace, appIdentityKeyRingSecretName)
-	}
-	return key, nil
+	return snapshot.SubjectKey, nil
 }
 
 // AppIdentityPublicKeys returns the current verification key followed by all
 // prior keys whose overlap window has not expired.
 func (r *AppIdentityKeyRing) AppIdentityPublicKeys(ctx context.Context) ([]AppIdentityPublicKey, error) {
-	secret, err := r.getOrCreate(ctx)
+	snapshot, err := r.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	privateKey := ed25519.PrivateKey(secret.Data[appIdentitySigningKeyField])
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("app identity key ring %s/%s has an invalid signing key", r.namespace, appIdentityKeyRingSecretName)
-	}
-	keys := []AppIdentityPublicKey{{Key: append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)}}
-	previous, err := decodeAppIdentityPreviousKeys(secret.Data[appIdentityPreviousKeysField])
-	if err != nil {
-		return nil, err
-	}
-	now := r.now()
-	for _, entry := range previous {
-		if len(entry.Key) != ed25519.PublicKeySize || !now.Before(entry.ExpiresAt) {
-			continue
-		}
-		keys = append(keys, AppIdentityPublicKey{
-			Key:       append(ed25519.PublicKey(nil), entry.Key...),
-			ExpiresAt: entry.ExpiresAt,
-		})
-	}
-	return keys, nil
+	return snapshot.PublicKeys, nil
 }
 
 // RotateAppIdentitySigningKey explicitly rotates assertion signing and keeps
@@ -154,10 +273,7 @@ func (r *AppIdentityKeyRing) RotateAppIdentitySigningKey(ctx context.Context) er
 		return fmt.Errorf("app identity key ring is unavailable")
 	}
 	secrets := r.client.CoreV1().Secrets(r.namespace)
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if _, err := r.getOrCreate(ctx); err != nil {
-			return err
-		}
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Re-fetch so this update is based on the latest keyring and resource
 		// version, even if another replica rotated concurrently.
 		secret, err := secrets.Get(ctx, appIdentityKeyRingSecretName, metav1.GetOptions{})
@@ -199,8 +315,18 @@ func (r *AppIdentityKeyRing) RotateAppIdentitySigningKey(ctx context.Context) er
 		if _, err := secrets.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 			return err
 		}
+		r.invalidateSnapshot()
 		return nil
 	})
+	return err
+}
+
+func (r *AppIdentityKeyRing) invalidateSnapshot() {
+	r.cacheMu.Lock()
+	r.cacheGeneration++
+	r.cachedSnapshot = nil
+	r.cacheExpiresAt = time.Time{}
+	r.cacheMu.Unlock()
 }
 
 func (r *AppIdentityKeyRing) getOrCreate(ctx context.Context) (*corev1.Secret, error) {

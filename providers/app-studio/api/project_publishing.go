@@ -123,12 +123,13 @@ type projectPublishingPublicationView struct {
 }
 
 type projectPublishingGrantView struct {
-	Name        string `json:"name"`
-	UID         string `json:"uid,omitempty"`
-	User        string `json:"user"`
-	Publication string `json:"publication"`
-	Revoked     bool   `json:"revoked"`
-	Phase       string `json:"phase,omitempty"`
+	Name             string `json:"name"`
+	UID              string `json:"uid,omitempty"`
+	User             string `json:"user"`
+	Publication      string `json:"publication"`
+	Revoked          bool   `json:"revoked"`
+	Phase            string `json:"phase,omitempty"`
+	MigrationPending bool   `json:"migrationPending,omitempty"`
 }
 
 type projectPublishingResponse struct {

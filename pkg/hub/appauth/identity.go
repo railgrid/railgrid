@@ -21,6 +21,7 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -46,6 +47,9 @@ const (
 	IdentityIssuerPath          = "/auth/apps/identity"
 	identityAssertionTTL        = 15 * time.Minute
 	identitySubjectKeyMinLength = 32
+	identityPKCEMethodS256      = "S256"
+	identityPKCEVerifierMin     = 43
+	identityPKCEVerifierMax     = 128
 )
 
 var identityEnvironmentRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
@@ -54,23 +58,25 @@ var identityEnvironmentRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 // query parameters; duplicate parameters are rejected rather than silently
 // choosing one value.
 type identityAuthorizeInput struct {
-	Ref         InstanceRef
-	AppID       string
-	RedirectURI string
-	Origin      string
-	State       string
+	Ref           InstanceRef
+	AppID         string
+	RedirectURI   string
+	Origin        string
+	State         string
+	CodeChallenge string
 }
 
 // identityExchangeRequest is the app proxy's server-to-server redemption.
 // Every field is checked against the one-use code and the current instance.
 type identityExchangeRequest struct {
-	Code     string `json:"code"`
-	Origin   string `json:"origin"`
-	Cluster  string `json:"cluster"`
-	Group    string `json:"group"`
-	Resource string `json:"resource"`
-	Name     string `json:"name"`
-	AppID    string `json:"app_id"`
+	Code         string `json:"code"`
+	Origin       string `json:"origin"`
+	Cluster      string `json:"cluster"`
+	Group        string `json:"group"`
+	Resource     string `json:"resource"`
+	Name         string `json:"name"`
+	AppID        string `json:"app_id"`
+	CodeVerifier string `json:"code_verifier"`
 }
 
 // IdentityExchangeResponse contains the signed assertion and the small
@@ -217,7 +223,7 @@ func (h *Handler) HandleIdentityAuthorize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	code, err := h.mintIdentityCode(r.Context(), input.Ref, input.Origin, app, session.Identity)
+	code, err := h.mintIdentityCode(r.Context(), input.Ref, input.Origin, input.CodeChallenge, app, session.Identity)
 	if err != nil {
 		h.renderError(w, http.StatusInternalServerError, "App sign-in is unavailable",
 			"The platform could not complete sign-in. Try again shortly.")
@@ -248,7 +254,8 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 	}
 	ref := InstanceRef{Cluster: req.Cluster, Group: req.Group, Resource: req.Resource, Name: req.Name}
 	origin, originErr := canonicalOriginOnly(req.Origin)
-	if ref.validate() != nil || !strings.HasPrefix(req.Code, identityAppCodePrefix) || originErr != nil || !validAppID(req.AppID) {
+	if ref.validate() != nil || !strings.HasPrefix(req.Code, identityAppCodePrefix) || originErr != nil ||
+		!validAppID(req.AppID) || !validIdentityCodeVerifier(req.CodeVerifier) {
 		http.Error(w, "malformed identity exchange request", http.StatusBadRequest)
 		return
 	}
@@ -256,6 +263,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 	record, ok := h.codes.Take(r.Context(), req.Code)
 	if !ok || record.Purpose != IdentityPurpose || record.Ref.key() != ref.key() ||
 		record.RedirectOrigin != origin || record.AppID != req.AppID || record.InstanceUID == "" ||
+		!validIdentityCodeChallenge(record.CodeChallenge) || !identityCodeVerifierMatches(req.CodeVerifier, record.CodeChallenge) ||
 		record.Identity.UserID == "" || record.Identity.RBACIdentity == "" || record.Identity.AppScope != "" ||
 		!h.now().Before(record.ExpiresAt) {
 		http.Error(w, "app sign-in expired", http.StatusGone)
@@ -334,13 +342,19 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) HandleIdentityJWKS(w http.ResponseWriter, r *http.Request) {
 	noStore(w)
-	privateKey, err := h.currentIdentitySigningKey(r.Context())
-	if err != nil {
-		klog.FromContext(r.Context()).Error(err, "app identity JWKS key unavailable")
-		http.Error(w, "app identity keys are temporarily unavailable", http.StatusServiceUnavailable)
-		return
+	var privateKey ed25519.PrivateKey
+	var publicKeys []ed25519.PublicKey
+	var err error
+	if h.identityKeys != nil {
+		var keys IdentityKeySnapshot
+		keys, err = h.identityKeySnapshot(r.Context())
+		privateKey, publicKeys = keys.SigningKey, keys.PublicKeys
+	} else {
+		privateKey, err = h.currentIdentitySigningKey(r.Context())
+		if err == nil {
+			publicKeys, err = h.loadIdentityPublicKeys(r.Context())
+		}
 	}
-	publicKeys, err := h.loadIdentityPublicKeys(r.Context())
 	if err != nil {
 		klog.FromContext(r.Context()).Error(err, "app identity JWKS public keys unavailable")
 		http.Error(w, "app identity keys are temporarily unavailable", http.StatusServiceUnavailable)
@@ -388,7 +402,7 @@ func parseIdentityAuthorizeInput(u *url.URL) (identityAuthorizeInput, error) {
 	}
 	for key, values := range q {
 		switch key {
-		case "cluster", "group", "resource", "name", "app_id", "redirect_uri", "state":
+		case "cluster", "group", "resource", "name", "app_id", "redirect_uri", "state", "code_challenge", "code_challenge_method":
 		case retriedParam:
 			if len(values) != 1 || values[0] != "1" {
 				return input, fmt.Errorf("invalid %s", retriedParam)
@@ -424,6 +438,13 @@ func parseIdentityAuthorizeInput(u *url.URL) (identityAuthorizeInput, error) {
 	}
 	if input.State, err = getOne("state"); err != nil || !stateRE.MatchString(input.State) {
 		return input, fmt.Errorf("invalid state")
+	}
+	if input.CodeChallenge, err = getOne("code_challenge"); err != nil || !validIdentityCodeChallenge(input.CodeChallenge) {
+		return input, fmt.Errorf("invalid code_challenge")
+	}
+	challengeMethod, err := getOne("code_challenge_method")
+	if err != nil || challengeMethod != "S256" {
+		return input, fmt.Errorf("code_challenge_method must be S256")
 	}
 	if input.Ref.validate() != nil {
 		return input, fmt.Errorf("invalid instance reference")
@@ -506,6 +527,37 @@ func validAppID(appID string) bool {
 	return ok && segmentRE.MatchString(projectUID) && environment != "" && !strings.Contains(environment, "/") && identityEnvironmentRE.MatchString(environment)
 }
 
+func validIdentityCodeVerifier(verifier string) bool {
+	if len(verifier) < identityPKCEVerifierMin || len(verifier) > identityPKCEVerifierMax {
+		return false
+	}
+	for i := 0; i < len(verifier); i++ {
+		c := verifier[i]
+		if ('A' > c || c > 'Z') && ('a' > c || c > 'z') && ('0' > c || c > '9') &&
+			c != '-' && c != '.' && c != '_' && c != '~' {
+			return false
+		}
+	}
+	return true
+}
+
+func validIdentityCodeChallenge(challenge string) bool {
+	if len(challenge) != base64.RawURLEncoding.EncodedLen(sha256.Size) {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(challenge)
+	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == challenge
+}
+
+func identityCodeVerifierMatches(verifier, challenge string) bool {
+	if !validIdentityCodeVerifier(verifier) || !validIdentityCodeChallenge(challenge) {
+		return false
+	}
+	digest := sha256.Sum256([]byte(verifier))
+	actual := base64.RawURLEncoding.EncodeToString(digest[:])
+	return subtle.ConstantTimeCompare([]byte(actual), []byte(challenge)) == 1
+}
+
 func validIdentityApp(app IdentityApp) bool {
 	if !app.Enabled || app.InstanceUID == "" || app.AppID == "" || !validAppID(app.AppID) || app.PublishedOrigin == "" {
 		return false
@@ -579,7 +631,10 @@ func (h *Handler) authorizeIdentityAccess(ctx context.Context, identity browsers
 	return review.Status.Allowed, nil
 }
 
-func (h *Handler) mintIdentityCode(ctx context.Context, ref InstanceRef, redirectOrigin string, app IdentityApp, identity browsersession.Identity) (string, error) {
+func (h *Handler) mintIdentityCode(ctx context.Context, ref InstanceRef, redirectOrigin, codeChallenge string, app IdentityApp, identity browsersession.Identity) (string, error) {
+	if !validIdentityCodeChallenge(codeChallenge) {
+		return "", fmt.Errorf("identity code challenge is required")
+	}
 	buf := make([]byte, 32)
 	if _, err := io.ReadFull(h.random, buf); err != nil {
 		return "", err
@@ -593,6 +648,7 @@ func (h *Handler) mintIdentityCode(ctx context.Context, ref InstanceRef, redirec
 		AppID:          app.AppID,
 		Environment:    app.Environment,
 		InstanceUID:    app.InstanceUID,
+		CodeChallenge:  codeChallenge,
 		Identity:       identity,
 		ExpiresAt:      h.now().Add(codeTTL),
 	}
@@ -606,11 +662,19 @@ func (h *Handler) signIdentityAssertion(ctx context.Context, identity browserses
 	if !validIdentityApp(app) || identity.UserID == "" {
 		return "", fmt.Errorf("identity and app descriptor are required")
 	}
-	privateKey, err := h.currentIdentitySigningKey(ctx)
-	if err != nil {
-		return "", err
+	var privateKey ed25519.PrivateKey
+	var subjectKey []byte
+	var err error
+	if h.identityKeys != nil {
+		var keys IdentityKeySnapshot
+		keys, err = h.identityKeySnapshot(ctx)
+		privateKey, subjectKey = keys.SigningKey, keys.SubjectKey
+	} else {
+		privateKey, err = h.currentIdentitySigningKey(ctx)
+		if err == nil {
+			subjectKey, err = h.identitySubjectKey(ctx)
+		}
 	}
-	subjectKey, err := h.identitySubjectKey(ctx)
 	if err != nil {
 		return "", err
 	}

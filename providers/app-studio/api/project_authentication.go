@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -125,9 +126,25 @@ func (s *Server) configureAuthentication(ctx context.Context, c *asclient.Client
 		return nil, err
 	}
 	if current.UID != p.UID {
-		return nil, fmt.Errorf("project identity changed while configuring authentication")
+		return nil, apierrors.NewConflict(projectsGVR.GroupResource(), p.Name, fmt.Errorf("project identity changed while configuring authentication"))
 	}
-	if current.Spec.Authentication.Enabled == enabled {
+	changed := current.Spec.Authentication.Enabled != enabled
+	current.Spec.Authentication.Enabled = enabled
+	for ei := range current.Spec.Environments {
+		for bi := range current.Spec.Environments[ei].Bindings {
+			b := current.Spec.Environments[ei].Bindings[bi]
+			if b.Provider != "app-studio" {
+				continue
+			}
+			b, err = bindings.ApplyAuthentication(current, current.Spec.Environments[ei].Name, b)
+			if err != nil {
+				return nil, err
+			}
+			changed = changed || !apiequality.Semantic.DeepEqual(current.Spec.Environments[ei].Bindings[bi], b)
+			current.Spec.Environments[ei].Bindings[bi] = b
+		}
+	}
+	if !changed {
 		return current, nil
 	}
 	if enabled {
@@ -143,20 +160,6 @@ func (s *Server) configureAuthentication(ctx context.Context, c *asclient.Client
 		}
 		if !projectAuthenticationSupported(info) {
 			return nil, newValidationError("the selected template does not support Railgrid Auth; update the application template before enabling it")
-		}
-	}
-	current.Spec.Authentication.Enabled = enabled
-	for ei := range current.Spec.Environments {
-		for bi := range current.Spec.Environments[ei].Bindings {
-			b := current.Spec.Environments[ei].Bindings[bi]
-			if b.Provider != "app-studio" {
-				continue
-			}
-			b, err = bindings.ApplyAuthentication(current, current.Spec.Environments[ei].Name, b)
-			if err != nil {
-				return nil, err
-			}
-			current.Spec.Environments[ei].Bindings[bi] = b
 		}
 	}
 	return c.Projects().Update(ctx, current, metav1.UpdateOptions{})

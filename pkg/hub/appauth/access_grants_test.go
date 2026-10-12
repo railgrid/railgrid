@@ -239,10 +239,11 @@ func TestAppAccessGrantBrokerCreatesOnlyFixedNamedGrant(t *testing.T) {
 	}
 }
 
-func TestAppAccessGrantBrokerMigratesCurrentProjectGrantOnList(t *testing.T) {
+func TestAppAccessGrantBrokerListsLegacyApprovalsWithoutRBACMigration(t *testing.T) {
 	client := brokerTestClient(brokerTestInstanceUID)
 	brokerSeedLegacyGrant(t, client, brokerTestProjectUID, "member", "railgrid:member@example.test")
 	handler := brokerTestHandler(client, true)
+	before := len(client.Actions())
 	response := httptest.NewRecorder()
 	handler.Handle(response, brokerTestRequest(brokerListBody(), "org", "workspace", brokerListCall()))
 	if response.Code != http.StatusOK {
@@ -252,40 +253,34 @@ func TestAppAccessGrantBrokerMigratesCurrentProjectGrantOnList(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Items) != 1 || result.Items[0].User != "member" {
-		t.Fatalf("migrated grants = %#v", result.Items)
+	if len(result.Items) != 1 || result.Items[0].User != "member" || !result.Items[0].MigrationPending {
+		t.Fatalf("legacy approvals = %#v", result.Items)
 	}
 	role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessRoleName("app-demo-prod"), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if role.GetLabels()[appAccessProjectUID] != brokerTestProjectUID || role.GetLabels()[appAccessInstanceUID] != brokerTestInstanceUID ||
-		len(role.GetOwnerReferences()) != 2 {
-		t.Fatalf("migrated role metadata labels=%#v owners=%#v", role.GetLabels(), role.GetOwnerReferences())
-	}
-	rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
-	if len(rules) != 2 {
-		t.Fatalf("migrated legacy role rules = %#v", rules)
+	if role.GetLabels()[appAccessProjectUID] != brokerTestProjectUID || role.GetLabels()[appAccessInstanceUID] != "" ||
+		len(role.GetOwnerReferences()) != 0 {
+		t.Fatalf("list migrated legacy role: labels=%#v owners=%#v", role.GetLabels(), role.GetOwnerReferences())
 	}
 	binding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessBindingName("app-demo-prod", "member"), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binding.GetLabels()[appAccessProjectUID] != brokerTestProjectUID || binding.GetLabels()[appAccessInstanceUID] != brokerTestInstanceUID ||
-		len(binding.GetOwnerReferences()) != 2 {
-		t.Fatalf("migrated binding metadata labels=%#v owners=%#v", binding.GetLabels(), binding.GetOwnerReferences())
+	if binding.GetLabels()[appAccessProjectUID] != brokerTestProjectUID || binding.GetLabels()[appAccessInstanceUID] != "" ||
+		len(binding.GetOwnerReferences()) != 0 {
+		t.Fatalf("list migrated legacy binding: labels=%#v owners=%#v", binding.GetLabels(), binding.GetOwnerReferences())
 	}
-	identityRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessIdentityRoleName(appAccessGrantRequest{
+	if _, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessIdentityRoleName(appAccessGrantRequest{
 		Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID,
-	}), metav1.GetOptions{})
-	if err != nil || len(identityRole.GetOwnerReferences()) != 2 {
-		t.Fatalf("migrated UID-fenced role = %#v err=%v", identityRole, err)
+	}), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("list created UID-fenced role: err=%v", err)
 	}
-	identityBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessIdentityBindingName(appAccessGrantRequest{
-		Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID,
-	}, "member"), metav1.GetOptions{})
-	if err != nil || len(identityBinding.GetOwnerReferences()) != 2 {
-		t.Fatalf("migrated UID-fenced binding = %#v err=%v", identityBinding, err)
+	for _, action := range client.Actions()[before:] {
+		if action.GetVerb() == "create" || action.GetVerb() == "update" || action.GetVerb() == "delete" {
+			t.Fatalf("list performed an RBAC migration write: %#v", action)
+		}
 	}
 }
 
@@ -312,7 +307,7 @@ func TestAppAccessGrantBrokerListsLegacyApprovalsWithoutUpdatePermission(t *test
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Items) != 1 || result.Items[0].User != "member" {
+	if len(result.Items) != 1 || result.Items[0].User != "member" || !result.Items[0].MigrationPending {
 		t.Fatalf("read-only legacy approval list = %#v", result.Items)
 	}
 	role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessRoleName("app-demo-prod"), metav1.GetOptions{})
@@ -337,6 +332,32 @@ func TestAppAccessGrantBrokerListsLegacyApprovalsWithoutUpdatePermission(t *test
 	for _, action := range client.Actions()[before:] {
 		if action.GetVerb() == "create" || action.GetVerb() == "update" || action.GetVerb() == "delete" {
 			t.Fatalf("read-only list performed mutation action: %#v", action)
+		}
+	}
+}
+
+func TestAppAccessGrantBrokerListsWhenMigrationStatusReadsFail(t *testing.T) {
+	client := brokerTestClient(brokerTestInstanceUID)
+	brokerSeedLegacyGrant(t, client, brokerTestProjectUID, "member", "railgrid:member@example.test")
+	client.PrependReactor("get", "clusterroles", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("RBAC read temporarily unavailable")
+	})
+	before := len(client.Actions())
+	response := httptest.NewRecorder()
+	brokerTestHandler(client, true).Handle(response, brokerTestRequest(brokerListBody(), "org", "workspace", brokerListCall()))
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var result appAccessGrantResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 1 || !result.Items[0].MigrationPending {
+		t.Fatalf("status-read failure hint = %#v", result.Items)
+	}
+	for _, action := range client.Actions()[before:] {
+		if action.GetVerb() == "create" || action.GetVerb() == "update" || action.GetVerb() == "delete" {
+			t.Fatalf("migration status probe attempted a write: %#v", action)
 		}
 	}
 }
@@ -374,7 +395,7 @@ func TestAppAccessGrantBrokerListsCurrentGrantsWithoutRewritingThem(t *testing.T
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Items) != 1 || result.Items[0].User != "member" {
+	if len(result.Items) != 1 || result.Items[0].User != "member" || result.Items[0].MigrationPending {
 		t.Fatalf("current approval list = %#v", result.Items)
 	}
 	if len(verbs) != 2 || verbs[0] != "get" || verbs[1] != "get" {
@@ -492,10 +513,9 @@ func TestAppAccessGrantBrokerRejectsAggregatedManagedRoles(t *testing.T) {
 		if recognizedAppAccessRole(role, req) {
 			t.Fatal("ClusterRole with aggregationRule was recognized for migration")
 		}
-		response := httptest.NewRecorder()
-		brokerTestHandler(client, true).Handle(response, brokerTestRequest(brokerListBody(), "org", "workspace", brokerListCall()))
-		if response.Code != http.StatusServiceUnavailable {
-			t.Fatalf("list status = %d, want %d; body=%s", response.Code, http.StatusServiceUnavailable, response.Body.String())
+		reconciler := appAccessGrantMigrationReconciler{handler: brokerTestHandler(client, true)}
+		if err := reconciler.reconcileInstance(context.Background(), "cluster-id", "app-demo-prod"); err == nil {
+			t.Fatal("background migration accepted a ClusterRole with aggregationRule")
 		}
 		persisted, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), role.GetName(), metav1.GetOptions{})
 		if err != nil {

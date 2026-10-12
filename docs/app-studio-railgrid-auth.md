@@ -19,6 +19,13 @@ binding before accepting that descriptor. Supplying identity values on a
 standalone Instance does not create a Project identity or select another app's
 audience.
 
+The hub canonicalizes its external HTTPS origin for the identity issuer,
+including host case, the default `:443` port, and trailing slashes. An HTTP URL
+or a URL containing credentials, a path prefix, query, or fragment disables
+only the optional identity routes and logs the reason; the hub and ordinary
+published-app access authentication continue to start. Enabling Railgrid Auth
+still requires a usable HTTPS identity service.
+
 The `authentication-grants` Project custom subresource lists, approves, and
 revokes existing production app users. Approval takes `{user, appId}`, where
 `user` is an existing platform User identifier and `appId` must identify the
@@ -59,10 +66,28 @@ That identity permission lives in a separate role bound to the Project and
 Instance UIDs, so a stale
 binding cannot acquire it when an app name is reused. Reusing a deleted
 Project's name does not carry its app approvals into the replacement.
-The broker can migrate grants with the same recorded Project UID when the owner
-opens grant management; grants belonging to a different or unknown Project UID
-are never adopted. Existing local grants created before this UID check need
-that verified migration before they can issue new identities.
+Listing grants is strictly read-only, including when the caller also has update
+permission. A grant's `migrationPending` flag indicates that its UID-specific
+identity permission still needs migration or could not be confirmed by a read.
+A leader-elected hub controller watches the provider catalog and
+each verified platform or organization-owned Infrastructure APIExport. It
+replays existing Instances at startup and reconciles Instance changes across
+that export's consumer workspaces. Before migrating an approval it re-reads the
+Project, its environment binding, the Instance owner, and the existing managed
+RBAC objects in the same tenant workspace. Grants belonging to a different or
+unknown Project UID are never adopted.
+Recognized stale grants for a replaced Project are removed with UID and resource
+version delete preconditions, so their old name-based private-app permission
+cannot carry forward. Unknown ownership or unexpected RBAC shapes are preserved
+for operator review.
+
+The migrated labels, owner references, and UID-specific roles are durable KRM
+state. Reconciliation is idempotent: a failed write retries with controller
+backoff, and a restart replays the persisted Instances rather than relying on
+an in-memory migration checkpoint. This migration preserves existing approvals
+and creates no new accounts or memberships. A legacy approval remains unable
+to issue an identity until its verified migration finishes. New approval,
+revocation, and reset operations remain explicit request-time mutations.
 
 Workspace members can sign in to every environment. Development previews and
 other non-production environments require workspace membership, even if an old
@@ -93,8 +118,13 @@ The access proxy reserves these endpoints when Railgrid Auth is enabled:
 
 The hub serves `/auth/apps/identity/authorize`, `/exchange`, and `/jwks`. The
 one-use code is bound to the exact app origin, audience, environment and tenant
-Instance UID. Its purpose is separate from preview and app-access codes. The hub
-rechecks the persisted descriptor and authorization at redemption.
+Instance UID, plus an S256 PKCE challenge. The access proxy generates a random
+verifier for each login and keeps it in the protected return-state cookie;
+only its hash travels through the hub login URL. Exchange requires the matching
+verifier, so an intercepted authorization code alone cannot obtain an assertion.
+Missing, malformed, or mismatched PKCE inputs fail closed. Its purpose is
+separate from preview and app-access codes. The hub rechecks the persisted
+descriptor and authorization at redemption.
 Authorization and exchange both re-read the platform User record. Deleted,
 missing, or changed accounts cannot obtain a new assertion from an old hub
 session; unavailable account lookups fail closed. Existing assertions retain
@@ -106,6 +136,12 @@ email and RBAC usernames are not application database keys. The key ring is
 persisted in the hub's controllers workspace, with an independent subject key
 and an explicit rotation operation that retains prior public keys through the
 assertion lifetime. No hub or provider bearer reaches the application.
+
+Signing and JWKS responses each use one coherent persisted-key snapshot. The
+hub coalesces simultaneous cache misses and caches that snapshot for at most
+ten seconds, or until an overlapping public key expires. Rotation invalidates
+the rotating process's cache; other hub replicas observe the new key within
+ten seconds. An expired cache never hides a failed Secret read.
 
 Each login attempt uses a Secure, HttpOnly `__Host-` return-state cookie with
 `Path=/` and no Domain attribute, so sibling applications cannot plant the
@@ -125,6 +161,32 @@ mutations require the configured exact Origin. Revocation is bounded by the
 fifteen-minute session lifetime. Cached known verification keys keep valid
 sessions usable during a hub outage; new sign-ins, unknown keys and renewals
 fail closed.
+
+Deploy the updated hub and access gates together when adding PKCE. Old login
+attempts and gates without a verifier are rejected; users can start a new login
+after the rollout. There is no fallback to code-only redemption.
+
+## Key rotation
+
+An operator with `get` and `update` access to the existing
+`railgrid-app-identity-keyring` Secret in the hub's controllers workspace can
+rotate the signing key with an explicit KCP kubeconfig:
+
+```sh
+railgrid-hub rotate-app-identity-key \
+  --kubeconfig /path/to/kcp-admin.kubeconfig \
+  --context kcp-admin
+```
+
+The command scopes the client to `root:railgrid:system:controllers` and uses
+the supplied file's current context when `--context` is omitted. It does not
+start the hub, create a key ring, use ambient credentials, or bypass KCP RBAC.
+It preserves the subject-pseudonym key and existing unexpired public keys,
+adds the previous signing key to the fifteen-minute overlap, and updates the
+Secret using its resource version. Retry the command if a transient dependency
+failure prevents the update; malformed or unavailable key material fails closed.
+This is an overlapping signing-key rotation, not immediate revocation of
+existing assertions or recovery from compromise of the subject-pseudonym key.
 
 ## SDK and assistant skill
 
@@ -170,6 +232,9 @@ in `docs/app-studio-harness-validation.md`. Authentication-specific regressions
 cover app-only grants, incompatible enablement, sharing preservation, optional
 identity, signature and environment/instance mismatches, code replay, origin
 checks, key rotation, replica changes, logout and cached-key outages.
+Additional regressions cover intercepted codes and PKCE validation, cached
+Secret read counts and concurrent refreshes, optional HTTP-issuer startup,
+operator rotation RBAC, and authentication binding repair without a flag change.
 
 Live validation uses an owned App Studio application and normal browser sessions.
 Check anonymous access, two users' separate records, denied access, logout,

@@ -45,6 +45,7 @@ import (
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/backend"
+	"github.com/railgrid/provider-infrastructure/internal/huborigin"
 )
 
 // Name is the backend identifier operators put in Template.spec.backend.
@@ -148,14 +149,15 @@ func accessGateTokens() map[string]string {
 	if hubURL == "" {
 		hubURL = strings.TrimSpace(os.Getenv("RAILGRID_HUB_URL"))
 	}
+	hubURL = canonicalHubURL(hubURL)
 	hubPublicURL := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_PUBLIC_URL"))
 	if hubPublicURL == "" {
 		hubPublicURL = hubURL
 	}
 	// This origin feeds both the gate's browser redirects and the app SDK's
-	// issuer URL. Remove a configured trailing slash once here so app templates
-	// can append fixed endpoint paths without producing a double slash.
-	hubPublicURL = strings.TrimRight(hubPublicURL, "/")
+	// issuer URL, so use the same host/scheme/default-port canonicalization the
+	// gate applies when it validates RAILGRID_AUTH_ISSUER.
+	hubPublicURL = canonicalHubURL(hubPublicURL)
 	hubInsecure := "false"
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_INSECURE")), "true") {
 		hubInsecure = "true"
@@ -167,6 +169,16 @@ func accessGateTokens() map[string]string {
 		hubPublicURLToken:               hubPublicURL,
 		hubInsecureToken:                hubInsecure,
 	}
+}
+
+func canonicalHubURL(raw string) string {
+	if normalized, err := huborigin.Normalize(raw); err == nil {
+		return normalized
+	}
+	// Preserve the previous substitution behavior for malformed optional
+	// values. The access proxy validates configured hub URLs before use, and
+	// Railgrid Auth remains disabled unless its required metadata is present.
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
 // appPublicPortSuffix turns RAILGRID_APP_PUBLIC_PORT into the ":<port>" suffix

@@ -69,6 +69,9 @@ type AppAccessGrant struct {
 	Publication string `json:"publication"`
 	Revoked     bool   `json:"revoked"`
 	Phase       string `json:"phase"`
+	// MigrationPending is a read-only hint that the hub migration controller
+	// has not yet upgraded this grant's RBAC metadata.
+	MigrationPending bool `json:"migrationPending,omitempty"`
 }
 
 type appAccessGrantRequest struct {
@@ -241,22 +244,6 @@ func (h *AppAccessGrantHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if req.Operation == "list" {
-		needsMigration, err := h.currentAppAccessGrantMigrationNeeded(r.Context(), client, project, instance, req)
-		if err != nil {
-			http.Error(w, "app access is temporarily unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if needsMigration && h.authorized(r.Context(), call, cluster, project, "update") && h.authorized(r.Context(), call, cluster, instance, "update") {
-			if err := h.migrateCurrentAppAccessGrants(r.Context(), client, project, instance, req); err != nil {
-				http.Error(w, "app access is temporarily unavailable", http.StatusServiceUnavailable)
-				return
-			}
-		}
-	} else if err := h.migrateCurrentAppAccessGrants(r.Context(), client, project, instance, req); err != nil {
-		http.Error(w, "app access is temporarily unavailable", http.StatusServiceUnavailable)
-		return
-	}
 	if req.Operation == "create" {
 		if err := h.ensureAppAccessRole(r.Context(), client, project, instance, req); err != nil {
 			http.Error(w, "app access is temporarily unavailable", http.StatusServiceUnavailable)
@@ -279,7 +266,7 @@ func (h *AppAccessGrantHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	items, err := h.listAppAccessBindings(r.Context(), client, project, req)
+	items, err := h.listAppAccessBindings(r.Context(), client, project, instance, req)
 	if err != nil {
 		http.Error(w, "app access is temporarily unavailable", http.StatusServiceUnavailable)
 		return
@@ -533,9 +520,10 @@ func (h *AppAccessGrantHandler) ensureAppAccessBinding(ctx context.Context, clie
 }
 
 // migrateCurrentAppAccessGrants upgrades branch-created grants only after the
-// live target has passed Project UID, environment binding, and Instance owner
-// checks. A stale Project UID is deliberately left untouched for safe cleanup
-// by a later create; it is never relabeled to the replacement Project.
+// migration reconciler has passed Project UID, environment binding, and
+// Instance owner checks. Recognized grants from a prior Project UID are
+// removed with delete preconditions; they are never relabeled to the
+// replacement Project.
 func (h *AppAccessGrantHandler) migrateCurrentAppAccessGrants(ctx context.Context, client dynamic.Interface, project, instance *unstructured.Unstructured, req appAccessGrantRequest) error {
 	roleName := appAccessRoleName(req.Name)
 	role, err := client.Resource(appAccessClusterRoleGVR).Get(ctx, roleName, metav1.GetOptions{})
@@ -546,9 +534,18 @@ func (h *AppAccessGrantHandler) migrateCurrentAppAccessGrants(ctx context.Contex
 		return err
 	}
 	roleLabels := role.GetLabels()
-	if roleLabels[appAccessLabel] != req.Name || roleLabels[appAccessProject] != project.GetName() ||
-		roleLabels[appAccessProjectUID] != req.ProjectUID {
+	if roleLabels[appAccessLabel] != req.Name || roleLabels[appAccessProject] != project.GetName() {
 		return nil
+	}
+	recordedProjectUID := roleLabels[appAccessProjectUID]
+	if recordedProjectUID == "" {
+		return nil
+	}
+	if recordedProjectUID != req.ProjectUID {
+		if !recognizedAppAccessRole(role, req) {
+			return nil
+		}
+		return h.removeStaleAppAccessRole(ctx, client, role, req, recordedProjectUID)
 	}
 	if !recognizedAppAccessRole(role, req) {
 		return fmt.Errorf("ClusterRole %q has an unexpected app-access policy", roleName)
@@ -580,77 +577,18 @@ func (h *AppAccessGrantHandler) migrateCurrentAppAccessGrants(ctx context.Contex
 				return err
 			}
 		}
-		if err := h.ensureIdentityAppAccessGrant(ctx, client, project, instance, req, IdentityAccount{
-			User: user, RBACIdentity: bindingSubjectUser(binding),
-		}); err != nil {
+		account := IdentityAccount{User: user, RBACIdentity: bindingSubjectUser(binding)}
+		current, err := appAccessIdentityGrantCurrent(ctx, client, project, instance, req, account)
+		if err != nil {
 			return err
+		}
+		if !current {
+			if err := h.ensureIdentityAppAccessGrant(ctx, client, project, instance, req, account); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
-}
-
-// currentAppAccessGrantMigrationNeeded identifies only grants that are tied to
-// the currently verified Project UID. Missing or stale ProjectUID metadata is
-// never eligible for migration to a replacement Project.
-func (h *AppAccessGrantHandler) currentAppAccessGrantMigrationNeeded(ctx context.Context, client dynamic.Interface, project, instance *unstructured.Unstructured, req appAccessGrantRequest) (bool, error) {
-	roleName := appAccessRoleName(req.Name)
-	role, err := client.Resource(appAccessClusterRoleGVR).Get(ctx, roleName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	roleLabels := role.GetLabels()
-	if roleLabels[appAccessLabel] != req.Name || roleLabels[appAccessProject] != project.GetName() || roleLabels[appAccessProjectUID] != req.ProjectUID {
-		return false, nil
-	}
-	if !appAccessRoleStateCurrent(role, project, instance, req) {
-		return true, nil
-	}
-
-	selector := labels.Set{appAccessLabel: req.Name, appAccessProject: project.GetName()}.AsSelector().String()
-	bindings, err := client.Resource(appAccessBindingGVR).List(ctx, metav1.ListOptions{LabelSelector: selector})
-	if err != nil {
-		return false, err
-	}
-	for i := range bindings.Items {
-		binding := &bindings.Items[i]
-		if !validRoleReference(binding, roleName) || binding.GetLabels()[appAccessProjectUID] != req.ProjectUID {
-			continue
-		}
-		user := binding.GetLabels()[appAccessUserLabel]
-		identity := bindingSubjectUser(binding)
-		if !recognizedAppAccessBinding(binding, req, project.GetName(), req.ProjectUID, roleName) || user == "" || identity == "" {
-			return true, nil
-		}
-		if !appAccessBindingStateCurrent(binding, project, instance, req, user, identity, roleName) {
-			return true, nil
-		}
-		identityRoleName := appAccessIdentityRoleName(req)
-		identityRole, err := client.Resource(appAccessClusterRoleGVR).Get(ctx, identityRoleName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		account := IdentityAccount{User: user, RBACIdentity: identity}
-		if !appAccessIdentityRoleStateCurrent(identityRole, project, instance, req) {
-			return true, nil
-		}
-		identityBinding, err := client.Resource(appAccessBindingGVR).Get(ctx, appAccessIdentityBindingName(req, user), metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		if !appAccessIdentityBindingStateCurrent(identityBinding, project, instance, req, account, identityRoleName) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (h *AppAccessGrantHandler) removeStaleAppAccessRole(ctx context.Context, client dynamic.Interface, role *unstructured.Unstructured, req appAccessGrantRequest, oldProjectUID string) error {
@@ -915,6 +853,28 @@ func appAccessIdentityBindingStateCurrent(binding, project, instance *unstructur
 	return recognizedAppAccessIdentityBinding(binding, project, instance, req, account, roleName) && appAccessOwnerReferencesCurrent(binding, project, instance)
 }
 
+func appAccessIdentityGrantCurrent(ctx context.Context, client dynamic.Interface, project, instance *unstructured.Unstructured, req appAccessGrantRequest, account IdentityAccount) (bool, error) {
+	roleName := appAccessIdentityRoleName(req)
+	role, err := client.Resource(appAccessClusterRoleGVR).Get(ctx, roleName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !appAccessIdentityRoleStateCurrent(role, project, instance, req) {
+		return false, nil
+	}
+	binding, err := client.Resource(appAccessBindingGVR).Get(ctx, appAccessIdentityBindingName(req, account.User), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return appAccessIdentityBindingStateCurrent(binding, project, instance, req, account, roleName), nil
+}
+
 func appAccessOwnerReferencesCurrent(obj, project, instance *unstructured.Unstructured) bool {
 	owners := obj.GetOwnerReferences()
 	return len(owners) == 2 && owners[0].APIVersion == "ai.railgrid.ai/v1alpha1" && owners[0].Kind == "Project" &&
@@ -982,7 +942,7 @@ func recognizedAppAccessBinding(binding *unstructured.Unstructured, req appAcces
 		validRoleReference(binding, roleName) && bindingSubjectUser(binding) != ""
 }
 
-func (h *AppAccessGrantHandler) listAppAccessBindings(ctx context.Context, client dynamic.Interface, project *unstructured.Unstructured, req appAccessGrantRequest) ([]AppAccessGrant, error) {
+func (h *AppAccessGrantHandler) listAppAccessBindings(ctx context.Context, client dynamic.Interface, project, instance *unstructured.Unstructured, req appAccessGrantRequest) ([]AppAccessGrant, error) {
 	selector := labels.Set{appAccessLabel: req.Name, appAccessProject: project.GetName()}.AsSelector().String()
 	list, err := client.Resource(appAccessBindingGVR).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
@@ -990,6 +950,11 @@ func (h *AppAccessGrantHandler) listAppAccessBindings(ctx context.Context, clien
 	}
 	items := make([]AppAccessGrant, 0, len(list.Items))
 	roleName := appAccessRoleName(req.Name)
+	var role *unstructured.Unstructured
+	var roleErr error
+	if len(list.Items) > 0 {
+		role, roleErr = client.Resource(appAccessClusterRoleGVR).Get(ctx, roleName, metav1.GetOptions{})
+	}
 	for i := range list.Items {
 		binding := &list.Items[i]
 		if binding.GetLabels()[appAccessLabel] != req.Name || binding.GetLabels()[appAccessProject] != project.GetName() {
@@ -1002,10 +967,33 @@ func (h *AppAccessGrantHandler) listAppAccessBindings(ctx context.Context, clien
 		items = append(items, AppAccessGrant{
 			Name: binding.GetName(), UID: string(binding.GetUID()), User: user,
 			Publication: req.Name, Phase: "Active",
+			MigrationPending: appAccessGrantMigrationPending(ctx, client, project, instance, req, binding, role, roleErr),
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].User < items[j].User })
 	return items, nil
+}
+
+// appAccessGrantMigrationPending is an advisory read-only check. RBAC read
+// failures keep the hint pending without making an otherwise valid list fail.
+func appAccessGrantMigrationPending(ctx context.Context, client dynamic.Interface, project, instance *unstructured.Unstructured, req appAccessGrantRequest, binding, role *unstructured.Unstructured, roleErr error) bool {
+	roleName := appAccessRoleName(req.Name)
+	if roleErr != nil || !appAccessRoleStateCurrent(role, project, instance, req) {
+		return true
+	}
+	user := binding.GetLabels()[appAccessUserLabel]
+	identity := bindingSubjectUser(binding)
+	if !appAccessBindingStateCurrent(binding, project, instance, req, user, identity, roleName) {
+		return true
+	}
+	account := IdentityAccount{User: user, RBACIdentity: identity}
+	identityRoleName := appAccessIdentityRoleName(req)
+	identityRole, err := client.Resource(appAccessClusterRoleGVR).Get(ctx, identityRoleName, metav1.GetOptions{})
+	if err != nil || !appAccessIdentityRoleStateCurrent(identityRole, project, instance, req) {
+		return true
+	}
+	identityBinding, err := client.Resource(appAccessBindingGVR).Get(ctx, appAccessIdentityBindingName(req, user), metav1.GetOptions{})
+	return err != nil || !appAccessIdentityBindingStateCurrent(identityBinding, project, instance, req, account, identityRoleName)
 }
 
 func (h *AppAccessGrantHandler) revokeAppAccessBinding(ctx context.Context, client dynamic.Interface, project, instance *unstructured.Unstructured, req appAccessGrantRequest) error {
@@ -1016,8 +1004,7 @@ func (h *AppAccessGrantHandler) revokeAppAccessBinding(ctx context.Context, clie
 	if err != nil {
 		return err
 	}
-	if !recognizedAppAccessBinding(binding, req, project.GetName(), req.ProjectUID, appAccessRoleName(req.Name)) ||
-		binding.GetLabels()[appAccessInstanceUID] != req.UID {
+	if !recognizedAppAccessBinding(binding, req, project.GetName(), req.ProjectUID, appAccessRoleName(req.Name)) {
 		return fmt.Errorf("ClusterRoleBinding %q is not an app-access grant for this target", req.Grant)
 	}
 	if err := deleteIdentityAppAccessBinding(ctx, client, project, instance, req,
@@ -1035,8 +1022,7 @@ func (h *AppAccessGrantHandler) resetAppAccessBindings(ctx context.Context, clie
 	}
 	for i := range list.Items {
 		binding := &list.Items[i]
-		if !recognizedAppAccessBinding(binding, req, project.GetName(), req.ProjectUID, appAccessRoleName(req.Name)) ||
-			binding.GetLabels()[appAccessInstanceUID] != req.UID {
+		if !recognizedAppAccessBinding(binding, req, project.GetName(), req.ProjectUID, appAccessRoleName(req.Name)) {
 			continue
 		}
 		if err := deleteIdentityAppAccessBinding(ctx, client, project, instance, req,
