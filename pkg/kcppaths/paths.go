@@ -128,3 +128,26 @@ func SplitOrgProviderPath(path string) (orgUUID, name string, ok bool) {
 	}
 	return orgUUID, rest, true
 }
+
+// SplitWorkspacePath is the inverse of WorkspacePath: it attributes a tenant
+// workspace path (root:railgrid:tenants:<org>:<ws>) to its Org and workspace
+// UUIDs. An Org's own workspace, its providers container, or any path outside
+// the tenant tree reports ok=false.
+//
+// Hub controllers that reach a workspace by logical cluster (through an
+// APIExport virtual workspace) need this to find the consent the tenant
+// recorded under (org, workspace) — a Grant is keyed by UUIDs, not by cluster.
+func SplitWorkspacePath(path string) (orgUUID, wsUUID string, ok bool) {
+	rest, found := strings.CutPrefix(path, TenantsParent+":")
+	if !found {
+		return "", "", false
+	}
+	orgUUID, wsUUID, found = strings.Cut(rest, ":")
+	if !found || orgUUID == "" || wsUUID == "" || strings.Contains(wsUUID, ":") {
+		return "", "", false
+	}
+	if wsUUID == OrgProvidersWorkspaceName {
+		return "", "", false
+	}
+	return orgUUID, wsUUID, true
+}

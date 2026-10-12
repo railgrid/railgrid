@@ -637,44 +637,47 @@ func (b *Bootstrapper) EnsureChildWorkspaceRailgridBinding(ctx context.Context, 
 		return fmt.Errorf("creating child workspace client: %w", err)
 	}
 
-	allVerbs := []string{"get", "list", "watch", "create", "update", "delete"}
+	// The claim set is the embedded core.railgrid.ai export's, not a list kept
+	// here: the two must agree verb for verb or kcp reports
+	// PermissionClaimsMismatch and serves nothing for that claim.
+	claims, err := b.coreBindingClaims()
+	if err != nil {
+		return fmt.Errorf("building railgrid APIBinding claims: %w", err)
+	}
 	binding := &apisv1alpha2.APIBinding{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: apisv1alpha2.SchemeGroupVersion.String(),
 			Kind:       "APIBinding",
 		},
-		ObjectMeta: metav1.ObjectMeta{Name: "railgrid"},
+		ObjectMeta: metav1.ObjectMeta{Name: CoreBindingName},
 		Spec: apisv1alpha2.APIBindingSpec{
 			Reference: apisv1alpha2.BindingReference{
 				Export: &apisv1alpha2.ExportBindingReference{
 					Path: kcppaths.SystemControllers,
-					Name: "core.railgrid.ai",
+					Name: CoreExportName,
 				},
 			},
-			PermissionClaims: []apisv1alpha2.AcceptablePermissionClaim{
-				acceptedClaim("", "secrets", "", allVerbs),
-				acceptedClaim("", "namespaces", "", []string{"get", "list", "watch", "create"}),
-				acceptedClaim("", "configmaps", "", allVerbs),
-				acceptedClaim("", "serviceaccounts", "", allVerbs),
-				acceptedClaim("rbac.authorization.k8s.io", "clusterroles", "", allVerbs),
-				acceptedClaim("rbac.authorization.k8s.io", "clusterrolebindings", "", allVerbs),
-				// tenancy.kcp.io/workspaces, scoped by the tenancy APIExport's
-				// identity hash, must match the claim the core.railgrid.ai export
-				// declares. The edge mount reconciler creates/deletes and
-				// Owns(&Workspace{}) the per-edge mount workspaces, so it needs
-				// the full verb set the export offers.
-				acceptedClaim("tenancy.kcp.io", "workspaces", b.workspaceIdentityHash, allVerbs),
-			},
+			PermissionClaims: claims,
 		},
 	}
 	u, err := toUnstructured(binding)
 	if err != nil {
 		return fmt.Errorf("converting railgrid APIBinding to unstructured: %w", err)
 	}
-	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+	_, err = wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
+	switch {
+	case errors.IsAlreadyExists(err):
+		// A workspace enabled before the export grew a claim keeps the old
+		// set until something rewrites it; this is that something for the
+		// paths that re-ensure the binding (workspace create, org reconcile).
+		// The binding-claims reconciler covers every other workspace.
+		if _, err := updateAPIBindingClaims(ctx, wsClient, CoreBindingName, claims); err != nil {
+			return fmt.Errorf("updating railgrid APIBinding claims in %s/%s: %w", orgUUID, wsUUID, err)
+		}
+	case err != nil:
 		return fmt.Errorf("creating railgrid APIBinding in %s/%s: %w", orgUUID, wsUUID, err)
 	}
-	if err := waitForAPIBindingBound(ctx, wsClient, "railgrid"); err != nil {
+	if err := waitForAPIBindingBound(ctx, wsClient, CoreBindingName); err != nil {
 		return err
 	}
 	// The `workspace` WorkspaceType deliberately does NOT extend
@@ -1873,6 +1876,13 @@ type ProviderClaim struct {
 	// whose object does not match (stamping the matchLabels when they are
 	// simply absent). See docs/cross-provider-simplification.md X-4.
 	MatchLabels map[string]string
+	// Consented marks a composition claim whose acceptance is recorded in the
+	// workspace's Grant. The hub writes an unconsented composition Rejected as
+	// a placeholder, and that Rejected must not stick once consent arrives by
+	// any path — so the merge lets a Consented claim replace a held Rejected,
+	// while a provider's own claim (never Consented) keeps the tenant's
+	// rejection.
+	Consented bool
 }
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
@@ -1963,7 +1973,7 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 	_, err = wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
 	switch {
 	case errors.IsAlreadyExists(err):
-		if err := updateAPIBindingClaims(ctx, wsClient, bindingName, specClaims); err != nil {
+		if _, err := updateAPIBindingClaims(ctx, wsClient, bindingName, specClaims); err != nil {
 			return err
 		}
 	case err != nil:
@@ -1976,42 +1986,39 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 }
 
 // updateAPIBindingClaims sets spec.permissionClaims of an existing binding to
-// desired, retrying on conflict. A no-op when they already match.
-func updateAPIBindingClaims(ctx context.Context, wsClient dynamic.Interface, bindingName string, desired []apisv1alpha2.AcceptablePermissionClaim) error {
+// desired, retrying on conflict, and reports whether it wrote anything. A
+// no-op when they already match.
+func updateAPIBindingClaims(ctx context.Context, wsClient dynamic.Interface, bindingName string, desired []apisv1alpha2.AcceptablePermissionClaim) (bool, error) {
 	const maxAttempts = 5
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		u, err := wsClient.Resource(apiBindingGVR).Get(ctx, bindingName, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("getting APIBinding %q: %w", bindingName, err)
+			return false, fmt.Errorf("getting APIBinding %q: %w", bindingName, err)
 		}
 		var current apisv1alpha2.APIBinding
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &current); err != nil {
-			return fmt.Errorf("decoding APIBinding %q: %w", bindingName, err)
+			return false, fmt.Errorf("decoding APIBinding %q: %w", bindingName, err)
 		}
 		if reflect.DeepEqual(current.Spec.PermissionClaims, desired) {
-			return nil
+			return false, nil
 		}
-		items := make([]any, 0, len(desired))
-		for i := range desired {
-			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired[i])
-			if err != nil {
-				return fmt.Errorf("encoding permission claim: %w", err)
-			}
-			items = append(items, raw)
+		items, err := decodeClaims(desired)
+		if err != nil {
+			return false, err
 		}
 		if err := unstructured.SetNestedSlice(u.Object, items, "spec", "permissionClaims"); err != nil {
-			return fmt.Errorf("setting spec.permissionClaims: %w", err)
+			return false, fmt.Errorf("setting spec.permissionClaims: %w", err)
 		}
 		if _, err := wsClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err == nil {
-			return nil
+			return true, nil
 		} else if !errors.IsConflict(err) {
-			return fmt.Errorf("updating APIBinding %q: %w", bindingName, err)
+			return false, fmt.Errorf("updating APIBinding %q: %w", bindingName, err)
 		} else {
 			lastErr = err
 		}
 	}
-	return fmt.Errorf("updating APIBinding %q: gave up after %d conflicts: %w", bindingName, maxAttempts, lastErr)
+	return false, fmt.Errorf("updating APIBinding %q: gave up after %d conflicts: %w", bindingName, maxAttempts, lastErr)
 }
 
 func claimSelector(c ProviderClaim) apisv1alpha2.PermissionClaimSelector {
@@ -2082,6 +2089,7 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 			SelfHosted:      strings.HasPrefix(path, kcppaths.TenantsParent+":"),
 			Terminating:     terminating,
 			DeletionBlocked: deletionBlockedMessage(&item),
+			Claims:          bindingClaimState(&item),
 		}
 	}
 	return out, nil
@@ -2143,6 +2151,85 @@ type ProviderBinding struct {
 	// controller is gone. Empty when deletion is progressing normally or the
 	// binding is not terminating.
 	DeletionBlocked string
+	// Claims is how the binding's accepted claims stand against what the
+	// export declares today. See BindingClaimState.
+	Claims BindingClaimState
+}
+
+// ClaimRef names one permission claim by what identifies it on a binding.
+type ClaimRef struct {
+	Group    string
+	Resource string
+}
+
+// BindingClaimState is the gap, if any, between the claims a provider's export
+// declares and the claims a tenant's binding accepts. kcp records the export's
+// claims on every binding (status.exportPermissionClaims) but acts only on the
+// intersection with spec.permissionClaims, so a claim the export gained after
+// Enable is simply never applied and nothing on the binding says so — this is
+// where the hub says so.
+type BindingClaimState struct {
+	// Pending are export claims the binding does not list at all. The hub's
+	// binding-claims reconciler accepts a provider's own requirements on the
+	// tenant's behalf, so after rollout this holds only what still needs a
+	// human: a composition nobody consented to, or a claim written moments ago.
+	Pending []ClaimRef
+	// Rejected are claims the binding lists as Rejected: a tenant decision
+	// (unticked at Enable) or a composition awaiting consent. The reconciler
+	// never overturns these.
+	Rejected []ClaimRef
+	// Mismatch is kcp's PermissionClaimsValid message when a claim the binding
+	// accepts differs from the export in verbs or selector — typically a
+	// provider that narrowed a selector after this workspace enabled it. kcp
+	// makes an accepted selector immutable, so only Disable + Enable clears it.
+	Mismatch string
+}
+
+// bindingClaimState derives BindingClaimState from a binding as kcp reports it.
+func bindingClaimState(item *unstructured.Unstructured) BindingClaimState {
+	var state BindingClaimState
+	specClaims, _, _ := unstructured.NestedSlice(item.Object, "spec", "permissionClaims")
+	held := make(map[ClaimRef]string, len(specClaims))
+	for _, raw := range specClaims {
+		pc, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		group, _ := pc["group"].(string)
+		resource, _ := pc["resource"].(string)
+		st, _ := pc["state"].(string)
+		ref := ClaimRef{Group: group, Resource: resource}
+		held[ref] = st
+		if st == string(apisv1alpha2.ClaimRejected) {
+			state.Rejected = append(state.Rejected, ref)
+		}
+	}
+	exportClaims, _, _ := unstructured.NestedSlice(item.Object, "status", "exportPermissionClaims")
+	for _, raw := range exportClaims {
+		pc, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		group, _ := pc["group"].(string)
+		resource, _ := pc["resource"].(string)
+		ref := ClaimRef{Group: group, Resource: resource}
+		if _, ok := held[ref]; !ok {
+			state.Pending = append(state.Pending, ref)
+		}
+	}
+	conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
+	for _, c := range conditions {
+		cond, ok := c.(map[string]any)
+		if !ok || cond["type"] != string(apisv1alpha2.PermissionClaimsValid) || cond["status"] != "False" {
+			continue
+		}
+		if msg, ok := cond["message"].(string); ok && msg != "" {
+			state.Mismatch = msg
+		} else if reason, ok := cond["reason"].(string); ok {
+			state.Mismatch = reason
+		}
+	}
+	return state
 }
 
 // providerNameFromExportPath maps an APIBinding's export path to the provider
@@ -2235,30 +2322,34 @@ func (b *Bootstrapper) ListProviderAPIBindingsForExport(ctx context.Context, exp
 
 // ReacceptProviderAPIBindingClaims rewrites one binding's
 // spec.permissionClaims to `claims` — the provider's CatalogEntry claim set as
-// it stands today — accepting each one, and reports whether anything changed.
+// it stands today — and reports whether anything changed.
 //
 // This is the migration half of AGENTS.md §5.1. A provider that starts
-// requiring a newly-declared claim breaks every already-enabled tenant on
-// rollout, because `init` only updates the provider-side APIExport: the
-// tenant's binding keeps the claim set it accepted when it was enabled. Bound
-// or not, that binding is the object that decides what the provider is
-// actually allowed to touch.
+// requiring a newly-declared claim would otherwise break every already-enabled
+// tenant on rollout, because `init` only updates the provider-side APIExport:
+// the tenant's binding keeps the claim set it accepted when it was enabled.
+// Bound or not, that binding is the object that decides what the provider is
+// actually allowed to touch. The binding-claims reconciler calls the same
+// writer (ReconcileProviderBindingClaims) whenever a CatalogEntry or a binding
+// changes; this entry point remains for the admin endpoint.
 //
-// Two rules make re-running this safe:
+// Three rules make re-running this safe:
 //
 //   - A claim the tenant EXPLICITLY REJECTED stays Rejected. Rejecting is a
 //     decision the tenant made about their own workspace; a migration
 //     propagates the provider's claim set, it does not overturn consent.
+//   - A claim the caller marks not Accepted (a composition the workspace has
+//     not consented to) is written Rejected, exactly as the Enable flow writes
+//     it, so the binding lists what the export declares and kcp reports the
+//     gap on the object rather than the claim silently missing.
 //   - A claim already on the binding keeps its selector. Only genuinely new
-//     claims take their scope from the export, because kcp makes an accepted claim's selector
-//     immutable, so a claim narrowed after a workspace enabled the provider
-//     keeps that workspace's original (wider) scope until the provider is
-//     disabled and re-enabled there.
+//     claims take their scope from the export, because kcp makes an accepted
+//     claim's selector immutable, so a claim narrowed after a workspace enabled
+//     the provider keeps that workspace's original (wider) scope until the
+//     provider is disabled and re-enabled there.
 //
 // Claims the provider no longer declares are dropped: the target is the
-// CatalogEntry's current set, not the union with history. ProviderClaim.Accepted
-// is ignored — the type is shared with the Enable flow, where a human ticked
-// each box; here the whole point is that the provider already declares them.
+// CatalogEntry's current set, not the union with history.
 func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 	ctx context.Context,
 	ref ProviderBindingRef,
@@ -2275,44 +2366,30 @@ func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 	if err != nil {
 		return false, fmt.Errorf("creating child workspace client: %w", err)
 	}
+	changed, err := reacceptClaimsOnBinding(ctx, wsClient, ref.BindingName, claims)
+	if err != nil {
+		return false, fmt.Errorf("APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+	}
+	return changed, nil
+}
 
-	key := func(group, resource string) string { return group + "/" + resource }
-
+// reacceptClaimsOnBinding is the one writer behind ReacceptProviderAPIBindingClaims
+// and ReconcileProviderBindingClaims: it merges `claims` onto the binding's
+// current spec.permissionClaims under the rules documented there and writes the
+// result when it differs, retrying on conflict.
+func reacceptClaimsOnBinding(ctx context.Context, wsClient dynamic.Interface, bindingName string, claims []ProviderClaim) (bool, error) {
 	const maxAttempts = 5
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		u, err := wsClient.Resource(apiBindingGVR).Get(ctx, ref.BindingName, metav1.GetOptions{})
+		u, err := wsClient.Resource(apiBindingGVR).Get(ctx, bindingName, metav1.GetOptions{})
 		if err != nil {
-			return false, fmt.Errorf("getting APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+			return false, fmt.Errorf("getting: %w", err)
 		}
 		var binding apisv1alpha2.APIBinding
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &binding); err != nil {
-			return false, fmt.Errorf("decoding APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+			return false, fmt.Errorf("decoding: %w", err)
 		}
-		existing := make(map[string]apisv1alpha2.AcceptablePermissionClaim, len(binding.Spec.PermissionClaims))
-		for _, pc := range binding.Spec.PermissionClaims {
-			existing[key(pc.Group, pc.Resource)] = pc
-		}
-		desired := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
-		for _, c := range claims {
-			entry := apisv1alpha2.AcceptablePermissionClaim{
-				ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
-					PermissionClaim: apisv1alpha2.PermissionClaim{
-						GroupResource: apisv1alpha2.GroupResource{Group: c.Group, Resource: c.Resource},
-						Verbs:         c.Verbs,
-					},
-					Selector: claimSelector(c),
-				},
-				State: apisv1alpha2.ClaimAccepted,
-			}
-			if prev, ok := existing[key(c.Group, c.Resource)]; ok {
-				entry.Selector = prev.Selector
-				if prev.State == apisv1alpha2.ClaimRejected {
-					entry.State = apisv1alpha2.ClaimRejected
-				}
-			}
-			desired = append(desired, entry)
-		}
+		desired := mergeBindingClaims(binding.Spec.PermissionClaims, claims)
 		if reflect.DeepEqual(binding.Spec.PermissionClaims, desired) {
 			return false, nil
 		}
@@ -2321,13 +2398,9 @@ func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 		// re-serializing the decoded APIBinding: a round-trip through the typed
 		// struct would silently drop anything this build's kcp SDK does not
 		// know about.
-		items := make([]any, 0, len(desired))
-		for i := range desired {
-			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&desired[i])
-			if err != nil {
-				return false, fmt.Errorf("encoding permission claim: %w", err)
-			}
-			items = append(items, raw)
+		items, err := decodeClaims(desired)
+		if err != nil {
+			return false, err
 		}
 		if err := unstructured.SetNestedSlice(u.Object, items, "spec", "permissionClaims"); err != nil {
 			return false, fmt.Errorf("setting spec.permissionClaims: %w", err)
@@ -2335,12 +2408,50 @@ func (b *Bootstrapper) ReacceptProviderAPIBindingClaims(
 		if _, err := wsClient.Resource(apiBindingGVR).Update(ctx, u, metav1.UpdateOptions{}); err == nil {
 			return true, nil
 		} else if !errors.IsConflict(err) {
-			return false, fmt.Errorf("updating APIBinding %q in %s/%s: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, err)
+			return false, fmt.Errorf("updating: %w", err)
 		} else {
 			lastErr = err
 		}
 	}
-	return false, fmt.Errorf("updating APIBinding %q in %s/%s after %d conflicts: %w", ref.BindingName, ref.OrgUUID, ref.WorkspaceUUID, maxAttempts, lastErr)
+	return false, fmt.Errorf("updating after %d conflicts: %w", maxAttempts, lastErr)
+}
+
+// mergeBindingClaims computes the claim list a binding should carry given what
+// it carries now and what the provider declares: one entry per declared claim,
+// in declaration order, Accepted unless the declaration says otherwise or the
+// binding already holds that claim Rejected (a Consented composition overrides
+// a held Rejected, see ProviderClaim.Consented); existing claims keep their
+// selector; undeclared claims are dropped.
+func mergeBindingClaims(current []apisv1alpha2.AcceptablePermissionClaim, claims []ProviderClaim) []apisv1alpha2.AcceptablePermissionClaim {
+	key := func(group, resource string) string { return group + "/" + resource }
+	existing := make(map[string]apisv1alpha2.AcceptablePermissionClaim, len(current))
+	for _, pc := range current {
+		existing[key(pc.Group, pc.Resource)] = pc
+	}
+	desired := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
+	for _, c := range claims {
+		entry := apisv1alpha2.AcceptablePermissionClaim{
+			ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
+				PermissionClaim: apisv1alpha2.PermissionClaim{
+					GroupResource: apisv1alpha2.GroupResource{Group: c.Group, Resource: c.Resource},
+					Verbs:         c.Verbs,
+				},
+				Selector: claimSelector(c),
+			},
+			State: apisv1alpha2.ClaimAccepted,
+		}
+		if !c.Accepted {
+			entry.State = apisv1alpha2.ClaimRejected
+		}
+		if prev, ok := existing[key(c.Group, c.Resource)]; ok {
+			entry.Selector = prev.Selector
+			if prev.State == apisv1alpha2.ClaimRejected && !c.Consented {
+				entry.State = apisv1alpha2.ClaimRejected
+			}
+		}
+		desired = append(desired, entry)
+	}
+	return desired
 }
 
 // DeleteProviderAPIBinding removes the named provider APIBinding from the
@@ -2468,23 +2579,6 @@ func (b *Bootstrapper) RemoveAppAccessGrant(ctx context.Context, orgUUID, wsUUID
 		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", bindingName, err)
 	}
 	return nil
-}
-
-func acceptedClaim(group, resource, identityHash string, verbs []string) apisv1alpha2.AcceptablePermissionClaim {
-	return apisv1alpha2.AcceptablePermissionClaim{
-		ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{
-			PermissionClaim: apisv1alpha2.PermissionClaim{
-				GroupResource: apisv1alpha2.GroupResource{
-					Group:    group,
-					Resource: resource,
-				},
-				Verbs:        verbs,
-				IdentityHash: identityHash,
-			},
-			Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true},
-		},
-		State: apisv1alpha2.ClaimAccepted,
-	}
 }
 
 // toUnstructured converts a typed runtime.Object to an Unstructured object.

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
@@ -516,6 +517,50 @@ func schemaBytes(extension *runtime.RawExtension) json.RawMessage {
 type Registry struct {
 	mu    sync.RWMutex
 	byKey map[providerKey]*Provider
+	// requirementsListeners are told, outside the lock, whenever a provider's
+	// spec.requires is first observed or changes. See OnRequirementsChange.
+	requirementsListeners map[int]RequirementsListener
+	nextListenerID        int
+}
+
+// RequirementsListener receives a copy of the provider whose requirements
+// changed. It must not block: it is called from the catalog reconciler.
+type RequirementsListener func(p Provider)
+
+// OnRequirementsChange registers fn to be called from Upsert whenever a
+// provider's spec.requires differs from what the registry held before (or the
+// provider is new), and returns the function that unregisters it. The
+// requirements are what the hub keeps accepted on every tenant APIBinding to
+// the provider's export, so this is the signal that those bindings need
+// revisiting — the binding-claims reconciler subscribes here rather than
+// growing a second watch on CatalogEntries. Subscribers that live for one
+// leadership term unregister when the term ends, so the registry (which lives
+// for the process) does not accumulate dead listeners.
+func (r *Registry) OnRequirementsChange(fn RequirementsListener) (unregister func()) {
+	if fn == nil {
+		return func() {}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.requirementsListeners == nil {
+		r.requirementsListeners = map[int]RequirementsListener{}
+	}
+	id := r.nextListenerID
+	r.nextListenerID++
+	r.requirementsListeners[id] = fn
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.requirementsListeners, id)
+	}
+}
+
+// RequirementsListeners reports how many listeners are registered. For tests
+// that pin the unregister contract.
+func (r *Registry) RequirementsListeners() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.requirementsListeners)
 }
 
 // providerKey scopes a registry record. Org is empty for platform-global
@@ -619,9 +664,10 @@ func (r *Registry) ListForOrg(orgUUID string) []Provider {
 // source can move a provider backwards in time and flip it stale.
 func (r *Registry) Upsert(p Provider) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	requirementsChanged := true
 	key := providerKey{Org: p.OrgUUID, Name: p.Name}
 	if existing, ok := r.byKey[key]; ok {
+		requirementsChanged = !equality.Semantic.DeepEqual(existing.Requires, p.Requires)
 		if existing.LastHeartbeat.After(p.LastHeartbeat) {
 			// The reported version belongs to the beat it arrived with, so it
 			// travels with the timestamp that wins.
@@ -649,6 +695,18 @@ func (r *Registry) Upsert(p Provider) {
 	cp := p
 	cp.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
 	r.byKey[key] = &cp
+	listeners := make([]RequirementsListener, 0, len(r.requirementsListeners))
+	for _, fn := range r.requirementsListeners {
+		listeners = append(listeners, fn)
+	}
+	r.mu.Unlock()
+
+	if !requirementsChanged {
+		return
+	}
+	for _, fn := range listeners {
+		fn(cloneProvider(cp))
+	}
 }
 
 // cloneProviderRequirements deep-copies the requirement list so a snapshot

@@ -126,11 +126,13 @@ provider's own APIExport — no `identityHash`, so kcp resolves it per consumer
 workspace against whatever export that workspace bound — and that claim is how
 the provider reads and writes the composed kind.
 
-A tenant `APIBinding` created before this release **does not acquire the new
-claim on its own**: the hub only ever creates a binding, and never rewrites an
-existing one. Until the claim is on the binding and `Accepted`, the composing
-provider sees none of those objects and the symptom is "enabled, but it never
-builds anything". Two ways to fix it, per workspace:
+A tenant `APIBinding` created before this release acquires the new claim as
+**Rejected** from the hub's binding-claims reconciler (a composition is consent
+the tenant gives, not something the hub grants on their behalf). Until a
+workspace or organization admin accepts it the composing provider sees none of
+those objects and the symptom is "enabled, but it never builds anything". The
+provider card shows the pending claim with a *Review access* button; two ways
+to settle it, per workspace:
 
 ```
 POST /api/admin/providers/{name}/claims/reaccept
