@@ -83,6 +83,12 @@ func (s *Server) ensureProjectAssistantRunSandbox(
 	if runID == "" {
 		return nil, nil, errors.New("run sandbox requires a durable assistant run ID")
 	}
+	// Capture the requested source before waiting for infrastructure. Other
+	// threads can keep editing while this run's isolated environment starts.
+	snapshot, err := s.projectWorkspaceSyncFiles(ctx, req.WorkspaceScope)
+	if err != nil {
+		return nil, nil, fmt.Errorf("snapshot run sandbox source: %w", err)
+	}
 	name := projectAssistantRunSandboxName(req.WorkspaceScope, req.Project, runID)
 	manager := s.projectAssistantSandboxManager()
 	release, err := manager.acquire(projectAssistantRunSandboxTenantKey(req.Identity, req.WorkspaceScope), name, runID)
@@ -144,11 +150,6 @@ func (s *Server) ensureProjectAssistantRunSandbox(
 		rollback()
 		return nil, nil, fmt.Errorf("wait for run sandbox instance %q: %w", name, err)
 	}
-	snapshot, err := s.projectWorkspaceSyncFiles(readyCtx, req.WorkspaceScope)
-	if err != nil {
-		rollback()
-		return nil, nil, fmt.Errorf("snapshot run sandbox source: %w", err)
-	}
 	client := s.projectAssistantRunSandboxClient()
 	seedDigest := projectSandboxSyncDigest(snapshot.Files)
 	var remoteRevision uint64
@@ -188,7 +189,7 @@ func (s *Server) ensureProjectAssistantRunSandbox(
 		instance: projectAssistantSandboxInstance{APIVersion: target.APIVersion, Kind: target.Kind, Resource: target.Resource, Name: target.ResourceName},
 		runState: runState,
 		metadata: projectAssistantRunSandboxMetadata{
-			Version: 3, Status: "active", RunID: runID,
+			Version: 3, Status: "active", RunID: runID, ThreadID: req.ThreadID,
 			OrgUUID: req.WorkspaceScope.OrgUUID, WorkspaceUUID: req.WorkspaceScope.WorkspaceUUID,
 			ProjectName: req.WorkspaceScope.ProjectName, ProjectUID: req.WorkspaceScope.ProjectUID,
 			Template:            templateName,
@@ -224,9 +225,9 @@ func (s *Server) attachProjectAssistantRunSandbox(
 	if !eligibility.Eligible {
 		return nil, func() {}, nil
 	}
-	// Checkpoints created before run sandboxes were enabled intentionally have
-	// no sandbox metadata. Resume them on the legacy execution path instead of
-	// turning a rollout into an incompatibility for already-suspended runs.
+	// Checkpoints created before run sandboxes were enabled have no sandbox
+	// metadata. Source-file tools can still resume them, but command execution
+	// remains blocked unless this run can attach an isolated private sandbox.
 	if checkpoint == nil {
 		return nil, func() {}, nil
 	}
@@ -234,6 +235,9 @@ func (s *Server) attachProjectAssistantRunSandbox(
 		return nil, nil, errors.New("resuming a run sandbox requires project client, project, and checkpoint metadata")
 	}
 	metadata := checkpoint.Metadata
+	if metadata.ExecutionUnresolved {
+		return nil, nil, fmt.Errorf("%w: checkpoint contains a private command without a terminal cleanup receipt", errProjectAssistantRunSandboxConflict)
+	}
 	if strings.TrimSpace(metadata.ProviderExportPath) == "" || strings.TrimSpace(metadata.TransportGeneration) == "" {
 		return nil, nil, fmt.Errorf("%w: checkpoint does not contain provider transport identity", errProjectAssistantRunSandboxConflict)
 	}
@@ -831,10 +835,17 @@ func finishProjectAssistantRunSandbox(ctx context.Context, sandbox *projectAssis
 	}
 	var permissionErr *projectAssistantPermissionRequiredError
 	var inputErr *projectAssistantInputRequiredError
-	if errors.As(runErr, &permissionErr) || errors.As(runErr, &inputErr) {
+	executionUnresolved := sandbox.metadataSnapshot().ExecutionUnresolved
+	if (errors.As(runErr, &permissionErr) || errors.As(runErr, &inputErr)) && !executionUnresolved {
 		// A suspended run keeps its instance and manager lease.  Its checkpoint
 		// carries enough metadata for the resume path to reattach.
 		return runErr
+	}
+	if executionUnresolved {
+		// An unproven command may still be writing into the private workspace.
+		// Never retain or resume that cache; destroy the worker even if the rest
+		// of the turn would otherwise be suspended or cache-safe.
+		cacheSafe = false
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -951,57 +962,72 @@ func (b *projectAssistantRunSandbox) checkpointForTerminalSettlement(ctx context
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var checkpointErr error
 	if ctx.Err() == nil {
-		return b.checkpoint(ctx, req)
-	}
-	if !errors.Is(ctx.Err(), context.Canceled) {
+		checkpointErr = b.checkpoint(ctx, req)
+	} else if !errors.Is(ctx.Err(), context.Canceled) {
 		// An actual deadline is a settlement failure, not a user interruption.
 		// Preserve the expired context so the caller deletes the uncertain cache.
-		return b.checkpoint(ctx, req)
+		checkpointErr = b.checkpoint(ctx, req)
+	} else {
+		// A user interruption cancels the run context before the bounded executor
+		// returns its terminal canceled result. The command has already settled at
+		// this point, so use an independent bounded context to preserve any proven
+		// workspace changes and retain a healthy warm cache. A real checkpoint or
+		// fence failure still fails closed and deletes the Instance.
+		checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dataPlaneCallTimeout)
+		defer cancel()
+		checkpointErr = b.checkpoint(checkpointCtx, req)
 	}
-	// A user interruption cancels the run context before the bounded executor
-	// returns its terminal canceled result. The command has already settled at
-	// this point, so use an independent bounded context to preserve any proven
-	// workspace changes and retain a healthy warm cache. A real checkpoint or
-	// fence failure still fails closed and deletes the Instance.
-	checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dataPlaneCallTimeout)
-	defer cancel()
-	return b.checkpoint(checkpointCtx, req)
+	if checkpointErr != nil {
+		return checkpointErr
+	}
+	return sandboxUnresolvedMutationError(projectAssistantSandboxUnresolvedPaths(b.metadataSnapshot().Reconciliations))
 }
 
 func (b *projectAssistantRunSandbox) checkpoint(ctx context.Context, req projectAssistantRunRequest) error {
+	if b == nil {
+		return fmt.Errorf("%w: project workspace store is not configured", errProjectAssistantRunSandboxConflict)
+	}
+	b.operationMu.Lock()
+	defer b.operationMu.Unlock()
+	return b.checkpointLocked(ctx, req)
+}
+
+func (b *projectAssistantRunSandbox) checkpointLocked(ctx context.Context, req projectAssistantRunRequest) error {
 	if b == nil || req.Workspace == nil {
 		return fmt.Errorf("%w: project workspace store is not configured", errProjectAssistantRunSandboxConflict)
 	}
+	if b.metadataSnapshot().ExecutionUnresolved {
+		return fmt.Errorf("%w: private command outcome is unknown and has no terminal cleanup receipt", errProjectAssistantRunSandboxConflict)
+	}
 	if b.runState != nil && !projectAssistantTurnProfileAllowsMutation(b.runState.TurnProfile()) {
-		return nil
+		return b.verifyRemoteExecutionFenceLocked(ctx)
 	}
 	meta := b.metadataSnapshot()
-	localRevision, err := req.Workspace.SourceRevision(ctx, req.WorkspaceScope)
-	if err != nil {
-		return err
-	}
-	if localRevision != meta.SourceRevision {
-		return fmt.Errorf("%w: source revision changed from %d to %d", errProjectAssistantRunSandboxConflict, meta.SourceRevision, localRevision)
-	}
-	var localSnapshot projectWorkspaceSyncSnapshot
-	if b.server != nil {
-		localSnapshot, err = b.server.projectWorkspaceSyncFiles(ctx, req.WorkspaceScope)
-		if err != nil {
-			return err
-		}
-		if expected := strings.TrimSpace(meta.SourceDigest); expected != "" {
-			observed := projectSandboxSyncDigest(localSnapshot.Files)
-			if observed != expected {
-				return fmt.Errorf("%w: source digest changed", errProjectAssistantRunSandboxConflict)
-			}
-		}
-	}
+	// Check only the files this run changed. The remote checkpoint carries
+	// each file's original version; ApplyManagedTransaction validates all of
+	// those versions atomically. An unrelated thread edit must not invalidate
+	// this run's pinned command workspace or block a disjoint writeback.
 	if strings.TrimSpace(meta.RemoteCheckpointID) == "" {
 		return fmt.Errorf("%w: remote workspace baseline checkpoint is missing", errProjectAssistantRunSandboxConflict)
 	}
 	response, err := b.request(ctx, projectAssistantSandboxWorkspaceRequest{Action: "checkpoint", CheckpointID: meta.RemoteCheckpointID})
 	if err != nil {
+		if errors.Is(err, errProjectAssistantRunSandboxConflict) {
+			known := meta.Reconciliations
+			if paths, discoverErr := b.discoverUnapprovedRemoteChanges(ctx); discoverErr == nil && len(paths) > 0 {
+				for _, path := range paths {
+					if !known[path].NeedsReread {
+						return sandboxUnapprovedMutationError(paths)
+					}
+				}
+				return sandboxUnresolvedMutationError(paths)
+			}
+			if unresolved := projectAssistantSandboxUnresolvedPaths(meta.Reconciliations); len(unresolved) > 0 {
+				return sandboxUnresolvedMutationError(unresolved)
+			}
+		}
 		return err
 	}
 	changes, err := projectAssistantSandboxChanges(response.Changes)
@@ -1010,17 +1036,93 @@ func (b *projectAssistantRunSandbox) checkpoint(ctx context.Context, req project
 	}
 	if len(changes) == 0 {
 		remote := b.metadataSnapshot()
+		unresolved := projectAssistantSandboxUnresolvedPaths(meta.Reconciliations)
 		b.mu.Lock()
 		b.metadata.CheckpointRevision = remote.RemoteRevision
 		b.metadata.CheckpointDigest = remote.RemoteDigest
+		b.metadata.RemoteFenceNeedsRefresh = false
+		b.metadata.ApprovedMutations = projectAssistantSandboxRetainReceipts(b.metadata.ApprovedMutations, unresolved)
 		b.mu.Unlock()
 		if b.runState != nil {
 			b.runState.SetSandboxMetadata(b.metadataSnapshot())
 		}
+		return sandboxUnresolvedMutationError(unresolved)
+	}
+	unapproved := make([]string, 0)
+	proposals := make(map[string]projectAssistantSandboxConflictProposal)
+	quarantined := make([]string, 0)
+	for _, change := range changes {
+		if reconciliation := meta.Reconciliations[change.Path]; reconciliation.NeedsReread {
+			quarantined = append(quarantined, change.Path)
+			continue
+		}
+		receipt, approved := meta.ApprovedMutations[change.Path]
+		if approved && projectAssistantSandboxReceiptMatchesChange(receipt, change) {
+			continue
+		}
+		unapproved = append(unapproved, change.Path)
+		proposals[change.Path] = projectAssistantSandboxConflictProposal{
+			Operation:       change.Operation,
+			Content:         change.Content,
+			ExpectedVersion: change.ExpectedVersion,
+		}
+	}
+	if len(unapproved) > 0 {
+		b.recordUnapprovedCheckpointChanges(proposals)
+		return sandboxUnapprovedMutationError(unapproved)
+	}
+	eligible := changes[:0]
+	for _, change := range changes {
+		if reconciliation, ok := meta.Reconciliations[change.Path]; ok {
+			if reconciliation.NeedsReread {
+				continue
+			}
+			change.ExpectedVersion = reconciliation.Version
+			if reconciliation.Version == "" {
+				if change.Operation == workspace.ManagedFileDelete {
+					continue
+				}
+				change.Operation = workspace.ManagedFileCreate
+			} else if change.Operation == workspace.ManagedFileCreate {
+				change.Operation = workspace.ManagedFileReplace
+			}
+		}
+		eligible = append(eligible, change)
+	}
+	changes = eligible
+	if len(changes) == 0 {
+		if len(quarantined) > 0 {
+			return sandboxUnresolvedMutationError(quarantined)
+		}
 		return nil
 	}
+	ctx = workspace.ContextWithMutationOrigin(ctx, meta.ThreadID, meta.RunID)
 	if _, err := req.Workspace.ApplyManagedTransaction(ctx, req.WorkspaceScope, changes); err != nil {
-		return fmt.Errorf("%w: apply checkpoint: %v", errProjectAssistantRunSandboxConflict, err)
+		var conflict *workspace.MutationError
+		if errors.As(err, &conflict) && len(conflict.ChangedFiles) > 0 {
+			proposals := make(map[string]workspace.ManagedFileChange, len(changes))
+			for _, change := range changes {
+				proposals[change.Path] = change
+			}
+			b.mu.Lock()
+			if b.metadata.Reconciliations == nil {
+				b.metadata.Reconciliations = map[string]projectAssistantSandboxReconciliation{}
+			}
+			for _, path := range conflict.ChangedFiles {
+				reconciliation := projectAssistantSandboxReconciliation{NeedsReread: true}
+				if proposal, exists := proposals[path]; exists && len(proposal.Content) <= projectAssistantRunSandboxMaxChangeBytes {
+					reconciliation.ConflictProposal = &projectAssistantSandboxConflictProposal{
+						Operation: proposal.Operation, Content: proposal.Content, ExpectedVersion: proposal.ExpectedVersion,
+					}
+				}
+				b.metadata.Reconciliations[path] = reconciliation
+			}
+			b.mu.Unlock()
+			if b.runState != nil {
+				b.runState.SetSandboxMetadata(b.metadataSnapshot())
+			}
+		}
+		return fmt.Errorf("%w: apply checkpoint: %w", errProjectAssistantRunSandboxConflict, err)
 	}
 	paths := make([]string, 0, len(changes))
 	for _, change := range changes {
@@ -1029,24 +1131,32 @@ func (b *projectAssistantRunSandbox) checkpoint(ctx context.Context, req project
 	if _, err := req.Workspace.AddUncommittedPaths(ctx, req.WorkspaceScope, paths); err != nil {
 		return fmt.Errorf("%w: persist checkpoint dirty paths: %v", errProjectAssistantRunSandboxConflict, err)
 	}
-	newRevision, err := req.Workspace.SourceRevision(ctx, req.WorkspaceScope)
-	if err != nil {
-		return err
-	}
+	var newRevision uint64
 	newDigest := ""
 	if b.server != nil {
 		// The source fence is the complete FileStore snapshot, not the digest of
 		// only the changed paths. This remains comparable with the next full
-		// seed/checkpoint and with the component-root worker digest.
+		// seed/checkpoint and with the component-root worker digest. Use the
+		// revision captured under the same read snapshot as these bytes; a
+		// separate SourceRevision call can observe a sibling edit on the other
+		// side of this digest and pair two different workspace states.
 		updated, snapshotErr := b.server.projectWorkspaceSyncFiles(ctx, req.WorkspaceScope)
 		if snapshotErr != nil {
 			return snapshotErr
 		}
+		newRevision = updated.SourceRevision
 		newDigest = projectSandboxSyncDigest(updated.Files)
 	} else {
+		newRevision, err = req.Workspace.SourceRevision(ctx, req.WorkspaceScope)
+		if err != nil {
+			return err
+		}
 		newDigest, err = req.Workspace.WorkspaceDigest(ctx, req.WorkspaceScope, paths)
 		if err != nil {
 			return err
+		}
+		if err := req.Workspace.VerifySourceRevision(ctx, req.WorkspaceScope, newRevision); err != nil {
+			return fmt.Errorf("%w: source changed while collecting the private checkpoint fence: %v", errProjectAssistantRunSandboxConflict, err)
 		}
 	}
 	// Advance the worker's durable baseline only after the FileStore
@@ -1069,7 +1179,13 @@ func (b *projectAssistantRunSandbox) checkpoint(ctx context.Context, req project
 	b.metadata.RemoteDigest = baseline.SourceDigest
 	b.metadata.CheckpointRevision = baseline.SourceRevision
 	b.metadata.CheckpointDigest = baseline.SourceDigest
+	b.metadata.RemoteFenceNeedsRefresh = false
 	b.metadata.RemoteCheckpointID = baseline.CheckpointID
+	unresolved := projectAssistantSandboxUnresolvedPaths(b.metadata.Reconciliations)
+	b.metadata.ApprovedMutations = projectAssistantSandboxRetainReceipts(b.metadata.ApprovedMutations, unresolved)
+	for _, change := range changes {
+		delete(b.metadata.Reconciliations, change.Path)
+	}
 	b.mu.Unlock()
 	if b.runState != nil {
 		b.runState.SetSandboxMetadata(b.metadataSnapshot())

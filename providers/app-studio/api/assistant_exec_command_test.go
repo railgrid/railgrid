@@ -586,8 +586,11 @@ func TestProjectAssistantExecCommandSandboxPresentationPinsWorkspace(t *testing.
 
 func TestProjectAssistantFirstExecLazilyInitializesSandboxExactlyOnce(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
-	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
-	client := &sandboxClientFake{execResponse: projectSandboxExecResponse{SessionID: "exec-session", State: "succeeded", ExitCode: intPointer(0), Stdout: "EXEC_LAZY_OK"}}
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging))
+	client := &sandboxClientFake{
+		response:     projectAssistantSandboxWorkspaceResponse{SourceRevision: 7, SourceDigest: "sha256:remote"},
+		execResponse: projectSandboxExecResponse{SessionID: "exec-session", State: "succeeded", ExitCode: intPointer(0), Stdout: "EXEC_LAZY_OK"},
+	}
 	setupCalls := 0
 	state.ConfigureSandboxCapability(CodingSandboxEligibility{
 		Eligible: true, ProviderExportPath: projectAssistantPlatformInfrastructureExportPath, TransportGeneration: projectAssistantSandboxTransportGeneration,
@@ -595,8 +598,11 @@ func TestProjectAssistantFirstExecLazilyInitializesSandboxExactlyOnce(t *testing
 		setupCalls++
 		return &projectAssistantRunSandbox{
 			client: client, runState: state,
-			target:   projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."}}},
-			metadata: projectAssistantRunSandboxMetadata{Status: "active", RemoteRevision: 7, RemoteDigest: "sha256:remote"},
+			target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."}}},
+			metadata: projectAssistantRunSandboxMetadata{
+				Status: "active", RemoteRevision: 7, RemoteDigest: "sha256:remote", RemoteCheckpointID: "baseline",
+				CheckpointRevision: 7, CheckpointDigest: "sha256:remote",
+			},
 		}, func() {}, nil
 	})
 	run := execProjectAssistantCommand(projectAssistantWorkflowRunContext{AssistantRunID: "run-lazy-exec", RunState: state})
@@ -677,11 +683,14 @@ func TestProjectAssistantRunSandboxExecAcceptsOnlyWorkspaceComponent(t *testing.
 			},
 		},
 		metadata: projectAssistantRunSandboxMetadata{
-			Status:         "active",
-			SourceRevision: 1,
-			SourceDigest:   "sha256:source",
-			RemoteRevision: 1,
-			RemoteDigest:   "sha256:source",
+			Status:             "active",
+			SourceRevision:     1,
+			SourceDigest:       "sha256:source",
+			RemoteRevision:     1,
+			RemoteDigest:       "sha256:source",
+			RemoteCheckpointID: "baseline",
+			CheckpointRevision: 1,
+			CheckpointDigest:   "sha256:source",
 		},
 	}
 	current := projectAssistantWorkflowRunContext{AssistantRunID: "run"}
@@ -731,7 +740,10 @@ func TestProjectAssistantRunSandboxExecCleansUpAmbiguousStart(t *testing.T) {
 				target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{
 					projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."},
 				}},
-				metadata: projectAssistantRunSandboxMetadata{Status: "active", RemoteRevision: 1, RemoteDigest: "sha256:source"},
+				metadata: projectAssistantRunSandboxMetadata{
+					Status: "active", RemoteRevision: 1, RemoteDigest: "sha256:source", RemoteCheckpointID: "baseline",
+					CheckpointRevision: 1, CheckpointDigest: "sha256:source",
+				},
 			}
 			result, err := execProjectAssistantRunSandboxCommand(context.Background(), projectAssistantWorkflowRunContext{AssistantRunID: "run-cleanup"}, sandbox, &projectAssistantExecCommandInput{
 				Component: projectAssistantRunSandboxWorkspaceVerb,

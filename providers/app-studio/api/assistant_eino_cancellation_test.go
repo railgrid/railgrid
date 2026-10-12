@@ -83,9 +83,12 @@ func TestProjectEinoAssistantSandboxExecFollowsSupervisorCancellation(t *testing
 				projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."},
 			}},
 			metadata: projectAssistantRunSandboxMetadata{
-				Status:         "active",
-				RemoteRevision: 1,
-				RemoteDigest:   "sha256:cancel-probe",
+				Status:             "active",
+				RemoteRevision:     1,
+				RemoteDigest:       "sha256:cancel-probe",
+				RemoteCheckpointID: "baseline-cancel-probe",
+				CheckpointRevision: 1,
+				CheckpointDigest:   "sha256:cancel-probe",
 			},
 		}, func() {}, nil
 	}

@@ -413,6 +413,20 @@ Source changes belong in the versioned App Studio file tools; shared-runtime
 command changes remain runtime-local and are not written back to App Studio
 source.
 An explicitly enabled private coding sandbox retains its separate opt-in path.
+Its instance identity includes the durable run ID: continuations reuse that run's
+workspace, while sibling runs cannot reseed it. The source snapshot is captured
+before waiting for the private runtime to become ready.
+
+Private workspace tools record the exact file versions they approve. Checkpoint
+writeback accepts only those approved bytes, using an atomic transaction against
+the shared files' expected versions. Command-created source changes remain
+unapplied proposals. A conflict preserves the proposal and requires a fresh
+shared-file read and explicit reconciliation; unrelated approved edits can still
+proceed. Runtime verification captures source evidence before observing the
+runtime and checks it again before reporting readiness, so changes during the
+verification cannot certify a different revision. A completed private command
+requires a fresh workspace check; an unproven process outcome blocks checkpoint
+writeback and prevents retaining a warm instance at terminal settlement.
 
 Each shared-runtime command carries the synchronized source revision and digest
 checked at launch. This is not filesystem snapshot isolation: another thread's

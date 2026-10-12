@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -459,6 +460,477 @@ func doSync(t *testing.T, srv *agentServer, body syncRequest) (*httptest.Respons
 	var resp syncResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	return rec, resp
+}
+
+type syncLifecycleRuntime struct {
+	workDir          string
+	capturePath      string
+	status           processStatusResponse
+	statusErrors     []error
+	restartErrors    []error
+	reloadErrors     []error
+	reloadErr        error
+	reloadMutation   func() error
+	statusCalls      int
+	restartCalls     int
+	reloadCalls      int
+	restartedContent []string
+}
+
+func (r *syncLifecycleRuntime) Restart(context.Context) error {
+	r.restartCalls++
+	path := r.capturePath
+	if path == "" {
+		path = "app.js"
+	}
+	content, _ := os.ReadFile(filepath.Join(r.workDir, path))
+	r.restartedContent = append(r.restartedContent, string(content))
+	if len(r.restartErrors) == 0 {
+		return nil
+	}
+	err := r.restartErrors[0]
+	r.restartErrors = r.restartErrors[1:]
+	return err
+}
+
+func (*syncLifecycleRuntime) ExitContainer(context.Context) error { return nil }
+func (r *syncLifecycleRuntime) Reload(context.Context, []string) error {
+	r.reloadCalls++
+	if r.reloadMutation != nil {
+		if err := r.reloadMutation(); err != nil {
+			return err
+		}
+	}
+	if len(r.reloadErrors) > 0 {
+		err := r.reloadErrors[0]
+		r.reloadErrors = r.reloadErrors[1:]
+		return err
+	}
+	return r.reloadErr
+}
+func (*syncLifecycleRuntime) SetEnv(context.Context, map[string]string) ([]string, error) {
+	return nil, nil
+}
+func (*syncLifecycleRuntime) Logs(context.Context) (string, error) { return "", nil }
+func (r *syncLifecycleRuntime) Status(context.Context) (processStatusResponse, error) {
+	r.statusCalls++
+	if len(r.statusErrors) > 0 {
+		err := r.statusErrors[0]
+		r.statusErrors = r.statusErrors[1:]
+		return processStatusResponse{}, err
+	}
+	return r.status, nil
+}
+
+func authoritativeSyncRequest(t *testing.T, revision uint64, content string) syncRequest {
+	t.Helper()
+	files := []syncFile{{Path: "app.js", Content: content}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return syncRequest{Files: files, Restart: "always", SourceRevision: revision, SourceDigest: digest}
+}
+
+func syncCoordinator(workDir string, runtime runtimeOperations, reloadStrategy string, reloadRules []reloadRule) *agentServer {
+	return newCoordinatorServer(&agentConfig{
+		WorkDir: workDir, ControlToken: "test-token", ReloadStrategy: reloadStrategy, ReloadRules: reloadRules,
+	}, runtime, &sync.Mutex{})
+}
+
+func TestAuthoritativeSyncRetriesPendingRestartAfterCoordinatorRecreation(t *testing.T) {
+	workDir := t.TempDir()
+	request := authoritativeSyncRequest(t, 1, "revision one\n")
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:       workDir,
+		restartErrors: []error{fmt.Errorf("runtime supervisor restart: %w", syscall.ECONNREFUSED)},
+	}
+	firstCoordinator := syncCoordinator(workDir, firstRuntime, "process", nil)
+
+	firstRecorder, _ := doSync(t, firstCoordinator, request)
+	if firstRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first sync status = %d body=%s, want retryable 503", firstRecorder.Code, firstRecorder.Body.String())
+	}
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart {
+		t.Fatalf("manifest after refused restart = %+v found=%t err=%v", manifest, found, err)
+	}
+	if status := agentStatus(t, firstCoordinator); status.SourceRevision != 0 || status.SourceDigest != "" {
+		t.Fatalf("status certified source while restart was pending: %+v", status)
+	}
+
+	// A newly constructed coordinator has no in-memory retry state. It must
+	// recover the intent from the manifest and replay it on the same revision.
+	secondRuntime := &syncLifecycleRuntime{workDir: workDir}
+	secondCoordinator := syncCoordinator(workDir, secondRuntime, "process", nil)
+	secondRecorder, second := doSync(t, secondCoordinator, request)
+	if secondRecorder.Code != http.StatusOK || !second.Restarted {
+		t.Fatalf("retry sync status = %d response=%+v body=%s", secondRecorder.Code, second, secondRecorder.Body.String())
+	}
+	if secondRuntime.restartCalls != 1 || !slices.Equal(secondRuntime.restartedContent, []string{"revision one\n"}) {
+		t.Fatalf("replayed restart calls/content = %d/%q", secondRuntime.restartCalls, secondRuntime.restartedContent)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || manifest.PendingRestart {
+		t.Fatalf("manifest after successful replay = %+v found=%t err=%v", manifest, found, err)
+	}
+
+	// The durable completion marker makes an ordinary same-revision replay a
+	// no-op instead of starting the application twice.
+	replayRecorder, replay := doSync(t, secondCoordinator, request)
+	if replayRecorder.Code != http.StatusOK || replay.Restarted || secondRuntime.restartCalls != 1 {
+		t.Fatalf("completed replay status=%d response=%+v restartCalls=%d body=%s", replayRecorder.Code, replay, secondRuntime.restartCalls, replayRecorder.Body.String())
+	}
+}
+
+func TestNewerAuthoritativeRevisionFencesPendingRestartToCurrentFiles(t *testing.T) {
+	workDir := t.TempDir()
+	firstRequest := authoritativeSyncRequest(t, 1, "old revision\n")
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:       workDir,
+		restartErrors: []error{syscall.ECONNREFUSED},
+	}
+	firstCoordinator := syncCoordinator(workDir, firstRuntime, "process", nil)
+	if recorder, _ := doSync(t, firstCoordinator, firstRequest); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first sync status = %d body=%s, want 503", recorder.Code, recorder.Body.String())
+	}
+
+	secondRuntime := &syncLifecycleRuntime{workDir: workDir}
+	secondCoordinator := syncCoordinator(workDir, secondRuntime, "process", nil)
+	newRequest := authoritativeSyncRequest(t, 2, "new revision\n")
+	if recorder, response := doSync(t, secondCoordinator, newRequest); recorder.Code != http.StatusOK || !response.Restarted {
+		t.Fatalf("newer sync status = %d response=%+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	if secondRuntime.restartCalls != 1 || !slices.Equal(secondRuntime.restartedContent, []string{"new revision\n"}) {
+		t.Fatalf("restart did not use newest revision: calls=%d content=%q", secondRuntime.restartCalls, secondRuntime.restartedContent)
+	}
+	if recorder, _ := doSync(t, secondCoordinator, firstRequest); recorder.Code != http.StatusConflict {
+		t.Fatalf("old revision replay status = %d body=%s, want conflict", recorder.Code, recorder.Body.String())
+	}
+	if secondRuntime.restartCalls != 1 {
+		t.Fatalf("fenced old revision caused another restart: %d calls", secondRuntime.restartCalls)
+	}
+}
+
+func TestAutoSyncLeavesSourceUntouchedWhenRuntimeStatusIsUnavailable(t *testing.T) {
+	workDir := t.TempDir()
+	files := []syncFile{{Path: "server.js", Content: "startup source\n"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := syncRequest{Files: files, Restart: "auto", SourceRevision: 1, SourceDigest: digest}
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:      workDir,
+		statusErrors: []error{fmt.Errorf("runtime supervisor status: %w", syscall.ECONNREFUSED)},
+	}
+	firstCoordinator := syncCoordinator(workDir, firstRuntime, "process", nil)
+	firstRecorder, _ := doSync(t, firstCoordinator, request)
+	if firstRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first auto sync status = %d body=%s, want retryable 503", firstRecorder.Code, firstRecorder.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "server.js")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("auto sync mutated source before unavailable status was resolved: stat err=%v", err)
+	}
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || found {
+		t.Fatalf("manifest after unavailable status = %+v found=%t err=%v, want no source applied", manifest, found, err)
+	}
+
+	// On retry the supervisor is available. Since the failed request did not
+	// mutate source, the original startup path still appears in the changed set
+	// and the auto policy restarts the process.
+	secondRuntime := &syncLifecycleRuntime{
+		workDir:     workDir,
+		capturePath: "server.js",
+		status:      processStatusResponse{Configured: true, Running: true},
+	}
+	secondCoordinator := syncCoordinator(workDir, secondRuntime, "process", nil)
+	secondRecorder, response := doSync(t, secondCoordinator, request)
+	if secondRecorder.Code != http.StatusOK || !response.Restarted {
+		t.Fatalf("auto sync retry status=%d response=%+v body=%s", secondRecorder.Code, response, secondRecorder.Body.String())
+	}
+	if secondRuntime.restartCalls != 1 || !slices.Equal(secondRuntime.restartedContent, []string{"startup source\n"}) {
+		t.Fatalf("auto retry lost startup change: restart calls=%d content=%q", secondRuntime.restartCalls, secondRuntime.restartedContent)
+	}
+	if secondRuntime.statusCalls != 1 {
+		t.Fatalf("auto retry should check the available runtime once, status calls=%d", secondRuntime.statusCalls)
+	}
+}
+
+func TestAutoSyncDoesNotRestartWhenUnconfiguredAndNeverSkipsStatus(t *testing.T) {
+	workDir := t.TempDir()
+	unconfiguredRuntime := &syncLifecycleRuntime{
+		workDir: workDir,
+		status:  processStatusResponse{Configured: false, Running: false},
+	}
+	unconfiguredCoordinator := syncCoordinator(workDir, unconfiguredRuntime, "process", nil)
+	files := []syncFile{{Path: "server.js", Content: "startup source\n"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := syncRequest{Files: files, Restart: "auto", SourceRevision: 1, SourceDigest: digest}
+	if recorder, response := doSync(t, unconfiguredCoordinator, request); recorder.Code != http.StatusOK || response.Restarted {
+		t.Fatalf("unconfigured auto sync status=%d response=%+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	if unconfiguredRuntime.restartCalls != 0 || unconfiguredRuntime.statusCalls != 1 {
+		t.Fatalf("unconfigured auto sync calls: restarts=%d status=%d", unconfiguredRuntime.restartCalls, unconfiguredRuntime.statusCalls)
+	}
+	if manifest, found, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workDir)); err != nil || !found || manifest.PendingRestart {
+		t.Fatalf("unconfigured auto sync manifest=%+v found=%t err=%v", manifest, found, err)
+	}
+
+	neverWorkDir := t.TempDir()
+	neverRuntime := &syncLifecycleRuntime{
+		workDir:      neverWorkDir,
+		statusErrors: []error{syscall.ECONNREFUSED},
+	}
+	neverCoordinator := syncCoordinator(neverWorkDir, neverRuntime, "process", nil)
+	neverRequest := authoritativeSyncRequest(t, 1, "never restart\n")
+	neverRequest.Restart = "never"
+	if recorder, response := doSync(t, neverCoordinator, neverRequest); recorder.Code != http.StatusOK || response.Restarted {
+		t.Fatalf("never sync status=%d response=%+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	if neverRuntime.statusCalls != 0 || neverRuntime.restartCalls != 0 {
+		t.Fatalf("never policy consulted runtime: status=%d restarts=%d", neverRuntime.statusCalls, neverRuntime.restartCalls)
+	}
+}
+
+func TestPendingRestartIsDeferredByAutoUnconfiguredAndNeverPolicies(t *testing.T) {
+	workDir := t.TempDir()
+	request := authoritativeSyncRequest(t, 1, "package.json source\n")
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:       workDir,
+		restartErrors: []error{syscall.ECONNREFUSED},
+	}
+	firstRecorder, _ := doSync(t, syncCoordinator(workDir, firstRuntime, "process", nil), request)
+	if firstRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("initial sync status = %d body=%s, want retryable 503", firstRecorder.Code, firstRecorder.Body.String())
+	}
+
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart {
+		t.Fatalf("manifest after refused restart = %+v found=%t err=%v", manifest, found, err)
+	}
+
+	autoRequest := request
+	autoRequest.Restart = "auto"
+	autoRuntime := &syncLifecycleRuntime{
+		workDir: workDir,
+		status:  processStatusResponse{Configured: false, Running: false},
+	}
+	autoRecorder, autoResponse := doSync(t, syncCoordinator(workDir, autoRuntime, "process", nil), autoRequest)
+	if autoRecorder.Code != http.StatusOK || autoResponse.Restarted {
+		t.Fatalf("unconfigured auto retry status=%d response=%+v body=%s", autoRecorder.Code, autoResponse, autoRecorder.Body.String())
+	}
+	if autoRuntime.statusCalls != 1 || autoRuntime.restartCalls != 0 {
+		t.Fatalf("unconfigured auto retry calls: status=%d restarts=%d", autoRuntime.statusCalls, autoRuntime.restartCalls)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart || manifest.SourceRevision != request.SourceRevision {
+		t.Fatalf("auto retry cleared pending restart intent: %+v found=%t err=%v", manifest, found, err)
+	}
+
+	neverRequest := request
+	neverRequest.Restart = "never"
+	neverRuntime := &syncLifecycleRuntime{
+		workDir:      workDir,
+		statusErrors: []error{syscall.ECONNREFUSED},
+	}
+	neverRecorder, neverResponse := doSync(t, syncCoordinator(workDir, neverRuntime, "process", nil), neverRequest)
+	if neverRecorder.Code != http.StatusOK || neverResponse.Restarted {
+		t.Fatalf("never retry status=%d response=%+v body=%s", neverRecorder.Code, neverResponse, neverRecorder.Body.String())
+	}
+	if neverRuntime.statusCalls != 0 || neverRuntime.restartCalls != 0 {
+		t.Fatalf("never retry consulted or restarted runtime: status=%d restarts=%d", neverRuntime.statusCalls, neverRuntime.restartCalls)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart || manifest.SourceRevision != request.SourceRevision {
+		t.Fatalf("never retry cleared pending restart intent: %+v found=%t err=%v", manifest, found, err)
+	}
+
+	request.Restart = "always"
+	replayRuntime := &syncLifecycleRuntime{workDir: workDir}
+	replayRecorder, replayResponse := doSync(t, syncCoordinator(workDir, replayRuntime, "process", nil), request)
+	if replayRecorder.Code != http.StatusOK || !replayResponse.Restarted || replayRuntime.restartCalls != 1 {
+		t.Fatalf("explicit replay status=%d response=%+v restartCalls=%d body=%s", replayRecorder.Code, replayResponse, replayRuntime.restartCalls, replayRecorder.Body.String())
+	}
+	if !slices.Equal(replayRuntime.restartedContent, []string{"package.json source\n"}) {
+		t.Fatalf("replayed restart content = %q", replayRuntime.restartedContent)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || manifest.PendingRestart {
+		t.Fatalf("manifest after successful replay = %+v found=%t err=%v", manifest, found, err)
+	}
+}
+
+func TestNeverPolicyDefersPendingReloadAndRestartEffects(t *testing.T) {
+	workDir := t.TempDir()
+	command := "npm install"
+	files := []syncFile{{Path: "package.json", Content: "package.json source\n"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := syncRequest{Files: files, Restart: "always", SourceRevision: 1, SourceDigest: digest}
+	rules := []reloadRule{{Paths: []string{"package.json"}, Command: command}}
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:      workDir,
+		reloadErrors: []error{errors.New("reload command exited with status 7")},
+	}
+	firstRecorder, firstResponse := doSync(t, syncCoordinator(workDir, firstRuntime, "process", rules), request)
+	if firstRecorder.Code != http.StatusOK || firstResponse.ReloadError == "" || firstResponse.Restarted {
+		t.Fatalf("initial sync status=%d response=%+v body=%s", firstRecorder.Code, firstResponse, firstRecorder.Body.String())
+	}
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart || !slices.Equal(manifest.PendingReloadCommands, []string{command}) || verifyWorkspaceManifest(root, manifest) != nil {
+		t.Fatalf("manifest after reload failure = %+v found=%t err=%v, want pending reload and restart", manifest, found, err)
+	}
+
+	neverRequest := request
+	neverRequest.Restart = "never"
+	neverRuntime := &syncLifecycleRuntime{workDir: workDir}
+	neverRecorder, neverResponse := doSync(t, syncCoordinator(workDir, neverRuntime, "process", rules), neverRequest)
+	if neverRecorder.Code != http.StatusOK || neverResponse.Restarted {
+		t.Fatalf("never retry status=%d response=%+v body=%s", neverRecorder.Code, neverResponse, neverRecorder.Body.String())
+	}
+	if neverRuntime.statusCalls != 0 || neverRuntime.reloadCalls != 0 || neverRuntime.restartCalls != 0 {
+		t.Fatalf("never retry ran runtime effects: status=%d reload=%d restart=%d", neverRuntime.statusCalls, neverRuntime.reloadCalls, neverRuntime.restartCalls)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart || !slices.Equal(manifest.PendingReloadCommands, []string{command}) {
+		t.Fatalf("never retry lost durable intent: %+v found=%t err=%v", manifest, found, err)
+	}
+
+	request.Restart = "always"
+	replayRuntime := &syncLifecycleRuntime{workDir: workDir}
+	replayRecorder, replayResponse := doSync(t, syncCoordinator(workDir, replayRuntime, "process", rules), request)
+	if replayRecorder.Code != http.StatusOK || !replayResponse.Restarted || replayResponse.ReloadError != "" {
+		t.Fatalf("replay status=%d response=%+v body=%s", replayRecorder.Code, replayResponse, replayRecorder.Body.String())
+	}
+	if replayRuntime.reloadCalls != 1 || replayRuntime.restartCalls != 1 {
+		t.Fatalf("replay calls: reload=%d restart=%d", replayRuntime.reloadCalls, replayRuntime.restartCalls)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || manifest.PendingRestart || len(manifest.PendingReloadCommands) != 0 {
+		t.Fatalf("manifest after successful replay = %+v found=%t err=%v", manifest, found, err)
+	}
+}
+
+func TestPlainReloadFailurePreservesPendingIntentAndReplays(t *testing.T) {
+	workDir := t.TempDir()
+	command := "npm install"
+	request := syncRequest{
+		Files: []syncFile{{Path: "package.json", Content: `{}`}}, Restart: "always",
+	}
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:      workDir,
+		reloadErrors: []error{errors.New("reload command exited with status 7")},
+		reloadMutation: func() error {
+			return os.WriteFile(filepath.Join(workDir, "package.json"), []byte(`{"installed":true}`), 0o600)
+		},
+	}
+	firstCoordinator := syncCoordinator(workDir, firstRuntime, "process", []reloadRule{{Paths: []string{"package.json"}, Command: command}})
+	firstRecorder, firstResponse := doSync(t, firstCoordinator, request)
+	if firstRecorder.Code != http.StatusOK || firstResponse.ReloadError == "" || firstResponse.Restarted {
+		t.Fatalf("first plain sync status=%d response=%+v body=%s", firstRecorder.Code, firstResponse, firstRecorder.Body.String())
+	}
+	if firstRuntime.reloadCalls != 1 || firstRuntime.restartCalls != 0 {
+		t.Fatalf("first sync calls: reload=%d restart=%d", firstRuntime.reloadCalls, firstRuntime.restartCalls)
+	}
+
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart || !slices.Equal(manifest.PendingReloadCommands, []string{command}) || verifyWorkspaceManifest(root, manifest) != nil {
+		t.Fatalf("manifest after reload failure = %+v found=%t err=%v, want pending reload and restart", manifest, found, err)
+	}
+
+	replayRuntime := &syncLifecycleRuntime{workDir: workDir}
+	replayCoordinator := syncCoordinator(workDir, replayRuntime, "process", []reloadRule{{Paths: []string{"package.json"}, Command: command}})
+	replayRecorder, replayResponse := doSync(t, replayCoordinator, request)
+	if replayRecorder.Code != http.StatusOK || !replayResponse.Restarted || replayResponse.ReloadError != "" {
+		t.Fatalf("plain replay status=%d response=%+v body=%s", replayRecorder.Code, replayResponse, replayRecorder.Body.String())
+	}
+	if replayRuntime.reloadCalls != 1 || replayRuntime.restartCalls != 1 {
+		t.Fatalf("plain replay calls: reload=%d restart=%d", replayRuntime.reloadCalls, replayRuntime.restartCalls)
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || manifest.PendingRestart || len(manifest.PendingReloadCommands) != 0 {
+		t.Fatalf("manifest after successful replay = %+v found=%t err=%v", manifest, found, err)
+	}
+}
+
+func TestPlainSyncPersistsPendingRestartAndDoesNotRetryCommandFailure(t *testing.T) {
+	workDir := t.TempDir()
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:       workDir,
+		restartErrors: []error{syscall.ECONNREFUSED},
+	}
+	firstCoordinator := syncCoordinator(workDir, firstRuntime, "process", nil)
+	plainRequest := syncRequest{Files: []syncFile{{Path: "app.js", Content: "plain source\n"}}, Restart: "always"}
+	if recorder, _ := doSync(t, firstCoordinator, plainRequest); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first plain sync status = %d body=%s, want 503", recorder.Code, recorder.Body.String())
+	}
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart {
+		t.Fatalf("plain manifest after refused restart = %+v found=%t err=%v", manifest, found, err)
+	}
+
+	secondRuntime := &syncLifecycleRuntime{workDir: workDir}
+	secondCoordinator := syncCoordinator(workDir, secondRuntime, "process", nil)
+	if recorder, response := doSync(t, secondCoordinator, plainRequest); recorder.Code != http.StatusOK || !response.Restarted {
+		t.Fatalf("plain retry status = %d response=%+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || manifest.PendingRestart {
+		t.Fatalf("plain manifest after retry = %+v found=%t err=%v", manifest, found, err)
+	}
+
+	commandWorkDir := t.TempDir()
+	commandErrRuntime := &syncLifecycleRuntime{workDir: commandWorkDir, reloadErr: errors.New("reload command exited with status 7")}
+	commandCoordinator := syncCoordinator(commandWorkDir, commandErrRuntime, "process", []reloadRule{{Paths: []string{"package.json"}, Command: "npm install"}})
+	files := []syncFile{{Path: "package.json", Content: `{}`}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandRequest := syncRequest{Files: files, Restart: "always", SourceRevision: 1, SourceDigest: digest}
+	commandRecorder, commandResponse := doSync(t, commandCoordinator, commandRequest)
+	if commandRecorder.Code != http.StatusOK || commandResponse.ReloadError == "" {
+		t.Fatalf("ambiguous command failure became retryable: status=%d response=%+v body=%s", commandRecorder.Code, commandResponse, commandRecorder.Body.String())
+	}
+}
+
+func TestPlainEmptySyncClearsPendingRestartAfterSuccess(t *testing.T) {
+	workDir := t.TempDir()
+	firstRuntime := &syncLifecycleRuntime{
+		workDir:       workDir,
+		restartErrors: []error{syscall.ECONNREFUSED},
+	}
+	request := syncRequest{Restart: "always"}
+	if recorder, _ := doSync(t, syncCoordinator(workDir, firstRuntime, "process", nil), request); recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first empty sync status = %d body=%s, want 503", recorder.Code, recorder.Body.String())
+	}
+	root := mustOpenWorkspaceRoot(t, workDir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !manifest.PendingRestart {
+		t.Fatalf("empty sync manifest after refusal = %+v found=%t err=%v", manifest, found, err)
+	}
+
+	secondRuntime := &syncLifecycleRuntime{workDir: workDir}
+	if recorder, response := doSync(t, syncCoordinator(workDir, secondRuntime, "process", nil), request); recorder.Code != http.StatusOK || !response.Restarted {
+		t.Fatalf("empty sync retry status=%d response=%+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || manifest.PendingRestart {
+		t.Fatalf("empty sync manifest after success = %+v found=%t err=%v", manifest, found, err)
+	}
 }
 
 func TestSyncWritesFilesAndRunsReloadRules(t *testing.T) {

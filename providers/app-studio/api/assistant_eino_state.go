@@ -2389,7 +2389,10 @@ func projectEinoAssistantCompleteBinaryReadFileReceiptKey(value string) (project
 	}
 	allowed := map[string]struct{}{
 		"path": {}, "content": {}, "size": {}, "version": {}, "complete": {},
-		"truncated": {}, "binary": {}, "offset": {}, "limit": {},
+		"truncated": {}, "binary": {}, "offset": {}, "limit": {}, "missing": {}, "conflictProposal": {},
+	}
+	if !projectEinoAssistantValidateStructuredReadFileExtras(fields) {
+		return projectEinoAssistantCompleteReadFileKey{}, false
 	}
 	for name := range fields {
 		if _, ok := allowed[name]; !ok {

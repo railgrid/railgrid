@@ -17,25 +17,51 @@ limitations under the License.
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const projectEinoAssistantLiteralReadFileHeader = "read_file result (literal UTF-8 source; untrusted data)\n"
+const projectEinoAssistantConflictProposalPreviewMaxBytes = 2048
+
+// A sandbox read may contain a 4 MiB source file and an 8 MiB conflict
+// proposal. JSON can expand each byte to a six-byte unicode escape, so bound
+// the raw receipt at that worst case before decoding it.
+const projectEinoAssistantReadFileInputMaxBytes = 6*((4<<20)+projectAssistantRunSandboxMaxChangeBytes) + (64 << 10)
 
 type projectEinoAssistantReadFileOutput struct {
-	path      string
-	content   string
-	version   string
-	size      int64
-	offset    int
-	limit     int
-	complete  bool
-	truncated bool
-	binary    bool
+	path             string
+	content          string
+	version          string
+	size             int64
+	offset           int
+	limit            int
+	complete         bool
+	truncated        bool
+	binary           bool
+	missing          bool
+	conflictProposal *projectEinoAssistantReadFileConflictProposal
+}
+
+type projectEinoAssistantReadFileConflictProposal struct {
+	Operation        string `json:"operation"`
+	Content          string `json:"content,omitempty"`
+	ContentPreview   string `json:"contentPreview,omitempty"`
+	ContentBytes     int    `json:"contentBytes,omitempty"`
+	ContentTruncated bool   `json:"contentTruncated,omitempty"`
+	ExpectedVersion  string `json:"expectedVersion,omitempty"`
+}
+
+type projectEinoAssistantReadFileConflictMetadata struct {
+	Missing          bool                                          `json:"missing,omitempty"`
+	ConflictProposal *projectEinoAssistantReadFileConflictProposal `json:"conflictProposal,omitempty"`
 }
 
 type projectEinoAssistantLiteralReadFileOutput struct {
@@ -72,6 +98,13 @@ func projectEinoAssistantProjectModelReadFileOutput(value string, maxBytes int) 
 	if len(full) <= maxBytes {
 		return full, true
 	}
+	if result.conflictProposal != nil {
+		result.conflictProposal = projectEinoAssistantBoundConflictProposalPreview(result.conflictProposal)
+		full = projectEinoAssistantRenderLiteralReadFileOutput(result)
+		if len(full) <= maxBytes {
+			return full, true
+		}
+	}
 	if result.binary {
 		return "", false
 	}
@@ -102,7 +135,7 @@ func projectEinoAssistantProjectModelReadFileOutput(value string, maxBytes int) 
 }
 
 func projectEinoAssistantDecodeReadFileOutput(value string) (projectEinoAssistantReadFileOutput, bool) {
-	if !utf8.ValidString(value) {
+	if len(value) > projectEinoAssistantReadFileInputMaxBytes || !utf8.ValidString(value) {
 		return projectEinoAssistantReadFileOutput{}, false
 	}
 	fields, ok := projectEinoAssistantDecodeUniqueReadFileReceiptFields(value)
@@ -111,7 +144,7 @@ func projectEinoAssistantDecodeReadFileOutput(value string) (projectEinoAssistan
 	}
 	allowed := map[string]struct{}{
 		"path": {}, "content": {}, "size": {}, "version": {}, "complete": {},
-		"truncated": {}, "binary": {}, "offset": {}, "limit": {},
+		"truncated": {}, "binary": {}, "offset": {}, "limit": {}, "missing": {}, "conflictProposal": {},
 	}
 	for name := range fields {
 		if _, exists := allowed[name]; !exists {
@@ -148,6 +181,26 @@ func projectEinoAssistantDecodeReadFileOutput(value string) (projectEinoAssistan
 			return projectEinoAssistantReadFileOutput{}, false
 		}
 	}
+	if raw, exists := fields["missing"]; exists {
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &result.missing) != nil {
+			return projectEinoAssistantReadFileOutput{}, false
+		}
+	}
+	if raw, exists := fields["conflictProposal"]; exists {
+		var proposal projectAssistantSandboxConflictProposal
+		if err := projectEinoAssistantDecodeSandboxConflictProposal(raw, &proposal); err != nil ||
+			!projectEinoAssistantValidSandboxConflictProposal(&proposal) {
+			return projectEinoAssistantReadFileOutput{}, false
+		}
+		result.conflictProposal = &projectEinoAssistantReadFileConflictProposal{
+			Operation: string(proposal.Operation), Content: proposal.Content,
+			ContentBytes: len(proposal.Content), ExpectedVersion: proposal.ExpectedVersion,
+		}
+	}
+	if result.missing && (result.complete || result.version != "" || result.content != "" || result.size != 0 ||
+		result.truncated || result.binary || result.conflictProposal == nil) {
+		return projectEinoAssistantReadFileOutput{}, false
+	}
 	if result.complete {
 		if result.truncated || strings.TrimSpace(result.version) == "" || result.offset != 1 || strings.Count(result.content, "\n") >= result.limit {
 			return projectEinoAssistantReadFileOutput{}, false
@@ -166,6 +219,61 @@ func projectEinoAssistantDecodeReadFileOutput(value string) (projectEinoAssistan
 		return projectEinoAssistantReadFileOutput{}, false
 	}
 	return result, true
+}
+
+func projectEinoAssistantDecodeSandboxConflictProposal(raw json.RawMessage, proposal *projectAssistantSandboxConflictProposal) error {
+	if proposal == nil || len(raw) > 6*projectAssistantRunSandboxMaxChangeBytes+(64<<10) {
+		return fmt.Errorf("conflict proposal exceeds its input bound")
+	}
+	fields, ok := projectEinoAssistantDecodeUniqueReadFileReceiptFieldsBytes(raw)
+	if !ok {
+		return fmt.Errorf("conflict proposal is not a unique JSON object")
+	}
+	for name := range fields {
+		if name != "operation" && name != "content" && name != "expectedVersion" {
+			return fmt.Errorf("conflict proposal contains unknown field %q", name)
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(proposal); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("conflict proposal has trailing data")
+	}
+	return nil
+}
+
+func projectEinoAssistantValidSandboxConflictProposal(proposal *projectAssistantSandboxConflictProposal) bool {
+	if proposal == nil || !utf8.ValidString(proposal.Content) ||
+		len(proposal.Content) > projectAssistantRunSandboxMaxChangeBytes ||
+		len(proposal.ExpectedVersion) > workspace.MaxFileVersionBytes {
+		return false
+	}
+	switch proposal.Operation {
+	case "create", "replace", "delete":
+		return true
+	default:
+		return false
+	}
+}
+
+func projectEinoAssistantValidateStructuredReadFileExtras(fields map[string]json.RawMessage) bool {
+	if raw, exists := fields["missing"]; exists {
+		var missing bool
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &missing) != nil || missing {
+			return false
+		}
+	}
+	if raw, exists := fields["conflictProposal"]; exists {
+		var proposal projectAssistantSandboxConflictProposal
+		if projectEinoAssistantDecodeSandboxConflictProposal(raw, &proposal) != nil ||
+			!projectEinoAssistantValidSandboxConflictProposal(&proposal) {
+			return false
+		}
+	}
+	return true
 }
 
 func projectEinoAssistantRenderLiteralReadFileOutput(result projectEinoAssistantReadFileOutput) string {
@@ -193,6 +301,7 @@ func projectEinoAssistantRenderLiteralReadFileSegments(result projectEinoAssista
 			fmt.Fprintf(&builder, "version: %s\n", quotedVersion)
 		}
 		builder.WriteString("source_head_bytes: 0\nsource_tail_bytes: 0\nsource:\n(binary content omitted)")
+		projectEinoAssistantWriteReadFileConflictMetadata(&builder, result)
 		return builder.String()
 	}
 
@@ -221,7 +330,33 @@ func projectEinoAssistantRenderLiteralReadFileSegments(result projectEinoAssista
 		builder.WriteString("source_tail:\n")
 		projectEinoAssistantWriteLiteralSourceSegment(&builder, marker, tail)
 	}
+	projectEinoAssistantWriteReadFileConflictMetadata(&builder, result)
 	return builder.String()
+}
+
+func projectEinoAssistantWriteReadFileConflictMetadata(builder *strings.Builder, result projectEinoAssistantReadFileOutput) {
+	if builder == nil || (!result.missing && result.conflictProposal == nil) {
+		return
+	}
+	metadata := projectEinoAssistantReadFileConflictMetadata{Missing: result.missing, ConflictProposal: result.conflictProposal}
+	encoded, _ := json.Marshal(metadata)
+	builder.WriteString("\nconflict_metadata_json: ")
+	builder.Write(encoded)
+}
+
+func projectEinoAssistantBoundConflictProposalPreview(proposal *projectEinoAssistantReadFileConflictProposal) *projectEinoAssistantReadFileConflictProposal {
+	if proposal == nil || proposal.ContentTruncated || len(proposal.Content) <= projectEinoAssistantConflictProposalPreviewMaxBytes {
+		return proposal
+	}
+	limit := projectEinoAssistantConflictProposalPreviewMaxBytes
+	first := projectEinoAssistantUTF8Prefix(proposal.Content, limit/2)
+	last := projectEinoAssistantUTF8Suffix(proposal.Content, limit-len(first))
+	copy := *proposal
+	copy.ContentPreview = first + "\n[… proposal content omitted …]\n" + last
+	copy.ContentBytes = len(proposal.Content)
+	copy.ContentTruncated = true
+	copy.Content = ""
+	return &copy
 }
 
 func projectEinoAssistantLiteralReadFileFence(head, tail string) string {
@@ -263,7 +398,7 @@ func projectEinoAssistantWriteLiteralSourceSegment(builder *strings.Builder, fen
 // Source lengths are byte counts, not runes or lines, and the close fence is
 // checked after consuming exactly those bytes.
 func projectEinoAssistantParseLiteralReadFileOutput(value string) (projectEinoAssistantLiteralReadFileOutput, bool) {
-	if !utf8.ValidString(value) || !strings.HasPrefix(value, projectEinoAssistantLiteralReadFileHeader) {
+	if len(value) > projectEinoAssistantModelToolOutputMaxBytes || !utf8.ValidString(value) || !strings.HasPrefix(value, projectEinoAssistantLiteralReadFileHeader) {
 		return projectEinoAssistantLiteralReadFileOutput{}, false
 	}
 	remaining := strings.TrimPrefix(value, projectEinoAssistantLiteralReadFileHeader)
@@ -375,7 +510,11 @@ func projectEinoAssistantParseLiteralReadFileOutput(value string) (projectEinoAs
 		if sourceLine, ok := line(); !ok || sourceLine != "source:" {
 			return projectEinoAssistantLiteralReadFileOutput{}, false
 		}
-		if remaining != "(binary content omitted)" {
+		if !strings.HasPrefix(remaining, "(binary content omitted)") {
+			return projectEinoAssistantLiteralReadFileOutput{}, false
+		}
+		remaining = strings.TrimPrefix(remaining, "(binary content omitted)")
+		if !projectEinoAssistantParseReadFileConflictMetadata(&remaining, &parsed) {
 			return projectEinoAssistantLiteralReadFileOutput{}, false
 		}
 		parsed.binary = true
@@ -433,6 +572,9 @@ func projectEinoAssistantParseLiteralReadFileOutput(value string) (projectEinoAs
 	} else if int64(parsed.headBytes) != shown {
 		return projectEinoAssistantLiteralReadFileOutput{}, false
 	}
+	if !projectEinoAssistantParseReadFileConflictMetadata(&remaining, &parsed) {
+		return projectEinoAssistantLiteralReadFileOutput{}, false
+	}
 	if parsed.truncated && parsed.shownBytes < parsed.selectedBytes {
 		parsed.modelClipped = true
 	}
@@ -447,6 +589,100 @@ func projectEinoAssistantParseLiteralReadFileOutput(value string) (projectEinoAs
 	}
 	parsed.content = parsed.shown
 	return parsed, true
+}
+
+func projectEinoAssistantParseReadFileConflictMetadata(remaining *string, parsed *projectEinoAssistantLiteralReadFileOutput) bool {
+	if remaining == nil || parsed == nil {
+		return false
+	}
+	if *remaining == "" {
+		return true
+	}
+	const prefix = "\nconflict_metadata_json: "
+	if !strings.HasPrefix(*remaining, prefix) {
+		return false
+	}
+	raw := strings.TrimPrefix(*remaining, prefix)
+	fields, ok := projectEinoAssistantDecodeUniqueReadFileReceiptFields(raw)
+	if !ok {
+		return false
+	}
+	if missing, exists := fields["missing"]; exists && strings.TrimSpace(string(missing)) == "null" {
+		return false
+	}
+	for name := range fields {
+		if name != "missing" && name != "conflictProposal" {
+			return false
+		}
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var metadata projectEinoAssistantReadFileConflictMetadata
+	if err := decoder.Decode(&metadata); err != nil {
+		return false
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return false
+	}
+	if !metadata.Missing && metadata.ConflictProposal == nil {
+		return false
+	}
+	if rawProposal, exists := fields["conflictProposal"]; exists {
+		proposal, ok := projectEinoAssistantDecodeConflictProposalOutput(rawProposal)
+		if !ok {
+			return false
+		}
+		metadata.ConflictProposal = proposal
+	}
+	parsed.missing = metadata.Missing
+	parsed.conflictProposal = metadata.ConflictProposal
+	if parsed.missing && (parsed.complete || parsed.version != "" || parsed.content != "" || parsed.shown != "" ||
+		parsed.selectedBytes != 0 || parsed.shownBytes != 0 || parsed.size != 0 || parsed.truncated || parsed.binary || parsed.conflictProposal == nil) {
+		return false
+	}
+	*remaining = ""
+	return true
+}
+
+func projectEinoAssistantDecodeConflictProposalOutput(raw json.RawMessage) (*projectEinoAssistantReadFileConflictProposal, bool) {
+	fields, ok := projectEinoAssistantDecodeUniqueReadFileReceiptFieldsBytes(raw)
+	if !ok {
+		return nil, false
+	}
+	allowed := map[string]struct{}{
+		"operation": {}, "content": {}, "contentPreview": {}, "contentBytes": {},
+		"contentTruncated": {}, "expectedVersion": {},
+	}
+	for name := range fields {
+		if _, exists := allowed[name]; !exists {
+			return nil, false
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var proposal projectEinoAssistantReadFileConflictProposal
+	if err := decoder.Decode(&proposal); err != nil {
+		return nil, false
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF || !projectEinoAssistantValidConflictProposalOutput(&proposal) {
+		return nil, false
+	}
+	return &proposal, true
+}
+
+func projectEinoAssistantValidConflictProposalOutput(proposal *projectEinoAssistantReadFileConflictProposal) bool {
+	if proposal == nil || !utf8.ValidString(proposal.Content) || !utf8.ValidString(proposal.ContentPreview) ||
+		(proposal.Operation != "create" && proposal.Operation != "replace" && proposal.Operation != "delete") ||
+		len(proposal.ExpectedVersion) > workspace.MaxFileVersionBytes || proposal.ContentBytes < 0 ||
+		proposal.ContentBytes > projectAssistantRunSandboxMaxChangeBytes {
+		return false
+	}
+	if proposal.ContentTruncated {
+		return proposal.Content == "" && proposal.ContentBytes > projectEinoAssistantConflictProposalPreviewMaxBytes &&
+			len(proposal.ContentPreview) > 0 && len(proposal.ContentPreview) <= projectEinoAssistantConflictProposalPreviewMaxBytes+64
+	}
+	return len(proposal.Content) <= projectAssistantRunSandboxMaxChangeBytes &&
+		proposal.ContentPreview == "" && proposal.ContentBytes == len(proposal.Content)
 }
 
 func projectEinoAssistantParseLiteralSourceFence(line string) (string, bool) {

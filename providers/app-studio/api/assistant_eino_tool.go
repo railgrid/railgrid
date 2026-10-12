@@ -926,6 +926,15 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		}
 		result, err = t.req.ToolPort.Invoke(ctx, t.tool, callRequest)
 	}
+	if err == nil && projectEinoAssistantSuccessfulWorkspaceMutationResult(spec.Name, result) {
+		if sandbox := projectAssistantRunSandboxForRequest(callRequest); sandbox != nil {
+			if checkpointErr := sandbox.checkpoint(ctx, t.req); checkpointErr != nil {
+				// Private sandbox bytes remain a proposal until the shared workspace
+				// accepts them in its version-fenced transaction.
+				result, err = "", checkpointErr
+			}
+		}
+	}
 	// recoveryOf is presentation-only. Accept it only when this run previously
 	// issued the referenced failed action, then carry it into the typed mutation
 	// result and subsequent event projection without affecting the workspace

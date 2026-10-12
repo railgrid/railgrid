@@ -84,6 +84,152 @@ func TestProjectEinoAssistantLiteralReadFileRoundTripsExactSourceBytes(t *testin
 	}
 }
 
+func TestProjectEinoAssistantLiteralReadFileExposesUnappliedConflictProposal(t *testing.T) {
+	const shared = "shared version after another thread's edit\n"
+	proposal := &projectAssistantSandboxConflictProposal{
+		Operation: workspace.ManagedFileReplace, Content: "private draft\n", ExpectedVersion: "sha256:before-conflict",
+	}
+	raw, err := projectAssistantSourceReadResult(projectAssistantReadFileSourceResult{
+		Path: "src/App.tsx", Content: shared, Size: int64(len(shared)), Version: "sha256:shared-current",
+		Complete: true, Offset: 1, Limit: 2000, ConflictProposal: proposal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, ok := projectEinoAssistantProjectModelReadFileOutput(raw, projectEinoAssistantModelToolOutputMaxBytes)
+	if !ok {
+		t.Fatal("conflict reread was not projected")
+	}
+	parsed, ok := projectEinoAssistantParseLiteralReadFileOutput(projected)
+	if !ok || parsed.content != shared || parsed.version != "sha256:shared-current" || !parsed.complete {
+		t.Fatalf("authoritative source receipt = %#v, parsed=%v", parsed, ok)
+	}
+	if parsed.conflictProposal == nil || parsed.conflictProposal.Operation != "replace" ||
+		parsed.conflictProposal.Content != proposal.Content || parsed.conflictProposal.ExpectedVersion != proposal.ExpectedVersion ||
+		parsed.conflictProposal.ContentTruncated {
+		t.Fatalf("unapplied conflict proposal = %#v, want full %#v", parsed.conflictProposal, proposal)
+	}
+	key, ok := projectEinoAssistantCompleteReadFileReceiptKey(projected)
+	if !ok || key.version != "sha256:shared-current" {
+		t.Fatalf("authoritative reread did not retain mutation-read authority: %#v, %v", key, ok)
+	}
+}
+
+func TestProjectEinoAssistantConflictProposalPreviewIsBoundedAndMissingSourceIsNotWritable(t *testing.T) {
+	largeProposal := &projectAssistantSandboxConflictProposal{
+		Operation: workspace.ManagedFileReplace, Content: strings.Repeat("p", projectEinoAssistantConflictProposalPreviewMaxBytes*10),
+		ExpectedVersion: "sha256:stale",
+	}
+	raw, err := projectAssistantSourceReadResult(projectAssistantReadFileSourceResult{
+		Path: "src/large.ts", Content: "current\n", Size: int64(len("current\n")), Version: "sha256:current",
+		Complete: true, Offset: 1, Limit: 2000, ConflictProposal: largeProposal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, ok := projectEinoAssistantProjectModelReadFileOutput(raw, projectEinoAssistantModelToolOutputMaxBytes)
+	if !ok || len(projected) > projectEinoAssistantModelToolOutputMaxBytes {
+		t.Fatalf("large proposal projection = %d bytes, ok=%v", len(projected), ok)
+	}
+	parsed, ok := projectEinoAssistantParseLiteralReadFileOutput(projected)
+	if !ok || parsed.conflictProposal == nil || !parsed.conflictProposal.ContentTruncated ||
+		parsed.conflictProposal.ContentBytes != len(largeProposal.Content) || parsed.content != "current\n" {
+		t.Fatalf("bounded proposal preview = %#v, parsed=%v", parsed, ok)
+	}
+
+	missingRaw, err := projectAssistantSourceReadResult(projectAssistantReadFileSourceResult{
+		Path: "src/deleted.ts", Complete: false, Offset: 1, Limit: 2000, Missing: true,
+		ConflictProposal: &projectAssistantSandboxConflictProposal{Operation: workspace.ManagedFileCreate, Content: "private create"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingProjected, ok := projectEinoAssistantProjectModelReadFileOutput(missingRaw, projectEinoAssistantModelToolOutputMaxBytes)
+	missing, parsedOK := projectEinoAssistantParseLiteralReadFileOutput(missingProjected)
+	if !ok || !parsedOK || !missing.missing || missing.complete || missing.version != "" || missing.conflictProposal == nil {
+		t.Fatalf("missing-file conflict read = %#v, projected=%v parsed=%v", missing, ok, parsedOK)
+	}
+	if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(missingProjected); ok {
+		t.Fatal("missing authoritative file unexpectedly granted mutation read authority")
+	}
+}
+
+func TestProjectEinoAssistantReadFileProjectionRejectsOversizedProposal(t *testing.T) {
+	proposalJSON := []byte(`{"operation":"replace","content":"` + strings.Repeat("p", projectAssistantRunSandboxMaxChangeBytes+1) + `"}`)
+	var proposal projectAssistantSandboxConflictProposal
+	if err := projectEinoAssistantDecodeSandboxConflictProposal(proposalJSON, &proposal); err != nil {
+		t.Fatalf("bounded raw proposal JSON unexpectedly failed to decode: %v", err)
+	}
+	if projectEinoAssistantValidSandboxConflictProposal(&proposal) {
+		t.Fatal("proposal exceeding the sandbox change limit was accepted")
+	}
+}
+
+func TestProjectEinoAssistantReadFileExtrasCannotWidenAuthority(t *testing.T) {
+	extraCases := []struct {
+		name  string
+		value json.RawMessage
+	}{
+		{name: "missing complete source", value: json.RawMessage(`true`)},
+		{name: "unknown proposal operation", value: json.RawMessage(`{"operation":"move","content":"source"}`)},
+		{name: "unknown proposal field", value: json.RawMessage(`{"operation":"replace","content":"source","unreviewed":true}`)},
+		{name: "duplicate proposal field", value: json.RawMessage(`{"operation":"replace","operation":"delete","content":"source"}`)},
+		{name: "invalid proposal type", value: json.RawMessage(`"replace"`)},
+	}
+	for _, extra := range extraCases {
+		t.Run(extra.name, func(t *testing.T) {
+			for _, binary := range []bool{false, true} {
+				receipt := map[string]any{
+					"path": "src/read.ts", "content": "source\n", "size": int64(len("source\n")),
+					"version": "sha256:current", "complete": true, "offset": 1, "limit": 20,
+				}
+				if binary {
+					receipt["content"] = ""
+					receipt["size"] = int64(12)
+					receipt["binary"] = true
+				}
+				if extra.name == "missing complete source" {
+					receipt["missing"] = extra.value
+				} else {
+					receipt["conflictProposal"] = extra.value
+				}
+				raw, err := projectAssistantSourceReadResult(receipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(raw); ok {
+					t.Fatalf("text receipt accepted malformed extras: %s", raw)
+				}
+				if _, ok := projectEinoAssistantCompleteBinaryReadFileReceiptKey(raw); ok {
+					t.Fatalf("binary receipt accepted malformed extras: %s", raw)
+				}
+			}
+		})
+	}
+
+	validRaw, err := projectAssistantSourceReadResult(projectAssistantReadFileSourceResult{
+		Path: "src/read.ts", Content: "shared\n", Size: int64(len("shared\n")), Version: "sha256:current",
+		Complete: true, Offset: 1, Limit: 20,
+		ConflictProposal: &projectAssistantSandboxConflictProposal{Operation: workspace.ManagedFileReplace, Content: "proposal"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validProjected, ok := projectEinoAssistantProjectModelReadFileOutput(validRaw, projectEinoAssistantModelToolOutputMaxBytes)
+	if !ok {
+		t.Fatal("valid conflict metadata was not projected")
+	}
+	duplicateProposal := strings.Replace(validProjected, `"operation":"replace"`, `"operation":"replace","operation":"delete"`, 1)
+	for _, malformed := range []string{validProjected + " trailing", validProjected + "\nconflict_metadata_json: {}", duplicateProposal} {
+		if _, ok := projectEinoAssistantParseLiteralReadFileOutput(malformed); ok {
+			t.Fatalf("literal receipt accepted trailing or duplicate metadata: %q", malformed)
+		}
+		if _, ok := projectEinoAssistantCompleteReadFileReceiptKey(malformed); ok {
+			t.Fatal("malformed literal metadata retained complete-read authority")
+		}
+	}
+}
+
 func TestProjectEinoAssistantLiteralReadFileHandlesEmptyAndRangedSource(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -73,6 +73,7 @@ func (s *Server) captureProjectAssistantPreviewSourceFence(ctx context.Context, 
 			return &projectAssistantPreviewSourceFence{
 				server: s, sandbox: sandbox, runState: runState, scope: sandbox.scope,
 				revision: metadata.SourceRevision, digest: metadata.SourceDigest,
+				requiresSharedPreviewCheckpoint: true,
 			}, nil
 		}
 	}
@@ -150,6 +151,9 @@ func (f *projectAssistantPreviewSourceFence) validate(ctx context.Context) error
 	}
 	if sandbox != nil {
 		metadata := sandbox.metadataSnapshot()
+		if metadata.ExecutionUnresolved || metadata.RemoteFenceNeedsRefresh {
+			return fmt.Errorf("%w: private command execution has not established current source evidence", errProjectAssistantRunSandboxConflict)
+		}
 		if metadata.RemoteRevision > 0 && strings.TrimSpace(metadata.RemoteDigest) == "" {
 			return fmt.Errorf("%w: private source has a remote revision without a digest", errProjectAssistantRunSandboxConflict)
 		}
