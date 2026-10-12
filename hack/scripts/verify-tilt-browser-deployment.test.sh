@@ -42,6 +42,10 @@ require(
     re.fullmatch(r"[0-9a-f]{64}", digests[0]) is not None,
     f"Playwright MCP digest must be exactly 64 lowercase hex characters: {digests[0]!r}",
 )
+require(re.search(r"(?m)^\s*- --isolated\s*$", browser) is not None,
+        "browser template must explicitly isolate MCP session contexts")
+require(re.search(r"(?m)^\s*- --shared-browser-context\s*$", browser) is None,
+        "browser template must not share page/cookie state across MCP clients")
 
 regular_app = section(
     tilt,

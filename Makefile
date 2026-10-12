@@ -724,7 +724,7 @@ verify-design-docs: ## Validate structured design-document metadata and emit its
 test-tilt-external-providers: ## Verify external provider checkout loading in both Tilt stacks
 	@python3 hack/scripts/verify-tilt-external-providers.test.py
 
-verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachability wiring
+verify-tilt-browser-deployment: test-app-studio-harness-scripts ## Verify Browser image pin and Tilt hub reachability wiring
 	@bash hack/scripts/verify-tilt-browser-deployment.test.sh
 	@bash hack/scripts/configure-tilt-preview-dns.test.sh
 
@@ -2964,3 +2964,26 @@ package-runner-linux: build-runner-linux ## Package Linux runner binaries and th
 test-provider-action-identity:
 	go test -race -count=1 ./pkg/hub/serviceaccounts -run 'ProviderAction|Workload'
 	go test -race -count=1 ./pkg/hub -run 'ProviderAction|TenantResolver|Workload'
+
+.PHONY: test-app-studio-harness test-app-studio-harness-scripts lint-app-studio-harness fix-lint-app-studio-harness app-studio-harness-report
+test-app-studio-harness-scripts: ## Verify host retention and benchmark evidence accounting
+	python3 hack/scripts/tilt-host-health.test.py
+	python3 hack/scripts/app-studio-harness-report.test.py
+
+test-app-studio-harness: test-app-studio-harness-scripts ## Verify harness execution, browser, telemetry, and development-host safeguards
+	cd providers/app-studio && go test -count=1 ./api ./store
+	cd providers/infrastructure/dev-agent && go test -count=1 ./...
+	cd providers/app-studio/portal && npm run test:assistant-exec && npm run test:assistant-progress && npm run test:assistant-trace
+	python3 hack/scripts/verify-tilt-app-studio-sequence.test.py
+	python3 hack/scripts/verify-tilt-sandbox-default.test.py
+
+lint-app-studio-harness: $(GOLANGCI_LINT) ## Lint the App Studio harness and development runtime
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run ./api ./store
+	cd providers/infrastructure/dev-agent && $(abspath $(GOLANGCI_LINT)) run ./...
+
+fix-lint-app-studio-harness: $(GOLANGCI_LINT) ## Format and fix lint in the harness and development runtime
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run --fix ./api ./store
+	cd providers/infrastructure/dev-agent && $(abspath $(GOLANGCI_LINT)) run --fix ./...
+
+app-studio-harness-report: ## Analyze saved benchmark receipts; ARGS='<directory> [--acceptance <manifest> --require-acceptance]'
+	python3 hack/scripts/app-studio-harness-report.py $(ARGS)

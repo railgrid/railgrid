@@ -14,6 +14,7 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 config.define_string('external-providers-dir', usage='Comma-separated external provider checkout paths')
 config.define_string('external-providers')
+config.define_string('app-studio-sandbox-mode', usage='App Studio sandbox mode: off, byo-only, or force')
 # Run kcp from a published image instead of the server compiled into the hub,
 # so a kcp change can be tried without moving this repository's kcp dependency.
 # The hub then starts with --external-kcp and the embedded server stays off.
@@ -26,10 +27,22 @@ config.define_string('external-providers')
 # The external server keeps its own root directory, so switching starts from an
 # EMPTY kcp: no workspaces, no providers, no tenants. Switch back by dropping
 # the flag; the embedded server's .kcp directory is left untouched.
+config.define_string('host-log-path', usage='Explicit Tilt console log to bound to 256 MiB plus one 8 MiB diagnostic tail')
 config.define_string('kcp-image')
 cfg = config.parse()
 
 kcp_image = cfg.get('kcp-image', '') or os.getenv('RAILGRID_KCP_IMAGE', '')
+# Universal sandbox stays opt-in locally. Resolve one mode for both the
+# resource graph and provider process, with an explicit Tilt arg taking
+# precedence over the existing environment override.
+app_studio_sandbox_mode = (
+    (cfg.get('app-studio-sandbox-mode', '') or '').strip().lower()
+    or os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower()
+    or 'off'
+)
+if app_studio_sandbox_mode not in ('off', 'byo-only', 'force'):
+    fail('--app-studio-sandbox-mode must be one of: off, byo-only, force')
+app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 kcp_external_root = '.kcp-external'
 kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 
@@ -52,6 +65,23 @@ preview_hub_public_host = preview_hub_public_url.replace('https://', '').replace
 # the port advertised in app URLs there even when the internal listener and
 # host port-forward stay on an unprivileged development port.
 preview_gateway_service_port = preview_app_public_port or '443'
+
+# Observe disk headroom without deleting data or caches. A headless launcher may
+# opt its console log into bounded retention with --host-log-path.
+host_health_args = ['python3', 'hack/scripts/tilt-host-health.py', '--path', os.getcwd()]
+host_build_tmp = os.getenv('GOTMPDIR', '')
+if host_build_tmp and host_build_tmp != 'off':
+    host_health_args += ['--path', host_build_tmp]
+host_log_path = cfg.get('host-log-path', '') or os.getenv('TILT_LOG_PATH', '')
+if host_log_path:
+    host_health_args += ['--log', host_log_path]
+local_resource(
+    'host-health',
+    serve_cmd=host_health_args,
+    deps=['hack/scripts/tilt-host-health.py'],
+    readiness_probe=probe(period_secs=10, exec=exec_action(host_health_args + ['--check'])),
+    labels=['hub'],
+)
 
 # ---------------------------------------------------------------------------
 # portal — Vue.js SPA dev server on :3000
@@ -197,10 +227,6 @@ dev_agent_image = 'ghcr.io/railgrid/railgrid-dev-agent:latest'
 dev_agent_image_repository = 'ghcr.io/railgrid/railgrid-dev-agent'
 universal_dev_image = 'ghcr.io/railgrid/railgrid-universal-dev:latest'
 universal_dev_image_repository = 'ghcr.io/railgrid/railgrid-universal-dev'
-# Universal sandbox is opt-in locally. Use the same resolved mode for Tilt's
-# resource graph and the provider process so they cannot disagree.
-app_studio_sandbox_mode = os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower() or 'off'
-app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 # Host address as seen FROM INSIDE the railgrid-kro containers. Resolve
 # host.docker.internal inside the node first: on Docker Desktop/OrbStack the
 # bridge gateway below is the VM, not the host, and dialing it gets connection
@@ -395,11 +421,13 @@ local_resource(
         'providers/app-studio/assets.go',
         'providers/app-studio/api',
         'providers/app-studio/apis',
+        'providers/app-studio/controller',
         'providers/app-studio/scaffold',
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',
         'providers/app-studio/workspace',
+        'providers/app-studio/internal',
         'providers/app-studio/go.mod',
         'providers/app-studio/go.sum',
         'providers/app-studio/portal/dist',
@@ -1044,7 +1072,7 @@ while true; do
     continue
   fi
   kubectl --kubeconfig "$KRO_KUBECONFIG" --context "$CTX" \
-    -n %s port-forward "svc/$svc" %s:%s &
+    -n %s port-forward "svc/$svc" %s:%s >/dev/null &
   pf=$!
   fails=0
   probe_ticks=0
