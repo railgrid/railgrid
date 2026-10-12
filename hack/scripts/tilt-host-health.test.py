@@ -53,6 +53,8 @@ class HostHealthTest(unittest.TestCase):
             )
         )
         self.assertLess(config_index, parse_index)
+        self.assertLess(source.index("config.define_string('host-log-path'"),
+                        source.index('# Run kcp from a published image'))
 
         resource = next(
             node.value for node in tree.body
@@ -96,21 +98,59 @@ class HostHealthTest(unittest.TestCase):
             with path.open('wb') as writer:
                 writer.write(b'a' * 65536 + b'diagnostic-tail')
                 writer.flush()
-                self.assertTrue(health.rotate_log(path, limit=32768, keep=15))
+                self.assertEqual(health.rotate_log(path, limit=32768, keep=15), 15)
                 self.assertEqual(path.with_name('tilt.log.previous').read_bytes(), b'diagnostic-tail')
                 self.assertLessEqual(path.with_name('tilt.log.previous').stat().st_size,
                                      health.MAX_RETAINED_TAIL)
                 writer.write(b'still-running')
                 writer.flush()
                 self.assertGreater(path.stat().st_size, 65536)
-                self.assertFalse(health.rotate_log(path, limit=32768, keep=15))
+                self.assertIsNone(health.rotate_log(path, limit=32768, keep=15))
                 self.assertTrue(path.read_bytes().endswith(b'still-running'))
+
+    def test_rotation_event_reports_short_tail_and_zero_byte_tail(self):
+        class StopLoop(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            short_log = Path(tmp) / 'short.log'
+            short_contents = b'short-tail'
+            short_log.write_bytes(short_contents)
+            empty_tail_log = Path(tmp) / 'empty-tail.log'
+            empty_tail_log.write_bytes(b'x' * 8192)
+            original_rotate = health.rotate_log
+
+            def rotate_for_test(path):
+                if Path(path) == short_log:
+                    return original_rotate(path, limit=1, keep=64)
+                return original_rotate(path, limit=1, keep=0)
+
+            output = io.StringIO()
+            with patch.object(sys, 'argv', [
+                    'tilt-host-health.py', '--path', tmp,
+                    '--log', str(short_log), '--log', str(empty_tail_log)]), \
+                    patch.object(health, 'rotate_log', side_effect=rotate_for_test), \
+                    patch.object(health, 'check_disk', return_value=[]), \
+                    patch.object(health.time, 'sleep', side_effect=StopLoop), \
+                    redirect_stdout(output):
+                with self.assertRaises(StopLoop):
+                    health.main()
+
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            rotations = {event['path']: event['retainedTailBytes'] for event in events
+                         if event['event'] == 'tilt_log_rotated'}
+            self.assertEqual(rotations, {str(short_log): len(short_contents),
+                                         str(empty_tail_log): 0})
+            self.assertEqual(short_log.with_name('short.log.previous').read_bytes(),
+                             short_contents)
+            self.assertEqual(empty_tail_log.with_name('empty-tail.log.previous').read_bytes(),
+                             b'')
 
     def test_retained_diagnostic_tail_has_a_fixed_upper_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'tilt.log'
             path.write_bytes(b'x' * (health.MAX_RETAINED_TAIL + 1024))
-            self.assertTrue(health.rotate_log(path, limit=1))
+            self.assertEqual(health.rotate_log(path, limit=1), health.MAX_RETAINED_TAIL)
             self.assertEqual(path.with_name('tilt.log.previous').stat().st_size,
                              health.MAX_RETAINED_TAIL)
             with self.assertRaisesRegex(ValueError, 'managed log tail'):
@@ -125,7 +165,7 @@ class HostHealthTest(unittest.TestCase):
                 health.rotate_log(log, limit=1)
             log.unlink(); log.write_bytes(b'x' * 65536)
             log.with_name('tilt.log.previous').symlink_to(data)
-            self.assertTrue(health.rotate_log(log, limit=32768, keep=16))
+            self.assertEqual(health.rotate_log(log, limit=32768, keep=16), 16)
             self.assertEqual(data.read_bytes(), b'preserve')
             self.assertEqual(log.with_name('tilt.log.previous').stat().st_mode & 0o777, 0o600)
 
@@ -142,7 +182,7 @@ class HostHealthTest(unittest.TestCase):
 
     def test_missing_log_and_low_disk_probe_do_not_mutate_data(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertFalse(health.rotate_log(Path(tmp) / 'missing'))
+            self.assertIsNone(health.rotate_log(Path(tmp) / 'missing'))
             self.assertEqual(health.check_disk([tmp], minimum=1), [])
             self.assertEqual(len(health.check_disk([tmp], minimum=2**80)), 1)
             self.assertEqual(list(Path(tmp).iterdir()), [])

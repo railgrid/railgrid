@@ -51,7 +51,6 @@ import (
 	"github.com/gorilla/mux"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -243,16 +242,6 @@ type dataPlaneClusterKey struct{}
 
 // dataPlaneProviderKey carries the provider client the gate returned.
 type dataPlaneProviderKey struct{}
-
-// withDataPlaneProvider records a provider client on ctx, for tests that
-// drive a handler without the dispatcher.
-func withDataPlaneProvider(ctx context.Context, cluster string, provider dynamic.Interface) context.Context {
-	ctx = context.WithValue(ctx, dataPlaneClusterKey{}, cluster)
-	if provider != nil {
-		ctx = context.WithValue(ctx, dataPlaneProviderKey{}, provider)
-	}
-	return ctx
-}
 
 // dataPlaneCluster returns the logical cluster this request addresses.
 //

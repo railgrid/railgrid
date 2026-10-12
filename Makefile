@@ -724,7 +724,7 @@ verify-design-docs: ## Validate structured design-document metadata and emit its
 test-tilt-external-providers: ## Verify external provider checkout loading in both Tilt stacks
 	@python3 hack/scripts/verify-tilt-external-providers.test.py
 
-verify-tilt-browser-deployment: test-app-studio-harness-scripts ## Verify Browser image pin and Tilt hub reachability wiring
+verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachability wiring
 	@bash hack/scripts/verify-tilt-browser-deployment.test.sh
 	@bash hack/scripts/configure-tilt-preview-dns.test.sh
 
@@ -2819,7 +2819,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
@@ -2981,7 +2981,7 @@ lint-app-studio-harness: $(GOLANGCI_LINT) ## Lint the App Studio harness and dev
 	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run ./api ./store
 	cd providers/infrastructure/dev-agent && $(abspath $(GOLANGCI_LINT)) run ./...
 
-fix-lint-app-studio-harness: $(GOLANGCI_LINT) ## Format and fix lint in the harness and development runtime
+fix-lint-app-studio-harness: $(GOLANGCI_LINT) ## Auto-fix all App Studio API/store and dev-agent files (not limited to changed files)
 	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run --fix ./api ./store
 	cd providers/infrastructure/dev-agent && $(abspath $(GOLANGCI_LINT)) run --fix ./...
 

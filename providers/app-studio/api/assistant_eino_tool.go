@@ -1447,13 +1447,6 @@ func projectEinoAssistantWorkspaceDigest(ctx context.Context, store *workspace.F
 	return store.WorkspaceDigest(ctx, scope, paths)
 }
 
-func projectAssistantMutationFromSuccessfulResult(name, result string, successful bool) *projectAssistantMutation {
-	if !successful {
-		return nil
-	}
-	return projectAssistantMutationFromResult(name, result)
-}
-
 func projectEinoAssistantPersistentToolResult(name, result string) string {
 	baseName := projectToolBaseName(name)
 	if projectAssistantNativeBrowserToolName(baseName) {

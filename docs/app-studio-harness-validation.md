@@ -15,7 +15,7 @@ The durable event field `failed` records a Go invocation error; `disposition` re
 
 A recovered retry does not erase the original attempt failure. Preserve the recovery correlation and count the attempt in its own population. Aggregate counts can identify discrepancies, but matching counts do not prove that individual calls agree because the populations have different boundaries and may include wrapper calls.
 
-The command receipt separates process outcome from source applicability. Preserve the exit code and dispatched source revision even when the source changed while the command ran; a zero exit code with a stale receipt is not proof that current source passes. The default local sandbox mode is `off`, which uses the shared development runtime. Commands in that runtime can observe concurrent workspace writes; a revision receipt identifies the checked source revision but does not promise an immutable filesystem. Record the effective `APP_STUDIO_RUN_SANDBOX_MODE` for each run because sandbox modes have different runtime and source-isolation behavior.
+The command receipt separates process outcome from source applicability. Preserve the exit code and dispatched source revision even when the source changed while the command ran; a zero exit code with a stale receipt is not proof that current source passes. The `app-studio-sandbox-mode` Tilt option selects an additional private sandbox per assistant run. The default, `off`, keeps threads in the project’s existing sandboxed development runtime; it does not disable project sandboxing. `byo-only` requires an eligible bring-your-own sandbox provider, and development-only `force` enables private run sandboxes. The Tilt option overrides `APP_STUDIO_RUN_SANDBOX_MODE`. Commands in that runtime can observe concurrent workspace writes; a revision receipt identifies the checked source revision but does not promise an immutable filesystem. Record the effective `APP_STUDIO_RUN_SANDBOX_MODE` for each run because sandbox modes have different runtime and source-isolation behavior.
 
 The portal parses the server-owned command disclosure through a strict allowlist. Unknown fields can cause an otherwise valid receipt to be omitted from the rendered activity feed. Keep a regression for the full current server envelope, including source revision metadata, and for a command-only turn with no commentary. Exercise blocked starts, zero and nonzero exits, cancellation with and without a confirmed process receipt, long arguments, and Unicode output at the supported limits. Execution-input byte bounds, redacted public-argument bounds, and server-truncated Unicode output bounds are separate contracts; do not impose a smaller portal limit that discards a valid receipt.
 
@@ -68,7 +68,7 @@ The report prints JSON sections named `nativeAudit`, `ui`, `durableEvents`, `rec
 
 Admission-to-result intervals include queueing. Their overlap can help locate concurrency pressure, but it does not prove that processes ran simultaneously and is not a throughput measurement. Missing or unfinished command intervals make timing coverage incomplete; the overlap then describes only complete intervals. Use process start/finish observations when a live check must establish how many commands were actually running.
 
-An optional acceptance manifest declares the cases before a live check. Every `passed` case must reference at least one existing evidence file. Relative evidence paths resolve from the acceptance manifest's directory. File existence establishes provenance, not independent validation of the artifact's content. A starting template should keep unobserved cases unverified:
+An optional acceptance manifest declares the cases before a live check. Every `passed` case must reference at least one non-empty evidence file; all referenced files must be non-empty and resolve within the manifest directory. Relative evidence paths resolve from the acceptance manifest's directory. A non-empty file establishes an artifact reference, not independent validation of its content: a placeholder can still pass this check. A starting template should keep unobserved cases unverified:
 
 ```json
 {
@@ -95,7 +95,7 @@ Require every declared case to pass with evidence by adding `--acceptance <file>
 make app-studio-harness-report ARGS='<evidence-directory> --acceptance <evidence-directory>/acceptance.json --require-acceptance'
 ```
 
-The report exits nonzero if a case failed or remains unverified, if a passing case has no existing evidence, or if the acceptance manifest is invalid. Use owned disposable fixtures with explicit ownership. Do not reset a customized application's database to make a benchmark pass.
+With `--require-acceptance`, exit code 1 means a failed/unverified case or unavailable/empty evidence. Exit code 2 means invalid input or an unreadable input file; the CLI reports a concise error without a traceback. Exit code 0 means the requested checks passed. Use owned disposable fixtures with explicit ownership. Do not reset a customized application's database to make a benchmark pass.
 
 ## Local regression checks
 
@@ -108,7 +108,7 @@ make lint-app-studio-harness
 make verify-tilt-browser-deployment
 ```
 
-`test-app-studio-harness-scripts` covers the host-health and evidence-report scripts. `test-app-studio-harness` also runs App Studio API/store tests, the nested infrastructure development-agent tests, portal execution/progress/trace tests, and Tilt sequence/sandbox checks. These local checks do not exercise a live browser, a deployed provider, or benchmark performance. `verify-tilt-browser-deployment` checks the managed Browser image and isolation wiring.
+`test-app-studio-harness-scripts` covers the host-health and evidence-report scripts. `test-app-studio-harness` also runs App Studio API/store tests, the nested infrastructure development-agent tests, portal execution/progress/trace tests, and Tilt sequence/sandbox checks. These local checks do not exercise a live browser, a deployed provider, or benchmark performance. `verify-tilt-browser-deployment` checks the managed Browser image and isolation wiring. `make verify` includes the aggregate harness checks and lint. `fix-lint-app-studio-harness` is an explicit whole-package formatter for API/store and dev-agent files; it is not limited to the current diff and is not run by CI. In CI, script tests have a dedicated gate; the existing Go module and provider-portal matrices cover the Go/npm suites, and the full-mode lint job also runs harness lint.
 
 ## Live regression protocol
 

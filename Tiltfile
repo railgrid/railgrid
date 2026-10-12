@@ -14,7 +14,8 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 config.define_string('external-providers-dir', usage='Comma-separated external provider checkout paths')
 config.define_string('external-providers')
-config.define_string('app-studio-sandbox-mode', usage='App Studio sandbox mode: off, byo-only, or force')
+config.define_string('app-studio-sandbox-mode', usage='Private per-run sandbox mode (project runtime remains sandboxed): off, byo-only, force')
+config.define_string('host-log-path', usage='Explicit Tilt console log to bound to 256 MiB plus one 8 MiB diagnostic tail')
 # Run kcp from a published image instead of the server compiled into the hub,
 # so a kcp change can be tried without moving this repository's kcp dependency.
 # The hub then starts with --external-kcp and the embedded server stays off.
@@ -27,7 +28,6 @@ config.define_string('app-studio-sandbox-mode', usage='App Studio sandbox mode: 
 # The external server keeps its own root directory, so switching starts from an
 # EMPTY kcp: no workspaces, no providers, no tenants. Switch back by dropping
 # the flag; the embedded server's .kcp directory is left untouched.
-config.define_string('host-log-path', usage='Explicit Tilt console log to bound to 256 MiB plus one 8 MiB diagnostic tail')
 config.define_string('kcp-image')
 cfg = config.parse()
 

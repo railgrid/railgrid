@@ -137,6 +137,19 @@ class WorkflowTests(unittest.TestCase):
                          ["python3 -m pip install -r hack/ci/requirements-test.txt",
                           "make verify-ci-selection", "make verify-workflows"])
 
+    def test_harness_checks_have_explicit_gates(self):
+        ci = self.workflows["ci"]["jobs"]
+        scripts = ci["test-app-studio-harness-scripts"]
+        self.assertNotIn("if", scripts)
+        commands = [step["run"] for step in scripts["steps"] if "run" in step]
+        self.assertIn("make test-app-studio-harness-scripts", commands)
+        self.assertIn("make lint-app-studio-harness",
+                      [step["run"] for step in ci["lint"]["steps"] if "run" in step])
+        # Existing module and portal matrices cover the remaining aggregate
+        # harness suites; keep the nested runtime module in that coverage.
+        modules = {entry["module"] for entry in ci["test-modules"]["strategy"]["matrix"]["include"]}
+        self.assertTrue({"providers/app-studio", "providers/infrastructure/dev-agent"} <= modules)
+
     def test_image_and_helm_publishing_only_on_original_events(self):
         images = self.workflows["images"]["jobs"]
         for event in ("pull_request", "workflow_dispatch", "push", "release"):

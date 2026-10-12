@@ -206,6 +206,10 @@ jobs:
         go-version-file: go.mod
     - name: Lint
       run: make lint
+    - name: Stub App Studio portal for Go embed
+      run: mkdir -p providers/app-studio/portal/dist && touch providers/app-studio/portal/dist/.gitkeep
+    - name: Lint App Studio harness and development runtime
+      run: make lint-app-studio-harness
 
   verify-boilerplate:
     runs-on: ubuntu-latest
@@ -255,6 +259,20 @@ jobs:
         go-version-file: go.mod
     - name: Verify codegen
       run: make verify-codegen
+
+  test-app-studio-harness-scripts:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Test harness evidence and host retention
+      run: make test-app-studio-harness-scripts
+    - name: Verify Tilt harness wiring
+      run: |
+        make test-tilt-app-studio-sequence
+        python3 hack/scripts/verify-tilt-sandbox-default.test.py
 
   verify-tilt-browser-deployment:
     runs-on: ubuntu-latest
@@ -351,7 +369,7 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [changes, build, govulncheck, lint, portal, provider-portals, test-modules, test-app-studio-postgres, verify-boilerplate, verify-ci-selection, verify-codegen, verify-design-docs, verify-portalkit, verify-tilt-browser-deployment, verify-ui-conformance]
+    needs: [changes, test-app-studio-harness-scripts, build, govulncheck, lint, portal, provider-portals, test-modules, test-app-studio-postgres, verify-boilerplate, verify-ci-selection, verify-codegen, verify-design-docs, verify-portalkit, verify-tilt-browser-deployment, verify-ui-conformance]
     runs-on: ubuntu-latest
     permissions:
       contents: read

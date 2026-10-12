@@ -786,7 +786,7 @@ PROBE_HOST=tilt-probe.%s
 while true; do
   svc="$(kubectl --context "$CTX" get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=$GW -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
   if [ -z "$svc" ]; then sleep 2; continue; fi
-  kubectl --context "$CTX" -n envoy-gateway-system port-forward "svc/$svc" 10443:10443 &
+  kubectl --context "$CTX" -n envoy-gateway-system port-forward "svc/$svc" 10443:10443 >/dev/null &
   pf=$!
   fails=0
   while kill -0 $pf 2>/dev/null; do

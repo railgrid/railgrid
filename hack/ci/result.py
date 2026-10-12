@@ -10,7 +10,7 @@ import sys
 # compare it with the workflows so new jobs cannot escape the completion gate.
 POLICIES = {
     "ci": {
-        "always": {"govulncheck", "verify-boilerplate", "verify-portalkit",
+        "always": {"test-app-studio-harness-scripts", "govulncheck", "verify-boilerplate", "verify-portalkit",
                    "verify-ui-conformance", "verify-design-docs",
                    "verify-tilt-browser-deployment", "provider-portals", "verify-ci-selection"},
         "full": {"build", "test-modules", "test-app-studio-postgres",

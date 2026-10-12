@@ -15,6 +15,7 @@
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
@@ -25,6 +26,24 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('report', Path(__file__).with_name('app-studio-harness-report.py'))
 report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(report)
+SCRIPT_PATH = Path(__file__).with_name('app-studio-harness-report.py')
+
+
+def write_cli_inputs(directory):
+    Path(directory, 'audits.json').write_text(json.dumps([
+        {'runID': 'r', 'metrics': {'tools': []}},
+    ]))
+    Path(directory, 'metrics.json').write_text(json.dumps({
+        'rows': [{'run': 'r', 'failedItems': 0, 'recoveredItems': 0}],
+    }))
+    Path(directory, 'tool-timings.json').write_text(json.dumps({'calls': []}))
+
+
+def run_cli(directory, *arguments):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(directory), *map(str, arguments)],
+        capture_output=True, text=True, check=False,
+    )
 
 
 class HarnessReportTest(unittest.TestCase):
@@ -143,6 +162,109 @@ class HarnessReportTest(unittest.TestCase):
                   'admittedAt': '2026-10-11T00:00:00', 'finishedAt': '2026-10-11T00:00:01'}]
         with self.assertRaisesRegex(ValueError, 'timezone'):
             report.command_concurrency(calls)
+
+    def test_audit_at_producer_tool_cap_is_marked_as_possibly_truncated(self):
+        audit = {'runID': 'r', 'metrics': {'tools': [
+            {'name': 'read_file', 'status': 'succeeded'} for _ in range(report.AUDIT_TOOL_CAP)
+        ]}}
+        result = report.summarize([audit], {'rows': [{'run': 'r'}]}, {'calls': []})
+        self.assertEqual(report.AUDIT_TOOL_CAP, 128)
+        self.assertEqual(result['nativeAudit']['possiblyTruncatedRuns'], ['r'])
+
+
+class HarnessReportCLITest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp.name)
+        write_cli_inputs(self.directory)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def write_acceptance(self, manifest):
+        path = self.directory / 'acceptance.json'
+        path.write_text(json.dumps(manifest))
+        return path
+
+    def assert_invalid_cli_input(self, result, secret=None):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(result.stdout, '')
+        if secret:
+            self.assertNotIn(secret, result.stderr)
+            self.assertNotIn(secret, result.stdout)
+
+    def test_malformed_manifest_array_and_missing_case_id_exit_two_without_echo(self):
+        manifest = self.write_acceptance(['SECRET_ACCEPTANCE_VALUE'])
+        result = run_cli(self.directory, '--acceptance', manifest, '--require-acceptance')
+        self.assert_invalid_cli_input(result, 'SECRET_ACCEPTANCE_VALUE')
+
+        manifest = self.write_acceptance({'cases': [
+            {'status': 'passed', 'evidence': ['private/artifact.json'],
+             'reason': 'SECRET_FREE_TEXT_VALUE'},
+        ]})
+        result = run_cli(self.directory, '--acceptance', manifest, '--require-acceptance')
+        self.assert_invalid_cli_input(result, 'SECRET_FREE_TEXT_VALUE')
+        self.assertNotIn('private/artifact.json', result.stderr)
+
+    def test_null_acceptance_manifest_is_invalid_with_or_without_required_mode(self):
+        manifest = self.directory / 'acceptance.json'
+        manifest.write_text('null')
+        for arguments in (('--acceptance', manifest),
+                          ('--acceptance', manifest, '--require-acceptance')):
+            with self.subTest(arguments=arguments):
+                result = run_cli(self.directory, *arguments)
+                self.assert_invalid_cli_input(result)
+
+    def test_malformed_input_containers_and_counters_exit_two_without_tracebacks(self):
+        bad_inputs = [
+            ('audits.json', {'runID': 'SECRET_RUN'}),
+            ('metrics.json', {'rows': [[]]}),
+            ('tool-timings.json', {'calls': [[]]}),
+        ]
+        for name, value in bad_inputs:
+            with self.subTest(name=name):
+                write_cli_inputs(self.directory)
+                Path(self.directory, name).write_text(json.dumps(value))
+                result = run_cli(self.directory)
+                self.assert_invalid_cli_input(result, 'SECRET_RUN' if name == 'audits.json' else None)
+
+        write_cli_inputs(self.directory)
+        Path(self.directory, 'metrics.json').write_text(json.dumps({
+            'rows': [{'run': 'r', 'failedItems': True}],
+        }))
+        result = run_cli(self.directory)
+        self.assert_invalid_cli_input(result)
+
+    def test_malformed_json_and_missing_files_exit_two_without_tracebacks(self):
+        Path(self.directory, 'metrics.json').write_text('{"private":"SECRET_JSON_VALUE"')
+        result = run_cli(self.directory)
+        self.assert_invalid_cli_input(result, 'SECRET_JSON_VALUE')
+
+        write_cli_inputs(self.directory)
+        Path(self.directory, 'tool-timings.json').unlink()
+        result = run_cli(self.directory)
+        self.assert_invalid_cli_input(result)
+
+        write_cli_inputs(self.directory)
+        result = run_cli(self.directory, '--acceptance', self.directory / 'missing-acceptance.json')
+        self.assert_invalid_cli_input(result)
+
+    def test_empty_evidence_file_is_an_acceptance_gap_with_exit_one(self):
+        evidence = self.directory / 'empty.png'
+        evidence.write_bytes(b'')
+        manifest = self.write_acceptance({'cases': [
+            {'id': 'empty-evidence', 'status': 'passed', 'evidence': ['empty.png']},
+        ]})
+        result = run_cli(self.directory, '--acceptance', manifest, '--require-acceptance')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertEqual(result.stderr, '')
+        output = json.loads(result.stdout)
+        self.assertFalse(output['acceptance']['fullyVerified'])
+        self.assertEqual(output['acceptance']['gaps'][0]['evidenceFilesFound'], 0)
+        self.assertEqual(output['acceptance']['gaps'][0]['evidenceFilesMissing'], 1)
+        self.assertIn('do not verify file contents', output['acceptance']['limitation'])
 
 
 if __name__ == '__main__':

@@ -28,6 +28,7 @@ import (
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components"
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-app-studio/store"
@@ -35,6 +36,50 @@ import (
 
 func projectEinoAssistantChatModelRunInfoForTest() *callbacks.RunInfo {
 	return &callbacks.RunInfo{Component: components.ComponentOfChatModel}
+}
+
+func TestProjectEinoAssistantModelCallbackRedactsGraphStateBeforeModelFailure(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.NextModelCallOrdinal()
+	modelInput := []*schema.Message{schema.UserMessage("inspect the image"), assistantModelInputMessageForTest()}
+	var checkpointMessages []*schema.Message
+	graph := compose.NewGraph[struct{}, string](compose.WithGenLocalState(func(context.Context) *adk.State { //nolint:staticcheck // The test needs Eino's only exported type for its opaque graph state to reproduce the production redaction boundary.
+		//nolint:staticcheck // The test needs Eino's only exported type for its opaque graph state to reproduce the production redaction boundary.
+		return &adk.State{Messages: append([]*schema.Message(nil), modelInput...)}
+	}))
+	if err := graph.AddLambdaNode("model", compose.InvokableLambda(func(ctx context.Context, _ struct{}) (string, error) {
+		handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{}, runState, nil)
+		handler.OnStart(ctx, projectEinoAssistantChatModelRunInfoForTest(), &einomodel.CallbackInput{Messages: modelInput})
+		if len(modelInput) != 2 || !projectEinoAssistantAttachmentMessage(modelInput[1]) || modelInput[1].UserInputMultiContent[0].Image.Base64Data == nil {
+			return "", errors.New("model callback input did not retain image bytes")
+		}
+		if err := compose.ProcessState[*adk.State](ctx, func(_ context.Context, state *adk.State) error { //nolint:staticcheck // The test inspects Eino's opaque graph state through its only exported type alias to prove redaction before model failure.
+			checkpointMessages = append([]*schema.Message(nil), state.Messages...)
+			return nil
+		}); err != nil {
+			return "", err
+		}
+		return "", context.Canceled
+	})); err != nil {
+		t.Fatalf("add model callback node: %v", err)
+	}
+	if err := graph.AddEdge(compose.START, "model"); err != nil {
+		t.Fatalf("add graph start: %v", err)
+	}
+	if err := graph.AddEdge("model", compose.END); err != nil {
+		t.Fatalf("add graph end: %v", err)
+	}
+	runner, err := graph.Compile(context.Background())
+	if err != nil {
+		t.Fatalf("compile model callback graph: %v", err)
+	}
+	_, err = runner.Invoke(context.Background(), struct{}{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("model failure = %v, want canceled", err)
+	}
+	if len(checkpointMessages) != 1 || checkpointMessages[0].Content != "inspect the image" {
+		t.Fatalf("checkpoint state retained model-only image data: %#v", checkpointMessages)
+	}
 }
 
 func TestProjectEinoAssistantModelCallbackIgnoresGraphEventsAndErrors(t *testing.T) {

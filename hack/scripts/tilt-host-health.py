@@ -36,6 +36,7 @@ MAX_RETAINED_TAIL = 8 * MIB
 
 
 def rotate_log(path, limit=256 * MIB, keep=8 * MIB):
+    """Return retained tail bytes, or None when no rotation was needed."""
     if limit <= 0:
         raise ValueError('managed log limit must be positive')
     if keep < 0 or keep > MAX_RETAINED_TAIL:
@@ -44,7 +45,7 @@ def rotate_log(path, limit=256 * MIB, keep=8 * MIB):
     try:
         fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        return False
+        return None
     with os.fdopen(fd, 'r+b') as stream:
         metadata = os.fstat(stream.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
@@ -53,7 +54,7 @@ def rotate_log(path, limit=256 * MIB, keep=8 * MIB):
             raise ValueError('managed log must not have hard links')
         fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if metadata.st_blocks * 512 <= limit:
-            return False
+            return None
         stream.seek(max(0, metadata.st_size - keep))
         tail = stream.read(keep)
         temporary = None
@@ -70,7 +71,7 @@ def rotate_log(path, limit=256 * MIB, keep=8 * MIB):
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-    return True
+    return len(tail)
 
 
 def check_disk(paths, minimum):
@@ -116,9 +117,10 @@ def main():
             log_errors = {}
             for path in args.log:
                 try:
-                    if rotate_log(path):
+                    retained_tail_bytes = rotate_log(path)
+                    if retained_tail_bytes is not None:
                         print(json.dumps({'event': 'tilt_log_rotated', 'path': path,
-                                          'retainedTailBytes': MAX_RETAINED_TAIL}), flush=True)
+                                          'retainedTailBytes': retained_tail_bytes}), flush=True)
                 except (OSError, ValueError) as error:
                     log_errors[path] = str(error)
             if log_errors != previous_log_errors:
