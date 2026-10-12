@@ -142,9 +142,48 @@ func TestValidatedRejectsMissingRequiredFields(t *testing.T) {
 	if cond := validated(t, h.reconcile(t)); cond.Reason != agentsv1alpha1.ReasonInvalidSpec {
 		t.Fatalf("empty agentRef: reason = %s, want InvalidSpec", cond.Reason)
 	}
-	h = newHarness(t, trigger("", testAgent), agent(testAgent))
-	if cond := validated(t, h.reconcile(t)); cond.Reason != agentsv1alpha1.ReasonMissingWebhookRef {
-		t.Fatalf("empty webhookRef: reason = %s, want MissingWebhookRef", cond.Reason)
+}
+
+// A Trigger from before the Webhook kind has no webhookRef and a URL already
+// pasted into GitHub. The reconciler gives it a Webhook of its own name — the
+// path is keyed by name, so the URL is unchanged — and points the trigger at
+// it, instead of leaving the trigger invalid and the URL answering 404 until
+// somebody notices.
+func TestLegacyTriggerIsMigratedToAWebhookOfItsOwnName(t *testing.T) {
+	h := newHarness(t, trigger("", testAgent), agent(testAgent))
+	got := h.reconcile(t)
+	if got.Spec.WebhookRef != testTrigger {
+		t.Fatalf("spec.webhookRef = %q, want the trigger's own name %q", got.Spec.WebhookRef, testTrigger)
+	}
+	var wh agentsv1alpha1.Webhook
+	if err := h.c.Get(context.Background(), client.ObjectKey{Name: testTrigger}, &wh); err != nil {
+		t.Fatalf("no Webhook %q was created: %v", testTrigger, err)
+	}
+	if wh.Spec.Source != agentsv1alpha1.WebhookSourceWebhook {
+		t.Errorf("migrated webhook source = %q, want webhook", wh.Spec.Source)
+	}
+	// The spec write re-delivers the object; the next pass validates it.
+	if cond := validated(t, h.reconcile(t)); cond.Status != metav1.ConditionTrue {
+		t.Fatalf("after migration Validated = %s/%s, want True", cond.Status, cond.Reason)
+	}
+}
+
+// A Webhook of the trigger's name may already exist — the tenant made one, or
+// an earlier pass created it and the spec write conflicted. It is adopted as
+// it stands, not replaced.
+func TestLegacyTriggerAdoptsAnExistingWebhookOfItsName(t *testing.T) {
+	existing := webhook(testTrigger)
+	existing.Spec.DisplayName = "mine"
+	h := newHarness(t, trigger("", testAgent), agent(testAgent), existing)
+	if got := h.reconcile(t); got.Spec.WebhookRef != testTrigger {
+		t.Fatalf("spec.webhookRef = %q, want %q", got.Spec.WebhookRef, testTrigger)
+	}
+	var wh agentsv1alpha1.Webhook
+	if err := h.c.Get(context.Background(), client.ObjectKey{Name: testTrigger}, &wh); err != nil {
+		t.Fatal(err)
+	}
+	if wh.Spec.Source != agentsv1alpha1.WebhookSourceGitHub || wh.Spec.DisplayName != "mine" {
+		t.Errorf("the existing webhook was rewritten: %+v", wh.Spec)
 	}
 }
 

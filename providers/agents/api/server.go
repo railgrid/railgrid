@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -102,6 +103,9 @@ type Server struct {
 	bg       *background
 	events   *eventBus
 	liveRuns *runRegistry
+	// stamps counts the status writes a webhook delivery left running after
+	// its sender was answered (see deliverWebhookEvent); tests wait on it.
+	stamps sync.WaitGroup
 	// callers is the data-plane caller factory. On a verb it acts AS THE
 	// PROVIDER through the APIExport virtual workspace (Gate needs
 	// AsProvider); on the MCP class, the one route that still carries the

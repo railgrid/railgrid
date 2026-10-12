@@ -367,14 +367,20 @@ func adoptSecret(ctx context.Context, c client.Client, cred *agentsv1alpha1.Mode
 			return nil
 		}
 	}
-	patch := client.MergeFrom(sec.DeepCopy())
 	sec.OwnerReferences = append(sec.OwnerReferences, metav1.OwnerReference{
 		APIVersion: agentsv1alpha1.SchemeGroupVersion.String(),
 		Kind:       "ModelCredential",
 		Name:       cred.Name,
 		UID:        cred.UID,
 	})
-	if err := c.Patch(ctx, sec, patch); err != nil {
+	// Update, not Patch: the secrets claim in manifest.yaml grants get, list,
+	// watch, create, update and delete, and the export virtual workspace
+	// enforces exactly that list, so a patch is forbidden against real kcp
+	// (the fake client in the unit tests knows nothing of claims). Granting
+	// the verb would be a claim change every enabled tenant has to re-accept.
+	// The Secret was read a moment ago, so its resourceVersion guards the
+	// write; a conflict is retried by the next reconcile.
+	if err := c.Update(ctx, sec); err != nil {
 		return fmt.Errorf("adopting secret %q: %w", sec.Name, err)
 	}
 	return nil

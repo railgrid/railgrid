@@ -91,6 +91,7 @@ func webhookListKinds() map[schema.GroupVersionResource]string {
 // holding the agent, the webhook and its triggers.
 func inboundWebhookServer(t *testing.T, wh *unstructured.Unstructured, triggers ...runtime.Object) (*Server, *dynamicfake.FakeDynamicClient, string) {
 	t.Helper()
+	withRoutes(wh, triggers...)
 	objs := append([]runtime.Object{inboundAgent(), wh}, triggers...)
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(inboundScheme(), webhookListKinds(), objs...)
 	s := &Server{cfg: Config{WebhookKey: "unit-test-webhook-key"}, store: store.NewMemoryStore()}
@@ -102,7 +103,29 @@ func inboundWebhookServer(t *testing.T, wh *unstructured.Unstructured, triggers 
 	return s, dyn, s.webhookToken(testCluster, wh.GetName())
 }
 
+// withRoutes does what the Webhook reconciler does: lists in status.routes the
+// triggers whose spec.webhookRef names the webhook. The inbound path routes
+// from that table, so a fixture without it routes to nobody.
+func withRoutes(wh *unstructured.Unstructured, triggers ...runtime.Object) {
+	var routes []any
+	for _, obj := range triggers {
+		u, ok := obj.(*unstructured.Unstructured)
+		if !ok {
+			continue
+		}
+		if ref, _, _ := unstructured.NestedString(u.Object, "spec", "webhookRef"); ref == wh.GetName() {
+			routes = append(routes, map[string]any{"name": u.GetName()})
+		}
+	}
+	if len(routes) > 0 {
+		_ = unstructured.SetNestedSlice(wh.Object, routes, "status", "routes")
+	}
+}
+
+// postWebhook feeds the inbound path and waits for the status stamps it left
+// running, so an assertion on status.lastDelivery right after is not a race.
 func postWebhook(s *Server, name, token, body string, headers map[string]string) *httptest.ResponseRecorder {
+	defer s.stamps.Wait()
 	r := httptest.NewRequest(http.MethodPost, "/webhooks/triggers/"+testCluster+"/"+name+"/"+token, strings.NewReader(body))
 	r.SetPathValue("cluster", testCluster)
 	r.SetPathValue("name", name)
@@ -400,11 +423,11 @@ func TestRecordedHeaders(t *testing.T) {
 // webhook and its triggers and records runs where the inbound path would.
 func webhookVerbFixture(t *testing.T, allow func(conformance.Attributes) bool) (*Server, http.Handler) {
 	t.Helper()
-	objects := []*unstructured.Unstructured{
-		agentObject(conformanceAgent),
-		webhookObject(testWebhookName, map[string]any{"source": "github"}),
-	}
-	for _, o := range prAndPushTriggers(conformanceAgent) {
+	triggers := prAndPushTriggers(conformanceAgent)
+	wh := webhookObject(testWebhookName, map[string]any{"source": "github"})
+	withRoutes(wh, triggers...)
+	objects := []*unstructured.Unstructured{agentObject(conformanceAgent), wh}
+	for _, o := range triggers {
 		objects = append(objects, o.(*unstructured.Unstructured))
 	}
 	callers := &conformance.FakeCallers{
@@ -726,5 +749,69 @@ func TestTriggerWritesRejectUnknownFilterKeys(t *testing.T) {
 	}
 	if err := checkFilterKeys(map[string]string{"header.X-Env": "prod", "match": "x"}); err != nil {
 		t.Fatalf("known keys refused: %v", err)
+	}
+}
+
+// A sender redelivers on a 503, and with 1:n routing a 503 is one route
+// failing while another already fired. The redelivery (same sender id) must
+// not start a second run on the trigger that fired: its route is carried
+// forward with the earlier run, and the delivery is still recorded.
+func TestRedeliveryDoesNotFireATriggerTwice(t *testing.T) {
+	s, _, token := inboundWebhookServer(t, webhookObject(testWebhookName, map[string]any{"source": "github"}), prAndPushTriggers(testAgentName)...)
+	headers := map[string]string{"X-GitHub-Event": "push", "X-GitHub-Delivery": "gh-redelivered"}
+	first := decodeResult(t, postWebhook(s, testWebhookName, token, `{"ref":"refs/heads/main"}`, headers))
+	if first.Outcome != "fired" || routeOf(first.Routes, "on-push").RunID == "" {
+		t.Fatalf("first delivery = %+v, want on-push fired", first)
+	}
+	again := decodeResult(t, postWebhook(s, testWebhookName, token, `{"ref":"refs/heads/main"}`, headers))
+	if again.Outcome != "fired" {
+		t.Fatalf("redelivery = %+v, want fired (the earlier run)", again)
+	}
+	if got, want := routeOf(again.Routes, "on-push").RunID, routeOf(first.Routes, "on-push").RunID; got != want {
+		t.Errorf("redelivery on-push run = %q, want the first run %q", got, want)
+	}
+	if got := routeOf(again.Routes, "on-push").Reason; !strings.Contains(got, "already fired") {
+		t.Errorf("redelivery on-push reason = %q, want it to say the route already fired", got)
+	}
+	if rows := sinkOf(t, s, testCluster); len(rows) != 2 {
+		t.Errorf("sink has %d rows, want both deliveries recorded", len(rows))
+	}
+	agentScope := workspaceScope(testCluster)
+	agentScope.AgentName = testAgentName
+	runs, err := s.store.ListRuns(t.Context(), agentScope, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Errorf("%d runs recorded, want exactly one for one sender delivery", len(runs))
+	}
+
+	// A different sender id is a different event.
+	other := decodeResult(t, postWebhook(s, testWebhookName, token, `{"ref":"refs/heads/main"}`,
+		map[string]string{"X-GitHub-Event": "push", "X-GitHub-Delivery": "gh-fresh"}))
+	if got := routeOf(other.Routes, "on-push").RunID; got == "" || got == routeOf(first.Routes, "on-push").RunID {
+		t.Errorf("a new sender id reused the earlier run: %+v", other)
+	}
+}
+
+// A webhook that keeps no bodies records the delivery — headers, coordinates,
+// every route's verdict — without the payload, and the routes still judge
+// the payload they were given.
+func TestWebhookWithoutRecordedBodiesKeepsTheVerdictOnly(t *testing.T) {
+	s, _, token := inboundWebhookServer(t, webhookObject(testWebhookName, map[string]any{"source": "github", "recordBodies": false}), prAndPushTriggers(testAgentName)...)
+	res := decodeResult(t, postWebhook(s, testWebhookName, token, `{"action":"opened","secret":"hunter2"}`,
+		map[string]string{"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "gh-quiet"}))
+	if res.Outcome != "fired" || routeOf(res.Routes, "on-pr").Outcome != "fired" {
+		t.Fatalf("delivery = %+v, want on-pr fired on the payload", res)
+	}
+	rows := sinkOf(t, s, testCluster)
+	if len(rows) != 1 {
+		t.Fatalf("sink has %d rows, want 1", len(rows))
+	}
+	if rows[0].Body != "" || rows[0].BodySize != 0 {
+		t.Errorf("body was recorded: %q (%d bytes)", rows[0].Body, rows[0].BodySize)
+	}
+	if rows[0].EventType != "pull_request" || rows[0].Action != "opened" || rows[0].Headers["X-Github-Event"] != "pull_request" {
+		t.Errorf("coordinates or headers missing: %+v", rows[0])
 	}
 }

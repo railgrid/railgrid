@@ -1544,9 +1544,9 @@ func (p *PostgresStore) ListWebhookDeliveries(ctx context.Context, scope Scope, 
 		SELECT `+webhookDeliveryColumns+`, left(body, $5), length(body)
 		FROM agents_webhook_deliveries
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND webhook_uid=$3 AND ($4 = '' OR outcome = $4)
-			AND routes @> $7::jsonb
+			AND routes @> $7::jsonb AND ($8 = '' OR delivery_id = $8)
 		ORDER BY received_at DESC, id DESC LIMIT $6`,
-		scope.OrgUUID, scope.WorkspaceUUID, webhookUID, q.Outcome, WebhookDeliveryPreviewBytes, limit, string(routeFilter))
+		scope.OrgUUID, scope.WorkspaceUUID, webhookUID, q.Outcome, WebhookDeliveryPreviewBytes, limit, string(routeFilter), q.DeliveryID)
 	if err != nil {
 		return nil, err
 	}

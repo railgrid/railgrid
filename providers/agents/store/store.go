@@ -652,6 +652,9 @@ type WebhookDeliveryQuery struct {
 	Outcome string
 	// Trigger keeps only deliveries routed to this Trigger; empty keeps all.
 	Trigger string
+	// DeliveryID keeps only deliveries the sender tagged with this id
+	// (X-GitHub-Delivery): a redelivery lookup. Empty keeps all.
+	DeliveryID string
 	// Limit caps the result (newest first). Zero means the store default.
 	Limit int
 }

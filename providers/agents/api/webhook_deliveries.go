@@ -41,6 +41,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +50,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -69,6 +71,15 @@ const webhookBodyLimit = 64 * 1024
 // POST would fight the reconcilers for the object for no information gain,
 // since the sink has every delivery anyway.
 const lastDeliveryCoalesce = time.Minute
+
+// lastDeliveryStampTimeout bounds the status stamps a delivery leaves running
+// after its sender was answered (see deliverWebhookEvent).
+const lastDeliveryStampTimeout = 10 * time.Second
+
+// redeliveryLookback is how many earlier deliveries carrying the same sender
+// id are consulted before an inbound event is routed (see priorFiredRoutes).
+// A sender retries a handful of times, not hundreds.
+const redeliveryLookback = 20
 
 // redactedHeaderValue stands in for a recorded header whose value looks like
 // a credential. The header's presence is kept so a filter on it still shows
@@ -168,6 +179,10 @@ type inboundDelivery struct {
 	// ReplayOf names the recorded delivery this one re-feeds, when it is a
 	// replay rather than a fresh POST.
 	ReplayOf string
+	// Inbound says the delivery arrived at the URL from the sender, as opposed
+	// to a replay or a sample a caller spelled out. Only an inbound delivery
+	// can be a redelivery of one already handled (see priorFiredRoutes).
+	Inbound bool
 }
 
 // routedTrigger is one Trigger a delivery is offered to: the object as listed,
@@ -233,6 +248,14 @@ func (s *Server) routeToTrigger(ctx context.Context, cluster string, trig *agent
 		route.Outcome, route.Reason = agentsv1alpha1.TriggerDeliveryNoTask, "trigger has no task"
 		return route
 	}
+	// A replay is "run it again", not "continue": it gets a session of its
+	// own rather than appending to the transcript of the run the original
+	// delivery started. Keying on the sender's id is for the sender's own
+	// redeliveries, which priorFiredRoutes already folds away.
+	sessionKey := in.SenderID
+	if in.ReplayOf != "" {
+		sessionKey = ""
+	}
 	runID, err := s.bg.submitRun(ctx, executor.Job{
 		ID:            fmt.Sprintf("%s/%s/%d", cluster, trig.Name, time.Now().UnixNano()),
 		Kind:          executor.KindTrigger,
@@ -241,7 +264,7 @@ func (s *Server) routeToTrigger(ctx context.Context, cluster string, trig *agent
 		AgentRef:      trig.Spec.AgentRef,
 		Task:          task,
 		Trigger:       agentsv1alpha1.RunTriggerEvent,
-		SessionID:     triggerSessionID(trig.Name, in.SenderID),
+		SessionID:     triggerSessionID(trig.Name, sessionKey),
 		NotifyChannel: trig.Spec.ChannelRef,
 	})
 	if err != nil {
@@ -279,15 +302,23 @@ func rollupReason(outcome string, routes []store.WebhookRoute) string {
 // once in the webhook's sink with every route, stamps status on the webhook
 // and on each routed trigger, and tells the portal.
 func (s *Server) deliverWebhookEvent(ctx context.Context, cluster string, dyn dynamic.Interface, whU *unstructured.Unstructured, wh *agentsv1alpha1.Webhook, triggers []routedTrigger, in inboundDelivery) webhookDeliveryResult {
+	scope := s.bg.scopeFor(ctx, cluster, "")
+	prior := s.priorFiredRoutes(ctx, scope, wh, in)
 	routes := make([]store.WebhookRoute, 0, len(triggers))
 	for _, rt := range triggers {
+		if runID, done := prior[rt.trig.Name]; done {
+			routes = append(routes, store.WebhookRoute{
+				Trigger: rt.trig.Name, Outcome: agentsv1alpha1.TriggerDeliveryFired, RunID: runID,
+				Reason: "already fired for this delivery; the run is the earlier one",
+			})
+			continue
+		}
 		routes = append(routes, s.routeToTrigger(ctx, cluster, rt.trig, in))
 	}
 	res := webhookDeliveryResult{Outcome: store.WebhookDeliveryRollup(routes), Routes: routes}
 	res.Reason = rollupReason(res.Outcome, routes)
 
 	now := time.Now().UTC()
-	scope := s.bg.scopeFor(ctx, cluster, "")
 	res.ID = s.recordWebhookDelivery(ctx, scope, wh, now, res.Outcome, res.Reason, routes, in)
 
 	fired := int32(0)
@@ -297,12 +328,58 @@ func (s *Server) deliverWebhookEvent(ctx context.Context, cluster string, dyn dy
 		}
 	}
 	summary := map[string]any{"routed": int64(len(routes)), "fired": int64(fired)}
-	stampLastDelivery(ctx, dyn, agentsclient.WebhookGVR, whU, now, res.Outcome, res.Reason, res.ID, summary)
-	for i, rt := range triggers {
-		stampLastDelivery(ctx, dyn, agentsclient.TriggerGVR, rt.u, now, routes[i].Outcome, routes[i].Reason, res.ID, nil)
-	}
+	// The status stamps are off the sender's request: up to one write per
+	// routed trigger plus one on the webhook, each a kcp round trip, and
+	// GitHub times a delivery out at ten seconds. The sender is answered as
+	// soon as the sink has the delivery; the stamps finish on their own,
+	// bounded, with the request's values but not its cancellation.
+	stampCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lastDeliveryStampTimeout)
+	s.stamps.Add(1)
+	go func() {
+		defer s.stamps.Done()
+		defer cancel()
+		stampLastDelivery(stampCtx, dyn, agentsclient.WebhookGVR, whU.GetName(), now, res.Outcome, res.Reason, res.ID, summary)
+		for i, rt := range triggers {
+			stampLastDelivery(stampCtx, dyn, agentsclient.TriggerGVR, rt.u.GetName(), now, routes[i].Outcome, routes[i].Reason, res.ID, nil)
+		}
+	}()
 	s.publishWebhookDelivery(scope, wh.Name, res, triggers)
 	return res
+}
+
+// priorFiredRoutes answers "which of this webhook's triggers already fired
+// for this very delivery?" — the sender's delivery id (X-GitHub-Delivery) is
+// the key. A redelivery is the normal case with 1:n routing, not an edge: if
+// trigger A fired and trigger B failed, the sender got 503 and sends the same
+// event again, and A must not start a second run for it. Nothing is folded
+// for a replay (the caller asked for it again), for a sample, or when the
+// sender gave no id or the webhook keeps no sink to look in.
+func (s *Server) priorFiredRoutes(ctx context.Context, scope store.Scope, wh *agentsv1alpha1.Webhook, in inboundDelivery) map[string]string {
+	senderID := strings.TrimSpace(in.SenderID)
+	if !in.Inbound || in.ReplayOf != "" || senderID == "" || s.webhookRetention(wh) <= 0 {
+		return nil
+	}
+	rows, err := s.store.ListWebhookDeliveries(ctx, scope, string(wh.UID), store.WebhookDeliveryQuery{DeliveryID: senderID, Limit: redeliveryLookback})
+	if err != nil {
+		// Not knowing is not a reason to drop the event; worst case is the
+		// duplicate run this lookup exists to prevent, said in the log.
+		log.Printf("agents: looking up earlier deliveries %q of webhook %s: %v", senderID, wh.Name, err)
+		return nil
+	}
+	fired := map[string]string{}
+	for _, row := range rows {
+		if row.ReplayOf != "" {
+			continue // a replay is the user's doing, not the sender's
+		}
+		for _, r := range row.Routes {
+			if r.Outcome == agentsv1alpha1.TriggerDeliveryFired && r.RunID != "" {
+				if _, seen := fired[r.Trigger]; !seen {
+					fired[r.Trigger] = r.RunID
+				}
+			}
+		}
+	}
+	return fired
 }
 
 // recordWebhookDelivery writes the sink row and returns its id, or "" when the
@@ -315,6 +392,10 @@ func (s *Server) recordWebhookDelivery(ctx context.Context, scope store.Scope, w
 		return ""
 	}
 	extracted := triggerfilter.Extract(in.Headers, in.Body)
+	body := string(in.Body)
+	if wh.Spec.RecordBodies != nil && !*wh.Spec.RecordBodies {
+		body = ""
+	}
 	entry := store.WebhookDelivery{
 		ID:            uuid.NewString(),
 		WebhookName:   wh.Name,
@@ -328,7 +409,7 @@ func (s *Server) recordWebhookDelivery(ctx context.Context, scope store.Scope, w
 		Repository:    extracted.Repository,
 		ContentType:   in.Headers.Get("Content-Type"),
 		Headers:       recordedHeaders(in.Headers),
-		Body:          string(in.Body),
+		Body:          body,
 		BodyTruncated: in.Truncated,
 		ReplayOf:      in.ReplayOf,
 		Routes:        routes,
@@ -368,10 +449,20 @@ func (s *Server) publishWebhookDelivery(scope store.Scope, webhook string, res w
 // Webhook or a Trigger, coalesced: a delivery whose outcome and reason match
 // the stored summary refreshes it at most once per lastDeliveryCoalesce.
 // extra adds fields to the summary (the webhook's routed/fired counts).
-// Best-effort — a reconciler may be writing the same object, and the sink has
-// the delivery regardless.
-func stampLastDelivery(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, u *unstructured.Unstructured, now time.Time, outcome, reason, id string, extra map[string]any) {
-	if dyn == nil || u == nil {
+//
+// The object is read fresh and the two fields are merge-patched onto the
+// status subresource, never a whole-status update from the copy the request
+// was routed with: the reconcilers write the same subresource (routes, the
+// path, Validated), and an update from a stale copy would either conflict
+// and drop the stamp or, worse, win and revert theirs. A merge patch touches
+// only these keys. Best-effort still — the sink has the delivery regardless.
+func stampLastDelivery(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, name string, now time.Time, outcome, reason, id string, extra map[string]any) {
+	if dyn == nil || name == "" {
+		return
+	}
+	u, err := dyn.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		log.Printf("agents: stamping lastDelivery on %s %s: %v", gvr.Resource, name, err)
 		return
 	}
 	lastOutcome, _, _ := unstructured.NestedString(u.Object, "status", "lastDelivery", "outcome")
@@ -381,13 +472,11 @@ func stampLastDelivery(ctx context.Context, dyn dynamic.Interface, gvr schema.Gr
 		lastOutcome == outcome && lastReason == reason && now.Sub(received) < lastDeliveryCoalesce {
 		return
 	}
-	status, _, _ := unstructured.NestedMap(u.Object, "status")
-	if status == nil {
-		status = map[string]any{}
-	}
 	stamp := now.Format(time.RFC3339)
-	status["lastReceived"] = stamp
-	summary := map[string]any{"time": stamp, "outcome": outcome}
+	// Every summary key is spelled, absent ones as null: a JSON merge patch
+	// merges objects key by key, so a reason left out would otherwise survive
+	// from the previous summary.
+	summary := map[string]any{"time": stamp, "outcome": outcome, "reason": nil, "deliveryID": nil, "routed": nil, "fired": nil}
 	if reason != "" {
 		summary["reason"] = reason
 	}
@@ -397,29 +486,44 @@ func stampLastDelivery(ctx context.Context, dyn dynamic.Interface, gvr schema.Gr
 	for k, v := range extra {
 		summary[k] = v
 	}
-	status["lastDelivery"] = summary
-	_ = unstructured.SetNestedMap(u.Object, status, "status")
-	if _, err := dyn.Resource(gvr).UpdateStatus(ctx, u, metav1.UpdateOptions{}); err != nil {
-		log.Printf("agents: stamping lastDelivery on %s %s: %v", gvr.Resource, u.GetName(), err)
+	patch, err := json.Marshal(map[string]any{"status": map[string]any{"lastReceived": stamp, "lastDelivery": summary}})
+	if err != nil {
+		log.Printf("agents: stamping lastDelivery on %s %s: %v", gvr.Resource, name, err)
+		return
+	}
+	if _, err := dyn.Resource(gvr).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}, "status"); err != nil {
+		log.Printf("agents: stamping lastDelivery on %s %s: %v", gvr.Resource, name, err)
 	}
 }
 
-// routedTriggers lists the Triggers whose spec.webhookRef names the webhook,
-// sorted by name so routes are recorded in a stable order. A trigger on its
-// way out is not offered the delivery.
-func routedTriggers(ctx context.Context, dyn dynamic.Interface, webhook string) ([]routedTrigger, error) {
-	list, err := dyn.Resource(agentsclient.TriggerGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	var out []routedTrigger
-	for i := range list.Items {
-		u := &list.Items[i]
+// routedTriggers reads the Triggers a delivery is offered to: the ones the
+// Webhook reconciler listed in status.routes (every Trigger whose
+// spec.webhookRef names the webhook, kept current from a watch), fetched by
+// name and sorted so routes are recorded in a stable order. Routing from the
+// reconciled table rather than a LIST of every Trigger in the workspace keeps
+// the cost of an inbound POST proportional to the webhook's own fan-out, not
+// the tenant's trigger count — and the URL holder sets the POST rate. A route
+// whose Trigger is gone since the table was written, or is on its way out, is
+// skipped; the next reconcile drops it from the table.
+func routedTriggers(ctx context.Context, dyn dynamic.Interface, wh *agentsv1alpha1.Webhook) ([]routedTrigger, error) {
+	out := make([]routedTrigger, 0, len(wh.Status.Routes))
+	for _, route := range wh.Status.Routes {
+		name := strings.TrimSpace(route.Name)
+		if name == "" {
+			continue
+		}
+		u, err := dyn.Resource(agentsclient.TriggerGVR).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
 		if u.GetDeletionTimestamp() != nil {
 			continue
 		}
 		trig, err := fromU[agentsv1alpha1.Trigger](u)
-		if err != nil || strings.TrimSpace(trig.Spec.WebhookRef) != webhook {
+		if err != nil || strings.TrimSpace(trig.Spec.WebhookRef) != wh.Name {
 			continue
 		}
 		out = append(out, routedTrigger{u: u, trig: trig})
@@ -477,19 +581,26 @@ func (s *Server) webhookInbound(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "webhook object is not a Webhook: "+err.Error())
 		return
 	}
-	body, _ := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit+1))
+	if err != nil {
+		// A body cut short by the connection is not the event: judged by a
+		// filter and recorded, it would be a false "filtered" the sender never
+		// retries. Refuse it; nothing is recorded.
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "reading the request body: "+err.Error())
+		return
+	}
 	truncated := len(body) > webhookBodyLimit
 	if truncated {
 		body = body[:webhookBodyLimit]
 	}
-	triggers, err := routedTriggers(r.Context(), dyn, name)
+	triggers, err := routedTriggers(r.Context(), dyn, wh)
 	if err != nil {
 		// Nothing was routed, so nothing is recorded; the sender redelivers.
-		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "listing the webhook's triggers: "+err.Error())
+		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "reading the webhook's triggers: "+err.Error())
 		return
 	}
 	res := s.deliverWebhookEvent(r.Context(), cluster, dyn, whU, wh, triggers, inboundDelivery{
-		Headers: r.Header, Body: body, Truncated: truncated, SenderID: r.Header.Get("X-GitHub-Delivery"),
+		Headers: r.Header, Body: body, Truncated: truncated, SenderID: r.Header.Get("X-GitHub-Delivery"), Inbound: true,
 	})
 	writeDeliveryAnswer(w, res)
 }
@@ -561,8 +672,8 @@ func (s *Server) listWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
 		Limit:   50,
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		n := 0
-		if _, err := fmt.Sscanf(raw, "%d", &n); err != nil || n <= 0 {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", "limit must be a positive integer")
 			return
 		}
@@ -650,7 +761,7 @@ func (s *Server) runWebhook(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	triggers, err := routedTriggers(r.Context(), dyn, wh.Name)
+	triggers, err := routedTriggers(r.Context(), dyn, wh)
 	if err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "listing the webhook's triggers: "+err.Error())
 		return

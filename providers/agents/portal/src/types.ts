@@ -421,6 +421,10 @@ export interface Webhook {
     // deliveryRetention is how many recent deliveries the sink keeps; unset
     // means the provider default, 0 keeps none.
     deliveryRetention?: number
+    // recordBodies says whether the sink keeps each delivery's payload; unset
+    // means true. false keeps headers and every route's verdict but no body,
+    // for a sender whose payloads must not sit in the sink.
+    recordBodies?: boolean
   }
   // webhookPath embeds the webhook's secret token; the portal shows it so the
   // operator can paste the full URL into GitHub (or any webhook sender).

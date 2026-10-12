@@ -113,7 +113,7 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: webhooks
-    schema: v261012-77f29a8e.webhooks.agents.railgrid.ai
+    schema: v261012-7d05d6c4.webhooks.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai

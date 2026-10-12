@@ -126,13 +126,25 @@ and tools are edited inside the agent, next to a live chat playground.
   `AGENTS_TRIGGER_DELIVERY_RETENTION` (200); `0` keeps nothing. Headers are
   kept minus hub/transport plumbing, with credential-looking values
   (`X-Hub-Signature-256`, anything named key/token/secret/auth) stored as
-  `[redacted]`; the body is kept up to the 64 KiB read limit.
-  `status.lastReceived` and `status.lastDelivery` summarise the newest
+  `[redacted]`; the body is kept up to the 64 KiB read limit unless the
+  Webhook says `spec.recordBodies: false`, which keeps headers, the extracted
+  coordinates and every route's verdict but no payload. Anyone who passes the
+  data-plane gate for the Webhook (`get`) can read its sink, bodies included;
+  that is the switch for a sender whose payloads carry secrets or personal
+  data. The inbound POST routes from the Webhook's reconciled `status.routes`
+  (one GET per routed trigger, not a LIST of the workspace's triggers), and
+  before routing it looks the sender's delivery id up in the sink: a route
+  that already fired for that id — a redelivery after a 503 from another
+  route failing — is carried forward with its earlier Run instead of fired
+  again. `status.lastReceived` and `status.lastDelivery` summarise the newest
   delivery on the webhook (`{time, outcome, reason, deliveryID, routed,
-  fired}`) and on each routed trigger (its own route outcome), written
-  coalesced (at most once a minute for a run of deliveries with the same
-  outcome and reason), so "the filter drops everything" no longer looks like
-  "nobody calls the URL". Read through `webhooks/{name}/deliveries` (list,
+  fired}`) and on each routed trigger (its own route outcome), written after
+  the sender was answered as a merge patch of those two fields on the status
+  subresource (so a reconciler writing `routes` or `Validated` at the same
+  moment is not reverted) and coalesced (at most once a minute for a run of
+  deliveries with the same outcome and reason), so "the filter drops
+  everything" no longer looks like "nobody calls the URL". Read through
+  `webhooks/{name}/deliveries` (list,
   narrowed by `outcome` or `trigger`, or one entry whole by id) and shown on
   the portal's Webhooks page, which refreshes on the `webhook-delivery` push
   event (published once per agent whose trigger was routed, carrying only
@@ -146,7 +158,9 @@ and tools are edited inside the agent, next to a live chat playground.
   delivery after a short debounce and paints each key green or red.
   `webhooks/{name}/run` re-feeds a recorded delivery (`{"deliveryID"}`) to
   every routed trigger, or injects a sample (`{"headers", "body"}`), and
-  records it as a fresh delivery (`replayOf` set on a replay).
+  records it as a fresh delivery (`replayOf` set on a replay). A replayed
+  route runs in a session of its own rather than continuing the original
+  run's transcript: it is "run it again", not "carry on".
   `triggers/{name}/run` with `{"deliveryID"}` replays it through that one
   trigger only — pause switch and filter included — recorded as a sink row
   whose only route is that trigger.
@@ -400,7 +414,7 @@ The [Milestones](#milestones) section lists the full plan.
 | `ModelCredential` | A named model endpoint an agent runs on: `provider` (`openai-compatible` / `openai`), `baseURL`, a default `model` id, `secretRef` → the tenant Secret holding the API key, and `secretKey` (default `apiKey`). Status is the source of truth: `SecretResolved` (the Secret exists, carries the key, and is labelled `railgrid.ai/owner: agents`), `Reachable` (`GET {baseURL}/models` answered), `Ready` (both), plus `models` (the ids the endpoint served, ≤500), `lastProbeTime` and a bounded `lastProbeError`. The reconciler also makes the credential an owner of the labelled Secret it resolves, so deleting the credential — from the portal, MCP or kubectl — garbage-collects the Secret instead of leaving stale keys for the next credential of that name to inherit. Agents name one in `spec.models[purpose]` and `spec.modelFallbacks` |
 | `AgentSchedule` | Time-based firing. `type: cron \| wakeup \| heartbeat`; cron spec (5-field) + **`timeZone`** (IANA name, like `CronJob.spec.timeZone`; default UTC) + task prompt (cron) or standing checklist ref (heartbeat) + `agentRef` + retry policy + `suspend`. Status: `nextRun`, `lastRun`, `consecutiveFailures`, `disabledReason` |
 | `Trigger` | Event-based firing — the non-time half of automation. `spec.webhookRef` (the Webhook it routes from) + `filter` (`eventType`, `action`, `repository`, `match`, `header.<name>`) + `task` + `agentRef` + `channelRef` + `suspend`. Status: `lastFired`, `lastRunID`, `consecutiveFailures`, `disabledReason`, `lastReceived` / `lastDelivery` (its own route outcome), and `Validated` (reasons include `MissingWebhookRef`, `UnknownWebhookRef`, `UnknownAgentRef`, `UnknownFilterKey`) |
-| `Webhook` | One inbound URL and its delivery sink, routed 1:n to Triggers. `spec.source` (`webhook` / `github`, the sender flavour) + `displayName` + `deliveryRetention`. Status: `webhookPath` (the hub-relative URL, minted by the provider), `routes` (`[{name}]`, the triggers naming it), `lastReceived` / `lastDelivery` (rollup with `routed` / `fired` counts), `Validated`. A finalizer purges the sink on delete |
+| `Webhook` | One inbound URL and its delivery sink, routed 1:n to Triggers. `spec.source` (`webhook` / `github`, the sender flavour) + `displayName` + `deliveryRetention` + `recordBodies`. A Trigger from before this kind existed (no `webhookRef`) is migrated by the Trigger reconciler to a Webhook of its own name, so its URL — keyed by name — keeps answering. Status: `webhookPath` (the hub-relative URL, minted by the provider), `routes` (`[{name}]`, the triggers naming it), `lastReceived` / `lastDelivery` (rollup with `routed` / `fired` counts), `Validated`. A finalizer purges the sink on delete |
 | `Toolset` | A shareable bundle of tool grants (families, connections, approval rules) many agents can link, so wiring is written once |
 | `AgentSkill` *(post-v1)* | Markdown instructions + required connection types + tool grants, attachable to agents. Later: shareable across tenants via the catalog — the ClawHub analog, which a single-user OpenClaw cannot do |
 

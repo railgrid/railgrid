@@ -1211,6 +1211,9 @@ func (m *MemoryStore) ListWebhookDeliveries(_ context.Context, scope Scope, webh
 		if q.Trigger != "" && !routedTo(rows[i], q.Trigger) {
 			continue
 		}
+		if q.DeliveryID != "" && rows[i].DeliveryID != q.DeliveryID {
+			continue
+		}
 		row := rows[i]
 		if len(row.Body) > WebhookDeliveryPreviewBytes {
 			row.Body = row.Body[:WebhookDeliveryPreviewBytes]

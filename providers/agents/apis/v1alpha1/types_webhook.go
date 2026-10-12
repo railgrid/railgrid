@@ -89,6 +89,16 @@ type WebhookSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=1000
 	DeliveryRetention *int32 `json:"deliveryRetention,omitempty"`
+
+	// RecordBodies says whether the sink keeps each delivery's payload. The
+	// payload is whatever the sender POSTed — for a generic webhook possibly
+	// tokens or personal data — and anyone who can read the Webhook can read
+	// its sink, so a webhook fed sensitive payloads can keep headers, the
+	// extracted event coordinates and every route's verdict without the body.
+	// Unset means true. Without bodies a replay re-feeds an empty payload and
+	// the filter tester can only judge header-based keys.
+	// +optional
+	RecordBodies *bool `json:"recordBodies,omitempty"`
 }
 
 // WebhookDeliverySummary is the most recent inbound delivery, as the

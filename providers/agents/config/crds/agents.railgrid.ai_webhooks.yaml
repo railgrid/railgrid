@@ -72,6 +72,16 @@ spec:
                 description: DisplayName is a human label for the portal.
                 maxLength: 100
                 type: string
+              recordBodies:
+                description: |-
+                  RecordBodies says whether the sink keeps each delivery's payload. The
+                  payload is whatever the sender POSTed — for a generic webhook possibly
+                  tokens or personal data — and anyone who can read the Webhook can read
+                  its sink, so a webhook fed sensitive payloads can keep headers, the
+                  extracted event coordinates and every route's verdict without the body.
+                  Unset means true. Without bodies a replay re-feeds an empty payload and
+                  the filter tester can only judge header-based keys.
+                type: boolean
               source:
                 description: |-
                   Source is the sender flavour: webhook (anything that can POST) or

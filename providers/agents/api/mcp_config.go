@@ -187,12 +187,14 @@ type createWebhookInput struct {
 	Source            string `json:"source" jsonschema:"webhook (any HTTP POST) or github (GitHub webhook deliveries; the portal offers GitHub's event catalog)"`
 	DisplayName       string `json:"displayName,omitempty" jsonschema:"Human-readable label"`
 	DeliveryRetention *int32 `json:"deliveryRetention,omitempty" jsonschema:"How many recent deliveries to keep (0 to 1000); unset means the provider default, 0 keeps none"`
+	RecordBodies      *bool  `json:"recordBodies,omitempty" jsonschema:"Whether the sink keeps each delivery's payload (default true). false keeps headers, event coordinates and every route's verdict but no body: for a sender whose payloads carry secrets or personal data, since anyone who can read the webhook can read its sink"`
 }
 
 type updateWebhookInput struct {
 	Name              string  `json:"name" jsonschema:"Name of the webhook to update (see list_webhooks)"`
 	DisplayName       *string `json:"displayName,omitempty" jsonschema:"New human-readable label"`
 	DeliveryRetention *int32  `json:"deliveryRetention,omitempty" jsonschema:"New delivery cap (0 to 1000); 0 keeps none"`
+	RecordBodies      *bool   `json:"recordBodies,omitempty" jsonschema:"Whether the sink keeps each delivery's payload from now on; false keeps headers and verdicts only"`
 }
 
 type listWebhookDeliveriesInput struct {
@@ -541,6 +543,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: agentsv1alpha1.WebhookSpec{
 				Source: source, DisplayName: strings.TrimSpace(in.DisplayName), DeliveryRetention: in.DeliveryRetention,
+				RecordBodies: in.RecordBodies,
 			},
 		}, metav1.CreateOptions{})
 		if err != nil {
@@ -552,7 +555,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "update_webhook",
 		Title:       "Update a webhook",
-		Description: "Edit a webhook's label or delivery retention. Only the fields you pass change; the URL and the source stay as they are.",
+		Description: "Edit a webhook's label, delivery retention or whether payloads are recorded. Only the fields you pass change; the URL and the source stay as they are.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateWebhookInput) (*mcp.CallToolResult, webhookSummary, error) {
 		c, err := s.mcpClient(r)
@@ -571,6 +574,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		}
 		if in.DeliveryRetention != nil {
 			wh.Spec.DeliveryRetention = in.DeliveryRetention
+		}
+		if in.RecordBodies != nil {
+			wh.Spec.RecordBodies = in.RecordBodies
 		}
 		out, err := c.Webhooks().Update(ctx, wh, metav1.UpdateOptions{})
 		if err != nil {

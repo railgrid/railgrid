@@ -10,9 +10,11 @@
 // automation.
 //
 // A Trigger owns no URL any more: it routes from a Webhook (spec.webhookRef),
-// which owns the inbound path and the delivery sink, so this reconciler only
-// validates. What it reports is the Validated condition, not an enforcement:
-// a trigger with a bad spec is left to fail visibly rather than refused.
+// which owns the inbound path and the delivery sink, so this reconciler
+// validates — and migrates a trigger from before the Webhook kind to a
+// Webhook of its own name (migrateToWebhook), since its URL is already in
+// use. What it reports is the Validated condition, not an enforcement: a
+// trigger with a bad spec is left to fail visibly rather than refused.
 //
 // Each check is a way for a trigger to look configured and never fire:
 // spec.agentRef naming no Agent (the event arrives, finds no agent, and is
@@ -130,6 +132,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	if strings.TrimSpace(trig.Spec.WebhookRef) == "" {
+		migrated, err := r.migrateToWebhook(ctx, c, &trig)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if migrated {
+			// The spec write re-delivers the object; validation runs on the
+			// fresh copy with the reference in place.
+			return ctrl.Result{}, nil
+		}
+	}
+
 	reason, message, err := r.validate(ctx, c, &trig)
 	if err != nil {
 		// A failed read is not a verdict.
@@ -159,6 +173,44 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	return ctrl.Result{}, nil
 }
 
+// migrateToWebhook gives a Trigger written before the Webhook kind existed the
+// Webhook its URL now belongs to. Such a trigger owned its URL — derived from
+// the cluster and ITS name — and that URL is already pasted into GitHub, so
+// the Webhook is created under the trigger's name (webhookpath keys the path
+// by name: same URL) and spec.webhookRef is pointed at it. Until this runs the
+// trigger's URL answers 404 and every delivery sent to it is lost, which is
+// why the reconciler does it rather than a release note asking the tenant to.
+//
+// Idempotent: a Webhook already there (this reconciler's earlier pass, or the
+// tenant's own) is adopted as it stands, and only the reference is written.
+// The sender flavour is not knowable any more — the legacy spec.source is
+// pruned from the stored object — so the Webhook is created as a generic
+// webhook; a github one is a one-field edit in the portal and changes only
+// which event catalog the filter editor offers. Reports whether the trigger's
+// spec was written.
+func (r *Reconciler) migrateToWebhook(ctx context.Context, c client.Client, trig *agentsv1alpha1.Trigger) (bool, error) {
+	wh := agentsv1alpha1.Webhook{ObjectMeta: metav1.ObjectMeta{Name: trig.Name}}
+	switch err := c.Get(ctx, types.NamespacedName{Name: trig.Name}, &wh); {
+	case apierrors.IsNotFound(err):
+		wh.Spec.Source = agentsv1alpha1.WebhookSourceWebhook
+		wh.Spec.DisplayName = trig.Name
+		if err := c.Create(ctx, &wh); err != nil && !apierrors.IsAlreadyExists(err) {
+			return false, fmt.Errorf("creating webhook %q for trigger %q: %w", trig.Name, trig.Name, err)
+		}
+	case err != nil:
+		return false, err
+	}
+	trig.Spec.WebhookRef = trig.Name
+	if err := c.Update(ctx, trig); err != nil {
+		if apierrors.IsConflict(err) {
+			return true, nil // the watch re-delivers the newer object
+		}
+		return false, fmt.Errorf("pointing trigger %q at webhook %q: %w", trig.Name, trig.Name, err)
+	}
+	klog.FromContext(ctx).Info("trigger migrated to a webhook of its own name", "trigger", trig.Name)
+	return true, nil
+}
+
 // validate returns the first problem with the trigger, as (reason, message).
 // An error is a failed read, not a verdict.
 func (r *Reconciler) validate(ctx context.Context, c client.Client, trig *agentsv1alpha1.Trigger) (reason, message string, err error) {
@@ -168,6 +220,8 @@ func (r *Reconciler) validate(ctx context.Context, c client.Client, trig *agents
 	}
 	webhookRef := strings.TrimSpace(trig.Spec.WebhookRef)
 	if webhookRef == "" {
+		// Reached only when migrateToWebhook could not write the reference
+		// (a conflict, say); the re-delivered object gets another pass.
 		return agentsv1alpha1.ReasonMissingWebhookRef, "spec.webhookRef is required: name the Webhook this trigger routes from", nil
 	}
 
