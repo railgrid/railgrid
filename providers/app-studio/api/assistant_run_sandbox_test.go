@@ -483,30 +483,34 @@ func TestProjectAssistantRunSandboxReclaimsOnlyTerminalDurableOwner(t *testing.T
 	}
 }
 
-func TestProjectAssistantRunSandboxSafeTerminalRetainsProjectCache(t *testing.T) {
+func TestProjectAssistantRunSandboxSafeTerminalRetainsRunScopedWorkspace(t *testing.T) {
 	now := time.Now().UTC()
-	instance := newRunSandboxTestInstance("cache", projectAssistantRunSandboxCacheStateCached, now)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "shop", ProjectUID: "project-uid"}
+	id := identity{orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID}
+	runID := "run-2"
+	cacheName := projectAssistantRunSandboxName(workspace.Scope(scope), nil, runID)
+	instance := newRunSandboxTestInstance(cacheName, projectAssistantRunSandboxCacheStateCached, now)
 	client := newRunSandboxTestClient(instance)
 	server := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, projectClientFor: func(identity) (*asclient.Client, error) { return client, nil }}
-	hardExpiry, err := server.claimProjectAssistantRunSandboxInstance(context.Background(), client, store.Scope{}, "cache", "run-2")
+	hardExpiry, err := server.claimProjectAssistantRunSandboxInstance(context.Background(), client, scope, cacheName, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, err := server.projectAssistantSandboxManager().acquire("org/ws", "cache", "run-2")
+	release, err := server.projectAssistantSandboxManager().acquire(projectAssistantRunSandboxTenantKey(id, workspace.Scope(scope)), cacheName, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sandbox := &projectAssistantRunSandbox{
 		server: server,
-		id:     identity{orgUUID: "org", workspaceUUID: "ws"},
+		id:     id,
 		instance: projectAssistantSandboxInstance{
 			Resource: runSandboxInstancesResource.GVR.Resource,
-			Name:     "cache",
+			Name:     cacheName,
 		},
 		metadata: projectAssistantRunSandboxMetadata{
 			Status:          projectAssistantRunSandboxCacheStateActive,
-			RunID:           "run-2",
-			CacheGeneration: "run-2",
+			RunID:           runID,
+			CacheGeneration: runID,
 			HardExpiresAt:   hardExpiry,
 		},
 	}
@@ -514,7 +518,7 @@ func TestProjectAssistantRunSandboxSafeTerminalRetainsProjectCache(t *testing.T)
 	if got := finishProjectAssistantRunSandbox(context.Background(), sandbox, release, modelErr, true); !errors.Is(got, modelErr) {
 		t.Fatalf("finish error = %v, want original model failure", got)
 	}
-	retained, err := client.Resource(runSandboxInstancesResource, "").Get(context.Background(), "cache", metav1.GetOptions{})
+	retained, err := client.Resource(runSandboxInstancesResource, "").Get(context.Background(), cacheName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("safe failed turn deleted cache: %v", err)
 	}
@@ -525,8 +529,11 @@ func TestProjectAssistantRunSandboxSafeTerminalRetainsProjectCache(t *testing.T)
 	if state := annotations[projectAssistantRunSandboxCacheState]; state != projectAssistantRunSandboxCacheStateCached {
 		t.Fatalf("retained cache state = %q", state)
 	}
-	if server.projectAssistantSandboxManager().claimed("cache") {
+	if server.projectAssistantSandboxManager().claimed(cacheName) {
 		t.Fatal("safe terminal retained process-local claim")
+	}
+	if nextRunName := projectAssistantRunSandboxName(workspace.Scope(scope), nil, "run-next"); nextRunName == cacheName {
+		t.Fatal("safe terminal workspace can be reused by a different durable run")
 	}
 }
 

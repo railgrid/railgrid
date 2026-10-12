@@ -68,12 +68,15 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 	}
 
 	summaries := make([]string, 0, len(toolCallMessage.ToolCalls))
+	pendingPrivateWriteback := false
 	for index, toolCall := range toolCallMessage.ToolCalls {
-		summary := summarizeProjectToolResult(toolCall.Function.Name, toolResponseMessages[index].Content)
+		content := toolResponseMessages[index].Content
+		summary := summarizeProjectToolResult(toolCall.Function.Name, content)
 		if summary == "" {
 			return projectEinoAssistantOriginalToolMessageGroup(toolCallMessage, toolResponseMessages), nil
 		}
 		summaries = append(summaries, summary)
+		pendingPrivateWriteback = pendingPrivateWriteback || projectEinoAssistantPendingPrivateWriteback(content)
 	}
 	// Collapse the successful-mutation group into natural-language evidence and
 	// DROP the tool-call objects entirely. The earlier code kept each call but
@@ -85,13 +88,29 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 	// imitate. Emit only a provenance-marked synthetic user message: an
 	// assistant marker can be mistaken for the model's terminal reply, causing
 	// the run to stop while the original task still has unfinished work.
-	evidence := schema.UserMessage(
-		projectEinoAssistantWorkspaceMutationEvidencePrefix + " [compacted internal history] " + strings.Join(summaries, "; ") + ". Continue the original task; treat these completed results as authoritative and reread only after a conflict, failed mutation, or later mutation.",
-	)
+	evidenceText := projectEinoAssistantWorkspaceMutationEvidencePrefix + " [compacted internal history] " + strings.Join(summaries, "; ") + ". Continue the original task; treat these completed results as authoritative and reread only after a conflict, failed mutation, or later mutation."
+	if pendingPrivateWriteback {
+		evidenceText += " At the time of these edits, the run recorded them in its private workspace while shared-project writeback was pending. Treat them as private-only until a later version-checked checkpoint confirms shared writeback; do not repeat these edits, and reread and reconcile if checkpointing is blocked."
+	}
+	evidence := schema.UserMessage(evidenceText)
 	evidence.Extra = map[string]any{
 		projectEinoAssistantSyntheticMessageKindKey: projectEinoAssistantWorkspaceMutationEvidenceKind,
 	}
 	return []*schema.Message{evidence}, nil
+}
+
+func projectEinoAssistantPendingPrivateWriteback(content string) bool {
+	var result struct {
+		Writeback struct {
+			Status string `json:"status"`
+			Scope  string `json:"scope"`
+		} `json:"writeback"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &result); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(result.Writeback.Status), "pending") &&
+		strings.EqualFold(strings.TrimSpace(result.Writeback.Scope), "private")
 }
 
 func projectEinoAssistantSyntheticWorkspaceMutationEvidence(message *schema.Message) bool {

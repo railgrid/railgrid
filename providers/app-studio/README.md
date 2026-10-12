@@ -412,21 +412,44 @@ component selects the working root, and `workdir` is relative to that root.
 Source changes belong in the versioned App Studio file tools; shared-runtime
 command changes remain runtime-local and are not written back to App Studio
 source.
-An explicitly enabled private coding sandbox retains its separate opt-in path.
-Its instance identity includes the durable run ID: continuations reuse that run's
-workspace, while sibling runs cannot reseed it. The source snapshot is captured
-before waiting for the private runtime to become ready.
+Private coding sandboxes remain opt-in: `APP_STUDIO_RUN_SANDBOX_MODE` defaults
+to `off`; `force` requires development mode and a single App Studio replica,
+while `byo-only` stays fail-closed without a complete scoped provider resolver.
+Each eligible durable run gets its own Instance and workspace volume. A safe
+terminal marks that run's Instance unclaimed, retaining a recovery target if
+the process fails before durable terminal status settles. It remains until
+quota eviction or the 12-hour TTL. A continuation with the same run ID can
+reattach, but a new run gets a different Instance and cannot use it as a warm
+cache. Suspended permission or input waits retain the run's durable claim for
+resume. The source snapshot is captured before waiting for the private runtime
+to become ready.
 
-Private workspace tools record the exact file versions they approve. Checkpoint
-writeback accepts only those approved bytes, using an atomic transaction against
-the shared files' expected versions. Command-created source changes remain
-unapplied proposals. A conflict preserves the proposal and requires a fresh
-shared-file read and explicit reconciliation; unrelated approved edits can still
-proceed. Runtime verification captures source evidence before observing the
-runtime and checks it again before reporting readiness, so changes during the
-verification cannot certify a different revision. A completed private command
-requires a fresh workspace check; an unproven process outcome blocks checkpoint
-writeback and prevents retaining a warm instance at terminal settlement.
+Capacity is bounded per tenant workspace to two non-expired sandboxes. When a
+new run reaches that limit, App Studio marks and deletes the least-recently-used
+unclaimed cached Instance before proceeding. If all capacity is claimed or
+suspended, the new run is rejected until capacity is released or expires. The
+Infrastructure controller reaps each sandbox at its 12-hour idle or hard
+lifetime; expired and deleting Instances do not count against the App Studio
+limit. Project ownership also lets Kubernetes garbage-collect its Instances
+when the Project is deleted.
+
+Private workspace tools record the exact file versions they approve. A
+successful private mutation reports `writeback.status=pending` with
+`writeback.scope=private`: the change is in the isolated workspace, and shared
+writeback is still pending, so the model must not repeat the mutation. App
+Studio batches checkpoint work at command, preview, commit, and terminal
+boundaries; it does not scan and write back the full workspace after every
+individual edit. Checkpoint writeback accepts only approved bytes, using an
+atomic transaction against the shared files' expected versions. Command-created
+source changes remain unapplied proposals. A conflict preserves the proposal
+and requires a fresh shared-file read and explicit reconciliation; unrelated
+approved edits can still proceed. Runtime verification captures source evidence
+before observing the runtime and checks it again before reporting readiness, so
+changes during the verification cannot certify a different revision. A
+completed private command requires a fresh workspace check; an unproven process
+outcome blocks checkpoint writeback and prevents retaining the run's workspace
+at terminal settlement. Tool results do not report shared writeback success
+until the shared transaction commits.
 
 Each shared-runtime command carries the synchronized source revision and digest
 checked at launch. This is not filesystem snapshot isolation: another thread's

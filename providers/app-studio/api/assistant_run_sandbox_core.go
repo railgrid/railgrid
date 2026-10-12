@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -70,24 +71,17 @@ func (b *projectAssistantRunSandbox) metadataSnapshot() projectAssistantRunSandb
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	copy := b.metadata
-	if b.metadata.ApprovedMutations != nil {
-		copy.ApprovedMutations = make(map[string]projectAssistantSandboxMutationReceipt, len(b.metadata.ApprovedMutations))
-		for path, value := range b.metadata.ApprovedMutations {
-			copy.ApprovedMutations[path] = value
+	snapshot := b.metadata
+	snapshot.ApprovedMutations = maps.Clone(b.metadata.ApprovedMutations)
+	snapshot.Reconciliations = maps.Clone(b.metadata.Reconciliations)
+	for path, value := range snapshot.Reconciliations {
+		if value.ConflictProposal != nil {
+			proposalCopy := *value.ConflictProposal
+			value.ConflictProposal = &proposalCopy
 		}
+		snapshot.Reconciliations[path] = value
 	}
-	if b.metadata.Reconciliations != nil {
-		copy.Reconciliations = make(map[string]projectAssistantSandboxReconciliation, len(b.metadata.Reconciliations))
-		for path, value := range b.metadata.Reconciliations {
-			if value.ConflictProposal != nil {
-				proposal := *value.ConflictProposal
-				value.ConflictProposal = &proposal
-			}
-			copy.Reconciliations[path] = value
-		}
-	}
-	return copy
+	return snapshot
 }
 
 func (b *projectAssistantRunSandbox) touch() error {
@@ -683,8 +677,8 @@ func (b *projectAssistantRunSandbox) recordUnapprovedCheckpointChanges(proposals
 	for path, proposal := range proposals {
 		current := b.metadata.Reconciliations[path]
 		current.NeedsReread = true
-		copy := proposal
-		current.ConflictProposal = &copy
+		proposalCopy := proposal
+		current.ConflictProposal = &proposalCopy
 		b.metadata.Reconciliations[path] = current
 	}
 	b.mu.Unlock()
@@ -877,16 +871,27 @@ func (b *projectAssistantRunSandbox) exec(ctx context.Context, ref dataPlaneRef,
 }
 
 func (b *projectAssistantRunSandbox) prepareExecStart(ctx context.Context, requestID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return errors.New("exec start requires a request ID")
 	}
+	const maxFenceReconciliations = 2
+	reconciliations := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		metadata := b.metadataSnapshot()
 		if metadata.ExecutionUnresolved || strings.TrimSpace(metadata.PendingExecRequestID) != "" {
 			return fmt.Errorf("%w: a previous private command has no terminal cleanup receipt", errProjectAssistantRunSandboxConflict)
 		}
 		if metadata.RemoteFenceNeedsRefresh || projectAssistantRunSandboxDirty(metadata) {
+			if reconciliations >= maxFenceReconciliations {
+				return fmt.Errorf("%w: private command source kept changing while its fence was refreshed; retry against the latest source", errProjectAssistantRunSandboxConflict)
+			}
 			if projectAssistantRunSandboxNeedsCheckpoint(b.runState) {
 				if b.server == nil || b.server.workspaces == nil {
 					return fmt.Errorf("%w: shared workspace is unavailable to refresh the private command fence", errProjectAssistantRunSandboxConflict)
@@ -899,10 +904,15 @@ func (b *projectAssistantRunSandbox) prepareExecStart(ctx context.Context, reque
 			} else if err := b.verifyRemoteExecutionFence(ctx); err != nil {
 				return err
 			}
+			reconciliations++
 			continue
 		}
 
 		b.operationMu.Lock()
+		if err := ctx.Err(); err != nil {
+			b.operationMu.Unlock()
+			return err
+		}
 		metadata = b.metadataSnapshot()
 		if metadata.ExecutionUnresolved || strings.TrimSpace(metadata.PendingExecRequestID) != "" {
 			b.operationMu.Unlock()
@@ -910,6 +920,9 @@ func (b *projectAssistantRunSandbox) prepareExecStart(ctx context.Context, reque
 		}
 		if metadata.RemoteFenceNeedsRefresh || projectAssistantRunSandboxDirty(metadata) {
 			b.operationMu.Unlock()
+			if reconciliations >= maxFenceReconciliations {
+				return fmt.Errorf("%w: private command source kept changing while its fence was refreshed; retry against the latest source", errProjectAssistantRunSandboxConflict)
+			}
 			continue
 		}
 		b.mu.Lock()
@@ -1158,16 +1171,17 @@ func (s *Server) checkpointProjectAssistantRunSandboxIfDirty(ctx context.Context
 	if metadata.ExecutionUnresolved {
 		return true, fmt.Errorf("%w: private command outcome is unknown and has no terminal cleanup receipt", errProjectAssistantRunSandboxConflict)
 	}
-	// Preview and runtime evidence may certify only the snapshot this run
-	// actually examined. Editing disjoint files remains valid, but a private
-	// command result cannot certify a sibling thread's newer source revision.
+	// Managed checkpointing can safely apply approved, disjoint file edits
+	// without overwriting concurrent work. Preview and runtime certification is
+	// stricter: a command's source read set is unknowable, so its result is valid
+	// only for the complete shared-source revision it actually examined.
 	if s.workspaces != nil {
 		current, err := s.workspaces.SourceRevision(ctx, sandbox.scope)
 		if err != nil {
 			return true, err
 		}
 		if current != sandbox.metadataSnapshot().SourceRevision {
-			return true, fmt.Errorf("%w: the shared source changed after this run's snapshot", errProjectAssistantRunSandboxConflict)
+			return true, fmt.Errorf("%w: shared source changed after this run's snapshot; start a new assistant turn so the sandbox uses the latest workspace before relying on another command or verification", errProjectAssistantRunSandboxConflict)
 		}
 	}
 	if !projectAssistantTurnProfileAllowsMutation(runState.TurnProfile()) {

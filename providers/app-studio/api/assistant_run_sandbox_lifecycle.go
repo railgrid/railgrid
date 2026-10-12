@@ -122,9 +122,9 @@ func (s *Server) ensureProjectAssistantRunSandbox(
 		rollback()
 		return nil, nil, err
 	}
-	// A reused project cache is not ours to delete until its durable claim has
-	// succeeded. A newly created instance is safe to remove on an early claim
-	// failure; an existing cache may belong to another run.
+	// An existing run-sandbox Instance is not ours to delete until its durable
+	// claim has succeeded. A newly created instance is safe to remove on an
+	// early claim failure; an existing one may have a different durable owner.
 	cleanupInstance := createdInstance
 	defer func() {
 		if cleanupInstance {
@@ -771,9 +771,12 @@ func (s *Server) cleanupInterruptedProjectAssistantRunSandbox(ctx context.Contex
 	return nil
 }
 
-// retain marks a successful terminal as an unclaimed project cache. The
-// workspace volume and remote process survive, while a subsequent run must
-// claim the same Instance and perform a fresh authoritative sync/baseline.
+// retain marks a safe terminal as an unclaimed run-scoped workspace. The
+// workspace volume and remote process survive the engine return so a run whose
+// durable terminal status has not yet been written can recover. A continuation
+// with this run ID can reattach; a new run has a different Instance name and
+// cannot reuse this workspace. Quota eviction and the Infrastructure TTL bound
+// how long an unclaimed terminal workspace remains.
 func (b *projectAssistantRunSandbox) retain(ctx context.Context) error {
 	if b == nil {
 		return nil
@@ -973,8 +976,9 @@ func (b *projectAssistantRunSandbox) checkpointForTerminalSettlement(ctx context
 		// A user interruption cancels the run context before the bounded executor
 		// returns its terminal canceled result. The command has already settled at
 		// this point, so use an independent bounded context to preserve any proven
-		// workspace changes and retain a healthy warm cache. A real checkpoint or
-		// fence failure still fails closed and deletes the Instance.
+		// workspace changes and retain a healthy run sandbox for same-run
+		// recovery. A checkpoint or fence failure still fails closed and deletes
+		// the Instance.
 		checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dataPlaneCallTimeout)
 		defer cancel()
 		checkpointErr = b.checkpoint(checkpointCtx, req)
