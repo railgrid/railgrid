@@ -2819,7 +2819,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
@@ -2964,3 +2964,26 @@ package-runner-linux: build-runner-linux ## Package Linux runner binaries and th
 test-provider-action-identity:
 	go test -race -count=1 ./pkg/hub/serviceaccounts -run 'ProviderAction|Workload'
 	go test -race -count=1 ./pkg/hub -run 'ProviderAction|TenantResolver|Workload'
+
+.PHONY: test-app-studio-harness test-app-studio-harness-scripts lint-app-studio-harness fix-lint-app-studio-harness app-studio-harness-report
+test-app-studio-harness-scripts: ## Verify host retention and benchmark evidence accounting
+	python3 hack/scripts/tilt-host-health.test.py
+	python3 hack/scripts/app-studio-harness-report.test.py
+
+test-app-studio-harness: test-app-studio-harness-scripts ## Verify harness execution, browser, telemetry, and development-host safeguards
+	cd providers/app-studio && go test -count=1 ./api ./store
+	cd providers/infrastructure/dev-agent && go test -count=1 ./...
+	cd providers/app-studio/portal && npm run test:assistant-exec && npm run test:assistant-progress && npm run test:assistant-trace
+	python3 hack/scripts/verify-tilt-app-studio-sequence.test.py
+	python3 hack/scripts/verify-tilt-sandbox-default.test.py
+
+lint-app-studio-harness: $(GOLANGCI_LINT) ## Lint the App Studio harness and development runtime
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run ./api ./store
+	cd providers/infrastructure/dev-agent && $(abspath $(GOLANGCI_LINT)) run ./...
+
+fix-lint-app-studio-harness: $(GOLANGCI_LINT) ## Auto-fix all App Studio API/store and dev-agent files (not limited to changed files)
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run --fix ./api ./store
+	cd providers/infrastructure/dev-agent && $(abspath $(GOLANGCI_LINT)) run --fix ./...
+
+app-studio-harness-report: ## Analyze saved benchmark receipts; ARGS='<directory> [--acceptance <manifest> --require-acceptance]'
+	python3 hack/scripts/app-studio-harness-report.py $(ARGS)

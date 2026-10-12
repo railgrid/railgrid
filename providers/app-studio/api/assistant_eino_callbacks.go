@@ -127,7 +127,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelInput(ctx context
 	// attachment messages from graph state while retaining the callback's input
 	// slice, so an interrupt/cancel checkpoint cannot persist verified image
 	// bytes.
-	_ = compose.ProcessState[*adk.State](ctx, func(_ context.Context, state *adk.State) error {
+	_ = compose.ProcessState[*adk.State](ctx, func(_ context.Context, state *adk.State) error { //nolint:staticcheck // Eino exposes no nondeprecated compose state type here, and AfterModelRewriteState is skipped on model errors or cancellation.
 		state.Messages = projectEinoAssistantMessagesWithoutAttachments(state.Messages)
 		return nil
 	})

@@ -20,10 +20,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 TREE = ast.parse((ROOT / 'Tiltfile').read_text())
+CLUSTER_TREE = ast.parse((ROOT / 'Tiltfile.cluster').read_text())
 
 
-def resource_fields(name):
-    resource = next(node.value for node in TREE.body if isinstance(node, ast.Expr)
+def resource_fields(name, tree=TREE):
+    resource = next(node.value for node in tree.body if isinstance(node, ast.Expr)
                     and isinstance(node.value, ast.Call)
                     and isinstance(node.value.func, ast.Name)
                     and node.value.func.id == 'local_resource'
@@ -52,8 +53,16 @@ class AppStudioSequence(unittest.TestCase):
         deps = ast.literal_eval(fields['deps'])
         self.assertIn('providers/app-studio/portal/dist', deps)
         self.assertNotIn('providers/app-studio/portal/src', deps)
+        self.assertIn('providers/app-studio/controller', deps)
+        self.assertIn('providers/app-studio/internal', deps)
         self.assertEqual(ast.literal_eval(fields['ignore']),
                          ['providers/app-studio/**/*_test.go'])
+
+    def test_cluster_preview_port_forward_suppresses_stdout_only(self):
+        fields = resource_fields('app-studio-preview-port-forward', CLUSTER_TREE)
+        command = ast.unparse(fields['serve_cmd'])
+        self.assertIn('port-forward "svc/$svc" 10443:10443 >/dev/null &', command)
+        self.assertNotIn('2>&1', command)
 
     def test_production_builds_portal_and_go_once(self):
         commands = subprocess.run(['make', '-n', 'build-app-studio-provider'], cwd=ROOT,
@@ -71,6 +80,11 @@ class AppStudioSequence(unittest.TestCase):
         self.assertNotIn('npm run build', commands)
         self.assertNotIn('npm install', commands)
         self.assertNotIn('npm ci', commands)
+
+    def test_preview_port_forward_suppresses_kubectl_stdout(self):
+        fields = resource_fields('app-studio-preview-port-forward')
+        command = ast.unparse(fields['serve_cmd'])
+        self.assertIn('port-forward "svc/$svc" %s:%s >/dev/null &', command)
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ class CodeSequence(unittest.TestCase):
         deps = ast.literal_eval(FIELDS['deps'])
         self.assertIn('.kcp/admin.kubeconfig', deps)
         self.assertNotIn('.kcp/code-runtime.kubeconfig', deps)
-        self.assertIn('providers/code/deploy/chart/files/schemas', deps)
+        self.assertIn('providers/code/deploy/chart/files', deps)
         probe = ast.unparse(FIELDS['readiness_probe'])
         self.assertIn("path='/readyz'", probe)
 

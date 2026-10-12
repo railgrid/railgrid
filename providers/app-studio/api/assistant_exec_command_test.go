@@ -1415,7 +1415,7 @@ func TestProjectAssistantExecStartRecoversLostAcceptedResponse(t *testing.T) {
 		if err != nil {
 			return projectSandboxExecResponse{}, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var result projectSandboxExecResponse
 		err = json.NewDecoder(resp.Body).Decode(&result)
 		return result, err
