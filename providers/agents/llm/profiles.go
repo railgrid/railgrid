@@ -366,7 +366,7 @@ func modelReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
 }
 
 // modelSupportsTemperature reports whether the model accepts a custom sampling
-// temperature. OpenAI's GPT-5 family and o-series reasoning models fix it.
+// temperature. OpenAI's GPT-5/GPT-6 families and o-series reasoning models fix it.
 func modelSupportsTemperature(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
@@ -376,7 +376,8 @@ func modelSupportsTemperature(model string) bool {
 		m = m[idx+1:]
 	}
 	switch {
-	case strings.HasPrefix(m, "gpt-5"), strings.HasPrefix(m, "gpt5"):
+	case strings.HasPrefix(m, "gpt-5"), strings.HasPrefix(m, "gpt5"),
+		strings.HasPrefix(m, "gpt-6"), strings.HasPrefix(m, "gpt6"):
 		return false
 	case strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
 		return false

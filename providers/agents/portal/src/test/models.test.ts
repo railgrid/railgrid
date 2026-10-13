@@ -226,7 +226,7 @@ describe('models view on an empty workspace', () => {
     await settleVue()
 
     expect(el.querySelector('form.agents-model-create'), 'create form should render after the click').toBeTruthy()
-    const provider = el.querySelector<HTMLButtonElement>('.agents-model-create .k-form-select__trigger')!
+    const provider = el.querySelector<HTMLSelectElement>('.agents-model-create #model-provider')!
     expect(provider.getAttribute('aria-labelledby')?.split(' ')).toContain('agents-model-provider-label')
     expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
   })
@@ -556,5 +556,54 @@ describe('event-stream liveness', () => {
     const store = new AppStore(api)
     expect(store.live).toBe(false)
     store.disconnect()
+  })
+})
+
+describe('model collection layouts', () => {
+  beforeEach(() => localStorage.removeItem('railgrid:agents:models:layout'))
+
+  it('switches cards to ResourceTable, retains search, and remembers list layout', async () => {
+    const api = stubApi({ catalog: async () => [], usage: async () => usageWithNulls })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'fast', provider: 'openai', model: 'gpt-6-luna', ready: true },
+      { name: 'careful', provider: 'openai', model: 'gpt-6-sol', ready: false },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+    await settleVue()
+    expect(view.element.querySelectorAll('.k-model-connection')).toHaveLength(2)
+    const search = view.element.querySelector<HTMLInputElement>('[aria-label="Search models"]')!
+    search.value = 'sol'
+    search.dispatchEvent(new Event('input'))
+    await settleVue()
+    expect(view.element.querySelectorAll('.k-model-connection')).toHaveLength(1)
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Model layout: Cards"]')!.click()
+    await settleVue()
+    const list = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(el => el.textContent?.trim() === 'List')!
+    list.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-model-grid')).toBeNull()
+    const table = view.element.querySelector('table')!
+    expect(table.textContent).toContain('careful')
+    expect(table.textContent).not.toContain('fast')
+    expect(localStorage.getItem('railgrid:agents:models:layout')).toBe('list')
+    const edit = [...table.querySelectorAll<HTMLButtonElement>('button')].find(el => el.getAttribute('aria-label') === 'Edit careful')!
+    edit.click()
+    await settleVue()
+    expect(view.element.querySelector('[aria-label="Model configuration form"]')).toBeTruthy()
+    view.unmount()
+    const next = await mountVue(Models, { store, api })
+    await settleVue()
+    expect(next.element.querySelector('table')).toBeTruthy()
+    const layoutButton = next.element.querySelector<HTMLButtonElement>('[aria-label="Model layout: List"]')!
+    layoutButton.click()
+    await settleVue()
+    ;[...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(el => el.textContent?.trim() === 'Cards')!.click()
+    await settleVue()
+    expect(next.element.querySelector('table')).toBeNull()
+    expect(next.element.querySelectorAll('.k-model-connection')).toHaveLength(2)
+    next.unmount()
+    localStorage.removeItem('railgrid:agents:models:layout')
   })
 })

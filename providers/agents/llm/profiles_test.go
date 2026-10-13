@@ -48,13 +48,19 @@ func TestModelReasoningEffort(t *testing.T) {
 
 func TestBuildModelReasoningEffortPayload(t *testing.T) {
 	for _, tc := range []struct {
-		model       string
-		wantEffort  string
-		wantPresent bool
+		model           string
+		wantEffort      string
+		wantPresent     bool
+		wantTemperature bool
 	}{
 		{model: "gpt-5.6-luna", wantEffort: "none", wantPresent: true},
 		{model: "gpt-6-luna", wantEffort: "none", wantPresent: true},
-		{model: "gpt-4o", wantPresent: false},
+		{model: "gpt-6-sol"},
+		{model: "openai/gpt-6-sol"},
+		{model: "gpt-6.1-sol"},
+		{model: "gpt-5.4"},
+		{model: "o3"},
+		{model: "gpt-4o", wantPresent: false, wantTemperature: true},
 	} {
 		t.Run("model="+tc.model, func(t *testing.T) {
 			var payload map[string]any
@@ -86,6 +92,13 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 				t.Fatalf("Generate: %v", err)
 			}
 
+			temperature, hasTemperature := payload["temperature"]
+			if hasTemperature != tc.wantTemperature {
+				t.Fatalf("temperature presence = %v, want %v; payload: %#v", hasTemperature, tc.wantTemperature, payload)
+			}
+			if hasTemperature && temperature != 0.2 {
+				t.Fatalf("temperature = %v, want 0.2", temperature)
+			}
 			got, present := payload["reasoning_effort"]
 			if present != tc.wantPresent {
 				t.Fatalf("reasoning_effort presence = %v, want %v; payload: %#v", present, tc.wantPresent, payload)

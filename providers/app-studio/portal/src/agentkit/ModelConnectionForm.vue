@@ -115,7 +115,7 @@ function isLocked(): boolean {
             <select
               id="model-provider"
               :value="providerPreset"
-              class="k-input k-form-select__trigger"
+              class="k-input"
               :disabled="isLocked()"
               :aria-labelledby="providerLabelId"
               :aria-describedby="`${providerLabelId}-hint`"

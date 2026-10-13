@@ -59,11 +59,11 @@ AGENTKIT_PORTALS=(
 )
 AGENTKIT_FILES=(activity.css activity.ts agent-ui.css conversation.css styles.ts)
 AGENTKIT_VUE_FILES=(
-  AIActionRow.vue AIActivityDisclosure.vue AIComposer.vue
+  AIActionRow.vue AIActivityDisclosure.vue AIComposer.vue AIModelPicker.vue
   AIConversationHeader.vue AIConversationIdentity.vue AIConversationLayout.vue
   AIConversationRail.vue AIInterrupt.vue AIMessage.vue AIPrimaryAction.vue
   AITranscript.vue AIWorkbenchPane.vue AIWorkbenchTab.vue AIWorkbenchTabs.vue AIWorkbenchLauncher.vue AIWorkspace.vue AIPaneDivider.vue
-  ModelConnectionCard.vue ModelUsageSection.vue ModelConnectionForm.vue
+  ModelCollection.vue ModelConnectionCard.vue ModelUsageSection.vue ModelConnectionForm.vue
   ModelIDSelector.vue ai.ts modelIDSelection.ts
   AIActivityFeed.vue AIExecutionDetails.vue AIConversationTurn.vue AITurnProgress.vue AIPlanDisclosure.vue AIPlanSteps.vue
   conversation.ts AITimestamp.vue clock.ts timestamp.ts
@@ -119,11 +119,11 @@ sync_agentkit_vue_file() {
   local dst="$2"
   local name="$3"
   case "$name" in
-    ModelConnectionCard.vue)
-      # Canonical AgentKit resolves the core badge from the sibling SDK. The
-      # self-contained portal copy resolves that same dependency from its
+    ModelConnectionCard.vue|ModelCollection.vue)
+      # Canonical AgentKit resolves core components from the sibling Vue kit.
+      # The self-contained portal copy resolves those dependencies from its
       # vendored portalkit directory.
-      sed 's#\.\./portalkit-vue/StatusBadge\.vue#../portalkit/StatusBadge.vue#g' "$src/$name" > "$dst/$name"
+      sed 's#\.\./portalkit-vue/#../portalkit/#g' "$src/$name" > "$dst/$name"
       ;;
     *)
       cp "$src/$name" "$dst/$name"
@@ -228,8 +228,8 @@ verify_agentkit_vue_file() {
   local expected
   expected="$(mktemp)"
   case "$name" in
-    ModelConnectionCard.vue)
-      sed 's#\.\./portalkit-vue/StatusBadge\.vue#../portalkit/StatusBadge.vue#g' "$src/$name" > "$expected"
+    ModelConnectionCard.vue|ModelCollection.vue)
+      sed 's#\.\./portalkit-vue/#../portalkit/#g' "$src/$name" > "$expected"
       ;;
     *)
       cp "$src/$name" "$expected"

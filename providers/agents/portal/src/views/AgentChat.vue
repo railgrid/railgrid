@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw } from 'lucide-vue-next'
 import { ApiError, type ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
+import AIModelPicker from '../agentkit/AIModelPicker.vue'
+import { queueAgentConfigSave } from '../vue/config-save-queue'
 import AIComposer from '../agentkit/AIComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
 import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
@@ -117,7 +119,48 @@ const agent = computed(() => {
 // A harness-backed agent has no chat credential and needs none: its turns run
 // on the machine's harness, which brings its own model. "Can this agent answer?"
 // is therefore the backend question, not the credential one.
-const hasModel = computed(() => agentHarnessBacked(agent.value) || Boolean(agentModelCredential(agent.value)))
+const hasModel = computed(() => {
+  revision.value
+  return agentHarnessBacked(agent.value) || Boolean(agentModelCredential(agent.value))
+})
+// Changing this selection updates the agent, not just this conversation.
+const modelSaving = ref(false)
+const modelSaveError = ref('')
+let modelSaveSerial = 0
+const isModelBackend = computed(() => {
+  revision.value
+  return Boolean(agent.value) && !agentHarnessBacked(agent.value)
+})
+const modelChoices = computed(() => {
+  revision.value
+  return props.store.chatCredentials().map(credential => ({
+    id: credential.name, name: credential.name, model: credential.model || 'Provider default',
+  }))
+})
+const modelSwitchDisabled = computed(() => modelSaving.value || streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
+
+async function selectModelCredential(credential: string): Promise<void> {
+  if (!isModelBackend.value || modelSwitchDisabled.value || credential === agentModelCredential(agent.value) || !modelChoices.value.some(model => model.id === credential)) return
+  const authority = captureAuthority()
+  const name = props.name
+  const serial = ++modelSaveSerial
+  modelSaving.value = true
+  modelSaveError.value = ''
+  const saved = await queueAgentConfigSave({
+    store: props.store, api: props.api, name,
+    patch: { modelCredential: credential },
+    apply: spec => {
+      const backend = spec.backend || (spec.backend = {})
+      backend.model = { ...backend.model, credentials: { ...backend.model?.credentials, chat: credential } }
+    },
+    success: 'Default model saved.',
+  })
+  if (!mounted || serial !== modelSaveSerial || props.name !== name || !authorityIsCurrent(authority)) return
+  modelSaving.value = false
+  if (!saved) modelSaveError.value = 'Model could not be saved. Try again.'
+  else maybeAutoSend()
+}
+
 const sessionOptions = computed(() => {
   const list = sessions.value.slice()
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
@@ -595,7 +638,7 @@ async function openAgent(): Promise<void> {
 }
 
 function maybeAutoSend(): void {
-  if (!mounted || initializedFor !== props.name || streaming.value) return
+  if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value) return
   const text = props.store.takePendingPrompt(props.name)
   if (!text) return
   resetApprovalRecovery()
@@ -734,7 +777,7 @@ async function cancelLiveRun(
 
 async function send(): Promise<void> {
   const text = draft.value.trim()
-  if (!text || streaming.value) return
+  if (!text || streaming.value || modelSaving.value || !hasModel.value) return
   claimChatOwnership()
   // Sending takes ownership of the transcript synchronously. A history read
   // that started before this turn must not replace the newly streamed messages
@@ -1339,6 +1382,9 @@ function onCompositionStart(): void { composing = true }
 function onCompositionEnd(): void { composing = false }
 
 watch([() => props.store, () => props.api, () => props.name], () => {
+  modelSaveSerial += 1
+  modelSaving.value = false
+  modelSaveError.value = ''
   if (!mounted) return
   bindServer(props.store)
   void openAgent()
@@ -1571,8 +1617,27 @@ defineExpose({
                 class="agents-composer-primary"
                 state="send"
                 type="submit"
-                :disabled="!hasModel || !draft.trim()"
+                :disabled="!hasModel || modelSaving || !draft.trim()"
               />
+            </template>
+            <template v-if="isModelBackend" #footer>
+              <AIModelPicker
+                class="agents-chat-model-picker"
+                :models="modelChoices"
+                :selectedID="agentModelCredential(agent)"
+                :disabled="modelSwitchDisabled"
+                require-selection
+                contained
+                @select="selectModelCredential"
+              />
+            </template>
+            <template v-if="isModelBackend" #help>
+              <span v-if="modelSaveError" role="alert">{{ modelSaveError }}</span>
+              <span v-else-if="modelSaving" role="status">Saving model…</span>
+              <span v-else-if="store.credentials.loading">Loading models…</span>
+              <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>
+              <button v-else-if="!modelChoices.length" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="emit('navigate', { kind: 'menu', menu: 'models' })">Connect a model</button>
+              <span v-else>Changes save as this agent’s default for future turns.</span>
             </template>
           </AIComposer>
         </form>

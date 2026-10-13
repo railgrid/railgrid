@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { Check, ChevronDown, Cpu } from 'lucide-vue-next'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { ProjectLLMModelSettings } from './types'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { ensureAgentUIStyles } from '../agentkit/styles'
+
+ensureAgentUIStyles()
 
 const props = defineProps<{
-  models: ProjectLLMModelSettings[]
+  models: { id: string; name: string; model: string }[]
   selectedID: string
   disabled?: boolean
+  requireSelection?: boolean
+  contained?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -18,9 +22,10 @@ const triggerRef = ref<HTMLButtonElement | null>(null)
 const listboxRef = ref<HTMLElement | null>(null)
 const open = ref(false)
 const activeIndex = ref(0)
-const selected = computed(() => props.models.find((model) => model.id === props.selectedID) ?? props.models[0])
-const activeOptionID = computed(() => props.models[activeIndex.value] ? `app-studio-model-option-${activeIndex.value}` : undefined)
-const listboxID = 'app-studio-model-options'
+const selected = computed(() => props.models.find((model) => model.id === props.selectedID) ?? (props.requireSelection ? (props.selectedID ? { id: props.selectedID, name: props.selectedID, model: '' } : undefined) : props.models[0]))
+const pickerID = useId()
+const activeOptionID = computed(() => props.models[activeIndex.value] ? `${pickerID}-option-${activeIndex.value}` : undefined)
+const listboxID = `${pickerID}-options`
 
 function selectedIndex(): number {
   const index = props.models.findIndex((model) => model.id === selected.value?.id)
@@ -121,12 +126,12 @@ watch(() => [props.selectedID, props.models.length, props.disabled] as const, ([
 </script>
 
 <template>
-  <div ref="root" class="relative min-w-0 max-w-56">
+  <div ref="root" class="k-ai-model-picker" :class="{ 'k-ai-model-picker--contained': contained }">
     <button
       ref="triggerRef"
       type="button"
       role="combobox"
-      class="app-studio-touch-target inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:bg-surface-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60"
+      class="k-ai-model-picker__trigger"
       :disabled="disabled || models.length === 0"
       aria-haspopup="listbox"
       :aria-expanded="open"
@@ -136,9 +141,9 @@ watch(() => [props.selectedID, props.models.length, props.disabled] as const, ([
       @click="open ? closePicker() : openPicker()"
       @keydown="handleTriggerKeydown"
     >
-      <Cpu class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      <span class="truncate">{{ selected?.name || 'Configure model' }}</span>
-      <ChevronDown class="h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="2" />
+      <Cpu class="k-ai-model-picker__icon" :stroke-width="1.75" />
+      <span class="k-ai-model-picker__label">{{ selected?.name || 'Configure model' }}</span>
+      <ChevronDown class="k-ai-model-picker__chevron" :class="{ 'is-open': open }" :stroke-width="2" />
     </button>
 
     <div
@@ -147,31 +152,31 @@ watch(() => [props.selectedID, props.models.length, props.disabled] as const, ([
       :id="listboxID"
       role="listbox"
       aria-label="Choose model"
-      class="k-menu fixed inset-x-2 bottom-2 [z-index:var(--app-studio-z-dropdown)] max-h-[calc(100dvh-1rem)] overflow-y-auto md:absolute md:inset-x-auto md:bottom-9 md:right-0 md:max-h-72 md:w-72"
+      class="k-menu k-ai-model-picker__menu"
     >
       <button
         v-for="(model, index) in models"
-        :id="`app-studio-model-option-${index}`"
+        :id="`${pickerID}-option-${index}`"
         :key="model.id"
         type="button"
         role="option"
         tabindex="-1"
         :aria-selected="model.id === selected?.id"
-        class="app-studio-touch-target k-menu-item items-start"
+        class="k-menu-item k-ai-model-picker__option"
         :class="{
           'is-selected': model.id === selected?.id,
-          'bg-surface-overlay': activeIndex === index && model.id !== selected?.id,
+          'is-active': activeIndex === index && model.id !== selected?.id,
         }"
         @mousedown.prevent
         @mouseenter="activeIndex = index"
         @click="choose(model.id)"
       >
-        <Cpu class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
-        <span class="min-w-0 flex-1">
-          <span class="block truncate text-[12px] font-medium text-text-primary">{{ model.name }}</span>
-          <span class="mt-0.5 block truncate font-mono text-[10px] text-text-muted">{{ model.model }}</span>
+        <Cpu class="k-ai-model-picker__icon" :stroke-width="1.75" />
+        <span class="k-ai-model-picker__details">
+          <span class="k-ai-model-picker__name">{{ model.name }}</span>
+          <span class="k-ai-model-picker__model">{{ model.model }}</span>
         </span>
-        <Check v-if="model.id === selected?.id" class="mt-0.5 h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+        <Check v-if="model.id === selected?.id" class="k-ai-model-picker__check" :stroke-width="1.75" />
       </button>
     </div>
   </div>

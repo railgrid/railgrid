@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { ArrowLeft, Brain, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
+import { Play, ArrowLeft, Brain, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
+import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
+import ModelCollection from '../agentkit/ModelCollection.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
 import ModelUsageSection from '../agentkit/ModelUsageSection.vue'
 import ModelConnectionEditor from './ModelConnectionEditor.vue'
@@ -166,6 +170,13 @@ function familyModel(credential: Credential): string {
 function familyEndpoint(credential: Credential): string {
   return harnessCredential(credential) ? 'Edge machine' : credential.baseURL || ''
 }
+const modelRows = computed(() => credentials.value.data.map(credential => ({
+  id: credential.name, name: credential.name, model: familyModel(credential), endpoint: familyEndpoint(credential) || 'Provider default',
+  configured: credential.secretResolved !== false,
+  status: testing.value.has(credential.name) ? 'Testing…' : tested.value.get(credential.name)?.ok ? `Test passed · ${tested.value.get(credential.name)?.latencyMS} ms` : tested.value.has(credential.name) ? 'Test failed' : statusLabel(credential),
+  tone: tested.value.get(credential.name)?.ok ? 'success' as const : tested.value.has(credential.name) ? 'danger' as const : statusTone(credential),
+  credential,
+})))
 const editorIsHarness = computed(() => editingCredential.value
   ? harnessCredential(editingCredential.value)
   : editorFamily.value === 'harness')
@@ -301,8 +312,9 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-      <div v-if="credentials.hasSnapshot" class="k-model-grid">
-        <ModelConnectionCard v-for="credential in credentials.data" :key="credential.name" :name="credential.name" :model="familyModel(credential)" :endpoint="familyEndpoint(credential)" :endpoint-label="harnessCredential(credential) ? 'Runs on' : 'Endpoint'" :resource-label="harnessCredential(credential) ? 'Harness identity' : 'Model'" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
+      <ModelCollection v-if="credentials.hasSnapshot && credentials.data.length" :rows="modelRows" preference-key="railgrid:agents:models:layout">
+        <template #cards="{ rows }">
+        <ModelConnectionCard v-for="{ credential } in rows" :key="credential.name" :name="credential.name" :model="familyModel(credential)" :endpoint="familyEndpoint(credential)" :endpoint-label="harnessCredential(credential) ? 'Runs on' : 'Endpoint'" :resource-label="harnessCredential(credential) ? 'Harness identity' : 'Model'" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credential.name) ? 'Testing…' : tested.get(credential.name)?.ok ? `Test passed · ${tested.get(credential.name)?.latencyMS} ms` : tested.has(credential.name) ? 'Test failed' : statusLabel(credential)"
           :test-tone="tested.get(credential.name)?.ok ? 'success' : tested.has(credential.name) ? 'danger' : statusTone(credential)">
           <template v-if="harnessCredential(credential)">
@@ -320,7 +332,17 @@ defineExpose({ loadCatalog, loadUsage })
           <p v-if="!harnessCredential(credential) && credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
           <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="toggleEdit(credential)">Edit</button><button v-if="!harnessCredential(credential)" class="k-btn k-btn--ghost" :disabled="testing.has(credential.name) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credential.name}…` : `Delete ${credential.name}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
         </ModelConnectionCard>
-      </div>
+        </template>
+        <template #details="{ row: { credential } }">
+          <p v-if="tested.get(credential.name)?.error" class="k-error" role="alert">{{ tested.get(credential.name)?.error }}</p>
+          <TechnicalDetails :diagnostic="tested.get(credential.name)?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
+        </template>
+        <template #actions="{ row: { credential } }">
+          <ResourceTableEditButton :label="`Edit ${credential.name}`" :disabled="credentialActions.size > 0" @click="toggleEdit(credential)" />
+          <ResourceTableActionButton v-if="!harnessCredential(credential)" :icon="Play" :label="`Test connection for ${credential.name}`" :busy="testing.has(credential.name)" :disabled="credentialIsBusy(credential.name)" @click="testCredential(credential.name)" />
+          <ResourceTableDeleteButton :label="`Delete ${credential.name}`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
+        </template>
+      </ModelCollection>
       <ModelUsageSection provider="Agents" available>
 <template #controls><div class="agents-seg" role="group" aria-label="Usage window"><button v-for="days in [7, 30, 90]" :key="days" :class="['k-btn k-btn--ghost', { on: days === windowDays }]" :aria-pressed="days === windowDays" @click="windowDays = days">{{ days }}d</button></div></template>
       <div v-if="usageError && !usageHasSnapshot" class="k-error" role="alert">Usage unavailable: {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
