@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"regexp"
@@ -139,6 +140,67 @@ func (s *TemplateSpec) ValidateDevelopment() error {
 		}
 	}
 
+	return nil
+}
+
+// ValidateRailgridAuth checks the explicitly declared Railgrid Auth
+// integration contract. It describes the shape App Studio can configure and
+// the API component it can develop; it does not prove that application code
+// enforces authorization for protected data.
+func (s *TemplateSpec) ValidateRailgridAuth() error {
+	if s.RailgridAuth == nil {
+		return nil
+	}
+	if s.RailgridAuth.Version != CapabilityRailgridAuthV1 {
+		return fmt.Errorf("spec.railgridAuth.version %q is unsupported; supported version is %q", s.RailgridAuth.Version, CapabilityRailgridAuthV1)
+	}
+	if s.Development == nil {
+		return fmt.Errorf("spec.railgridAuth requires spec.development.components.api")
+	}
+	apiComponent, ok := s.Development.Components["api"]
+	if !ok {
+		return fmt.Errorf("spec.railgridAuth requires spec.development.components.api")
+	}
+	if strings.TrimSpace(apiComponent.WorkspacePath) == "" {
+		return fmt.Errorf("spec.railgridAuth requires spec.development.components.api.workspacePath")
+	}
+	if _, err := normalizeWorkspacePath(apiComponent.WorkspacePath); err != nil {
+		return fmt.Errorf("spec.railgridAuth development api workspacePath: %w", err)
+	}
+
+	if s.Schema == nil {
+		return fmt.Errorf("spec.railgridAuth requires spec.schema properties")
+	}
+	raw := s.Schema.Raw
+	if len(raw) == 0 && s.Schema.Object != nil {
+		var err error
+		raw, err = json.Marshal(s.Schema.Object)
+		if err != nil {
+			return fmt.Errorf("spec.railgridAuth decode spec.schema: %w", err)
+		}
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return fmt.Errorf("spec.railgridAuth decode spec.schema: %w", err)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("spec.railgridAuth requires spec.schema.properties")
+	}
+	for _, field := range []struct{ name, wantType string }{
+		{name: RailgridAuthEnabledField, wantType: "boolean"},
+		{name: RailgridAuthAppIDField, wantType: "string"},
+		{name: RailgridAuthEnvironmentField, wantType: "string"},
+		{name: RailgridAuthInstanceUIDField, wantType: "string"},
+	} {
+		property, ok := properties[field.name].(map[string]any)
+		if !ok || property["type"] != field.wantType {
+			return fmt.Errorf("spec.railgridAuth requires spec.schema.properties.%s.type=%q", field.name, field.wantType)
+		}
+		if property["readOnly"] != true {
+			return fmt.Errorf("spec.railgridAuth requires spec.schema.properties.%s.readOnly=true", field.name)
+		}
+	}
 	return nil
 }
 

@@ -97,6 +97,14 @@ func TestAuthenticationToolsDoNotRequireMCPIdentity(t *testing.T) {
 		if !ok || spec.RequiresProjectMCPIdentity {
 			t.Fatalf("invalid auth tool %s", name)
 		}
+		if name == "configure_project_authentication" {
+			description := strings.ToLower(spec.Description)
+			for _, phrase := range []string{"template_not_selected", "for pending", "do not switch or update this project's template for auth", "disabling remains"} {
+				if !strings.Contains(description, strings.ToLower(phrase)) {
+					t.Errorf("configure_project_authentication guidance omits %q: %s", phrase, spec.Description)
+				}
+			}
+		}
 	}
 }
 
@@ -156,6 +164,64 @@ func TestProjectAuthenticationResponseReportsPersistedRuntime(t *testing.T) {
 			}
 			if len(response.Environments) != 1 || response.Environments[0].RuntimeExists != tc.wantExists {
 				t.Fatalf("production environment state = %+v, want one runtimeExists=%v", response.Environments, tc.wantExists)
+			}
+		})
+	}
+}
+
+func TestProjectAuthenticationResponseReportsVerifiedTemplateSupport(t *testing.T) {
+	tests := []struct {
+		name       string
+		template   bool
+		missing    bool
+		mutate     func(*unstructured.Unstructured)
+		want       bool
+		wantReason string
+	}{
+		{name: "current verified capability", template: true, mutate: func(*unstructured.Unstructured) {}, want: true, wantReason: "supported"},
+		{name: "declaration absent", template: true, mutate: func(obj *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(obj.Object, "spec", "railgridAuth")
+		}, wantReason: "not_declared"},
+		{name: "status stale", template: true, mutate: func(obj *unstructured.Unstructured) { obj.SetGeneration(8) }, wantReason: "pending"},
+		{name: "invalid contract condition with stale aggregate status", template: true, mutate: func(obj *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(obj.Object, int64(6), "status", "observedGeneration")
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidRailgridAuth")
+		}, wantReason: "invalid_contract"},
+		{name: "unrelated malformed component does not imply invalid auth", template: true, mutate: func(obj *unstructured.Unstructured) {
+			_ = unstructured.SetNestedMap(obj.Object, map[string]any{"broken": map[string]any{"workspacePath": ""}}, "spec", "development", "components")
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidSpec")
+		}, wantReason: "pending"},
+		{name: "unknown version", template: true, mutate: func(obj *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(obj.Object, "v2", "spec", "railgridAuth", "version")
+		}, wantReason: "unknown_version"},
+		{name: "selected template was deleted", missing: true, wantReason: "template_missing"},
+		{name: "no template selected", wantReason: "template_not_selected"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			project := publishingTestProjectTyped("demo", "project-uid", "private")
+			project.Spec.Authentication.Enabled = true
+			project.Spec.Environments = nil
+			objects := []runtime.Object{publishingTestProjectObject(t, project)}
+			if tc.template {
+				template := readyRailgridAuthTemplateObject()
+				tc.mutate(template)
+				objects = append(objects, template)
+			} else if !tc.missing {
+				project.Spec.Template = nil
+				objects[0] = publishingTestProjectObject(t, project)
+			}
+			response, err := (&Server{}).authenticationResponse(context.Background(), asclient.NewFromDynamic(publishingTestDynamic(objects...)), project)
+			if err != nil {
+				t.Fatalf("authenticationResponse: %v", err)
+			}
+			if response.Supported != tc.want || response.SupportReason != tc.wantReason || response.SupportMessage == "" {
+				t.Fatalf("authentication support = supported:%v reason:%q message:%q, want supported:%v reason:%q and a message", response.Supported, response.SupportReason, response.SupportMessage, tc.want, tc.wantReason)
+			}
+			if !response.Enabled {
+				t.Fatal("reading an unsupported capability disabled existing Project authentication")
 			}
 		})
 	}
@@ -262,16 +328,9 @@ func TestGetProjectAuthenticationToolAuthorizesCallerBeforeProviderReads(t *test
 	})
 }
 
-func TestAuthenticationConfigurationPreservesSharingAndRequiresCompatibility(t *testing.T) {
+func TestAuthenticationConfigurationPreservesSharingAndRequiresVerifiedCapability(t *testing.T) {
 	p := publishingTestProjectTyped("demo", "owned-project", "private")
-	template := applicationTemplateObject()
-	properties := map[string]any{"railgridAuth": map[string]any{"type": "boolean"}, "railgridAuthAppID": map[string]any{"type": "string"}, "railgridAuthEnvironment": map[string]any{"type": "string"}, "railgridAuthInstanceUID": map[string]any{"type": "string"}}
-	if err := unstructured.SetNestedMap(template.Object, properties, "spec", "schema", "properties"); err != nil {
-		t.Fatal(err)
-	}
-	if err := unstructured.SetNestedMap(template.Object, map[string]any{"api": map[string]any{"workspacePath": "api", "devImage": "node", "startCommand": "npm start", "port": "api", "imageInput": "apiImage"}}, "spec", "development", "components"); err != nil {
-		t.Fatal(err)
-	}
+	template := readyRailgridAuthTemplateObject()
 	dyn := publishingTestDynamic(publishingTestProjectObject(t, p), template)
 	c := asclient.NewFromDynamic(dyn)
 	s := &Server{integrationAccessReviewer: func(context.Context, identity, dataplane.ResourceAttributes) (bool, error) { return true, nil }, authenticationServiceProbe: func(context.Context) error { return errors.New("old hub") }}
@@ -305,5 +364,42 @@ func TestAuthenticationConfigurationPreservesSharingAndRequiresCompatibility(t *
 	s.integrationAccessReviewer = func(context.Context, identity, dataplane.ResourceAttributes) (bool, error) { return false, nil }
 	if _, err = s.configureAuthentication(context.Background(), c, identity{}, saved, false); !apierrors.IsForbidden(err) {
 		t.Fatalf("unauthorized disable error=%v", err)
+	}
+}
+
+func TestAuthenticationConfigurationRejectsUndeclaredSupportAndStillAllowsDisable(t *testing.T) {
+	project := publishingTestProjectTyped("demo", "project-uid", "private")
+	undeclaredTemplate := applicationTemplateObject()
+	client := asclient.NewFromDynamic(publishingTestDynamic(publishingTestProjectObject(t, project), undeclaredTemplate))
+	server := &Server{
+		integrationAccessReviewer:  func(context.Context, identity, dataplane.ResourceAttributes) (bool, error) { return true, nil },
+		authenticationServiceProbe: func(context.Context) error { t.Fatal("unsupported template reached the hub auth probe"); return nil },
+	}
+	if _, err := server.configureAuthentication(context.Background(), client, identity{}, project, true); err == nil || !strings.Contains(err.Error(), "Create a new project with a template that explicitly supports Railgrid Auth") {
+		t.Fatalf("enable error = %v, want create-new compatible-project guidance", err)
+	}
+	saved, err := client.Projects().Get(context.Background(), project.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Spec.Authentication.Enabled {
+		t.Fatal("failed enable changed the Project authentication setting")
+	}
+
+	missingTemplateProject := publishingTestProjectTyped("missing-template", "missing-template-uid", "private")
+	missingTemplateClient := asclient.NewFromDynamic(publishingTestDynamic(publishingTestProjectObject(t, missingTemplateProject)))
+	if _, err := server.configureAuthentication(context.Background(), missingTemplateClient, identity{}, missingTemplateProject, true); err == nil || !strings.Contains(err.Error(), "selected template is no longer available") {
+		t.Fatalf("deleted-template enable error = %v, want missing-template guidance", err)
+	}
+
+	existing := publishingTestProjectTyped("already-enabled", "existing-project-uid", "private")
+	existing.Spec.Authentication.Enabled = true
+	disableClient := asclient.NewFromDynamic(publishingTestDynamic(publishingTestProjectObject(t, existing)))
+	disabled, err := server.configureAuthentication(context.Background(), disableClient, identity{}, existing, false)
+	if err != nil {
+		t.Fatalf("disable unsupported existing Project: %v", err)
+	}
+	if disabled.Spec.Authentication.Enabled {
+		t.Fatal("explicit disable left Railgrid Auth enabled")
 	}
 }

@@ -73,6 +73,91 @@ func applicationTemplateObject() *unstructured.Unstructured {
 	}}
 }
 
+func readyRailgridAuthTemplateObject() *unstructured.Unstructured {
+	obj := applicationTemplateObject()
+	obj.SetGeneration(7)
+	_ = unstructured.SetNestedMap(obj.Object, map[string]any{"version": "v1"}, "spec", "railgridAuth")
+	_ = unstructured.SetNestedField(obj.Object, int64(7), "status", "observedGeneration")
+	_ = unstructured.SetNestedField(obj.Object, []any{
+		map[string]any{"type": "Ready", "status": "True", "reason": "Ready", "observedGeneration": int64(7)},
+	}, "status", "conditions")
+	_ = unstructured.SetNestedField(obj.Object, []any{
+		map[string]any{"name": projectTemplateRailgridAuthCapabilityName, "version": projectTemplateRailgridAuthCapabilityVersion},
+	}, "status", "capabilities")
+	return obj
+}
+
+func setRailgridAuthReadyConditionField(obj *unstructured.Unstructured, key string, value any) {
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found || len(conditions) == 0 {
+		return
+	}
+	condition, ok := conditions[0].(map[string]any)
+	if !ok {
+		return
+	}
+	condition[key] = value
+	_ = unstructured.SetNestedSlice(obj.Object, conditions, "status", "conditions")
+}
+
+func TestProjectTemplateRailgridAuthSupportRequiresDeclarationAndCurrentReadyCapability(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*unstructured.Unstructured)
+		want       bool
+		wantReason string
+	}{
+		{name: "verified current v1", mutate: func(*unstructured.Unstructured) {}, want: true, wantReason: "supported"},
+		{name: "capability without explicit declaration", mutate: func(obj *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(obj.Object, "spec", "railgridAuth")
+		}, wantReason: "not_declared"},
+		{name: "status generation is stale", mutate: func(obj *unstructured.Unstructured) { obj.SetGeneration(8) }, wantReason: "pending"},
+		{name: "ready condition generation is stale", mutate: func(obj *unstructured.Unstructured) {
+			setRailgridAuthReadyConditionField(obj, "observedGeneration", int64(6))
+		}, wantReason: "pending"},
+		{name: "unrelated invalid spec does not imply invalid auth", mutate: func(obj *unstructured.Unstructured) {
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidSpec")
+		}, wantReason: "pending"},
+		{name: "current invalid contract condition", mutate: func(obj *unstructured.Unstructured) {
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidRailgridAuth")
+		}, wantReason: "invalid_contract"},
+		{name: "current invalid condition outranks stale aggregate generation", mutate: func(obj *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(obj.Object, int64(6), "status", "observedGeneration")
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidRailgridAuth")
+		}, wantReason: "invalid_contract"},
+		{name: "ready status has no verified capability", mutate: func(obj *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(obj.Object, "status", "capabilities")
+		}, wantReason: "invalid_contract"},
+		{name: "malformed declaration", mutate: func(obj *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(obj.Object, "v1", "spec", "railgridAuth")
+		}, wantReason: "invalid_contract"},
+		{name: "unknown well-formed version", mutate: func(obj *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(obj.Object, "v2", "spec", "railgridAuth", "version")
+		}, wantReason: "unknown_version"},
+		{name: "backend not ready", mutate: func(obj *unstructured.Unstructured) {
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "BackendError")
+		}, wantReason: "pending"},
+		{name: "deleting template", mutate: func(obj *unstructured.Unstructured) { timestamp := metav1.Now(); obj.SetDeletionTimestamp(&timestamp) }, wantReason: "pending"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := readyRailgridAuthTemplateObject()
+			tc.mutate(obj)
+			got := projectTemplateRailgridAuthSupportFromUnstructured(obj)
+			if got.Supported != tc.want || got.Reason != tc.wantReason {
+				t.Fatalf("support = %+v, want supported=%v reason=%q", got, tc.want, tc.wantReason)
+			}
+			if got.Message == "" {
+				t.Fatal("support message is empty")
+			}
+		})
+	}
+}
+
 func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
 	if err != nil {
@@ -490,6 +575,36 @@ func TestApplyProjectDevelopmentTemplateBuildsInitialBindingIdempotently(t *test
 	}
 	if got := len(p.Spec.Environments[0].Bindings); got != 2 {
 		t.Fatalf("development bindings after second apply = %d, want idempotent 2", got)
+	}
+}
+
+func TestDevelopmentTemplateViewsExposeVerifiedAuthSupport(t *testing.T) {
+	ready := readyRailgridAuthTemplateObject()
+	ready.SetName("compatible")
+	stale := ready.DeepCopy()
+	stale.SetName("stale")
+	stale.SetGeneration(stale.GetGeneration() + 1)
+	undeclared := ready.DeepCopy()
+	undeclared.SetName("undeclared")
+	unstructured.RemoveNestedField(undeclared.Object, "spec", "railgridAuth")
+	views := developmentTemplateViews([]unstructured.Unstructured{*stale, *undeclared, *ready})
+	if len(views) != 3 {
+		t.Fatalf("views = %+v, want three templates", views)
+	}
+	// Exercise the JSON contract shared by the catalog and planning response:
+	// false must be present so consumers can fail closed without name inference.
+	data, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire []map[string]any
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for i, reason := range []string{"supported", "pending", "not_declared"} {
+		if wire[i]["railgridAuthSupported"] != (i == 0) || wire[i]["railgridAuthReason"] != reason {
+			t.Errorf("template %s: auth support = %v, reason = %v", wire[i]["name"], wire[i]["railgridAuthSupported"], wire[i]["railgridAuthReason"])
+		}
 	}
 }
 

@@ -174,14 +174,14 @@ function inputID(path: string | string[]): string {
           :path-prefix="fullPath(name)"
           @update:values="value => update([name], value)"
         />
-        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[11px] leading-4 text-text-muted">{{ field.description }}</p>
-        <p v-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[10px] text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
+        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[12px] leading-5 text-text-muted">{{ field.description }}</p>
+        <p v-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[12px] leading-5 text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
       </fieldset>
 
       <fieldset v-else-if="isMap(field)" class="@container grid min-w-0 gap-2 rounded-lg border border-border-subtle p-3" :aria-describedby="describedBy([name], field)">
         <legend class="px-1 text-[12px] font-semibold text-text-primary">{{ field.title || fieldLabel(name) }}</legend>
         <div v-for="([key, value]) in mapEntries([name])" :key="key" class="grid min-w-0 grid-cols-1 items-center gap-2 @lg:grid-cols-[minmax(0,9rem)_minmax(0,1fr)_auto]">
-          <label :for="inputID(`${name}.${key}.key`)" class="sr-only">{{ fieldLabel(name) }} key</label>
+          <label :for="inputID(`${name}.${key}.key`)" class="sr-only">{{ field.title || fieldLabel(name) }} key</label>
           <input
             :id="inputID(`${name}.${key}.key`)"
             :value="key"
@@ -192,7 +192,7 @@ function inputID(path: string | string[]): string {
             placeholder="Key"
             @change="renameMapEntry([name], key, ($event.target as HTMLInputElement).value)"
           >
-          <label :for="inputID(`${name}.${key}.value`)" class="sr-only">{{ fieldLabel(name) }} {{ key }} value</label>
+          <label :for="inputID(`${name}.${key}.value`)" class="sr-only">{{ field.title || fieldLabel(name) }} {{ key }} value</label>
           <input
             :id="inputID(`${name}.${key}.value`)"
             :value="value"
@@ -203,12 +203,12 @@ function inputID(path: string | string[]): string {
             placeholder="Value"
             @input="updateMapValue([name], key, ($event.target as HTMLInputElement).value)"
           >
-          <button type="button" class="app-studio-touch-target shrink-0 text-[11px] font-medium text-danger hover:underline disabled:opacity-50" :disabled="fieldDisabled(name)" @click="removeMapEntry([name], key)">Remove</button>
+          <button type="button" class="k-btn k-btn--text shrink-0 text-danger" :disabled="fieldDisabled(name)" :aria-label="`Remove ${key} from ${field.title || fieldLabel(name)}`" @click="removeMapEntry([name], key)">Remove</button>
         </div>
-        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[11px] leading-4 text-text-muted">{{ field.description }}</p>
-        <p v-if="fieldImmutable(name)" class="text-[10px] text-text-muted">Locked after the first production deployment.</p>
-        <p v-else-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[10px] text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
-        <button type="button" class="app-studio-touch-target justify-self-start text-left text-[11px] font-medium text-accent hover:underline disabled:opacity-50" :disabled="fieldDisabled(name)" @click="addMapEntry([name])">Add {{ fieldLabel(name) }} value</button>
+        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[12px] leading-5 text-text-muted">{{ field.description }}</p>
+        <p v-if="fieldImmutable(name)" class="text-[12px] leading-5 text-text-muted">Locked after the first production deployment.</p>
+        <p v-else-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[12px] leading-5 text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
+        <button type="button" class="k-btn k-btn--ghost justify-self-start" :disabled="fieldDisabled(name)" :aria-label="`Add value to ${field.title || fieldLabel(name)}`" @click="addMapEntry([name])">Add value</button>
       </fieldset>
 
       <div v-else-if="field.type === 'array'" class="grid gap-1.5">
@@ -224,10 +224,10 @@ function inputID(path: string | string[]): string {
           placeholder="One value per line"
           @input="update([name], arrayInputValues(($event.target as HTMLTextAreaElement).value, field.items, imageInputs))"
         />
-        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[11px] leading-4 text-text-muted">{{ field.description }}</p>
-        <p class="text-[10px] text-text-muted">Enter one value per line.</p>
-        <p v-if="fieldImmutable(name)" class="text-[10px] text-text-muted">Locked after the first production deployment.</p>
-        <p v-else-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[10px] text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
+        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[12px] leading-5 text-text-muted">{{ field.description }}</p>
+        <p class="text-[12px] leading-5 text-text-muted">Enter one value per line.</p>
+        <p v-if="fieldImmutable(name)" class="text-[12px] leading-5 text-text-muted">Locked after the first production deployment.</p>
+        <p v-else-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[12px] leading-5 text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
       </div>
 
       <div v-else class="grid gap-1.5">
@@ -276,9 +276,9 @@ function inputID(path: string | string[]): string {
           :pattern="field.pattern"
           @input="update([name], coerce(field, ($event.target as HTMLInputElement).value))"
         >
-        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[11px] leading-4 text-text-muted">{{ field.description }}</p>
-        <p v-if="fieldImmutable(name)" class="text-[10px] text-text-muted">Locked after the first production deployment.</p>
-        <p v-else-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[10px] text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
+        <p v-if="field.description" :id="fieldDescriptionID([name])" class="text-[12px] leading-5 text-text-muted">{{ field.description }}</p>
+        <p v-if="fieldImmutable(name)" class="text-[12px] leading-5 text-text-muted">Locked after the first production deployment.</p>
+        <p v-else-if="fieldIssues(name).length" :id="fieldErrorID([name])" class="text-[12px] leading-5 text-danger" role="alert">{{ fieldIssues(name)[0] }}</p>
       </div>
     </template>
   </div>

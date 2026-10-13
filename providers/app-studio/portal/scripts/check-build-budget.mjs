@@ -83,12 +83,25 @@ enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipByt
 // Scoped drafts, bounded storage/identity cleanup, attachment ownership, and
 // command evidence add 18,852 raw / 5,748 gzip bytes. Keep 596 raw / 394 gzip
 // bytes of local headroom. Review fixes account for 5,808 raw / 1,620 gzip bytes.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_249_500, gzipBytes: 348_700 })
+// The auth-compatible creation flow and guarded composer handoff measure
+// 1,257,303 raw / 350,530 gzip bytes; keep the bootstrap/tile budgets unchanged.
+// Integrations search, grouped resources, and readable permission review add
+// 2,374 raw / 529 gzip bytes over the prior local baseline. Measured page:
+// 1,258,306 raw / 351,517 gzip; retain a bounded allowance for this feature.
+// Shared workbench overflow controls and layout refinements measure
+// 1,260,036 raw / 352,204 gzip. Keep less than 1 KB of headroom.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_261_000, gzipBytes: 352_500 })
 // Baseline total assets measure 1,305,524 raw / 368,042 gzip. The same change
 // adds 18,852 raw / 5,745 gzip; keep 624 raw / 413 gzip bytes of headroom.
 // Authentication settings load only when the settings panel opens. Bound
 // this new chunk separately and add only its explicit allowance to the total.
+// Auth capability states, guarded disable confirmation, and deferred access
+// management measure 16,072 raw / 4,723 gzip bytes in the settings-only chunk.
 const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthentication', 'authentication settings')
 const authArtifact = await artifact(manifest[authKey].file)
-enforce('App Studio authentication settings', [authArtifact], { rawBytes: 6_500, gzipBytes: 2_500 })
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_331_500, gzipBytes: 376_700 })
+enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
+// Combined assets measure 1,349,179 raw / 380,776 gzip bytes.
+// The same Integrations change applies to total assets; bootstrap and tile
+// budgets stay fixed.
+// Labeled shared toggle: 1,352,452 raw / 382,522 gzip total.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_353_000, gzipBytes: 383_000 })

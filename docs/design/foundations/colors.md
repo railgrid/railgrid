@@ -29,6 +29,7 @@ namespace.
 | `--color-success` | `#2fd6a0` | `#067246` | `-subtle` at 12% and `-border` at 30% |
 | `--color-warning` | `#f0a63a` | `#8f5500` | `-subtle` at 12% |
 | `--color-danger` | `#ff5d5d` | `#b22a32` | `-subtle`, `-hover` (`#ff7676` / `#9f202a`) |
+| `--color-toggle-knob`, `--color-toggle-knob-border` | `#ffffff`, `#dedee6` | `#ffffff`, `#dedee6` | Theme-stable light switch knob and its subtle outline |
 | `--color-danger-surface`, `--color-surface-base`, `--color-text-error`, `--color-on-accent` | aliases (`danger-subtle`, `surface`, `danger`, `#0a0b12`) | aliases (`danger-subtle`, `surface`, `danger`, `#fff`) | Compatibility aliases so `var()` never falls through to a stale literal |
 
 Rules:

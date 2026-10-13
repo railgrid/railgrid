@@ -80,9 +80,13 @@ export const COLOR_TOKENS = Object.freeze(new Set([
   'danger-hover',
   'danger-surface',
   'on-accent',
+  'toggle-knob',
+  'toggle-knob-border',
 ]))
 
 const DARK_FALLBACKS = Object.freeze({
+  'toggle-knob': ['#fff', '#ffffff'],
+  'toggle-knob-border': ['#dedee6'],
   surface: ['#0a0b12'],
   'surface-raised': ['#111320'],
   'surface-overlay': ['#171927'],

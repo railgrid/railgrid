@@ -3,16 +3,28 @@ import { CircleAlert, Check, Loader2, RefreshCw, X } from 'lucide-vue-next'
 
 import type { ReleasePipelineView } from './promotionState'
 
-defineProps<{
+const props = withDefaults(defineProps<{
   pipeline: ReleasePipelineView
+  hideSummary?: boolean
   takingLonger?: boolean
   needsAttention?: boolean
   refreshing?: boolean
-}>()
+}>(), {
+  hideSummary: false,
+})
 
 const emit = defineEmits<{
   refresh: []
 }>()
+
+function stepStatusLabel(step: ReleasePipelineView['steps'][number]): string {
+  if (step.state === 'done') return 'Complete'
+  if (step.state === 'error') return 'Failed'
+  if (step.state === 'attention') return 'Needs attention'
+  if (step.state === 'pending') return 'Waiting'
+  if (props.needsAttention) return 'Needs attention'
+  return props.pipeline.transitional ? 'In progress' : 'Next step'
+}
 </script>
 
 <template>
@@ -26,6 +38,7 @@ const emit = defineEmits<{
         :key="step.key"
         class="grid grid-cols-[18px_minmax(0,1fr)] items-start gap-2 border-l border-border-subtle pl-2 first:border-l-0 first:pl-0 sm:grid-cols-1 sm:border-l-0 sm:border-t sm:pt-2"
         :class="step.state === 'error' ? 'text-danger' : step.state === 'done' ? 'text-success' : ['current', 'attention'].includes(step.state) ? 'text-warning' : 'text-text-muted'"
+        :aria-current="step.state === 'current' ? 'step' : undefined"
       >
         <span class="flex h-[18px] w-[18px] items-center justify-center" aria-hidden="true">
           <Check v-if="step.state === 'done'" class="h-3.5 w-3.5" :stroke-width="2" />
@@ -35,13 +48,15 @@ const emit = defineEmits<{
           <span v-else class="h-1.5 w-1.5 rounded-full bg-current" />
         </span>
         <span class="min-w-0">
-          <span class="block text-[10px] font-semibold uppercase tracking-wide">{{ step.label }}</span>
-          <span v-if="step.detail" class="block truncate font-mono text-[10px] text-text-muted" :title="step.detail">{{ step.detail }}</span>
+          <span class="block text-[10px] font-semibold uppercase tracking-wide">{{ step.key === 'access' ? 'Sharing' : step.label }}</span>
+          <span class="block text-[11px] font-medium leading-4">{{ stepStatusLabel(step) }}</span>
+          <span v-if="step.detail && step.key !== 'deploy'" class="block truncate font-mono text-[10px] text-text-muted" :title="step.detail">{{ step.detail }}</span>
         </span>
       </li>
     </ol>
 
     <div
+      v-if="!props.hideSummary"
       class="grid gap-1 border-t border-border-subtle pt-3"
       :role="pipeline.state === 'failed' ? 'alert' : 'status'"
       :aria-live="pipeline.state === 'failed' ? 'assertive' : 'polite'"
@@ -52,18 +67,15 @@ const emit = defineEmits<{
           <p class="text-[13px] font-medium" :class="pipeline.tone === 'danger' ? 'text-danger' : pipeline.tone === 'success' ? 'text-success' : pipeline.tone === 'warning' ? 'text-warning' : 'text-text-primary'">
             {{ pipeline.message }}
           </p>
-          <p class="mt-0.5 text-[11px] leading-4 text-text-muted">
+          <p class="mt-0.5 text-[12px] leading-5 text-text-muted">
             {{ takingLonger && pipeline.transitional ? 'Taking longer than usual. ' : '' }}{{ pipeline.detail }}
           </p>
-          <p v-if="pipeline.requestedRevision || pipeline.observedRevision" class="mt-1 font-mono text-[10px] text-text-muted">
-            Requested revision: {{ pipeline.requestedRevision || '—' }} · Current observed: {{ pipeline.observedRevision || '—' }}
-          </p>
         </div>
-        <div class="flex shrink-0 items-center gap-3">
+        <div class="flex shrink-0 flex-wrap items-center gap-2">
           <button
             v-if="pipeline.artifactLag || ['artifact_attention', 'unavailable'].includes(pipeline.state)"
             type="button"
-            class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+            class="app-studio-touch-target k-btn k-btn--ghost min-h-8 gap-1.5 px-3 text-[12px] disabled:cursor-not-allowed disabled:opacity-60"
             :disabled="refreshing"
             @click="emit('refresh')"
           >
@@ -76,7 +88,8 @@ const emit = defineEmits<{
             :href="pipeline.buildURL"
             target="_blank"
             rel="noopener noreferrer"
-            class="app-studio-touch-target inline-flex min-h-8 items-center text-[11px] font-medium text-accent hover:underline"
+            aria-label="View build (opens in a new tab)"
+            class="app-studio-touch-target k-btn k-btn--ghost min-h-8 px-3 text-[12px] no-underline hover:no-underline"
           >View build</a>
         </div>
       </div>

@@ -18,7 +18,7 @@ test('moves environment mutations out of the preview toolbar', async () => {
   assert.match(app, /aria-label="Development settings"/)
   assert.match(app, /id="development-template-heading"[\s\S]*>Template</)
   assert.match(app, /id="development-preview-access-heading"[\s\S]*>Preview access</)
-  assert.match(app, /aria-label="Development template"/)
+  assert.match(app, /aria-describedby="development-template-hint"/)
   assert.match(app, /@change="changeDevelopmentTemplate"/)
   assert.doesNotMatch(history, /Load from Git|loadFromGit|hydrate/i)
 })

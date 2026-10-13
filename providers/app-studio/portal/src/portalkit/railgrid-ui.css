@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 36;
+  --railgrid-ui-core-version: 37;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -1187,39 +1187,50 @@ html.light [data-k-tip]::after {
 .k-progress__bar--warning { background: var(--color-warning, #f0a63a); }
 .k-progress__bar--danger { background: var(--color-danger, #ff5d5d); }
 
-/* ── Toggle switch (sharp — 3px track, 2px knob; not the iOS pill) ────────
+/* ── Toggle switch — compact track with a light, theme-stable knob ──────
  * <button class="k-toggle" role="switch" aria-checked="true">
- *   <span class="k-toggle__knob" /></button> */
+ *   <span class="k-toggle__knob" /></button>
+ * Consumers provide a labeled 44px hit area around the visual control. */
 .k-toggle {
+  box-sizing: border-box;
   position: relative;
+  display: inline-block;
   flex: none;
-  width: 40px;
-  height: 22px;
-  border-radius: 3px;
-  border: 0;
-  background: var(--color-border-default, rgba(255, 255, 255, 0.11));
+  width: 36px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  background: var(--color-surface-overlay, #171927);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
   padding: 0;
 }
-.k-toggle[aria-checked="true"] { background: var(--color-accent, #8b6bff); }
+.k-toggle[aria-checked="true"] {
+  background: var(--color-accent, #8b6bff);
+  border-color: var(--color-accent, #8b6bff);
+}
 .k-toggle:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 3px;
 }
 .k-toggle:disabled { cursor: not-allowed; opacity: 0.6; }
 .k-toggle__knob {
+  box-sizing: border-box;
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: 2px;
-  background: var(--color-text-primary, #e9e9f2);
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid var(--color-toggle-knob-border, #dedee6);
+  background: var(--color-toggle-knob, #fff);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--color-surface, #0a0b12) 30%, transparent);
-  transition: left 0.15s ease;
+  transition: inset-inline-start 0.15s ease;
 }
-.k-toggle[aria-checked="true"] .k-toggle__knob { left: 21px; }
+.k-toggle[aria-checked="true"] .k-toggle__knob { inset-inline-start: 18px; }
+@media (prefers-reduced-motion: reduce) {
+  .k-toggle, .k-toggle__knob { transition: none; }
+}
 
 /* ── Avatar (mono initials; prefer the email chip for identity) ───────────*/
 .k-avatar {

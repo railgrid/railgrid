@@ -54,7 +54,7 @@ when unused Vue components can be eliminated by the bundler.
 
 Core PortalKit uses `--railgrid-ui-core-version: 36` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
-AgentKit presentation style/runtime version is 10 (the `AGENT_UI_VERSION`
+AgentKit presentation style/runtime version is 15 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
 does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
@@ -87,7 +87,11 @@ later trace update can expose the details.
 Rich composer commands, attachment receipts, project previews, and specialized
 configuration/run workbenches stay with their provider.
 
-`AIWorkbenchTabs.vue` and `AIWorkbenchLauncher.vue` share the tab lifecycle
-controls and searchable tool picker used by Agents and App Studio. Providers
-supply admitted items and own tab state, routes, persistence, and reorder
-policy. Closing a tab is a presentation action, not resource deletion.
+`AIWorkbenchTabs.vue` keeps tab frames at their natural width up to 240px and
+scrolls the strip when it overflows. Previous and next controls appear only
+when needed; selecting a tab keeps it visible without moving focus. The
+component preserves provider keyboard, drag, and close events.
+`AIWorkbenchLauncher.vue` supplies the searchable tool picker used by Agents and
+App Studio. Providers supply admitted items and own tab state, routes,
+persistence, and reorder policy. Closing a tab is a presentation action, not
+resource deletion.

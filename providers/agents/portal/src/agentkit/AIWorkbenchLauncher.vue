@@ -11,6 +11,7 @@
 import { ArrowRight, PanelRight, Search, X } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
+import AIWorkbenchPane from './AIWorkbenchPane.vue'
 import type { AIWorkbenchLauncherItemView } from './ai'
 import { safeConversationID } from './conversation'
 
@@ -79,6 +80,7 @@ function updateQuery(event: Event): void {
 </script>
 
 <template>
+  <AIWorkbenchPane title="New tab" description="Open a workbench tool.">
   <div class="k-ai-launcher" data-k-workbench-launcher>
     <div class="k-ai-launcher__search">
       <Search class="k-ai-launcher__search-icon" :stroke-width="1.75" aria-hidden="true" />
@@ -127,4 +129,5 @@ function updateQuery(event: Event): void {
       <p v-if="!section.items.length" class="k-ai-launcher__empty" role="status">{{ emptyLabel }}</p>
     </section>
   </div>
+  </AIWorkbenchPane>
 </template>

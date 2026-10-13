@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { portalHref } from './portalkit/navigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ExternalLink, GitBranch, Loader2 } from 'lucide-vue-next'
+import { ExternalLink, Loader2 } from 'lucide-vue-next'
 import { api } from './api'
 import type { RailgridContext, Project } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
@@ -20,10 +20,22 @@ const repositoryMessage = computed(() => {
   const repo = props.project.repository
   if (!repo?.ready) return repo?.message || 'Creating repository; files stay in App Studio.'
   if (repo.commitsError) return repo.commitsError
-  if (repo.commits?.[0]?.phase === 'Failed') return 'Git save failed. Check your connection.'
-  return repo.commits?.some(commit => commit.phase === 'Succeeded')
-    ? 'Saved to Git; changes may be pending.'
-    : 'Connected; initial upload pending.'
+  // The API orders RepositoryCommit records newest-first by creation time.
+  // Use the newest request so an older success cannot hide a later failure.
+  const latestCommit = repo.commits?.[0]
+  switch (latestCommit?.phase) {
+    case 'Pending':
+    case 'Running':
+      return 'Latest Git save is in progress.'
+    case 'Failed':
+      return 'Latest Git save failed. Check the Git connection.'
+    case 'Succeeded':
+      return 'Latest Git save succeeded. Newer App Studio changes may not be in Git.'
+    default:
+      return latestCommit
+        ? 'Latest Git save status is unavailable.'
+        : 'Repository connected. No Git save has completed yet.'
+  }
 })
 const action = computed(() => {
   switch (connection.value?.status) {
@@ -73,24 +85,24 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) 
 </script>
 
 <template>
-  <section class="grid gap-3 rounded-lg border border-border-subtle bg-surface p-3" aria-label="Git settings">
-    <h3 class="flex items-center gap-2 text-[13px] font-semibold text-text-primary"><GitBranch class="h-4 w-4" /> Git <span class="font-normal text-text-secondary">Recommended</span></h3>
+  <section class="grid gap-3 rounded-lg border border-border-subtle bg-transparent p-3" aria-label="Git settings">
+    <h3 class="flex items-center gap-2 text-[13px] font-semibold text-text-primary">Git <span class="font-normal text-text-secondary">Recommended</span></h3>
     <template v-if="project.repository?.ref">
       <p class="text-[12px] text-text-primary">{{ project.repository.name || project.repository.ref }}</p>
       <p class="text-[12px] text-text-secondary" role="status">{{ repositoryMessage }}</p>
-      <a :href="portalHref('/ui/providers/code/connections')" target="_blank" rel="noopener noreferrer" class="text-[12px] text-accent underline underline-offset-2">Manage Git connection</a>
+      <a :href="portalHref('/ui/providers/code/connections')" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost no-underline justify-self-start">Manage Git connection <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /></a>
     </template>
     <template v-else>
       <p class="text-[12px] text-text-secondary">Git adds backup, history, and builds. You can keep building without it.</p>
       <p class="text-[12px] text-text-secondary" role="status">{{ checking ? 'Checking Git connection…' : connection?.message }}</p>
       <div v-if="!canCreate" class="flex flex-wrap gap-2">
-        <a :href="action.href" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ action.label }} <ExternalLink class="h-3.5 w-3.5" /></a>
+        <a :href="action.href" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ action.label }} <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /></a>
         <button type="button" class="k-btn k-btn--ghost" :disabled="checking" @click="check">Check again</button>
       </div>
     </template>
     <template v-if="canCreate">
       <p class="text-[12px] text-text-secondary">{{ recovery ? 'Save files to a fresh repository. The previous repository will be left untouched.' : 'Save source to a private repository when idle. Binary and oversized files may stay in App Studio.' }}</p>
-      <button type="button" class="k-btn k-btn--primary justify-self-start" :disabled="saving || checking" @click="connect"><Loader2 v-if="saving" class="h-4 w-4 animate-spin" />{{ recovery ? 'Create a new repository' : 'Create repository and save project files' }}</button>
+      <button type="button" class="k-btn k-btn--primary justify-self-start" :disabled="saving || checking" @click="connect"><Loader2 v-if="saving" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" /><span>{{ saving ? 'Creating repository…' : recovery ? 'Create a new repository' : 'Create repository and save project files' }}</span></button>
     </template>
     <p v-if="error" role="alert" class="text-[12px] text-danger">{{ error }}</p>
   </section>

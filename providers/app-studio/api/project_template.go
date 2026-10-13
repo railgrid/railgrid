@@ -103,6 +103,151 @@ type projectTemplateInfo struct {
 	// BuildWorkflowPath is the repository-owned CI workflow declared by
 	// spec.development.build. Empty means the Template declares no CI.
 	BuildWorkflowPath string
+
+	// RailgridAuthSupport is the controller-verified Railgrid Auth contract
+	// exposed by the Template. App Studio never infers this capability from
+	// production input fields or component names.
+	RailgridAuthSupport projectTemplateRailgridAuthSupport
+}
+
+const (
+	projectTemplateRailgridAuthCapabilityName    = "railgrid-auth"
+	projectTemplateRailgridAuthCapabilityVersion = "v1"
+	projectTemplateRailgridAuthReasonSupported   = "supported"
+	projectTemplateRailgridAuthReasonNotSelected = "template_not_selected"
+	projectTemplateRailgridAuthReasonMissing     = "template_missing"
+	projectTemplateRailgridAuthReasonNotDeclared = "not_declared"
+	projectTemplateRailgridAuthReasonPending     = "pending"
+	projectTemplateRailgridAuthReasonInvalid     = "invalid_contract"
+	projectTemplateRailgridAuthReasonUnknown     = "unknown_version"
+)
+
+type projectTemplateRailgridAuthSupport struct {
+	Supported bool
+	Reason    string
+	Message   string
+}
+
+func projectTemplateRailgridAuthSupportFromUnstructured(obj *unstructured.Unstructured) projectTemplateRailgridAuthSupport {
+	if obj == nil {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonInvalid)
+	}
+	declaration, found, err := unstructured.NestedMap(obj.Object, "spec", "railgridAuth")
+	if err != nil {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonInvalid)
+	}
+	if !found {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonNotDeclared)
+	}
+	version, ok := declaration["version"].(string)
+	if !ok || !projectTemplateRailgridAuthVersionWellFormed(version) {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonInvalid)
+	}
+	if version != projectTemplateRailgridAuthCapabilityVersion {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonUnknown)
+	}
+
+	if obj.GetDeletionTimestamp() != nil {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonPending)
+	}
+	generation := obj.GetGeneration()
+	if generation <= 0 {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonPending)
+	}
+	ready, readyFound, readyInvalid := projectTemplateRailgridAuthReadyCondition(obj, generation)
+	if readyInvalid {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonInvalid)
+	}
+	if !readyFound || !ready {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonPending)
+	}
+	observedGeneration, found, err := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	if err != nil || !found || observedGeneration != generation {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonPending)
+	}
+	if !projectTemplateHasCapability(obj, projectTemplateRailgridAuthCapabilityName, projectTemplateRailgridAuthCapabilityVersion) {
+		return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonInvalid)
+	}
+	return projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonSupported)
+}
+
+func projectTemplateRailgridAuthVersionWellFormed(version string) bool {
+	if len(version) < 2 || version[0] != 'v' || version[1] == '0' {
+		return false
+	}
+	for i := 1; i < len(version); i++ {
+		if version[i] < '0' || version[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// projectTemplateRailgridAuthReadyCondition returns whether the current
+// generation has a Ready=True condition, whether such a condition was found,
+// and whether the current generation explicitly failed contract validation.
+func projectTemplateRailgridAuthReadyCondition(obj *unstructured.Unstructured, generation int64) (ready, found, invalid bool) {
+	conditions, hasConditions, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !hasConditions {
+		return false, false, false
+	}
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if !ok || condition["type"] != "Ready" {
+			continue
+		}
+		observed, hasObserved, observedErr := unstructured.NestedInt64(condition, "observedGeneration")
+		if observedErr != nil || !hasObserved || observed != generation {
+			return false, false, false
+		}
+		switch condition["status"] {
+		case "True":
+			return true, true, false
+		case "False":
+			if condition["reason"] == "InvalidRailgridAuth" {
+				return false, true, true
+			}
+			return false, true, false
+		default:
+			return false, true, false
+		}
+	}
+	return false, found, false
+}
+
+func projectTemplateHasCapability(obj *unstructured.Unstructured, name, version string) bool {
+	capabilities, found, err := unstructured.NestedSlice(obj.Object, "status", "capabilities")
+	if err != nil || !found {
+		return false
+	}
+	for _, raw := range capabilities {
+		capability, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if capability["name"] == name && capability["version"] == version {
+			return true
+		}
+	}
+	return false
+}
+
+var projectTemplateRailgridAuthMessages = map[string]string{
+	projectTemplateRailgridAuthReasonSupported:   "This template has a current, Ready Railgrid Auth v1 contract.",
+	projectTemplateRailgridAuthReasonNotSelected: "Choose a template that explicitly supports Railgrid Auth for this project before enabling it.",
+	projectTemplateRailgridAuthReasonMissing:     "This Project's selected template is no longer available. To set up Railgrid Auth on a new app, create a new project with a template that explicitly supports Railgrid Auth.",
+	projectTemplateRailgridAuthReasonNotDeclared: "This template does not declare Railgrid Auth support. Create a new project with a template that explicitly supports Railgrid Auth.",
+	projectTemplateRailgridAuthReasonPending:     "Railgrid Auth support is still being checked for this template. Retry after it becomes Ready, or ask a workspace admin if its status stays out of date.",
+	projectTemplateRailgridAuthReasonInvalid:     "This template's Railgrid Auth contract is invalid or has not been verified. Ask the template owner to correct it, or create a new project with a template that explicitly supports Railgrid Auth.",
+	projectTemplateRailgridAuthReasonUnknown:     "This template declares a Railgrid Auth version this App Studio release cannot use. Create a new project with a template that explicitly supports Railgrid Auth v1.",
+}
+
+func projectTemplateRailgridAuthResult(reason string) projectTemplateRailgridAuthSupport {
+	return projectTemplateRailgridAuthSupport{
+		Supported: reason == projectTemplateRailgridAuthReasonSupported,
+		Reason:    reason,
+		Message:   projectTemplateRailgridAuthMessages[reason],
+	}
 }
 
 // projectTemplateComponent is one development component's contract: where its
@@ -144,15 +289,27 @@ type projectTemplateComponent struct {
 // catalog and extracts the development contract. Returns a NotFound API error
 // when the catalog has no such template (surfaced as 404).
 func fetchProjectTemplate(ctx context.Context, c *asclient.Client, name string) (projectTemplateInfo, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return projectTemplateInfo{}, fmt.Errorf("template name is required")
-	}
-	obj, err := c.Resource(templateResource, "").Get(ctx, name, metav1.GetOptions{})
+	obj, err := fetchProjectTemplateObject(ctx, c, name)
 	if err != nil {
 		return projectTemplateInfo{}, err
 	}
 	return projectTemplateInfoFromUnstructured(obj)
+}
+
+// fetchProjectTemplateObject reads the raw Template. Callers that need only a
+// small part of its contract, such as an independently reported capability,
+// should not fail because an unrelated development or production field is
+// malformed.
+func fetchProjectTemplateObject(ctx context.Context, c *asclient.Client, name string) (*unstructured.Unstructured, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("template name is required")
+	}
+	obj, err := c.Resource(templateResource, "").Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
 }
 
 func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projectTemplateInfo, error) {
@@ -160,8 +317,9 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 		return projectTemplateInfo{}, fmt.Errorf("template is nil")
 	}
 	info := projectTemplateInfo{
-		Name:          obj.GetName(),
-		PlatformOwned: projectTemplateIsPlatformOwned(obj),
+		Name:                obj.GetName(),
+		PlatformOwned:       projectTemplateIsPlatformOwned(obj),
+		RailgridAuthSupport: projectTemplateRailgridAuthSupportFromUnstructured(obj),
 	}
 
 	// Instance coordinates are the FLATTENED tenant-facing kind: every
@@ -715,6 +873,10 @@ type projectDevelopmentTemplateView struct {
 	// with starter code (spec.development.scaffold) — the wizard shows it so
 	// the user knows the project opens on a runnable placeholder.
 	HasScaffold bool `json:"hasScaffold,omitempty"`
+	// Auth support is controller-verified for the current template generation,
+	// not inferred from the template name or model recommendation.
+	RailgridAuthSupported bool   `json:"railgridAuthSupported"`
+	RailgridAuthReason    string `json:"railgridAuthReason"`
 }
 
 // listDevelopmentTemplates is GET /api/projects/development-templates: the
@@ -765,10 +927,12 @@ func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelo
 			continue
 		}
 		view := projectDevelopmentTemplateView{
-			Name:               info.Name,
-			Components:         info.WorkspacePaths(),
-			HasScaffold:        info.ScaffoldRepo != "",
-			PreviewAccessModes: append([]string(nil), info.PreviewAccessModes...),
+			Name:                  info.Name,
+			Components:            info.WorkspacePaths(),
+			HasScaffold:           info.ScaffoldRepo != "",
+			PreviewAccessModes:    append([]string(nil), info.PreviewAccessModes...),
+			RailgridAuthSupported: info.RailgridAuthSupport.Supported,
+			RailgridAuthReason:    info.RailgridAuthSupport.Reason,
 		}
 		view.DisplayName, _, _ = unstructured.NestedString(obj.Object, "spec", "displayName")
 		view.Description, _, _ = unstructured.NestedString(obj.Object, "spec", "description")

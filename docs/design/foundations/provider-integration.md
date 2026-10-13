@@ -47,11 +47,13 @@ The optional AgentKit workbench tab recipe is canonical in
 `provider-sdk/agentkit/agent-ui.css` through the `.k-workbench-tabs`,
 `.k-workbench-tab`, `.k-workbench-tab__button`, `.k-workbench-tab__icon`, and
 `.k-workbench-tab__label` classes. Both App Studio and Agents consume it: the
-recipe defines 32px bordered tabs, 112–240px width bounds, 6px radius, 12px/500
-typography, accent active border/background at 40%/10%, and 44px coarse-pointer
-sizing. App Studio retains drag, reorder, and close tab lifecycle; Agents uses
-fixed Config and Runs tabs. Core PortalKit does not own or load these optional
-recipes.
+recipe defines 32px bordered tabs that keep their natural width between 112px
+and 240px, a 6px radius, 12px/500 typography, accent active border/background
+at 40%/10%, and 44px coarse-pointer sizing. Overflow keeps each tab intact in a
+horizontal viewport and exposes previous/next scroll controls only when needed;
+selecting a tab scrolls it into view without moving focus. App Studio retains
+drag, reorder, and close tab lifecycle; Agents uses fixed Config and Runs tabs.
+Core PortalKit does not own or load these optional recipes.
 
 AgentKit is an optional layer. Its independent `AGENT_UI_VERSION` and
 `--railgrid-agent-ui-version` marker are owned by `provider-sdk/agentkit/styles.ts`;

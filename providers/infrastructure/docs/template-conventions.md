@@ -111,6 +111,83 @@ A new workload template that should consume databases or caches should copy
 this shape exactly, including the input names, Secret names, and env names,
 so that agents can use the same guidance for every template.
 
+## Declaring Railgrid Auth support
+
+`spec.railgridAuth.version: v1` is the explicit, versioned opt-in that lets a
+Template advertise the Railgrid Auth integration to App Studio. A Template
+without this declaration is unsupported, even if its schema happens to contain
+similarly named fields. App Studio consumes the controller-published
+`status.capabilities` entry only while the Template is Ready and its
+`status.observedGeneration` matches the current generation. Custom templates
+that want the settings and setup guidance must add the declaration and satisfy
+the same contract; there is no legacy schema-based fallback.
+
+The declaration is separate from the instance values App Studio manages. The
+schema must define `railgridAuth` as a boolean and
+`railgridAuthAppID`, `railgridAuthEnvironment`, and
+`railgridAuthInstanceUID` as read-only strings; all four properties are
+platform-managed. The Template must expose an `api` development component with
+an explicit `workspacePath`. Version `v1` currently recognizes the KRO
+access-proxy image and instance markers, the `api`/`apiDeployment` component
+resource mapping, and the canonical auth env expressions used by the shipped
+Application graph. Alternate backends or expression shapes need an explicit
+contract version before they can be advertised.
+
+The infrastructure controller checks those types, markers, component mapping,
+and exact expression strings before publishing `railgrid-auth` version `v1`;
+it withdraws the capability when the declaration is invalid or the Template is
+not Ready for the current generation. This is structural recognition, not a
+KRO CEL evaluator or proof that a graph expression behaves as intended.
+
+These checks establish the integration's structural wiring. They do not prove
+that the application's routes authorize access correctly. Application owners
+remain responsible for implementing and testing authorization in the API; see
+the Railgrid Auth section in
+[`application-template-architecture.md`](application-template-architecture.md).
+
+### Exact v1 runtime bindings
+
+In `spec.backendConfig.resources`, the API workload must be an `apps/v1`
+Deployment whose resource `id` is `api` or `apiDeployment`. The gate must be an
+`apps/v1` Deployment with a container image of `${railgrid.accessProxyImage}`,
+non-empty `RAILGRID_ACCESS_PROXY_ROUTES`, and instance markers
+`RAILGRID_ACCESS_PROXY_INSTANCE_GROUP=infrastructure.railgrid.ai` and
+`RAILGRID_ACCESS_PROXY_INSTANCE_RESOURCE=instances`.
+
+Copy the following `env` entries into the API container and the gate container.
+The last two entries are required on the gate only. Values must match exactly,
+including spacing and quoting inside each expression; equivalent CEL syntax is
+not accepted by v1. YAML quoting itself may differ if the decoded string stays
+the same. On a mismatch, `Ready=False/InvalidRailgridAuth` identifies the
+resource, container, variable, and expected expression without exposing the
+actual value.
+
+```yaml
+- name: RAILGRID_AUTH_ISSUER
+  value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "${railgrid.hubPublicUrl}/auth/apps/identity" : ""}'
+- name: RAILGRID_AUTH_AUDIENCE
+  value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthAppID : ""}'
+- name: RAILGRID_AUTH_ORIGIN
+  value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://" + schema.spec.expose.fqdn + "${railgrid.appPublicPort}" : ""}'
+- name: RAILGRID_AUTH_INSTANCE_UID
+  value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthInstanceUID : ""}'
+- name: RAILGRID_ACCESS_PROXY_RAILGRID_AUTH
+  value: '${schema.spec.railgridAuth ? "true" : "false"}'
+- name: RAILGRID_AUTH_ENVIRONMENT
+  value: '${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthEnvironment : ""}'
+```
+
+### Upgrade note for custom templates
+
+Schema-inferred auth support has been removed. Organization-owned and other
+custom templates must explicitly add `spec.railgridAuth.version: v1`, satisfy
+the bindings above, and become Ready for their current generation before App
+Studio permits new auth enablement. The bundled Application template already
+opts in. Existing projects are not switched or migrated, and existing auth
+settings remain manageable, including disabling auth. Update the template in
+place if it implements this contract; a new project is needed only when a
+different runtime template is required.
+
 ## Checklist for a new template
 
 - [ ] Each container image is either a `spec.schema` field with a sane `default`

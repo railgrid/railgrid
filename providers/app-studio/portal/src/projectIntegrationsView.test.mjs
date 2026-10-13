@@ -9,6 +9,7 @@ const {
   projectIntegrationConsentState,
   projectIntegrationErrorMessage,
   projectIntegrationItemsAfterResponse,
+  projectIntegrationMatchesSearch,
 } = await vite.ssrLoadModule('/src/ProjectIntegrations.vue')
 test.after(async () => vite.close())
 
@@ -75,6 +76,16 @@ test('does not duplicate a discovered candidate already represented by a project
   assert.equal(cards[0].state, 'connected')
   assert.equal(cards[0].integration, persistedIntegration)
   assert.equal(cards[0].catalogActions[0].id, 'query/v1')
+})
+
+test('searches a resource by its name, alias, provider name, or provider display name', () => {
+  const entry = projectIntegrationCardEntries([], [candidate()])[0]
+  const providers = [{ name: 'databricks', displayName: 'Databricks Cloud' }]
+
+  for (const query of ['WAREHOUSE', 'auto-warehouse', 'databricks', 'cloud']) {
+    assert.equal(projectIntegrationMatchesSearch(entry, ` ${query} `, providers), true, query)
+  }
+  assert.equal(projectIntegrationMatchesSearch(entry, 'unrelated', providers), false)
 })
 
 test('keeps discovered catalog metadata attached to the matching alias when a resource has duplicate bindings', () => {

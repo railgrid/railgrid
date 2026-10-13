@@ -29,6 +29,7 @@ import {
   PanelRight,
   Plus,
   Search,
+  RefreshCw,
   Send,
   Settings2,
   Plug,
@@ -222,6 +223,7 @@ import { useGitOnboarding } from './useGitOnboarding'
 import { useProjectCreationSubmit } from './useProjectCreationSubmit'
 import GitRecommendationBanner from './GitRecommendationBanner.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
+import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -744,7 +746,7 @@ const initializingMessage = ref('App Studio is preparing this workspace...')
 const error = ref<string | null>(null)
 const toolError = ref<string | null>(null)
 const showSettings = ref(false)
-const publishingPaneRef = ref<HTMLElement | null>(null)
+const publishingPaneRef = ref<InstanceType<typeof AIWorkbenchPane> | null>(null)
 const historyPaneRef = ref<HTMLElement | null>(null)
 const projectSettingsName = ref('')
 const projectSettingsDescription = ref('')
@@ -983,6 +985,11 @@ const llmDiscoveryError = ref<string | null>(null)
 const llmDiscoveryStatus = ref<string | null>(null)
 let llmDiscoverySerial = 0
 const wizardOpen = ref(false)
+const authCompatibleCreation = ref(false)
+const authCompatibleCreationPrompt = ref('')
+const authCompatibleCreationError = ref('')
+const authCompatibleCreationChecking = ref(false)
+let authCompatibleCreationGeneration = 0
 const projectCreationSubmit = useProjectCreationSubmit()
 const projectCreationPending = projectCreationSubmit.pending
 const setupSessionActive = ref(false)
@@ -2110,6 +2117,26 @@ const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
 const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
 const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
 
+watch(isCreateRoute, (active) => {
+  if (active || !authCompatibleCreation.value) return
+  authCompatibleCreationGeneration += 1
+  authCompatibleCreation.value = false
+  authCompatibleCreationError.value = ''
+  authCompatibleCreationChecking.value = false
+}, { flush: 'sync' })
+
+watch(() => appContextFingerprint(props.ctx), (current, previous) => {
+  if (current === previous || !authCompatibleCreation.value) return
+  authCompatibleCreationGeneration += 1
+  authCompatibleCreation.value = false
+  authCompatibleCreationPrompt.value = ''
+  authCompatibleCreationError.value = ''
+  authCompatibleCreationChecking.value = false
+  wizardOpen.value = false
+  projectCreationSubmit.invalidate()
+  toast('warning', 'Workspace changed. Start a new compatible project in the selected workspace.')
+}, { flush: 'sync' })
+
 // The create flow can have a durable project (or an ambiguous project-create
 // response) before its first attachment or assistant turn is accepted. Keep
 // that submission while the host is on the create route so navigating back to
@@ -2802,7 +2829,7 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
   {
     id: 'builtin:integrations',
     title: 'Integrations',
-    subtitle: 'Review automatic provider actions for this project',
+    subtitle: 'Manage what this project can access',
     icon: Link2,
     builtInTab: 'integrations',
   },
@@ -4822,6 +4849,10 @@ async function applyLandingStarterPrompt(starter: LandingStarterPrompt) {
 }
 
 async function openNewProjectComposer() {
+  authCompatibleCreationGeneration += 1
+  authCompatibleCreation.value = false
+  authCompatibleCreationError.value = ''
+  authCompatibleCreationChecking.value = false
   prompt.value = ''
   error.value = null
   closeLandingImportPopover()
@@ -5075,6 +5106,7 @@ async function setDefaultLLMModel(modelID: string) {
 }
 
 async function createProjectFromPrompt() {
+  authCompatibleCreation.value = false
   const content = projectCreationPrompt(prompt.value, preProjectAttachments.value.length)
   if (!content) return
   // Keep the derived planning input visible in the wizard. It is deliberately
@@ -5094,6 +5126,12 @@ async function createProjectFromPrompt() {
 
 async function onWizardCancel() {
   projectCreationSubmit.invalidate()
+  if (authCompatibleCreation.value) {
+    authCompatibleCreationGeneration += 1
+    authCompatibleCreation.value = false
+    authCompatibleCreationError.value = ''
+    authCompatibleCreationChecking.value = false
+  }
   // Keep prompt.value intact so editing/back returns to the landing composer
   // with the exact idea that was submitted. NewProjectWizard invalidates its
   // pending plan request before emitting cancel.
@@ -5104,7 +5142,45 @@ async function onWizardCancel() {
 }
 
 async function onWizardCreate(payload: { prompt: string; templateName?: string; displayName?: string }) {
-  await projectCreationSubmit.run(ensureCreateSetupReady, async () => {
+  const authMode = authCompatibleCreation.value
+  const authGeneration = authCompatibleCreationGeneration
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  const authModeIsCurrent = () => !authMode || (
+    authCompatibleCreation.value &&
+    authCompatibleCreationGeneration === authGeneration &&
+    isCreateRoute.value &&
+    appContextFingerprint(props.ctx) === contextFingerprint
+  )
+
+  authCompatibleCreationError.value = ''
+  await projectCreationSubmit.run(async () => {
+    if (!authModeIsCurrent()) return false
+    return ensureCreateSetupReady()
+  }, async () => {
+    if (!authModeIsCurrent()) return
+    if (authMode) {
+      authCompatibleCreationChecking.value = true
+      try {
+        const templates = await api.listDevelopmentTemplates(props.ctx)
+        if (!authModeIsCurrent()) return
+        const selectedTemplate = templates.find((template) => template.name === payload.templateName)
+        if (!payload.templateName || selectedTemplate?.railgridAuthSupported !== true || selectedTemplate.railgridAuthReason !== 'supported') {
+          authCompatibleCreationError.value = 'This template is no longer available for Railgrid Auth. Choose a compatible template and review the project again.'
+          return
+        }
+      } catch (e) {
+        if (!authModeIsCurrent()) return
+        authCompatibleCreationError.value = e instanceof Error
+          ? `Could not recheck template support: ${e.message}`
+          : 'Could not recheck template support. Try again before creating the project.'
+        return
+      } finally {
+        if (authCompatibleCreation.value && authCompatibleCreationGeneration === authGeneration) {
+          authCompatibleCreationChecking.value = false
+        }
+      }
+      if (!authModeIsCurrent()) return
+    }
     prompt.value = payload.prompt
     setupSessionActive.value = false
     setupCompletionVisible.value = false
@@ -5112,8 +5188,77 @@ async function onWizardCreate(payload: { prompt: string; templateName?: string; 
     await createProjectAndStartConversation(payload.prompt, {
       templateName: payload.templateName,
       displayName: payload.displayName,
-    })
+    }, { forceNewProject: authMode })
   })
+}
+
+function openAuthCompatibleProjectCreation() {
+  if (projectSettingsSaving.value || llmSaving.value) {
+    toast('warning', 'Wait for settings to finish saving, then try again.')
+    return
+  }
+  const project = selected.value
+  if (!project || settingsProject.value?.name !== project.name || settingsProject.value?.uid !== project.uid) return
+  persistCurrentAssistantComposerDraft()
+  authCompatibleCreationGeneration += 1
+  authCompatibleCreation.value = true
+  authCompatibleCreationPrompt.value = 'Create a new app with Railgrid sign-in and protected access to each user’s private data.'
+  authCompatibleCreationError.value = ''
+  authCompatibleCreationChecking.value = false
+  wizardOpen.value = true
+  closeSettings()
+  props.navigate(CREATE_PROJECT_ROUTE)
+}
+
+async function setupAuthInCurrentProjectDraft() {
+  if (projectSettingsSaving.value || llmSaving.value) {
+    toast('warning', 'Wait for settings to finish saving, then try again.')
+    return
+  }
+  const project = selected.value
+  const projectName = project?.name ?? ''
+  const projectUID = project?.uid ?? ''
+  const threadID = activeAssistantThreadID.value
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  if (!projectName || settingsProject.value?.name !== projectName || settingsProject.value?.uid !== projectUID) return
+  if (messageStreaming.value || assistantComposerSubmitting.value || queuedAssistantSteeringID.value || selectingThreadID.value || threadHistoryLoading.value) {
+    toast('warning', 'Wait for the current response or conversation change to finish before adding the Railgrid Auth request.')
+    return
+  }
+  const request = 'Add Railgrid sign-in to this app. Protect its private pages and backend routes, and ensure each signed-in user can access only their own data. Keep app access separate from workspace membership.'
+  const isCurrent = () => appComponentMounted &&
+    appContextFingerprint(props.ctx) === contextFingerprint &&
+    selected.value?.name === projectName &&
+    (selected.value?.uid ?? '') === projectUID &&
+    selectedNameFromPath.value === projectName &&
+    activeAssistantThreadID.value === threadID &&
+    !selectingThreadID.value &&
+    !threadHistoryLoading.value
+
+  closeSettings()
+  await nextTick()
+  if (!isCurrent()) return
+  if (messageStreaming.value || assistantComposerSubmitting.value || queuedAssistantSteeringID.value) {
+    toast('warning', 'Finish the current response before adding the Railgrid Auth request to this draft.')
+    return
+  }
+  const existing = prompt.value.trim()
+  if (existing.includes(request)) {
+    persistCurrentAssistantComposerDraft()
+    assistantComposerRef.value?.focus()
+    return
+  }
+  const nextPrompt = existing ? `${existing}\n\n${request}` : request
+  const nextParts = [...assistantComposerParts.value]
+  const lastPart = nextParts[nextParts.length - 1]
+  const addition = existing ? `\n\n${request}` : request
+  if (lastPart?.type === 'text') nextParts[nextParts.length - 1] = { ...lastPart, text: `${lastPart.text}${addition}` }
+  else nextParts.push({ type: 'text', text: addition })
+  prompt.value = nextPrompt
+  assistantComposerParts.value = nextParts
+  persistCurrentAssistantComposerDraft(nextParts)
+  await nextTick()
+  if (isCurrent()) assistantComposerRef.value?.focus()
 }
 
 function onWizardSetupAction(action: 'setup-llm') {
@@ -5181,8 +5326,11 @@ async function startPreProjectAssistantTurn(
 async function createProjectAndStartConversation(
   content: string,
   createOverrides?: { templateName?: string; displayName?: string },
+  options: { forceNewProject?: boolean } = {},
 ) {
-  const pendingForContent = pendingFirstProjectSubmission?.content === content ? pendingFirstProjectSubmission : null
+  const pendingForContent = !options.forceNewProject && pendingFirstProjectSubmission?.content === content
+    ? pendingFirstProjectSubmission
+    : null
   const pendingProjectName = pendingForContent?.projectName ?? ''
   const retry = Boolean(pendingForContent && pendingForContent.modelID === selectedLLMModelID.value)
   let submission = retry
@@ -7193,7 +7341,7 @@ function openPublishingFromShare() {
   shareDialogOpen.value = false
   shareDialogReturnFocus = null
   openBuiltInWorkbenchTab('publishing')
-  void nextTick(() => publishingPaneRef.value?.focus())
+  void nextTick(() => publishingPaneRef.value?.$el?.focus())
 }
 
 function workbenchPersistenceContext() {
@@ -9624,7 +9772,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <template v-else-if="wizardOpen">
               <NewProjectWizard
                 :ctx="props.ctx"
-                :initial-prompt="prompt"
+                :initial-prompt="authCompatibleCreation ? undefined : prompt"
+                :initial-draft="authCompatibleCreation ? authCompatibleCreationPrompt : undefined"
+                :auth-compatible-only="authCompatibleCreation"
+                :creation-error="authCompatibleCreationError"
+                :creation-checking="authCompatibleCreationChecking"
                 :disabled="projectCreationPending || busy || !canStartProjectFromPrompt"
                 :disabled-reason="projectCreationPending ? 'Checking project setup…' : createPromptSubmitTitle"
                 :setup-items="createSetupItemsForPrompt"
@@ -10708,7 +10860,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-show="!projectRouteLoading && !projectRouteFailure && activeWorkbenchTab?.kind === 'settings'"
-        class="min-h-0 flex-1 overflow-hidden"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
         :id="activeWorkbenchTab?.kind === 'settings' ? workbenchTabPanelID(activeWorkbenchTab) : undefined"
         :aria-labelledby="activeWorkbenchTab?.kind === 'settings' ? workbenchTabControlID(activeWorkbenchTab) : undefined"
@@ -10718,7 +10870,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-show="!projectRouteLoading && !projectRouteFailure && activeWorkbenchTab?.kind === 'publishing'"
-        class="min-h-0 flex-1 overflow-hidden"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
         :id="activeWorkbenchTab?.kind === 'publishing' ? workbenchTabPanelID(activeWorkbenchTab) : undefined"
         :aria-labelledby="activeWorkbenchTab?.kind === 'publishing' ? workbenchTabControlID(activeWorkbenchTab) : undefined"
@@ -10728,7 +10880,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-show="!projectRouteLoading && !projectRouteFailure && activeWorkbenchTab?.kind === 'history'"
-        class="min-h-0 flex-1 overflow-hidden"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
         :id="activeWorkbenchTab?.kind === 'history' ? workbenchTabPanelID(activeWorkbenchTab) : undefined"
         :aria-labelledby="activeWorkbenchTab?.kind === 'history' ? workbenchTabControlID(activeWorkbenchTab) : undefined"
@@ -10766,7 +10918,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <template v-else>
       <div
         v-if="activeWorkbenchTab?.kind === 'launcher'"
-        class="min-h-0 flex-1 overflow-auto"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
@@ -10782,7 +10934,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'preview'"
-        class="min-h-0 flex-1 overflow-auto p-3"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto p-4"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
@@ -10924,7 +11076,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'code'"
-        class="min-h-0 flex-1 overflow-hidden"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
@@ -10938,7 +11090,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'skills'"
-        class="min-h-0 flex-1 overflow-auto p-3"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
@@ -10956,11 +11108,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'review'"
-        class="min-h-0 flex-1 overflow-auto p-3"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
+        <AIWorkbenchPane title="Review" description="Review requests that need your input.">
         <div class="grid gap-3">
           <AIInterrupt
             v-if="pendingFollowUp"
@@ -11059,24 +11212,26 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
             </template>
           </AIInterrupt>
-          <div v-else class="rounded-lg border border-border-subtle bg-surface/80 p-3 text-[12px] text-text-muted">
+          <div v-else class="py-2 text-[12px] text-text-muted" role="status">
             No reviews are waiting.
           </div>
         </div>
+        </AIWorkbenchPane>
       </div>
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'providers'"
-        class="min-h-0 flex-1 overflow-auto p-3"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
-        <div class="relative mb-3 min-w-0">
+        <AIWorkbenchPane title="Providers" description="Open provider tools available in this workspace.">
+        <div class="relative min-w-0">
           <Search class="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-text-muted" :stroke-width="1.75" />
           <input
             v-model="providerQuery"
-            class="app-studio-touch-target h-8 w-full rounded-md border border-border-subtle bg-surface py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+            class="app-studio-touch-target k-input pl-8 pr-8"
             placeholder="Search provider views..."
             aria-label="Search provider views"
           />
@@ -11122,11 +11277,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             No provider views found.
           </div>
         </div>
+        </AIWorkbenchPane>
       </div>
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'integrations'"
-        class="min-h-0 flex-1 overflow-auto bg-surface"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
@@ -11141,7 +11297,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'provider'"
-        class="relative min-h-0 flex-1 overflow-hidden bg-surface"
+        class="k-ai-workbench-canvas relative min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
@@ -11193,7 +11349,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div>{{ toolError || 'Provider view is unavailable.' }}</div>
           <button type="button" class="app-studio-touch-target mt-3 font-medium underline underline-offset-2" @click="retryActiveProviderTool">Retry provider view</button>
         </div>
-        <div ref="toolHostRef" class="h-full min-h-0 w-full overflow-auto p-3" />
+        <div ref="toolHostRef" class="h-full min-h-0 w-full overflow-auto p-4" />
       </div>
       </template>
         </section>
@@ -11212,21 +11368,21 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div
         class="flex w-full flex-col"
         :class="projectControlSurfaceInWorkbench
-          ? 'h-full min-h-0 overflow-hidden bg-surface-raised'
+          ? 'k-ai-workbench-canvas h-full min-h-0 overflow-hidden'
           : isCreateModelRoute
             ? ''
           : isModelsRoute
             ? ''
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
-        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute" class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
+        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute" :class="settingsInWorkbench ? 'k-ai-workbench-pane__header px-4 pt-4' : 'flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3'">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <Cpu v-if="isModelsRoute || isCreateModelRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
-              <Settings2 v-else class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
-              <h2 class="truncate text-[15px] font-semibold text-text-primary">{{ settingsTitle }}</h2>
+              <Settings2 v-else-if="!settingsInWorkbench" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <h2 :class="settingsInWorkbench ? 'k-ai-workbench-pane__title' : 'truncate text-[15px] font-semibold text-text-primary'">{{ settingsTitle }}</h2>
             </div>
-            <p class="mt-1 text-[12px] text-text-muted">
+            <p class="k-ai-workbench-pane__description">
               {{ settingsDescription }}
             </p>
           </div>
@@ -11241,7 +11397,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div :class="isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : 'min-h-0 overflow-auto p-4'">
+        <div :class="isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 overflow-auto px-4 pb-4' : 'min-h-0 overflow-auto p-4'">
           <div class="grid gap-4">
           <div
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
@@ -11249,9 +11405,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             aria-label="Project settings"
             class="grid gap-3"
           >
-          <form class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3" @submit.prevent="saveProjectSettings">
+          <form class="grid gap-3 rounded-lg border border-border-subtle bg-transparent p-3" @submit.prevent="saveProjectSettings">
             <div>
-              <div class="text-[13px] font-semibold text-text-primary">Project</div>
+              <h3 class="text-[13px] font-semibold text-text-primary">Project</h3>
               <p class="mt-1 text-[12px] text-text-muted">Update the project name and description shown in App Studio.</p>
             </div>
             <label class="grid gap-1.5">
@@ -11289,29 +11445,32 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
             </div>
           </form>
-          <ProjectAuthentication v-if="settingsProject" :key="settingsProject.uid || settingsProject.name" :ctx="props.ctx" :project="settingsProject" />
+          <ProjectAuthentication
+            v-if="settingsProject"
+            :key="settingsProject.uid || settingsProject.name"
+            :ctx="props.ctx"
+            :project="settingsProject"
+            @create-compatible-project="openAuthCompatibleProjectCreation"
+            @setup-auth="setupAuthInCurrentProjectDraft"
+          />
           <GitConnectionSettings
             v-if="settingsProject" :key="settingsProject.name"
             :ctx="props.ctx" :project="settingsProject"
             @connected="onProjectGitConnected"
           />
           <section
-            class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
+            class="grid gap-4 rounded-lg border border-border-subtle bg-transparent p-3"
             aria-label="Development settings"
           >
             <div class="flex items-start gap-2.5">
-              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface">
-                <LayoutTemplate class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
-              </div>
               <div class="min-w-0">
-                <h3 class="text-[12px] font-semibold text-text-primary">Development</h3>
-                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Configure the development runtime and who can access its preview.</p>
+                <h3 class="text-[13px] font-semibold text-text-primary">Development</h3>
+                <p class="mt-0.5 text-[12px] leading-5 text-text-muted">Configure the development runtime and who can access its preview.</p>
               </div>
             </div>
             <section class="grid gap-3" aria-labelledby="development-template-heading">
               <div>
                 <h4 id="development-template-heading" class="text-[12px] font-semibold text-text-primary">Template</h4>
-                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Choose the runtime used for development. Changing it replaces the running development instance while preserving workspace and Git files.</p>
               </div>
               <label class="grid max-w-sm gap-1.5">
                 <span class="text-[12px] font-medium text-text-secondary">Runtime template</span>
@@ -11320,8 +11479,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <LayoutTemplate v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
                   <select
                     :value="selected?.template || ''"
-                    class="app-studio-touch-target h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
-                    aria-label="Development template"
+                    class="k-input appearance-none pl-9 pr-9 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-describedby="development-template-hint"
                     :disabled="developmentTemplatesLoading || developmentTemplateBusy || messageStreaming || developmentTemplates.length === 0"
                     @change="changeDevelopmentTemplate"
                   >
@@ -11339,7 +11498,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
                 </span>
               </label>
-              <p v-if="messageStreaming" class="text-[11px] leading-4 text-text-muted">Wait for or stop the active assistant run before changing templates.</p>
+              <p id="development-template-hint" class="text-[12px] leading-5 text-text-muted">Choose the runtime used for development. Changing it replaces the running development instance while preserving workspace and Git files.</p>
+              <p v-if="messageStreaming" class="text-[12px] leading-5 text-text-muted">Wait for or stop the active assistant run before changing templates.</p>
               <div v-if="developmentTemplatesError" class="flex flex-wrap items-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
                 <span>{{ developmentTemplatesError }}</span>
                 <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadDevelopmentTemplates">Retry</button>
@@ -11363,7 +11523,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             >
               <div>
                 <h4 id="development-preview-access-heading" class="text-[12px] font-semibold text-text-primary">Preview access</h4>
-                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Workspace members can open a private preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
               </div>
               <label class="grid max-w-sm gap-1.5">
                 <span class="text-[12px] font-medium text-text-secondary">Visibility</span>
@@ -11373,8 +11532,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <Lock v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
                   <select
                     :value="developmentPreviewDesiredAccess"
-                    class="app-studio-touch-target h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
-                    aria-label="Development preview access"
+                    class="k-input appearance-none pl-9 pr-9 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-describedby="development-preview-access-hint"
                     :disabled="developmentPreviewAccessBusy || !developmentPreviewAccessConverged || messageStreaming"
                     @change="changeDevelopmentPreviewAccess(($event.target as HTMLSelectElement).value)"
                   >
@@ -11384,27 +11543,37 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
                 </span>
               </label>
+              <p id="development-preview-access-hint" class="text-[12px] leading-5 text-text-muted">Workspace members can open a private preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
               <p v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating access…</p>
               <p v-if="developmentPreviewAccessError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
             </section>
           </section>
           </div>
 
-          <section
+          <AIWorkbenchPane
+            title="Publishing"
+            description="Deploy and share your app."
             v-else-if="publishingInWorkbench"
             ref="publishingPaneRef"
             tabindex="-1"
             aria-label="Publishing"
-            class="grid gap-3 outline-none"
+            class="outline-none"
           >
-            <section class="grid gap-4 rounded-lg border border-border-subtle bg-surface p-4" aria-label="Production overview" :aria-busy="promotionLoading && !promotion">
+            <template #actions>
+              <button type="button" aria-label="Refresh production status" class="k-btn k-btn--ghost"
+                :disabled="promotionBusy || publishingRefreshBusy" @click="refreshProduction">
+                <Loader2 v-if="promotionBusy || publishingRefreshBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+                {{ publishingRefreshBusy ? 'Refreshing…' : 'Refresh' }}
+              </button>
+            </template>
+            <section class="grid gap-4" aria-label="Production overview" :aria-busy="promotionLoading && !promotion">
               <div class="flex min-w-0 items-start justify-between gap-3">
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
-                    <Globe class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
-                    <h3 class="text-[15px] font-semibold text-text-primary">Production</h3>
+                    <h3 class="text-[13px] font-semibold text-text-primary">Production</h3>
                   </div>
-                  <p class="mt-1 max-w-2xl text-[13px] leading-5 text-text-secondary">{{ selected?.repository?.ref ? productionOverviewDescription : 'Build and preview without Git. Production publishing requires a connected repository, a Git commit, and a successful build.' }}</p>
+                  <p v-if="!promotion || promotionError || !selected?.repository?.ref" class="mt-1 max-w-2xl text-[13px] leading-5 text-text-secondary">{{ selected?.repository?.ref ? productionOverviewDescription : 'Build and preview without Git. Production publishing requires a connected repository, a Git commit, and a successful build.' }}</p>
                   <button v-if="selected && !selected.repository?.ref" type="button" class="k-btn k-btn--primary mt-3" @click="openSettings">Connect Git</button>
                 </div>
                 <StatusBadge :status="productionOverview.label" :tone="productionOverview.tone" />
@@ -11419,6 +11588,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <template v-else-if="promotion">
                   <ReleasePipeline
                     :pipeline="releasePipeline"
+                    :hide-summary="releasePipeline.state === 'ready' && Boolean(latestDeployableRelease && (!productionBinding || !latestDeployableRelease.live))"
                     :taking-longer="releaseTakingLonger"
                     :needs-attention="releaseArtifactNeedsAttention"
                     :refreshing="publishingRefreshBusy"
@@ -11435,7 +11605,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <Check class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
                         Verified release
                       </div>
-                      <h4 class="mt-2 text-[18px] font-semibold leading-6 text-text-primary">
+                      <h4 class="mt-2 text-[18px] font-semibold leading-6 text-text-primary" aria-live="polite">
                         {{ productionBinding ? 'Ready to update production to' : 'Ready to deploy' }}
                         <code class="font-mono text-[16px] font-medium text-text-primary">{{ productionReleaseSHA }}</code>
                       </h4>
@@ -11464,7 +11634,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <button
                           ref="productionDeployButtonRef"
                           type="button"
-                          class="app-studio-touch-target inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+                          class="k-btn k-btn--primary"
                           :disabled="!canPromoteLatestRelease"
                           @click="openProductionDeployReview(latestDeployableRelease)"
                         >
@@ -11473,7 +11643,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         </button>
                         <span class="text-[12px] text-text-secondary">{{ productionBinding ? 'Production update' : 'First production deployment' }}</span>
                       </div>
-                      <p v-if="currentBuildActionDisabledReason" class="mt-2 text-[11px] leading-4 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
+                      <p v-if="currentBuildActionDisabledReason" class="mt-2 text-[12px] leading-5 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
                     </div>
 
                     <aside class="border-t border-border-subtle pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0" aria-label="Deployment consequences">
@@ -11518,30 +11688,30 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <div class="border-t border-border-subtle bg-surface p-3 sm:border-t-0"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Access</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionBinding ? 'Policy unchanged' : 'Invite-only after deploy' }}</dd></div>
                     </dl>
                     <div class="flex flex-wrap justify-end gap-2">
-                      <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="closeProductionDeployReview">Cancel</button>
-                      <button ref="productionDeployConfirmRef" type="button" class="app-studio-touch-target inline-flex h-9 items-center gap-1.5 rounded-md border border-accent bg-accent px-3.5 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="confirmProductionDeploy">
+                      <button type="button" class="k-btn k-btn--ghost" @click="closeProductionDeployReview">Cancel</button>
+                      <button ref="productionDeployConfirmRef" type="button" class="k-btn k-btn--primary" @click="confirmProductionDeploy">
                         Deploy release
                       </button>
                     </div>
                   </section>
 
-                  <p v-if="!latestDeployableRelease && currentBuildActionDisabledReason" class="border-t border-border-subtle pt-3 text-[11px] leading-4 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
+                  <p v-if="!latestDeployableRelease && currentBuildActionDisabledReason" class="border-t border-border-subtle pt-3 text-[12px] leading-5 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
 
                   <div v-if="productionAccess.label === 'Live'" class="grid gap-3 border-t border-border-subtle pt-4">
                     <div class="flex min-w-0 items-center gap-2">
-                      <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
+                      <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
                       <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex min-w-0 items-center truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
                     </div>
                     <div class="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <div class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Access policy</div>
+                        <div class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Who can open the link</div>
                         <div class="mt-1 text-[12px] text-text-secondary">{{ publishing?.publication?.mode === 'public' ? 'Anyone with the link' : `${productionViewerCount} invited viewer${productionViewerCount === '1' ? '' : 's'}` }}</div>
                       </div>
                       <div class="flex flex-wrap items-center gap-2">
-                        <button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" @click="openShareDialog">
-                          <Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access
+                        <button type="button" class="k-btn k-btn--ghost" @click="openShareDialog">
+                          <Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Manage sharing
                         </button>
-                        <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
+                        <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost no-underline"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Open app</a>
                       </div>
                     </div>
                   </div>
@@ -11549,17 +11719,17 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <div v-if="publishing?.published" class="grid gap-2">
                       <div class="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <div class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Access policy</div>
+                          <div class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Who can open the link</div>
                           <div class="mt-1 text-[12px] text-text-secondary">{{ productionDescription }}</div>
                         </div>
                         <StatusBadge :status="productionPublicationStatus.label" :tone="productionPublicationStatus.tone" />
                       </div>
-                      <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[11px] leading-4 text-danger" role="alert">{{ publishing.publication.error }}</p>
-                      <div class="flex flex-wrap justify-end gap-2"><button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button></div>
+                      <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[12px] leading-5 text-danger" role="alert">{{ publishing.publication.error }}</p>
+                      <div class="flex flex-wrap justify-end gap-2"><button type="button" class="k-btn k-btn--ghost" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Manage sharing</button></div>
                     </div>
-                    <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-success/30 bg-success-subtle p-3 text-success">
-                      <div><div class="text-[12px] font-semibold">Production is running</div><div class="mt-1 text-[12px] leading-5">Access is invite-only. Use Share to invite people or make the app public.</div></div>
-                      <button type="button" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-success/30 bg-surface px-3 text-[12px] font-medium text-success" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" />Manage access</button>
+                    <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="flex flex-wrap items-center gap-3">
+                      <button type="button" class="k-btn k-btn--primary" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Set up sharing</button>
+                      <p class="text-[12px] leading-5 text-text-secondary">App sign-in is managed in Railgrid Auth.</p>
                     </div>
                   </div>
                   <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
@@ -11571,7 +11741,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </template>
             </section>
 
-            <section v-if="!promotionLoading || promotion" class="rounded-lg border border-border-subtle bg-surface" aria-label="Deployment configuration">
+            <section v-if="!promotionLoading || promotion" class="rounded-lg border border-border-subtle bg-transparent" aria-label="Deployment configuration">
               <button
                 type="button"
                 class="app-studio-touch-target flex w-full items-start justify-between gap-4 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -11580,13 +11750,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 @click="productionSettingsOpen = !productionSettingsOpen"
               >
                 <span class="flex min-w-0 items-start gap-2">
-                  <Settings2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-                  <span class="min-w-0"><span class="block text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Deployment configuration</span><span class="mt-1 block text-[12px] leading-4 text-text-secondary">{{ productionSettingsSummary }}</span></span>
+                  <span class="min-w-0"><span class="block text-[13px] font-semibold text-text-primary">Deployment configuration</span><span class="mt-1 block text-[12px] leading-4 text-text-secondary">{{ productionSettingsSummary }}</span></span>
                 </span>
-                <ChevronRight class="mt-0.5 h-4 w-4 shrink-0 text-text-muted transition-transform" :class="productionSettingsOpen ? 'rotate-90' : ''" :stroke-width="1.75" aria-hidden="true" />
+                <span class="text-[11px] text-text-muted">{{ productionSettingsOpen ? 'Hide' : 'Show' }}</span>
               </button>
               <div id="production-settings-body" v-show="productionSettingsOpen" class="grid gap-3 border-t border-border-subtle p-3">
-                <p class="text-[12px] leading-5 text-text-secondary">Template-owned runtime settings only. Names, rollout revisions, component images, and access policy are managed separately.</p>
+                <p class="text-[12px] leading-5 text-text-secondary">Choose how the production app runs. Sharing and sign-in are managed separately.</p>
                 <div v-if="currentProductionRelease" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-border-subtle py-2 text-[11px] text-text-secondary" aria-label="Current production release">
                   <span class="font-semibold uppercase tracking-wide">Current production release</span>
                   <code class="font-mono text-text-primary">{{ shortReleaseSHA(currentProductionRelease.commitSHA) }}</code>
@@ -11603,31 +11772,35 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   @validity="productionFormValid = $event"
                 />
                 <div v-if="promotion" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
-                  <p class="text-[11px] leading-4 text-text-secondary">{{ productionBinding ? 'Saving configuration redeploys the current release. Access does not change.' : 'These values will be reviewed and applied with the first deployment.' }}</p>
+                  <p class="text-[12px] leading-5 text-text-secondary">{{ productionBinding ? 'Saving configuration redeploys the current release. Access does not change.' : 'These values will be reviewed and applied with the first deployment.' }}</p>
                   <button
                     v-if="productionBinding"
                     type="button"
-                    class="app-studio-touch-target inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    class="k-btn k-btn--ghost"
                     :disabled="promotionBusy || !promotionValuesDirty || !canRedeployCurrentProduction"
                     @click="redeployCurrentProduction"
                   >
                     <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
-                    Save configuration and redeploy
+                    {{ promotionBusy ? 'Redeploying…' : 'Save configuration and redeploy' }}
                   </button>
                 </div>
-                <p v-if="promotion && promotionValuesDirty && productionBinding && !canRedeployCurrentProduction" class="text-[11px] leading-4 text-text-secondary" role="status">{{ productionSettingsActionDisabledReason }}</p>
+                <p v-if="promotion && promotionValuesDirty && productionBinding && !canRedeployCurrentProduction" class="text-[12px] leading-5 text-text-secondary" role="status">{{ productionSettingsActionDisabledReason }}</p>
                 <div v-if="!promotion" class="flex min-h-[180px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
                   <div>Production configuration is unavailable. Refresh to retry.</div>
                   <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
                 </div>
               </div>
             </section>
-            <section class="grid gap-3 rounded-lg border border-border-subtle bg-surface p-3" aria-label="Technical details">
+            <section class="grid gap-3 rounded-lg border border-border-subtle bg-transparent p-3" aria-label="Technical details">
               <button type="button" class="app-studio-touch-target flex w-full items-center justify-between gap-2 text-left" :aria-expanded="productionTechnicalOpen" @click="productionTechnicalOpen = !productionTechnicalOpen">
-                <span class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted"><Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />Technical details</span>
+                <span class="flex items-center gap-2 text-[13px] font-semibold text-text-primary">Technical details</span>
                 <span class="text-[11px] text-text-muted">{{ productionTechnicalOpen ? 'Hide' : 'Show' }}</span>
               </button>
-              <div v-if="productionTechnicalOpen" class="grid gap-3 border-t border-border-subtle pt-3">
+              <div v-if="productionTechnicalOpen" class="grid min-w-0 gap-3 border-t border-border-subtle pt-3">
+                <dl class="grid gap-2 text-[12px]">
+                  <div class="grid gap-1 sm:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Requested rollout</dt><dd class="break-all font-mono">{{ releasePipeline.requestedRevision || 'Not requested' }}</dd></div>
+                  <div class="grid gap-1 sm:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Observed rollout</dt><dd class="break-all font-mono">{{ releasePipeline.observedRevision || 'Not observed' }}</dd></div>
+                </dl>
                 <div class="grid gap-2">
                   <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Project and preview</div>
                   <dl class="grid gap-2 text-[12px]">
@@ -11635,15 +11808,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Development preview</dt><dd class="truncate text-text-primary">{{ productionSummaryTarget }}</dd></div>
                     <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Suggested domain</dt><dd class="font-mono text-text-primary">{{ productionDefaultDomain }}</dd></div>
                   </dl>
-                  <p class="text-[11px] leading-4 text-text-muted">The authoritative production URL appears above only after the publication reports Ready.</p>
+                  <p class="text-[12px] leading-5 text-text-muted">The authoritative production URL appears above only after the publication reports Ready.</p>
                 </div>
-                <div v-if="productionBinding" class="grid gap-2"><div class="flex flex-wrap items-center justify-between gap-2"><div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Provider binding</div><span class="font-mono text-[11px] text-text-muted">Revision {{ promotion?.observedRolloutRevision || 'not observed' }}</span></div><pre class="max-h-56 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay p-2.5 font-mono text-[11px] leading-4 text-text-secondary">{{ JSON.stringify(productionBinding, null, 2) }}</pre></div>
+                <div v-if="productionBinding" class="grid gap-2"><div class="flex flex-wrap items-center justify-between gap-2"><div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Provider binding</div><span class="font-mono text-[11px] text-text-muted">Revision {{ promotion?.observedRolloutRevision || 'not observed' }}</span></div><pre class="max-h-56 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay p-2.5 font-mono text-[12px] leading-5 text-text-secondary">{{ JSON.stringify(productionBinding, null, 2) }}</pre></div>
                 <div v-if="promotionFeedback" role="status" aria-live="polite" class="rounded-lg border px-3 py-2 text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'border-success/30 bg-success-subtle text-success' : 'border-warning/30 bg-warning-subtle text-warning'">{{ promotionFeedback.message }}</div>
-                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[11px] leading-4 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p><div class="flex items-center gap-2"><button type="button" aria-label="Refresh production status" class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="promotionBusy || publishingRefreshBusy" @click="refreshProduction"><Loader2 v-if="promotionBusy || publishingRefreshBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />Refresh status</button></div></div>
+                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[12px] leading-5 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p></div>
               </div>
             </section>
-            <p class="text-[11px] leading-4 text-text-muted">Your development instance keeps running while production is deployed and published.</p>
-          </section>
+            <p class="text-[12px] leading-5 text-text-muted">Your development instance keeps running while production is deployed and published.</p>
+          </AIWorkbenchPane>
 
           <section
             v-else-if="historyInWorkbench"
@@ -11652,10 +11825,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             aria-label="History"
             class="grid gap-3 outline-none"
           >
-            <div class="grid gap-1">
-              <h2 class="text-[14px] font-semibold text-text-primary">History</h2>
-              <p class="text-[12px] leading-5 text-text-muted">Return the current project filesystem to an earlier Git commit without changing Git history or production.</p>
-            </div>
             <button v-if="!selected?.repository?.ref" type="button" class="k-btn k-btn--ghost mb-3" @click="openSettings">Connect Git in project settings</button>
             <ProjectHistory
               :repository-ref="selected?.repository?.ref"

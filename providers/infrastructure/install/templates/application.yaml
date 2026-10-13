@@ -16,6 +16,10 @@ spec:
   # URL; spec.access (public|private) chooses who can reach it.
   exposure: public
   backend: kro
+  # Versioned integration contract consumed by App Studio. This declares the
+  # template's auth wiring; it does not certify the app's own authorization.
+  railgridAuth:
+    version: v1
   # Example payload the portal pre-fills the provision form with, so the 3-tier
   # demo is effectively one click. The frontend/backend images are the example
   # apps under examples/application/apps/, built + pushed to :latest by
@@ -264,18 +268,22 @@ spec:
       webPort:
         type: integer
         default: 8080
-        description: "Port the frontend container listens on."
+        title: Frontend port
+        description: "Port the frontend listens on. Defaults to 8080."
       webReplicas:
         type: integer
         default: 1
         minimum: 1
         maximum: 10
+        title: Frontend replicas
+        description: "Number of frontend copies to run. Defaults to 1; choose 1 to 10."
       webEnv:
         type: object
         additionalProperties:
           type: string
         default: {}
-        description: "Environment variables for the frontend container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT) win on name conflicts. Values are stored world-readable — not for secrets."
+        title: Frontend environment variables
+        description: "Set configuration the frontend reads at runtime. Changes update in place. The platform's PORT takes precedence. Values are stored world-readable; never enter passwords, API keys, or other secrets."
 
       # ── Backend tier (internal; reachable only via cluster DNS) ──
       apiImage:
@@ -285,17 +293,22 @@ spec:
       apiPort:
         type: integer
         default: 8080
+        title: Backend port
+        description: "Port the backend listens on. Defaults to 8080."
       apiReplicas:
         type: integer
         default: 1
         minimum: 1
         maximum: 10
+        title: Backend replicas
+        description: "Number of backend copies to run. Defaults to 1; choose 1 to 10."
       apiEnv:
         type: object
         additionalProperties:
           type: string
         default: {}
-        description: "Environment variables for the backend container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT, DATABASE_URL) win on name conflicts. Values are stored world-readable — not for secrets."
+        title: Backend environment variables
+        description: "Set configuration the backend reads at runtime. Changes update in place. The platform's PORT and DATABASE_URL take precedence. Values are stored world-readable; never enter passwords, API keys, or other secrets."
 
       # ── Database tier (Postgres; always provisioned in v1) ──
       # default: {} so an omitted database object is instantiated and its nested

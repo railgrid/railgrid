@@ -113,7 +113,7 @@ export function useProductionSettings(input: ProductionSettingsInputs): Producti
     if (!productionBinding.value) return { label: 'Not deployed', tone: 'muted' }
     if (!productionDeployment.value.ready) return { label: productionDeployment.value.label, tone: productionDeployment.value.tone }
     if (!input.publishing.value) return { label: 'Checking access', tone: 'muted' }
-    if (!input.publishing.value.published) return { label: 'Ready to publish', tone: 'success' }
+    if (!input.publishing.value.published) return { label: 'Deployed', tone: 'success' }
     if (productionPublicationReady.value) return { label: productionURL.value ? 'Live' : 'Ready', tone: 'success' }
     if (input.publishing.value.publication?.error) return { label: 'Access error', tone: 'danger' }
     return { label: 'Enabling access', tone: 'warning' }

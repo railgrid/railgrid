@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Check, ExternalLink, Layers, Loader2, Package, RefreshCw } from 'lucide-vue-next'
-import type { RailgridContext, ProjectPlan } from './types'
+import type { DevelopmentTemplate, RailgridContext, ProjectPlan } from './types'
 import { api } from './api'
 import type { CreateSetupItem } from './createReadiness'
 import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
@@ -23,6 +23,12 @@ const props = defineProps<{
   // initialPrompt is the idea already submitted in the landing composer. In
   // this mode the wizard never renders a second intake textarea.
   initialPrompt?: string
+  // initialDraft prefills an editable request without starting model planning.
+  initialDraft?: string
+  // Restricts planning and creation to templates with verified Ready auth support.
+  authCompatibleOnly?: boolean
+  creationError?: string
+  creationChecking?: boolean
   attachments?: AssistantStagedAttachment[]
   attachmentError?: string
 }>()
@@ -47,21 +53,36 @@ const wizardSteps: Array<{ id: Step; label: string }> = [
 ]
 
 const step = ref<Step>('describe')
-const prompt = ref('')
+const prompt = ref(props.initialDraft?.trim() ?? '')
 const planning = ref(false)
 const error = ref<string | null>(null)
 const plan = ref<ProjectPlan | null>(null)
 const chosenTemplate = ref<string>('')
+const compatibleTemplateCatalog = ref<DevelopmentTemplate[]>([])
+const compatibleCatalogLoading = ref(Boolean(props.authCompatibleOnly))
+const compatibleCatalogError = ref('')
+const compatibleTemplateChoice = ref('')
 const displayName = ref('')
 const stepHeading = ref<HTMLElement | null>(null)
 let planRequestSerial = 0
+let catalogRequestSerial = 0
 
 const hasInitialPrompt = computed(() => Boolean(props.initialPrompt?.trim()))
-const canPlan = computed(() => prompt.value.trim().length > 0 && !planning.value)
+function isVerifiedAuthTemplate(template: DevelopmentTemplate | undefined): template is DevelopmentTemplate {
+  return template?.railgridAuthSupported === true && template.railgridAuthReason === 'supported'
+}
+
+const compatibleTemplates = computed(() => compatibleTemplateCatalog.value.filter(isVerifiedAuthTemplate))
+const compatiblePlanTemplates = computed(() => (plan.value?.availableTemplates ?? []).filter(isVerifiedAuthTemplate))
+const selectableTemplates = computed(() => props.authCompatibleOnly ? compatiblePlanTemplates.value : plan.value?.availableTemplates ?? [])
+const selectedCompatibleTemplate = computed(() => compatibleTemplates.value.find((template) => template.name === compatibleTemplateChoice.value) ?? null)
+const canPlan = computed(() => prompt.value.trim().length > 0 && !planning.value && (
+  !props.authCompatibleOnly || (!compatibleCatalogLoading.value && !!selectedCompatibleTemplate.value)
+))
 const activeStepIndex = computed(() => wizardSteps.findIndex((wizardStep) => wizardStep.id === step.value))
 
 const activeTemplate = computed(() =>
-  plan.value?.availableTemplates.find((template) => template.name === chosenTemplate.value) ?? null,
+  selectableTemplates.value.find((template) => template.name === chosenTemplate.value) ?? null,
 )
 
 const activeComponents = computed<Record<string, string>>(() => {
@@ -141,9 +162,35 @@ function invalidatePlanRequest() {
   planRequestSerial += 1
 }
 
+async function loadCompatibleTemplateCatalog() {
+  if (!props.authCompatibleOnly) return
+  const serial = ++catalogRequestSerial
+  const ctx = props.ctx
+  compatibleCatalogLoading.value = true
+  compatibleCatalogError.value = ''
+  compatibleTemplateCatalog.value = []
+  compatibleTemplateChoice.value = ''
+  try {
+    const templates = await api.listDevelopmentTemplates(ctx)
+    if (serial !== catalogRequestSerial || !props.authCompatibleOnly || props.ctx !== ctx) return
+    compatibleTemplateCatalog.value = templates
+    compatibleTemplateChoice.value = templates.find(isVerifiedAuthTemplate)?.name ?? ''
+  } catch (e) {
+    if (serial !== catalogRequestSerial || props.ctx !== ctx) return
+    compatibleCatalogError.value = e instanceof Error ? e.message : 'Could not check which templates support Railgrid Auth.'
+  } finally {
+    if (serial === catalogRequestSerial && props.ctx === ctx) compatibleCatalogLoading.value = false
+  }
+}
+
 async function runPlan() {
   if (!canPlan.value) return
   const content = prompt.value.trim()
+  const requiredTemplate = props.authCompatibleOnly ? selectedCompatibleTemplate.value?.name ?? '' : ''
+  if (props.authCompatibleOnly && !requiredTemplate) {
+    error.value = 'Choose a verified Railgrid Auth template before preparing this project.'
+    return
+  }
   const serial = ++planRequestSerial
   planning.value = true
   step.value = 'prepare'
@@ -152,10 +199,30 @@ async function runPlan() {
   chosenTemplate.value = ''
 
   try {
-    const result = await api.planProject(props.ctx, { prompt: content })
+    const result = await api.planProject(props.ctx, {
+      prompt: content,
+      ...(requiredTemplate ? { templateName: requiredTemplate } : {}),
+    })
     if (serial !== planRequestSerial) return
-    plan.value = result
-    chosenTemplate.value = result.template ?? ''
+    if (props.authCompatibleOnly) {
+      const supportedChoices = result.availableTemplates.filter(isVerifiedAuthTemplate)
+      if (!supportedChoices.some((template) => template.name === requiredTemplate)) {
+        error.value = 'That template is no longer verified for Railgrid Auth. Refresh the choices and select a current template.'
+        compatibleTemplateChoice.value = ''
+        step.value = 'describe'
+        return
+      }
+      if (result.template !== requiredTemplate) {
+        error.value = 'App Studio returned a different template than the verified choice. Refresh the choices and try again.'
+        step.value = 'describe'
+        return
+      }
+      plan.value = { ...result, template: requiredTemplate, availableTemplates: supportedChoices }
+      chosenTemplate.value = requiredTemplate
+    } else {
+      plan.value = result
+      chosenTemplate.value = result.template ?? ''
+    }
     displayName.value = result.displayName
     step.value = 'confirm'
   } catch (e) {
@@ -171,7 +238,11 @@ async function runPlan() {
 }
 
 function confirmCreate() {
-  if (props.disabled) return
+  if (props.disabled || props.creationChecking) return
+  if (props.authCompatibleOnly && (!isVerifiedAuthTemplate(selectableTemplates.value.find((template) => template.name === chosenTemplate.value)))) {
+    error.value = 'Choose a verified Railgrid Auth template before creating this project.'
+    return
+  }
   emit('create', {
     prompt: prompt.value.trim(),
     templateName: chosenTemplate.value || undefined,
@@ -199,7 +270,7 @@ watch(
     if (!seed) {
       invalidatePlanRequest()
       planning.value = false
-      prompt.value = ''
+      prompt.value = props.authCompatibleOnly ? props.initialDraft?.trim() ?? '' : ''
       plan.value = null
       chosenTemplate.value = ''
       displayName.value = ''
@@ -224,6 +295,12 @@ watch(
     displayName.value = ''
     error.value = null
     const seed = props.initialPrompt?.trim() ?? ''
+    if (props.authCompatibleOnly) {
+      prompt.value = props.initialDraft?.trim() ?? ''
+      step.value = 'describe'
+      void loadCompatibleTemplateCatalog()
+      return
+    }
     if (seed) {
       prompt.value = seed
       void runPlan()
@@ -232,6 +309,20 @@ watch(
     step.value = 'describe'
   },
 )
+
+watch(() => props.authCompatibleOnly, (enabled) => {
+  if (enabled) {
+    prompt.value = props.initialDraft?.trim() ?? ''
+    step.value = 'describe'
+    void loadCompatibleTemplateCatalog()
+    return
+  }
+  catalogRequestSerial += 1
+  compatibleCatalogLoading.value = false
+  compatibleCatalogError.value = ''
+  compatibleTemplateCatalog.value = []
+  compatibleTemplateChoice.value = ''
+})
 
 watch(step, async (current, previous) => {
   if (current === previous) return
@@ -245,6 +336,7 @@ onMounted(async () => {
   // receives the same accessible announcement as later step changes.
   await nextTick()
   stepHeading.value?.focus({ preventScroll: true })
+  if (props.authCompatibleOnly) void loadCompatibleTemplateCatalog()
 })
 </script>
 
@@ -300,9 +392,45 @@ onMounted(async () => {
     >
       <div class="k-create-body flex w-full flex-col gap-5 p-5 sm:p-7">
         <header class="k-create-header m-0">
-          <h2 id="new-project-intake-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">Describe your project</h2>
-          <p class="mt-1 text-[13px] leading-5 text-text-secondary">Share the app, dashboard, workflow, or API you want to make in this Railgrid workspace. You can review the suggested starting point before anything is created.</p>
+          <h2 id="new-project-intake-title" ref="stepHeading" tabindex="-1" class="text-[20px] font-semibold text-text-primary outline-none">
+            {{ authCompatibleOnly ? 'Create a compatible project' : 'Describe your project' }}
+          </h2>
+          <p class="mt-1 text-[13px] leading-5 text-text-secondary">
+            <template v-if="authCompatibleOnly">Choose a verified Railgrid Auth template for a separate new project. Your current project stays unchanged, and nothing is created until you review and confirm.</template>
+            <template v-else>Share the app, dashboard, workflow, or API you want to make in this Railgrid workspace. You can review the suggested starting point before anything is created.</template>
+          </p>
         </header>
+
+        <section v-if="authCompatibleOnly" class="grid gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-3" aria-labelledby="auth-template-choice-label">
+          <label id="auth-template-choice-label" for="auth-compatible-template" class="text-[12px] font-medium text-text-secondary">Templates supporting Railgrid Auth</label>
+          <div v-if="compatibleCatalogLoading" role="status" aria-live="polite" class="text-[12px] text-text-secondary">
+            Checking compatible templates…
+          </div>
+          <div v-else-if="compatibleCatalogError" role="alert" class="grid gap-2 text-[12px] text-danger">
+            <p>Could not check compatible templates. Try again.</p>
+            <p class="break-words">{{ compatibleCatalogError }}</p>
+            <button type="button" class="app-studio-touch-target k-btn k-btn--ghost w-fit" @click="loadCompatibleTemplateCatalog">Try again</button>
+          </div>
+          <div v-else-if="!compatibleTemplates.length" class="grid gap-2 text-[12px] leading-5 text-text-secondary">
+            <p role="status">No compatible templates are available right now. Ask a workspace admin to check template readiness, then try again.</p>
+            <button type="button" class="app-studio-touch-target k-btn k-btn--ghost w-fit" @click="loadCompatibleTemplateCatalog">Check again</button>
+          </div>
+          <template v-else>
+            <select
+              id="auth-compatible-template"
+              v-model="compatibleTemplateChoice"
+              class="app-studio-touch-target k-input h-10 min-w-0 text-[16px] md:text-[13px]"
+              aria-describedby="auth-template-guidance"
+            >
+              <option v-for="template in compatibleTemplates" :key="template.name" :value="template.name">
+                {{ template.displayName || template.name }}
+              </option>
+            </select>
+            <p id="auth-template-guidance" class="text-[12px] leading-5 text-text-secondary">
+              {{ selectedCompatibleTemplate?.description || 'This template is ready for Railgrid Auth.' }}
+            </p>
+          </template>
+        </section>
 
         <div class="grid gap-2">
           <label for="new-project-prompt" class="text-[12px] font-medium text-text-secondary">Project description</label>
@@ -336,7 +464,7 @@ onMounted(async () => {
           :disabled="!canPlan"
           @click="runPlan"
         >
-          Prepare project <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
+          {{ authCompatibleOnly ? 'Review compatible project' : 'Prepare project' }} <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
         </button>
       </div>
     </section>
@@ -450,18 +578,19 @@ onMounted(async () => {
               <span class="text-[12px] font-medium text-text-secondary">Template</span>
               <select
                 v-model="chosenTemplate"
-                class="app-studio-touch-target h-10 min-w-0 rounded-md border border-border-default bg-surface-overlay px-3 text-[16px] text-text-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 md:text-[13px]"
+                class="app-studio-touch-target k-input h-10 min-w-0 text-[16px] md:text-[13px]"
                 aria-label="Template"
                 aria-describedby="template-impact template-selection-review"
               >
-                <option value="">No template (start empty)</option>
-                <option v-for="template in plan?.availableTemplates ?? []" :key="template.name" :value="template.name">
+                <option v-if="!authCompatibleOnly" value="">No template (start empty)</option>
+                <option v-for="template in selectableTemplates" :key="template.name" :value="template.name">
                   {{ template.displayName || template.name }}{{ template.name === plan?.template ? ' — recommended' : '' }}{{ template.hasScaffold ? ' · starter code' : '' }}
                 </option>
               </select>
               <div id="template-selection-review" class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">
                 <span class="font-medium text-text-primary">Selected development template:</span>
                 <span class="ml-1 text-text-primary">{{ activeTemplateName || 'No template (start empty)' }}</span>
+                <span v-if="authCompatibleOnly" class="mt-0.5 block font-medium text-success">Verified for Railgrid Auth</span>
                 <span class="mt-0.5 block">{{ activeTemplateDescription }}</span>
                 <span v-if="chosenTemplate" class="mt-0.5 block font-mono text-[12px] text-text-muted">Template ID: {{ chosenTemplate }}</span>
               </div>
@@ -500,6 +629,8 @@ onMounted(async () => {
 
       <footer v-if="step === 'confirm'" class="k-create-actions flex flex-col items-stretch gap-3 border-t border-border-subtle px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
         <div class="min-w-0 flex-1">
+          <p v-if="creationError" role="alert" class="mb-2 break-words text-[12px] text-danger [overflow-wrap:anywhere]">{{ creationError }}</p>
+          <p v-if="creationChecking" role="status" aria-live="polite" class="mb-2 text-[12px] text-text-secondary">Rechecking template support…</p>
           <div v-if="setupBlocked" class="grid gap-3" role="alert">
             <div>
               <p class="break-words text-[12px] font-semibold text-danger [overflow-wrap:anywhere]">{{ setupError || disabledReason || 'Complete setup before creating a project.' }}</p>
@@ -548,7 +679,7 @@ onMounted(async () => {
         <button
           type="button"
           class="app-studio-touch-target inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none sm:w-auto"
-          :disabled="disabled"
+          :disabled="disabled || creationChecking"
           @click="confirmCreate"
         >
           Create project
