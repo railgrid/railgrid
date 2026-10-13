@@ -5,15 +5,24 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
+import { parse, compileScript, compileTemplate } from '@vue/compiler-sfc'
+
+const { descriptor } = parse(readFileSync(new URL('./LoginPage.vue', import.meta.url), 'utf8'))
+const { bindings } = compileScript(descriptor, { id: 'login-session-test' })
+const template = compileTemplate({ source: descriptor.template.content, filename: 'LoginPage.vue',
+  id: 'login-session-test', compilerOptions: { bindingMetadata: bindings } })
+assert.deepEqual(template.errors, [])
 
 const vite = await createServer({
   appType: 'custom',
   configFile: false,
   root: new URL('../../', import.meta.url).pathname,
-  plugins: [vue()],
-  cacheDir: join(tmpdir(), 'railgrid-login-auth-session-test'),
+  plugins: [vue(), { name: 'login-client-render',
+    resolveId(id) { if (id === 'virtual:login-render') return id },
+    load(id) { if (id === 'virtual:login-render') return template.code },
+  }],
+  cacheDir: new URL('../../node_modules/.vite-login-auth-session-test', import.meta.url).pathname,
   resolve: { alias: { '@': new URL('..', import.meta.url).pathname } },
   optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true, hmr: false, ws: false },
@@ -22,7 +31,8 @@ const vite = await createServer({
 const { default: LoginPage } = await vite.ssrLoadModule('/src/pages/LoginPage.vue')
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
 const { peekAppAccessNext } = await vite.ssrLoadModule('/src/auth/appAccessNext.ts')
-LoginPage.render = () => null
+// SSR loading supplies setup; mount the real compiled client template.
+LoginPage.render = (await vite.ssrLoadModule('virtual:login-render')).render
 test.after(() => vite.close())
 
 function storage() {
@@ -49,7 +59,7 @@ function createHostRenderer() {
       if (index >= 0) node.parent.children.splice(index, 1)
       node.parent = null
     },
-    createElement(type) { return { type, props: {}, children: [], parent: null } },
+    createElement(type) { return { type, props: {}, children: [], parent: null, addEventListener() {}, removeEventListener() {} } },
     createText(text) { return { type: '#text', text, parent: null } },
     createComment(text) { return { type: '#comment', text, parent: null } },
     setText(node, text) { node.text = text },
@@ -62,7 +72,7 @@ function createHostRenderer() {
   })
 }
 
-function mountLoginScenario({ expiresAt = 4_000_000_000, healthzStatus = 200 } = {}) {
+function mountLoginScenario({ expiresAt = 4_000_000_000, healthzStatus = 200, oidcOnly = false, hangHealthz = false } = {}) {
   const previous = {
     localStorage: globalThis.localStorage,
     sessionStorage: globalThis.sessionStorage,
@@ -102,16 +112,18 @@ function mountLoginScenario({ expiresAt = 4_000_000_000, healthzStatus = 200 } =
   let resolveBootstrapResponse
   const bootstrapResponse = new Promise((resolve) => { resolveBootstrapResponse = resolve })
   const requests = []
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, options = {}) => {
     const path = typeof input === 'string' ? input : input.url
     requests.push(path)
     if (path === '/healthz') {
-      return new Response(JSON.stringify({ oidc: false }), { status: healthzStatus })
+      if (hangHealthz) return untilAborted(options.signal)
+      return new Response(JSON.stringify({ oidc: oidcOnly, tokenLogin: !oidcOnly }), { status: healthzStatus })
     }
     if (path === '/auth/session/bootstrap') {
       beginBootstrap()
-      return bootstrapResponse
+      return Promise.race([bootstrapResponse, untilAborted(options.signal)])
     }
+    if (path === '/auth/logout') return new Response('{}')
     throw new Error(`Unexpected request path: ${path}`)
   }
 
@@ -135,6 +147,8 @@ function mountLoginScenario({ expiresAt = 4_000_000_000, healthzStatus = 200 } =
 
   return {
     auth,
+    host,
+    storedAuth: () => portalStorage.getItem('railgrid-auth'),
     continuation,
     redirects,
     requests,
@@ -207,6 +221,7 @@ test('cached login keeps the app continuation pending when browser session boots
     assert.deepEqual(scenario.redirects, [], 'failed bootstrap must not bounce back through app authorization')
     assert.equal(scenario.auth.browserSessionReady, false)
     assert.equal(scenario.pendingContinuation(), scenario.continuation)
+    assertLoginAvailable(scenario)
   } finally {
     await scenario.cleanup()
   }
@@ -221,8 +236,115 @@ test('cached login keeps the app continuation pending when the stored bearer is 
     assert.deepEqual(scenario.redirects, [], 'a stale bearer must not resume app authorization')
     assert.equal(scenario.auth.browserSessionReady, false)
     assert.equal(scenario.pendingContinuation(), scenario.continuation)
-    assert.deepEqual(scenario.requests, ['/healthz'], 'a stale bearer must not be sent to session bootstrap')
+    assertLoginAvailable(scenario)
+    assert.deepEqual(scenario.requests, ['/healthz', '/auth/logout'], 'a stale bearer must not be sent to session bootstrap')
   } finally {
     await scenario.cleanup()
   }
 })
+
+function untilAborted(signal) {
+  assert.ok(signal, 'initialization fetches must have an abort signal')
+  return new Promise((_, reject) => {
+    if (signal.aborted) reject(signal.reason)
+    else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+}
+
+function elements(node) {
+  return [node, ...(node.children ?? []).flatMap(elements)]
+}
+
+function textContent(node) {
+  return (node.type === '#comment' ? '' : node.text ?? '') + (node.children ?? []).map(textContent).join('')
+}
+
+function assertLoginAvailable(scenario, oidcOnly = false) {
+  const nodes = elements(scenario.host)
+  const alert = nodes.find((node) => node.props?.role === 'alert')
+  assert.ok(alert, 'restoration error must be rendered')
+  assert.match(textContent(alert), /Could not restore the browser session/)
+  assert.equal(scenario.auth.token, null)
+  assert.equal(scenario.storedAuth(), null)
+  const buttons = nodes.filter((node) => node.type === 'button')
+  assert.ok(buttons.some((node) => textContent(node).includes(oidcOnly ? 'Sign in with SSO' : 'Sign in with token')))
+  assert.equal(nodes.some((node) => node.type === 'input' && node.props.id === 'token'), !oidcOnly)
+}
+
+for (const oidcOnly of [false, true]) {
+  test(`rejected cached login clears storage and renders ${oidcOnly ? 'SSO' : 'token'} sign-in`, async () => {
+    const scenario = mountLoginScenario({ oidcOnly })
+    try {
+      await scenario.bootstrapStarted
+      scenario.completeBootstrap(401)
+      await scenario.appDetection()
+      await nextTick()
+      assert.deepEqual(scenario.redirects, [])
+      assert.equal(scenario.pendingContinuation(), scenario.continuation)
+      assertLoginAvailable(scenario, oidcOnly)
+    } finally {
+      await scenario.cleanup()
+    }
+  })
+}
+
+for (const hangHealthz of [false, true]) {
+  test(`hung ${hangHealthz ? 'health discovery and bootstrap' : 'bootstrap'} reaches a usable sign-in page`, async (t) => {
+    // Exercise the real abort signals without waiting eight seconds per request.
+    t.mock.method(AbortSignal, 'timeout', (milliseconds) => {
+      assert.equal(milliseconds, 8000)
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('Timed out', 'TimeoutError')), 10)
+      return controller.signal
+    })
+    const scenario = mountLoginScenario({ hangHealthz })
+    try {
+      await scenario.appDetection()
+      await nextTick()
+      assert.equal(scenario.auth.initialized, true)
+      assert.deepEqual(scenario.redirects, [])
+      assert.equal(scenario.pendingContinuation(), scenario.continuation)
+      assertLoginAvailable(scenario)
+    } finally {
+      await scenario.cleanup()
+    }
+  })
+}
+
+test('logout during bootstrap cannot restore session readiness', async () => {
+  const scenario = mountLoginScenario()
+  try {
+    await scenario.bootstrapStarted
+    scenario.auth.logout()
+    scenario.completeBootstrap()
+    await scenario.appDetection()
+    await nextTick()
+    assert.equal(scenario.auth.token, null)
+    assert.equal(scenario.auth.browserSessionReady, false)
+    assert.equal(scenario.pendingContinuation(), scenario.continuation)
+    assert.deepEqual(scenario.redirects, [])
+  } finally {
+    await scenario.cleanup()
+  }
+})
+
+for (const oldStatus of [200, 503]) {
+  test(`old bootstrap (${oldStatus}) cannot overwrite a newer login`, async () => {
+    const scenario = mountLoginScenario()
+    try {
+      await scenario.bootstrapStarted
+      scenario.auth.loginFromOIDCResponse({
+        idToken: 'new-synthetic-bearer', expiresAt: 4_000_000_000,
+        email: 'new@example.test', userId: 'new-user', clusterName: 'new-cluster',
+      })
+      scenario.completeBootstrap(oldStatus)
+      await scenario.appDetection()
+      await nextTick()
+      assert.equal(scenario.auth.token, 'new-synthetic-bearer')
+      assert.equal(scenario.auth.browserSessionReady, true)
+      assert.deepEqual(scenario.redirects, [scenario.continuation])
+    } finally {
+      await scenario.cleanup()
+    }
+  })
+}

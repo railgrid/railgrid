@@ -2,7 +2,7 @@ import { API_PATHS } from './constants'
 import type { BrowserSessionResponse, HealthzResponse, LoginResponse, VersionResponse } from '@/auth/types'
 
 export async function fetchHealthz(): Promise<HealthzResponse> {
-  const res = await fetch(API_PATHS.healthz)
+  const res = await fetch(API_PATHS.healthz, { signal: AbortSignal.timeout(8000) })
   if (!res.ok) throw new Error(`healthz failed: ${res.status}`)
   return res.json()
 }
@@ -27,6 +27,7 @@ export async function loginWithToken(token: string): Promise<LoginResponse> {
 // endpoint or made available to a published app.
 export async function bootstrapBrowserSession(token: string): Promise<BrowserSessionResponse> {
   const res = await fetch('/auth/session/bootstrap', {
+    signal: AbortSignal.timeout(8000),
     method: 'POST',
     credentials: 'same-origin',
     headers: { Authorization: `Bearer ${token}` },

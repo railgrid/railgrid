@@ -93,15 +93,18 @@ export const useAuthStore = defineStore('auth', () => {
       // same-origin request; failures are non-fatal because the bearer-backed
       // portal can still complete its normal API bootstrap.
       if (token.value) {
+        const revision = authSessionRevision()
         try {
           const valid = await getBearerToken()
           if (valid) {
             await bootstrapBrowserSession(valid)
+            // A logout or new login may have replaced this session in flight.
+            assertAuthSession(revision)
             browserSessionReady.value = true
           }
         } catch {
-          browserSessionReady.value = false
-          /* authFetch will surface a real token failure through the session event */
+          // Do not overwrite readiness established by a newer login.
+          if (revision === authSessionRevision()) browserSessionReady.value = false
         }
       }
     } finally {

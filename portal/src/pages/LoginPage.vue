@@ -46,6 +46,8 @@ onMounted(async () => {
   await auth.detectAuthMode()
   if (auth.token && !switching) {
     if (peekAppAccessNext() && !auth.browserSessionReady) {
+      // Preserve the app destination, but do not retry a rejected cached login.
+      auth.logout()
       loginError.value = 'Could not restore the browser session. Sign in again to continue.'
       return
     }
