@@ -172,7 +172,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if err := railgridauth.Validate(&tmpl); err != nil {
 		setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionFalse,
-			infrav1alpha1.ReasonInvalidSpec, err.Error())
+			infrav1alpha1.ReasonInvalidRailgridAuth, err.Error())
 		return r.writeStatus(ctx, &tmpl, patchBase)
 	}
 

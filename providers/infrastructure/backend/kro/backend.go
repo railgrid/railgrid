@@ -49,7 +49,7 @@ import (
 )
 
 // Name is the backend identifier operators put in Template.spec.backend.
-const Name = "kro"
+const Name = infrav1alpha1.BackendKRO
 
 // Backend authors kro ResourceGraphDefinitions on the runtime cluster from
 // Templates. It implements backend.Backend.

@@ -260,6 +260,9 @@ const (
 	// gate without trusting tenant-provided labels.
 	UniversalCodingSandboxTemplateName = "universal-coding-sandbox"
 
+	// BackendKRO identifies the KRO resource graph backend.
+	BackendKRO = "kro"
+
 	// RailgridModeField is the reserved instance spec property name. Templates
 	// MUST NOT declare it in spec.schema themselves.
 	RailgridModeField = "railgridMode"
@@ -853,6 +856,7 @@ const (
 	ReasonReconciling           = "Reconciling"
 	ReasonReady                 = "Ready"
 	ReasonInvalidSpec           = "InvalidSpec"
+	ReasonInvalidRailgridAuth   = "InvalidRailgridAuth"
 	ReasonBackendNotFound       = "BackendNotFound"
 	ReasonBackendError          = "BackendError"
 	ReasonCodingSandboxDisabled = "CodingSandboxDisabled"

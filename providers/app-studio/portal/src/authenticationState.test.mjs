@@ -315,3 +315,21 @@ test('ignores a grant response from an earlier project context', async () => {
   assert.deepEqual(caller.grants.value, currentGrants.items)
   assert.equal(caller.grantsLoading.value, false)
 })
+
+test('keeps an in-flight authentication result across a token refresh for the same identity', async () => {
+  caller.resetScenario()
+  const identity = { orgUUID: 'org', workspaceUUID: 'workspace', user: { userId: 'user' } }
+  caller.setContext({ ...identity, token: 'old-token' })
+  let resolve
+  const pending = new Promise(done => { resolve = done })
+  caller.setAuthenticationResponses([pending])
+  const loading = caller.load()
+  caller.setContext({ ...identity, token: 'refreshed-token' })
+  const result = { enabled: false, supported: true, environments: [] }
+  resolve(result)
+  await loading
+  assert.equal(caller.state.value, result)
+  assert.equal(caller.loading.value, false)
+  assert.doesNotMatch(script, /props\.ctx\?\.token/)
+  assert.match(script, /watch\(\s*contextKey,/)
+})

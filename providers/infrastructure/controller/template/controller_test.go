@@ -362,8 +362,8 @@ func TestReconcilePublishesAndRevokesRailgridAuthCapability(t *testing.T) {
 	if len(got.Status.Capabilities) != 0 {
 		t.Fatalf("invalid auth schema retained stale capabilities: %+v", got.Status.Capabilities)
 	}
-	if ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != infrav1alpha1.ReasonInvalidSpec {
-		t.Fatalf("invalid auth schema Ready condition = %+v, want Ready=False/InvalidSpec", ready)
+	if ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != infrav1alpha1.ReasonInvalidRailgridAuth {
+		t.Fatalf("invalid auth schema Ready condition = %+v, want Ready=False/InvalidRailgridAuth", ready)
 	}
 
 	// Removing the declaration means unsupported. A still-valid Template can

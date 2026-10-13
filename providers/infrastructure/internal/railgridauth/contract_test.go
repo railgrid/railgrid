@@ -216,3 +216,33 @@ func writeGraphConfig(t *testing.T, tmpl *infrav1alpha1.Template, config map[str
 	}
 	tmpl.Spec.BackendConfig.Raw = raw
 }
+
+func TestValidateReportsExpectedExpressionWithoutLeakingActualValue(t *testing.T) {
+	for _, id := range []string{"gateDeployment", "apiDeployment"} {
+		t.Run(id, func(t *testing.T) {
+			tmpl := applicationTemplate(t)
+			setGraphEnv(t, tmpl, id, "RAILGRID_AUTH_ISSUER", "secret-incorrect-value")
+			err := Validate(tmpl)
+			if err == nil {
+				t.Fatal("expected wiring error")
+			}
+			for _, want := range []string{id, "RAILGRID_AUTH_ISSUER", canonicalAuthIssuer} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q does not identify %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), "secret-incorrect-value") {
+				t.Fatalf("error exposes actual env value: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsExpressionWhitespaceDrift(t *testing.T) {
+	tmpl := applicationTemplate(t)
+	setGraphEnv(t, tmpl, "apiDeployment", "RAILGRID_AUTH_ISSUER", strings.Replace(canonicalAuthIssuer, " != ", "!=", 1))
+	err := Validate(tmpl)
+	if err == nil || !strings.Contains(err.Error(), "RAILGRID_AUTH_ISSUER must exactly equal "+canonicalAuthIssuer) {
+		t.Fatalf("Validate() = %v, want exact expression guidance", err)
+	}
+}

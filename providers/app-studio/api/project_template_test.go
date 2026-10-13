@@ -115,14 +115,18 @@ func TestProjectTemplateRailgridAuthSupportRequiresDeclarationAndCurrentReadyCap
 		{name: "ready condition generation is stale", mutate: func(obj *unstructured.Unstructured) {
 			setRailgridAuthReadyConditionField(obj, "observedGeneration", int64(6))
 		}, wantReason: "pending"},
-		{name: "current invalid contract condition", mutate: func(obj *unstructured.Unstructured) {
+		{name: "unrelated invalid spec does not imply invalid auth", mutate: func(obj *unstructured.Unstructured) {
 			setRailgridAuthReadyConditionField(obj, "status", "False")
 			setRailgridAuthReadyConditionField(obj, "reason", "InvalidSpec")
+		}, wantReason: "pending"},
+		{name: "current invalid contract condition", mutate: func(obj *unstructured.Unstructured) {
+			setRailgridAuthReadyConditionField(obj, "status", "False")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidRailgridAuth")
 		}, wantReason: "invalid_contract"},
 		{name: "current invalid condition outranks stale aggregate generation", mutate: func(obj *unstructured.Unstructured) {
 			_ = unstructured.SetNestedField(obj.Object, int64(6), "status", "observedGeneration")
 			setRailgridAuthReadyConditionField(obj, "status", "False")
-			setRailgridAuthReadyConditionField(obj, "reason", "InvalidSpec")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidRailgridAuth")
 		}, wantReason: "invalid_contract"},
 		{name: "ready status has no verified capability", mutate: func(obj *unstructured.Unstructured) {
 			unstructured.RemoveNestedField(obj.Object, "status", "capabilities")

@@ -186,13 +186,13 @@ func TestProjectAuthenticationResponseReportsVerifiedTemplateSupport(t *testing.
 		{name: "invalid contract condition with stale aggregate status", template: true, mutate: func(obj *unstructured.Unstructured) {
 			_ = unstructured.SetNestedField(obj.Object, int64(6), "status", "observedGeneration")
 			setRailgridAuthReadyConditionField(obj, "status", "False")
-			setRailgridAuthReadyConditionField(obj, "reason", "InvalidSpec")
+			setRailgridAuthReadyConditionField(obj, "reason", "InvalidRailgridAuth")
 		}, wantReason: "invalid_contract"},
-		{name: "unrelated malformed component does not hide support error", template: true, mutate: func(obj *unstructured.Unstructured) {
+		{name: "unrelated malformed component does not imply invalid auth", template: true, mutate: func(obj *unstructured.Unstructured) {
 			_ = unstructured.SetNestedMap(obj.Object, map[string]any{"broken": map[string]any{"workspacePath": ""}}, "spec", "development", "components")
 			setRailgridAuthReadyConditionField(obj, "status", "False")
 			setRailgridAuthReadyConditionField(obj, "reason", "InvalidSpec")
-		}, wantReason: "invalid_contract"},
+		}, wantReason: "pending"},
 		{name: "unknown version", template: true, mutate: func(obj *unstructured.Unstructured) {
 			_ = unstructured.SetNestedField(obj.Object, "v2", "spec", "railgridAuth", "version")
 		}, wantReason: "unknown_version"},

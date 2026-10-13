@@ -53,7 +53,6 @@ function contextKey(): string {
     props.ctx?.orgUUID,
     props.ctx?.workspaceUUID,
     props.ctx?.user?.userId,
-    props.ctx?.token,
   ])
 }
 
@@ -247,7 +246,7 @@ function retry() {
 }
 
 watch(
-  () => [props.project.uid, props.project.name, props.ctx?.orgUUID, props.ctx?.workspaceUUID, props.ctx?.user?.userId, props.ctx?.token],
+  contextKey,
   () => {
     saving.value = false
     operation.value = null

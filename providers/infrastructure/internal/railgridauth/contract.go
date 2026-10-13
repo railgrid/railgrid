@@ -50,7 +50,7 @@ func Validate(tmpl *infrav1alpha1.Template) error {
 	if err := tmpl.Spec.ValidateRailgridAuth(); err != nil {
 		return err
 	}
-	if tmpl.Spec.Backend != "kro" {
+	if tmpl.Spec.Backend != infrav1alpha1.BackendKRO {
 		return fmt.Errorf("spec.railgridAuth currently requires spec.backend=kro so the controller can inspect its workload graph")
 	}
 	resources, err := backendResources(tmpl.Spec.BackendConfig)
@@ -58,6 +58,7 @@ func Validate(tmpl *infrav1alpha1.Template) error {
 		return err
 	}
 	var gateWired, apiWorkloadFound, apiWired bool
+	var gateMismatch, apiMismatch error
 	for _, raw := range resources {
 		resource, ok := raw.(map[string]any)
 		if !ok {
@@ -82,18 +83,36 @@ func Validate(tmpl *infrav1alpha1.Template) error {
 				continue
 			}
 			env := containerEnv(container)
-			if apiVersion == "apps/v1" && kind == "Deployment" && isAccessProxy(container, env) && hasCanonicalAuthEnv(env, true) {
-				gateWired = true
+			if apiVersion == "apps/v1" && kind == "Deployment" && isAccessProxy(container, env) {
+				if err := validateCanonicalAuthEnv(env, true); err != nil {
+					if gateMismatch == nil {
+						gateMismatch = fmt.Errorf("resource %q container %q: %w", id, container["name"], err)
+					}
+				} else {
+					gateWired = true
+				}
 			}
-			if isAPIWorkload && apiVersion == "apps/v1" && kind == "Deployment" && hasCanonicalAuthEnv(env, false) {
-				apiWired = true
+			if isAPIWorkload && apiVersion == "apps/v1" && kind == "Deployment" {
+				if err := validateCanonicalAuthEnv(env, false); err != nil {
+					if apiMismatch == nil {
+						apiMismatch = fmt.Errorf("resource %q container %q: %w", id, container["name"], err)
+					}
+				} else {
+					apiWired = true
+				}
 			}
 		}
 	}
 	if !gateWired {
+		if gateMismatch != nil {
+			return fmt.Errorf("spec.railgridAuth v1 requires the canonical KRO access-proxy Deployment: %w", gateMismatch)
+		}
 		return fmt.Errorf("spec.railgridAuth v1 requires the canonical KRO access-proxy Deployment and Railgrid Auth env expressions")
 	}
 	if !apiWorkloadFound || !apiWired {
+		if apiMismatch != nil {
+			return fmt.Errorf("spec.railgridAuth v1 requires the api development component's KRO Deployment: %w", apiMismatch)
+		}
 		return fmt.Errorf("spec.railgridAuth v1 requires the api development component's KRO Deployment (id api or apiDeployment) with canonical issuer, origin, application ID, and instance UID env expressions")
 	}
 	return nil
@@ -158,16 +177,27 @@ func isAccessProxy(container map[string]any, env map[string]string) bool {
 		env["RAILGRID_ACCESS_PROXY_INSTANCE_RESOURCE"] == "instances"
 }
 
-func hasCanonicalAuthEnv(env map[string]string, includeGateFields bool) bool {
-	if env["RAILGRID_AUTH_ISSUER"] != canonicalAuthIssuer ||
-		env["RAILGRID_AUTH_AUDIENCE"] != canonicalAuthAudience ||
-		env["RAILGRID_AUTH_ORIGIN"] != canonicalAuthOrigin ||
-		env["RAILGRID_AUTH_INSTANCE_UID"] != canonicalAuthInstanceUID {
-		return false
+// validateCanonicalAuthEnv recognizes the exact v1 wiring, not arbitrary
+// semantically equivalent CEL. Never include actual values in errors: a
+// misconfigured environment variable could contain a secret.
+func validateCanonicalAuthEnv(env map[string]string, includeGateFields bool) error {
+	checks := []struct{ name, want string }{
+		{"RAILGRID_AUTH_ISSUER", canonicalAuthIssuer},
+		{"RAILGRID_AUTH_AUDIENCE", canonicalAuthAudience},
+		{"RAILGRID_AUTH_ORIGIN", canonicalAuthOrigin},
+		{"RAILGRID_AUTH_INSTANCE_UID", canonicalAuthInstanceUID},
+		{"RAILGRID_ACCESS_PROXY_RAILGRID_AUTH", canonicalRailgridAuthToggle},
+		{"RAILGRID_AUTH_ENVIRONMENT", canonicalAuthEnvironment},
 	}
-	return !includeGateFields ||
-		(env["RAILGRID_ACCESS_PROXY_RAILGRID_AUTH"] == canonicalRailgridAuthToggle &&
-			env["RAILGRID_AUTH_ENVIRONMENT"] == canonicalAuthEnvironment)
+	if !includeGateFields {
+		checks = checks[:4]
+	}
+	for _, check := range checks {
+		if env[check.name] != check.want {
+			return fmt.Errorf("env %s must exactly equal %s", check.name, check.want)
+		}
+	}
+	return nil
 }
 
 func nonEmpty(value string) bool {

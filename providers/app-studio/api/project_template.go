@@ -204,7 +204,7 @@ func projectTemplateRailgridAuthReadyCondition(obj *unstructured.Unstructured, g
 		case "True":
 			return true, true, false
 		case "False":
-			if condition["reason"] == "InvalidSpec" {
+			if condition["reason"] == "InvalidRailgridAuth" {
 				return false, true, true
 			}
 			return false, true, false
@@ -232,20 +232,21 @@ func projectTemplateHasCapability(obj *unstructured.Unstructured, name, version 
 	return false
 }
 
+var projectTemplateRailgridAuthMessages = map[string]string{
+	projectTemplateRailgridAuthReasonSupported:   "This template has a current, Ready Railgrid Auth v1 contract.",
+	projectTemplateRailgridAuthReasonNotSelected: "Choose a template that explicitly supports Railgrid Auth for this project before enabling it.",
+	projectTemplateRailgridAuthReasonMissing:     "This Project's selected template is no longer available. To set up Railgrid Auth on a new app, create a new project with a template that explicitly supports Railgrid Auth.",
+	projectTemplateRailgridAuthReasonNotDeclared: "This template does not declare Railgrid Auth support. Create a new project with a template that explicitly supports Railgrid Auth.",
+	projectTemplateRailgridAuthReasonPending:     "Railgrid Auth support is still being checked for this template. Retry after it becomes Ready, or ask a workspace admin if its status stays out of date.",
+	projectTemplateRailgridAuthReasonInvalid:     "This template's Railgrid Auth contract is invalid or has not been verified. Ask the template owner to correct it, or create a new project with a template that explicitly supports Railgrid Auth.",
+	projectTemplateRailgridAuthReasonUnknown:     "This template declares a Railgrid Auth version this App Studio release cannot use. Create a new project with a template that explicitly supports Railgrid Auth v1.",
+}
+
 func projectTemplateRailgridAuthResult(reason string) projectTemplateRailgridAuthSupport {
-	messages := map[string]string{
-		projectTemplateRailgridAuthReasonSupported:   "This template has a current, Ready Railgrid Auth v1 contract.",
-		projectTemplateRailgridAuthReasonNotSelected: "Choose a template that explicitly supports Railgrid Auth for this project before enabling it.",
-		projectTemplateRailgridAuthReasonMissing:     "This Project's selected template is no longer available. To set up Railgrid Auth on a new app, create a new project with a template that explicitly supports Railgrid Auth.",
-		projectTemplateRailgridAuthReasonNotDeclared: "This template does not declare Railgrid Auth support. Create a new project with a template that explicitly supports Railgrid Auth.",
-		projectTemplateRailgridAuthReasonPending:     "Railgrid Auth support is still being checked for this template. Retry after it becomes Ready, or ask a workspace admin if its status stays out of date.",
-		projectTemplateRailgridAuthReasonInvalid:     "This template's Railgrid Auth contract is invalid or has not been verified. Ask the template owner to correct it, or create a new project with a template that explicitly supports Railgrid Auth.",
-		projectTemplateRailgridAuthReasonUnknown:     "This template declares a Railgrid Auth version this App Studio release cannot use. Create a new project with a template that explicitly supports Railgrid Auth v1.",
-	}
 	return projectTemplateRailgridAuthSupport{
 		Supported: reason == projectTemplateRailgridAuthReasonSupported,
 		Reason:    reason,
-		Message:   messages[reason],
+		Message:   projectTemplateRailgridAuthMessages[reason],
 	}
 }
 
