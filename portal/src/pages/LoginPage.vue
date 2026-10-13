@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { consumePortalNext, rememberPortalNext } from '@/auth/portalNext'
-import { consumeAppAccessNext, rememberAppAccessNext } from '@/auth/appAccessNext'
+import { consumeAppAccessNext, peekAppAccessNext, rememberAppAccessNext } from '@/auth/appAccessNext'
 import { API_PATHS } from '@/lib/constants'
 import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor, Plus } from 'lucide-vue-next'
 
@@ -40,7 +40,15 @@ onMounted(async () => {
   // hub session; remember the hub-relative continuation across the flow.
   rememberAppAccessNext(search.get('next'))
   rememberPortalNext(search.get('returnTo'))
+  // Login is public, so the protected-route guard cannot serve as the
+  // browser-session barrier for a cached portal bearer. App.vue shares this
+  // initialization promise when it starts its own mount-time check.
+  await auth.detectAuthMode()
   if (auth.token && !switching) {
+    if (peekAppAccessNext() && !auth.browserSessionReady) {
+      loginError.value = 'Could not restore the browser session. Sign in again to continue.'
+      return
+    }
     const next = consumeAppAccessNext()
     if (next) {
       window.location.assign(next)
@@ -49,7 +57,6 @@ onMounted(async () => {
     router.replace(consumePortalNext() ?? '/')
     return
   }
-  await auth.detectAuthMode()
   if (switching && oidcAvailable.value) handleOIDCLogin(true)
 })
 

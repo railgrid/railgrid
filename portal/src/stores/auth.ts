@@ -25,6 +25,7 @@ export const useAuthStore = defineStore('auth', () => {
   let selfRequest: Promise<void> | null = null
   const authMode = ref<AuthMode | null>(null)
   const healthz = ref<HealthzResponse | null>(null)
+  const browserSessionReady = ref(false)
   const loading = ref(false)
   const error = ref<string | null>(null)
   const initialized = ref(false)
@@ -73,13 +74,20 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function initializeAuth() {
     try {
-      const h = await fetchHealthz()
-      healthz.value = h
-      // tokenLogin === false means the hub explicitly disabled interactive
-      // token login (e.g. OIDC-only deployments); absent = legacy hub that
-      // always offered it.
-      const tokenLoginOffered = h.tokenLogin !== false
-      authMode.value = h.oidc ? (tokenLoginOffered ? 'both' : 'oidc') : 'token'
+      try {
+        const h = await fetchHealthz()
+        healthz.value = h
+        // tokenLogin === false means the hub explicitly disabled interactive
+        // token login (e.g. OIDC-only deployments); absent = legacy hub that
+        // always offered it.
+        const tokenLoginOffered = h.tokenLogin !== false
+        authMode.value = h.oidc ? (tokenLoginOffered ? 'both' : 'oidc') : 'token'
+      } catch {
+        // The portal can still restore a cached browser session when auth
+        // discovery is temporarily unavailable. Keep the login form usable.
+        authMode.value = 'token'
+      }
+
       // A hard refresh may retain a portal bearer while the hub's opaque
       // session cookie has expired or was cleared. Re-establish it through a
       // same-origin request; failures are non-fatal because the bearer-backed
@@ -87,13 +95,15 @@ export const useAuthStore = defineStore('auth', () => {
       if (token.value) {
         try {
           const valid = await getBearerToken()
-          if (valid) await bootstrapBrowserSession(valid)
+          if (valid) {
+            await bootstrapBrowserSession(valid)
+            browserSessionReady.value = true
+          }
         } catch {
+          browserSessionReady.value = false
           /* authFetch will surface a real token failure through the session event */
         }
       }
-    } catch {
-      authMode.value = 'token'
     } finally {
       // Protected routes use this initialization as a barrier. In particular,
       // provider UIs must not mount a private preview iframe before a retained
@@ -127,6 +137,7 @@ export const useAuthStore = defineStore('auth', () => {
       user.value = { email: auth.email, userId: auth.userId }
       self.value = null
       clusterName.value = auth.clusterName
+      browserSessionReady.value = true
       resetSessionExpired()
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Login failed'
@@ -142,6 +153,7 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = { email: auth.email, userId: auth.userId }
     self.value = null
     clusterName.value = auth.clusterName
+    browserSessionReady.value = true
     resetSessionExpired()
   }
 
@@ -170,6 +182,7 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     self.value = null
     clusterName.value = null
+    browserSessionReady.value = false
   }
 
   // setClusterName retargets every `/clusters/{clusterName}` request to a
@@ -209,6 +222,7 @@ export const useAuthStore = defineStore('auth', () => {
     clusterName,
     authMode,
     healthz,
+    browserSessionReady,
     loading,
     error,
     initialized,
