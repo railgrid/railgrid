@@ -24,7 +24,7 @@ test('shows development access in Project Settings only for compatible templates
   assert.match(app, /developmentPreviewAccessModesFromAuthorization/)
   assert.match(app, /includes\('private'\).*includes\('public'\)/s)
   assert.match(selector, /id="development-preview-access-heading"[\s\S]*>Preview access</)
-  assert.match(selector, /aria-label="Development preview access"/)
+  assert.match(selector, /aria-describedby="development-preview-access-hint"/)
   assert.match(selector, /option value="private">Workspace only/)
   assert.match(selector, /option value="public">Anyone with link/)
   assert.match(selector, /developmentPreviewAccessBusy \|\| !developmentPreviewAccessConverged/)

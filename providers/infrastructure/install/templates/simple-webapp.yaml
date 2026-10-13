@@ -131,18 +131,22 @@ spec:
       port:
         type: integer
         default: 8080
-        description: "Port the container listens on (dev mode: the port the dev server must bind)."
+        title: Port
+        description: "Port your app listens on. Defaults to 8080; in development, bind the dev server to this port and to 0.0.0.0."
       replicas:
         type: integer
         default: 1
         minimum: 1
         maximum: 10
+        title: Replicas
+        description: "Number of app copies to run. Defaults to 1; choose 1 to 10."
       env:
         type: object
         additionalProperties:
           type: string
         default: {}
-        description: "Environment variables for the container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT, and DATABASE_URL / REDIS_URL when a connection is set) win on name conflicts. Values are stored world-readable — not for secrets; use connections for database/cache credentials."
+        title: Environment variables
+        description: "Set configuration your app reads at runtime. Changes update in place. The platform's PORT and any connected DATABASE_URL or REDIS_URL take precedence. Values are stored world-readable; use connections for database and cache credentials, and never enter passwords, API keys, or other secrets."
       # Fixed slots, not a list input: simpleschema.go gives a list of objects
       # no item properties on the kro side, and the dev overlay copies the
       # container env list literally, so a CEL-built env list would be dropped

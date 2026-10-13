@@ -32,7 +32,8 @@ async function contextStateHarness(t, initialContext) {
     const call = node.expression
     const source = call.arguments[0]
     return call.expression.getText(ast) === 'watch' && source && ts.isArrowFunction(source) &&
-      source.body.getText(ast) === 'appContextFingerprint(props.ctx)'
+      source.body.getText(ast) === 'appContextFingerprint(props.ctx)' &&
+      call.arguments[1]?.getText(ast).includes('invalidateProjectContextState()')
   })
   assert.equal(statements.length, 2)
   const outputText = compileStatements(statements)

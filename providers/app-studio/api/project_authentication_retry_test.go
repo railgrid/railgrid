@@ -48,7 +48,7 @@ func TestConfigureAuthenticationRepairsBindingsWithoutChangingFlag(t *testing.T)
 			added := p.Spec.Environments[0].DeepCopy()
 			added.Name = "development"
 			p.Spec.Environments = append(p.Spec.Environments, *added)
-			template := applicationTemplateObject()
+			template := readyRailgridAuthTemplateObject()
 			properties := map[string]any{
 				bindings.AuthEnabledField:     map[string]any{"type": "boolean"},
 				bindings.AuthAppIDField:       map[string]any{"type": "string"},

@@ -266,10 +266,10 @@ test('only marks external access done when a ready publication has a URL', () =>
   }
   const resolving = releasePipelineView(readiness, { published: true, ready: true })
   assert.equal(resolving.steps.find((step) => step.key === 'access').state, 'current')
-  assert.match(resolving.message, /Resolving external access/)
+  assert.match(resolving.message, /Preparing its production link/)
   const live = releasePipelineView(readiness, { published: true, ready: true, url: 'https://demo.example.test' })
   assert.equal(live.steps.find((step) => step.key === 'access').state, 'done')
-  assert.match(live.message, /external access enabled/)
+  assert.match(live.message, /Your production app is live/)
 })
 
 test('does not use a stale workflow run to explain the selected commit', () => {
@@ -308,7 +308,7 @@ test('production readiness advances access without claiming it is already enable
     production: { name: 'demo-prod', phase: 'Ready' },
   }, { published: false, ready: false })
   assert.equal(pipeline.state, 'production_ready')
-  assert.match(pipeline.message, /Choose who can access it/)
+  assert.match(pipeline.message, /Choose who can open it/)
   assert.equal(pipeline.steps.find((step) => step.key === 'access').state, 'current')
 })
 
@@ -366,7 +366,9 @@ test('keeps a stale Ready production revision in deployment until the requested 
   })
   assert.equal(pipeline.state, 'deploying')
   assert.equal(pipeline.transitional, true)
-  assert.match(pipeline.detail, /Requested rollout requeste.*older-41/)
+  assert.equal(pipeline.requestedRevision, 'requested-42')
+  assert.equal(pipeline.observedRevision, 'older-41')
+  assert.match(pipeline.detail, /Waiting for the production app/)
   assert.equal(pipeline.steps.find((step) => step.key === 'deploy').state, 'current')
 })
 

@@ -24,6 +24,7 @@ export function assistantSkillsRequestIsCurrent(
 </script>
 
 <script setup lang="ts">
+import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   Check,
@@ -324,43 +325,39 @@ function friendlyError(error: unknown, fallback: string): string {
 </script>
 
 <template>
-  <div class="grid min-h-full content-start gap-3">
-    <header class="flex flex-wrap items-center gap-3 border-b border-border-subtle pb-3">
-      <div class="mr-auto min-w-48">
-        <h2 class="text-[18px] font-semibold tracking-tight text-text-primary">Skills</h2>
-        <p class="mt-0.5 text-[11px] text-text-secondary">Task-specific guidance available to App Studio</p>
-      </div>
-      <label class="relative min-w-56 flex-1 sm:max-w-sm">
-        <Search class="pointer-events-none absolute left-3 top-2.5 h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
-        <input
-          v-model="query"
-          type="search"
-          class="app-studio-touch-target k-input skills-search-input h-9 min-w-0"
-          placeholder="Search skills"
-          aria-label="Search skills"
-        />
-        <button
-          v-if="query"
-          type="button"
-          class="app-studio-touch-target absolute right-2 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-          aria-label="Clear skill search"
-          @click="query = ''"
-        >
-          <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
-      </label>
+  <AIWorkbenchPane title="Skills" description="Task-specific guidance available to App Studio.">
+    <template #actions>
       <button
-          type="button"
-          class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-          :disabled="catalogLoading || actionBusy || !projectName"
-          aria-label="Refresh skills"
-          @click="refreshCatalog()"
-        >
-          <Loader2 v-if="catalogLoading" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-          <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          Refresh
-        </button>
-    </header>
+        type="button"
+        class="k-btn k-btn--ghost"
+        :disabled="catalogLoading || actionBusy || !projectName"
+        aria-label="Refresh skills"
+        @click="refreshCatalog()"
+      >
+        <Loader2 v-if="catalogLoading" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+        <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        Refresh
+      </button>
+    </template>
+    <label class="relative w-full min-w-0 max-w-sm">
+      <Search class="pointer-events-none absolute left-3 top-2.5 h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
+      <input
+        v-model="query"
+        type="search"
+        class="app-studio-touch-target k-input skills-search-input h-9 min-w-0"
+        placeholder="Search skills"
+        aria-label="Search skills"
+      />
+      <button
+        v-if="query"
+        type="button"
+        class="app-studio-touch-target absolute right-2 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+        aria-label="Clear skill search"
+        @click="query = ''"
+      >
+        <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </button>
+    </label>
 
     <div v-if="!projectName" class="rounded-xl border border-warning/30 bg-warning-subtle p-4 text-[12px] leading-5 text-warning" role="status">
       Open an existing project to manage its skills. Bundled skills become available when a project is selected.
@@ -459,18 +456,21 @@ function friendlyError(error: unknown, fallback: string): string {
                 type="button"
                 role="switch"
                 :aria-checked="selectedSkill.enabled !== false"
-                :aria-label="selectedSkill.enabled === false ? 'Enable skill' : 'Disable skill'"
-                class="app-studio-touch-target flex h-11 w-11 shrink-0 items-center justify-center rounded-sm bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Enable skill"
+                class="app-studio-touch-target flex h-11 shrink-0 items-center justify-center gap-2.5 rounded-md bg-transparent px-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="actionBusy"
                 @click="toggleSelectedSkill"
               >
+                <span>{{ selectedSkill.enabled === false ? 'Skill disabled' : 'Skill enabled' }}</span>
                 <span class="k-toggle" aria-hidden="true" :aria-checked="selectedSkill.enabled !== false">
                   <span class="k-toggle__knob" />
                 </span>
               </button>
+              <div class="ml-2 border-l border-border-subtle pl-2">
               <button ref="detailCloseRef" type="button" class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
                 <X class="h-5 w-5" :stroke-width="1.75" />
               </button>
+              </div>
             </div>
           </header>
 
@@ -502,7 +502,7 @@ function friendlyError(error: unknown, fallback: string): string {
         </section>
       </div>
     </Teleport>
-  </div>
+  </AIWorkbenchPane>
 </template>
 
 <style scoped>

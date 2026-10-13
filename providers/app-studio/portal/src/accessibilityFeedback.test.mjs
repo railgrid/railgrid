@@ -70,7 +70,7 @@ test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.match(app, /class="app-studio-touch-target absolute right-1\.5 top-1\.5/)
   assert.match(app, /class="app-studio-touch-target flex h-8 w-8[^>]*aria-label="Prepare project for review"/)
   assert.match(app, /class="app-studio-touch-target flex h-8 w-8[^>]*aria-label="Delete annotation"/)
-  assert.match(app, /aria-label="Refresh production status" class="app-studio-touch-target/)
+  assert.match(app, /aria-label="Refresh production status" class="k-btn k-btn--ghost/)
   assert.match(app, /import AIWorkbenchTabs from '\.\/agentkit\/AIWorkbenchTabs\.vue'/)
   assert.match(app, /const workbenchTabItems = computed<AIWorkbenchTabView\[\]>/)
   assert.match(app, /workbenchTabItems[\s\S]*selected: workbench\.value\.activeTabID === tab\.id[\s\S]*controls: workbenchTabPanelID\(tab\)/)

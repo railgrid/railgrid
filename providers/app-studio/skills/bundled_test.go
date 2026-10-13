@@ -50,7 +50,7 @@ func TestBundledRailgridAuthSkillIsDiscoverableAndReadOnly(t *testing.T) {
 	}
 
 	checks := map[string][]string{
-		"SKILL.md":   {"get_project_authentication", "configure_project_authentication", "only after the project owner explicitly asks", "first Railgrid user", "third-party"},
+		"SKILL.md":   {"get_project_authentication", "configure_project_authentication", "only after the project owner explicitly asks", "supportReason", "do not switch or update that Project's Template", "first Railgrid user", "third-party"},
 		"express.md": {"@railgrid/auth-node", "X-Railgrid-App-Identity", "RAILGRID_AUTH_AUDIENCE"},
 		"react.md":   {"/__railgrid/auth/login?returnTo=/", "/__railgrid/auth/logout", "401"},
 		"ownership.md": {

@@ -53,35 +53,36 @@ type projectAuthenticationEnvironment struct {
 type projectAuthenticationResponse struct {
 	Enabled             bool                               `json:"enabled"`
 	Supported           bool                               `json:"supported"`
+	SupportReason       string                             `json:"supportReason"`
+	SupportMessage      string                             `json:"supportMessage"`
 	Environments        []projectAuthenticationEnvironment `json:"environments"`
 	ApplicationVerified bool                               `json:"applicationVerified"`
 	Message             string                             `json:"message"`
 }
 
-func projectAuthenticationSupported(info projectTemplateInfo) bool {
-	properties, _ := info.ProductionSchema["properties"].(map[string]any)
-	field, _ := properties[bindings.AuthEnabledField].(map[string]any)
-	if field["type"] != "boolean" || info.Components["api"].WorkspacePath == "" {
-		return false
-	}
-	for _, name := range []string{bindings.AuthAppIDField, bindings.AuthEnvironmentField, "railgridAuthInstanceUID"} {
-		value, _ := properties[name].(map[string]any)
-		if value["type"] != "string" {
-			return false
-		}
-	}
-	return true
-}
-
 func (s *Server) authenticationResponse(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (projectAuthenticationResponse, error) {
-	response := projectAuthenticationResponse{Enabled: p.Spec.Authentication.Enabled, Environments: []projectAuthenticationEnvironment{}, Message: "Railgrid Auth identifies approved users. Application middleware and ownership checks must still be implemented and tested."}
-	if p.Spec.Template != nil {
-		info, err := fetchProjectTemplate(ctx, c, p.Spec.Template.Name)
-		if err != nil {
-			return response, err
-		}
-		response.Supported = projectAuthenticationSupported(info)
+	support := projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonNotSelected)
+	response := projectAuthenticationResponse{
+		Enabled:        p.Spec.Authentication.Enabled,
+		SupportReason:  support.Reason,
+		SupportMessage: support.Message,
+		Environments:   []projectAuthenticationEnvironment{},
+		Message:        "Railgrid Auth identifies approved users. Application middleware and ownership checks must still be implemented and tested.",
 	}
+	if p.Spec.Template != nil {
+		template, err := fetchProjectTemplateObject(ctx, c, p.Spec.Template.Name)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return response, err
+			}
+			support = projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonMissing)
+		} else {
+			support = projectTemplateRailgridAuthSupportFromUnstructured(template)
+		}
+	}
+	response.Supported = support.Supported
+	response.SupportReason = support.Reason
+	response.SupportMessage = support.Message
 	for _, env := range p.Spec.Environments {
 		for _, binding := range env.Bindings {
 			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderResource || binding.ResourceRef == nil || binding.Provider != "app-studio" {
@@ -169,18 +170,22 @@ func (s *Server) configureAuthentication(ctx context.Context, c *asclient.Client
 		return current, nil
 	}
 	if enabled {
+		if current.Spec.Template == nil {
+			return nil, newValidationError(projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonNotSelected).Message)
+		}
+		template, err := fetchProjectTemplateObject(ctx, c, current.Spec.Template.Name)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, newValidationError(projectTemplateRailgridAuthResult(projectTemplateRailgridAuthReasonMissing).Message)
+			}
+			return nil, err
+		}
+		support := projectTemplateRailgridAuthSupportFromUnstructured(template)
+		if !support.Supported {
+			return nil, newValidationError(support.Message)
+		}
 		if err := s.checkAuthenticationService(ctx); err != nil {
 			return nil, err
-		}
-		if current.Spec.Template == nil {
-			return nil, newValidationError("select a supported application template before enabling Railgrid Auth")
-		}
-		info, err := fetchProjectTemplate(ctx, c, current.Spec.Template.Name)
-		if err != nil {
-			return nil, err
-		}
-		if !projectAuthenticationSupported(info) {
-			return nil, newValidationError("the selected template does not support Railgrid Auth; update the application template before enabling it")
 		}
 	}
 	return c.Projects().Update(ctx, current, metav1.UpdateOptions{})
@@ -261,7 +266,7 @@ func projectAuthenticationTools(s *Server) []projectAssistantTool {
 			response, err := s.authenticationResponse(ctx, c, p)
 			return projectAssistantToolJSONResult(response, err)
 		}},
-		projectAssistantToolFunc{spec: projectAssistantToolSpec{Name: "configure_project_authentication", Description: "Enable or disable Railgrid Auth for this Project after a user requests authentication. Does not alter sharing or add membership; integrate the supported SDK and test backend ownership checks separately.", Parameters: json.RawMessage(`{"type":"object","properties":{"enabled":{"type":"boolean"}},"required":["enabled"],"additionalProperties":false}`), Risk: projectAssistantToolRiskRuntime}, call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+		projectAssistantToolFunc{spec: projectAssistantToolSpec{Name: "configure_project_authentication", Description: "Enable or disable Railgrid Auth for this Project after a user requests authentication. First inspect supportReason from get_project_authentication and enable only when supported is true. For template_not_selected, choose an auth-supporting template for this project through the existing template selection flow. For template_missing, explain that the selected Template is unavailable and preserve the existing setting; disabling remains available. For pending, explain that support is still being checked and retry after the template becomes Ready. For not_declared, invalid_contract, or unknown_version, do not switch or update this Project's template for auth; explain supportMessage and recommend a new project from a template that explicitly supports Railgrid Auth. This does not alter sharing or add membership; integrate the supported SDK and test backend ownership checks separately.", Parameters: json.RawMessage(`{"type":"object","properties":{"enabled":{"type":"boolean"}},"required":["enabled"],"additionalProperties":false}`), Risk: projectAssistantToolRiskRuntime}, call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
 			if s == nil || req.Project == nil {
 				return "", fmt.Errorf("a configured Project is required")
 			}

@@ -313,6 +313,81 @@ func TestReconcilePublishesBrowserCapabilityAfterCurrentBackendReady(t *testing.
 	}
 }
 
+func TestReconcilePublishesAndRevokesRailgridAuthCapability(t *testing.T) {
+	raw, err := os.ReadFile("../../install/templates/application.yaml")
+	if err != nil {
+		t.Fatalf("read application seed: %v", err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatalf("decode application seed: %v", err)
+	}
+	tmpl.Generation = 1
+	r, stb := newTestReconciler(t, &tmpl)
+	registry := backend.NewRegistry()
+	if err := registry.Register(&kroNamedStub{Backend: stb}); err != nil {
+		t.Fatalf("register kro test backend: %v", err)
+	}
+	r.Backends = registry
+
+	reconcileUntilSettled(t, r, tmpl.Name)
+	var got infrav1alpha1.Template
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: tmpl.Name}, &got); err != nil {
+		t.Fatalf("get application Template: %v", err)
+	}
+	want := infrav1alpha1.TemplateCapability{
+		Name: infrav1alpha1.CapabilityRailgridAuth, Version: infrav1alpha1.CapabilityRailgridAuthV1,
+	}
+	if got.Status.ObservedGeneration != got.Generation || len(got.Status.Capabilities) != 1 || got.Status.Capabilities[0] != want {
+		t.Fatalf("application status generation=%d capabilities=%+v, want current generation %d and %+v", got.Status.ObservedGeneration, got.Status.Capabilities, got.Generation, want)
+	}
+	if ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != got.Generation {
+		t.Fatalf("application Ready condition = %+v, want current Ready=True", ready)
+	}
+
+	// A malformed declaration revokes the old proof before the template is
+	// ready again, even though the previous generation had the capability.
+	validSchema := append([]byte(nil), got.Spec.Schema.Raw...)
+	got.Spec.Schema.Raw = []byte(`{"type":"object","properties":{}}`)
+	got.Generation++
+	if err := r.Client.Update(context.Background(), &got); err != nil {
+		t.Fatalf("update invalid auth schema: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: got.Name}}); err != nil {
+		t.Fatalf("reconcile invalid auth schema: %v", err)
+	}
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: got.Name}, &got); err != nil {
+		t.Fatalf("get invalid application Template: %v", err)
+	}
+	if len(got.Status.Capabilities) != 0 {
+		t.Fatalf("invalid auth schema retained stale capabilities: %+v", got.Status.Capabilities)
+	}
+	if ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != infrav1alpha1.ReasonInvalidSpec {
+		t.Fatalf("invalid auth schema Ready condition = %+v, want Ready=False/InvalidSpec", ready)
+	}
+
+	// Removing the declaration means unsupported. A still-valid Template can
+	// be Ready, but the controller must not infer the feature from legacy fields.
+	got.Spec.Schema.Raw = validSchema
+	got.Spec.RailgridAuth = nil
+	got.Generation++
+	if err := r.Client.Update(context.Background(), &got); err != nil {
+		t.Fatalf("remove auth declaration: %v", err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: got.Name}}); err != nil {
+		t.Fatalf("reconcile omitted auth declaration: %v", err)
+	}
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: got.Name}, &got); err != nil {
+		t.Fatalf("get template without auth declaration: %v", err)
+	}
+	if got.Status.ObservedGeneration != got.Generation || len(got.Status.Capabilities) != 0 {
+		t.Fatalf("omitted declaration status generation=%d capabilities=%+v, want current and no capability", got.Status.ObservedGeneration, got.Status.Capabilities)
+	}
+	if ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady); ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != got.Generation {
+		t.Fatalf("template without auth declaration Ready condition = %+v, want current Ready=True", ready)
+	}
+}
+
 func TestReconcileRevokesBrowserCapabilityBeforeDeletionFinalization(t *testing.T) {
 	tmpl := newTestTemplate(t, "browser")
 	tmpl.Status.Capabilities = []infrav1alpha1.TemplateCapability{{

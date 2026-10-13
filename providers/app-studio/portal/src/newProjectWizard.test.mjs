@@ -70,6 +70,43 @@ test('submitted landing idea renders one stable preparation surface without dupl
   }
 })
 
+test('auth-compatible creation opens as an editable draft and does not start planning automatically', async () => {
+  const calls = []
+  const originalPlanProject = api.planProject
+  api.planProject = async (_ctx, body) => {
+    calls.push(body)
+    return { displayName: 'Protected app', repositoryName: 'protected-app', availableTemplates: [] }
+  }
+
+  try {
+    const html = await renderToString(createSSRApp(NewProjectWizard, {
+      ctx: null,
+      authCompatibleOnly: true,
+      initialDraft: 'Create a new app with protected user data.',
+    }))
+
+    assert.deepEqual(calls, [])
+    assert.match(html, /Create a compatible project/)
+    assert.match(html, /Your current project stays unchanged/)
+    assert.match(html, /Checking compatible templates…/)
+    assert.match(html, /Create a new app with protected user data\./)
+    assert.doesNotMatch(html, /Prepare your project/)
+  } finally {
+    api.planProject = originalPlanProject
+  }
+})
+
+test('auth-compatible planning and confirmation fail closed on unverified or changed template choices', () => {
+  assert.match(wizardSource, /template\?\.railgridAuthSupported === true && template\.railgridAuthReason === 'supported'/)
+  assert.match(wizardSource, /templateName: requiredTemplate/)
+  assert.match(wizardSource, /result\.template !== requiredTemplate/)
+  assert.match(wizardSource, /supportedChoices\.some\(\(template\) => template\.name === requiredTemplate\)/)
+  assert.match(wizardSource, /creationChecking\) return/)
+  assert.match(appSource, /api\.listDevelopmentTemplates\(props\.ctx\)[\s\S]*selectedTemplate\?\.railgridAuthSupported !== true[\s\S]*selectedTemplate\.railgridAuthReason !== 'supported'/)
+  assert.match(appSource, /@create-compatible-project="openAuthCompatibleProjectCreation"/)
+  assert.match(appSource, /@setup-auth="setupAuthInCurrentProjectDraft"/)
+})
+
 test('confirmation contract preserves the request and exposes editable name, template, and starter-code details', () => {
   assert.match(wizardSource, />Your request<\/div>[\s\S]*\{\{ prompt \}\}/)
   assert.match(wizardSource, /<span[^>]*>Project name<\/span>[\s\S]*v-model="displayName"/)
@@ -132,9 +169,9 @@ test('planning failures remain honest and retain retry/edit affordances for a su
 })
 
 test('confirmed details emit the exact durable create payload and honor the disabled gate', () => {
-  assert.match(wizardSource, /function confirmCreate\(\) \{[\s\S]*if \(props\.disabled\) return[\s\S]*emit\('create', \{[\s\S]*prompt: prompt\.value\.trim\(\),[\s\S]*templateName: chosenTemplate\.value \|\| undefined,[\s\S]*displayName: displayName\.value\.trim\(\) \|\| undefined,[\s\S]*\}\)[\s\S]*\}/)
+  assert.match(wizardSource, /function confirmCreate\(\) \{[\s\S]*if \(props\.disabled \|\| props\.creationChecking\) return[\s\S]*emit\('create', \{[\s\S]*prompt: prompt\.value\.trim\(\),[\s\S]*templateName: chosenTemplate\.value \|\| undefined,[\s\S]*displayName: displayName\.value\.trim\(\) \|\| undefined,[\s\S]*\}\)[\s\S]*\}/)
   assert.match(wizardSource, /@click="confirmCreate"/)
-  assert.match(wizardSource, /:disabled="disabled"/)
+  assert.match(wizardSource, /:disabled="disabled \|\| creationChecking"/)
 })
 
 test('wizard keeps responsive controls and long blueprint content usable', () => {
@@ -162,7 +199,7 @@ test('App replaces the landing composer with the wizard and wires cancel to rest
   const wizardBlock = appSource.match(/<template v-else-if="wizardOpen">[\s\S]*?<\/template>/)?.[0]
   assert.ok(wizardBlock, 'wizard must occupy the landing surface when open')
   assert.match(wizardBlock, /<NewProjectWizard/)
-  assert.match(wizardBlock, /:initial-prompt="prompt"/)
+  assert.match(wizardBlock, /:initial-prompt="authCompatibleCreation \? undefined : prompt"/)
   assert.match(wizardBlock, /@cancel="onWizardCancel"/)
   assert.match(appSource, /<template v-else>\s*<div[\s\S]*?<form[\s\S]*<AssistantPreProjectComposer[\s\S]*v-if="!wizardOpen"/)
   assert.match(appSource, /:class="wizardOpen \|\| firstTimeSetupVisible \? 'items-start' : 'items-center'"/)
@@ -183,17 +220,25 @@ test('wizard handoff keeps the existing readiness and project/thread start path 
   const handoff = appSource.match(/async function onWizardCreate\([\s\S]*?\n\}/)?.[0]
   assert.ok(handoff, 'wizard create handler must remain explicit')
   assert.match(handoff, /prompt\.value = payload\.prompt/)
-  assert.match(handoff, /await projectCreationSubmit\.run\(ensureCreateSetupReady, async \(\) =>/)
+  assert.match(handoff, /await projectCreationSubmit\.run\(async \(\) => \{[\s\S]*ensureCreateSetupReady\(\)/)
+  assert.ok(handoff.indexOf('ensureCreateSetupReady()') < handoff.indexOf('const templates = await api.listDevelopmentTemplates(props.ctx)'), 'auth template support is rechecked after setup and before project creation')
   assert.ok(handoff.indexOf('projectCreationSubmit.run') < handoff.indexOf('wizardOpen.value = false'), 'guarded readiness must pass before closing the confirmation surface')
   assert.match(appSource, /:disabled="projectCreationPending \|\| busy \|\| !canStartProjectFromPrompt"/)
   assert.match(appSource, /async function onWizardCancel\(\) \{\s+projectCreationSubmit\.invalidate\(\)/)
   assert.match(handoff, /createProjectAndStartConversation\(payload\.prompt, \{[\s\S]*templateName: payload\.templateName,[\s\S]*displayName: payload\.displayName/)
+  assert.match(handoff, /forceNewProject: authMode/)
   assert.match(appSource, /:setup-items="createSetupItemsForPrompt"/)
   assert.match(appSource, /:setup-error="createSetupErrorMessage"/)
   assert.match(appSource, /:setup-loading="createSetupLoading"/)
   assert.match(appSource, /:code-connections-url="CODE_CONNECTIONS_URL"/)
   assert.match(appSource, /@setup-action="onWizardSetupAction"/)
   assert.match(appSource, /@retry-setup="onWizardSetupRetry"/)
+  const setupAuth = appSource.match(/async function setupAuthInCurrentProjectDraft\(\)[\s\S]*?\n\}/)?.[0]
+  assert.ok(setupAuth, 'setup-auth must remain an explicit guarded draft action')
+  assert.match(setupAuth, /selected\.value\?\.uid[\s\S]*activeAssistantThreadID\.value === threadID/)
+  assert.match(setupAuth, /!selectingThreadID\.value[\s\S]*!threadHistoryLoading\.value/)
+  assert.match(setupAuth, /assistantComposerParts\.value = nextParts[\s\S]*persistCurrentAssistantComposerDraft\(nextParts\)/)
+  assert.doesNotMatch(setupAuth, /!threadID/)
   assert.match(appSource, /await Promise\.all\(\[loadCreateReadiness\(\), loadLLMSettings\(\)\]\)/)
   assert.match(wizardSource, /target="_blank"[\s\S]*rel="noopener noreferrer"[\s\S]*Connect Git/)
   assert.match(wizardSource, /@click="emit\('retry-setup'\)"[\s\S]*Check again/)

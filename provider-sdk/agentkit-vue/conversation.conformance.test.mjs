@@ -9,6 +9,7 @@ const disclosure = source('AIPlanDisclosure.vue')
 const steps = source('AIPlanSteps.vue')
 const workbenchTabs = source('AIWorkbenchTabs.vue')
 const workbenchLauncher = source('AIWorkbenchLauncher.vue')
+const workbenchPane = source('AIWorkbenchPane.vue')
 const aiTypes = source('ai.ts')
 const types = source('conversation.ts')
 const styles = readFileSync(new URL('../agentkit/conversation.css', import.meta.url), 'utf8')
@@ -59,6 +60,15 @@ test('workbench tabs present launcher and close controls while forwarding provid
   assert.match(workbenchTabs, /v-if="tab\.closeable"/)
   assert.match(workbenchTabs, /class="k-workbench-tabs__launcher"/)
   assert.match(workbenchTabs, /@click="emit\('launch', \$event\)"/)
+  assert.match(workbenchTabs, /scrollPreviousLabel\?: string/)
+  assert.match(workbenchTabs, /scrollNextLabel\?: string/)
+  assert.match(workbenchTabs, /v-if="hasOverflow"/)
+  assert.match(workbenchTabs, /:aria-label="scrollPreviousLabel"/)
+  assert.match(workbenchTabs, /:aria-label="scrollNextLabel"/)
+  assert.match(workbenchTabs, /new ResizeObserver\(refreshAfterLayout\)/)
+  assert.match(workbenchTabs, /resizeObserver\?\.disconnect\(\)/)
+  assert.match(workbenchTabs, /element\.scrollBy\(\{ left, behavior: 'auto' \}\)/)
+  assert.doesNotMatch(workbenchTabs, /\.focus\(/)
   assert.doesNotMatch(workbenchTabs, /localStorage|sessionStorage|reorderWorkbench|fetch\(/)
 })
 
@@ -76,6 +86,32 @@ test('workbench launcher presents controlled search and provider-filtered choice
   assert.doesNotMatch(workbenchLauncher, /localStorage|sessionStorage|fetch\(|reorderWorkbench/)
 })
 
+test('workbench panes share the raised canvas, plain document header, and tool exception', () => {
+  assert.match(workbenchPane, /variant\?: 'document' \| 'tool'/)
+  assert.match(workbenchPane, /title\?: string/)
+  assert.match(workbenchPane, /description\?: string/)
+  assert.match(workbenchPane, /class="k-ai-workbench-canvas k-ai-workbench-pane"/)
+  assert.match(workbenchPane, /class="k-ai-workbench-pane__header"/)
+  assert.match(workbenchPane, /slot name="actions"/)
+  assert.match(workbenchPane, /<slot \/>/)
+
+  assert.match(agentStyles, /\.k-ai-workbench-canvas\s*\{[^}]*--k-workbench-canvas:\s*var\(--color-surface-raised/)
+  assert.match(agentStyles, /\.k-ai-workbench-canvas\s*\{[^}]*background:\s*var\(--k-workbench-canvas\)/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane__title\s*\{[^}]*font-size:\s*16px;[^}]*font-weight:\s*600/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane__description\s*\{[^}]*font-size:\s*12px/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane__header\s*\{[^}]*gap:\s*16px;[^}]*margin-bottom:\s*16px/)
+
+  const documentRule = agentStyles.match(/\.k-ai-workbench-pane--document\s*\{([^}]*)\}/)?.[1] || ''
+  assert.match(documentRule, /padding:\s*16px/)
+  assert.doesNotMatch(documentRule, /border|box-shadow|background/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane--tool\s*\{\s*padding:\s*0;\s*\}/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane--tool \.k-ai-workbench-pane__body\s*\{[^}]*overflow:\s*hidden/)
+
+  assert.match(workbenchLauncher, /<AIWorkbenchPane title="New tab" description="Open a workbench tool\.">/)
+  assert.match(workbenchLauncher, /<\/AIWorkbenchPane>/)
+  assert.match(agentStyles, /\.k-ai-launcher\s*\{[^}]*padding:\s*0;/)
+})
+
 test('selected workbench tabs keep readable text on their accent tint', () => {
   assert.match(agentStyles, /\.k-workbench-tab--active\s*\{[\s\S]*?color: var\(--color-accent-hover/)
   assert.match(agentStyles, /\.k-workbench-tab--active:hover:not\(:disabled\)\s*\{[\s\S]*?color: var\(--color-accent-hover/)
@@ -83,6 +119,16 @@ test('selected workbench tabs keep readable text on their accent tint', () => {
 
 test('coarse-pointer workbench tabs preserve labels beside full-size close controls', () => {
   assert.match(agentStyles, /@media \(hover: none\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.k-workbench-tab\s*\{[\s\S]*?min-width: 144px;[\s\S]*?\.k-workbench-tab__close \{ width: 44px; height: 44px; \}/)
+})
+
+test('workbench tabs scroll as a group without shrinking their labels', () => {
+  assert.match(agentStyles, /\.k-workbench-tabs__viewport\s*\{[^}]*overflow-x:\s*auto;/)
+  assert.match(agentStyles, /\.k-workbench-tabs\s*\{[^}]*flex:\s*0 0 auto;/)
+  assert.match(agentStyles, /\.k-workbench-tab\s*\{[^}]*max-width:\s*240px;[^}]*flex:\s*0 0 auto;/)
+  assert.match(agentStyles, /\.k-workbench-tabs__scroll-control:focus-visible\s*\{[^}]*outline:/)
+  assert.match(agentStyles, /\.k-workbench-tabs__scroll-control:disabled\s*\{[^}]*opacity:/)
+  assert.match(agentStyles, /@media \(hover: none\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.k-workbench-tabs__scroll-control \{ width: 44px; height: 44px; \}/)
+  assert.match(agentStyles, /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.k-workbench-tabs__viewport \{ scroll-behavior: auto; \}/)
 })
 
 test('coarse-pointer workbench tab buttons remain 44px inside their bordered frame', () => {

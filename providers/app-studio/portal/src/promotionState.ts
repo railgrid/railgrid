@@ -208,27 +208,25 @@ export function releasePipelineView(
     state = 'failed'
     tone = 'danger'
     message = 'The production rollout failed.'
-    detail = requestedRevision
-      ? `Requested rollout ${shortSHA(requestedRevision)}; observed ${shortSHA(observedRevision) || 'no revision'}.`
-      : 'The production provider reported a terminal failure.'
+    detail = 'Production could not start this release. Check Technical details for the rollout information.'
   } else if (selectedReleaseDeployed) {
     state = 'production_ready'
     tone = 'success'
     message = accessLive
-      ? 'Production is running with external access enabled.'
+      ? 'Your production app is live.'
       : access.published
-        ? 'Production is running. Resolving external access…'
-        : 'Production is running. Choose who can access it.'
-    detail = requestedRevision
-      ? `Requested rollout ${shortSHA(requestedRevision)} is observed in production${observedRevision ? ` at ${shortSHA(observedRevision)}` : ''}. Redeploying a newer release does not change the current access policy.`
-      : 'Redeploying a newer release does not change the current access policy.'
+        ? 'Your app is running. Preparing its production link…'
+        : 'Your app is running. Choose who can open it.'
+    detail = accessLive
+      ? 'Features inside the app may still require sign-in.'
+      : access.published
+        ? 'Your sharing settings are being applied.'
+        : 'Set up the production link in Share. Choose workspace and invited people, or anyone with the link.'
   } else if (deploying) {
     state = 'deploying'
     tone = 'warning'
     message = `Deploying release ${shortSHA(commitSHA) || 'to production'}…`
-    detail = productionPhase
-      ? `Requested rollout ${shortSHA(requestedRevision) || shortSHA(commitSHA) || 'unknown'}; current production is ${shortSHA(observedRevision) || 'not observed'} (${readiness?.production?.phase}).`
-      : 'The production provider is applying the release.'
+    detail = 'Waiting for the production app to start the requested release. Your sharing settings will not change.'
   } else if (!commitSHA) {
     state = 'needs_commit'
     tone = 'muted'

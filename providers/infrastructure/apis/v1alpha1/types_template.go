@@ -101,6 +101,15 @@ type TemplateSpec struct {
 	// +kubebuilder:validation:MaxLength=64
 	Version string `json:"version"`
 
+	// RailgridAuth declares that this Template implements the versioned
+	// Railgrid Auth integration contract. The controller validates the
+	// declaration against the development component, values schema, and
+	// backend graph before publishing the corresponding status capability.
+	// This declaration describes integration wiring; application authorization
+	// remains the application's responsibility.
+	// +optional
+	RailgridAuth *TemplateRailgridAuth `json:"railgridAuth,omitempty"`
+
 	// IconURL is an optional asset URL the portal shows on catalog
 	// cards. Falls back to a generic icon when empty.
 	// +optional
@@ -288,6 +297,7 @@ const (
 	// materialized runtime CR, which can be recreated independently.
 	RailgridAuthEnabledField     = "railgridAuth"
 	RailgridAuthAppIDField       = "railgridAuthAppID"
+	RailgridAuthEnvironmentField = "railgridAuthEnvironment"
 	RailgridAuthInstanceUIDField = "railgridAuthInstanceUID"
 
 	// RailgridNetworkPhaseField is a platform-reserved development value. The
@@ -738,6 +748,17 @@ type TemplateInstanceCRD struct {
 	Kind string `json:"kind"`
 }
 
+// TemplateRailgridAuth declares the Railgrid Auth integration contract
+// supported by this Template.
+type TemplateRailgridAuth struct {
+	// Version selects the integration contract. Omission does not imply
+	// support; only versions explicitly declared here may be published as a
+	// Template capability.
+	// +required
+	// +kubebuilder:validation:Enum=v1
+	Version string `json:"version"`
+}
+
 // TemplateStatus is the observed state.
 type TemplateStatus struct {
 	// ObservedGeneration mirrors metadata.generation last reconciled.
@@ -791,6 +812,8 @@ type TemplateCapability struct {
 const (
 	CapabilityMCPBrowserSessionIsolation   = "mcp.browser-session-isolation"
 	CapabilityMCPBrowserSessionIsolationV1 = "v1"
+	CapabilityRailgridAuth                 = "railgrid-auth"
+	CapabilityRailgridAuthV1               = "v1"
 )
 
 // TemplateBackendStatus is what the named backend reported. The

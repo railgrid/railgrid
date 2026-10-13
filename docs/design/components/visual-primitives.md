@@ -23,10 +23,13 @@ glow.
 
 ## Anatomy and variants
 
-- **Toggle:** `.k-toggle` is a sharp 3px track with `bg-accent` when
-  `aria-checked="true"` and `border-default` when off; its knob is 2px
-  `text-primary` and uses the standard focus ring. SkillsWorkbench's inline
-  Tailwind toggle follows the same shape.
+- **Toggle:** `.k-toggle` is a 36×20px track with 4px corners and an accent
+  fill when `aria-checked="true"`; off uses an outlined neutral surface.
+  Its 14px knob has 3px corners and stays light in both themes, using the
+  component tokens `--color-toggle-knob` and `--color-toggle-knob-border`.
+  Consumers supply a labeled 44px hit area and keep the accessible switch
+  name stable as its checked state changes. SkillsWorkbench uses the shared
+  visual inside a labeled header control, separated from the close action.
 - **Progress:** `.k-progress` is a 2px-radius `surface-overlay` track with
   semantic `__bar` fills (`--accent`, `--warning`, and `--danger`) and a transform
   transition.
@@ -43,7 +46,7 @@ glow.
 ## Behavior
 
 The toggle's `aria-checked="true"` state selects `bg-accent`, while off uses
-`border-default`; the standard focus ring remains in use. Progress uses a transform
+`surface-overlay` with a `border-default` outline; the standard focus ring remains in use. Progress uses a transform
 transition and semantic `__bar` fills. Set `--k-progress-value` to a fraction from
 0 to 1, rather than setting the fill's width; values are clamped to that range.
 The fill scales from the start edge and updates immediately under reduced
@@ -66,7 +69,7 @@ identity treatment alongside the avatar primitive.
 
 ## Layout and responsive behavior
 
-Use the documented sharp geometry: a 3px toggle track, 2px progress radius,
+Use the documented sharp geometry: a 4px toggle track, 2px progress radius,
 28px or `--sm` 20px avatar, 6px presence dot, and 3px keycap radius. The
 primitive recipes retain their own dimensions rather than adding provider-local
 variants.

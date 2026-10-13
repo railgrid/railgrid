@@ -627,6 +627,26 @@ spec:
                 - resource
                 - version
                 type: object
+              railgridAuth:
+                description: |-
+                  RailgridAuth declares that this Template implements the versioned
+                  Railgrid Auth integration contract. The controller validates the
+                  declaration against the development component, values schema, and
+                  backend graph before publishing the corresponding status capability.
+                  This declaration describes integration wiring; application authorization
+                  remains the application's responsibility.
+                properties:
+                  version:
+                    description: |-
+                      Version selects the integration contract. Omission does not imply
+                      support; only versions explicitly declared here may be published as a
+                      Template capability.
+                    enum:
+                    - v1
+                    type: string
+                required:
+                - version
+                type: object
               sampleValues:
                 description: |-
                   SampleValues is an optional example input payload the portal pre-fills

@@ -4,6 +4,8 @@ import type { RailgridContext, ListResponse, ProjectPublishingGrant } from './ty
 export interface ProjectAuthentication {
   enabled: boolean
   supported: boolean
+  supportReason?: string
+  supportMessage?: string
   applicationVerified: boolean
   message: string
   environments: { environment: string; instance: string; runtimeExists?: boolean; configured: boolean; runtimeReady: boolean; reason?: string }[]

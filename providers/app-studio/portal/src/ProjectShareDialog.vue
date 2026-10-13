@@ -418,7 +418,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
         <header class="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
           <div class="min-w-0">
             <h2 id="project-share-dialog-title" class="text-[16px] font-semibold text-text-primary">Share {{ projectName }}</h2>
-            <p id="project-share-dialog-description" class="mt-1 text-[12px] leading-5 text-text-muted">Manage Production and Preview separately.</p>
+            <p id="project-share-dialog-description" class="mt-1 text-[12px] leading-5 text-text-muted">Choose who can open your Production and Preview links. App sign-in is managed in Railgrid Auth.</p>
           </div>
           <button
             ref="dialogCloseButton"
@@ -547,7 +547,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   <legend class="text-[11px] font-medium text-text-secondary">Who can open the Production app?</legend>
                   <div class="grid gap-2 sm:grid-cols-2">
                     <button
-                      v-for="option in [{ value: 'restricted', title: 'Workspace + invited people', detail: 'Sign-in required' }, { value: 'public', title: 'Anyone with the link', detail: 'No sign-in required' }]"
+                      v-for="option in [{ value: 'restricted', title: 'Workspace + invited people', detail: 'Sign in to open the link' }, { value: 'public', title: 'Anyone with the link', detail: 'App features may require sign-in' }]"
                       :key="option.value"
                       type="button"
                       class="flex items-start gap-2 rounded-md border px-3 py-2.5 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60"
@@ -565,7 +565,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 </fieldset>
 
                 <p v-if="selectedMode === 'public'" class="rounded-lg bg-warning-subtle px-3 py-2 text-[11px] leading-4 text-warning" role="status">
-                  Anyone with the link can use Production without signing in. Existing invitations remain saved if you switch back.
+                  Anyone can open the link. Features inside the app may still require sign-in. Existing invitations remain saved if you switch back.
                 </p>
 
                 <section v-if="showViewers" class="grid gap-3 border-t border-border-subtle pt-3" aria-labelledby="project-share-people-title">
@@ -599,7 +599,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                         {{ inviteBusy ? 'Inviting…' : 'Send invite' }}
                       </button>
                     </div>
-                    <p class="text-[11px] leading-4 text-text-muted">New users join the Workspace at first sign-in.</p>
+                    <p class="text-[11px] leading-4 text-text-muted">New users join the organization at first sign-in.</p>
                   </div>
                   <ul v-if="activeGrants.length" class="grid gap-1.5">
                     <li v-for="grant in activeGrants" :key="grant.name" class="flex items-center justify-between gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-[12px]">
@@ -679,7 +679,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   <legend class="text-[11px] font-medium text-text-secondary">Who can open this Preview?</legend>
                   <div class="grid gap-2 sm:grid-cols-2">
                     <button
-                      v-for="option in [{ value: 'restricted', title: 'Workspace + invited people', detail: 'Best for work in progress' }, { value: 'public', title: 'Anyone with the link', detail: 'No sign-in required' }]"
+                      v-for="option in [{ value: 'restricted', title: 'Workspace + invited people', detail: 'Best for work in progress' }, { value: 'public', title: 'Anyone with the link', detail: 'App features may require sign-in' }]"
                       :key="option.value"
                       type="button"
                       class="flex items-start gap-2 rounded-md border px-3 py-2.5 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60"
@@ -723,7 +723,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                       <input v-model="previewInviteEmail" type="email" class="k-input min-w-0 flex-1 font-mono text-[12px]" placeholder="name@company.com" aria-label="Invite by email to the Preview" :disabled="busy || loading || !previewSavedRestricted" @keyup.enter="invitePreviewByEmail">
                       <button type="button" class="app-studio-touch-target inline-flex h-9 items-center rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canInvitePreview" @click="invitePreviewByEmail">Send invite</button>
                     </div>
-                    <p class="text-[11px] leading-4 text-text-muted">New users join the Workspace at first sign-in.</p>
+                    <p class="text-[11px] leading-4 text-text-muted">New users join the organization at first sign-in.</p>
                   </div>
                   <ul v-if="previewActiveGrants.length" class="grid gap-1.5">
                     <li v-for="grant in previewActiveGrants" :key="grant.name" class="flex items-center justify-between gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-[12px]">

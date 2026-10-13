@@ -83,6 +83,9 @@
   /* Violet Circuit's dark accent is bright enough for near-black text; this
    * keeps normal-size primary actions at readable contrast. */
   --color-on-accent: #0a0b12;
+  /* Physical switch knob stays light in both themes. */
+  --color-toggle-knob: #ffffff;
+  --color-toggle-knob-border: #dedee6;
 }
 
 /* ── Light override (sharpened light — same shapes, glow becomes shadow) ── */

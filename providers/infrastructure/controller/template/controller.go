@@ -40,6 +40,7 @@ import (
 	"github.com/railgrid/provider-infrastructure/backend"
 	"github.com/railgrid/provider-infrastructure/instancespec"
 	"github.com/railgrid/provider-infrastructure/internal/browsercontract"
+	"github.com/railgrid/provider-infrastructure/internal/railgridauth"
 )
 
 // Reconciler reconciles Template objects.
@@ -169,6 +170,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			infrav1alpha1.ReasonInvalidSpec, err.Error())
 		return r.writeStatus(ctx, &tmpl, patchBase)
 	}
+	if err := railgridauth.Validate(&tmpl); err != nil {
+		setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionFalse,
+			infrav1alpha1.ReasonInvalidSpec, err.Error())
+		return r.writeStatus(ctx, &tmpl, patchBase)
+	}
 
 	// The values contract: spec.schema must parse, compile to a structural
 	// schema, and not claim platform-reserved properties. This is exactly
@@ -213,10 +219,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionTrue,
 		infrav1alpha1.ReasonReady, "")
 	if browsercontract.SupportsBrowserSessionIsolation(&tmpl) {
-		tmpl.Status.Capabilities = []infrav1alpha1.TemplateCapability{{
+		tmpl.Status.Capabilities = append(tmpl.Status.Capabilities, infrav1alpha1.TemplateCapability{
 			Name:    infrav1alpha1.CapabilityMCPBrowserSessionIsolation,
 			Version: infrav1alpha1.CapabilityMCPBrowserSessionIsolationV1,
-		}}
+		})
+	}
+	if tmpl.Spec.RailgridAuth != nil {
+		tmpl.Status.Capabilities = append(tmpl.Status.Capabilities, infrav1alpha1.TemplateCapability{
+			Name:    infrav1alpha1.CapabilityRailgridAuth,
+			Version: tmpl.Spec.RailgridAuth.Version,
+		})
 	}
 	tmpl.Status.ObservedGeneration = tmpl.Generation
 	logger.V(1).Info("template ready", "backend", b.Name())

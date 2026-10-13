@@ -2237,6 +2237,43 @@ func TestFilterProjectAssistantDevelopmentTemplatesCarriesFullAgentUsage(t *test
 	}
 }
 
+func TestFilterProjectAssistantDevelopmentTemplatesReportsVerifiedRailgridAuthCapability(t *testing.T) {
+	supported := readyRailgridAuthTemplateObject()
+	supported.SetName("supported-template")
+	undeclared := readyRailgridAuthTemplateObject()
+	undeclared.SetName("undeclared-template")
+	unstructured.RemoveNestedField(undeclared.Object, "spec", "railgridAuth")
+	pending := readyRailgridAuthTemplateObject()
+	pending.SetName("pending-template")
+	pending.SetGeneration(8)
+
+	result, err := filterProjectAssistantDevelopmentTemplates(context.Background(), &projectAssistantTemplateCatalog{
+		Items: []unstructured.Unstructured{*supported, *undeclared, *pending},
+	})
+	if err != nil {
+		t.Fatalf("filterProjectAssistantDevelopmentTemplates: %v", err)
+	}
+	if len(result.Templates) != 3 {
+		t.Fatalf("templates = %d, want all candidates", len(result.Templates))
+	}
+	byName := make(map[string]projectAssistantTemplateCandidate, len(result.Templates))
+	for _, candidate := range result.Templates {
+		byName[candidate.Name] = candidate
+	}
+	if candidate := byName["supported-template"]; !candidate.RailgridAuthSupported || candidate.RailgridAuthReason != "supported" {
+		t.Fatalf("supported candidate = %+v", candidate)
+	}
+	if candidate := byName["undeclared-template"]; candidate.RailgridAuthSupported || candidate.RailgridAuthReason != "not_declared" {
+		t.Fatalf("undeclared candidate = %+v", candidate)
+	}
+	if candidate := byName["pending-template"]; candidate.RailgridAuthSupported || candidate.RailgridAuthReason != "pending" {
+		t.Fatalf("pending candidate = %+v", candidate)
+	}
+	if !strings.Contains(result.Summary, "railgridAuthSupported") || !strings.Contains(result.Summary, "railgridAuthReason") {
+		t.Fatalf("summary does not explain capability fields: %q", result.Summary)
+	}
+}
+
 // The aggregate budget exists only for an unusually large catalog, and even
 // then it must shorten rather than drop: a dropped template is a choice the
 // agent never learns exists.

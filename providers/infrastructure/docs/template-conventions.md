@@ -111,6 +111,40 @@ A new workload template that should consume databases or caches should copy
 this shape exactly, including the input names, Secret names, and env names,
 so that agents can use the same guidance for every template.
 
+## Declaring Railgrid Auth support
+
+`spec.railgridAuth.version: v1` is the explicit, versioned opt-in that lets a
+Template advertise the Railgrid Auth integration to App Studio. A Template
+without this declaration is unsupported, even if its schema happens to contain
+similarly named fields. App Studio consumes the controller-published
+`status.capabilities` entry only while the Template is Ready and its
+`status.observedGeneration` matches the current generation. Custom templates
+that want the settings and setup guidance must add the declaration and satisfy
+the same contract; there is no legacy schema-based fallback.
+
+The declaration is separate from the instance values App Studio manages. The
+schema must define `railgridAuth` as a boolean and
+`railgridAuthAppID`, `railgridAuthEnvironment`, and
+`railgridAuthInstanceUID` as read-only strings; all four properties are
+platform-managed. The Template must expose an `api` development component with
+an explicit `workspacePath`. Version `v1` currently recognizes the KRO
+access-proxy image and instance markers, the `api`/`apiDeployment` component
+resource mapping, and the canonical auth env expressions used by the shipped
+Application graph. Alternate backends or expression shapes need an explicit
+contract version before they can be advertised.
+
+The infrastructure controller checks those types, markers, component mapping,
+and exact expression strings before publishing `railgrid-auth` version `v1`;
+it withdraws the capability when the declaration is invalid or the Template is
+not Ready for the current generation. This is structural recognition, not a
+KRO CEL evaluator or proof that a graph expression behaves as intended.
+
+These checks establish the integration's structural wiring. They do not prove
+that the application's routes authorize access correctly. Application owners
+remain responsible for implementing and testing authorization in the API; see
+the Railgrid Auth section in
+[`application-template-architecture.md`](application-template-architecture.md).
+
 ## Checklist for a new template
 
 - [ ] Each container image is either a `spec.schema` field with a sane `default`

@@ -92,6 +92,10 @@ type projectAssistantTemplateCandidate struct {
 	Description string `json:"description,omitempty"`
 	Category    string `json:"category,omitempty"`
 	AgentUsage  string `json:"agentUsage,omitempty"`
+	// Railgrid Auth is surfaced from the same current-generation Ready
+	// capability check used by the Console and enable endpoint.
+	RailgridAuthSupported bool   `json:"railgridAuthSupported"`
+	RailgridAuthReason    string `json:"railgridAuthReason"`
 
 	// Components carries each development component's full contract —
 	// directory, toolchain, and start command — not just the directory. The
@@ -884,13 +888,15 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 		category, _, _ := unstructured.NestedString(obj.Object, "spec", "category")
 		usage, _, _ := unstructured.NestedString(obj.Object, "spec", "agent", "usage")
 		candidates = append(candidates, projectAssistantTemplateCandidate{
-			Name:          info.Name,
-			DisplayName:   trimProjectAssistantWorkflowString(displayName, 80),
-			Description:   trimProjectAssistantWorkflowString(description, projectAssistantTemplateDescriptionChars),
-			Category:      trimProjectAssistantWorkflowString(category, 40),
-			RawAgentUsage: strings.TrimSpace(usage),
-			AgentUsage:    trimProjectAssistantWorkflowString(usage, projectAssistantTemplateUsageChars),
-			Components:    boundedProjectAssistantTemplateComponents(info.Components),
+			Name:                  info.Name,
+			DisplayName:           trimProjectAssistantWorkflowString(displayName, 80),
+			Description:           trimProjectAssistantWorkflowString(description, projectAssistantTemplateDescriptionChars),
+			Category:              trimProjectAssistantWorkflowString(category, 40),
+			RawAgentUsage:         strings.TrimSpace(usage),
+			AgentUsage:            trimProjectAssistantWorkflowString(usage, projectAssistantTemplateUsageChars),
+			RailgridAuthSupported: info.RailgridAuthSupport.Supported,
+			RailgridAuthReason:    info.RailgridAuthSupport.Reason,
+			Components:            boundedProjectAssistantTemplateComponents(info.Components),
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
@@ -902,7 +908,7 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 		}, nil
 	}
 	truncated := boundProjectAssistantTemplateCandidates(candidates)
-	summary := fmt.Sprintf("Found %d selectable hosted development/preview template(s). These govern the shared project runtime and browser preview used by default exec_command; an explicitly enabled private coding sandbox is separate. agent.usage below is each hosted template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template when a shared runtime for commands or a hosted preview is required.", len(candidates))
+	summary := fmt.Sprintf("Found %d selectable hosted development/preview template(s). These govern the shared project runtime and browser preview used by default exec_command; an explicitly enabled private coding sandbox is separate. Each candidate also reports railgridAuthSupported and railgridAuthReason from the Template's current-generation Ready capability status; use those fields when choosing a template for Railgrid Auth, and do not switch an existing Project's template to enable auth. agent.usage below is each hosted template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template when a shared runtime for commands or a hosted preview is required.", len(candidates))
 	if truncated {
 		summary += " Some agent.usage text was shortened to fit; call infrastructure__describe_template on a candidate for its full contract before writing code against it."
 	}

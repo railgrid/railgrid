@@ -14,6 +14,19 @@ after the project owner explicitly asks to enable or set up Railgrid Auth. Do
 not change the setting because the user only asked how auth works or asked for
 an implementation discussion.
 
+Use `supported`, `supportReason`, and `supportMessage` from that inspection
+before enabling. If `supportReason` is `pending`, explain that the Template
+status is still being checked and retry only after it becomes Ready. If it is
+`template_not_selected`, choose an auth-supporting Template for this Project
+through the existing selection flow. If an existing Template reports
+`not_declared`, `invalid_contract`, or `unknown_version`, do not switch or
+update that Project's Template to enable auth; explain the reported reason and
+recommend a new Project from a Template that explicitly supports Railgrid
+Auth. If `template_missing` is reported, explain that the selected Template is
+unavailable and keep the existing setting unchanged. An already-enabled
+setting stays enabled when its support status cannot be verified; disabling
+remains available.
+
 Railgrid's app-auth gate owns login, logout, the browser session cookie, and
 the signed app identity header. The generated app owns its `/api/me` route and
 all user-owned records. Add the pinned server dependency

@@ -7,7 +7,70 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 13;
+  --railgrid-agent-ui-version: 15;
+}
+
+/* ── AI workbench pane ────────────────────────────────────────────────────
+ * Document panes share a plain heading and one raised canvas. Tool panes keep
+ * their own editor or preview surface while inheriting the same host canvas. */
+.k-ai-workbench-canvas {
+  --k-workbench-canvas: var(--color-surface-raised, #111320);
+  background: var(--k-workbench-canvas);
+}
+.k-ai-workbench-pane {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-height: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-ai-workbench-pane--document { padding: 16px; }
+.k-ai-workbench-pane--tool { padding: 0; }
+.k-ai-workbench-pane__header {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.k-ai-workbench-pane__heading { min-width: 0; }
+.k-ai-workbench-pane__title {
+  margin: 0;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.k-ai-workbench-pane__description {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 18px;
+}
+.k-ai-workbench-pane__actions {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.k-ai-workbench-pane__body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+}
+.k-ai-workbench-pane--tool .k-ai-workbench-pane__body {
+  overflow: hidden;
 }
 
 /* Conversation headers keep their neutral icon-only back control in the core
@@ -27,13 +90,11 @@
  * the shared recipe owns geometry, typography, state, and touch sizing. */
 .k-workbench-tabs {
   display: flex;
-  min-width: 0;
-  max-width: 100%;
+  width: max-content;
+  min-width: 100%;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
 }
 .k-workbench-tab {
   box-sizing: border-box;
@@ -43,7 +104,7 @@
   max-width: 240px;
   height: 32px;
   min-height: 32px;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   overflow: hidden;
   border: 1px solid transparent;
@@ -1090,8 +1151,50 @@ button.k-workbench-tab {
   gap: 4px;
 }
 
-.k-workbench-tabs__strip > .k-workbench-tabs {
+.k-workbench-tabs__viewport {
+  display: flex;
+  min-width: 0;
   flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+}
+
+.k-workbench-tabs__scroll-control {
+  display: inline-flex;
+  width: 28px;
+  height: 32px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+}
+
+.k-workbench-tabs__scroll-control:hover:not(:disabled) {
+  border-color: var(--color-border-subtle, rgba(255, 255, 255, .07));
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
+}
+
+.k-workbench-tabs__scroll-control:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 1px;
+}
+
+.k-workbench-tabs__scroll-control:disabled {
+  cursor: default;
+  opacity: .45;
+}
+
+.k-workbench-tabs__scroll-control > :where(svg, img) {
+  width: 16px;
+  height: 16px;
 }
 
 .k-workbench-tabs__launcher {
@@ -1155,7 +1258,12 @@ button.k-workbench-tab {
 
 @media (hover: none), (any-pointer: coarse) {
   .k-workbench-tabs__launcher { width: 44px; height: 44px; }
+  .k-workbench-tabs__scroll-control { width: 44px; height: 44px; }
   .k-workbench-tab__close { width: 44px; height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-workbench-tabs__viewport { scroll-behavior: auto; }
 }
 
 /* Shared workbench AIWorkbenchLauncher presentation, loaded by ensureAgentUIStyles. */
@@ -1164,11 +1272,10 @@ button.k-workbench-tab {
   display: grid;
   width: 100%;
   max-width: 704px;
-  min-height: 100%;
-  margin: 0 auto;
+  margin: 0;
   align-content: start;
   gap: 16px;
-  padding: 16px;
+  padding: 0;
 }
 
 .k-ai-launcher__search {

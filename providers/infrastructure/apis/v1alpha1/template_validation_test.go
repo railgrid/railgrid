@@ -17,8 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func devComponent(workspacePath string) TemplateDevelopmentComponent {
@@ -252,6 +255,79 @@ func TestValidateDevelopment(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("ValidateDevelopment() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateRailgridAuth(t *testing.T) {
+	valid := func() TemplateSpec {
+		schema, err := json.Marshal(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				RailgridAuthEnabledField:     map[string]any{"type": "boolean", "readOnly": true},
+				RailgridAuthAppIDField:       map[string]any{"type": "string", "readOnly": true},
+				RailgridAuthEnvironmentField: map[string]any{"type": "string", "readOnly": true},
+				RailgridAuthInstanceUIDField: map[string]any{"type": "string", "readOnly": true},
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal test schema: %v", err)
+		}
+		return TemplateSpec{
+			RailgridAuth: &TemplateRailgridAuth{Version: CapabilityRailgridAuthV1},
+			Development: &TemplateDevelopment{Components: map[string]TemplateDevelopmentComponent{
+				"api": {WorkspacePath: "api", StartCommand: "npm run dev"},
+			}},
+			Schema: &runtime.RawExtension{Raw: schema},
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*TemplateSpec)
+		wantErr string
+	}{
+		{name: "valid declaration"},
+		{name: "omission is unsupported", mutate: func(spec *TemplateSpec) { spec.RailgridAuth = nil }},
+		{name: "unsupported version", mutate: func(spec *TemplateSpec) { spec.RailgridAuth.Version = "v2" }, wantErr: "unsupported"},
+		{name: "missing api component", mutate: func(spec *TemplateSpec) { spec.Development.Components = nil }, wantErr: "development.components.api"},
+		{name: "missing api workspace path", mutate: func(spec *TemplateSpec) {
+			component := spec.Development.Components["api"]
+			component.WorkspacePath = ""
+			spec.Development.Components["api"] = component
+		}, wantErr: "api.workspacePath"},
+		{name: "workspace escape", mutate: func(spec *TemplateSpec) {
+			component := spec.Development.Components["api"]
+			component.WorkspacePath = "../api"
+			spec.Development.Components["api"] = component
+		}, wantErr: "escapes the workspace"},
+		{name: "missing flag schema", mutate: func(spec *TemplateSpec) {
+			spec.Schema.Raw = []byte(`{"type":"object","properties":{"railgridAuthAppID":{"type":"string"},"railgridAuthEnvironment":{"type":"string"},"railgridAuthInstanceUID":{"type":"string"}}}`)
+		}, wantErr: "properties.railgridAuth.type"},
+		{name: "wrong flag type", mutate: func(spec *TemplateSpec) {
+			spec.Schema.Raw = []byte(`{"type":"object","properties":{"railgridAuth":{"type":"string"},"railgridAuthAppID":{"type":"string"},"railgridAuthEnvironment":{"type":"string"},"railgridAuthInstanceUID":{"type":"string"}}}`)
+		}, wantErr: "properties.railgridAuth.type"},
+		{name: "mutable flag schema", mutate: func(spec *TemplateSpec) {
+			spec.Schema.Raw = []byte(`{"type":"object","properties":{"railgridAuth":{"type":"boolean","readOnly":false},"railgridAuthAppID":{"type":"string","readOnly":true},"railgridAuthEnvironment":{"type":"string","readOnly":true},"railgridAuthInstanceUID":{"type":"string","readOnly":true}}}`)
+		}, wantErr: "properties.railgridAuth.readOnly=true"},
+		{name: "missing identity field", mutate: func(spec *TemplateSpec) {
+			spec.Schema.Raw = []byte(`{"type":"object","properties":{"railgridAuth":{"type":"boolean","readOnly":true},"railgridAuthAppID":{"type":"string","readOnly":true},"railgridAuthEnvironment":{"type":"string","readOnly":true}}}`)
+		}, wantErr: "properties.railgridAuthInstanceUID.type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := valid()
+			if tc.mutate != nil {
+				tc.mutate(&spec)
+			}
+			err := spec.ValidateRailgridAuth()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateRailgridAuth() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateRailgridAuth() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
 	}

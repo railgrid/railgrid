@@ -4,6 +4,12 @@ function clean(value: string | null | undefined): string {
   return value?.trim() ?? ''
 }
 
+function canonicalCommitSHA(value: string | null | undefined): string {
+  const sha = clean(value)
+  if ((sha.length !== 40 && sha.length !== 64) || !/^[0-9a-f]+$/i.test(sha)) return ''
+  return sha.toLowerCase()
+}
+
 function commitTime(commit: ProjectRepositoryCommit): number {
   for (const value of [commit.completedAt, commit.createdAt]) {
     const parsed = Date.parse(clean(value))
@@ -13,27 +19,39 @@ function commitTime(commit: ProjectRepositoryCommit): number {
 }
 
 export function repositoryCommitSelectable(commit: ProjectRepositoryCommit | null | undefined): commit is ProjectRepositoryCommit & { commitSHA: string } {
-  const sha = clean(commit?.commitSHA)
-  return commit?.phase === 'Succeeded' && (sha.length === 40 || sha.length === 64) && /^[0-9a-f]+$/i.test(sha)
+  return commit?.phase === 'Succeeded' && canonicalCommitSHA(commit.commitSHA) !== ''
 }
 
 export function orderRepositoryCommits(commits: readonly ProjectRepositoryCommit[]): ProjectRepositoryCommit[] {
-  return commits
+  const ordered = commits
     .map((commit, index) => ({ commit, index }))
-    .sort((left, right) => commitTime(right.commit) - commitTime(left.commit) || left.index - right.index)
-    .map(({ commit }) => commit)
+    .sort((left, right) => {
+      const timeOrder = commitTime(right.commit) - commitTime(left.commit)
+      if (timeOrder !== 0) return timeOrder
+      const createdOrder = Date.parse(clean(right.commit.createdAt)) - Date.parse(clean(left.commit.createdAt))
+      if (Number.isFinite(createdOrder) && createdOrder !== 0) return createdOrder
+      if (left.commit.name !== right.commit.name) return left.commit.name > right.commit.name ? -1 : 1
+      return left.index - right.index
+    })
+
+  const seenSuccessfulSHAs = new Set<string>()
+  return ordered.flatMap(({ commit }) => {
+    if (!repositoryCommitSelectable(commit)) return [commit]
+    const sha = canonicalCommitSHA(commit.commitSHA)
+    if (seenSuccessfulSHAs.has(sha)) return []
+    seenSuccessfulSHAs.add(sha)
+    return [commit]
+  })
 }
 
 export function reconcileHistorySelection(previous: string | null | undefined, commits: readonly ProjectRepositoryCommit[]): string {
-  const selected = clean(previous)
-  const ordered = orderRepositoryCommits(commits)
-  if (selected && ordered.some((commit) => repositoryCommitSelectable(commit) && clean(commit.commitSHA) === selected)) return selected
-  return clean(ordered.find(repositoryCommitSelectable)?.commitSHA)
+  return selectedHistoryCommit(commits, previous)?.commitSHA ?? ''
 }
 
 export function selectedHistoryCommit(commits: readonly ProjectRepositoryCommit[], commitSHA: string | null | undefined): ProjectRepositoryCommit | null {
-  const selected = clean(commitSHA)
-  return orderRepositoryCommits(commits).find((commit) => repositoryCommitSelectable(commit) && clean(commit.commitSHA) === selected) ?? null
+  const selected = canonicalCommitSHA(commitSHA)
+  if (!selected) return null
+  return orderRepositoryCommits(commits).find((commit) => repositoryCommitSelectable(commit) && canonicalCommitSHA(commit.commitSHA) === selected) ?? null
 }
 
 export function adjacentHistoryCommit(
@@ -45,7 +63,8 @@ export function adjacentHistoryCommit(
   if (selectable.length === 0) return null
   if (direction === 'first') return selectable[0] ?? null
   if (direction === 'last') return selectable[selectable.length - 1] ?? null
-  const current = selectable.findIndex((commit) => clean(commit.commitSHA) === clean(commitSHA))
+  const selected = canonicalCommitSHA(commitSHA)
+  const current = selectable.findIndex((commit) => canonicalCommitSHA(commit.commitSHA) === selected)
   if (current < 0) return selectable[0] ?? null
   const offset = direction === 'next' ? 1 : -1
   return selectable[(current + offset + selectable.length) % selectable.length] ?? null

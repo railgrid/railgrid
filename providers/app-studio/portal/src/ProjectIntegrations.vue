@@ -201,13 +201,25 @@ export function projectIntegrationErrorMessage(error: unknown, fallback: string)
       : ''
   return message.trim() || fallback
 }
+
+export function projectIntegrationMatchesSearch(
+  entry: ProjectIntegrationCardEntry,
+  query: string,
+  providers: Array<{ name: string; displayName?: string }>,
+): boolean {
+  const search = query.trim().toLowerCase()
+  if (!search) return true
+  const provider = providers.find((candidate) => candidate.name === entry.provider)
+  return [entry.resourceRef?.name, entry.alias, entry.provider, provider?.displayName, entry.resourceRef?.kind, entry.kind]
+    .some((value) => value?.toLowerCase().includes(search))
+}
 </script>
 
 <script setup lang="ts">
+import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   ChevronDown, KeyRound,
-  Link2,
   Loader2,
   RefreshCw,
   ShieldCheck,
@@ -249,6 +261,7 @@ const busy = ref(false)
 const error = ref<string | null>(null)
 const formError = ref<string | null>(null)
 const notice = ref<string | null>(null)
+const search = ref('')
 const consentReviewKey = ref('')
 const acceptedConsentActionKey = ref('')
 const consentError = ref<{ key: string; message: string } | null>(null)
@@ -257,6 +270,13 @@ let integrationMutationSerial = 0
 
 const integrationCards = computed(() => projectIntegrationCardEntries(integrations.value, availableIntegrations.value))
 const hasIntegrationCards = computed(() => integrationCards.value.length > 0)
+const visibleIntegrationCards = computed(() => integrationCards.value.filter((entry) =>
+  projectIntegrationMatchesSearch(entry, search.value, props.providers),
+))
+const integrationGroups = computed(() => [
+  { state: 'connected' as const, label: 'Connected', entries: visibleIntegrationCards.value.filter((entry) => entry.state === 'connected') },
+  { state: 'available' as const, label: 'Available', entries: visibleIntegrationCards.value.filter((entry) => entry.state === 'available') },
+].filter((group) => group.entries.length))
 const discoveryNotification = computed(() => {
   const current = discovery.value
   if (!current || current.state === 'available') return null
@@ -275,10 +295,13 @@ const discoveryNotification = computed(() => {
   }
 })
 const integrationsErrorMessage = computed(() => (
-  hasIntegrationCards.value
+  integrationsLoaded.value
     ? `Could not refresh provider access. Showing the last confirmed results. ${projectIntegrationErrorMessage(error.value, 'The request returned no error details.')}`
     : `Could not load provider access. ${projectIntegrationErrorMessage(error.value, 'The request returned no error details.')}`
 ))
+const integrationsErrorTitle = computed(() => integrationsLoaded.value
+  ? 'Could not refresh provider access'
+  : 'Could not load provider access')
 
 const integrationsAuthority = computed(() => projectIntegrationsAuthorityKey(props.ctx, props.projectName))
 
@@ -308,6 +331,7 @@ watch(
     integrationsLoaded.value = false
     loading.value = false
     busy.value = false
+    search.value = ''
     error.value = null
     notice.value = null
     formError.value = null
@@ -458,15 +482,15 @@ async function connectConsentAction(entry: ProjectIntegrationCardEntry, action: 
   }
 }
 
-async function revokeAction(integration: ProjectIntegration, actionName: string, actionVersion: string) {
+async function revokeAction(entry: ProjectIntegrationCardEntry, integration: ProjectIntegration, actionName: string, actionVersion: string) {
   const requestAuthority = integrationsAuthority.value
   const interactionSerial = integrationMutationSerial
   const context = props.ctx
   const projectName = props.projectName
-  const actionLabel = `${actionName}/${actionVersion}`
+  const actionLabel = actionDisplayName(entry, actionName, actionVersion)
   const confirmed = await confirmDialog({
     title: `Revoke ${actionLabel}?`,
-    message: `New invocations of ${actionLabel} will be denied for ${integration.alias}. The grant audit remains visible.`,
+    message: `This project can no longer use ${actionLabel} with ${integration.alias}. Its access history remains available.`,
     confirmLabel: 'Revoke action',
     danger: true,
   })
@@ -503,6 +527,13 @@ function providerDisplayName(name: string): string {
   return props.providers.find((provider) => provider.name === name)?.displayName || name
 }
 
+function actionDisplayName(entry: ProjectIntegrationCardEntry, action: ProviderAction | string, version?: string): string {
+  const id = typeof action === 'string' ? `${action}/${version || ''}` : action.id
+  return (typeof action === 'string'
+    ? entry.catalogActions.find((candidate) => candidate.id === id)?.displayName
+    : action.displayName) || id
+}
+
 function formatTimestamp(value?: string): string {
   if (!value) return 'Not recorded'
   const date = new Date(value)
@@ -518,36 +549,27 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex min-h-full flex-col gap-4 p-4" :aria-busy="loading || busy">
-    <header class="flex flex-wrap items-start justify-between gap-3">
-      <div class="flex min-w-0 items-start gap-3">
-        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-accent/25 bg-accent-subtle text-accent">
-          <Link2 class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
-        </div>
-        <div class="min-w-0">
-          <h2 class="text-[16px] font-semibold text-text-primary">Integrations</h2>
-          <p class="mt-1 max-w-2xl text-[12px] leading-5 text-text-muted">
-            Connect provider resources to this project and manage action access.
-          </p>
-        </div>
-      </div>
+  <AIWorkbenchPane title="Integrations" description="Manage what this project can access." :aria-busy="loading || busy">
+    <template #actions>
       <button
         type="button"
-        class="app-studio-touch-target inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        class="k-btn k-btn--ghost"
         :disabled="loading || busy || !projectName"
+        :aria-busy="loading ? 'true' : undefined"
         title="Refresh integrations"
         @click="refreshIntegrations"
       >
-        <Loader2 v-if="loading" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+        <Loader2 v-if="loading" class="h-3.5 w-3.5 motion-safe:animate-spin" :stroke-width="1.75" aria-hidden="true" />
         <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        Refresh
+        {{ loading ? 'Refreshing…' : busy ? 'Updating…' : 'Refresh' }}
       </button>
-    </header>
+    </template>
+
 
     <InlineNotification
       v-if="error"
       tone="error"
-      title="Could not refresh provider access"
+      :title="integrationsErrorTitle"
       :message="integrationsErrorMessage"
       action-label="Retry"
       :action-busy="loading"
@@ -567,59 +589,69 @@ onBeforeUnmount(() => {
     <InlineNotification v-if="formError" tone="error" :message="formError" />
     <InlineNotification v-if="notice" tone="success" :message="notice" />
 
-    <p class="text-[12px] leading-5 text-text-muted">
-      Available resources are discovered, not connected. Actions that need approval stay blocked until you approve them.
-    </p>
-
     <section class="min-w-0" aria-label="Provider resources">
-      <p class="mb-2 text-[11px] text-text-muted">{{ integrationCards.length }} {{ integrationCards.length === 1 ? 'resource' : 'resources' }}</p>
+      <label v-if="hasIntegrationCards" class="mb-4 block text-[12px] font-medium text-text-secondary">
+        Find a resource
+        <input
+          v-model.trim="search"
+          type="search"
+          class="k-input mt-1.5 w-full text-[13px]"
+          placeholder="Search name, alias, or provider"
+          aria-label="Find a resource"
+        />
+      </label>
 
       <div v-if="loading && !hasIntegrationCards" class="grid gap-2" role="status" aria-live="polite">
-        <div v-for="i in 3" :key="i" class="shimmer h-16 rounded-xl border border-border-subtle bg-surface" />
+        <p class="text-[12px] text-text-muted">Loading integrations…</p>
+        <div v-for="i in 3" :key="i" aria-hidden="true" class="shimmer h-16 rounded-xl border border-border-subtle bg-surface" />
       </div>
-      <div v-else-if="!loading && integrationsLoaded && !error && discovery?.state === 'available' && !hasIntegrationCards" class="flex min-h-28 items-center justify-center rounded-xl border border-dashed border-border-subtle bg-surface p-4 text-center text-[12px] text-text-muted">
-        No accessible provider resources are available to this project.
+      <p v-else-if="error && !integrationsLoaded" class="rounded-lg border border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+        Provider resources could not be loaded. Use Refresh to try again.
+      </p>
+      <p v-else-if="hasIntegrationCards && !visibleIntegrationCards.length" class="rounded-lg border border-dashed border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+        No resources match your search.
+      </p>
+      <div v-else-if="integrationsLoaded && !hasIntegrationCards && !error && discovery?.state === 'available'" class="rounded-xl border border-dashed border-border-subtle bg-surface p-5 text-center" role="status">
+        <h3 class="text-[13px] font-semibold text-text-primary">No resources available yet</h3>
+        <p class="mt-1 text-[12px] leading-5 text-text-muted">Create a resource in a provider or ask your workspace administrator for access, then refresh this list.</p>
       </div>
-      <div v-else-if="!loading && !hasIntegrationCards" class="flex min-h-20 items-center justify-center rounded-xl border border-dashed border-border-subtle bg-surface p-4 text-center text-[12px] text-text-muted" role="status">
-        No provider resources could be confirmed in this response. Retry discovery to check again.
-      </div>
-      <div v-else class="min-w-0 divide-y divide-border-subtle border-y border-border-subtle">
-        <details v-for="entry in integrationCards" :key="entry.key" class="integration-resource min-w-0">
-          <summary class="flex min-w-0 cursor-pointer list-none items-center gap-3 py-3 text-text-primary hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2">
+      <p v-else-if="integrationsLoaded && !hasIntegrationCards" class="rounded-lg border border-dashed border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+        No provider resources could be confirmed. Use Refresh to check again.
+      </p>
+      <p v-else-if="!integrationsLoaded && !loading" class="rounded-lg border border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+        Select a project to view its provider resources.
+      </p>
+      <div v-else class="min-w-0">
+        <section v-for="group in integrationGroups" :key="group.state" class="mb-5 min-w-0" :aria-label="`${group.label} resources`">
+          <h3 class="mb-2 font-mono text-[11px] font-medium uppercase tracking-wide text-text-muted">{{ group.label }} <span aria-hidden="true">·</span> {{ group.entries.length }}</h3>
+          <div class="min-w-0 divide-y divide-border-subtle border-y border-border-subtle">
+        <details v-for="entry in group.entries" :key="entry.key" class="integration-resource min-w-0">
+          <summary class="app-studio-touch-target flex min-w-0 cursor-pointer list-none items-center gap-3 py-3 text-text-primary hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2">
             <div class="min-w-0 flex-1">
-              <h3 class="break-words text-[13px] font-semibold [overflow-wrap:anywhere]">{{ entry.resourceRef?.name || entry.alias }}</h3>
-              <p class="mt-0.5 break-words text-[11px] text-text-muted [overflow-wrap:anywhere]">{{ [providerDisplayName(entry.provider), entry.resourceRef?.kind || entry.kind, entry.state === 'connected' ? entry.environment : null].filter(Boolean).join(' · ') }}</p>
+              <h4 class="break-words text-[13px] font-semibold [overflow-wrap:anywhere]">{{ entry.resourceRef?.name || entry.alias }}</h4>
+              <p class="mt-0.5 break-words text-[12px] text-text-muted [overflow-wrap:anywhere]">{{ [providerDisplayName(entry.provider), entry.resourceRef?.kind || entry.kind, entry.state === 'connected' ? entry.environment : null].filter(Boolean).join(' · ') }}</p>
             </div>
-            <span class="shrink-0 text-[11px]" :class="entry.state === 'connected' ? 'text-success' : 'text-text-muted'">{{ entry.state === 'connected' ? 'Connected' : 'Available' }}</span>
+            <StatusBadge v-if="entry.phase && !['Ready', 'Connected', 'Succeeded'].includes(entry.phase)" :status="entry.phase" />
             <ChevronDown class="integration-resource-chevron h-4 w-4 shrink-0 text-text-muted" aria-hidden="true" />
           </summary>
-          <div class="grid min-w-0 gap-3 pb-4">
-          <StatusBadge v-if="entry.state === 'connected' && entry.phase" class="justify-self-start" :status="entry.phase" />
+          <div class="grid min-w-0 gap-2 pb-3">
           <div v-if="entry.state === 'connected'" class="grid min-w-0 gap-2">
 
-            <div v-for="grant in entry.allowedActions" :key="`${grant.name}/${grant.version}`" class="grid min-w-0 gap-2 border-t border-border-subtle py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <div v-for="grant in entry.allowedActions" :key="`${grant.name}/${grant.version}`" class="flex min-w-0 flex-wrap items-center justify-between gap-2 py-1">
               <div class="min-w-0">
                 <div class="flex min-w-0 flex-wrap items-center gap-2">
-                  <span class="min-w-0 break-words text-[12px] font-medium text-text-primary [overflow-wrap:anywhere]">{{ grant.name }}/{{ grant.version }}</span>
-                  <StatusBadge :status="grant.revoked ? 'Revoked' : 'Granted'" :tone="grant.revoked ? 'danger' : 'success'" />
+                  <span class="min-w-0 break-words text-[12px] font-medium text-text-primary [overflow-wrap:anywhere]">{{ actionDisplayName(entry, grant.name, grant.version) }}</span>
+                  <StatusBadge v-if="grant.revoked" status="Revoked" tone="danger" />
+                  <span v-else class="text-[11px] text-text-muted">Allowed</span>
                 </div>
-                <details class="mt-1 text-[11px] text-text-muted">
-                  <summary class="cursor-pointer py-1">Grant details</summary>
-                <code class="mt-1 block min-w-0 break-all text-[10px] leading-4 text-text-muted [overflow-wrap:anywhere]">{{ grant.schemaDigest }}</code>
-                <div class="mt-1 min-w-0 break-words text-[10px] text-text-muted [overflow-wrap:anywhere]">
-                  Granted by {{ grant.grantedBy || 'server' }} · {{ formatTimestamp(grant.grantedAt) }}
-                </div>
-                <div v-if="grant.revoked" class="mt-1 min-w-0 break-words text-[10px] text-danger [overflow-wrap:anywhere]">
-                  Revoked by {{ grant.revokedBy || 'server' }} · {{ formatTimestamp(grant.revokedAt) }}
-                </div>
-                </details>
+
               </div>
               <button
                 v-if="entry.integration && !grant.revoked"
                 type="button"
-                class="k-btn k-btn--ghost app-studio-touch-target h-8 text-warning"
+                class="k-btn k-btn--text shrink-0 text-danger"
                 :disabled="busy"
-                @click="revokeAction(entry.integration, grant.name, grant.version)"
+                @click="revokeAction(entry, entry.integration, grant.name, grant.version)"
               >
                 <Undo2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                 Revoke
@@ -628,13 +660,12 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div v-if="catalogActionsForCard(entry).length" class="grid min-w-0 gap-2">
-            <p v-if="entry.state === 'connected'" class="min-w-0 break-words text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]">These catalog actions require separate approval and are not active on this binding yet.</p>
             <div v-for="action in catalogActionsForCard(entry)" :key="`${action.name}/${action.version}`" class="grid min-w-0 gap-2 border-t border-border-subtle py-3">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="flex min-w-0 flex-wrap items-center gap-2">
                   <span class="min-w-0 break-words text-[12px] font-medium text-text-primary [overflow-wrap:anywhere]">{{ action.displayName || action.id }}</span>
 
-                  <span class="k-badge k-badge--muted">{{ action.readOnly ? 'Read-only' : 'May mutate' }}</span>
+                  <span class="k-badge k-badge--muted">{{ action.readOnly ? 'Read-only' : 'Can make changes' }}</span>
                   <StatusBadge
                     v-if="action.consent?.required"
                     :status="consentStatusLabel(entry, action)"
@@ -652,54 +683,54 @@ onBeforeUnmount(() => {
                   @click="openConsentReview(entry, action)"
                 >
                   <KeyRound class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                  {{ isConsentReviewOpen(entry, action) ? 'Close review' : 'Review consent' }}
+                  {{ isConsentReviewOpen(entry, action) ? 'Close review' : 'Review access' }}
                 </button>
               </div>
-              <p v-if="action.description" class="min-w-0 break-words text-[11px] leading-4 text-text-secondary [overflow-wrap:anywhere]">{{ action.description }}</p>
-              <details class="text-[11px] text-text-muted">
-                <summary class="cursor-pointer py-1">Action details</summary>
-                <p class="break-words [overflow-wrap:anywhere]">{{ action.name }}/{{ action.version }} · Risk {{ action.risk || 'unspecified' }} · {{ action.consent?.required ? 'Approval required' : 'No approval required' }}</p>
-                <code class="block break-all text-[10px] leading-4">Schema {{ action.schemaDigest }}</code>
-              </details>
-              <p v-if="projectIntegrationConsentState(entry, action) === 'changed'" class="text-[11px] leading-4 text-warning">The catalog digest changed since this action was granted. Review the current contract before reactivating it.</p>
-              <p v-else-if="projectIntegrationConsentState(entry, action) === 'revoked'" class="text-[11px] leading-4 text-text-muted">A previous grant was revoked. A new approval will reactivate access for this action.</p>
-              <p v-else-if="projectIntegrationConsentState(entry, action) === 'unavailable'" class="text-[11px] leading-4 text-text-muted">Current catalog metadata is incomplete or deprecated, so this action cannot receive a new grant.</p>
+              <p v-if="action.description" class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">{{ action.description }}</p>
+
+              <p v-if="projectIntegrationConsentState(entry, action) === 'changed'" class="text-[12px] leading-5 text-warning">The provider changed the details for this action. Review them before allowing it again.</p>
+              <p v-else-if="projectIntegrationConsentState(entry, action) === 'revoked'" class="text-[12px] leading-5 text-text-muted">This action was revoked earlier. Review and allow it again to restore access.</p>
+              <p v-else-if="projectIntegrationConsentState(entry, action) === 'unavailable'" class="text-[12px] leading-5 text-text-muted">The provider has incomplete or deprecated details for this action, so it cannot be allowed right now.</p>
 
               <section
                 v-if="isConsentReviewOpen(entry, action)"
                 :id="consentReviewID(entry, action)"
-                class="grid min-w-0 gap-3 rounded-lg border border-warning/30 bg-warning-subtle/60 p-3"
+                class="grid min-w-0 gap-3 rounded-lg border border-border-subtle bg-surface p-3"
                 role="group"
                 :aria-labelledby="`${consentReviewID(entry, action)}-title`"
               >
                 <div class="flex items-start gap-2">
                   <ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-warning" :stroke-width="1.75" aria-hidden="true" />
                   <div class="min-w-0">
-                    <h5 :id="`${consentReviewID(entry, action)}-title`" class="text-[12px] font-semibold text-text-primary">Review this action before connecting</h5>
-                    <p class="mt-1 min-w-0 break-words text-[11px] leading-4 text-text-secondary [overflow-wrap:anywhere]">{{ action.consent?.prompt || 'Approve this provider action for the selected resource.' }}</p>
-                    <p v-if="action.consent?.scope" class="mt-1 min-w-0 break-words text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]">Provider scope: {{ action.consent.scope }}</p>
+                    <h5 :id="`${consentReviewID(entry, action)}-title`" class="text-[13px] font-semibold text-text-primary">Allow this action for this project?</h5>
+                    <p class="mt-1 min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">{{ action.consent?.prompt || `Approve the action shown below for ${entry.alias}.` }}</p>
+                    <p v-if="action.consent?.scope" class="mt-1 min-w-0 break-words text-[12px] leading-5 text-text-muted [overflow-wrap:anywhere]">Provider scope: {{ action.consent.scope }}</p>
                   </div>
                 </div>
-                <dl class="grid min-w-0 gap-2 text-[11px] sm:grid-cols-2">
+                <dl class="grid min-w-0 gap-2 text-[12px] sm:grid-cols-2">
                   <div class="min-w-0">
-                    <dt class="font-semibold text-text-muted">Project and environment</dt>
+                    <dt class="font-semibold text-text-muted">Project</dt>
                     <dd class="mt-0.5 break-words text-text-primary">{{ projectName }} · {{ entry.environment }}</dd>
                   </div>
                   <div class="min-w-0">
-                    <dt class="font-semibold text-text-muted">Provider resource</dt>
-                    <dd class="mt-0.5 min-w-0 break-all font-mono text-text-primary [overflow-wrap:anywhere]">{{ entry.resourceRef?.apiVersion }}/{{ entry.resourceRef?.kind }}/{{ entry.resourceRef?.resource }}/{{ entry.resourceRef?.name || 'unknown' }}</dd>
+                    <dt class="font-semibold text-text-muted">Resource</dt>
+                    <dd class="mt-0.5 min-w-0 break-words text-text-primary [overflow-wrap:anywhere]">{{ entry.resourceRef?.name || entry.alias }} · {{ providerDisplayName(entry.provider) }} · {{ entry.resourceRef?.kind || entry.kind }}</dd>
                   </div>
                   <div class="min-w-0">
-                    <dt class="font-semibold text-text-muted">Action and policy</dt>
-                    <dd class="mt-0.5 min-w-0 break-words text-text-primary [overflow-wrap:anywhere]">{{ action.name }}/{{ action.version }} · {{ action.readOnly ? 'Read-only' : 'May mutate' }} · Risk {{ action.risk || 'unspecified' }}</dd>
-                  </div>
-                  <div class="min-w-0">
-                    <dt class="font-semibold text-text-muted">Schema digest</dt>
-                    <dd class="mt-0.5 min-w-0 break-all font-mono text-text-primary [overflow-wrap:anywhere]">{{ action.schemaDigest }}</dd>
+                    <dt class="font-semibold text-text-muted">Action</dt>
+                    <dd class="mt-0.5 min-w-0 break-words text-text-primary [overflow-wrap:anywhere]">{{ actionDisplayName(entry, action) }} · {{ action.readOnly ? 'Read-only' : 'Can make changes' }}</dd>
                   </div>
                 </dl>
-                <p class="min-w-0 break-words text-[11px] leading-4 text-text-secondary [overflow-wrap:anywhere]">This approval covers only this versioned action on this exact resource in this project. Other resources and actions remain unchanged.</p>
-                <label :for="consentCheckboxID(entry, action)" class="k-checkbox-hit flex min-w-0 items-start gap-2 rounded-lg border border-warning/30 bg-surface px-2.5 py-2 text-[12px] leading-5 text-text-secondary">
+                <details class="k-resource-technical">
+                  <summary class="k-resource-technical__summary">Technical details<ChevronDown class="k-resource-technical__chevron h-3.5 w-3.5" aria-hidden="true" /></summary>
+                  <dl class="k-resource-technical__body k-resource-technical__labels text-[12px] text-text-secondary [overflow-wrap:anywhere]">
+                    <div><dt>Resource coordinate</dt><dd class="break-all font-mono">{{ entry.resourceRef?.apiVersion }}/{{ entry.resourceRef?.kind }}/{{ entry.resourceRef?.resource }}/{{ entry.resourceRef?.name || 'unknown' }}</dd></div>
+                    <div><dt>Action ID</dt><dd class="break-all font-mono">{{ action.name }}/{{ action.version }} · Risk {{ action.risk || 'unspecified' }}</dd></div>
+                    <div><dt>Schema digest</dt><dd class="break-all font-mono">{{ action.schemaDigest }}</dd></div>
+                  </dl>
+                </details>
+                <p class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">This approval applies only to this action on this resource in this project. Other resources and actions are not included.</p>
+                <label :for="consentCheckboxID(entry, action)" class="k-checkbox-hit flex min-w-0 items-start gap-2 rounded-lg border border-border-subtle bg-surface px-2.5 py-2 text-[12px] leading-5 text-text-secondary">
                   <input
                     :id="consentCheckboxID(entry, action)"
                     type="checkbox"
@@ -708,14 +739,14 @@ onBeforeUnmount(() => {
                     :disabled="busy"
                     @change="setConsentAccepted(entry, action, $event)"
                   />
-                  <span class="min-w-0 break-words [overflow-wrap:anywhere]"><span class="font-medium text-text-primary">I approve {{ action.name }}/{{ action.version }} for this exact project resource.</span></span>
+                  <span class="min-w-0 break-words [overflow-wrap:anywhere]"><span class="font-medium text-text-primary">I allow this project to use this action with {{ entry.alias }}.</span></span>
                 </label>
                 <InlineNotification
                   v-if="consentError?.key === consentActionKey(entry, action)"
                   tone="error"
                   :message="consentError.message"
                 />
-                <div class="flex flex-wrap items-center justify-end gap-2 border-t border-warning/20 pt-3">
+                <div class="flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle pt-3">
                   <button type="button" class="k-btn k-btn--ghost app-studio-touch-target h-9" :disabled="busy" @click="closeConsentReview">Cancel</button>
                   <button
                     type="button"
@@ -723,29 +754,41 @@ onBeforeUnmount(() => {
                     :disabled="busy || !isConsentAccepted(entry, action) || !canConnectConsentAction(entry, action)"
                     @click="connectConsentAction(entry, action)"
                   >
-                    <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+                    <Loader2 v-if="busy" class="h-3.5 w-3.5 motion-safe:animate-spin" :stroke-width="1.75" aria-hidden="true" />
                     <KeyRound v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                    {{ busy ? 'Connecting…' : 'Connect action' }}
+                    {{ busy ? 'Allowing…' : 'Allow action' }}
                   </button>
                 </div>
               </section>
             </div>
           </div>
-          <p v-else-if="entry.state === 'available' && !entry.catalogActions.length" class="text-[11px] text-text-muted">No current catalog actions were included for this resource.</p>
-          <p v-else-if="entry.state === 'connected' && entry.catalogActions.length" class="text-[11px] leading-4 text-text-muted">No additional consent-required actions are waiting for review.</p>
-          <p v-else-if="entry.state === 'connected'" class="text-[11px] leading-4 text-text-muted">Current catalog metadata is unavailable for this resource. Refresh discovery to check for actions that need consent.</p>
-          <details class="k-resource-technical">
-            <summary class="k-resource-technical__summary">Resource details<ChevronDown class="k-resource-technical__chevron h-3.5 w-3.5" aria-hidden="true" /></summary>
-            <dl class="k-resource-technical__body text-[11px] text-text-secondary [overflow-wrap:anywhere]">
-              <div><dt class="font-semibold">{{ entry.state === 'connected' ? 'Project alias' : 'Suggested alias' }}</dt><dd>{{ entry.alias }}</dd></div>
+          <p v-else-if="entry.state === 'available' && !entry.catalogActions.length" class="text-[12px] text-text-muted">No actions are listed for this resource right now.</p>
+          <p v-else-if="entry.state === 'connected' && !entry.catalogActions.length" class="text-[12px] leading-5 text-text-muted">Action details are unavailable. Refresh to check for actions that need approval.</p>
+          <details class="text-[12px] text-text-muted">
+            <summary class="app-studio-touch-target cursor-pointer py-1">Resource details and access history</summary>
+            <dl class="mt-2 grid gap-2 text-[11px] [overflow-wrap:anywhere]">
+              <div><dt class="font-semibold">Project alias</dt><dd>{{ entry.alias }}</dd></div>
               <div><dt class="font-semibold">Resource</dt><dd>{{ entry.resourceRef?.apiVersion }}/{{ entry.resourceRef?.kind }}/{{ entry.resourceRef?.resource }}/{{ entry.resourceRef?.name || 'unknown' }}</dd></div>
+              <div v-if="entry.phase"><dt class="font-semibold">Status</dt><dd>{{ entry.phase }}</dd></div>
             </dl>
+            <div v-for="grant in entry.allowedActions" :key="`${grant.name}/${grant.version}`" class="mt-3 grid gap-1 text-[11px] [overflow-wrap:anywhere]">
+              <p class="font-medium text-text-secondary">{{ grant.name }}/{{ grant.version }}</p>
+              <code class="break-all">{{ grant.schemaDigest }}</code>
+              <p>Granted by {{ grant.grantedBy || 'server' }} · {{ formatTimestamp(grant.grantedAt) }}</p>
+              <p v-if="grant.revoked">Revoked by {{ grant.revokedBy || 'server' }} · {{ formatTimestamp(grant.revokedAt) }}</p>
+            </div>
+            <div v-for="action in entry.catalogActions" :key="action.id" class="mt-3 grid gap-1 text-[11px] [overflow-wrap:anywhere]">
+              <p>{{ action.id }} · Risk {{ action.risk || 'unspecified' }} · {{ action.consent?.required ? 'Approval required' : 'No approval required' }}</p>
+              <code class="break-all">{{ action.schemaDigest }}</code>
+            </div>
           </details>
           </div>
         </details>
+          </div>
+        </section>
       </div>
     </section>
-  </div>
+  </AIWorkbenchPane>
 </template>
 
 <style scoped>

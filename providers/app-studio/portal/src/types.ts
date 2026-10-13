@@ -700,6 +700,10 @@ export interface DevelopmentTemplate {
   components: Record<string, string>
   hasScaffold?: boolean
   previewAccessModes?: Array<'private' | 'public'>
+  // Verified from the template's current Ready Railgrid Auth capability.
+  // Missing fields from older servers are treated as unsupported.
+  railgridAuthSupported?: boolean
+  railgridAuthReason?: string
 }
 
 export interface ProjectFileInfo {
