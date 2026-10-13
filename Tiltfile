@@ -221,8 +221,11 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
 preview_gateway_name = 'app-studio-preview'
 preview_gateway_namespace = 'envoy-gateway-system'
 preview_kro_kubeconfig = '.railgrid-kro.kubeconfig'
-preview_kro_context = 'kind-railgrid-kro'
-preview_kro_node = 'railgrid-kro-control-plane'
+preview_kro_kind_name = 'railgrid-kro'
+preview_kro_context = 'kind-' + preview_kro_kind_name
+preview_kro_node = preview_kro_kind_name + '-control-plane'
+access_proxy_image = 'ghcr.io/railgrid/railgrid-access-proxy:dev'
+access_proxy_image_repository = 'ghcr.io/railgrid/railgrid-access-proxy'
 dev_agent_image = 'ghcr.io/railgrid/railgrid-dev-agent:latest'
 dev_agent_image_repository = 'ghcr.io/railgrid/railgrid-dev-agent'
 universal_dev_image = 'ghcr.io/railgrid/railgrid-universal-dev:latest'
@@ -582,6 +585,56 @@ local_resource(
     labels=['providers-agents'],
 )
 
+# --- Published-app access-proxy image ---
+# The Infrastructure provider templates every published app's access gate with
+# this locally built image. Tilt loads it into the preview kind cluster and
+# gives the provider an immutable containerd image reference below.
+access_proxy_image_deps = [
+    'providers/infrastructure/Dockerfile.access-proxy',
+    'providers/infrastructure/accessproxy',
+    'providers/infrastructure/cmd/access-proxy',
+    'providers/infrastructure/go.mod',
+    'providers/infrastructure/go.sum',
+    # The Dockerfile copies this module into the build context.
+    'provider-sdk',
+]
+local_resource(
+    'access-proxy-image',
+    cmd=('''
+set -eu
+preview_context="$(kubectl --kubeconfig={kro_kubeconfig} config current-context)"
+if [ "$preview_context" != "{kro_context}" ]; then
+  echo "preview kubeconfig context mismatch: expected {kro_context}, got $preview_context" >&2
+  exit 1
+fi
+preview_nodes="$(kubectl --kubeconfig={kro_kubeconfig} get nodes -o name)"
+if [ "$preview_nodes" != "node/{kro_node}" ]; then
+  echo "preview kubeconfig node mismatch: expected node/{kro_node}, got $preview_nodes" >&2
+  exit 1
+fi
+make load-access-proxy-image VERSION=dev KRO_KIND_NAME={kind_name}
+access_proxy_digest="$(docker exec {kro_node} ctr -n k8s.io images ls 'name=={access_proxy_image}' | awk 'NR == 2 {{ print $3 }}')"
+case "$access_proxy_digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "local access-proxy image has no immutable sha256 manifest digest" >&2; exit 1 ;;
+esac
+# kind imports the local tag but not the digest-qualified name admitted by the
+# Infrastructure template. Add that exact alias in the target node's CRI.
+docker exec {kro_node} ctr -n k8s.io images tag --force \\
+  {access_proxy_image} {access_proxy_repository}@$access_proxy_digest
+''').format(
+        kind_name=preview_kro_kind_name,
+        kro_kubeconfig=preview_kro_kubeconfig,
+        kro_context=preview_kro_context,
+        kro_node=preview_kro_node,
+        access_proxy_image=access_proxy_image,
+        access_proxy_repository=access_proxy_image_repository,
+    ),
+    deps=access_proxy_image_deps,
+    resource_deps=['kro-mgmt-up'],
+    labels=['providers-kro'],
+)
+
 # --- Dev agent image (template-native development mode) ---
 # The static control binary injected into dev-mode components; owned by the
 # infrastructure provider (docs/app-studio-template-sandboxes.md §2).
@@ -828,8 +881,22 @@ local_resource(
 
 infrastructure_sandbox_digest_script = ''
 infrastructure_sandbox_env = 'RAILGRID_CODING_SANDBOX_ENABLED=false \\'
+infrastructure_access_proxy_digest_script = ('''
+access_proxy_digest="$(docker exec {kro_node} ctr -n k8s.io images ls 'name=={access_proxy_image}' | awk 'NR == 2 {{ print $3 }}')"
+case "$access_proxy_digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "local access-proxy image has no immutable sha256 manifest digest" >&2; exit 1 ;;
+esac
+''').format(
+    kro_node=preview_kro_node,
+    access_proxy_image=access_proxy_image,
+)
+infrastructure_access_proxy_env = 'RAILGRID_ACCESS_PROXY_IMAGE="{repository}@$access_proxy_digest" \\'.format(
+    repository=access_proxy_image_repository,
+)
 infrastructure_resource_deps = [
     'hub',
+    'access-proxy-image',
     'dev-agent-image',
     'kro-mgmt-up',
     'preview-gateway-up',
@@ -867,6 +934,7 @@ local_resource(
     cmd='make build-infrastructure-provider',
     serve_cmd=('''
 set -eu
+{access_proxy_digest_script}
 host_gateway="$(docker exec {kro_node} getent ahostsv4 host.docker.internal 2>/dev/null | awk 'NR == 1 {{print $1}}')"
 if [ -z "$host_gateway" ]; then
   host_gateway="$(docker inspect -f '{docker_gateway_format}' {kro_node})"
@@ -880,6 +948,7 @@ RAILGRID_APP_PUBLIC_PORT={public_port} \
 RAILGRID_ACCESS_HUB_URL="https://$host_gateway:9443" \
 RAILGRID_ACCESS_HUB_PUBLIC_URL={hub_public_url} \
 RAILGRID_ACCESS_HUB_INSECURE=true \
+{access_proxy_env}
 {sandbox_env}
 make run-provider-infrastructure
 ''').format(
@@ -891,9 +960,14 @@ make run-provider-infrastructure
                    base_domain=preview_app_base_domain,
                    public_port=preview_app_public_port,
                    hub_public_url=preview_hub_public_url,
+                   access_proxy_digest_script=infrastructure_access_proxy_digest_script,
+                   access_proxy_env=infrastructure_access_proxy_env,
                    sandbox_digest_script=infrastructure_sandbox_digest_script,
                    sandbox_env=infrastructure_sandbox_env,
                ),
+    # resource_deps orders the image load before this provider starts; these
+    # shared file deps also restart it when a rebuilt proxy gets a new digest,
+    # so serve re-renders the Infrastructure RGD with that immutable image.
     deps=[
         'providers/infrastructure/main.go',
         'providers/infrastructure/assets.go',
@@ -927,14 +1001,12 @@ make run-provider-infrastructure
         'providers/infrastructure/apps',
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
-        'providers/infrastructure/go.mod',
-        'providers/infrastructure/go.sum',
         # Restart whenever init writes/updates the runtime kubeconfig:
         # serve refuses to start until RAILGRID_PROVIDER_KUBECONFIG resolves
         # to a real file (see the Makefile target), so the provider must be
         # restarted once `infrastructure-init` has written it.
         '.kcp/infrastructure-runtime.kubeconfig',
-    ],
+    ] + access_proxy_image_deps,
     # hub for CatalogEntry registration target, kro-mgmt-up for the
     # backend cluster the catalog reads from. Both must be green
     # before the provider starts; otherwise it boots in stub mode

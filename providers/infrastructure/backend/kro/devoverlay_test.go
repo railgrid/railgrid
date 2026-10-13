@@ -12,6 +12,8 @@ package kro
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -387,6 +389,104 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 		if err != nil || !found || value != devActionsSchemaFieldMarker {
 			t.Errorf("RGD schema %s = %q (found=%t err=%v), want %q", field, value, found, err, devActionsSchemaFieldMarker)
 		}
+	}
+}
+
+func TestApplicationAuthEnvironmentSurvivesDevelopmentOverlay(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "application.yaml"))
+	if err != nil {
+		t.Fatalf("read application seed template: %v", err)
+	}
+	tmpl := decodeTemplate(t, raw)
+	t.Setenv("RAILGRID_ACCESS_HUB_URL", "https://hub.internal.auth-test.example")
+	t.Setenv("RAILGRID_ACCESS_HUB_PUBLIC_URL", "HTTPS://Console.Auth-Test.Example:443/")
+	tokens := testTokens()
+	if got := tokens[hubPublicURLToken]; got != "https://console.auth-test.example" {
+		t.Fatalf("normalized public hub URL token = %q, want lowercase host without default port or trailing slash", got)
+	}
+	tokens[appPublicPortToken] = ":10443"
+	rgd, err := buildRGD(tmpl, tokens)
+	if err != nil {
+		t.Fatalf("build application RGD: %v", err)
+	}
+
+	configuredAuth := `schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != ""`
+	wantAuthEnv := map[string]string{
+		"RAILGRID_AUTH_ISSUER":       `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://console.auth-test.example/auth/apps/identity" : ""}`,
+		"RAILGRID_AUTH_AUDIENCE":     `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthAppID : ""}`,
+		"RAILGRID_AUTH_ORIGIN":       `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://" + schema.spec.expose.fqdn + ":10443" : ""}`,
+		"RAILGRID_AUTH_INSTANCE_UID": `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthInstanceUID : ""}`,
+	}
+	for _, id := range []string{"apiDeployment", "apiDevDeployment"} {
+		resource := findResource(t, rgd, id)
+		containers, found, err := unstructured.NestedSlice(resource, "template", "spec", "template", "spec", "containers")
+		if err != nil || !found {
+			t.Fatalf("%s containers: found=%t err=%v", id, found, err)
+		}
+		container := namedContainer(t, containers, "api")
+		for name, want := range wantAuthEnv {
+			if got, ok := testEnvValue(container, name); !ok || got != want {
+				t.Errorf("%s %s = %q (present=%t), want platform-trusted expression %q", id, name, got, ok, want)
+			}
+		}
+		envFrom, found, err := unstructured.NestedSlice(container, "envFrom")
+		if err != nil || !found || len(envFrom) != 1 {
+			t.Fatalf("%s envFrom = %#v (found=%t err=%v), want the app apiEnv ConfigMap", id, envFrom, found, err)
+		}
+		configMapRef, _, _ := unstructured.NestedString(envFrom[0].(map[string]any), "configMapRef", "name")
+		if configMapRef != "${apiEnvMap.metadata.name}" {
+			t.Errorf("%s envFrom ConfigMap = %q, want apiEnvMap", id, configMapRef)
+		}
+	}
+
+	gate := findResource(t, rgd, "gateDeployment")
+	gateContainers, found, err := unstructured.NestedSlice(gate, "template", "spec", "template", "spec", "containers")
+	if err != nil || !found {
+		t.Fatalf("gateDeployment containers: found=%t err=%v", found, err)
+	}
+	gateContainer := namedContainer(t, gateContainers, "gate")
+	for name, want := range map[string]string{
+		"RAILGRID_HUB_URL":           "https://hub.internal.auth-test.example",
+		"RAILGRID_HUB_PUBLIC_URL":    "https://console.auth-test.example",
+		"RAILGRID_AUTH_ISSUER":       `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://console.auth-test.example/auth/apps/identity" : ""}`,
+		"RAILGRID_AUTH_AUDIENCE":     `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthAppID : ""}`,
+		"RAILGRID_AUTH_ENVIRONMENT":  `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthEnvironment : ""}`,
+		"RAILGRID_AUTH_ORIGIN":       `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? "https://" + schema.spec.expose.fqdn + ":10443" : ""}`,
+		"RAILGRID_AUTH_INSTANCE_UID": `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? schema.spec.railgridAuthInstanceUID : ""}`,
+	} {
+		if got, ok := testEnvValue(gateContainer, name); !ok || got != want {
+			t.Errorf("gateDeployment %s = %q (present=%t), want platform-trusted expression %q", name, got, ok, want)
+		}
+	}
+	if got, ok := testEnvValue(gateContainer, "RAILGRID_ACCESS_PROXY_RAILGRID_AUTH"); !ok || got != `${schema.spec.railgridAuth ? "true" : "false"}` {
+		t.Errorf("gate auth toggle = %q (present=%t), want it controlled only by railgridAuth", got, ok)
+	}
+
+	// The platform fields default empty, so previously unconfigured Application
+	// instances remain opt-in even though configured verifier metadata survives
+	// a later gate disable. Both values must be present before either workload
+	// receives the SDK/gate verifier environment.
+	for field, want := range map[string]string{
+		"railgridAuth":            "boolean | default=false",
+		"railgridAuthAppID":       `string | default=""`,
+		"railgridAuthEnvironment": `string | default=""`,
+		"railgridAuthInstanceUID": `string | default=""`,
+	} {
+		if got, ok, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", field); err != nil || !ok || !strings.HasPrefix(got, want) {
+			t.Errorf("RGD schema %s = %q (present=%t err=%v), want %q", field, got, ok, err, want)
+		}
+	}
+	if !strings.Contains(wantAuthEnv["RAILGRID_AUTH_ISSUER"], configuredAuth) {
+		t.Fatal("API verifier configuration is not conditioned on both trusted identity fields")
+	}
+
+	// apiEnv is tenant-controlled and may contain keys named RAILGRID_AUTH_*.
+	// Kubernetes resolves explicit env entries over envFrom keys, so keeping
+	// these direct platform entries and the apiEnv ConfigMap reference separate
+	// guarantees the tenant map cannot choose the verifier trust configuration.
+	apiEnvMap := findResource(t, rgd, "apiEnvMap")
+	if got, found, err := unstructured.NestedString(apiEnvMap, "template", "data"); err != nil || !found || got != "${schema.spec.apiEnv}" {
+		t.Fatalf("apiEnvMap data = %q (found=%t err=%v), want the tenant apiEnv map", got, found, err)
 	}
 }
 

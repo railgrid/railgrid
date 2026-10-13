@@ -415,6 +415,8 @@ spec:
                           enum:
                           - memberships.read
                           - memberships.invite
+                          - app-auth.users.resolve
+                          - app-access.grants.manage
                           type: string
                         maxRole:
                           description: |-
@@ -445,6 +447,12 @@ spec:
                       - message: memberships.invite is org-scoped
                         rule: self.capability != 'memberships.invite' || self.scope
                           == 'org'
+                      - message: app-auth.users.resolve is workspace-scoped
+                        rule: self.capability != 'app-auth.users.resolve' || self.scope
+                          == 'workspace'
+                      - message: app-access.grants.manage is workspace-scoped
+                        rule: self.capability != 'app-access.grants.manage' || self.scope
+                          == 'workspace'
                       - message: maxRole and allowInvite apply to memberships.invite
                           only
                         rule: self.capability == 'memberships.invite' || (!has(self.maxRole)

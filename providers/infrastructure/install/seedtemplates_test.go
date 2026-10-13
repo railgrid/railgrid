@@ -1072,6 +1072,33 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			if desc, _ := cluster["description"].(string); !strings.Contains(desc, "Computed by the platform") {
 				t.Fatalf("railgridCluster description = %q, want platform-computed guidance", desc)
 			}
+			if file == "application.yaml" {
+				for name, wantType := range map[string]string{
+					"railgridAuth":            "boolean",
+					"railgridAuthAppID":       "string",
+					"railgridAuthEnvironment": "string",
+					"railgridAuthInstanceUID": "string",
+				} {
+					field, ok := properties[name].(map[string]any)
+					if !ok {
+						t.Fatalf("application schema has no %s property", name)
+					}
+					if field["type"] != wantType || field["readOnly"] != true {
+						t.Errorf("application schema %s = %#v, want readOnly %s", name, field, wantType)
+					}
+					description, _ := field["description"].(string)
+					if !strings.HasPrefix(description, "Computed by the platform") {
+						t.Errorf("application schema %s description = %q, want a platform-computed field that production promotion strips", name, description)
+					}
+					wantDefault := any("")
+					if name == "railgridAuth" {
+						wantDefault = false
+					}
+					if field["default"] != wantDefault {
+						t.Errorf("application schema %s default = %#v, want %#v", name, field["default"], wantDefault)
+					}
+				}
+			}
 
 			var backend map[string]any
 			if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
@@ -1079,7 +1106,9 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			}
 			resources, _ := backend["resources"].([]any)
 
+			var gateDeployment map[string]any
 			var gateEnv map[string]string
+			var apiEnv map[string]string
 			routeCount := 0
 			for _, rawResource := range resources {
 				resource, _ := rawResource.(map[string]any)
@@ -1087,10 +1116,13 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 				template, _ := resource["template"].(map[string]any)
 				switch template["kind"] {
 				case "Deployment":
-					if id != "gateDeployment" {
-						continue
+					switch id {
+					case "gateDeployment":
+						gateDeployment = template
+						gateEnv = containerEnv(t, template)
+					case "apiDeployment":
+						apiEnv = containerEnv(t, template)
 					}
-					gateEnv = containerEnv(t, template)
 				case "HTTPRoute":
 					routeCount++
 					if include, present := resource["includeWhen"]; present {
@@ -1112,6 +1144,9 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			}
 			if gateEnv == nil {
 				t.Fatal("seed has no gateDeployment component")
+			}
+			if got := containerField(t, gateDeployment, "imagePullPolicy"); got != "" {
+				t.Errorf("gate imagePullPolicy = %q, want Kubernetes image-based defaulting", got)
 			}
 			wantEnv := map[string]string{
 				"RAILGRID_ACCESS_PROXY_MODE": "${schema.spec.access}",
@@ -1136,8 +1171,53 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			if file == "application.yaml" && !strings.Contains(gateEnv["RAILGRID_ACCESS_PROXY_ROUTES"], `string(schema.spec.apiPort) + "/api,/=`) {
 				t.Errorf("application gate does not preserve the /api prefix upstream: %q", gateEnv["RAILGRID_ACCESS_PROXY_ROUTES"])
 			}
+			if file == "application.yaml" {
+				authConfigured := `${schema.spec.railgridAuthAppID != "" && schema.spec.railgridAuthInstanceUID != "" ? `
+				for name, want := range map[string]string{
+					"RAILGRID_ACCESS_PROXY_RAILGRID_AUTH": "${schema.spec.railgridAuth ? \"true\" : \"false\"}",
+					"RAILGRID_AUTH_ISSUER":                authConfigured + `"${railgrid.hubPublicUrl}/auth/apps/identity" : ""}`,
+					"RAILGRID_AUTH_AUDIENCE":              authConfigured + `schema.spec.railgridAuthAppID : ""}`,
+					"RAILGRID_AUTH_ENVIRONMENT":           authConfigured + `schema.spec.railgridAuthEnvironment : ""}`,
+					"RAILGRID_AUTH_ORIGIN":                authConfigured + `"https://" + schema.spec.expose.fqdn + "${railgrid.appPublicPort}" : ""}`,
+					"RAILGRID_AUTH_INSTANCE_UID":          authConfigured + `schema.spec.railgridAuthInstanceUID : ""}`,
+				} {
+					if got := gateEnv[name]; got != want {
+						t.Errorf("gate auth env %s = %q, want %q", name, got, want)
+					}
+				}
+				for name, want := range map[string]string{
+					"RAILGRID_AUTH_ISSUER":       authConfigured + `"${railgrid.hubPublicUrl}/auth/apps/identity" : ""}`,
+					"RAILGRID_AUTH_AUDIENCE":     authConfigured + `schema.spec.railgridAuthAppID : ""}`,
+					"RAILGRID_AUTH_ORIGIN":       authConfigured + `"https://" + schema.spec.expose.fqdn + "${railgrid.appPublicPort}" : ""}`,
+					"RAILGRID_AUTH_INSTANCE_UID": authConfigured + `schema.spec.railgridAuthInstanceUID : ""}`,
+				} {
+					if got := apiEnv[name]; got != want {
+						t.Errorf("API auth env %s = %q, want %q", name, got, want)
+					}
+				}
+			}
 		})
 	}
+}
+
+func containerField(t *testing.T, deployment map[string]any, field string) string {
+	t.Helper()
+	spec, _ := deployment["spec"].(map[string]any)
+	podTemplate, _ := spec["template"].(map[string]any)
+	podSpec, _ := podTemplate["spec"].(map[string]any)
+	containers, _ := podSpec["containers"].([]any)
+	if len(containers) == 0 {
+		t.Fatal("deployment has no containers")
+	}
+	container, _ := containers[0].(map[string]any)
+	if _, present := container[field]; !present {
+		return ""
+	}
+	value, ok := container[field].(string)
+	if !ok {
+		t.Fatalf("first deployment container has no string %s field", field)
+	}
+	return value
 }
 
 func containerEnv(t *testing.T, deployment map[string]any) map[string]string {

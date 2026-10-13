@@ -26,7 +26,9 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	"github.com/railgrid/railgrid/pkg/hub/appauth"
@@ -279,6 +281,10 @@ func TestAppCodeMintedOnOneReplicaRedeemsOnAnother(t *testing.T) {
 	if err := replicaA.Put(ctx, "code-1", record); err != nil {
 		t.Fatalf("put: %v", err)
 	}
+	peeked, found, err := replicaB.Peek(ctx, "code-1")
+	if err != nil || !found || peeked.Ref != record.Ref || peeked.Identity.UserID != record.Identity.UserID {
+		t.Fatalf("peek = (%+v, %v, %v), want the stored record", peeked, found, err)
+	}
 
 	got, ok := replicaB.Take(ctx, "code-1")
 	if !ok {
@@ -297,5 +303,55 @@ func TestAppCodeMintedOnOneReplicaRedeemsOnAnother(t *testing.T) {
 
 	if _, ok := replicaA.Take(ctx, "code-1"); ok {
 		t.Fatal("code was redeemable twice")
+	}
+}
+
+func TestAppCodePeekDistinguishesMissingFromUnavailable(t *testing.T) {
+	t.Run("missing code", func(t *testing.T) {
+		store := newTestAppCodeStore(kubefake.NewClientset())
+		if _, found, err := store.Peek(context.Background(), "missing"); err != nil || found {
+			t.Fatalf("missing peek = (found=%v, err=%v), want absent without error", found, err)
+		}
+	})
+	t.Run("unavailable shared store", func(t *testing.T) {
+		clientset := kubefake.NewClientset()
+		clientset.PrependReactor("get", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("kcp unavailable")
+		})
+		store := newTestAppCodeStore(clientset)
+		if _, found, err := store.Peek(context.Background(), "code"); err == nil || found {
+			t.Fatalf("unavailable peek = (found=%v, err=%v), want an error", found, err)
+		}
+	})
+}
+
+func TestIdentityCodePurposeAndAppBindingSurviveReplicaHandoff(t *testing.T) {
+	clientset := kubefake.NewClientset()
+	writer := newTestAppCodeStore(clientset)
+	reader := newTestAppCodeStore(clientset)
+	ctx := context.Background()
+	now := time.Now().Add(time.Minute)
+	ref := appauth.InstanceRef{Cluster: "cluster-1", Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-1"}
+	record := appauth.CodeRecord{
+		Purpose: appauth.IdentityPurpose, Ref: ref, RedirectOrigin: "https://app.example.test",
+		AppID: "project-1/production", Environment: "production", InstanceUID: "instance-uid",
+		CodeChallenge: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Identity:      browsersession.Identity{UserID: "user-1", Email: "one@example.test", Name: "One", RBACIdentity: "railgrid:one@example.test"},
+		ExpiresAt:     now,
+	}
+	if err := writer.Put(ctx, "i1.identity-code", record); err != nil {
+		t.Fatalf("put identity code: %v", err)
+	}
+	got, ok := reader.Take(ctx, "i1.identity-code")
+	if !ok {
+		t.Fatal("identity code did not resolve on the second replica")
+	}
+	if got.Purpose != appauth.IdentityPurpose || got.RedirectOrigin != record.RedirectOrigin || got.AppID != record.AppID ||
+		got.Environment != record.Environment || got.InstanceUID != record.InstanceUID || got.CodeChallenge != record.CodeChallenge || got.Ref != ref ||
+		got.Identity.UserID != "user-1" || got.Identity.RBACIdentity != "railgrid:one@example.test" {
+		t.Fatalf("identity code = %+v, want full purpose and descriptor binding", got)
+	}
+	if _, ok := writer.Take(ctx, "i1.identity-code"); ok {
+		t.Fatal("identity code was redeemable twice across replicas")
 	}
 }

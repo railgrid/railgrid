@@ -22,5 +22,5 @@ import "embed"
 
 // FS contains bundled skill directories relative to this package.
 //
-//go:embed project-summary
+//go:embed project-summary railgrid-auth
 var FS embed.FS

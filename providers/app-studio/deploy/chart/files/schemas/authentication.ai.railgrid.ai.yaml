@@ -1,0 +1,45 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v261012-6f27bf89.authentication.ai.railgrid.ai
+spec:
+  group: ai.railgrid.ai
+  names:
+    kind: AuthenticationRequest
+    listKind: AuthenticationRequestList
+    plural: authentication
+    singular: authenticationrequest
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      description: AuthenticationRequest is the payload of the "authentication" Project
+        custom subresource.
+      properties:
+        apiVersion:
+          description: |-
+            APIVersion defines the versioned schema of this representation of an object.
+            Servers should convert recognized schemas to the latest internal value, and
+            may reject unrecognized values.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          type: string
+        input:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+        kind:
+          description: |-
+            Kind is a string value representing the REST resource this object represents.
+            Servers may infer this from the endpoint the client submits requests to.
+            Cannot be updated.
+            In CamelCase.
+            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          type: string
+        metadata:
+          type: object
+        result:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+      type: object
+    served: true
+    storage: true
+    subresources: {}

@@ -232,6 +232,21 @@ func testTokens() map[string]string {
 	return tokens
 }
 
+func TestAccessProxyImageTokenDefaultsAndOverrides(t *testing.T) {
+	for _, image := range []string{"", "ghcr.io/example/access-proxy:v1.2.3", "ghcr.io/example/access-proxy@sha256:" + strings.Repeat("a", 64)} {
+		t.Run(image, func(t *testing.T) {
+			t.Setenv("RAILGRID_ACCESS_PROXY_IMAGE", image)
+			want := image
+			if want == "" {
+				want = DefaultAccessProxyImage
+			}
+			if got := accessGateTokens()[accessProxyImageToken]; got != want {
+				t.Fatalf("access-proxy image = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestDevImageTokensIncludeUniversalDefaultAndDigestOverride(t *testing.T) {
 	t.Setenv("RAILGRID_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
 	tokens := devImageTokens()

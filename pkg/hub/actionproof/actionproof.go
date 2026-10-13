@@ -46,7 +46,11 @@ const (
 	// deliberately kept outside the requestheader namespace.
 	Header = dataplane.HeaderActionProof
 
-	proofVersion  = 1
+	// proofVersion changes whenever verification semantics become incompatible.
+	// In particular, v2 proofs are the first proofs whose mutating uses are
+	// durably redeemed, so accepting v1 after rollout would let an in-flight
+	// v1 proof make its first redemption after revocation.
+	proofVersion  = 2
 	defaultTTL    = 2 * time.Minute
 	maxClockSkew  = 15 * time.Second
 	maxTokenBytes = 16 * 1024
@@ -54,9 +58,36 @@ const (
 )
 
 var (
-	proofDomain = []byte("railgrid-hub-action-proof-v1\x00")
+	proofDomain = []byte("railgrid-hub-action-proof-v2\x00")
 	errInvalid  = errors.New("invalid hub action proof")
 )
+
+// UseStore durably claims a mutating use of an action proof. Implementations
+// must make Consume atomic across hub replicas; a process-local map is not a
+// valid implementation.
+type UseStore interface {
+	Consume(ctx context.Context, nonce, capability, method, path string, expiresAt time.Time) (bool, error)
+}
+
+// UseKey returns a domain-separated hash for one proof/capability/operation
+// coordinate. The nonce remains secret material and never appears in a
+// resource name or storage key.
+func UseKey(nonce, capability, method, path string) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte("railgrid-hub-action-proof-use-v1\x00"))
+	for _, value := range []string{nonce, capability, method, path} {
+		_, _ = h.Write([]byte(value))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// AcceptedUntil returns the latest time the verifier could accept claims.
+// Keeping redemption records through the verifier's maximum clock skew avoids
+// a late replay after an entry is swept.
+func AcceptedUntil(claims Claims) time.Time {
+	return time.Unix(claims.ExpiresAt, 0).Add(maxClockSkew)
+}
 
 // Claims is the hub-authenticated identity and original action coordinate.
 // The hub signs these claims only after authenticating the human and
@@ -81,6 +112,21 @@ type Claims struct {
 	// InviteUser binds an App Studio invitation proof to the one email named
 	// by the original publishing action. Empty for all other sharing intents.
 	InviteUser string `json:"inviteUser,omitempty"`
+	// AppAuthUser and AppAuthAppID bind an App Studio authentication-grant
+	// action to one existing platform account and one production app audience.
+	AppAuthUser  string `json:"appAuthUser,omitempty"`
+	AppAuthAppID string `json:"appAuthAppID,omitempty"`
+	// AppAccess* bind an App Studio action to one broker operation and the
+	// exact Project-owned Infrastructure Instance it may affect.
+	AppAccessOperation  string `json:"appAccessOperation,omitempty"`
+	AppAccessGroup      string `json:"appAccessGroup,omitempty"`
+	AppAccessResource   string `json:"appAccessResource,omitempty"`
+	AppAccessName       string `json:"appAccessName,omitempty"`
+	AppAccessUID        string `json:"appAccessUID,omitempty"`
+	AppAccessProject    string `json:"appAccessProject,omitempty"`
+	AppAccessProjectUID string `json:"appAccessProjectUID,omitempty"`
+	AppAccessUser       string `json:"appAccessUser,omitempty"`
+	AppAccessGrant      string `json:"appAccessGrant,omitempty"`
 
 	ProofVersion int    `json:"proofVersion"`
 	IssuedAt     int64  `json:"iat"`
@@ -250,6 +296,66 @@ func validateClaims(claims Claims) error {
 			return errInvalid
 		}
 	}
+	if (claims.AppAuthUser == "") != (claims.AppAuthAppID == "") {
+		return errInvalid
+	}
+	if claims.AppAuthUser != "" {
+		if !validUserResourceName(claims.AppAuthUser) || !validAppAuthAppID(claims.AppAuthAppID) ||
+			claims.Method != http.MethodPost || claims.Provider != "app-studio" || claims.Group != "ai.railgrid.ai" ||
+			claims.Version != "v1alpha1" || claims.Resource != "projects" || claims.Verb != "authentication-grants" {
+			return errInvalid
+		}
+	}
+	if claims.AppAccessOperation != "" {
+		if (claims.AppAccessOperation != "list" && claims.AppAccessOperation != "create" &&
+			claims.AppAccessOperation != "revoke" && claims.AppAccessOperation != "reset") ||
+			claims.Provider != "app-studio" || claims.Group != "ai.railgrid.ai" ||
+			claims.Version != "v1alpha1" || claims.Resource != "projects" ||
+			!validUserResourceName(claims.AppAccessProject) || !validUserResourceName(claims.AppAccessProjectUID) ||
+			claims.AppAccessGroup != "infrastructure.railgrid.ai" || claims.AppAccessResource != "instances" ||
+			!validUserResourceName(claims.AppAccessName) || !validUserResourceName(claims.AppAccessUID) ||
+			!validOptionalField(claims.AppAccessUser) || len(claims.AppAccessUser) > 320 ||
+			!validOptionalField(claims.AppAccessGrant) || len(claims.AppAccessGrant) > 253 {
+			return errInvalid
+		}
+		if claims.AppAccessProject != claims.ParentName {
+			return errInvalid
+		}
+		switch claims.AppAccessOperation {
+		case "list":
+			grantRead := claims.Method == http.MethodGet && (claims.Verb == "publishing-grants" ||
+				claims.Verb == "preview-grants" || claims.Verb == "authentication-grants")
+			publishingRead := (claims.Verb == "publishing" || claims.Verb == "preview") &&
+				(claims.Method == http.MethodGet || claims.Method == http.MethodPost)
+			if claims.AppAccessUser != "" || claims.AppAccessGrant != "" || (!grantRead && !publishingRead) {
+				return errInvalid
+			}
+		case "create":
+			if claims.Method != http.MethodPost || claims.AppAccessUser == "" || claims.AppAccessGrant != "" ||
+				(claims.Verb != "publishing-grants" && claims.Verb != "preview-grants" && claims.Verb != "authentication-grants") {
+				return errInvalid
+			}
+			if claims.Verb == "authentication-grants" &&
+				(claims.AppAuthUser != claims.AppAccessUser || claims.AppAuthAppID != claims.AppAccessProjectUID+"/production") {
+				return errInvalid
+			}
+		case "revoke":
+			grantRevoke := (claims.Method == http.MethodDelete && claims.Verb == "authentication-grants") ||
+				(claims.Method == http.MethodPost && (claims.Verb == "publishing-grants" || claims.Verb == "preview-grants"))
+			if claims.AppAccessGrant == "" || claims.AppAccessUser != "" || !grantRevoke {
+				return errInvalid
+			}
+		case "reset":
+			if claims.Method != http.MethodDelete || claims.AppAccessGrant != "" || claims.AppAccessUser != "" ||
+				(claims.Verb != "publishing" && claims.Verb != "preview") {
+				return errInvalid
+			}
+		}
+	} else if claims.AppAccessGroup != "" || claims.AppAccessResource != "" || claims.AppAccessName != "" ||
+		claims.AppAccessUID != "" || claims.AppAccessProject != "" || claims.AppAccessProjectUID != "" ||
+		claims.AppAccessUser != "" || claims.AppAccessGrant != "" {
+		return errInvalid
+	}
 	if len(claims.Groups) > 128 || len(claims.Extra) > 128 {
 		return errInvalid
 	}
@@ -269,6 +375,26 @@ func validateClaims(claims Claims) error {
 		}
 	}
 	return nil
+}
+
+func validUserResourceName(value string) bool {
+	if len(value) == 0 || len(value) > 253 {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return value[0] != '-' && value[0] != '.' && value[len(value)-1] != '-' && value[len(value)-1] != '.'
+}
+
+func validAppAuthAppID(value string) bool {
+	projectUID, environment, ok := strings.Cut(value, "/")
+	if !ok || projectUID == "" || environment != "production" || strings.Contains(projectUID, "/") || len(value) > 512 {
+		return false
+	}
+	return validUserResourceName(projectUID)
 }
 
 func validateTime(claims Claims, now time.Time) error {

@@ -101,6 +101,31 @@ func FromContext(ctx context.Context) (TenantContext, bool) {
 type DelegatedCall struct {
 	// User is the person the token stands for (User CR name).
 	User string
+	// RBACIdentity, Groups, and Extra are the identity fields verified by the
+	// hub action proof. They are populated only for proof-backed calls and let
+	// narrow handlers ask SAR about the original human without trusting
+	// request headers supplied by a provider.
+	RBACIdentity string
+	Groups       []string
+	Extra        map[string][]string
+	// ActionUser and ActionAppID are optional action-proof intent fields for
+	// narrowly bound App Studio account resolution.
+	ActionUser  string
+	ActionAppID string
+	// AppAccess* are the exact app-access operation and persisted object
+	// coordinates signed into an App Studio action proof.
+	AppAccessOperation    string
+	AppAccessGroup        string
+	AppAccessResource     string
+	AppAccessName         string
+	AppAccessUID          string
+	AppAccessProject      string
+	AppAccessProjectUID   string
+	AppAccessUser         string
+	AppAccessGrant        string
+	AppAccessSourceVerb   string
+	AppAccessSourceMethod string
+	AppAccessInviteUser   string
 	// Provider and ProviderOrgUUID identify the provider ("" org = platform).
 	Provider        string
 	ProviderOrgUUID string
@@ -116,6 +141,9 @@ type DelegatedCall struct {
 	// ServiceAccount token. The tenant resolver must prefer this verified
 	// person over the provider's bearer identity.
 	ActionProof bool
+	// ActionProofNonce identifies the proof after its mutating capability use
+	// was durably claimed by the hub. It is empty for replayable GET calls.
+	ActionProofNonce string
 }
 
 type delegatedCallKey struct{}

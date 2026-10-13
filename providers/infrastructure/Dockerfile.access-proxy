@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # railgrid-access-proxy: the infrastructure-owned per-app gate that templates
-# render into their own graph. Build context is providers/infrastructure.
+# render into their own graph. Build context is the repository root.
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 ARG TARGETARCH

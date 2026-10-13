@@ -109,6 +109,38 @@ func (s *Store) Put(ctx context.Context, key string, value []byte, expiresAt tim
 	return nil
 }
 
+// CreateIfAbsent atomically creates value under key. The Kubernetes API's
+// Create operation is the cross-replica compare-and-set: exactly one caller
+// can claim a key, while all others observe AlreadyExists.
+func (s *Store) CreateIfAbsent(ctx context.Context, key string, value []byte, expiresAt time.Time) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("sharedstore: store is unavailable")
+	}
+	if s.client == nil {
+		return false, fmt.Errorf("sharedstore: %s store is unavailable", s.kind)
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      s.objectName(key),
+			Namespace: s.namespace,
+			Labels:    map[string]string{LabelKind: s.kind},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			dataKeyValue:     value,
+			dataKeyExpiresAt: []byte(expiresAt.UTC().Format(time.RFC3339Nano)),
+		},
+	}
+	_, err := s.client.CoreV1().Secrets(s.namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("sharedstore: claiming %s entry: %w", s.kind, err)
+	}
+	return true, nil
+}
+
 // Get returns the value stored under key. An expired entry reports ErrNotFound
 // and is deleted opportunistically, so a stale record cannot outlive its expiry
 // even if the sweeper is not running.

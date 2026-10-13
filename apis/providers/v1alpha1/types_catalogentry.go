@@ -533,7 +533,7 @@ type ProviderAction struct {
 }
 
 // ProviderHubCapability names one hub REST capability a provider may request.
-// +kubebuilder:validation:Enum=memberships.read;memberships.invite
+// +kubebuilder:validation:Enum=memberships.read;memberships.invite;app-auth.users.resolve;app-access.grants.manage
 type ProviderHubCapability string
 
 const (
@@ -546,6 +546,13 @@ const (
 	// at MaxRole (member), never changes an existing member, and honors
 	// AllowInvite for pre-provisioning an unknown email.
 	HubCapabilityMembershipsInvite ProviderHubCapability = "memberships.invite"
+	// HubCapabilityAppAuthUsersResolve resolves one existing account for a
+	// named app-only grant, without creating platform membership.
+	HubCapabilityAppAuthUsersResolve ProviderHubCapability = "app-auth.users.resolve"
+	// HubCapabilityAppAccessGrantsManage lets App Studio ask the hub to list,
+	// create, revoke, or reset app-access grants for one Project-managed
+	// Infrastructure Instance. The hub owns the workspace RBAC objects.
+	HubCapabilityAppAccessGrantsManage ProviderHubCapability = "app-access.grants.manage"
 )
 
 // ProviderHubAccessScope is where a capability applies.
@@ -559,6 +566,8 @@ const (
 
 // ProviderHubAccess is one requested hub capability.
 // +kubebuilder:validation:XValidation:rule="self.capability != 'memberships.invite' || self.scope == 'org'",message="memberships.invite is org-scoped"
+// +kubebuilder:validation:XValidation:rule="self.capability != 'app-auth.users.resolve' || self.scope == 'workspace'",message="app-auth.users.resolve is workspace-scoped"
+// +kubebuilder:validation:XValidation:rule="self.capability != 'app-access.grants.manage' || self.scope == 'workspace'",message="app-access.grants.manage is workspace-scoped"
 // +kubebuilder:validation:XValidation:rule="self.capability == 'memberships.invite' || (!has(self.maxRole) && !has(self.allowInvite))",message="maxRole and allowInvite apply to memberships.invite only"
 type ProviderHubAccess struct {
 	Capability ProviderHubCapability `json:"capability"`

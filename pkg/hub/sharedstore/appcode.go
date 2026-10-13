@@ -77,42 +77,52 @@ func (s *AppCodeStore) Store() *Store { return s.store }
 
 // storedCode is the wire form of an authorization code record.
 type storedCode struct {
-	Purpose      string    `json:"purpose,omitempty"`
-	Cluster      string    `json:"cluster"`
-	Group        string    `json:"group"`
-	Resource     string    `json:"resource"`
-	Name         string    `json:"name"`
-	RedirectHost string    `json:"redirectHost"`
-	UserID       string    `json:"userID"`
-	Email        string    `json:"email,omitempty"`
-	DisplayName  string    `json:"displayName,omitempty"`
-	AppExpiresAt time.Time `json:"appExpiresAt,omitempty"`
-	AppScope     string    `json:"appScope,omitempty"`
-	RBACIdentity string    `json:"rbacIdentity,omitempty"`
-	Issuer       string    `json:"issuer,omitempty"`
-	Subject      string    `json:"subject,omitempty"`
-	AuthType     string    `json:"authType,omitempty"`
-	ExpiresAt    time.Time `json:"expiresAt"`
+	Purpose        string    `json:"purpose,omitempty"`
+	Cluster        string    `json:"cluster"`
+	Group          string    `json:"group"`
+	Resource       string    `json:"resource"`
+	Name           string    `json:"name"`
+	RedirectHost   string    `json:"redirectHost"`
+	RedirectOrigin string    `json:"redirectOrigin,omitempty"`
+	AppID          string    `json:"appId,omitempty"`
+	Environment    string    `json:"environment,omitempty"`
+	InstanceUID    string    `json:"instanceUid,omitempty"`
+	CodeChallenge  string    `json:"codeChallenge,omitempty"`
+	UserID         string    `json:"userID"`
+	Email          string    `json:"email,omitempty"`
+	DisplayName    string    `json:"displayName,omitempty"`
+	AppExpiresAt   time.Time `json:"appExpiresAt,omitempty"`
+	AppScope       string    `json:"appScope,omitempty"`
+	RBACIdentity   string    `json:"rbacIdentity,omitempty"`
+	Issuer         string    `json:"issuer,omitempty"`
+	Subject        string    `json:"subject,omitempty"`
+	AuthType       string    `json:"authType,omitempty"`
+	ExpiresAt      time.Time `json:"expiresAt"`
 }
 
 func (s *AppCodeStore) Put(ctx context.Context, code string, record appauth.CodeRecord) error {
 	value, err := json.Marshal(storedCode{
-		Purpose:      record.Purpose,
-		Cluster:      record.Ref.Cluster,
-		Group:        record.Ref.Group,
-		Resource:     record.Ref.Resource,
-		Name:         record.Ref.Name,
-		RedirectHost: record.RedirectHost,
-		UserID:       record.Identity.UserID,
-		Email:        record.Identity.Email,
-		DisplayName:  record.Identity.Name,
-		AppScope:     record.Identity.AppScope,
-		AppExpiresAt: record.Identity.AppExpiresAt,
-		RBACIdentity: record.Identity.RBACIdentity,
-		Issuer:       record.Identity.Issuer,
-		Subject:      record.Identity.Subject,
-		AuthType:     record.Identity.AuthType,
-		ExpiresAt:    record.ExpiresAt,
+		Purpose:        record.Purpose,
+		Cluster:        record.Ref.Cluster,
+		Group:          record.Ref.Group,
+		Resource:       record.Ref.Resource,
+		Name:           record.Ref.Name,
+		RedirectHost:   record.RedirectHost,
+		RedirectOrigin: record.RedirectOrigin,
+		AppID:          record.AppID,
+		Environment:    record.Environment,
+		InstanceUID:    record.InstanceUID,
+		CodeChallenge:  record.CodeChallenge,
+		UserID:         record.Identity.UserID,
+		Email:          record.Identity.Email,
+		DisplayName:    record.Identity.Name,
+		AppScope:       record.Identity.AppScope,
+		AppExpiresAt:   record.Identity.AppExpiresAt,
+		RBACIdentity:   record.Identity.RBACIdentity,
+		Issuer:         record.Identity.Issuer,
+		Subject:        record.Identity.Subject,
+		AuthType:       record.Identity.AuthType,
+		ExpiresAt:      record.ExpiresAt,
 	})
 	if err != nil {
 		return fmt.Errorf("encoding app authorization code: %w", err)
@@ -130,9 +140,38 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 		}
 		return appauth.CodeRecord{}, false
 	}
+	record, err := decodeAppCode(value)
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "Decoding redeemed app authorization code failed")
+		return appauth.CodeRecord{}, false
+	}
+	return record, true
+}
+
+// Peek reads an app authorization code without consuming it. The separate
+// error result lets identity exchange distinguish a missing/expired code from
+// a shared-store outage and return a retryable response for the latter.
+func (s *AppCodeStore) Peek(ctx context.Context, code string) (appauth.CodeRecord, bool, error) {
+	value, err := s.store.Get(ctx, code)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return appauth.CodeRecord{}, false, nil
+		}
+		klog.FromContext(ctx).Error(err, "Looking up app authorization code failed")
+		return appauth.CodeRecord{}, false, fmt.Errorf("reading app authorization code: %w", err)
+	}
+	record, err := decodeAppCode(value)
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "Decoding app authorization code failed")
+		return appauth.CodeRecord{}, false, fmt.Errorf("decoding app authorization code: %w", err)
+	}
+	return record, true, nil
+}
+
+func decodeAppCode(value []byte) (appauth.CodeRecord, error) {
 	var stored storedCode
 	if err := json.Unmarshal(value, &stored); err != nil {
-		return appauth.CodeRecord{}, false
+		return appauth.CodeRecord{}, fmt.Errorf("decoding stored app authorization code: %w", err)
 	}
 	return appauth.CodeRecord{
 		Purpose: stored.Purpose,
@@ -142,7 +181,12 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 			Resource: stored.Resource,
 			Name:     stored.Name,
 		},
-		RedirectHost: stored.RedirectHost,
+		RedirectHost:   stored.RedirectHost,
+		RedirectOrigin: stored.RedirectOrigin,
+		AppID:          stored.AppID,
+		Environment:    stored.Environment,
+		InstanceUID:    stored.InstanceUID,
+		CodeChallenge:  stored.CodeChallenge,
 		Identity: browsersession.Identity{
 			UserID:       stored.UserID,
 			Email:        stored.Email,
@@ -155,5 +199,5 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 			AuthType:     stored.AuthType,
 		},
 		ExpiresAt: stored.ExpiresAt,
-	}, true
+	}, nil
 }

@@ -22,9 +22,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/rest"
 
 	infrav1alpha1 "github.com/railgrid/provider-infrastructure/apis/v1alpha1"
 	"github.com/railgrid/provider-infrastructure/kro"
+	"github.com/railgrid/provider-infrastructure/tenant"
 	sdkdataplane "github.com/railgrid/provider-sdk/dataplane"
 )
 
@@ -86,6 +88,80 @@ func TestRequireDevComponentDefaultsWhenSingle(t *testing.T) {
 	}
 	if _, err := requireDevComponent(multi, "db"); err == nil || !strings.Contains(err.Error(), "backend, frontend") {
 		t.Errorf("unknown component must list components, got %v", err)
+	}
+}
+
+func TestResolveDevTargetGetsReferencedTemplateWithoutListingCatalog(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer scoped-caller-token" {
+			t.Errorf("Authorization = %q, want caller token", got)
+		}
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method + " " + r.URL.Path {
+		case "GET /clusters/cluster-id/apis/infrastructure.railgrid.ai/v1alpha1/instances/demo":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
+				"kind":       "Instance",
+				"metadata":   map[string]any{"name": "demo"},
+				"spec": map[string]any{
+					"template": "application",
+					"values":   map[string]any{"railgridMode": "development"},
+				},
+			})
+		case "GET /clusters/cluster-id/apis/infrastructure.railgrid.ai/v1alpha1/templates/application":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiVersion": "infrastructure.railgrid.ai/v1alpha1",
+				"kind":       "Template",
+				"metadata":   map[string]any{"name": "application"},
+				"spec": map[string]any{
+					"development": map[string]any{
+						"components": map[string]any{
+							"app": map[string]any{"workspacePath": "."},
+						},
+					},
+				},
+			})
+		case "GET /clusters/cluster-id/apis/infrastructure.railgrid.ai/v1alpha1/templates":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden"}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	deps := Deps{
+		Tenant: tenant.NewClientFactory(&rest.Config{Host: server.URL}),
+		Verbs:  &captureHandler{},
+	}
+	target, err := resolveDevTarget(context.Background(), deps, identity{
+		tenant:    "root:orgs:acme",
+		clusterID: "cluster-id",
+		token:     "scoped-caller-token",
+	}, "demo")
+	if err != nil {
+		t.Fatalf("resolveDevTarget: %v", err)
+	}
+	if target.instance.Name != "demo" || target.resource != infrav1alpha1.InstancesResource {
+		t.Fatalf("target instance/resource = %q/%q, want demo/%q", target.instance.Name, target.resource, infrav1alpha1.InstancesResource)
+	}
+	if len(target.components) != 1 || target.components["app"].WorkspacePath != "." {
+		t.Fatalf("components = %+v, want only app rooted at workspace", target.components)
+	}
+	want := []string{
+		"GET /clusters/cluster-id/apis/infrastructure.railgrid.ai/v1alpha1/instances/demo",
+		"GET /clusters/cluster-id/apis/infrastructure.railgrid.ai/v1alpha1/templates/application",
+	}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %v, want only instance and referenced-template GETs %v", requests, want)
+	}
+	for i := range want {
+		if requests[i] != want[i] {
+			t.Fatalf("requests = %v, want %v", requests, want)
+		}
 	}
 }
 
@@ -412,6 +488,53 @@ func TestDevToolOutputSchemasAcceptAgentObjects(t *testing.T) {
 		exp, _ := json.Marshal(want)
 		if string(got) != string(exp) {
 			t.Errorf("devAgentResponse(%q) = %s, want %s", body, got, exp)
+		}
+	}
+}
+
+func TestDevToolInstanceSchemasNameKRMMetadataName(t *testing.T) {
+	ctx := context.Background()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	registerDevTools(srv, Deps{}, identity{})
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"dev_sync": false, "dev_logs": false, "dev_restart": false, "dev_exec": false}
+	for _, tool := range tools.Tools {
+		if _, ok := want[tool.Name]; !ok {
+			continue
+		}
+		properties := findPropertySchemas(tool.InputSchema, "instance")
+		if len(properties) != 1 {
+			t.Fatalf("%s instance schema count = %d, want 1", tool.Name, len(properties))
+		}
+		property, ok := properties[0].(map[string]any)
+		if !ok {
+			t.Fatalf("%s instance schema = %T, want object", tool.Name, properties[0])
+		}
+		description, _ := property["description"].(string)
+		for _, phrase := range []string{"KRM Instance metadata.name", "not the preview URL or hostname", "my-app-dev"} {
+			if !strings.Contains(description, phrase) {
+				t.Errorf("%s instance description %q does not contain %q", tool.Name, description, phrase)
+			}
+		}
+		want[tool.Name] = true
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("%s is missing from the dev tool list", name)
 		}
 	}
 }

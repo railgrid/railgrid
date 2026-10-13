@@ -17,6 +17,7 @@ root = Path(sys.argv[1])
 tilt = (root / "Tiltfile").read_text()
 cluster = (root / "Tiltfile.cluster").read_text()
 browser = (root / "providers/infrastructure/install/templates/browser.yaml").read_text()
+makefile = (root / "Makefile").read_text()
 
 
 def section(source: str, start: str, end: str) -> str:
@@ -68,6 +69,15 @@ regular_infrastructure = section(
     "local_resource(\n    'infrastructure',",
     "\n\nlocal_resource(\n    'infrastructure-register',",
 )
+access_proxy_image = section(
+    tilt,
+    "local_resource(\n    'access-proxy-image',",
+    "\n\n# --- Dev agent image",
+)
+access_proxy_deps_match = re.search(
+    r"(?ms)^access_proxy_image_deps\s*=\s*\[(.*?)^\]",
+    tilt,
+)
 require(
     "preview_hub_public_host" in regular_dns,
     "regular Tilt preview DNS must map the public hub hostname for Browser pods",
@@ -80,6 +90,50 @@ require(
     "getent ahostsv4 host.docker.internal 2>/dev/null | awk 'NR == 1 {{print $1}}'"
     in regular_infrastructure,
     "regular Tilt infrastructure must select exactly one IPv4 host gateway address",
+)
+require(
+    "make load-access-proxy-image VERSION=dev KRO_KIND_NAME={kind_name}" in access_proxy_image,
+    "regular Tilt must build and load the dev access-proxy image into its preview kind cluster",
+)
+require(
+    "load-access-proxy-image: docker-build-access-proxy" in makefile
+    and "kind load docker-image ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) --name $(KRO_KIND_NAME)" in makefile,
+    "Makefile must build and locally load the requested access-proxy tag",
+)
+require(
+    "resource_deps=['kro-mgmt-up']" in access_proxy_image,
+    "regular Tilt access-proxy image loading must wait for the preview kind cluster",
+)
+require(
+    "kubectl --kubeconfig={kro_kubeconfig} config current-context" in access_proxy_image
+    and "kubectl --kubeconfig={kro_kubeconfig} get nodes -o name" in access_proxy_image,
+    "regular Tilt must validate the configured preview kubeconfig context and node before loading the image",
+)
+require(
+    "access_proxy_repository}@$access_proxy_digest" in access_proxy_image,
+    "regular Tilt must create a digest-qualified access-proxy image alias in containerd",
+)
+require(
+    access_proxy_deps_match is not None
+    and all(
+        path in access_proxy_deps_match.group(1)
+        for path in [
+            "providers/infrastructure/Dockerfile.access-proxy",
+            "providers/infrastructure/accessproxy",
+            "providers/infrastructure/cmd/access-proxy",
+            "provider-sdk",
+        ]
+    )
+    and "deps=access_proxy_image_deps" in access_proxy_image
+    and "] + access_proxy_image_deps," in regular_infrastructure,
+    "regular Tilt must watch shared access-proxy image inputs both to rebuild the image and restart Infrastructure so it re-renders the pinned image",
+)
+require(
+    "'access-proxy-image'" in tilt
+    and "resource_deps=infrastructure_resource_deps" in regular_infrastructure
+    and "{access_proxy_env}" in regular_infrastructure
+    and "infrastructure_access_proxy_env = 'RAILGRID_ACCESS_PROXY_IMAGE=\"{repository}@$access_proxy_digest\"" in tilt,
+    "regular Tilt infrastructure must depend on and pass its immutable access-proxy image",
 )
 
 cluster_dns_setup = section(

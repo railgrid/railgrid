@@ -282,6 +282,14 @@ const (
 	// production-mode instances never receive it in their tenant schema.
 	RailgridActionsCABundleField = "railgridActionsCABundle"
 
+	// RailgridAuthInstanceUIDField is the platform-owned identity binding for a
+	// Railgrid Auth session. The Instance controller stamps the tenant-visible
+	// Instance UID into template values; it must never be derived from the
+	// materialized runtime CR, which can be recreated independently.
+	RailgridAuthEnabledField     = "railgridAuth"
+	RailgridAuthAppIDField       = "railgridAuthAppID"
+	RailgridAuthInstanceUIDField = "railgridAuthInstanceUID"
+
 	// RailgridNetworkPhaseField is a platform-reserved development value. The
 	// Instance controller holds a new sandbox in setup until its runtime graph
 	// is Ready, then switches it to runtime. Templates use it only to select

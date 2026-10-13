@@ -213,6 +213,8 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 		"hydrate_workspace",
 		"inspect_development_preview",
 		"interact_development_preview",
+		"get_project_authentication",
+		"configure_project_authentication",
 		"plan_project_changes",
 		"check_project_readiness",
 		"prepare_project_deployment",

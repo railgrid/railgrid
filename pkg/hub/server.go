@@ -19,6 +19,7 @@ package hub
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -48,6 +49,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/actionproof"
 	"github.com/railgrid/railgrid/pkg/hub/admin"
 	"github.com/railgrid/railgrid/pkg/hub/appauth"
 	"github.com/railgrid/railgrid/pkg/hub/bootstrap"
@@ -386,6 +388,7 @@ func (s *Server) Run(ctx context.Context) error {
 		previewBrowserSessionStore *browsersession.Store
 		appCodeStore               *sharedstore.AppCodeStore
 		previewAppCodeStore        *sharedstore.AppCodeStore
+		actionProofUses            actionproof.UseStore
 		sharedStores               []*sharedstore.Store
 	)
 	if kcpConfig != nil {
@@ -405,11 +408,16 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating isolated preview app-code store: %w", err)
 		}
+		proofUseStore, err := sharedstore.New(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace, sharedstore.ActionProofUseKind)
+		if err != nil {
+			return fmt.Errorf("creating shared action-proof redemption store: %w", err)
+		}
+		actionProofUses = sharedstore.NewActionProofUseStore(proofUseStore)
 		browserSessionStore = browsersession.New(browsersession.Config{Backend: sessionBackend})
 		previewBrowserSessionStore = browsersession.New(browsersession.Config{Backend: previewSessionBackend})
 		sharedStores = append(sharedStores,
 			sessionBackend.Store(), appCodeStore.Store(),
-			previewSessionBackend.Store(), previewAppCodeStore.Store(),
+			previewSessionBackend.Store(), previewAppCodeStore.Store(), proofUseStore,
 		)
 		logger.Info("Browser sessions and app-access codes are shared across replicas",
 			"workspace", kcppaths.SystemControllers, "namespace", kcp.HubSystemNamespace)
@@ -420,6 +428,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Create HTTP mux
 	router := mux.NewRouter()
+	var identityUserLookup *appauth.IdentityUserLookupHandler
+	var appAccessGrantHandler *appauth.AppAccessGrantHandler
 
 	// Auth routes (OIDC)
 	var authHandler *auth.Handler
@@ -667,6 +677,9 @@ func (s *Server) Run(ctx context.Context) error {
 		// BYO provider's own zone (or a fully customer-owned domain) work on
 		// hubs that configure no platform apps zone at all.
 		if kcpConfig != nil {
+			identityMembershipLookup := tenant.MembershipLookupFunc(func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
+			})
 			sarFactory := func(clusterID string) (authorizationv1client.SubjectAccessReviewInterface, error) {
 				cfg := rest.CopyConfig(kcpConfig)
 				cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterID)
@@ -680,6 +693,43 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating published-app host resolver: %w", err)
 			}
+			identityAppResolver, err := appauth.NewKCPIdentityAppResolver(kcpConfig)
+			if err != nil {
+				return fmt.Errorf("creating Railgrid Auth instance resolver: %w", err)
+			}
+			identityWorkspaceMember, err := appauth.NewKCPIdentityWorkspaceMemberResolver(kcpConfig, identityMembershipLookup)
+			if err != nil {
+				return fmt.Errorf("creating Railgrid Auth membership resolver: %w", err)
+			}
+			accountLookup := appauth.IdentityAccountLookup(func(ctx context.Context, userName string) (appauth.IdentityAccount, error) {
+				user, err := userClient.Users().Get(ctx, userName, metav1.GetOptions{})
+				if err != nil {
+					return appauth.IdentityAccount{}, err
+				}
+				return appauth.IdentityAccount{
+					User: user.Name, Email: user.Spec.Email, RBACIdentity: user.Spec.RBACIdentity,
+					Deleted: user.Status.DeletionRequestedAt != nil || !user.DeletionTimestamp.IsZero(),
+				}, nil
+			})
+			identityUserLookup, err = appauth.NewIdentityUserLookupHandler(appauth.IdentityUserLookupConfig{
+				SARClient:        sarFactory,
+				IdentityApp:      identityAppResolver,
+				WorkspaceCluster: bootstrapper.GetChildWorkspaceClusterName,
+				AccountLookup:    accountLookup,
+			})
+			if err != nil {
+				return fmt.Errorf("creating Railgrid Auth existing-account resolver: %w", err)
+			}
+			appAccessGrantHandler, err = appauth.NewKCPAppAccessGrantHandler(kcpConfig, appauth.AppAccessGrantHandlerConfig{
+				SARClient:        sarFactory,
+				IdentityApp:      identityAppResolver,
+				WorkspaceCluster: bootstrapper.GetChildWorkspaceClusterName,
+				AccountLookup:    accountLookup,
+				Memberships:      identityMembershipLookup,
+			})
+			if err != nil {
+				return fmt.Errorf("creating App Studio app-access grant broker: %w", err)
+			}
 			// App access tokens (programmatic access to private apps) are sealed
 			// with a subkey HKDF-derived from the hub's cross-replica secret in
 			// root:railgrid:system:controllers, so any replica verifies them.
@@ -687,19 +737,40 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating app-access token key source: %w", err)
 			}
+			appIdentityKeys, err := serviceaccounts.NewKCPAppIdentityKeyRing(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+			if err != nil {
+				return fmt.Errorf("creating Railgrid Auth key ring: %w", err)
+			}
 			appAuthCfg := appauth.Config{
-				PreviewIdentity: appauth.NewKCPPreviewIdentityResolver(kcpConfig),
-				Sessions:        browserSessionStore,
-				PreviewSessions: previewBrowserSessionStore,
-				PreviewCodes:    previewAppCodeStore,
-				SARClient:       sarFactory,
-				InstanceHost:    instanceHost,
+				PreviewIdentity:         appauth.NewKCPPreviewIdentityResolver(kcpConfig),
+				Sessions:                browserSessionStore,
+				PreviewSessions:         previewBrowserSessionStore,
+				PreviewCodes:            previewAppCodeStore,
+				SARClient:               sarFactory,
+				InstanceHost:            instanceHost,
+				IdentityApp:             identityAppResolver,
+				IdentityAccountLookup:   accountLookup,
+				IdentityWorkspaceMember: identityWorkspaceMember,
+				IdentityKeys: func(ctx context.Context) (appauth.IdentityKeySnapshot, error) {
+					stored, err := appIdentityKeys.Snapshot(ctx)
+					if err != nil {
+						return appauth.IdentityKeySnapshot{}, err
+					}
+					keys := make([]ed25519.PublicKey, 0, len(stored.PublicKeys))
+					for _, key := range stored.PublicKeys {
+						keys = append(keys, key.Key)
+					}
+					return appauth.IdentityKeySnapshot{SigningKey: stored.SigningKey, SubjectKey: stored.SubjectKey, PublicKeys: keys}, nil
+				},
 				// POST /auth/apps/token authenticates hub bearers with the same
 				// validator that mints browser sessions from a bearer.
 				BearerIdentity:      kcpProxy.BrowserIdentity,
 				IdentityUnavailable: proxy.ErrUserRecordUnavailable,
 				TokenKey:            appTokenKeys.DelegatedProofKey,
 				ClientIP:            func(r *http.Request) string { return proxy.ClientIP(r, trustedProxies) },
+			}
+			if err := configureAppIdentityIssuer(&appAuthCfg, s.opts.HubExternalURL); err != nil {
+				logger.Error(err, "Railgrid Auth disabled: hub external URL is not usable as an HTTPS issuer")
 			}
 			if appCodeStore != nil {
 				// authorize and exchange are separate requests that a scaled hub
@@ -816,6 +887,7 @@ func (s *Server) Run(ctx context.Context) error {
 			hubAccessGrants := hubaccess.NewStore(userClient)
 			hubAccessGate := &hubaccess.Gate{
 				ActionProof:     actionProofVerifier,
+				ActionProofUses: actionProofUses,
 				Human:           userResolver,
 				Verify:          catalogWorkloads.verifyHubAccessCaller,
 				Providers:       providerRegistry,
@@ -902,6 +974,12 @@ func (s *Server) Run(ctx context.Context) error {
 			tenantSub.Use(hubAccessGate.Middleware)
 			tenantSub.Use(tenant.Middleware(membershipResolver, membershipLookup))
 			apiHandler.RegisterTenantScoped(tenantSub)
+			if identityUserLookup != nil {
+				identityUserLookup.Register(tenantSub)
+			}
+			if appAccessGrantHandler != nil {
+				appAccessGrantHandler.Register(tenantSub)
+			}
 
 			// Step 9: ServiceAccount routes hang off the same
 			// tenant-scoped subrouter.
@@ -1208,14 +1286,28 @@ func (s *Server) Run(ctx context.Context) error {
 				go sharedstore.RunGC(ctx, sharedStoreGCInterval, sharedStores...)
 			}
 
-			var wg sync.WaitGroup
-			for name, mgr := range map[string]interface{ Start(context.Context) error }{
+			managers := map[string]interface{ Start(context.Context) error }{
 				"core multicluster (mcpserver)": coreMgr,
 				"admin multicluster":            adminMgr,
 				"organization bootstrap":        orgMgr,
 				"soft-delete":                   softdeleteMgr,
 				"membership-index invariants":   umiMgr,
-			} {
+			}
+			if appAccessGrantHandler != nil {
+				// Reads never migrate grants. A separate leader-only catalog
+				// manager discovers each Infrastructure export and replays its
+				// managed Instances through an idempotent migration reconciler.
+				// Keep this optional manager's setup failures independent of
+				// the core and tenancy controllers above.
+				migrationMgr, err := newAppAccessGrantMigrationManager(ctx, providersConfig, kcpConfig, scheme, appAccessGrantHandler)
+				if err != nil {
+					logger.Error(err, "App-access grant migration controller unavailable")
+				} else {
+					managers["app-access grant migration"] = migrationMgr
+				}
+			}
+			var wg sync.WaitGroup
+			for name, mgr := range managers {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()

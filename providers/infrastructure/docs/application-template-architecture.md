@@ -78,6 +78,39 @@ HTTPRoutes attach to.
 A wildcard DNS record `*.<RAILGRID_APP_BASE_DOMAIN>` (or per-app records created by
 your Gateway, as Cloudflare Tunnel does) must resolve to your Gateway edge.
 
+## Railgrid Auth for the Application API
+
+App Studio can enable Railgrid Auth for a project environment. It stamps
+`railgridAuth`, `railgridAuthAppID` (`<ProjectUID>/<environment>`), and the
+environment name into the Application instance values from the persisted
+project record. The infrastructure Instance controller adds
+`railgridAuthInstanceUID` from the tenant Application instance's metadata UID;
+it does not use the independently recreated runtime CR UID. These are platform
+values; the Application form does not let a tenant choose an identity audience
+or reuse a session after deleting and recreating an app instance.
+
+When enabled, the access gate reserves `/__railgrid/auth/login`,
+`/__railgrid/auth/identity/callback`, `/__railgrid/auth/session`, and
+`/__railgrid/auth/logout`. Login uses the hub's existing Railgrid account
+session and returns a short lived, Ed25519 signed app assertion in the
+HttpOnly `__Host-railgrid-app-auth` cookie. The gate verifies the exact issuer,
+environment audience, signature, and expiry against the hub JWKS. It injects
+the verified assertion as `X-Railgrid-App-Identity` only on `/api` requests,
+after removing caller-supplied `X-Railgrid-*` headers. The gate strips the
+cookie and authorization headers before forwarding; frontend requests never
+receive the identity assertion.
+
+`GET /__railgrid/auth/session` returns only normalized user data for the
+frontend. `POST /__railgrid/auth/logout` clears the local cookie and requires
+the exact app `Origin`; logout does not contact the hub. Anonymous public app
+requests remain public. Private apps still require their existing app-access
+session around the identity flow. API handlers that require a user must use the
+`provider-sdk/auth-node` middleware, which verifies the signed identity and
+returns 401 to anonymous callers. The API container receives
+`RAILGRID_AUTH_ISSUER`, `RAILGRID_AUTH_AUDIENCE`, and `RAILGRID_AUTH_ORIGIN`
+plus `RAILGRID_AUTH_INSTANCE_UID` from platform configuration; these values
+override same-named entries in `apiEnv`.
+
 ### TLS for the app base domain
 
 With the default Cloudflare Tunnel Gateway, TLS terminates at the Cloudflare

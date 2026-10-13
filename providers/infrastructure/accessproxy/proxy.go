@@ -66,6 +66,10 @@ type Proxy struct {
 	// exchange client it never follows redirects, so a caller's token can
 	// only ever be sent to the configured hub origin.
 	verifyClient *http.Client
+	// identityVerifier accepts only hub-signed app assertions. It holds a
+	// bounded JWKS cache and never derives its issuer or audience from a
+	// request.
+	identityVerifier *identityVerifier
 	// bearerRelayAllowed is false when the hub URL would carry a caller's
 	// token in cleartext over the network (plain http to a non-loopback
 	// host); bearer requests then fail closed instead of being relayed.
@@ -83,10 +87,11 @@ type Proxy struct {
 // absolute expiry. Keeping it in the cookie rather than a server-side map is
 // what lets a sign-in survive a gate restart or land on a different replica.
 type returnStatePayload struct {
-	Nonce       string `json:"n"`
-	Path        string `json:"p"`
-	ExpiresAt   int64  `json:"e"`
-	Partitioned bool   `json:"c,omitempty"`
+	Nonce        string `json:"n"`
+	Path         string `json:"p"`
+	ExpiresAt    int64  `json:"e"`
+	Partitioned  bool   `json:"c,omitempty"`
+	CodeVerifier string `json:"v,omitempty"`
 }
 
 type appSession struct {
@@ -136,6 +141,18 @@ func New(config Config) (*Proxy, error) {
 	verifyClient := *normalized.hubClient
 	verifyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	proxy.verifyClient = &verifyClient
+	if normalized.RailgridAuth {
+		proxy.identityVerifier = &identityVerifier{
+			issuer:      normalized.authIssuer,
+			audience:    normalized.AuthAudience,
+			environment: normalized.AuthEnvironment,
+			instanceUID: normalized.AuthInstanceUID,
+			hubURL:      normalized.hubURL,
+			client:      &verifyClient,
+			timeout:     normalized.hubTimeout,
+			now:         func() time.Time { return proxy.now() },
+		}
+	}
 	proxy.bearerRelayAllowed = hubURLProtectsTokens(normalized.hubURL)
 	return proxy, nil
 }
@@ -166,9 +183,9 @@ func (p *Proxy) Serve(ctx context.Context) error {
 	return err
 }
 
-// ServeHTTP enforces the exact app host, then either forwards directly
-// (public) or gates on the proxy-local session (private). Application bodies
-// never transit the hub in either mode.
+// ServeHTTP enforces the exact app host, handles enabled platform identity
+// endpoints, then either forwards directly (public) or gates on the legacy
+// proxy-local session (private). Application bodies never transit the hub.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p == nil {
 		http.Error(w, "access proxy unavailable", http.StatusServiceUnavailable)
@@ -190,6 +207,34 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleCallback(w, r)
 		return
 	}
+	if p.config.RailgridAuth && isIdentityEndpoint(r.URL.Path) {
+		// In private mode the existing app-access session remains the outer
+		// gate for identity endpoints too. The callback can still complete: if
+		// the browser has not established private access yet, this redirects it
+		// through the legacy flow with the identity callback URL preserved as
+		// the return path, then resumes here.
+		if p.config.Mode == ModePrivate && r.Method == identityEndpointMethod(r.URL.Path) {
+			if _, ok := p.currentSession(r); !ok {
+				if token, isBearer := bearerCredential(r); isBearer {
+					if !p.authorizeBearer(w, r, token) {
+						return
+					}
+				} else if r.Method == http.MethodGet {
+					if r.URL.Path == IdentitySessionPath {
+						writeUnauthenticatedJSON(w)
+						return
+					}
+					p.redirectToAuthorize(w, r, cleanReturnPath(r.URL.RequestURI()))
+					return
+				} else {
+					writeUnauthenticatedJSON(w)
+					return
+				}
+			}
+		}
+		p.serveIdentityEndpoint(w, r)
+		return
+	}
 	route, ok := p.routeFor(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
@@ -205,12 +250,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			} else {
+				if p.config.RailgridAuth && pathMatches("/api", r.URL.Path) {
+					writeUnauthenticatedJSON(w)
+					return
+				}
 				p.redirectToAuthorize(w, r, cleanReturnPath(r.URL.RequestURI()))
 				return
 			}
 		}
 	}
-	p.forward(w, r, route)
+	identity := ""
+	if p.config.RailgridAuth && pathMatches("/api", r.URL.Path) {
+		identity = p.identityAssertion(r)
+		if identity == "" && hasIdentitySessionCookie(r) {
+			p.clearIdentitySessionCookie(w, requestUsesPartitionedCookies(r))
+		}
+	}
+	p.forwardWithIdentity(w, r, route, identity)
 }
 
 // currentSession resolves the request's session cookie against the local
@@ -255,7 +311,7 @@ func (p *Proxy) routeFor(path string) (normalizedRoute, bool) {
 	return normalizedRoute{}, false
 }
 
-func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, route normalizedRoute) {
+func (p *Proxy) forwardWithIdentity(w http.ResponseWriter, r *http.Request, route normalizedRoute, identity string) {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			target := *route.target
@@ -268,6 +324,9 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, route normalized
 			request.Out.URL = &target
 			request.Out.Host = target.Host
 			stripUpstreamRequestHeaders(request.Out.Header)
+			if identity != "" {
+				request.Out.Header.Set(IdentityHeaderName, identity)
+			}
 		},
 		ModifyResponse: func(response *http.Response) error {
 			stripUpstreamResponseHeaders(response.Header)
@@ -503,9 +562,10 @@ func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state
 // was leaving the tab open past stateTTL.
 type returnStateOutcome struct {
 	// Path is the sanitised return path. Meaningful only when OK.
-	Path       string
-	CookieName string
-	OK         bool
+	Path         string
+	CookieName   string
+	CodeVerifier string
+	OK           bool
 	// Restart reports that beginning a fresh sign-in can plausibly succeed.
 	// It is set ONLY when a cookie actually came back, because that is the
 	// evidence the browser round-trips ours — without it a restart loops.
@@ -523,8 +583,15 @@ type returnStateOutcome struct {
 // newReturnState mints the nonce echoed to the hub and the cookie value that
 // carries the whole state back to the callback.
 func (p *Proxy) newReturnState(path string, partitioned bool) (nonce, cookieValue string, err error) {
+	return p.newReturnStateWithVerifier(path, partitioned, "")
+}
+
+func (p *Proxy) newReturnStateWithVerifier(path string, partitioned bool, codeVerifier string) (nonce, cookieValue string, err error) {
 	if path == "" {
 		return "", "", errors.New("empty return path")
+	}
+	if codeVerifier != "" && !validIdentityCodeVerifier(codeVerifier) {
+		return "", "", errors.New("invalid identity code verifier")
 	}
 	if len(path) > maxReturnPathBytes {
 		path = "/"
@@ -534,10 +601,11 @@ func (p *Proxy) newReturnState(path string, partitioned bool) (nonce, cookieValu
 		return "", "", err
 	}
 	raw, err := json.Marshal(returnStatePayload{
-		Nonce:       nonce,
-		Path:        path,
-		ExpiresAt:   p.now().Add(stateTTL).Unix(),
-		Partitioned: partitioned,
+		Nonce:        nonce,
+		Path:         path,
+		ExpiresAt:    p.now().Add(stateTTL).Unix(),
+		Partitioned:  partitioned,
+		CodeVerifier: codeVerifier,
 	})
 	if err != nil {
 		return "", "", err
@@ -877,6 +945,9 @@ func stripCookieDomain(value string) string {
 
 func isInternalCookie(name string) bool {
 	return strings.EqualFold(name, SessionCookieName) ||
+		strings.EqualFold(name, IdentitySessionCookieName) ||
 		strings.EqualFold(name, ReturnCookieName) ||
-		strings.HasPrefix(strings.ToLower(name), strings.ToLower(ReturnCookieName)+"-")
+		strings.HasPrefix(strings.ToLower(name), strings.ToLower(ReturnCookieName)+"-") ||
+		strings.HasPrefix(strings.ToLower(name), strings.ToLower(identityReturnCookiePrefix)+"-") ||
+		strings.HasPrefix(strings.ToLower(name), strings.ToLower(legacyIdentityReturnCookiePrefix)+"-")
 }

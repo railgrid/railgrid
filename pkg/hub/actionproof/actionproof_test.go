@@ -18,7 +18,10 @@ package actionproof
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,6 +97,37 @@ func TestSignAndVerify(t *testing.T) {
 	}
 	if got.ProofVersion != proofVersion || got.ExpiresAt-got.IssuedAt != int64(defaultTTL/time.Second) || len(got.Nonce) != 32 {
 		t.Fatalf("proof lifetime/version/nonce = %d/%d/%q", got.ProofVersion, got.ExpiresAt-got.IssuedAt, got.Nonce)
+	}
+}
+
+func TestVerifierRejectsAuthenticallySignedV1Proof(t *testing.T) {
+	now := time.Date(2026, time.October, 13, 12, 0, 0, 0, time.UTC)
+	claims := testClaims()
+	claims.ProofVersion = 1
+	claims.IssuedAt = now.Unix()
+	claims.ExpiresAt = now.Add(defaultTTL).Unix()
+	claims.Nonce = strings.Repeat("a", 32)
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := proofKey(context.Background(), testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyMAC := hmac.New(sha256.New, key)
+	_, _ = legacyMAC.Write([]byte("railgrid-hub-action-proof-v1\x00"))
+	_, _ = legacyMAC.Write(payload)
+	token := base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(legacyMAC.Sum(nil))
+
+	verifier := &Verifier{
+		Keys:          testKey,
+		Authenticate:  func(context.Context, *http.Request, Claims) error { return nil },
+		ValidateScope: func(context.Context, Claims) error { return nil },
+		Now:           func() time.Time { return now.Add(time.Second) },
+	}
+	if _, err := verifier.Verify(context.Background(), proofRequest(token)); err == nil {
+		t.Fatal("Verifier accepted a valid v1 proof after durable redemption was enabled")
 	}
 }
 
@@ -182,6 +216,102 @@ func TestInviteUserClaimIsLimitedToAppStudioSharingInvites(t *testing.T) {
 				t.Fatal("Sign accepted an invite user outside the App Studio sharing POST contract")
 			}
 		})
+	}
+}
+
+func TestAppAuthClaimsAreLimitedToOneProductionAuthenticationGrant(t *testing.T) {
+	now := time.Date(2026, time.October, 7, 12, 0, 0, 0, time.UTC)
+	claims := testClaims()
+	claims.Method = http.MethodPost
+	claims.Verb = "authentication-grants"
+	claims.AppAuthUser = "user-bob"
+	claims.AppAuthAppID = "project-1/production"
+	if _, err := Sign(context.Background(), testKey, claims, now); err != nil {
+		t.Fatalf("Sign valid app-auth proof: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Claims){
+		"development audience": func(c *Claims) { c.AppAuthAppID = "project-1/development" },
+		"wrong source action":  func(c *Claims) { c.Verb = "publishing-grants" },
+		"read source method":   func(c *Claims) { c.Method = http.MethodGet },
+		"different provider":   func(c *Claims) { c.Provider = "other-provider" },
+		"invalid user name":    func(c *Claims) { c.AppAuthUser = "../other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			caseClaims := claims
+			mutate(&caseClaims)
+			if _, err := Sign(context.Background(), testKey, caseClaims, now); err == nil {
+				t.Fatal("Sign accepted app-auth claims outside the authentication-grant action")
+			}
+		})
+	}
+	claims.AppAuthAppID = "app-studio-project-uid/production"
+	if _, err := Sign(context.Background(), testKey, claims, now); err != nil {
+		t.Fatalf("Sign app audience bound to Project UID instead of name: %v", err)
+	}
+}
+
+func TestAppAccessClaimsBindLegacyReadsAndAuthenticationGrantAudience(t *testing.T) {
+	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	claims := testClaims()
+	claims.ParentName = "project-1"
+	claims.Verb = "publishing"
+	claims.Method = http.MethodGet
+	claims.AppAccessOperation = "list"
+	claims.AppAccessGroup = "infrastructure.railgrid.ai"
+	claims.AppAccessResource = "instances"
+	claims.AppAccessName = "demo-prod"
+	claims.AppAccessUID = "instance-uid"
+	claims.AppAccessProject = "project-1"
+	claims.AppAccessProjectUID = "project-uid"
+	if _, err := Sign(context.Background(), testKey, claims, now); err != nil {
+		t.Fatalf("Sign legacy publishing read: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Claims){
+		"unbound project":             func(c *Claims) { c.AppAccessProject = "other-project" },
+		"missing instance UID":        func(c *Claims) { c.AppAccessUID = "" },
+		"unrelated source action":     func(c *Claims) { c.Verb = "publishing-members" },
+		"grant list from source POST": func(c *Claims) { c.Verb = "publishing-grants"; c.Method = http.MethodPost },
+	} {
+		t.Run(name, func(t *testing.T) {
+			caseClaims := claims
+			mutate(&caseClaims)
+			if _, err := Sign(context.Background(), testKey, caseClaims, now); err == nil {
+				t.Fatal("Sign accepted app-access proof outside its source action")
+			}
+		})
+	}
+
+	authClaims := claims
+	authClaims.Verb = "authentication-grants"
+	authClaims.Method = http.MethodPost
+	authClaims.AppAccessOperation = "create"
+	authClaims.AppAccessUser = "user-bob"
+	authClaims.AppAuthUser = "user-bob"
+	authClaims.AppAuthAppID = "project-uid/production"
+	if _, err := Sign(context.Background(), testKey, authClaims, now); err != nil {
+		t.Fatalf("Sign authentication grant bound to production AppID: %v", err)
+	}
+	for name, mutate := range map[string]func(*Claims){
+		"different account":  func(c *Claims) { c.AppAuthUser = "user-eve" },
+		"different audience": func(c *Claims) { c.AppAuthAppID = "replacement-project/production" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			caseClaims := authClaims
+			mutate(&caseClaims)
+			if _, err := Sign(context.Background(), testKey, caseClaims, now); err == nil {
+				t.Fatal("Sign accepted authentication grant for a different user or audience")
+			}
+		})
+	}
+}
+
+func TestAcceptedUntilIncludesVerifierClockSkew(t *testing.T) {
+	claims := Claims{ExpiresAt: 1_800_000_000}
+	want := time.Unix(claims.ExpiresAt, 0).Add(maxClockSkew)
+	if got := AcceptedUntil(claims); !got.Equal(want) {
+		t.Fatalf("AcceptedUntil=%s, want %s", got, want)
 	}
 }
 

@@ -106,9 +106,9 @@ func TestResetPreviewAccessGoesPrivateAndRemovesGrants(t *testing.T) {
 	dyn := publishingTestDynamic(
 		previewTestProject("demo", "project-uid", aiv1alpha1.ProjectSharingModePublic),
 		publishingTestTarget("demo-dev", "runtime-uid-1", "public", "https://demo-dev-abc.apps.test"),
-		staleGrantBinding("demo-dev", "bob"),
 	)
-	router := publishingTestServer(t, dyn)
+	router, broker := publishingTestServerWithBroker(t, dyn)
+	broker.grants["demo-dev"] = []projectPublishingGrantView{{Name: "grant-demo-dev-bob", User: "bob", Publication: "demo-dev", Phase: "Active"}}
 	rec := publishingDo(t, router, http.MethodDelete, "/api/projects/demo/preview", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset status = %d: %s", rec.Code, rec.Body.String())
@@ -127,8 +127,8 @@ func TestResetPreviewAccessGoesPrivateAndRemovesGrants(t *testing.T) {
 	if mode, _, _ := unstructured.NestedString(stored.Object, "spec", "sharing", "preview", "mode"); mode != string(aiv1alpha1.ProjectSharingModePrivate) {
 		t.Fatalf("stored preview mode = %q, want private", mode)
 	}
-	if _, err := dyn.Resource(clusterRoleBindingGVR).Get(context.Background(), appAccessBindingName("demo-dev", "bob"), metav1.GetOptions{}); err == nil {
-		t.Fatal("preview grant survived the reset")
+	if len(broker.grants["demo-dev"]) != 0 {
+		t.Fatalf("preview grants survived broker reset: %+v", broker.grants["demo-dev"])
 	}
 	// The development instance itself is untouched; the reconciler converges it.
 	if _, err := dyn.Resource(publishingTestTargetGVR).Get(context.Background(), "demo-dev", metav1.GetOptions{}); err != nil {

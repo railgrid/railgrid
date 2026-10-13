@@ -20,7 +20,8 @@ control who can open that URL:
   platform user may open a private app when they hold `get` on the instance's
   `access` subresource (e.g. `applications/my-shop` + subresource `access`).
   Granting access is creating a ClusterRole/ClusterRoleBinding pair; revoking
-  is deleting the binding. App Studio's share dialog is a RoleBinding writer.
+  is deleting the binding. App Studio asks the hub's narrow app-access broker
+  to make those RBAC changes; the provider never writes workspace RBAC.
   Workspace members are effectively workspace admins today, so they can open
   every app in their workspace without an explicit grant.
 
@@ -40,6 +41,18 @@ control who can open that URL:
   name is a platform-internal key that appears in no kcp binding; grant
   binding *names* and labels use it for display and dedup only. The hub
   membership API exposes it as `rbacIdentity` on membership views.
+
+The broker endpoint is `POST /api/orgs/{org}/workspaces/{ws}/app-auth/grants`.
+Its closed request names one operation (`list`, `create`, `revoke`, or `reset`),
+the exact Project and Instance names and UIDs, and optionally one stable User
+or grant name. It derives the Infrastructure object from the Project's
+production or development binding, verifies the Instance's Project owner
+reference and label, and checks the human's `get` or `update` permission on the
+exact Project and Instance. A hub-signed action proof binds those coordinates
+and the operation to the original App Studio Project action. The handler
+creates only the established `railgrid-app-access` role and User binding;
+there is no provider-controlled rule or subject input. Grant creation requires
+an existing platform User and does not create accounts or memberships.
 
 No `PublishedApp` or `AppAccessGrant` records exist, no publication
 controller runs, and the hub carries no knowledge of any provider CRD schema.

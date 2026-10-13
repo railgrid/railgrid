@@ -52,18 +52,22 @@ func (p projectAssistantHTTPToolPort) DiscoverMCP(ctx context.Context, id identi
 }
 
 func (p projectAssistantHTTPToolPort) Invoke(ctx context.Context, tool projectAssistantTool, req projectAssistantToolCallRequest) (string, error) {
-	if p.request == nil {
+	if p.server == nil || p.request == nil {
 		return "", errors.New("the App Studio tool transport is not configured")
 	}
 	if tool == nil {
 		return "", errors.New("an App Studio tool is required")
 	}
-	// Every aggregate MCP call a tool makes is authenticated as the Project's
-	// own hub-minted identity; a tool that cannot obtain one does not run.
-	httpReq, err := p.server.projectMCPRequest(ctx, p.request, req.Identity, req.Project)
-	if err != nil {
-		return "", err
+	// Local tools must not depend on an unrelated aggregate credential. Tools
+	// that actually call MCP opt in through their server-owned spec and receive
+	// only the Project-scoped identity minted for that transport.
+	req.HTTPRequest = nil
+	if tool.Spec().RequiresProjectMCPIdentity {
+		httpReq, err := p.server.projectMCPRequest(ctx, p.request, req.Identity, req.Project)
+		if err != nil {
+			return "", err
+		}
+		req.HTTPRequest = httpReq
 	}
-	req.HTTPRequest = httpReq
 	return tool.Call(ctx, req)
 }

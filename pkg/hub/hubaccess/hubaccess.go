@@ -67,6 +67,12 @@ func Match(method, urlPath string) (Requirement, bool) {
 	case len(parts) == 6 && parts[0] == "api" && parts[1] == "orgs" && parts[2] != "" &&
 		parts[3] == "workspaces" && parts[4] != "" && parts[5] == "memberships" && method == http.MethodGet:
 		return Requirement{providersv1alpha1.HubCapabilityMembershipsRead, providersv1alpha1.HubAccessScopeWorkspace}, true
+	case len(parts) == 7 && parts[0] == "api" && parts[1] == "orgs" && parts[2] != "" &&
+		parts[3] == "workspaces" && parts[4] != "" && parts[5] == "app-auth" && parts[6] == "user" && method == http.MethodPost:
+		return Requirement{providersv1alpha1.HubCapabilityAppAuthUsersResolve, providersv1alpha1.HubAccessScopeWorkspace}, true
+	case len(parts) == 7 && parts[0] == "api" && parts[1] == "orgs" && parts[2] != "" &&
+		parts[3] == "workspaces" && parts[4] != "" && parts[5] == "app-auth" && parts[6] == "grants" && method == http.MethodPost:
+		return Requirement{providersv1alpha1.HubCapabilityAppAccessGrantsManage, providersv1alpha1.HubAccessScopeWorkspace}, true
 	}
 	return Requirement{}, false
 }

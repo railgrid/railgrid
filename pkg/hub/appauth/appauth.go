@@ -45,6 +45,7 @@ package appauth
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -82,10 +83,22 @@ const (
 	// VerifyPath is the server-to-server endpoint the access proxy calls to
 	// authorize a request carrying an app access token (see HandleVerify).
 	VerifyPath = "/auth/apps/verify"
+	// IdentityAuthorizePath starts a Railgrid Auth browser sign-in for one
+	// published app instance.
+	IdentityAuthorizePath = "/auth/apps/identity/authorize"
+	// IdentityExchangePath exchanges a one-use app sign-in code for a short-
+	// lived Railgrid Auth assertion.
+	IdentityExchangePath = "/auth/apps/identity/exchange"
+	// IdentityJWKSPath publishes the signing key used by Railgrid Auth
+	// assertions.
+	IdentityJWKSPath = "/auth/apps/identity/jwks"
 	// CallbackPath is the reserved path on the app host that authorize
 	// redirects back to. It must stay in lockstep with the access proxy's
 	// callback route (providers/infrastructure/accessproxy).
 	CallbackPath = "/__railgrid/auth/callback"
+	// IdentityCallbackPath is the callback path for Railgrid Auth. It is
+	// intentionally distinct from the app access-proxy callback above.
+	IdentityCallbackPath = "/__railgrid/auth/identity/callback"
 
 	// AccessSubresource is the RBAC convention gating private apps: a visitor
 	// needs `get` on `<resource>/<name>` with this subresource in the tenant
@@ -114,6 +127,11 @@ const (
 	// isolation boundary by itself.
 	previewHandoffCodePrefix = "p2h."
 	previewAppCodePrefix     = "p2a."
+	identityAppCodePrefix    = "i1."
+
+	// IdentityPurpose separates app identity codes from private-app access
+	// codes in the shared, atomic CodeStore.
+	IdentityPurpose = "app-identity"
 )
 
 // segmentRE validates instance coordinates (API group labels, resource
@@ -167,6 +185,27 @@ type SARFactory func(clusterID string) (authorizationv1client.SubjectAccessRevie
 // authorize closed with a retryable error page.
 type InstanceHostResolver func(ctx context.Context, ref InstanceRef) (string, error)
 
+// IdentityApp describes the generic instance metadata needed for Railgrid
+// Auth. It deliberately contains no provider-specific API types.
+type IdentityApp struct {
+	InstanceUID     string
+	AppID           string
+	Environment     string
+	PublishedOrigin string
+	Enabled         bool
+}
+
+// IdentityAppResolver reads the identity-auth descriptor and published origin
+// for an instance. Implementations should return ErrInstanceNotPublished for
+// absent instances and fail closed for malformed or unavailable metadata.
+type IdentityAppResolver func(ctx context.Context, ref InstanceRef) (IdentityApp, error)
+
+// IdentityWorkspaceMember reports whether the signed-in account is a member
+// of the workspace that owns ref. Development app environments require this
+// additional check so a stale explicit app grant cannot make a preview
+// available to an outside account.
+type IdentityWorkspaceMember func(ctx context.Context, identity browsersession.Identity, ref InstanceRef) (bool, error)
+
 // ErrInstanceNotPublished is returned by an InstanceHostResolver when the
 // referenced instance has no published host to pin the redirect against.
 var ErrInstanceNotPublished = errors.New("instance has no published host")
@@ -188,6 +227,16 @@ type Config struct {
 	// InstanceHost resolves the published host of the instance a sign-in is
 	// for. Redirects are only issued to exactly that host.
 	InstanceHost InstanceHostResolver
+	// IdentityApp resolves the generic Railgrid Auth descriptor for an
+	// instance. Nil leaves the identity flow unregistered.
+	IdentityApp IdentityAppResolver
+	// IdentityAccountLookup revalidates the platform User record captured by
+	// the browser session before issuing or exchanging a Railgrid Auth code.
+	// It is required whenever the identity flow is configured.
+	IdentityAccountLookup IdentityAccountLookup
+	// IdentityWorkspaceMember is required for non-production app sign-ins;
+	// production sign-ins are governed by the instance access SAR.
+	IdentityWorkspaceMember IdentityWorkspaceMember
 	// Codes persists the one-use authorization codes. It defaults to a
 	// bounded process-local map, which is only correct for a single hub
 	// replica: authorize and exchange are separate requests and a scaled hub
@@ -217,6 +266,24 @@ type Config struct {
 	// as failed verifications. Nil treats every BearerIdentity error as an
 	// invalid credential.
 	IdentityUnavailable error
+	// IdentityIssuer is the absolute issuer URL for Railgrid Auth assertions.
+	// NormalizeIdentityIssuer derives it from the public HTTPS hub origin.
+	IdentityIssuer string
+	// IdentityKeys returns a coherent signing, subject and public-key snapshot.
+	// Production uses this instead of the individual callbacks below, so a
+	// rotation cannot split a single response across two Secret versions.
+	IdentityKeys func(context.Context) (IdentityKeySnapshot, error)
+	// IdentitySigningKey returns the current Ed25519 private signing key.
+	// The matching public key is exposed by IdentityJWKSPath.
+	IdentitySigningKey func(context.Context) (ed25519.PrivateKey, error)
+	// IdentityPublicKeys returns the current public key and any still-valid
+	// previous public keys. Keeping previous keys available for one assertion
+	// lifetime lets app sessions survive an explicit signing-key rotation.
+	IdentityPublicKeys func(context.Context) ([]ed25519.PublicKey, error)
+	// IdentitySubjectKey returns a purpose-separated secret used to derive
+	// stable, opaque app subjects. Keep this key stable across signing-key
+	// rotations.
+	IdentitySubjectKey func(context.Context) ([]byte, error)
 	// ClientIP keys the failed-verification limiter. It should see through
 	// the hub's trusted reverse proxies (proxy.ClientIP). Nil uses the
 	// connection peer address.
@@ -228,32 +295,45 @@ type Config struct {
 
 // Handler serves the authorize, exchange and verify endpoints.
 type Handler struct {
-	previewIdentity func(*http.Request, InstanceRef) (browsersession.Identity, error)
-	sessions        *browsersession.Store
-	previewSessions *browsersession.Store
-	sarClient       SARFactory
-	instanceHost    InstanceHostResolver
-	loginPath       string
-	now             func() time.Time
-	random          io.Reader
-	codes           CodeStore
-	previewCodes    CodeStore
+	previewIdentity         func(*http.Request, InstanceRef) (browsersession.Identity, error)
+	sessions                *browsersession.Store
+	previewSessions         *browsersession.Store
+	sarClient               SARFactory
+	instanceHost            InstanceHostResolver
+	identityApp             IdentityAppResolver
+	identityAccountLookup   IdentityAccountLookup
+	identityWorkspaceMember IdentityWorkspaceMember
+	loginPath               string
+	now                     func() time.Time
+	random                  io.Reader
+	codes                   CodeStore
+	previewCodes            CodeStore
 
-	bearerIdentity      func(*http.Request) (browsersession.Identity, error)
-	tokenKey            func(context.Context) ([]byte, error)
-	identityUnavailable error
-	clientIP            func(*http.Request) string
-	verifyFailures      *failureLimiter
+	bearerIdentity           func(*http.Request) (browsersession.Identity, error)
+	tokenKey                 func(context.Context) ([]byte, error)
+	identityUnavailable      error
+	identityIssuer           string
+	identityKeys             func(context.Context) (IdentityKeySnapshot, error)
+	identitySigningKey       func(context.Context) (ed25519.PrivateKey, error)
+	identityPublicKeys       func(context.Context) ([]ed25519.PublicKey, error)
+	identitySubjectKeySource func(context.Context) ([]byte, error)
+	clientIP                 func(*http.Request) string
+	verifyFailures           *failureLimiter
 }
 
 // CodeRecord is what authorize binds a code to and exchange verifies against.
 // It carries identity metadata only — never a credential.
 type CodeRecord struct {
-	Purpose      string
-	Ref          InstanceRef
-	RedirectHost string
-	Identity     browsersession.Identity
-	ExpiresAt    time.Time
+	Purpose        string
+	Ref            InstanceRef
+	RedirectHost   string
+	RedirectOrigin string
+	AppID          string
+	Environment    string
+	InstanceUID    string
+	CodeChallenge  string
+	Identity       browsersession.Identity
+	ExpiresAt      time.Time
 }
 
 // CodeStore persists one-use authorization codes between the browser's
@@ -263,6 +343,10 @@ type CodeRecord struct {
 // redeem is a replayable app sign-in.
 type CodeStore interface {
 	Put(ctx context.Context, code string, record CodeRecord) error
+	// Peek reads a record without consuming it. Implementations return an error
+	// when the backing store is unavailable, false when the code is absent or
+	// expired, and the record otherwise.
+	Peek(ctx context.Context, code string) (CodeRecord, bool, error)
 	Take(ctx context.Context, code string) (CodeRecord, bool)
 }
 
@@ -277,22 +361,40 @@ func New(cfg Config) (*Handler, error) {
 	if cfg.InstanceHost == nil {
 		return nil, fmt.Errorf("appauth: instance host resolver is required")
 	}
+	identityConfigured := cfg.IdentityApp != nil || cfg.IdentityIssuer != "" || cfg.IdentityKeys != nil || cfg.IdentitySigningKey != nil || cfg.IdentityPublicKeys != nil || cfg.IdentitySubjectKey != nil
+	if identityConfigured {
+		hasKeys := cfg.IdentityKeys != nil || (cfg.IdentitySigningKey != nil && cfg.IdentityPublicKeys != nil && cfg.IdentitySubjectKey != nil)
+		if cfg.IdentityApp == nil || cfg.IdentityAccountLookup == nil || cfg.IdentityIssuer == "" || !hasKeys {
+			return nil, fmt.Errorf("appauth: identity app and account resolvers, issuer, signing key, public keys, and subject key are required together")
+		}
+		if err := validateIdentityIssuer(cfg.IdentityIssuer); err != nil {
+			return nil, fmt.Errorf("appauth: invalid identity issuer: %w", err)
+		}
+	}
 	h := &Handler{
-		previewIdentity: cfg.PreviewIdentity,
-		sessions:        cfg.Sessions,
-		previewSessions: cfg.PreviewSessions,
-		sarClient:       cfg.SARClient,
-		instanceHost:    cfg.InstanceHost,
-		loginPath:       cfg.LoginPath,
-		now:             cfg.Now,
-		random:          cfg.Random,
-		codes:           cfg.Codes,
-		previewCodes:    cfg.PreviewCodes,
+		previewIdentity:         cfg.PreviewIdentity,
+		sessions:                cfg.Sessions,
+		previewSessions:         cfg.PreviewSessions,
+		sarClient:               cfg.SARClient,
+		instanceHost:            cfg.InstanceHost,
+		identityApp:             cfg.IdentityApp,
+		identityAccountLookup:   cfg.IdentityAccountLookup,
+		identityWorkspaceMember: cfg.IdentityWorkspaceMember,
+		loginPath:               cfg.LoginPath,
+		now:                     cfg.Now,
+		random:                  cfg.Random,
+		codes:                   cfg.Codes,
+		previewCodes:            cfg.PreviewCodes,
 
-		bearerIdentity:      cfg.BearerIdentity,
-		tokenKey:            cfg.TokenKey,
-		identityUnavailable: cfg.IdentityUnavailable,
-		clientIP:            cfg.ClientIP,
+		bearerIdentity:           cfg.BearerIdentity,
+		tokenKey:                 cfg.TokenKey,
+		identityUnavailable:      cfg.IdentityUnavailable,
+		identityIssuer:           cfg.IdentityIssuer,
+		identityKeys:             cfg.IdentityKeys,
+		identitySigningKey:       cfg.IdentitySigningKey,
+		identityPublicKeys:       cfg.IdentityPublicKeys,
+		identitySubjectKeySource: cfg.IdentitySubjectKey,
+		clientIP:                 cfg.ClientIP,
 	}
 	if h.clientIP == nil {
 		h.clientIP = peerAddress
@@ -341,6 +443,11 @@ func (h *Handler) RegisterRoutes(router *mux.Router, limit func(http.HandlerFunc
 	}
 	router.HandleFunc(AuthorizePath, wrap(h.HandleAuthorize)).Methods("GET")
 	router.HandleFunc(ExchangePath, wrap(h.HandleExchange)).Methods("POST")
+	if h.identityApp != nil && h.identityIssuer != "" && (h.identityKeys != nil || (h.identitySigningKey != nil && h.identityPublicKeys != nil && h.identitySubjectKeySource != nil)) {
+		router.HandleFunc(IdentityAuthorizePath, wrap(h.HandleIdentityAuthorize)).Methods("GET")
+		router.HandleFunc(IdentityExchangePath, wrap(h.HandleIdentityExchange)).Methods("POST")
+		router.HandleFunc(IdentityJWKSPath, wrap(h.HandleIdentityJWKS)).Methods("GET")
+	}
 	if h.tokenKey == nil {
 		return
 	}
@@ -555,6 +662,12 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		// consuming the one-time entry at the handoff endpoint.
 		http.Error(w, "sign-in expired", http.StatusGone)
 		return
+	case strings.HasPrefix(req.Code, identityAppCodePrefix):
+		// Identity codes belong to the PKCE-bound identity exchange endpoint.
+		// Reject them before touching the shared store so this legacy endpoint
+		// cannot burn a code that only the identity callback can redeem.
+		http.Error(w, "sign-in expired", http.StatusGone)
+		return
 	}
 	record, ok := codeStore.Take(r.Context(), req.Code)
 	if !ok || record.Purpose != "" || (previewCode && record.Identity.AppScope == "") || (!previewCode && record.Identity.AppScope != "") || record.Ref.key() != ref.key() || !strings.EqualFold(record.RedirectHost, req.Host) {
@@ -706,6 +819,21 @@ func (m *memoryCodeStore) Put(_ context.Context, code string, record CodeRecord)
 	}
 	m.codes[code] = record
 	return nil
+}
+
+func (m *memoryCodeStore) Peek(_ context.Context, code string) (CodeRecord, bool, error) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.codes[code]
+	if !ok {
+		return CodeRecord{}, false, nil
+	}
+	if now.After(record.ExpiresAt) {
+		delete(m.codes, code)
+		return CodeRecord{}, false, nil
+	}
+	return record, true, nil
 }
 
 func (m *memoryCodeStore) Take(_ context.Context, code string) (CodeRecord, bool) {
