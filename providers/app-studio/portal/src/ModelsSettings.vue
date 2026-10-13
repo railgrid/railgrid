@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Cpu, KeyRound, Loader2, Pencil, Plus, Star, Trash2 } from 'lucide-vue-next'
+import { Play, Cpu, KeyRound, Loader2, Pencil, Plus, Star, Trash2 } from 'lucide-vue-next'
+import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
+import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableActionButton from './portalkit/ResourceTableActionButton.vue'
+import ModelCollection from './agentkit/ModelCollection.vue'
 import ModelConnectionCard from './agentkit/ModelConnectionCard.vue'
 import ModelConnectionForm from './agentkit/ModelConnectionForm.vue'
 import ModelUsageSection from './agentkit/ModelUsageSection.vue'
@@ -57,6 +61,12 @@ const props = defineProps<{
   requireConnectionTest: boolean
   connectionTested: boolean
 }>()
+
+const modelRows = computed(() => (props.settings?.models || []).map(saved => ({
+  id: saved.id, name: saved.name, model: saved.model, endpoint: saved.baseURL || 'Provider default',
+  configured: saved.configured, default: saved.default, status: props.modelTests?.[saved.id]?.state || 'Not tested',
+  tone: props.modelTests?.[saved.id]?.tone, saved,
+})))
 
 const recommendedDiscoveredModels = computed(() => props.discoveredModels.filter((model) => model.compatibility === 'recommended').slice(0, 4))
 
@@ -120,8 +130,9 @@ const emit = defineEmits<{
       <InlineNotification v-if="testError && !editorOpen && !creationRoute" tone="error" :message="testError" />
       <InlineNotification v-else-if="testStatus && !editorOpen && !creationRoute" tone="success" :message="testStatus" />
 
-      <div v-if="settings?.models.length && !creationRoute && !editorOpen" class="k-model-grid">
-        <ModelConnectionCard v-for="saved in settings.models" :key="saved.id" :name="saved.name" :model="saved.model" :endpoint="saved.baseURL" :configured="saved.configured" :is-default="saved.default" :busy="saving"
+      <ModelCollection v-if="settings?.models.length && !creationRoute && !editorOpen" :rows="modelRows" preference-key="railgrid:app-studio:models:layout">
+        <template #cards="{ rows }">
+        <ModelConnectionCard v-for="{ saved } in rows" :key="saved.id" :name="saved.name" :model="saved.model" :endpoint="saved.baseURL" :configured="saved.configured" :is-default="saved.default" :busy="saving"
           :test-state="modelTests?.[saved.id]?.state" :test-tone="modelTests?.[saved.id]?.tone">
           <p v-if="saved.catalog" class="text-[11px] text-text-secondary">${{ saved.catalog.inputPer1M }} input · ${{ saved.catalog.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="text-[11px] text-text-secondary">Pricing unavailable</p>
           <p class="text-[11px] text-text-secondary">{{ saved.default ? 'Default for new projects' : 'Available in project model pickers' }}</p>
@@ -152,7 +163,15 @@ const emit = defineEmits<{
             </button>
           </template>
         </ModelConnectionCard>
-      </div>
+        </template>
+        <template #details="{ row: { saved } }"><InlineNotification v-if="modelTests?.[saved.id]?.error" tone="error" :message="modelTests[saved.id].error" /></template>
+        <template #actions="{ row: { saved } }">
+          <ResourceTableEditButton :label="`Edit ${saved.name}`" :disabled="saving" @click="emit('openEditor', saved.id)" />
+          <ResourceTableActionButton :icon="Play" :label="`Test connection for ${saved.name}`" :disabled="saving || !saved.configured" :busy="modelTests?.[saved.id]?.state === 'Testing…'" @click="emit('testSaved', saved.id)" />
+          <ResourceTableActionButton v-if="!saved.default" :icon="Star" :label="!saved.configured ? `Make ${saved.name} default unavailable: add a credential first` : `Make ${saved.name} default`" :disabled="saving || !saved.configured" @click="emit('setDefault', saved.id)" />
+          <ResourceTableDeleteButton :label="`Delete ${saved.name}`" :disabled="saving" @click="emit('delete', saved.id)" />
+        </template>
+      </ModelCollection>
 
       <FirstRunGuide
         v-else-if="!editorOpen && !creationRoute"

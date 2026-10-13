@@ -11,7 +11,7 @@ const aiInterrupt = await readFile(new URL('./agentkit/AIInterrupt.vue', import.
 const approvalModePicker = await readFile(new URL('./ApprovalModePicker.vue', import.meta.url), 'utf8')
 const commandPalette = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
 const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
-const modelPicker = await readFile(new URL('./ModelPicker.vue', import.meta.url), 'utf8')
+const modelPicker = await readFile(new URL('./agentkit/AIModelPicker.vue', import.meta.url), 'utf8')
 const modelsSettings = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
 const preProjectComposer = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
 const responseModePicker = await readFile(new URL('./ResponseModePicker.vue', import.meta.url), 'utf8')
@@ -59,7 +59,7 @@ test('makes the mobile workspace and destructive card action operable', () => {
 
 test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.ok((commandPalette.match(/class="app-studio-touch-target/g) ?? []).length >= 5)
-  assert.ok((modelPicker.match(/class="app-studio-touch-target/g) ?? []).length >= 2)
+  assert.ok(modelPicker.includes('class="k-ai-model-picker__trigger"') && modelPicker.includes('k-ai-model-picker__option'))
   assert.ok((modelsSettings.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
   assert.ok((responseModePicker.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
   assert.ok((approvalModePicker.match(/class="app-studio-touch-target/g) ?? []).length >= 4)

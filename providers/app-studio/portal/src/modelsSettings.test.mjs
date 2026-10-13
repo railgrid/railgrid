@@ -446,7 +446,7 @@ test('model creation replaces its route entry and nested navigation accepts repl
 test('composer exposes the configured model picker and sends its stable ID', async () => {
   const [app, picker] = await Promise.all([
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./ModelPicker.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIModelPicker.vue', import.meta.url), 'utf8'),
   ])
   assert.match(app, /<template #actions>[\s\S]*<ModelPicker[\s\S]*:models="configuredLLMModels"[\s\S]*@select="selectedLLMModelID = \$event"/)
   assert.match(app, /const startOperation = \{[\s\S]*modelID: selectedLLMModelID\.value/)
@@ -574,5 +574,29 @@ test('refreshing settings allows retry and ignores old saved-model completions',
         stopWatchingSettings()
       }
     }
+  }
+})
+
+test('restores the saved list layout with ResourceTable actions and model states', async () => {
+  const previousWindow = globalThis.window
+  globalThis.window = { localStorage: { getItem: key => key === 'railgrid:app-studio:models:layout' ? 'list' : null } }
+  try {
+    const html = await render({
+      settings: {
+        provider: 'openai-compatible', baseURL: '', model: 'gpt-6-sol', configured: true,
+        models: [{ id: 'sol', name: 'Sol', model: 'gpt-6-sol', baseURL: 'https://api.openai.com/v1', configured: true, default: true }],
+      },
+    })
+    assert.match(html, /<table/)
+    assert.doesNotMatch(html, /k-model-grid/)
+    assert.match(html, /Model layout: List/)
+    assert.match(html, /aria-label="Edit Sol"/)
+    assert.match(html, /aria-label="Test connection for Sol"/)
+    assert.match(html, /aria-label="Delete Sol"/)
+    assert.match(html, /Not tested/)
+    assert.match(html, /Default/)
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
   }
 })

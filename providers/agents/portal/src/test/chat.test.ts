@@ -338,7 +338,7 @@ describe('chat streaming', () => {
     expect(textarea.getAttribute('aria-describedby')).toBe('agents-composer-help')
     expect(textarea.placeholder).toBe('Message scout…')
     expect(text(el.querySelector('#agents-composer-help'))).toContain('Enter to send')
-    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
+    expect(el.querySelector('.k-ai-composer__help')).not.toBeNull()
     expect(textarea.title).toContain('Enter to send')
     expect(submit.classList.contains('agents-composer-primary')).toBe(true)
     expect(submit.getAttribute('aria-label')).toBe('Send')
@@ -1994,5 +1994,79 @@ describe('approval handoff after the chat stream closes', () => {
     expect(getRun).toHaveBeenCalledTimes(1)
     expect(el.querySelector('.agents-approval')).toBeNull()
     expect(text(el)).not.toContain('stale')
+  })
+})
+
+describe('conversation model picker', () => {
+  async function configureModels(store: ReturnType<typeof makeStore>): Promise<void> {
+    store.credentials.data = [
+      { name: 'openai', provider: 'openai', model: 'gpt-4o' },
+      { name: 'sol', provider: 'openai', model: 'gpt-6-sol' },
+      { name: 'harness-login', provider: 'codex' },
+    ]
+    store.credentials.loaded = true
+    store.dispatchEvent(new Event('change'))
+    await settle()
+  }
+
+  it('saves the selected credential, blocks sending until saved, and keeps the draft', async () => {
+    const pending = deferred<ReturnType<typeof agentFixture>>()
+    const saved = agentFixture('scout')
+    saved.spec.backend!.model!.credentials!.chat = 'sol'
+    const patchAgent = vi.fn(() => pending.promise)
+    const chatStream = vi.fn(scripted([]))
+    const { el, store } = await mountChat(chatStream, { patchAgent, listAgents: async () => [saved] })
+    await configureModels(store)
+    el.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+    await settle()
+    expect(el.querySelectorAll('[role="option"]')).toHaveLength(2)
+    const choose = [...el.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => text(option).includes('sol'))!
+    choose.click()
+    await settle()
+    expect(patchAgent).toHaveBeenCalledWith('scout', { modelCredential: 'sol' })
+    expect(text(el)).toContain('Saving model')
+    await send(el, 'Keep this draft')
+    expect(chatStream).not.toHaveBeenCalled()
+    pending.resolve(saved)
+    await settle(8)
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Keep this draft')
+    expect(el.querySelector('[role="combobox"]')!.getAttribute('aria-label')).toBe('Model: sol')
+    expect(text(el)).not.toContain('Saving model')
+  })
+
+  it('rolls back a rejected save and exposes an error', async () => {
+    const original = agentFixture('scout')
+    const { el, store } = await mountChat(scripted([]), {
+      patchAgent: async () => { throw new Error('denied') },
+      listAgents: async () => [original],
+    })
+    await configureModels(store)
+    const trigger = el.querySelector<HTMLButtonElement>('[role="combobox"]')!
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await settle()
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle(8)
+    expect(text(el)).toContain('Model could not be saved')
+    expect(trigger.getAttribute('aria-label')).toBe('Model: openai')
+  })
+
+  it('disables model switching during a running turn', async () => {
+    const gate = deferred<void>()
+    const { el, store } = await mountChat(scripted([], gate.promise))
+    await configureModels(store)
+    await send(el, 'Start a turn')
+    expect(el.querySelector<HTMLButtonElement>('[role="combobox"]')!.disabled).toBe(true)
+    gate.resolve()
+    await settle(8)
+    expect(el.querySelector<HTMLButtonElement>('[role="combobox"]')!.disabled).toBe(false)
+  })
+
+  it('omits the picker for harness execution', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    store.agents.data[0].spec.backend = { type: 'harness' }
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    expect(el.querySelector('[role="combobox"]')).toBeNull()
+    expect(text(el)).not.toContain('default for future turns')
   })
 })

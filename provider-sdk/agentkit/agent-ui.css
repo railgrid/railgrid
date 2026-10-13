@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 15;
+  --railgrid-agent-ui-version: 20;
 }
 
 /* ── AI workbench pane ────────────────────────────────────────────────────
@@ -1123,7 +1123,8 @@ button.k-workbench-tab {
 .k-model-usage__heading p,.k-model-usage__unavailable p{margin:4px 0 0;font-size:12px;color:var(--km-t);}
 .k-model-usage__unavailable h4{margin:0;font-size:13px;color:var(--km-p);}
 .k-model-form-field{display:grid;align-content:start;min-width:0;gap:6px;font-size:11px;font-weight:500;color:var(--km-t);}
-.k-model-form-field>.k-input,.k-model-form-section>.k-input{min-height:40px;}
+.k-model-form-field>.k-input,.k-model-form-section>.k-input{height:40px;min-height:40px;line-height:20px;}
+.k-model-form-endpoint{display:flex;align-items:center;min-width:0;}
 .k-model-form-section{display:grid;gap:12px;border-top:1px solid var(--km-b);padding-top:16px;}
 .k-model-form-heading{margin:0;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.025em;color:var(--km-m);}
 .k-model-form-hint{margin:0;font-size:11px;font-weight:400;line-height:16px;color:var(--km-m);}
@@ -1410,3 +1411,38 @@ button.k-workbench-tab {
   .k-ai-launcher__search > input { height: 44px; }
   .k-ai-launcher__search-clear { width: 44px; height: 44px; }
 }
+
+/* Shared composer model selector. */
+.k-ai-model-picker { position: relative; min-width: 0; max-width: 224px; }
+.k-ai-model-picker__trigger { display: inline-flex; align-items: center; gap: 6px; height: 32px; max-width: 100%; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-muted); font: inherit; font-size: 11px; font-weight: 500; cursor: pointer; }
+.k-ai-model-picker__trigger:hover { background: var(--color-surface-hover); color: var(--color-text-secondary); }
+.k-ai-model-picker__trigger:disabled { opacity: .6; cursor: not-allowed; }
+.k-ai-model-picker__label, .k-ai-model-picker__name, .k-ai-model-picker__model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-ai-model-picker__icon { width: 14px; height: 14px; flex-shrink: 0; }
+.k-ai-model-picker__chevron { width: 12px; height: 12px; flex-shrink: 0; }
+.k-ai-model-picker__chevron.is-open { transform: rotate(180deg); }
+.k-ai-model-picker__menu { position: absolute; bottom: 36px; right: 0; width: 288px; max-height: 288px; overflow-y: auto; z-index: var(--k-ai-model-picker-z, var(--k-layer-menu, 1000)); }
+.k-ai-model-picker__option { align-items: flex-start; }
+.k-ai-model-picker__option.is-active { background: var(--color-surface-overlay); }
+.k-ai-model-picker__details { flex: 1; min-width: 0; }
+.k-ai-model-picker__name { display: block; font-size: 12px; font-weight: 500; color: var(--color-text-primary); }
+.k-ai-model-picker__model { display: block; margin-top: 2px; font-family: var(--font-mono, monospace); font-size: 10px; color: var(--color-text-muted); }
+.k-ai-model-picker__check { width: 16px; height: 16px; flex-shrink: 0; color: var(--color-accent); }
+@media (max-width: 767px) { .k-ai-model-picker__menu { position: fixed; inset: auto 8px 8px; width: auto; max-height: calc(100dvh - 16px); } }
+@media (pointer: coarse) { .k-ai-model-picker__trigger, .k-ai-model-picker__option { min-height: 44px; } }
+
+/* Contained menus intentionally stay inside the composer at every breakpoint.
+ * A viewport-wide mobile menu can sit beneath the host navigation rail. Bound
+ * long lists to the available viewport height and scroll inside the menu. */
+.k-ai-model-picker--contained { flex: 1; max-width: 100%; }
+.k-ai-model-picker--contained .k-ai-model-picker__trigger { display: flex; margin-left: auto; }
+.k-ai-model-picker--contained .k-ai-model-picker__menu { position: absolute; inset: auto 0 calc(100% + 4px) auto; width: 288px; max-width: 100%; max-height: min(288px, 40dvh); }
+
+.k-model-collection { display: grid; gap: 16px; min-width: 0; }
+.k-model-collection__toolbar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }
+.k-model-collection__search { position: relative; flex: 0 1 320px; min-width: 160px; }
+.k-model-collection__search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--color-text-muted); pointer-events: none; }
+.k-model-collection__search > input { width: 100%; padding-left: 36px; }
+.k-model-collection__count { flex: 1; color: var(--color-text-muted); font-size: 12px; }
+.k-model-collection__empty { padding: 24px; color: var(--color-text-muted); text-align: center; }
+@media (max-width: 480px) { .k-model-collection__search { flex-basis: 100%; } }
