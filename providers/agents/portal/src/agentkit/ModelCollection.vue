@@ -17,6 +17,8 @@ const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase()
   return props.rows.filter(row => [row.name, row.model, row.endpoint, row.status].some(value => value.toLowerCase().includes(needle)))
 })
+const tableRows = computed(() => props.rows.map(row => ({ ...row, status: row.configured ? row.status : 'Needs credential' })))
+const tableFilters = [{ key: 'model', label: 'Model' }, { key: 'status', label: 'Status' }]
 const columns = [
   { key: 'name', label: 'Name', primary: true },
   { key: 'model', label: 'Model' },
@@ -29,18 +31,18 @@ const columns = [
 <template>
   <div class="k-model-collection">
     <div class="k-model-collection__toolbar">
-      <label class="k-model-collection__search">
+      <label v-if="layout === 'grid'" class="k-model-collection__search">
         <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
         <input v-model="query" type="search" class="k-input" aria-label="Search models" placeholder="Search models…" />
       </label>
-      <span class="k-model-collection__count" role="status">{{ filtered.length }}{{ query.trim() ? ` of ${rows.length}` : '' }} model{{ rows.length === 1 ? '' : 's' }}</span>
+      <span v-if="layout === 'grid'" class="k-model-collection__count" role="status">{{ filtered.length }}{{ query.trim() ? ` of ${rows.length}` : '' }} model{{ rows.length === 1 ? '' : 's' }}</span>
       <LayoutSelector v-model="layout" aria-label="Model layout" grid-label="Cards" />
     </div>
     <template v-if="layout === 'grid'">
       <div v-if="filtered.length" class="k-model-grid"><slot name="cards" :rows="filtered" /></div>
       <p v-else class="k-model-collection__empty">No models match your search.</p>
     </template>
-    <ResourceTable v-else :rows="filtered" :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models match your search.">
+    <ResourceTable v-else v-model:query="query" :rows="tableRows" searchable search-placeholder="Search models…" :search-keys="['name', 'model', 'endpoint', 'status']" :filters="tableFilters" search-empty-text="No models match your search." :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models match your search.">
       <template #name="{ row }">{{ row.name }} <StatusBadge v-if="row.default" status="Default" tone="muted" /></template>
       <template #status="{ row }">
         <StatusBadge :status="row.configured ? String(row.status) : 'Needs credential'" :tone="row.configured ? (row as T).tone || 'muted' : 'warning'" />

@@ -583,11 +583,25 @@ describe('model collection layouts', () => {
     const list = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(el => el.textContent?.trim() === 'List')!
     list.click()
     await settleVue()
+    await settleVue(4, 150)
     expect(view.element.querySelector('.k-model-grid')).toBeNull()
     const table = view.element.querySelector('table')!
     expect(table.textContent).toContain('careful')
     expect(table.textContent).not.toContain('fast')
     expect(localStorage.getItem('railgrid:agents:models:layout')).toBe('list')
+    expect(view.element.querySelector('.k-model-collection__search')).toBeNull()
+    const tableSearch = view.element.querySelector<HTMLInputElement>('.k-table__search-input')!
+    tableSearch.value = ''
+    tableSearch.dispatchEvent(new Event('input'))
+    await settleVue(4, 150)
+    expect(table.textContent).toContain('fast')
+    const statusFilter = [...view.element.querySelectorAll<HTMLButtonElement>('[role="combobox"]')].find(el => el.getAttribute('aria-labelledby')?.split(' ').some(id => document.getElementById(id)?.textContent?.trim() === 'Status'))!
+    statusFilter.click()
+    await settleVue()
+    ;[...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(el => el.textContent?.trim() === 'Not reachable')!.click()
+    await settleVue(4, 150)
+    expect(table.textContent).toContain('careful')
+    expect(table.textContent).not.toContain('fast')
     const edit = [...table.querySelectorAll<HTMLButtonElement>('button')].find(el => el.getAttribute('aria-label') === 'Edit careful')!
     edit.click()
     await settleVue()

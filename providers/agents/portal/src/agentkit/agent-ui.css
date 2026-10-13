@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 18;
+  --railgrid-agent-ui-version: 19;
 }
 
 /* ── AI workbench pane ────────────────────────────────────────────────────
@@ -1436,7 +1436,7 @@ button.k-workbench-tab {
 .k-ai-model-picker--contained .k-ai-model-picker__menu { position: absolute; inset: auto 0 calc(100% + 4px) auto; width: 288px; max-width: 100%; }
 
 .k-model-collection { display: grid; gap: 16px; min-width: 0; }
-.k-model-collection__toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.k-model-collection__toolbar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }
 .k-model-collection__search { position: relative; flex: 0 1 320px; min-width: 160px; }
 .k-model-collection__search > svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--color-text-muted); pointer-events: none; }
 .k-model-collection__search > input { width: 100%; padding-left: 36px; }

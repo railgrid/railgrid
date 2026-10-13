@@ -106,5 +106,5 @@ enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000
 // The same Integrations change applies to total assets; bootstrap and tile
 // budgets stay fixed.
 // Labeled shared toggle: 1,352,452 raw / 382,522 gzip total.
-// Shared picker plus model card/list controls: 1,359,660 raw / 384,273 gzip total.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_360_000, gzipBytes: 384_600 })
+// Shared picker plus model card/list controls: 1,360,125 raw / 384,385 gzip total.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_360_500, gzipBytes: 384_600 })
