@@ -42,11 +42,12 @@ import (
 )
 
 type projectAuthenticationEnvironment struct {
-	Environment  string `json:"environment"`
-	Instance     string `json:"instance"`
-	Configured   bool   `json:"configured"`
-	RuntimeReady bool   `json:"runtimeReady"`
-	Reason       string `json:"reason,omitempty"`
+	Environment   string `json:"environment"`
+	Instance      string `json:"instance"`
+	RuntimeExists bool   `json:"runtimeExists"`
+	Configured    bool   `json:"configured"`
+	RuntimeReady  bool   `json:"runtimeReady"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type projectAuthenticationResponse struct {
@@ -97,22 +98,40 @@ func (s *Server) authenticationResponse(ctx context.Context, c *asclient.Client,
 			}
 			resource := tenant.Resource{GVR: gvr, Kind: binding.ResourceRef.Kind, Plural: gvr.Resource}
 			obj, err := c.Resource(resource, "").Get(ctx, entry.Instance, metav1.GetOptions{})
-			if err == nil {
-				enabled, _, _ := unstructured.NestedBool(obj.Object, "spec", "values", bindings.AuthEnabledField)
-				audience, _, _ := unstructured.NestedString(obj.Object, "spec", "values", bindings.AuthAppIDField)
-				observedEnvironment, _, _ := unstructured.NestedString(obj.Object, "spec", "values", bindings.AuthEnvironmentField)
-				observedInstanceUID, _, _ := unstructured.NestedString(obj.Object, "spec", "values", "railgridAuthInstanceUID")
-				entry.Configured = enabled == p.Spec.Authentication.Enabled && (!enabled || (audience == string(p.UID)+"/"+env.Name && observedEnvironment == env.Name && observedInstanceUID == string(obj.GetUID())))
-				status := bindings.StatusFromObject(binding, obj)
-				entry.RuntimeReady = entry.Configured && status.Phase == "Ready"
-				if entry.RuntimeReady {
-					entry.Reason = ""
-				}
+			if missingNamedAuthenticationRuntime(err, gvr, entry.Instance) {
+				response.Environments = append(response.Environments, entry)
+				continue
+			}
+			if err != nil {
+				return response, fmt.Errorf("reading the Project-managed Infrastructure Instance: %w", err)
+			}
+			entry.RuntimeExists = true
+			enabled, _, _ := unstructured.NestedBool(obj.Object, "spec", "values", bindings.AuthEnabledField)
+			audience, _, _ := unstructured.NestedString(obj.Object, "spec", "values", bindings.AuthAppIDField)
+			observedEnvironment, _, _ := unstructured.NestedString(obj.Object, "spec", "values", bindings.AuthEnvironmentField)
+			observedInstanceUID, _, _ := unstructured.NestedString(obj.Object, "spec", "values", "railgridAuthInstanceUID")
+			entry.Configured = enabled == p.Spec.Authentication.Enabled && (!enabled || (audience == string(p.UID)+"/"+env.Name && observedEnvironment == env.Name && observedInstanceUID == string(obj.GetUID())))
+			status := bindings.StatusFromObject(binding, obj)
+			entry.RuntimeReady = entry.Configured && status.Phase == "Ready"
+			if entry.RuntimeReady {
+				entry.Reason = ""
 			}
 			response.Environments = append(response.Environments, entry)
 		}
 	}
 	return response, nil
+}
+
+func missingNamedAuthenticationRuntime(err error, resource schema.GroupVersionResource, name string) bool {
+	if !apierrors.IsNotFound(err) || name == "" {
+		return false
+	}
+	status, ok := err.(apierrors.APIStatus)
+	if !ok {
+		return false
+	}
+	details := status.Status().Details
+	return details != nil && details.Name == name && details.Group == resource.Group && details.Kind == resource.Resource
 }
 
 func (s *Server) configureAuthentication(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, enabled bool) (*aiv1alpha1.Project, error) {

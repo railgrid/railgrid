@@ -28,6 +28,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	ktesting "k8s.io/client-go/testing"
 
 	"github.com/gorilla/mux"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -95,6 +97,67 @@ func TestAuthenticationToolsDoNotRequireMCPIdentity(t *testing.T) {
 		if !ok || spec.RequiresProjectMCPIdentity {
 			t.Fatalf("invalid auth tool %s", name)
 		}
+	}
+}
+
+func TestProjectAuthenticationResponseReportsPersistedRuntime(t *testing.T) {
+	tests := []struct {
+		name          string
+		production    bool
+		persisted     bool
+		readFailure   bool
+		notFound      bool
+		notFoundName  string
+		wantExists    bool
+		wantReadError bool
+	}{
+		{name: "unpromoted project"},
+		{name: "production binding without persisted Instance", production: true},
+		{name: "persisted production Instance", production: true, persisted: true, wantExists: true},
+		{name: "resource endpoint 404 without object details", production: true, notFound: true, wantReadError: true},
+		{name: "404 for a different named object", production: true, notFound: true, notFoundName: "other-instance", wantReadError: true},
+		{name: "transient Instance read failure", production: true, readFailure: true, wantReadError: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			project := publishingTestProjectTyped("demo", "project-uid", "")
+			project.Spec.Template = nil
+			if !tc.production {
+				project.Spec.Environments = nil
+			}
+			objects := []runtime.Object{publishingTestProjectObject(t, project)}
+			if tc.persisted {
+				objects = append(objects, publishingTestTarget("demo-prod", "instance-uid", "private", ""))
+			}
+			dyn := publishingTestDynamic(objects...)
+			if tc.readFailure {
+				dyn.PrependReactor("get", "instances", func(ktesting.Action) (bool, runtime.Object, error) {
+					return true, nil, errors.New("temporary API failure")
+				})
+			}
+			if tc.notFound {
+				dyn.PrependReactor("get", "instances", func(ktesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewNotFound(publishingTestTargetGVR.GroupResource(), tc.notFoundName)
+				})
+			}
+
+			response, err := (&Server{}).authenticationResponse(context.Background(), asclient.NewFromDynamic(dyn), project)
+			if (err != nil) != tc.wantReadError {
+				t.Fatalf("authenticationResponse error = %v, wantReadError=%v", err, tc.wantReadError)
+			}
+			if tc.wantReadError {
+				return
+			}
+			if !tc.production {
+				if len(response.Environments) != 0 {
+					t.Fatalf("unpromoted project environments = %+v, want none", response.Environments)
+				}
+				return
+			}
+			if len(response.Environments) != 1 || response.Environments[0].RuntimeExists != tc.wantExists {
+				t.Fatalf("production environment state = %+v, want one runtimeExists=%v", response.Environments, tc.wantExists)
+			}
+		})
 	}
 }
 

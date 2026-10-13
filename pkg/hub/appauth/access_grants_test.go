@@ -749,6 +749,8 @@ func TestAppAccessGrantSourcesRemainIndependentAndRevokePrimaryFirst(t *testing.
 	}
 	publishingName := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
 	authenticationName := appAccessUIDBindingName(req, "member", appAccessGrantSourceAuthentication)
+	brokerStampBinding(t, client, publishingName, "publishing-primary-uid", "31")
+	brokerStampBinding(t, client, authenticationName, "authentication-primary-uid", "32")
 	publishingRoleName := appAccessUIDRoleNameForSource(req, appAccessGrantSourcePublishing)
 	authenticationRoleName := appAccessUIDRoleNameForSource(req, appAccessGrantSourceAuthentication)
 	if publishingRoleName == authenticationRoleName {
@@ -793,8 +795,9 @@ func TestAppAccessGrantSourcesRemainIndependentAndRevokePrimaryFirst(t *testing.
 	if response.Code != http.StatusOK {
 		t.Fatalf("publishing reset status=%d body=%s", response.Code, response.Body.String())
 	}
-	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), publishingName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("publishing primary binding survived its reset: %v", err)
+	resetBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), publishingName, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(resetBinding) {
+		t.Fatalf("publishing reset did not preserve an inert durable tombstone: binding=%#v err=%v", resetBinding, err)
 	}
 	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), authenticationName, metav1.GetOptions{}); err != nil {
 		t.Fatalf("publishing reset removed authentication grant: %v", err)
@@ -829,9 +832,19 @@ func TestAppAccessGrantSourcesRemainIndependentAndRevokePrimaryFirst(t *testing.
 		t.Fatal(err)
 	}
 	conflictOnce := true
-	client.PrependReactor("delete", "clusterrolebindings", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		if conflictOnce && action.(k8stesting.DeleteAction).GetName() == authenticationName {
+	client.PrependReactor("update", "clusterrolebindings", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updated := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		if conflictOnce && updated.GetName() == authenticationName {
 			conflictOnce = false
+			latestObject, err := client.Tracker().Get(appAccessBindingGVR, "", authenticationName)
+			if err != nil {
+				return true, nil, err
+			}
+			latest := latestObject.(*unstructured.Unstructured)
+			latest.SetResourceVersion("34")
+			if err := client.Tracker().Update(appAccessBindingGVR, latest, ""); err != nil {
+				return true, nil, err
+			}
 			return true, nil, apierrors.NewConflict(schema.GroupResource{Group: appAccessBindingGVR.Group, Resource: appAccessBindingGVR.Resource}, authenticationName, errors.New("resourceVersion conflict"))
 		}
 		return false, nil, nil
@@ -847,8 +860,9 @@ func TestAppAccessGrantSourcesRemainIndependentAndRevokePrimaryFirst(t *testing.
 	if response.Code != http.StatusOK {
 		t.Fatalf("authentication revoke status=%d body=%s", response.Code, response.Body.String())
 	}
-	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), authenticationName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("identity cleanup drift preserved primary authentication grant: %v", err)
+	revokedPrimary, err := client.Resource(appAccessBindingGVR).Get(context.Background(), authenticationName, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(revokedPrimary) {
+		t.Fatalf("identity cleanup drift preserved active primary authentication grant: binding=%#v err=%v", revokedPrimary, err)
 	}
 	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyIdentityName, metav1.GetOptions{}); err != nil {
 		t.Fatalf("drifted secondary identity binding should remain for cleanup: %v", err)
@@ -862,15 +876,181 @@ func TestAppAccessGrantSourcesRemainIndependentAndRevokePrimaryFirst(t *testing.
 	if !brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
 		t.Fatal("authentication revoke removed the independent publishing reachability grant")
 	}
-	primaryDeleteAttempts := 0
+	primaryUpdateAttempts := 0
 	for _, action := range client.Actions()[beforeRevoke:] {
-		if action.GetVerb() == "delete" && action.GetResource().Resource == appAccessBindingGVR.Resource && action.(k8stesting.DeleteAction).GetName() == authenticationName {
-			primaryDeleteAttempts++
+		if action.GetVerb() == "update" && action.GetResource().Resource == appAccessBindingGVR.Resource && action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured).GetName() == authenticationName {
+			primaryUpdateAttempts++
 		}
 	}
-	if primaryDeleteAttempts != 2 {
-		t.Fatalf("primary delete attempts after one conflict = %d, want bounded retry once", primaryDeleteAttempts)
+	if primaryUpdateAttempts != 2 {
+		t.Fatalf("primary tombstone updates after one conflict = %d, want one conflict retry", primaryUpdateAttempts)
 	}
+}
+
+func TestAppAccessGrantSignedCreateReactivatesTombstoneOnlyAfterCASConflict(t *testing.T) {
+	client := brokerTestClient(brokerTestInstanceUID)
+	handler := brokerTestHandler(client, true)
+	req := appAccessGrantRequest{
+		Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+		Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
+	}
+	create := func() *httptest.ResponseRecorder {
+		call := brokerListCall()
+		call.AppAccessOperation = "create"
+		call.AppAccessUser = "member"
+		call.AppAccessSourceMethod = http.MethodPost
+		response := httptest.NewRecorder()
+		handler.Handle(response, brokerTestRequest(brokerCreateBody(req.ProjectUID, req.UID, "member"), "org", "workspace", call))
+		return response
+	}
+	if response := create(); response.Code != http.StatusOK {
+		t.Fatalf("initial create status=%d body=%s", response.Code, response.Body.String())
+	}
+	name := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
+	brokerStampBinding(t, client, name, "create-revive-binding-uid", "71")
+	if response := brokerGrantMutation(brokerTestHandler(client, true), "revoke", name); response.Code != http.StatusOK {
+		t.Fatalf("revoke before reapproval status=%d body=%s", response.Code, response.Body.String())
+	}
+	if brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatal("revoked grant still authorizes access before explicit reapproval")
+	}
+
+	conflictOnce := true
+	client.PrependReactor("update", "clusterrolebindings", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updated := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		if conflictOnce && updated.GetName() == name && !appAccessBindingTombstoned(updated) {
+			conflictOnce = false
+			storedObject, err := client.Tracker().Get(appAccessBindingGVR, "", name)
+			if err != nil {
+				return true, nil, err
+			}
+			stored := storedObject.(*unstructured.Unstructured)
+			stored.SetResourceVersion("72")
+			if err := client.Tracker().Update(appAccessBindingGVR, stored, ""); err != nil {
+				return true, nil, err
+			}
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Group: appAccessBindingGVR.Group, Resource: appAccessBindingGVR.Resource}, name, errors.New("resourceVersion conflict"))
+		}
+		return false, nil, nil
+	})
+	if response := create(); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("reapproval with a lost CAS returned status=%d body=%s, want 503", response.Code, response.Body.String())
+	}
+	tombstone, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(tombstone) || brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatalf("lost reapproval CAS changed terminal denial: binding=%#v err=%v", tombstone, err)
+	}
+
+	if response := create(); response.Code != http.StatusOK {
+		t.Fatalf("fresh signed reapproval status=%d body=%s", response.Code, response.Body.String())
+	}
+	active, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil || appAccessBindingTombstoned(active) || bindingSubjectUser(active) != "railgrid:member@example.test" {
+		t.Fatalf("explicit signed reapproval did not restore the same subject: binding=%#v err=%v", active, err)
+	}
+	if !brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatal("fresh signed reapproval did not restore app access")
+	}
+}
+
+func TestRevokeCASFencesSignedCreateThatReadAnExistingTombstone(t *testing.T) {
+	client := brokerTestClient(brokerTestInstanceUID)
+	baseHandler := brokerTestHandler(client, true)
+	req := appAccessGrantRequest{
+		Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+		Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
+	}
+	createRequest := func(handler *AppAccessGrantHandler) *httptest.ResponseRecorder {
+		call := brokerListCall()
+		call.AppAccessOperation = "create"
+		call.AppAccessUser = "member"
+		call.AppAccessSourceMethod = http.MethodPost
+		response := httptest.NewRecorder()
+		handler.Handle(response, brokerTestRequest(brokerCreateBody(req.ProjectUID, req.UID, "member"), "org", "workspace", call))
+		return response
+	}
+	if response := createRequest(baseHandler); response.Code != http.StatusOK {
+		t.Fatalf("initial create status=%d body=%s", response.Code, response.Body.String())
+	}
+	name := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
+	brokerStampBinding(t, client, name, "stale-approval-binding-uid", "81")
+	if response := brokerGrantMutation(baseHandler, "revoke", name); response.Code != http.StatusOK {
+		t.Fatalf("initial revoke status=%d body=%s", response.Code, response.Body.String())
+	}
+	before, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(before) {
+		t.Fatalf("initial revoke did not persist tombstone: binding=%#v err=%v", before, err)
+	}
+	beforeToken := appAccessBindingRevocationToken(before)
+
+	// The signed create has read the tombstone and is about to reactivate it.
+	// A second replica revokes the same grant in the update hook. It must CAS a
+	// fresh token even though the row was already tombstoned, forcing the stale
+	// approval update to lose the resourceVersion race.
+	createClient := &brokerBindingUpdateHookClient{Interface: client}
+	interleaved := false
+	createClient.onUpdate = func(updated *unstructured.Unstructured) error {
+		if interleaved || updated.GetName() != name || appAccessBindingTombstoned(updated) {
+			return nil
+		}
+		interleaved = true
+		response := brokerGrantMutation(brokerTestHandler(client, true), "revoke", name)
+		if response.Code != http.StatusOK {
+			return errors.New(response.Body.String())
+		}
+		latest, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if !appAccessBindingTombstoned(latest) || appAccessBindingRevocationToken(latest) == beforeToken {
+			return errors.New("competing revoke did not refresh the tombstone CAS token")
+		}
+		return apierrors.NewConflict(schema.GroupResource{Group: appAccessBindingGVR.Group, Resource: appAccessBindingGVR.Resource}, name, errors.New("resourceVersion changed during signed create"))
+	}
+	createHandler := brokerTestHandler(createClient, true)
+	if response := createRequest(createHandler); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("stale signed create returned status=%d body=%s, want CAS failure", response.Code, response.Body.String())
+	}
+	if !interleaved {
+		t.Fatal("signed create did not reach the tombstone reactivation update")
+	}
+	terminal, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(terminal) || brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatalf("successful revoke did not defeat the stale signed create: binding=%#v err=%v", terminal, err)
+	}
+
+	createClient.onUpdate = nil
+	if response := createRequest(createHandler); response.Code != http.StatusOK {
+		t.Fatalf("fresh signed create after revocation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) == false {
+		t.Fatal("fresh explicit approval did not restore access")
+	}
+}
+
+type brokerBindingUpdateHookClient struct {
+	dynamic.Interface
+	onUpdate func(*unstructured.Unstructured) error
+}
+
+func (c *brokerBindingUpdateHookClient) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	resource := c.Interface.Resource(gvr)
+	if gvr != appAccessBindingGVR || c.onUpdate == nil {
+		return resource
+	}
+	return &brokerBindingUpdateHookResource{NamespaceableResourceInterface: resource, onUpdate: c.onUpdate}
+}
+
+type brokerBindingUpdateHookResource struct {
+	dynamic.NamespaceableResourceInterface
+	onUpdate func(*unstructured.Unstructured) error
+}
+
+func (r *brokerBindingUpdateHookResource) Update(ctx context.Context, obj *unstructured.Unstructured, opts metav1.UpdateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+	if err := r.onUpdate(obj); err != nil {
+		return nil, err
+	}
+	return r.NamespaceableResourceInterface.Update(ctx, obj, opts, subresources...)
 }
 
 func brokerListCall() tenant.DelegatedCall {
@@ -890,6 +1070,31 @@ func brokerListBody() string {
 
 func brokerCreateBody(projectUID, instanceUID, user string) string {
 	return `{"operation":"create","group":"infrastructure.railgrid.ai","resource":"instances","name":"app-demo-prod","uid":"` + instanceUID + `","projectName":"demo","projectUID":"` + projectUID + `","user":"` + user + `"}`
+}
+
+func brokerGrantMutationBody(operation, grant string) string {
+	body := strings.Replace(brokerListBody(), `"operation":"list"`, `"operation":"`+operation+`"`, 1)
+	if operation == "revoke" {
+		body = strings.TrimSuffix(body, "}") + `,"grant":"` + grant + `"}`
+	}
+	return body
+}
+
+func brokerGrantMutation(handler *AppAccessGrantHandler, operation, grant string) *httptest.ResponseRecorder {
+	call := brokerListCall()
+	call.AppAccessOperation = operation
+	call.AppAccessGrant = grant
+	switch operation {
+	case "revoke":
+		call.AppAccessSourceVerb = "publishing-grants"
+		call.AppAccessSourceMethod = http.MethodPost
+	case "reset":
+		call.AppAccessSourceVerb = "publishing"
+		call.AppAccessSourceMethod = http.MethodDelete
+	}
+	response := httptest.NewRecorder()
+	handler.Handle(response, brokerTestRequest(brokerGrantMutationBody(operation, grant), "org", "workspace", call))
+	return response
 }
 
 func brokerSeedLegacyGrant(t *testing.T, client *dynamicfake.FakeDynamicClient, projectUID, user, identity string) {
@@ -1045,7 +1250,7 @@ func brokerTestRequest(body, org, workspace string, call tenant.DelegatedCall) *
 	return mux.SetURLVars(req, map[string]string{"org": org, "workspace": workspace})
 }
 
-func brokerTestHandler(client *dynamicfake.FakeDynamicClient, allowed bool) *AppAccessGrantHandler {
+func brokerTestHandler(client dynamic.Interface, allowed bool) *AppAccessGrantHandler {
 	return &AppAccessGrantHandler{
 		clients: func(string) (dynamic.Interface, error) { return client, nil },
 		sarClient: func(string) (authorizationv1client.SubjectAccessReviewInterface, error) {
@@ -1067,6 +1272,19 @@ func brokerTestHandler(client *dynamicfake.FakeDynamicClient, allowed bool) *App
 		memberships: tenant.MembershipLookupFunc(func(context.Context, string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 			return &tenancyv1alpha1.UserMembershipIndex{Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{{OrgUUID: "org", WorkspaceUUID: "workspace"}}}}, nil
 		}),
+	}
+}
+
+func brokerStampBinding(t *testing.T, client *dynamicfake.FakeDynamicClient, name, uid, resourceVersion string) {
+	t.Helper()
+	binding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.SetUID(types.UID(uid))
+	binding.SetResourceVersion(resourceVersion)
+	if _, err := client.Resource(appAccessBindingGVR).Update(context.Background(), binding, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
 	}
 }
 

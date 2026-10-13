@@ -6,7 +6,7 @@ export interface ProjectAuthentication {
   supported: boolean
   applicationVerified: boolean
   message: string
-  environments: { environment: string; instance: string; configured: boolean; runtimeReady: boolean; reason?: string }[]
+  environments: { environment: string; instance: string; runtimeExists?: boolean; configured: boolean; runtimeReady: boolean; reason?: string }[]
 }
 
 export const authenticationApi = {

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ShieldCheck, Loader2 } from 'lucide-vue-next'
 import { authenticationApi as api, type ProjectAuthentication } from './authenticationApi'
+import { hasPersistedProductionRuntime, shouldLoadAuthenticationGrants } from './authenticationState'
 import type { RailgridContext, Project, ProjectPublishingGrant } from './types'
 import InlineNotification from './portalkit/InlineNotification.vue'
 
@@ -14,7 +15,7 @@ const saving = ref(false)
 const error = ref('')
 const notice = ref('')
 let generation = 0
-const production = computed(() => state.value?.environments.find(env => env.environment === 'production'))
+const productionRuntimeExists = computed(() => hasPersistedProductionRuntime(state.value?.environments))
 const productionAppID = computed(() => `${props.project.uid}/production`)
 async function load() {
   const current = ++generation
@@ -23,8 +24,10 @@ async function load() {
     const result = await api.getProjectAuthentication(props.ctx, props.project.name)
     if (current !== generation) return
     state.value = result
-    const response = await api.getProjectAuthenticationGrants(props.ctx, props.project.name)
-    if (current === generation) grants.value = response.items || []
+    if (shouldLoadAuthenticationGrants(result.environments)) {
+      const response = await api.getProjectAuthenticationGrants(props.ctx, props.project.name)
+      if (current === generation) grants.value = response.items || []
+    }
   } catch (e) { if (current === generation) error.value = e instanceof Error ? e.message : String(e) }
   finally { if (current === generation) loading.value = false }
 }
@@ -81,7 +84,7 @@ onBeforeUnmount(() => { generation++ })
       </ul>
       <div v-if="state.enabled" class="grid gap-3 border-t border-border-subtle pt-3">
         <p class="text-[12px] text-text-muted">Workspace members can sign in. Approve other existing Railgrid users for Production only.</p>
-        <form v-if="production" class="flex flex-wrap items-end gap-2" @submit.prevent="approve">
+        <form v-if="productionRuntimeExists" class="flex flex-wrap items-end gap-2" @submit.prevent="approve">
           <label class="grid min-w-0 flex-1 gap-1.5"><span class="text-[12px] font-medium text-text-secondary">Railgrid user ID</span><input v-model="user" class="k-input" placeholder="Existing user ID" :disabled="saving" /></label>
           <button class="k-btn" :disabled="saving || !user.trim()">Approve user</button>
         </form>

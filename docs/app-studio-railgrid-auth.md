@@ -77,6 +77,12 @@ hub lets the provider handle reads and policy changes with all broker target
 claims cleared. Malformed targets, foreign ownership and API failures remain
 closed to broker access.
 
+The Authentication panel lists grants only after the provider confirms a
+production Instance exists. Before the first production deploy it shows the
+deployment prompt without making a grant request. A starting or unhealthy
+Instance still has its grants listed; readiness is separate from existence.
+An ambiguous not-found response or another API read failure remains an error.
+
 Managed grants carry Project and Instance ownership. Identity issuance also
 requires `instances/access.auth.<scopeHash>`, where the scope hashes a dedicated
 authentication-grant domain and the Project and Instance UIDs, in addition to
@@ -115,10 +121,25 @@ trigger migration, and a current marker avoids per-binding scans. Clients are
 reused per tenant, and grant lists use app-scoped selectors and bounded pages.
 Malformed legacy bindings are reported and skipped while valid bindings migrate.
 Reconciliation is idempotent: a failed write retries with controller backoff,
-and a restart replays the persisted Instances. Revocation deletes the primary
-grant before attempting legacy identity cleanup. The primary auth binding owns
-the current sign-in permission, so cleanup drift cannot retain fresh sign-in
-access even when a separate sharing grant remains. Already issued assertions
+and a restart replays the persisted Instances. Revocation makes the deterministic
+UID-qualified primary binding inert by clearing its subjects and recording a
+revocation marker before attempting legacy identity cleanup. This durable
+record remains until its owning Project or Instance is garbage collected, or
+an explicit new approval restores it. Every revoke or reset writes a fresh
+revocation token using the binding's resource version, including when the
+binding is already revoked, so an approval that read an earlier version
+cannot overwrite that revocation. Migration cannot restore a revoked
+binding from a stale list or after a retry. When a legacy binding is still
+present, revoke and reset create or update this record before deleting that
+legacy binding with UID and resource-version preconditions. A grant name
+displayed before migration resolves only to an exact recognized replacement
+for the same user, source, Project UID and Instance UID.
+Reset revokes the recognized records in its paginated list snapshot. A
+concurrent explicit approval is a separate user action, rather than a stale
+migration replay. Complete the hub replica rollout before relying on durable
+revocation; older writers do not honor these records.
+The primary auth binding owns the current sign-in permission, so cleanup drift
+cannot retain fresh sign-in access even when a separate sharing grant remains. Already issued assertions
 still obey their existing bounded lifetime. This migration preserves existing
 sharing grants and creates no new accounts or memberships. An ambiguous legacy
 grant does not authorize app identity; approve authentication explicitly after

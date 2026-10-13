@@ -150,6 +150,175 @@ func TestAppAccessGrantMigrationReconcilesCurrentProjectGrantsAndReplays(t *test
 	}
 }
 
+func TestAppAccessGrantRevokeResolvesLegacyNameAfterMigration(t *testing.T) {
+	client := brokerTestClient(brokerTestInstanceUID)
+	brokerSeedLegacyGrant(t, client, brokerTestProjectUID, "member", "railgrid:member@example.test")
+	req := appAccessGrantRequest{
+		Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+		Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
+	}
+	legacyName := appAccessBindingName(req.Name, "member")
+	if err := (&appAccessGrantMigrationReconciler{handler: brokerTestHandler(client, true)}).reconcileInstance(context.Background(), "tenant-cluster-id", req.Name); err != nil {
+		t.Fatal(err)
+	}
+	targetName := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
+	brokerStampBinding(t, client, targetName, "migrated-binding-uid", "51")
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("migration did not retire legacy binding %q: %v", legacyName, err)
+	}
+
+	// The portal may still hold the name returned before migration. A separate
+	// handler replica must resolve that exact alias to the current UID grant.
+	response := brokerGrantMutation(brokerTestHandler(client, true), "revoke", legacyName)
+	if response.Code != http.StatusOK {
+		t.Fatalf("stale legacy-name revoke status=%d body=%s", response.Code, response.Body.String())
+	}
+	tombstone, err := client.Resource(appAccessBindingGVR).Get(context.Background(), targetName, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(tombstone) {
+		t.Fatalf("stale legacy-name revoke did not tombstone the UID grant: binding=%#v err=%v", tombstone, err)
+	}
+	if brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatal("revoked grant still authorizes the app access SAR")
+	}
+	response = brokerGrantMutation(brokerTestHandler(client, true), "list", "")
+	var listed appAccessGrantResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil || response.Code != http.StatusOK || len(listed.Items) != 0 {
+		t.Fatalf("tombstone appeared as active grant: status=%d items=%#v err=%v", response.Code, listed.Items, err)
+	}
+}
+
+func TestAppAccessGrantMigrationCannotOverwriteConcurrentRevokeOrReset(t *testing.T) {
+	for _, operation := range []string{"revoke", "reset"} {
+		t.Run(operation, func(t *testing.T) {
+			client := brokerTestClient(brokerTestInstanceUID)
+			brokerSeedLegacyGrant(t, client, brokerTestProjectUID, "member", "railgrid:member@example.test")
+			req := appAccessGrantRequest{
+				Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+				Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
+			}
+			legacyName := appAccessBindingName(req.Name, "member")
+			targetName := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
+			mutationHandler := brokerTestHandler(client, true)
+			triggered := false
+			var mutationErr error
+			migrationClient := &brokerBindingCreateHookClient{Interface: client}
+			migrationClient.onCreate = func(created *unstructured.Unstructured) error {
+				subjects, _, _ := unstructured.NestedSlice(created.Object, "subjects")
+				if !triggered && created.GetName() == targetName && len(subjects) > 0 {
+					triggered = true
+					response := brokerGrantMutation(mutationHandler, operation, legacyName)
+					if response.Code != http.StatusOK {
+						mutationErr = errors.New(response.Body.String())
+						return mutationErr
+					}
+				}
+				return nil
+			}
+
+			if err := (&appAccessGrantMigrationReconciler{handler: brokerTestHandler(migrationClient, true)}).reconcileInstance(context.Background(), "tenant-cluster-id", req.Name); err != nil {
+				t.Fatalf("migration overlapped %s with error: %v", operation, err)
+			}
+			if !triggered || mutationErr != nil {
+				t.Fatalf("concurrent %s did not complete: triggered=%v err=%v", operation, triggered, mutationErr)
+			}
+			binding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), targetName, metav1.GetOptions{})
+			if err != nil || !appAccessBindingTombstoned(binding) {
+				t.Fatalf("migration overwrote the %s tombstone: binding=%#v err=%v", operation, binding, err)
+			}
+			if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("%s returned before retiring the old grant: %v", operation, err)
+			}
+			if brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+				t.Fatalf("migration retry after %s restored app access", operation)
+			}
+			if err := (&appAccessGrantMigrationReconciler{handler: brokerTestHandler(client, true)}).reconcileInstance(context.Background(), "tenant-cluster-id", req.Name); err != nil {
+				t.Fatalf("migration retry after %s failed: %v", operation, err)
+			}
+			binding, err = client.Resource(appAccessBindingGVR).Get(context.Background(), targetName, metav1.GetOptions{})
+			if err != nil || !appAccessBindingTombstoned(binding) || brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+				t.Fatalf("migration replay after %s changed terminal denial: binding=%#v err=%v", operation, binding, err)
+			}
+		})
+	}
+}
+
+// brokerBindingCreateHookClient lets an independent handler run at the exact
+// point where migration attempts to create its UID-qualified destination. The
+// callback runs outside dynamicfake's reactor lock, so the competing API
+// operations use the same fake API server without recursively invoking a
+// reactor.
+type brokerBindingCreateHookClient struct {
+	dynamic.Interface
+	onCreate func(*unstructured.Unstructured) error
+}
+
+func (c *brokerBindingCreateHookClient) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	resource := c.Interface.Resource(gvr)
+	if gvr != appAccessBindingGVR || c.onCreate == nil {
+		return resource
+	}
+	return &brokerBindingCreateHookResource{NamespaceableResourceInterface: resource, onCreate: c.onCreate}
+}
+
+type brokerBindingCreateHookResource struct {
+	dynamic.NamespaceableResourceInterface
+	onCreate func(*unstructured.Unstructured) error
+}
+
+func (r *brokerBindingCreateHookResource) Create(ctx context.Context, obj *unstructured.Unstructured, opts metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+	if err := r.onCreate(obj); err != nil {
+		return nil, err
+	}
+	return r.NamespaceableResourceInterface.Create(ctx, obj, opts, subresources...)
+}
+
+func TestInterruptedAppAccessGrantMigrationResetSurvivesRetry(t *testing.T) {
+	client := brokerTestClient(brokerTestInstanceUID)
+	brokerSeedLegacyGrant(t, client, brokerTestProjectUID, "member", "railgrid:member@example.test")
+	req := appAccessGrantRequest{
+		Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+		Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
+	}
+	legacyName := appAccessBindingName(req.Name, "member")
+	targetName := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
+	interruptOnce := true
+	client.PrependReactor("delete", "clusterrolebindings", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if interruptOnce && action.(k8stesting.DeleteAction).GetName() == legacyName {
+			interruptOnce = false
+			return true, nil, errors.New("injected migration interruption after destination create")
+		}
+		return false, nil, nil
+	})
+	if err := (&appAccessGrantMigrationReconciler{handler: brokerTestHandler(client, true)}).reconcileInstance(context.Background(), "tenant-cluster-id", req.Name); err == nil {
+		t.Fatal("migration unexpectedly completed despite injected failure")
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyName, metav1.GetOptions{}); err != nil {
+		t.Fatalf("interrupted migration unexpectedly removed its source binding: %v", err)
+	}
+	brokerStampBinding(t, client, targetName, "interrupted-migration-uid", "61")
+
+	// A different handler instance records durable reset intent while the
+	// migration destination is active and its immutable legacy source remains.
+	response := brokerGrantMutation(brokerTestHandler(client, true), "reset", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("reset during interrupted migration status=%d body=%s", response.Code, response.Body.String())
+	}
+	tombstone, err := client.Resource(appAccessBindingGVR).Get(context.Background(), targetName, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(tombstone) {
+		t.Fatalf("reset did not tombstone interrupted migration destination: binding=%#v err=%v", tombstone, err)
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("reset returned before retiring the interrupted legacy binding: %v", err)
+	}
+	if err := (&appAccessGrantMigrationReconciler{handler: brokerTestHandler(client, true)}).reconcileInstance(context.Background(), "tenant-cluster-id", req.Name); err != nil {
+		t.Fatalf("migration replay after reset failed: %v", err)
+	}
+	tombstone, err = client.Resource(appAccessBindingGVR).Get(context.Background(), targetName, metav1.GetOptions{})
+	if err != nil || !appAccessBindingTombstoned(tombstone) || brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatalf("migration replay resurrected reset access: binding=%#v err=%v", tombstone, err)
+	}
+}
+
 func TestAppAccessGrantMigrationFencesStaleUIDRoleWithoutLegacyRole(t *testing.T) {
 	client := brokerTestClientFor("replacement-project-uid", "replacement-instance-uid")
 	currentProject, currentInstance := brokerTestProject(client), brokerTestInstance(client)
