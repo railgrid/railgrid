@@ -31,7 +31,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	clienttesting "k8s.io/client-go/testing"
 )
 
@@ -163,6 +165,98 @@ func TestAppIdentityKeySnapshotCacheCoalescesConcurrentRequests(t *testing.T) {
 	}
 	if got := reads.Load(); got != 1 {
 		t.Fatalf("concurrent snapshots caused %d Secret reads; want 1", got)
+	}
+}
+
+func TestAppIdentityKeySnapshotRefreshOutlivesFirstCallerCancellation(t *testing.T) {
+	client := fake.NewClientset(appIdentityKeyRingSecretForTest(t, proofTestNamespace,
+		bytes.Repeat([]byte{0x14}, ed25519.SeedSize),
+		bytes.Repeat([]byte{0x15}, delegatedProofKeyLength), nil))
+	blocking := &contextBlockingKeyringClient{
+		Interface: client,
+		entered:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	ring := newKCPAppIdentityKeyRingWithClient(blocking, proofTestNamespace, time.Now, bytes.NewReader(nil))
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := ring.Snapshot(firstCtx)
+		firstDone <- err
+	}()
+	<-blocking.entered
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := ring.Snapshot(context.Background())
+		secondDone <- err
+	}()
+	<-secondStarted
+	// Let the second request join the in-flight singleflight before cancelling
+	// the caller whose request started it.
+	time.Sleep(25 * time.Millisecond)
+	cancelFirst()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context canceled", err)
+	}
+	select {
+	case err := <-secondDone:
+		t.Fatalf("shared refresh ended with the first caller: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second caller did not receive the completed snapshot: %v", err)
+	}
+	if got := blocking.gets.Load(); got != 1 {
+		t.Fatalf("shared refresh performed %d Secret reads, want one", got)
+	}
+}
+
+type contextBlockingKeyringClient struct {
+	kubernetes.Interface
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	gets    atomic.Int32
+}
+
+func (c *contextBlockingKeyringClient) CoreV1() corev1client.CoreV1Interface {
+	return &contextBlockingCoreV1Client{
+		CoreV1Interface: c.Interface.CoreV1(),
+		owner:           c,
+	}
+}
+
+type contextBlockingCoreV1Client struct {
+	corev1client.CoreV1Interface
+	owner *contextBlockingKeyringClient
+}
+
+func (c *contextBlockingCoreV1Client) Secrets(namespace string) corev1client.SecretInterface {
+	return &contextBlockingSecretClient{
+		SecretInterface: c.CoreV1Interface.Secrets(namespace),
+		owner:           c.owner,
+	}
+}
+
+type contextBlockingSecretClient struct {
+	corev1client.SecretInterface
+	owner *contextBlockingKeyringClient
+}
+
+func (c *contextBlockingSecretClient) Get(ctx context.Context, name string, options metav1.GetOptions) (*corev1.Secret, error) {
+	c.owner.gets.Add(1)
+	c.owner.once.Do(func() { close(c.owner.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.owner.release:
+		return c.SecretInterface.Get(ctx, name, options)
 	}
 }
 

@@ -17,9 +17,11 @@ limitations under the License.
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -359,15 +361,31 @@ func (s *Server) existingAuthenticationUser(ctx context.Context, id identity, ta
 	s.setHubActionProofHeader(req.Header, id)
 	response, err := s.hubHTTPClient(15 * time.Second).Do(req)
 	if err != nil {
-		return publishingMember{}, err
+		return publishingMember{}, fmt.Errorf("existing account lookup: %w", newHubStatusError(http.StatusBadGateway, []byte("the hub identity service is unavailable")))
 	}
 	defer func() { _ = response.Body.Close() }()
+	const maxExistingAuthenticationUserResponseBytes = 32 << 10
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxExistingAuthenticationUserResponseBytes+1))
+	if err != nil {
+		return publishingMember{}, fmt.Errorf("read existing account lookup response: %w", newHubStatusError(http.StatusBadGateway, []byte("the hub returned an unreadable identity response")))
+	}
+	if len(body) > maxExistingAuthenticationUserResponseBytes {
+		message := fmt.Sprintf("hub identity response exceeded %d bytes", maxExistingAuthenticationUserResponseBytes)
+		return publishingMember{}, fmt.Errorf("existing account lookup: %w", newHubStatusError(response.StatusCode, []byte(message)))
+	}
 	if response.StatusCode != http.StatusOK {
-		return publishingMember{}, fmt.Errorf("existing account lookup refused (HTTP %d)", response.StatusCode)
+		return publishingMember{}, fmt.Errorf("existing account lookup: %w", newHubStatusError(response.StatusCode, body))
 	}
 	var member publishingMember
-	err = json.NewDecoder(response.Body).Decode(&member)
-	return member, err
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&member); err != nil {
+		return publishingMember{}, fmt.Errorf("existing account lookup returned invalid identity JSON: %w", newHubStatusError(http.StatusBadGateway, []byte("the hub returned an invalid identity response")))
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return publishingMember{}, fmt.Errorf("existing account lookup returned trailing identity data: %w", newHubStatusError(http.StatusBadGateway, []byte("the hub returned an invalid identity response")))
+	}
+	return member, nil
 }
 
 // Enablement requires a compatible identity service. A stale hub must not

@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
@@ -177,17 +178,19 @@ func TestAppAccessGrantBrokerCreatesOnlyFixedNamedGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roles.Items) != 2 || len(bindings.Items) != 2 {
-		t.Fatalf("RBAC objects = roles:%d bindings:%d, want legacy and UID-fenced pairs", len(roles.Items), len(bindings.Items))
+	if len(roles.Items) != 1 || len(bindings.Items) != 1 {
+		t.Fatalf("RBAC objects = roles:%d bindings:%d, want one publishing role and primary binding", len(roles.Items), len(bindings.Items))
 	}
-	legacyBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessBindingName("app-demo-prod", "member"), metav1.GetOptions{})
+	createdBindingName := appAccessUIDBindingName(appAccessGrantRequest{Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID}, "member", appAccessGrantSourcePublishing)
+	legacyBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), createdBindingName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := bindingSubjectUser(legacyBinding); got != "railgrid:member@example.test" {
 		t.Fatalf("created grant subject = %q, want current account RBAC identity", got)
 	}
-	role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessRoleName("app-demo-prod"), metav1.GetOptions{})
+	roleName := appAccessUIDRoleName(appAccessGrantRequest{Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID})
+	role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), roleName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,20 +203,10 @@ func TestAppAccessGrantBrokerCreatesOnlyFixedNamedGrant(t *testing.T) {
 	if len(resourceNames) != 1 || resourceNames[0] != "app-demo-prod" || len(verbs) != 1 || verbs[0] != "get" {
 		t.Fatalf("instance rule is not exact: %#v", rules[0])
 	}
-	identityRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessIdentityRoleName(appAccessGrantRequest{
+	if _, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessIdentityRoleName(appAccessGrantRequest{
 		Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID,
-	}), metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	identityRules, _, _ := unstructured.NestedSlice(identityRole.Object, "rules")
-	if len(identityRules) != 1 {
-		t.Fatalf("UID-fenced identity role rules = %#v", identityRules)
-	}
-	uidResources, _, _ := unstructured.NestedStringSlice(identityRules[0].(map[string]any), "resources")
-	identityFence, ok := identityAppAccessSubresource(brokerTestProjectUID, brokerTestInstanceUID)
-	if !ok || len(uidResources) != 1 || uidResources[0] != "instances/"+identityFence {
-		t.Fatalf("UID-fenced identity role rules = %#v", identityRules)
+	}), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("publishing grant created a separate identity role: %v", err)
 	}
 	if role.GetLabels()[appAccessProjectUID] != brokerTestProjectUID || role.GetLabels()[appAccessInstanceUID] != brokerTestInstanceUID {
 		t.Fatalf("role UID labels = %#v", role.GetLabels())
@@ -223,12 +216,6 @@ func TestAppAccessGrantBrokerCreatesOnlyFixedNamedGrant(t *testing.T) {
 	}
 	if owners := legacyBinding.GetOwnerReferences(); len(owners) != 2 || owners[0].Kind != "Project" || owners[0].UID != brokerTestProjectUID || owners[1].Kind != "Instance" || owners[1].UID != brokerTestInstanceUID {
 		t.Fatalf("binding owner references = %#v", owners)
-	}
-	identityBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessIdentityBindingName(appAccessGrantRequest{
-		Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID,
-	}, "member"), metav1.GetOptions{})
-	if err != nil || bindingSubjectUser(identityBinding) != "railgrid:member@example.test" {
-		t.Fatalf("UID-fenced grant binding = %#v err=%v", identityBinding, err)
 	}
 	var result appAccessGrantResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
@@ -429,44 +416,42 @@ func TestAppAccessGrantBrokerDoesNotCarryApprovalsAcrossProjectUID(t *testing.T)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
 	}
-	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessBindingName("app-demo-prod", "former-member"), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("old Project binding survived replacement cleanup: err=%v", err)
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessBindingName("app-demo-prod", "former-member"), metav1.GetOptions{}); err != nil {
+		t.Fatalf("old Project binding should remain attached to inert legacy role: %v", err)
 	}
-	currentLegacyBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessBindingName("app-demo-prod", "new-member"), metav1.GetOptions{})
-	if err != nil || currentLegacyBinding.GetLabels()[appAccessProjectUID] != replacementProjectUID || currentLegacyBinding.GetLabels()[appAccessInstanceUID] != replacementInstanceUID {
-		t.Fatalf("replacement legacy binding = %#v err=%v", currentLegacyBinding, err)
+	currentBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessUIDBindingName(appAccessGrantRequest{Name: "app-demo-prod", UID: replacementInstanceUID, ProjectUID: replacementProjectUID}, "new-member", appAccessGrantSourcePublishing), metav1.GetOptions{})
+	if err != nil || currentBinding.GetLabels()[appAccessProjectUID] != replacementProjectUID || currentBinding.GetLabels()[appAccessInstanceUID] != replacementInstanceUID {
+		t.Fatalf("replacement binding = %#v err=%v", currentBinding, err)
 	}
-	role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessRoleName("app-demo-prod"), metav1.GetOptions{})
+	legacyRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessRoleName("app-demo-prod"), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if role.GetLabels()[appAccessProjectUID] != replacementProjectUID || role.GetLabels()[appAccessInstanceUID] != replacementInstanceUID {
-		t.Fatalf("role was carried across Project UID: %#v", role.GetLabels())
+	legacyRules, _, _ := unstructured.NestedSlice(legacyRole.Object, "rules")
+	if len(legacyRules) != 0 || legacyRole.GetLabels()[appAccessProjectUID] != brokerTestProjectUID {
+		t.Fatalf("old static role was not fenced without relabeling: labels=%#v rules=%#v", legacyRole.GetLabels(), legacyRules)
+	}
+	newRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessUIDRoleName(appAccessGrantRequest{
+		Name: "app-demo-prod", UID: replacementInstanceUID, ProjectUID: replacementProjectUID,
+	}), metav1.GetOptions{})
+	if err != nil || newRole.GetLabels()[appAccessProjectUID] != replacementProjectUID || newRole.GetLabels()[appAccessInstanceUID] != replacementInstanceUID {
+		t.Fatalf("replacement UID role = %#v err=%v", newRole, err)
 	}
 	oldIdentityRoleName := appAccessIdentityRoleName(appAccessGrantRequest{Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID})
-	newIdentityRoleName := appAccessIdentityRoleName(appAccessGrantRequest{Name: "app-demo-prod", UID: replacementInstanceUID, ProjectUID: replacementProjectUID})
-	if oldIdentityRoleName == newIdentityRoleName {
-		t.Fatal("Project replacement reused the UID-fenced role name")
-	}
 	oldFence, oldFenceOK := identityAppAccessSubresource(brokerTestProjectUID, brokerTestInstanceUID)
-	newFence, newFenceOK := identityAppAccessSubresource(replacementProjectUID, replacementInstanceUID)
-	if !oldFenceOK || !newFenceOK || oldFence == newFence {
-		t.Fatalf("Project replacement reused the UID-fenced SAR coordinate: old=%q new=%q", oldFence, newFence)
+	oldAuthenticationFence, oldAuthenticationOK := authenticationAppAccessSubresource(brokerTestProjectUID, brokerTestInstanceUID)
+	newFence, newFenceOK := authenticationAppAccessSubresource(replacementProjectUID, replacementInstanceUID)
+	if !oldFenceOK || !oldAuthenticationOK || !newFenceOK || oldAuthenticationFence == newFence || oldFence == newFence {
+		t.Fatalf("Project UID replacement reused an authentication coordinate: oldAuth=%q oldLegacy=%q new=%q", oldAuthenticationFence, oldFence, newFence)
 	}
 	oldIdentityRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), oldIdentityRoleName, metav1.GetOptions{})
 	if err != nil || oldIdentityRole.GetLabels()[appAccessProjectUID] != brokerTestProjectUID {
-		t.Fatalf("old UID role = %#v err=%v", oldIdentityRole, err)
-	}
-	newIdentityRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), newIdentityRoleName, metav1.GetOptions{})
-	if err != nil || newIdentityRole.GetLabels()[appAccessProjectUID] != replacementProjectUID || newIdentityRole.GetLabels()[appAccessInstanceUID] != replacementInstanceUID {
-		t.Fatalf("replacement UID role = %#v err=%v", newIdentityRole, err)
+		t.Fatalf("old secondary UID role = %#v err=%v", oldIdentityRole, err)
 	}
 	oldRules, _, _ := unstructured.NestedSlice(oldIdentityRole.Object, "rules")
 	oldResources, _, _ := unstructured.NestedStringSlice(oldRules[0].(map[string]any), "resources")
-	newRules, _, _ := unstructured.NestedSlice(newIdentityRole.Object, "rules")
-	newResources, _, _ := unstructured.NestedStringSlice(newRules[0].(map[string]any), "resources")
-	if len(oldResources) != 1 || oldResources[0] != "instances/"+oldFence || len(newResources) != 1 || newResources[0] != "instances/"+newFence {
-		t.Fatalf("Project replacement identity rules old=%#v new=%#v", oldRules, newRules)
+	if len(oldResources) != 1 || oldResources[0] != "instances/"+oldFence || brokerRoleHasResource(newRole, "instances/"+newFence) {
+		t.Fatalf("replacement publication role inherited an old authentication permission: old=%#v new=%#v", oldRules, newRole.Object["rules"])
 	}
 	oldIdentityBinding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessIdentityBindingName(appAccessGrantRequest{
 		Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID,
@@ -474,26 +459,115 @@ func TestAppAccessGrantBrokerDoesNotCarryApprovalsAcrossProjectUID(t *testing.T)
 	if err != nil || !validRoleReference(oldIdentityBinding, oldIdentityRoleName) {
 		t.Fatalf("old UID binding was rebound to replacement role: %#v err=%v", oldIdentityBinding, err)
 	}
+	if brokerSARAllowed(client, "railgrid:former@example.test", "infrastructure.railgrid.ai", "instances/"+newFence, "app-demo-prod", AccessVerb) {
+		t.Fatal("retained old secondary grant authorized the replacement Project's identity SAR")
+	}
+	oldPrimary, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessBindingName("app-demo-prod", "former-member"), metav1.GetOptions{})
+	if err != nil || !validRoleReference(oldPrimary, appAccessRoleName("app-demo-prod")) {
+		t.Fatalf("old managed primary binding should remain attached to the inert legacy role: %#v err=%v", oldPrimary, err)
+	}
 }
 
-func TestIdentityAppAccessSubresourceFencesBothUIDs(t *testing.T) {
-	base, ok := identityAppAccessSubresource("project-one", "instance-one")
-	if !ok || !strings.HasPrefix(base, AccessSubresource+".") {
-		t.Fatalf("base identity fence = %q, valid=%v", base, ok)
+func TestAuthenticationAppAccessSubresourceFencesBothUIDs(t *testing.T) {
+	base, ok := authenticationAppAccessSubresource("project-one", "instance-one")
+	if !ok || !strings.HasPrefix(base, AccessSubresource+".auth.") {
+		t.Fatalf("authentication fence = %q, valid=%v", base, ok)
 	}
-	if same, valid := identityAppAccessSubresource("project-one", "instance-one"); !valid || same != base {
+	if same, valid := authenticationAppAccessSubresource("project-one", "instance-one"); !valid || same != base {
 		t.Fatalf("same Project+Instance produced different fence: %q valid=%v", same, valid)
 	}
 	for _, pair := range [][2]string{{"project-two", "instance-one"}, {"project-one", "instance-two"}} {
-		got, valid := identityAppAccessSubresource(pair[0], pair[1])
+		got, valid := authenticationAppAccessSubresource(pair[0], pair[1])
 		if !valid || got == base {
 			t.Fatalf("changed UID pair %q/%q reused fence %q valid=%v", pair[0], pair[1], got, valid)
 		}
 	}
 	for _, pair := range [][2]string{{"", "instance-one"}, {"project-one", "bad/instance"}} {
-		if got, valid := identityAppAccessSubresource(pair[0], pair[1]); valid || got != "" {
+		if got, valid := authenticationAppAccessSubresource(pair[0], pair[1]); valid || got != "" {
 			t.Fatalf("malformed UID pair %q/%q accepted as %q", pair[0], pair[1], got)
 		}
+	}
+	legacy, valid := identityAppAccessSubresource("project-one", "instance-one")
+	if !valid || legacy == base {
+		t.Fatalf("authentication SAR coordinate overlaps the legacy secondary identity permission: auth=%q legacy=%q", base, legacy)
+	}
+}
+
+func TestAppAccessGeneratedRBACNamesFitKubernetesLimits(t *testing.T) {
+	longName := "a" + strings.Repeat("b", 251) + "c"
+	req := appAccessGrantRequest{Name: longName, ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID}
+	if got := appAccessUIDRoleName(req); len(got) > 253 {
+		t.Fatalf("UID role name has %d characters, limit is 253", len(got))
+	}
+	if got := appAccessBindingNameForSource(longName, strings.Repeat("u", 253), appAccessGrantSourceAuthentication); len(got) > 253 {
+		t.Fatalf("authentication binding name has %d characters, limit is 253", len(got))
+	}
+	if got := appAccessBindingNameForSource(longName, strings.Repeat("u", 253), appAccessGrantSourcePublishing); len(got) > 253 {
+		t.Fatalf("publishing binding name has %d characters, limit is 253", len(got))
+	}
+	longReq := appAccessGrantRequest{Name: longName, UID: strings.Repeat("i", 253), ProjectUID: strings.Repeat("p", 253)}
+	for _, source := range []string{appAccessGrantSourcePublishing, appAccessGrantSourceAuthentication} {
+		if got := appAccessUIDBindingName(longReq, strings.Repeat("u", 253), source); len(got) > 253 {
+			t.Fatalf("%s UID-qualified binding name has %d characters, limit is 253", source, len(got))
+		}
+	}
+}
+
+func TestAppAccessGrantBrokerFencesStaleUIDRoleBeforeCreatingReplacementGrant(t *testing.T) {
+	const (
+		projectUID  = "replacement-project-uid"
+		instanceUID = "replacement-instance-uid"
+	)
+	client := brokerTestClientFor(projectUID, instanceUID)
+	oldProject := brokerTestProject(client).DeepCopy()
+	oldProject.SetUID(types.UID("old-project-uid"))
+	oldInstance := brokerTestInstance(client).DeepCopy()
+	oldInstance.SetUID(types.UID("old-instance-uid"))
+	oldInstance.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: "ai.railgrid.ai/v1alpha1", Kind: "Project", Name: oldProject.GetName(), UID: oldProject.GetUID(),
+	}})
+	oldReq := appAccessGrantRequest{
+		Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+		Project: oldProject.GetName(), ProjectUID: string(oldProject.GetUID()), UID: string(oldInstance.GetUID()),
+	}
+	staleRole := newAppAccessRole(oldProject, oldInstance, oldReq)
+	staleRole.SetUID(types.UID("stale-access-role-uid"))
+	staleRole.SetResourceVersion("47")
+	if _, err := client.Resource(appAccessClusterRoleGVR).Create(context.Background(), staleRole, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	staleBinding := newAppAccessBinding(oldProject, oldInstance, oldReq, IdentityAccount{
+		User: "former-member", RBACIdentity: "railgrid:former@example.test",
+	}, appAccessUIDRoleName(oldReq), appAccessGrantSourcePublishing)
+	if _, err := client.Resource(appAccessBindingGVR).Create(context.Background(), staleBinding, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := brokerTestHandler(client, true)
+	call := brokerListCall()
+	call.AppAccessOperation = "create"
+	call.AppAccessUser = "new-member"
+	call.AppAccessUID = instanceUID
+	call.AppAccessProjectUID = projectUID
+	response := httptest.NewRecorder()
+	handler.Handle(response, brokerTestRequest(brokerCreateBody(projectUID, instanceUID, "new-member"), "org", "workspace", call))
+	if response.Code != http.StatusOK {
+		t.Fatalf("replacement grant create status=%d body=%s", response.Code, response.Body.String())
+	}
+	persistedStaleRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), staleRole.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleRules, _, _ := unstructured.NestedSlice(persistedStaleRole.Object, "rules")
+	if len(staleRules) != 0 || persistedStaleRole.GetUID() != staleRole.GetUID() {
+		t.Fatalf("interactive create left stale reachability active: uid=%q rules=%#v", persistedStaleRole.GetUID(), staleRules)
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), staleBinding.GetName(), metav1.GetOptions{}); err != nil {
+		t.Fatalf("old binding should remain attached to its now-inert role: %v", err)
+	}
+	currentReq := appAccessGrantRequest{Name: "app-demo-prod", UID: instanceUID, ProjectUID: projectUID}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), appAccessUIDBindingName(currentReq, "new-member", appAccessGrantSourcePublishing), metav1.GetOptions{}); err != nil {
+		t.Fatalf("replacement approval was not created: %v", err)
 	}
 }
 
@@ -509,13 +583,17 @@ func TestAppAccessGrantBrokerRejectsAggregatedManagedRoles(t *testing.T) {
 		if _, err := client.Resource(appAccessClusterRoleGVR).Update(context.Background(), role, metav1.UpdateOptions{}); err != nil {
 			t.Fatal(err)
 		}
-		req := appAccessGrantRequest{Name: "app-demo-prod", ProjectUID: brokerTestProjectUID}
+		req := appAccessGrantRequest{
+			Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
+			Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
+		}
 		if recognizedAppAccessRole(role, req) {
 			t.Fatal("ClusterRole with aggregationRule was recognized for migration")
 		}
+		before := len(client.Actions())
 		reconciler := appAccessGrantMigrationReconciler{handler: brokerTestHandler(client, true)}
-		if err := reconciler.reconcileInstance(context.Background(), "cluster-id", "app-demo-prod"); err == nil {
-			t.Fatal("background migration accepted a ClusterRole with aggregationRule")
+		if err := reconciler.reconcileInstance(context.Background(), "cluster-id", "app-demo-prod"); err != nil {
+			t.Fatalf("unrecognized aggregated role should remain untouched without blocking the controller: %v", err)
 		}
 		persisted, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), role.GetName(), metav1.GetOptions{})
 		if err != nil {
@@ -524,16 +602,24 @@ func TestAppAccessGrantBrokerRejectsAggregatedManagedRoles(t *testing.T) {
 		if _, found := persisted.Object["aggregationRule"]; !found {
 			t.Fatal("rejected legacy role was rewritten during migration")
 		}
+		assertNoRBACWrites(t, client.Actions()[before:])
 	})
-	t.Run("identity role cannot be adopted", func(t *testing.T) {
+	t.Run("authentication primary role cannot be adopted", func(t *testing.T) {
 		client := brokerTestClient(brokerTestInstanceUID)
 		req := appAccessGrantRequest{
 			Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "app-demo-prod",
 			Project: "demo", ProjectUID: brokerTestProjectUID, UID: brokerTestInstanceUID,
 		}
-		brokerSeedIdentityGrant(t, client, req, "member", "railgrid:member@example.test")
-		roleName := appAccessIdentityRoleName(req)
-		role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), roleName, metav1.GetOptions{})
+		project, instance, err := brokerTestHandler(client, true).loadOwnedTarget(context.Background(), client, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roleName := appAccessUIDRoleNameForSource(req, appAccessGrantSourceAuthentication)
+		role := newAppAccessRoleForSource(project, instance, req, appAccessGrantSourceAuthentication)
+		if _, err := client.Resource(appAccessClusterRoleGVR).Create(context.Background(), role, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		role, err = client.Resource(appAccessClusterRoleGVR).Get(context.Background(), roleName, metav1.GetOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -541,16 +627,13 @@ func TestAppAccessGrantBrokerRejectsAggregatedManagedRoles(t *testing.T) {
 		if _, err := client.Resource(appAccessClusterRoleGVR).Update(context.Background(), role, metav1.UpdateOptions{}); err != nil {
 			t.Fatal(err)
 		}
-		project, instance, err := brokerTestHandler(client, true).loadOwnedTarget(context.Background(), client, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if recognizedAppAccessIdentityRole(role, project, instance, req) {
-			t.Fatal("ClusterRole with aggregationRule was recognized for adoption")
+		if recognizedAppAccessRoleForSource(role, req, appAccessGrantSourceAuthentication) {
+			t.Fatal("authentication ClusterRole with aggregationRule was recognized for adoption")
 		}
 		call := brokerListCall()
 		call.AppAccessOperation = "create"
 		call.AppAccessUser = "member"
+		call.AppAccessSourceVerb = "authentication-grants"
 		response := httptest.NewRecorder()
 		brokerTestHandler(client, true).Handle(response, brokerTestRequest(brokerCreateBody(brokerTestProjectUID, brokerTestInstanceUID, "member"), "org", "workspace", call))
 		if response.Code != http.StatusServiceUnavailable {
@@ -561,7 +644,7 @@ func TestAppAccessGrantBrokerRejectsAggregatedManagedRoles(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, found := persisted.Object["aggregationRule"]; !found {
-			t.Fatal("rejected identity role was rewritten during grant creation")
+			t.Fatal("rejected authentication role was rewritten during grant creation")
 		}
 	})
 }
@@ -608,13 +691,185 @@ func TestAppAccessGrantBrokerKeepsProductionAuthAppOnly(t *testing.T) {
 		t.Fatalf("status=%d membership lookups=%d body=%s", response.Code, membershipCalls, response.Body.String())
 	}
 	roles, err := client.Resource(appAccessClusterRoleGVR).List(context.Background(), metav1.ListOptions{})
-	if err != nil || len(roles.Items) != 2 {
+	if err != nil || len(roles.Items) != 1 {
 		t.Fatalf("production app role=%#v err=%v", roles.Items, err)
 	}
-	if _, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessIdentityRoleName(appAccessGrantRequest{
-		Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID,
-	}), metav1.GetOptions{}); err != nil {
-		t.Fatalf("production app has no UID-fenced role: %v", err)
+	req := appAccessGrantRequest{Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID, Group: "infrastructure.railgrid.ai", Resource: "instances"}
+	roleName := appAccessUIDRoleNameForSource(req, appAccessGrantSourceAuthentication)
+	role, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), roleName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("authentication primary role missing: %v", err)
+	}
+	authFence, ok := authenticationAppAccessSubresource(req.ProjectUID, req.UID)
+	if !ok || !brokerRoleHasResource(role, "instances/"+authFence) {
+		t.Fatalf("authentication primary role does not carry its UID-fenced identity permission: rules=%#v", role.Object["rules"])
+	}
+	if _, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), appAccessIdentityRoleName(req), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("authentication grant created an independently-authorizing secondary role: %v", err)
+	}
+	bindings, err := client.Resource(appAccessBindingGVR).List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(bindings.Items) != 1 || !validRoleReference(&bindings.Items[0], roleName) {
+		t.Fatalf("authentication primary binding=%#v err=%v", bindings.Items, err)
+	}
+	if !brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+authFence, req.Name, AccessVerb) {
+		t.Fatal("active authentication approval did not authorize its UID-fenced SAR coordinate")
+	}
+}
+
+func TestAppAccessGrantSourcesRemainIndependentAndRevokePrimaryFirst(t *testing.T) {
+	client := brokerTestClient(brokerTestInstanceUID)
+	handler := brokerTestHandler(client, true)
+	createSource := func(source string) *httptest.ResponseRecorder {
+		call := brokerListCall()
+		call.AppAccessOperation = "create"
+		call.AppAccessUser = "member"
+		if source == appAccessGrantSourceAuthentication {
+			call.AppAccessSourceVerb = "authentication-grants"
+		}
+		response := httptest.NewRecorder()
+		handler.Handle(response, brokerTestRequest(brokerCreateBody(brokerTestProjectUID, brokerTestInstanceUID, "member"), "org", "workspace", call))
+		return response
+	}
+	req := appAccessGrantRequest{Name: "app-demo-prod", UID: brokerTestInstanceUID, ProjectUID: brokerTestProjectUID, Group: "infrastructure.railgrid.ai", Resource: "instances"}
+	authFence, ok := authenticationAppAccessSubresource(req.ProjectUID, req.UID)
+	if !ok {
+		t.Fatal("test UIDs did not produce an authentication fence")
+	}
+	if response := createSource(appAccessGrantSourcePublishing); response.Code != http.StatusOK {
+		t.Fatalf("publishing create status=%d body=%s", response.Code, response.Body.String())
+	}
+	if brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+authFence, req.Name, AccessVerb) {
+		t.Fatal("publishing-only grant authorized an authentication SAR")
+	}
+	if response := createSource(appAccessGrantSourceAuthentication); response.Code != http.StatusOK {
+		t.Fatalf("authentication create status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+authFence, req.Name, AccessVerb) {
+		t.Fatal("authentication grant did not authorize its SAR while active")
+	}
+	publishingName := appAccessUIDBindingName(req, "member", appAccessGrantSourcePublishing)
+	authenticationName := appAccessUIDBindingName(req, "member", appAccessGrantSourceAuthentication)
+	publishingRoleName := appAccessUIDRoleNameForSource(req, appAccessGrantSourcePublishing)
+	authenticationRoleName := appAccessUIDRoleNameForSource(req, appAccessGrantSourceAuthentication)
+	if publishingRoleName == authenticationRoleName {
+		t.Fatal("publishing and authentication grants share a primary role")
+	}
+	for name, roleName := range map[string]string{publishingName: publishingRoleName, authenticationName: authenticationRoleName} {
+		binding, err := client.Resource(appAccessBindingGVR).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil || !validRoleReference(binding, roleName) {
+			t.Fatalf("primary binding %q=%#v err=%v; want source-specific role %q", name, binding, err, roleName)
+		}
+	}
+	publishingRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), publishingRoleName, metav1.GetOptions{})
+	if err != nil || brokerRoleHasResource(publishingRole, "instances/"+authFence) {
+		t.Fatalf("publishing role unexpectedly carries authentication permission: role=%#v err=%v", publishingRole, err)
+	}
+	authenticationRole, err := client.Resource(appAccessClusterRoleGVR).Get(context.Background(), authenticationRoleName, metav1.GetOptions{})
+	if err != nil || !brokerRoleHasResource(authenticationRole, "instances/"+authFence) {
+		t.Fatalf("authentication role lacks its UID permission: role=%#v err=%v", authenticationRole, err)
+	}
+
+	for _, source := range []string{appAccessGrantSourcePublishing, appAccessGrantSourceAuthentication} {
+		call := brokerListCall()
+		if source == appAccessGrantSourceAuthentication {
+			call.AppAccessSourceVerb = "authentication-grants"
+		}
+		response := httptest.NewRecorder()
+		handler.Handle(response, brokerTestRequest(brokerListBody(), "org", "workspace", call))
+		var result appAccessGrantResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || len(result.Items) != 1 || result.Items[0].Name != appAccessUIDBindingName(req, "member", source) {
+			t.Fatalf("%s listing status=%d items=%#v body=%s", source, response.Code, result.Items, response.Body.String())
+		}
+	}
+
+	reset := brokerListCall()
+	reset.AppAccessOperation = "reset"
+	response := httptest.NewRecorder()
+	resetBody := strings.Replace(brokerListBody(), `"operation":"list"`, `"operation":"reset"`, 1)
+	handler.Handle(response, brokerTestRequest(resetBody, "org", "workspace", reset))
+	if response.Code != http.StatusOK {
+		t.Fatalf("publishing reset status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), publishingName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("publishing primary binding survived its reset: %v", err)
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), authenticationName, metav1.GetOptions{}); err != nil {
+		t.Fatalf("publishing reset removed authentication grant: %v", err)
+	}
+	if !brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+authFence, req.Name, AccessVerb) {
+		t.Fatal("publishing reset removed the independent authentication SAR authorization")
+	}
+	if response := createSource(appAccessGrantSourcePublishing); response.Code != http.StatusOK {
+		t.Fatalf("publishing regrant status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// A stale secondary identity binding can drift and resist cleanup. The
+	// authentication primary role is the authorization boundary, so deleting
+	// its binding must deny fresh assertions even if that stale object remains.
+	brokerSeedIdentityGrantForSource(t, client, req, "member", "railgrid:member@example.test", appAccessGrantSourceAuthentication)
+	legacyIdentityName := appAccessIdentityBindingNameForSource(req, "member", appAccessGrantSourceAuthentication)
+	drifted, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyIdentityName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted.Object["roleRef"] = map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "foreign-role"}
+	if _, err := client.Resource(appAccessBindingGVR).Update(context.Background(), drifted, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := client.Resource(appAccessBindingGVR).Get(context.Background(), authenticationName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary.SetUID(types.UID("authentication-primary-uid"))
+	primary.SetResourceVersion("33")
+	if _, err := client.Resource(appAccessBindingGVR).Update(context.Background(), primary, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	conflictOnce := true
+	client.PrependReactor("delete", "clusterrolebindings", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if conflictOnce && action.(k8stesting.DeleteAction).GetName() == authenticationName {
+			conflictOnce = false
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Group: appAccessBindingGVR.Group, Resource: appAccessBindingGVR.Resource}, authenticationName, errors.New("resourceVersion conflict"))
+		}
+		return false, nil, nil
+	})
+	beforeRevoke := len(client.Actions())
+	revoke := brokerListCall()
+	revoke.AppAccessOperation = "revoke"
+	revoke.AppAccessSourceVerb = "authentication-grants"
+	revoke.AppAccessGrant = authenticationName
+	body := `{"operation":"revoke","group":"infrastructure.railgrid.ai","resource":"instances","name":"app-demo-prod","uid":"` + brokerTestInstanceUID + `","projectName":"demo","projectUID":"` + brokerTestProjectUID + `","grant":"` + authenticationName + `"}`
+	response = httptest.NewRecorder()
+	handler.Handle(response, brokerTestRequest(body, "org", "workspace", revoke))
+	if response.Code != http.StatusOK {
+		t.Fatalf("authentication revoke status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), authenticationName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("identity cleanup drift preserved primary authentication grant: %v", err)
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), legacyIdentityName, metav1.GetOptions{}); err != nil {
+		t.Fatalf("drifted secondary identity binding should remain for cleanup: %v", err)
+	}
+	if _, err := client.Resource(appAccessBindingGVR).Get(context.Background(), publishingName, metav1.GetOptions{}); err != nil {
+		t.Fatalf("authentication revoke removed the independent publishing grant: %v", err)
+	}
+	if brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+authFence, req.Name, AccessVerb) {
+		t.Fatal("revoked authentication primary binding still authorizes a fresh identity SAR")
+	}
+	if !brokerSARAllowed(client, "railgrid:member@example.test", req.Group, req.Resource+"/"+AccessSubresource, req.Name, AccessVerb) {
+		t.Fatal("authentication revoke removed the independent publishing reachability grant")
+	}
+	primaryDeleteAttempts := 0
+	for _, action := range client.Actions()[beforeRevoke:] {
+		if action.GetVerb() == "delete" && action.GetResource().Resource == appAccessBindingGVR.Resource && action.(k8stesting.DeleteAction).GetName() == authenticationName {
+			primaryDeleteAttempts++
+		}
+	}
+	if primaryDeleteAttempts != 2 {
+		t.Fatalf("primary delete attempts after one conflict = %d, want bounded retry once", primaryDeleteAttempts)
 	}
 }
 
@@ -645,7 +900,7 @@ func brokerSeedLegacyGrant(t *testing.T, client *dynamicfake.FakeDynamicClient, 
 	}
 	role := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
-		"metadata": map[string]any{"name": appAccessRoleName(req.Name), "labels": map[string]any{
+		"metadata": map[string]any{"name": appAccessRoleName(req.Name), "uid": "legacy-access-role-uid", "resourceVersion": "17", "labels": map[string]any{
 			appAccessLabel: req.Name, appAccessProject: req.Project, appAccessProjectUID: projectUID,
 		}},
 		"rules": appAccessRoleRules(req),
@@ -655,7 +910,7 @@ func brokerSeedLegacyGrant(t *testing.T, client *dynamicfake.FakeDynamicClient, 
 	}
 	binding := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
-		"metadata": map[string]any{"name": appAccessBindingName(req.Name, user), "labels": map[string]any{
+		"metadata": map[string]any{"name": appAccessBindingName(req.Name, user), "uid": "legacy-access-binding-uid", "resourceVersion": "18", "labels": map[string]any{
 			appAccessLabel: req.Name, appAccessProject: req.Project, appAccessProjectUID: projectUID, appAccessUserLabel: user,
 		}},
 		"subjects": []any{map[string]any{"kind": "User", "apiGroup": "rbac.authorization.k8s.io", "name": identity}},
@@ -667,6 +922,10 @@ func brokerSeedLegacyGrant(t *testing.T, client *dynamicfake.FakeDynamicClient, 
 }
 
 func brokerSeedIdentityGrant(t *testing.T, client *dynamicfake.FakeDynamicClient, req appAccessGrantRequest, user, identity string) {
+	brokerSeedIdentityGrantForSource(t, client, req, user, identity, appAccessGrantSourcePublishing)
+}
+
+func brokerSeedIdentityGrantForSource(t *testing.T, client *dynamicfake.FakeDynamicClient, req appAccessGrantRequest, user, identity, source string) {
 	t.Helper()
 	project := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project",
@@ -682,9 +941,9 @@ func brokerSeedIdentityGrant(t *testing.T, client *dynamicfake.FakeDynamicClient
 	}
 	binding := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
-		"metadata": map[string]any{"name": appAccessIdentityBindingName(req, user), "labels": map[string]any{
+		"metadata": map[string]any{"name": appAccessIdentityBindingNameForSource(req, user, source), "labels": map[string]any{
 			appAccessLabel: req.Name, appAccessProject: req.Project, appAccessProjectUID: req.ProjectUID,
-			appAccessInstanceUID: req.UID, appAccessUserLabel: user,
+			appAccessInstanceUID: req.UID, appAccessUserLabel: user, appAccessSourceLabel: source,
 		}},
 		"subjects": []any{map[string]any{"kind": "User", "apiGroup": "rbac.authorization.k8s.io", "name": identity}},
 		"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": appAccessIdentityRoleName(req)},
@@ -692,6 +951,90 @@ func brokerSeedIdentityGrant(t *testing.T, client *dynamicfake.FakeDynamicClient
 	if _, err := client.Resource(appAccessBindingGVR).Create(context.Background(), binding, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("seed old UID-fenced binding: %v", err)
 	}
+}
+
+func brokerRoleHasResource(role *unstructured.Unstructured, resource string) bool {
+	if role == nil {
+		return false
+	}
+	rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
+	for _, rule := range rules {
+		fields, ok := rule.(map[string]any)
+		if !ok {
+			continue
+		}
+		resources, _, _ := unstructured.NestedStringSlice(fields, "resources")
+		for _, candidate := range resources {
+			if candidate == resource {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// brokerSARAllowed evaluates the exact named resource permission shape used
+// by app-access grants, following ClusterRoleBinding subjects and roleRefs.
+func brokerSARAllowed(client dynamic.Interface, user, group, resource, name, verb string) bool {
+	ctx := context.Background()
+	roles, err := client.Resource(appAccessClusterRoleGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false
+	}
+	roleByName := make(map[string]*unstructured.Unstructured, len(roles.Items))
+	for i := range roles.Items {
+		role := &roles.Items[i]
+		roleByName[role.GetName()] = role
+	}
+	bindings, err := client.Resource(appAccessBindingGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false
+	}
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
+		bound := false
+		for _, raw := range subjects {
+			subject, ok := raw.(map[string]any)
+			if ok && subject["kind"] == "User" && subject["name"] == user {
+				bound = true
+				break
+			}
+		}
+		if !bound {
+			continue
+		}
+		roleName, _, _ := unstructured.NestedString(binding.Object, "roleRef", "name")
+		role := roleByName[roleName]
+		if role == nil {
+			continue
+		}
+		rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
+		for _, raw := range rules {
+			rule, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			groups, _, _ := unstructured.NestedStringSlice(rule, "apiGroups")
+			resources, _, _ := unstructured.NestedStringSlice(rule, "resources")
+			resourceNames, _, _ := unstructured.NestedStringSlice(rule, "resourceNames")
+			verbs, _, _ := unstructured.NestedStringSlice(rule, "verbs")
+			if containsGrantValue(groups, group) && containsGrantValue(resources, resource) &&
+				containsGrantValue(resourceNames, name) && containsGrantValue(verbs, verb) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsGrantValue(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected || value == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func brokerTestRequest(body, org, workspace string, call tenant.DelegatedCall) *http.Request {

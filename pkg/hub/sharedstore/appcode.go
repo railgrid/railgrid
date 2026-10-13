@@ -140,9 +140,38 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 		}
 		return appauth.CodeRecord{}, false
 	}
+	record, err := decodeAppCode(value)
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "Decoding redeemed app authorization code failed")
+		return appauth.CodeRecord{}, false
+	}
+	return record, true
+}
+
+// Peek reads an app authorization code without consuming it. The separate
+// error result lets identity exchange distinguish a missing/expired code from
+// a shared-store outage and return a retryable response for the latter.
+func (s *AppCodeStore) Peek(ctx context.Context, code string) (appauth.CodeRecord, bool, error) {
+	value, err := s.store.Get(ctx, code)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return appauth.CodeRecord{}, false, nil
+		}
+		klog.FromContext(ctx).Error(err, "Looking up app authorization code failed")
+		return appauth.CodeRecord{}, false, fmt.Errorf("reading app authorization code: %w", err)
+	}
+	record, err := decodeAppCode(value)
+	if err != nil {
+		klog.FromContext(ctx).Error(err, "Decoding app authorization code failed")
+		return appauth.CodeRecord{}, false, fmt.Errorf("decoding app authorization code: %w", err)
+	}
+	return record, true, nil
+}
+
+func decodeAppCode(value []byte) (appauth.CodeRecord, error) {
 	var stored storedCode
 	if err := json.Unmarshal(value, &stored); err != nil {
-		return appauth.CodeRecord{}, false
+		return appauth.CodeRecord{}, fmt.Errorf("decoding stored app authorization code: %w", err)
 	}
 	return appauth.CodeRecord{
 		Purpose: stored.Purpose,
@@ -170,5 +199,5 @@ func (s *AppCodeStore) Take(ctx context.Context, code string) (appauth.CodeRecor
 			AuthType:     stored.AuthType,
 		},
 		ExpiresAt: stored.ExpiresAt,
-	}, true
+	}, nil
 }

@@ -5,7 +5,7 @@ Install the exact server dependency in the app's server `package.json`:
 ```json
 {
   "dependencies": {
-    "@railgrid/auth-node": "npm:@crwilhit/railgrid-auth-node@0.1.1"
+    "@railgrid/auth-node": "0.1.1"
   }
 }
 ```

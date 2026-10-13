@@ -74,19 +74,16 @@ const (
 	//
 	//   - accessProxyImageToken — the gate container image
 	//     (RAILGRID_ACCESS_PROXY_IMAGE).
-	//   - accessProxyImagePullPolicyToken — IfNotPresent for immutable digests,
-	//     Always for tags (including the default mutable :latest tag).
 	//   - hubURLToken — in-cluster hub origin the gate exchanges sign-in codes
 	//     against (RAILGRID_ACCESS_HUB_URL, falling back to RAILGRID_HUB_URL).
 	//   - hubPublicURLToken — browser-reachable hub origin for sign-in
 	//     redirects (RAILGRID_ACCESS_HUB_PUBLIC_URL, falling back to hubURLToken).
 	//   - hubInsecureToken — "true"/"false" TLS-verification skip for gate→hub
 	//     calls (RAILGRID_ACCESS_HUB_INSECURE; local self-signed hubs only).
-	accessProxyImageToken           = "${railgrid.accessProxyImage}"
-	accessProxyImagePullPolicyToken = "${railgrid.accessProxyImagePullPolicy}"
-	hubURLToken                     = "${railgrid.hubUrl}"
-	hubPublicURLToken               = "${railgrid.hubPublicUrl}"
-	hubInsecureToken                = "${railgrid.hubInsecure}"
+	accessProxyImageToken = "${railgrid.accessProxyImage}"
+	hubURLToken           = "${railgrid.hubUrl}"
+	hubPublicURLToken     = "${railgrid.hubPublicUrl}"
+	hubInsecureToken      = "${railgrid.hubInsecure}"
 )
 
 const (

@@ -55,20 +55,40 @@ creates a grant. Authentication approvals additionally require that Railgrid
 Auth is enabled for that same production Instance and that the signed
 `appId` is `<projectUID>/production`. The hub creates only the fixed
 `railgrid-app-access` RBAC shape; providers cannot supply rules or subjects.
+Publishing and authentication approvals have separate source-labelled roles
+and bindings. Only an authentication approval's primary binding grants the
+UID-scoped sign-in permission. Lists, revokes, and resets act only on the source selected by the original Project verb. Unpublishing or
+resetting sharing preserves authentication approvals, and revoking an auth
+approval preserves any sharing grant for that account.
 The same hub-access decision policy applies to this capability: platform
 defaults can allow it while undecided, but an explicit decline always blocks
-the broker until an eligible admin accepts it.
+the broker until an eligible admin accepts it. Mutating proof redemption is
+recorded atomically in the shared hub store per nonce, capability, method and
+path, through the proof expiry and accepted clock skew. A resolver call and
+its following grant creation can each redeem their own capability once; a
+captured creation proof cannot restore a grant after revocation. Read-only
+GET calls remain reusable. The signer and verifier use proof version/domain
+v2, so proofs minted before redemption tracking cannot become a first-use
+replay after an upgrade. Complete the hub replica rollout before relying on
+these guarantees: mixed v1/v2 replicas reject each other's proofs, and an old
+in-flight action must be retried through a fresh original Project request.
+When publishing or preview has no runtime yet, the
+hub lets the provider handle reads and policy changes with all broker target
+claims cleared. Malformed targets, foreign ownership and API failures remain
+closed to broker access.
 
 Managed grants carry Project and Instance ownership. Identity issuance also
-requires `instances/access.<scopeHash>`, where the scope hashes the Project and
-Instance UIDs, in addition to the existing named `instances/access` permission.
-That identity permission lives in a separate role bound to the Project and
-Instance UIDs, so a stale
-binding cannot acquire it when an app name is reused. Reusing a deleted
-Project's name does not carry its app approvals into the replacement.
+requires `instances/access.auth.<scopeHash>`, where the scope hashes a dedicated
+authentication-grant domain and the Project and Instance UIDs, in addition to
+the named `instances/access` permission. Only the authentication source role
+contains that sign-in permission. Legacy secondary identity roles retain their
+old permission coordinate, which identity issuance no longer queries. A stale
+binding cannot acquire the new permission when an app name is reused. Reusing
+a deleted Project's name does not carry its app approvals into the replacement.
 Listing grants is strictly read-only, including when the caller also has update
-permission. A grant's `migrationPending` flag indicates that its UID-specific
-identity permission still needs migration or could not be confirmed by a read.
+permission. A grant's `migrationPending` flag indicates that its current
+source-specific policy or UID ownership still needs migration or could not be
+confirmed by a read.
 A leader-elected hub controller watches the provider catalog and
 each verified platform or organization-owned Infrastructure APIExport. It
 replays existing Instances at startup and reconciles Instance changes across
@@ -76,17 +96,33 @@ that export's consumer workspaces. Before migrating an approval it re-reads the
 Project, its environment binding, the Instance owner, and the existing managed
 RBAC objects in the same tenant workspace. Grants belonging to a different or
 unknown Project UID are never adopted.
-Recognized stale grants for a replaced Project are removed with UID and resource
-version delete preconditions, so their old name-based private-app permission
-cannot carry forward. Unknown ownership or unexpected RBAC shapes are preserved
-for operator review.
+Active reachability roles and bindings use the Project and Instance UID pair.
+Migration creates the new binding before deleting an exact recognized legacy
+binding with UID and resource-version preconditions; it never updates the
+immutable role reference. Structurally recognized static legacy roles are
+retired with empty rules, including roles whose Project UID is missing or old.
+Their remaining bindings cannot regain access when a role name is reused.
+A bounded app-scoped role scan also retires exact managed roles for previous
+UID pairs before a replacement app can receive new grants; access does not
+depend on asynchronous owner garbage collection.
+Unrecognized role shapes and binding objects are preserved for operator review.
+Unsourced legacy grants retain the historical publishing intent; authentication
+approvals must be explicit rather than inferred from an ambiguous old binding.
 
-The migrated labels, owner references, and UID-specific roles are durable KRM
-state. Reconciliation is idempotent: a failed write retries with controller
-backoff, and a restart replays the persisted Instances rather than relying on
-an in-memory migration checkpoint. This migration preserves existing approvals
-and creates no new accounts or memberships. A legacy approval remains unable
-to issue an identity until its verified migration finishes. New approval,
+The migrated labels, owner references, UID-specific roles and versioned
+completion marker are durable KRM state. Status-only Instance updates do not
+trigger migration, and a current marker avoids per-binding scans. Clients are
+reused per tenant, and grant lists use app-scoped selectors and bounded pages.
+Malformed legacy bindings are reported and skipped while valid bindings migrate.
+Reconciliation is idempotent: a failed write retries with controller backoff,
+and a restart replays the persisted Instances. Revocation deletes the primary
+grant before attempting legacy identity cleanup. The primary auth binding owns
+the current sign-in permission, so cleanup drift cannot retain fresh sign-in
+access even when a separate sharing grant remains. Already issued assertions
+still obey their existing bounded lifetime. This migration preserves existing
+sharing grants and creates no new accounts or memberships. An ambiguous legacy
+grant does not authorize app identity; approve authentication explicitly after
+the migration. New approval,
 revocation, and reset operations remain explicit request-time mutations.
 
 Workspace members can sign in to every environment. Development previews and
@@ -191,12 +227,12 @@ existing assertions or recovery from compromise of the subject-pseudonym key.
 ## SDK and assistant skill
 
 The server-only SDK lives in `provider-sdk/auth-node`. Generated applications
-use the stable consumer alias:
+use the organization-scoped package:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/auth-node": "npm:@crwilhit/railgrid-auth-node@0.1.1"
+    "@railgrid/auth-node": "0.1.1"
   }
 }
 ```
@@ -223,7 +259,12 @@ The SDK can be packed locally with `make pack-railgrid-auth-sdk`. Local smoke
 validation can install that exact artifact through an owned, internal ClusterIP
 registry without publishing a package externally. Production distribution needs
 the versioned package available in the configured registry; a local fixture is
-not a public package release.
+not a public package release. The organization-scoped `@railgrid/auth-node@0.1.1`
+release must be available before rolling out the updated assistant skill. The
+`auth-node/v<version>` release workflow publishes with provenance through npm
+trusted publishing after the package maintainer configures the repository and
+workflow identity. See the SDK README for the release setup and migration.
+This PR prepares the namespace switch; it does not publish to npm.
 
 ## Validation
 
@@ -235,6 +276,12 @@ checks, key rotation, replica changes, logout and cached-key outages.
 Additional regressions cover intercepted codes and PKCE validation, cached
 Secret read counts and concurrent refreshes, optional HTTP-issuer startup,
 operator rotation RBAC, and authentication binding repair without a flag change.
+Additional checks cover grant-source isolation, immutable role references,
+migration completion and status filtering, revocation with drifted identity
+bindings, proof redemption across replicas, retryable code exchange dependencies,
+non-consuming wrong-verifier attempts, callback refresh after temporary hub
+or JWKS failure, HTTPS or loopback hub transport, and
+key-cache refreshes that remain independent of individual request cancellation.
 
 Live validation uses an owned App Studio application and normal browser sessions.
 Check anonymous access, two users' separate records, denied access, logout,

@@ -46,7 +46,11 @@ const (
 	// deliberately kept outside the requestheader namespace.
 	Header = dataplane.HeaderActionProof
 
-	proofVersion  = 1
+	// proofVersion changes whenever verification semantics become incompatible.
+	// In particular, v2 proofs are the first proofs whose mutating uses are
+	// durably redeemed, so accepting v1 after rollout would let an in-flight
+	// v1 proof make its first redemption after revocation.
+	proofVersion  = 2
 	defaultTTL    = 2 * time.Minute
 	maxClockSkew  = 15 * time.Second
 	maxTokenBytes = 16 * 1024
@@ -54,9 +58,36 @@ const (
 )
 
 var (
-	proofDomain = []byte("railgrid-hub-action-proof-v1\x00")
+	proofDomain = []byte("railgrid-hub-action-proof-v2\x00")
 	errInvalid  = errors.New("invalid hub action proof")
 )
+
+// UseStore durably claims a mutating use of an action proof. Implementations
+// must make Consume atomic across hub replicas; a process-local map is not a
+// valid implementation.
+type UseStore interface {
+	Consume(ctx context.Context, nonce, capability, method, path string, expiresAt time.Time) (bool, error)
+}
+
+// UseKey returns a domain-separated hash for one proof/capability/operation
+// coordinate. The nonce remains secret material and never appears in a
+// resource name or storage key.
+func UseKey(nonce, capability, method, path string) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte("railgrid-hub-action-proof-use-v1\x00"))
+	for _, value := range []string{nonce, capability, method, path} {
+		_, _ = h.Write([]byte(value))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// AcceptedUntil returns the latest time the verifier could accept claims.
+// Keeping redemption records through the verifier's maximum clock skew avoids
+// a late replay after an entry is swept.
+func AcceptedUntil(claims Claims) time.Time {
+	return time.Unix(claims.ExpiresAt, 0).Add(maxClockSkew)
+}
 
 // Claims is the hub-authenticated identity and original action coordinate.
 // The hub signs these claims only after authenticating the human and

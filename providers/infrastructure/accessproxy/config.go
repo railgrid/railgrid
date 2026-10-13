@@ -311,6 +311,9 @@ func normalizeConfig(config Config) (normalizedConfig, error) {
 			}
 			hubURLString = hubURL
 		}
+		if !hubURLProtectsTokens(hubURLString) {
+			return normalizedConfig{}, fmt.Errorf("railgrid auth: hub URL must be HTTPS or loopback HTTP")
+		}
 		if hubPublicURLString == "" {
 			hubPublicURL, err := parseHTTPOrigin(config.HubPublicURL)
 			if err != nil {

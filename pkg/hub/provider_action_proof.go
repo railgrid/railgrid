@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,6 +35,8 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
+
+var errAppAccessRuntimeAbsent = errors.New("project has no persisted runtime binding")
 
 // providerActionProofBridge authenticates a person at the hub front door and
 // passes only a narrow, expiring proof through kcp. The person's bearer remains
@@ -290,16 +294,24 @@ func bindAppAccessTarget(ctx context.Context, client dynamic.Interface, route da
 	if err != nil {
 		return fmt.Errorf("reading the addressed App Studio Project: %w", err)
 	}
-	if string(project.GetUID()) == "" {
-		return fmt.Errorf("the addressed App Studio Project has no persisted UID")
+	if project.GetName() != route.Name || string(project.GetUID()) == "" {
+		return fmt.Errorf("the addressed App Studio Project has no valid persisted identity")
 	}
 	target, version, err := projectAppAccessTarget(project, environment, bindingName)
+	if errors.Is(err, errAppAccessRuntimeAbsent) && appAccessMayOmitAbsentRuntime(route, claims) {
+		clearAppAccessTarget(claims)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	instanceGVR := schema.GroupVersionResource{Group: claims.AppAccessGroup, Version: version, Resource: claims.AppAccessResource}
 	instance, err := client.Resource(instanceGVR).Get(ctx, target, metav1.GetOptions{})
 	if err != nil {
+		if missingNamedObject(err, instanceGVR.GroupResource(), target) && appAccessMayOmitAbsentRuntime(route, claims) {
+			clearAppAccessTarget(claims)
+			return nil
+		}
 		return fmt.Errorf("reading the Project-managed Infrastructure Instance: %w", err)
 	}
 	if !projectOwnsAppAccessInstance(project, instance) || string(instance.GetUID()) == "" {
@@ -311,28 +323,99 @@ func bindAppAccessTarget(ctx context.Context, client dynamic.Interface, route da
 	return nil
 }
 
+func appAccessMayOmitAbsentRuntime(route dataplane.SubresourceRequest, claims *actionproof.Claims) bool {
+	if claims == nil || route.Resource != "projects" || route.Tail != "" {
+		return false
+	}
+	if route.Verb != "publishing" && route.Verb != "preview" {
+		return false
+	}
+	return (claims.AppAccessOperation == "list" && (claims.Method == http.MethodGet || claims.Method == http.MethodPost)) ||
+		(claims.AppAccessOperation == "reset" && claims.Method == http.MethodDelete)
+}
+
+func clearAppAccessTarget(claims *actionproof.Claims) {
+	claims.AppAccessOperation = ""
+	claims.AppAccessGroup = ""
+	claims.AppAccessResource = ""
+	claims.AppAccessName = ""
+	claims.AppAccessUID = ""
+	claims.AppAccessProject = ""
+	claims.AppAccessProjectUID = ""
+	claims.AppAccessUser = ""
+	claims.AppAccessGrant = ""
+}
+
+func missingNamedObject(err error, resource schema.GroupResource, name string) bool {
+	if !apierrors.IsNotFound(err) || name == "" {
+		return false
+	}
+	status, ok := err.(apierrors.APIStatus)
+	if !ok {
+		return false
+	}
+	details := status.Status().Details
+	return details != nil && details.Name == name && details.Group == resource.Group && details.Kind == resource.Resource
+}
+
 func projectAppAccessTarget(project *unstructured.Unstructured, environment, bindingName string) (string, string, error) {
 	environments, found, err := unstructured.NestedSlice(project.Object, "spec", "environments")
-	if err != nil || !found {
-		return "", "", fmt.Errorf("project has no persisted environments")
+	if err != nil {
+		return "", "", fmt.Errorf("project environments are malformed: %w", err)
 	}
-	var selected map[string]any
+	if !found {
+		return "", "", errAppAccessRuntimeAbsent
+	}
+	var selectedEnvironment map[string]any
 	for _, rawEnv := range environments {
 		env, ok := rawEnv.(map[string]any)
-		if !ok || env["name"] != environment {
+		if !ok {
+			return "", "", fmt.Errorf("project environment entry is malformed")
+		}
+		environmentName, ok := env["name"].(string)
+		if !ok || strings.TrimSpace(environmentName) == "" || environmentName != strings.TrimSpace(environmentName) {
+			return "", "", fmt.Errorf("project environment name is malformed")
+		}
+		if environmentName != environment {
 			continue
 		}
-		bindings, _, _ := unstructured.NestedSlice(env, "bindings")
-		for _, rawBinding := range bindings {
-			candidate, ok := rawBinding.(map[string]any)
-			if ok && candidate["name"] == bindingName {
-				selected = candidate
-				break
+		if selectedEnvironment != nil {
+			return "", "", fmt.Errorf("project has duplicate %s environments", environment)
+		}
+		selectedEnvironment = env
+	}
+	if selectedEnvironment == nil {
+		return "", "", errAppAccessRuntimeAbsent
+	}
+	bindings, found, err := unstructured.NestedSlice(selectedEnvironment, "bindings")
+	if err != nil {
+		return "", "", fmt.Errorf("project %s environment bindings are malformed: %w", environment, err)
+	}
+	if !found {
+		return "", "", errAppAccessRuntimeAbsent
+	}
+	var selected map[string]any
+	for _, rawBinding := range bindings {
+		candidate, ok := rawBinding.(map[string]any)
+		if !ok {
+			return "", "", fmt.Errorf("project environment binding entry is malformed")
+		}
+		candidateName, ok := candidate["name"].(string)
+		if !ok || strings.TrimSpace(candidateName) == "" || candidateName != strings.TrimSpace(candidateName) {
+			return "", "", fmt.Errorf("project environment binding name is malformed")
+		}
+		if candidateName == bindingName {
+			if selected != nil {
+				return "", "", fmt.Errorf("project has duplicate %s app Instance bindings", environment)
 			}
+			selected = candidate
 		}
 	}
-	if selected == nil || selected["provider"] != "app-studio" || selected["kind"] != "providerResource" {
-		return "", "", fmt.Errorf("project has no supported %s app Instance binding", environment)
+	if selected == nil {
+		return "", "", errAppAccessRuntimeAbsent
+	}
+	if selected["provider"] != "app-studio" || selected["kind"] != "providerResource" {
+		return "", "", fmt.Errorf("project has an unsupported %s app Instance binding", environment)
 	}
 	ref, ok := selected["resourceRef"].(map[string]any)
 	if !ok || ref["kind"] != "Instance" || ref["resource"] != "instances" {
@@ -342,10 +425,28 @@ func projectAppAccessTarget(project *unstructured.Unstructured, environment, bin
 	if err != nil || gv.Group != "infrastructure.railgrid.ai" {
 		return "", "", fmt.Errorf("project app binding does not name the Infrastructure API")
 	}
-	name := strings.TrimSpace(stringValue(ref["name"]))
+	name := ""
+	if rawName, exists := ref["name"]; exists {
+		name, ok = rawName.(string)
+		if !ok {
+			return "", "", fmt.Errorf("project app binding Instance name is malformed")
+		}
+		name = strings.TrimSpace(name)
+	}
 	if name == "" {
-		values, _, _ := unstructured.NestedMap(selected, "values")
-		name = strings.TrimSpace(stringValue(values["name"]))
+		values, valuesFound, err := unstructured.NestedMap(selected, "values")
+		if err != nil {
+			return "", "", fmt.Errorf("project app binding values are malformed: %w", err)
+		}
+		if valuesFound {
+			if rawName, exists := values["name"]; exists {
+				name, ok = rawName.(string)
+				if !ok {
+					return "", "", fmt.Errorf("project app binding Instance name is malformed")
+				}
+				name = strings.TrimSpace(name)
+			}
+		}
 	}
 	if name == "" {
 		name = project.GetName() + "-" + bindingName

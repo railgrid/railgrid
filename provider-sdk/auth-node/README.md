@@ -1,13 +1,12 @@
 # `@railgrid/auth-node`
 
-`@railgrid/auth-node` is the stable consumer alias for the server package
-`@crwilhit/railgrid-auth-node`. Pin the package in the server component's
-manifest so development and production install the same version:
+`@railgrid/auth-node` is the organization-scoped server package. Pin it in the
+server component's manifest so development and production install the same version:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/auth-node": "npm:@crwilhit/railgrid-auth-node@0.1.1"
+    "@railgrid/auth-node": "0.1.1"
   }
 }
 ```
@@ -89,4 +88,21 @@ npm run test:install
 ```
 
 The install check packs the local artifact and imports it from a clean consumer
-under the stable alias. It does not publish to a registry.
+under its organization package name. It does not publish to a registry.
+
+## Release
+
+The organization-owned package is `@railgrid/auth-node`. Before deploying the
+updated App Studio skill, an npm organization maintainer must make the pinned
+version available under that name and authorize repository `railgrid/railgrid`,
+workflow filename `auth-node-release.yaml`, as its trusted publisher. See
+[npm trusted publisher setup](https://docs.npmjs.com/trusted-publishers/).
+
+The release workflow runs only for `auth-node/v<version>` tags matching
+`package.json`. It tests the SDK, installs the packed artifact in a clean
+consumer, publishes publicly with provenance using GitHub OIDC, then verifies
+the registry install. It stores no npm publishing token. This branch prepares
+the namespace change; it does not publish a package or migrate installed apps.
+Existing apps must update their dependency and lockfile to the organization
+package after the release is available. Local tarball installation remains
+available for pre-release checks.

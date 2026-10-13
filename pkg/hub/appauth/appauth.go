@@ -343,6 +343,10 @@ type CodeRecord struct {
 // redeem is a replayable app sign-in.
 type CodeStore interface {
 	Put(ctx context.Context, code string, record CodeRecord) error
+	// Peek reads a record without consuming it. Implementations return an error
+	// when the backing store is unavailable, false when the code is absent or
+	// expired, and the record otherwise.
+	Peek(ctx context.Context, code string) (CodeRecord, bool, error)
 	Take(ctx context.Context, code string) (CodeRecord, bool)
 }
 
@@ -658,6 +662,12 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		// consuming the one-time entry at the handoff endpoint.
 		http.Error(w, "sign-in expired", http.StatusGone)
 		return
+	case strings.HasPrefix(req.Code, identityAppCodePrefix):
+		// Identity codes belong to the PKCE-bound identity exchange endpoint.
+		// Reject them before touching the shared store so this legacy endpoint
+		// cannot burn a code that only the identity callback can redeem.
+		http.Error(w, "sign-in expired", http.StatusGone)
+		return
 	}
 	record, ok := codeStore.Take(r.Context(), req.Code)
 	if !ok || record.Purpose != "" || (previewCode && record.Identity.AppScope == "") || (!previewCode && record.Identity.AppScope != "") || record.Ref.key() != ref.key() || !strings.EqualFold(record.RedirectHost, req.Host) {
@@ -809,6 +819,21 @@ func (m *memoryCodeStore) Put(_ context.Context, code string, record CodeRecord)
 	}
 	m.codes[code] = record
 	return nil
+}
+
+func (m *memoryCodeStore) Peek(_ context.Context, code string) (CodeRecord, bool, error) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.codes[code]
+	if !ok {
+		return CodeRecord{}, false, nil
+	}
+	if now.After(record.ExpiresAt) {
+		delete(m.codes, code)
+		return CodeRecord{}, false, nil
+	}
+	return record, true, nil
 }
 
 func (m *memoryCodeStore) Take(_ context.Context, code string) (CodeRecord, bool) {

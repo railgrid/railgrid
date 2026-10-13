@@ -55,6 +55,8 @@ type identityFixture struct {
 	member             bool
 	appErr             error
 	sarErr             error
+	signingKeyErr      error
+	subjectKeyErr      error
 	sars               []*authorizationv1.SubjectAccessReview
 	memberCalls        int
 	privateKey         ed25519.PrivateKey
@@ -120,6 +122,9 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 		},
 		IdentityIssuer: "https://hub.example.test" + IdentityIssuerPath,
 		IdentitySigningKey: func(context.Context) (ed25519.PrivateKey, error) {
+			if f.signingKeyErr != nil {
+				return nil, f.signingKeyErr
+			}
 			return append(ed25519.PrivateKey(nil), f.privateKey...), nil
 		},
 		IdentityPublicKeys: func(context.Context) ([]ed25519.PublicKey, error) {
@@ -131,9 +136,14 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 			}
 			return keys, nil
 		},
-		IdentitySubjectKey: func(context.Context) ([]byte, error) { return append([]byte(nil), subjectKey...), nil },
-		Codes:              f.codeStore,
-		Now:                func() time.Time { return f.now },
+		IdentitySubjectKey: func(context.Context) ([]byte, error) {
+			if f.subjectKeyErr != nil {
+				return nil, f.subjectKeyErr
+			}
+			return append([]byte(nil), subjectKey...), nil
+		},
+		Codes: f.codeStore,
+		Now:   func() time.Time { return f.now },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -242,10 +252,10 @@ func TestIdentityAuthorizeExchangeSignsBoundShortLivedAssertion(t *testing.T) {
 	}
 	uidAttrs := f.sars[1].Spec.ResourceAttributes
 	projectUID, _, _ := strings.Cut(f.app.AppID, "/")
-	identityFence, validFence := identityAppAccessSubresource(projectUID, f.app.InstanceUID)
+	identityFence, validFence := authenticationAppAccessSubresource(projectUID, f.app.InstanceUID)
 	if uidAttrs.Group != attrs.Group || uidAttrs.Resource != attrs.Resource || uidAttrs.Name != attrs.Name ||
-		!validFence || uidAttrs.Subresource != identityFence || uidAttrs.Verb != AccessVerb {
-		t.Fatalf("UID-fenced authorize SAR = %+v", f.sars[1].Spec)
+		!validFence || !strings.HasPrefix(identityFence, AccessSubresource+".auth.") || uidAttrs.Subresource != identityFence || uidAttrs.Verb != AccessVerb {
+		t.Fatalf("authentication-grant authorize SAR = %+v", f.sars[1].Spec)
 	}
 	recorder, response := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
 	if recorder.Code != http.StatusOK || response.Assertion == "" || response.ExpiresIn != int64(identityAssertionTTL/time.Second) ||
@@ -327,21 +337,24 @@ func TestIdentityExchangeVerifierValidationAndOneUse(t *testing.T) {
 		}
 	})
 
-	t.Run("wrong valid verifier consumes code", func(t *testing.T) {
+	t.Run("wrong valid verifier leaves code for the rightful caller", func(t *testing.T) {
 		f := newIdentityFixture(t)
 		code, _ := f.authorize(t)
 		wrongVerifier := strings.Repeat("z", 43)
 		recorder, response := f.exchangeWithVerifier(t, code, fIdentityOrigin, f.app.AppID, wrongVerifier)
 		if recorder.Code != http.StatusGone || response.Assertion != "" {
-			t.Fatalf("wrong verifier status=%d assertion=%t body=%s; want consumed code", recorder.Code, response.Assertion != "", recorder.Body.String())
+			t.Fatalf("wrong verifier status=%d assertion=%t body=%s; want rejection", recorder.Code, response.Assertion != "", recorder.Body.String())
 		}
-		replay, _ := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
-		if replay.Code != http.StatusGone {
-			t.Fatalf("wrong-verifier attempt left code redeemable: replay=%d body=%s", replay.Code, replay.Body.String())
+		if _, found, err := f.codeStore.Peek(context.Background(), code); err != nil || !found {
+			t.Fatalf("wrong-verifier attempt changed code: found=%v err=%v", found, err)
+		}
+		retry, response := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
+		if retry.Code != http.StatusOK || response.Assertion == "" {
+			t.Fatalf("rightful retry status=%d assertion=%t body=%s", retry.Code, response.Assertion != "", retry.Body.String())
 		}
 	})
 
-	t.Run("legacy code without challenge fails closed and is consumed", func(t *testing.T) {
+	t.Run("legacy code without challenge fails closed without consumption", func(t *testing.T) {
 		f := newIdentityFixture(t)
 		code := identityAppCodePrefix + "legacy-code"
 		err := f.codeStore.Put(context.Background(), code, CodeRecord{
@@ -359,9 +372,8 @@ func TestIdentityExchangeVerifierValidationAndOneUse(t *testing.T) {
 		if recorder.Code != http.StatusGone || response.Assertion != "" {
 			t.Fatalf("legacy code status=%d assertion=%t body=%s; want fail-closed gone", recorder.Code, response.Assertion != "", recorder.Body.String())
 		}
-		replay, _ := f.exchange(t, code, fIdentityOrigin, f.app.AppID)
-		if replay.Code != http.StatusGone {
-			t.Fatalf("legacy code replay=%d, want 410", replay.Code)
+		if _, found, err := f.codeStore.Peek(context.Background(), code); err != nil || !found {
+			t.Fatalf("legacy code rejection changed code: found=%v err=%v", found, err)
 		}
 	})
 }
@@ -426,10 +438,63 @@ func TestIdentityExchangeFailsClosedWhenAccountLookupIsUnavailable(t *testing.T)
 	if recorder.Code != http.StatusServiceUnavailable || response.Assertion != "" || f.accountCalls != 2 {
 		t.Fatalf("exchange status=%d assertion=%t account lookups=%d body=%s", recorder.Code, response.Assertion != "", f.accountCalls, recorder.Body.String())
 	}
-	replay, _ := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
-	if replay.Code != http.StatusGone {
-		t.Fatalf("unavailable-account code replay status=%d, want 410", replay.Code)
+	f.accountErr = nil
+	retry, response := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
+	if retry.Code != http.StatusOK || response.Assertion == "" || f.accountCalls != 3 {
+		t.Fatalf("recovered exchange status=%d assertion=%t account lookups=%d body=%s", retry.Code, response.Assertion != "", f.accountCalls, retry.Body.String())
 	}
+}
+
+func TestIdentityExchangeRetainsCodeWhenSigningKeysAreUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*identityFixture, error)
+	}{
+		{name: "signing key", set: func(f *identityFixture, err error) { f.signingKeyErr = err }},
+		{name: "subject key", set: func(f *identityFixture, err error) { f.subjectKeyErr = err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newIdentityFixture(t)
+			code, _ := f.authorize(t)
+			tc.set(f, errors.New("key store unavailable"))
+			recorder, response := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
+			if recorder.Code != http.StatusServiceUnavailable || response.Assertion != "" {
+				t.Fatalf("exchange status=%d assertion=%t body=%s", recorder.Code, response.Assertion != "", recorder.Body.String())
+			}
+			if _, found, err := f.codeStore.Peek(context.Background(), code); err != nil || !found {
+				t.Fatalf("transient signing failure changed code: found=%v err=%v", found, err)
+			}
+			tc.set(f, nil)
+			retry, response := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
+			if retry.Code != http.StatusOK || response.Assertion == "" {
+				t.Fatalf("recovered exchange status=%d assertion=%t body=%s", retry.Code, response.Assertion != "", retry.Body.String())
+			}
+		})
+	}
+}
+
+func TestIdentityExchangeTreatsSharedCodeStoreFailureAsRetryable(t *testing.T) {
+	f := newIdentityFixture(t)
+	code, _ := f.authorize(t)
+	f.handler.codes = failingPeekCodeStore{CodeStore: f.codeStore, err: errors.New("shared store unavailable")}
+	recorder, response := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
+	if recorder.Code != http.StatusServiceUnavailable || response.Assertion != "" {
+		t.Fatalf("exchange status=%d assertion=%t body=%s", recorder.Code, response.Assertion != "", recorder.Body.String())
+	}
+	f.handler.codes = f.codeStore
+	retry, response := f.exchange(t, code, f.app.PublishedOrigin, f.app.AppID)
+	if retry.Code != http.StatusOK || response.Assertion == "" {
+		t.Fatalf("recovered exchange status=%d assertion=%t body=%s", retry.Code, response.Assertion != "", retry.Body.String())
+	}
+}
+
+type failingPeekCodeStore struct {
+	CodeStore
+	err error
+}
+
+func (s failingPeekCodeStore) Peek(context.Context, string) (CodeRecord, bool, error) {
+	return CodeRecord{}, false, s.err
 }
 
 func TestIdentityAndOrdinaryAppCodesCannotCrossRedeem(t *testing.T) {
@@ -446,8 +511,8 @@ func TestIdentityAndOrdinaryAppCodesCannotCrossRedeem(t *testing.T) {
 		t.Fatalf("ordinary app exchange redeemed identity code: status=%d body=%s", ordinaryRecorder.Code, ordinaryRecorder.Body.String())
 	}
 	identityRecorder, _ := f.exchange(t, identityCode, fIdentityOrigin, f.app.AppID)
-	if identityRecorder.Code != http.StatusGone {
-		t.Fatalf("identity exchange replayed a code taken by the other purpose: %d", identityRecorder.Code)
+	if identityRecorder.Code != http.StatusOK {
+		t.Fatalf("ordinary app exchange consumed identity code: status=%d body=%s", identityRecorder.Code, identityRecorder.Body.String())
 	}
 
 	ordinaryCode, err := f.handler.mintCode(context.Background(), InstanceRef{Cluster: "abc123cluster", Group: "infrastructure.railgrid.ai", Resource: "instances", Name: "shop"}, "shop.example.test", browsersession.Identity{UserID: "user-abc"})
@@ -493,13 +558,14 @@ const fIdentityCodeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW
 
 func TestIdentityExchangeRejectsOriginAudienceAndDescriptorChanges(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		mutate func(*identityFixture)
-		origin string
-		appID  string
+		name          string
+		mutate        func(*identityFixture)
+		origin        string
+		appID         string
+		retrySucceeds bool
 	}{
-		{name: "origin mismatch", origin: "https://attacker.example.test", appID: "project-1/production"},
-		{name: "app audience mismatch", origin: fIdentityOrigin, appID: "project-2/production"},
+		{name: "origin mismatch", origin: "https://attacker.example.test", appID: "project-1/production", retrySucceeds: true},
+		{name: "app audience mismatch", origin: fIdentityOrigin, appID: "project-2/production", retrySucceeds: true},
 		{name: "app disabled", origin: fIdentityOrigin, appID: "project-1/production", mutate: func(f *identityFixture) { f.app.Enabled = false }},
 		{name: "instance recreated", origin: fIdentityOrigin, appID: "project-1/production", mutate: func(f *identityFixture) { f.app.InstanceUID = "new-uid" }},
 		{name: "environment changed", origin: fIdentityOrigin, appID: "project-1/production", mutate: func(f *identityFixture) { f.app.Environment = "development" }},
@@ -515,8 +581,12 @@ func TestIdentityExchangeRejectsOriginAudienceAndDescriptorChanges(t *testing.T)
 				t.Fatalf("exchange status=%d body=%s, want 410", recorder.Code, recorder.Body.String())
 			}
 			replay, _ := f.exchange(t, code, fIdentityOrigin, "project-1/production")
-			if replay.Code != http.StatusGone {
-				t.Fatalf("failed exchange did not consume code: replay status=%d", replay.Code)
+			want := http.StatusGone
+			if tc.retrySucceeds {
+				want = http.StatusOK
+			}
+			if replay.Code != want {
+				t.Fatalf("correct-binding retry status=%d, want %d", replay.Code, want)
 			}
 		})
 	}
@@ -541,17 +611,17 @@ func TestIdentityFlowRechecksSARAndRejectsDisabledApps(t *testing.T) {
 			t.Fatalf("status=%d SARs=%d body=%s", recorder.Code, len(f.sars), recorder.Body.String())
 		}
 	})
-	t.Run("legacy access does not substitute for current UID grant", func(t *testing.T) {
+	t.Run("publishing identity grant does not substitute for auth grant", func(t *testing.T) {
 		f := newIdentityFixture(t)
 		f.uidAllowed = false
 		recorder := httptest.NewRecorder()
 		f.handler.HandleIdentityAuthorize(recorder, f.authorizeRequest(t, fIdentityOrigin+IdentityCallbackPath, f.app.AppID))
 		projectUID, _, _ := strings.Cut(f.app.AppID, "/")
-		identityFence, validFence := identityAppAccessSubresource(projectUID, f.app.InstanceUID)
+		identityFence, validFence := authenticationAppAccessSubresource(projectUID, f.app.InstanceUID)
 		if recorder.Code != http.StatusForbidden || len(f.sars) != 2 ||
 			f.sars[0].Spec.ResourceAttributes.Subresource != AccessSubresource ||
 			!validFence || f.sars[1].Spec.ResourceAttributes.Subresource != identityFence {
-			t.Fatalf("status=%d SARs=%#v body=%s", recorder.Code, f.sars, recorder.Body.String())
+			t.Fatalf("status=%d SARs=%#v body=%s; old publishing identity grants must not satisfy auth", recorder.Code, f.sars, recorder.Body.String())
 		}
 	})
 	t.Run("access revoked at exchange", func(t *testing.T) {

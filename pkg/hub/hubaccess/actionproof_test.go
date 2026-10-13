@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,26 @@ func (actionProofGrantReader) Get(_ context.Context, _ GrantKey) (*tenancyv1alph
 		{Capability: "app-auth.users.resolve", Scope: "workspace"},
 		{Capability: "app-access.grants.manage", Scope: "workspace"},
 	}}}, nil
+}
+
+type memoryActionProofUseStore struct {
+	mu   sync.Mutex
+	used map[string]struct{}
+}
+
+func newMemoryActionProofUseStore() *memoryActionProofUseStore {
+	return &memoryActionProofUseStore{used: make(map[string]struct{})}
+}
+
+func (s *memoryActionProofUseStore) Consume(_ context.Context, nonce, capability, method, path string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := actionproof.UseKey(nonce, capability, method, path)
+	if _, ok := s.used[key]; ok {
+		return false, nil
+	}
+	s.used[key] = struct{}{}
+	return true, nil
 }
 
 func TestActionProofGateBindsMembershipCallsToAppStudioAction(t *testing.T) {
@@ -93,8 +114,9 @@ func TestActionProofGateBindsMembershipCallsToAppStudioAction(t *testing.T) {
 			},
 			Now: func() time.Time { return now.Add(time.Second) },
 		},
-		Providers: actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: readInvite}},
-		Grants:    actionProofGrantReader{},
+		ActionProofUses: newMemoryActionProofUseStore(),
+		Providers:       actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: readInvite}},
+		Grants:          actionProofGrantReader{},
 	}
 
 	for _, tc := range []struct {
@@ -163,6 +185,28 @@ func TestActionProofGateBindsMembershipCallsToAppStudioAction(t *testing.T) {
 			}
 		})
 	}
+	getClaims := claims
+	getClaims.Method = http.MethodPost
+	getClaims.Verb = "publishing-grants"
+	getToken, err := actionproof.Sign(context.Background(), key, getClaims, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		request := httptest.NewRequest(http.MethodGet, "/api/orgs/org/memberships", nil)
+		request.Header.Set("Authorization", "Bearer "+providerToken)
+		request.Header.Set(actionproof.Header, getToken)
+		request.Header.Set("X-Railgrid-Org", claims.OrgUUID)
+		request.Header.Set("X-Railgrid-Workspace", claims.WorkspaceUUID)
+		request.Header.Set("X-Railgrid-Tenant", claims.ClusterID)
+		request.Header.Set("X-Railgrid-Cluster", claims.ClusterID)
+		reached := false
+		recorder := httptest.NewRecorder()
+		gate.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || !reached {
+			t.Fatalf("replayed GET status=%d reached=%v body=%s; GET proofs remain replayable", recorder.Code, reached, recorder.Body.String())
+		}
+	}
 }
 
 func TestActionProofGateBindsExistingAppAccountLookup(t *testing.T) {
@@ -203,8 +247,9 @@ func TestActionProofGateBindsExistingAppAccountLookup(t *testing.T) {
 			},
 			Now: func() time.Time { return now.Add(time.Second) },
 		},
-		Providers: actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: hubAccess}},
-		Grants:    actionProofGrantReader{},
+		ActionProofUses: newMemoryActionProofUseStore(),
+		Providers:       actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: hubAccess}},
+		Grants:          actionProofGrantReader{},
 	}
 
 	for _, tc := range []struct {
@@ -288,8 +333,9 @@ func TestActionProofGateBindsAppAccessBrokerBodyAndLegacyReads(t *testing.T) {
 			},
 			Now: func() time.Time { return now.Add(time.Second) },
 		},
-		Providers: actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: []providersv1alpha1.ProviderHubAccess{capability}}},
-		Grants:    actionProofGrantReader{},
+		ActionProofUses: newMemoryActionProofUseStore(),
+		Providers:       actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: []providersv1alpha1.ProviderHubAccess{capability}}},
+		Grants:          actionProofGrantReader{},
 	}
 	baseClaims := actionproof.Claims{
 		UserID: "user-alice", RBACIdentity: "railgrid:alice@example.com",
@@ -358,6 +404,92 @@ func TestActionProofGateBindsAppAccessBrokerBodyAndLegacyReads(t *testing.T) {
 				t.Fatalf("reached=%v call=%+v status=%d", reached, gotCall, recorder.Code)
 			}
 		})
+	}
+}
+
+func TestActionProofMutationCanAuthorizeResolverThenGrantCreateOnlyOnceEach(t *testing.T) {
+	key := serviceaccounts.StaticProofKeySource(strings.Repeat("a", 32))
+	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	providerToken := actionProofServiceAccountToken()
+	claims := actionproof.Claims{
+		UserID: "user-alice", RBACIdentity: "railgrid:alice@example.com",
+		OrgUUID: "org", WorkspaceUUID: "workspace", ClusterID: "cluster-id",
+		Provider: "app-studio", Group: "ai.railgrid.ai", Version: "v1alpha1",
+		Resource: "projects", ParentName: "project-1", Verb: "authentication-grants", Method: http.MethodPost,
+		AppAuthUser: "user-bob", AppAuthAppID: "project-uid/production",
+		AppAccessOperation: "create", AppAccessUser: "user-bob", AppAccessGroup: "infrastructure.railgrid.ai",
+		AppAccessResource: "instances", AppAccessName: "instance-1", AppAccessUID: "instance-uid",
+		AppAccessProject: "project-1", AppAccessProjectUID: "project-uid",
+	}
+	token, err := actionproof.Sign(context.Background(), key, claims, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := tenant.UserResolverFunc(func(*http.Request) (string, error) { return "", errors.New("provider token is not a human credential") })
+	gate := &Gate{
+		Human: human,
+		ActionProof: &actionproof.Verifier{
+			Keys: key,
+			Authenticate: func(_ context.Context, r *http.Request, c actionproof.Claims) error {
+				if r.Header.Get("Authorization") != "Bearer "+providerToken || c.Provider != "app-studio" {
+					return errors.New("wrong provider credential")
+				}
+				return nil
+			},
+			ValidateScope: func(_ context.Context, c actionproof.Claims) error {
+				if c.OrgUUID != "org" || c.WorkspaceUUID != "workspace" {
+					return errors.New("wrong tenant")
+				}
+				return nil
+			},
+			Now: func() time.Time { return now.Add(time.Second) },
+		},
+		ActionProofUses: newMemoryActionProofUseStore(),
+		Providers: actionProofProviderLookup{provider: providers.Provider{Name: "app-studio", HubAccess: []providersv1alpha1.ProviderHubAccess{
+			{Capability: "app-auth.users.resolve", Scope: providersv1alpha1.HubAccessScopeWorkspace},
+			{Capability: "app-access.grants.manage", Scope: providersv1alpha1.HubAccessScopeWorkspace},
+		}}},
+		Grants: actionProofGrantReader{},
+	}
+	resolverBody := `{"user":"user-bob","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","appId":"project-uid/production"}`
+	createBody := `{"operation":"create","group":"infrastructure.railgrid.ai","resource":"instances","name":"instance-1","uid":"instance-uid","projectName":"project-1","projectUID":"project-uid","user":"user-bob"}`
+
+	do := func(path, body string) (int, tenant.DelegatedCall, bool) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+providerToken)
+		request.Header.Set(actionproof.Header, token)
+		request.Header.Set("X-Railgrid-Org", claims.OrgUUID)
+		request.Header.Set("X-Railgrid-Workspace", claims.WorkspaceUUID)
+		request.Header.Set("X-Railgrid-Tenant", claims.ClusterID)
+		request.Header.Set("X-Railgrid-Cluster", claims.ClusterID)
+		var call tenant.DelegatedCall
+		reached := false
+		recorder := httptest.NewRecorder()
+		gate.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			reached = true
+			call, _ = tenant.DelegatedCallFrom(r.Context())
+		})).ServeHTTP(recorder, request)
+		return recorder.Code, call, reached
+	}
+
+	status, resolverCall, reached := do("/api/orgs/org/workspaces/workspace/app-auth/user", resolverBody)
+	if status != http.StatusOK || !reached || resolverCall.Capability != "app-auth.users.resolve" || resolverCall.ActionProofNonce == "" {
+		t.Fatalf("resolver status=%d reached=%v call=%+v", status, reached, resolverCall)
+	}
+	status, createCall, reached := do("/api/orgs/org/workspaces/workspace/app-auth/grants", createBody)
+	if status != http.StatusOK || !reached || createCall.Capability != "app-access.grants.manage" ||
+		createCall.ActionProofNonce != resolverCall.ActionProofNonce {
+		t.Fatalf("grant create status=%d reached=%v call=%+v; same proof must cover its distinct capability/path", status, reached, createCall)
+	}
+	for _, replay := range []struct{ path, body string }{
+		{path: "/api/orgs/org/workspaces/workspace/app-auth/user", body: resolverBody},
+		{path: "/api/orgs/org/workspaces/workspace/app-auth/grants", body: createBody},
+	} {
+		status, _, reached = do(replay.path, replay.body)
+		if status != http.StatusUnauthorized || reached {
+			t.Fatalf("replay %s status=%d reached=%v, want unauthorized before handler", replay.path, status, reached)
+		}
 	}
 }
 

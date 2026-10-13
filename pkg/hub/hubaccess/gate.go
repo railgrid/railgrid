@@ -85,9 +85,10 @@ type Gate struct {
 	// ActionProof verifies a request-scoped proof minted at the authenticated
 	// kcp front door. Unlike a delegated ServiceAccount token, it is accepted
 	// only for the App Studio membership flows bound to the original action.
-	ActionProof *actionproof.Verifier
-	Providers   ProviderLookup
-	Grants      GrantReader
+	ActionProof     *actionproof.Verifier
+	ActionProofUses actionproof.UseStore
+	Providers       ProviderLookup
+	Grants          GrantReader
 	// PlatformDefault grants a platform provider the capabilities it declares
 	// in a workspace where no decision was recorded yet (no grant object).
 	// Platform providers are operator-installed and, under the default
@@ -139,6 +140,28 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 				logger.Info("Action-proof hub access refused", "status", status, "reason", reason)
 				writeStatus(w, status, reason)
 				return
+			}
+			if r.Method != http.MethodGet {
+				if g.ActionProofUses == nil {
+					logger.Info("Action-proof use store is unavailable", "status", http.StatusServiceUnavailable)
+					writeStatus(w, http.StatusServiceUnavailable, "action-proof replay protection is unavailable; retry")
+					return
+				}
+				// Route matching and action-proof validation use URL.Path. Use the
+				// same canonical path coordinate and ignore query/fragment data,
+				// which do not change the authorized capability route.
+				consumed, err := g.ActionProofUses.Consume(r.Context(), claims.Nonce, call.Capability,
+					r.Method, r.URL.Path, actionproof.AcceptedUntil(claims))
+				if err != nil {
+					logger.Error(err, "Action-proof use could not be recorded")
+					writeStatus(w, http.StatusServiceUnavailable, "action-proof replay protection is unavailable; retry")
+					return
+				}
+				if !consumed {
+					writeStatus(w, http.StatusUnauthorized, "invalid hub action proof")
+					return
+				}
+				call.ActionProofNonce = claims.Nonce
 			}
 			call.ActionProof = true
 			call.RBACIdentity = claims.RBACIdentity

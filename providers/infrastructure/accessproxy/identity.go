@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -41,6 +43,7 @@ const (
 	maxIdentityTTL             = 15 * time.Minute
 	identityJWKSCacheTTL       = 5 * time.Minute
 	identityJWKSRefreshBackoff = time.Second
+	identityJWKSLoadTimeout    = 5 * time.Second
 	identityClockSkew          = 30 * time.Second
 	maxIdentityCodeBytes       = 4096
 	identityPKCEVerifierMin    = 43
@@ -66,11 +69,13 @@ type identityVerifier struct {
 	timeout     time.Duration
 	now         func() time.Time
 
-	mu                     sync.Mutex
+	mu                     sync.RWMutex
 	keys                   map[string]ed25519.PublicKey
 	keysUntil              time.Time
 	refreshFailureUntil    time.Time
 	unknownKidRefreshUntil time.Time
+	refreshInFlight        bool
+	refreshLoads           singleflight.Group
 }
 
 type identityJWTHeader struct {
@@ -209,6 +214,21 @@ func writeUnauthenticatedJSON(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"error":"unauthenticated"}`))
 }
 
+func writeIdentityExchangeRetryResponse(w http.ResponseWriter, status int) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "app identity exchange is temporarily unavailable; refresh this page to retry", status)
+}
+
+func (p *Proxy) releaseIdentityReturnState(state string) {
+	if state == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.usedStates, state)
+}
+
 func hasExactOrigin(r *http.Request, expected string) bool {
 	if r == nil {
 		return false
@@ -333,14 +353,20 @@ func (p *Proxy) handleIdentityCallback(w http.ResponseWriter, r *http.Request) {
 	response, err := p.verifyClient.Do(request)
 	if err != nil {
 		p.logf("app identity exchange failed: %s is unavailable (host=%s): %v", p.config.hubURL+identityExchangePath, p.config.host, err)
-		p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
-		http.Error(w, "app identity exchange unavailable", http.StatusBadGateway)
+		p.releaseIdentityReturnState(state)
+		writeIdentityExchangeRetryResponse(w, http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusGone {
 		p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
 		p.redirectIdentityToAuthorize(w, r, outcome.Path, outcome.Partitioned)
+		return
+	}
+	if response.StatusCode >= http.StatusInternalServerError && response.StatusCode <= 599 {
+		p.logf("app identity exchange temporarily unavailable: hub answered %d (host=%s)", response.StatusCode, p.config.host)
+		p.releaseIdentityReturnState(state)
+		writeIdentityExchangeRetryResponse(w, http.StatusServiceUnavailable)
 		return
 	}
 	if response.StatusCode != http.StatusOK {
@@ -350,23 +376,25 @@ func (p *Proxy) handleIdentityCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var exchange identityExchangeResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&exchange); err != nil || exchange.Assertion == "" || exchange.ExpiresIn <= 0 || exchange.ExpiresIn > int64(maxIdentityTTL/time.Second) {
-		p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
-		http.Error(w, "invalid app identity exchange", http.StatusBadGateway)
+	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&exchange)
+	if decodeErr != nil || exchange.Assertion == "" || exchange.ExpiresIn <= 0 || exchange.ExpiresIn > int64(maxIdentityTTL/time.Second) {
+		p.logf("app identity exchange returned an invalid response (host=%s): decode-error=%t assertion-empty=%t expires-in=%d", p.config.host, decodeErr != nil, exchange.Assertion == "", exchange.ExpiresIn)
+		p.releaseIdentityReturnState(state)
+		writeIdentityExchangeRetryResponse(w, http.StatusBadGateway)
 		return
 	}
 	claims, err := p.identityVerifier.verify(r.Context(), exchange.Assertion)
 	if err != nil {
-		p.logf("app identity assertion rejected (host=%s): %v", p.config.host, err)
-		p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
-		http.Error(w, "invalid app identity assertion", http.StatusBadGateway)
+		p.logf("app identity assertion verification failed (host=%s): %v", p.config.host, err)
+		p.releaseIdentityReturnState(state)
+		writeIdentityExchangeRetryResponse(w, http.StatusBadGateway)
 		return
 	}
 	expiresAt := time.Unix(claims.ExpiresAt, 0)
 	maxAge := int(expiresAt.Sub(p.now()).Seconds())
 	if maxAge < 1 {
-		p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
-		http.Error(w, "expired app identity assertion", http.StatusBadGateway)
+		p.releaseIdentityReturnState(state)
+		writeIdentityExchangeRetryResponse(w, http.StatusBadGateway)
 		return
 	}
 	p.clearIdentityReturnCookie(w, outcome.CookieName, outcome.Partitioned)
@@ -517,14 +545,6 @@ func (v *identityVerifier) verify(ctx context.Context, assertion string) (identi
 	if strings.ContainsAny(header.KeyID, "\r\n") {
 		return identityJWTClaims{}, errors.New("identity assertion key ID is invalid")
 	}
-	key, err := v.signingKey(ctx, header.KeyID)
-	if err != nil {
-		return identityJWTClaims{}, err
-	}
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(key, []byte(parts[0]+"."+parts[1]), signature) {
-		return identityJWTClaims{}, errors.New("identity assertion signature is invalid")
-	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return identityJWTClaims{}, errors.New("identity assertion payload is malformed")
@@ -533,104 +553,179 @@ func (v *identityVerifier) verify(ctx context.Context, assertion string) (identi
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return identityJWTClaims{}, errors.New("identity assertion claims are malformed")
 	}
+	if err := v.validateClaims(claims); err != nil {
+		return identityJWTClaims{}, err
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return identityJWTClaims{}, errors.New("identity assertion signature is invalid")
+	}
+	key, err := v.signingKey(ctx, header.KeyID)
+	if err != nil {
+		return identityJWTClaims{}, err
+	}
+	if !ed25519.Verify(key, []byte(parts[0]+"."+parts[1]), signature) {
+		return identityJWTClaims{}, errors.New("identity assertion signature is invalid")
+	}
+	return claims, nil
+}
+
+func (v *identityVerifier) validateClaims(claims identityJWTClaims) error {
 	if claims.Issuer != v.issuer || claims.Subject == "" || claims.AppID != v.audience || claims.Environment != v.environment || claims.InstanceUID != v.instanceUID {
-		return identityJWTClaims{}, errors.New("identity assertion scope is invalid")
+		return errors.New("identity assertion scope is invalid")
 	}
 	var audience string
 	if err := json.Unmarshal(claims.Audience, &audience); err != nil {
 		var values []string
 		if arrayErr := json.Unmarshal(claims.Audience, &values); arrayErr != nil {
-			return identityJWTClaims{}, errors.New("identity assertion audience is invalid")
+			return errors.New("identity assertion audience is invalid")
 		}
 		if len(values) != 1 || values[0] != v.audience {
-			return identityJWTClaims{}, errors.New("identity assertion audience does not match")
+			return errors.New("identity assertion audience does not match")
 		}
 	} else if audience != v.audience {
-		return identityJWTClaims{}, errors.New("identity assertion audience does not match")
+		return errors.New("identity assertion audience does not match")
 	}
 	now := v.now()
 	if claims.IssuedAt <= 0 || claims.ExpiresAt <= claims.IssuedAt || claims.ExpiresAt-claims.IssuedAt > int64(maxIdentityTTL/time.Second) || now.Add(identityClockSkew).Before(time.Unix(claims.IssuedAt, 0)) || !now.Before(time.Unix(claims.ExpiresAt, 0)) {
-		return identityJWTClaims{}, errors.New("identity assertion time window is invalid")
+		return errors.New("identity assertion time window is invalid")
 	}
 	if claims.NotBefore != 0 && now.Add(identityClockSkew).Before(time.Unix(claims.NotBefore, 0)) {
-		return identityJWTClaims{}, errors.New("identity assertion is not active yet")
+		return errors.New("identity assertion is not active yet")
 	}
-	return claims, nil
+	return nil
 }
 
 func (v *identityVerifier) signingKey(ctx context.Context, keyID string) (ed25519.PublicKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	now := v.now()
 	v.mu.Lock()
-	defer v.mu.Unlock()
 	key, known := v.keys[keyID]
 	if known && now.Before(v.keysUntil) {
+		v.mu.Unlock()
 		return key, nil
 	}
 	if !known && now.Before(v.unknownKidRefreshUntil) {
+		v.mu.Unlock()
 		return nil, errors.New("identity assertion key ID is unknown")
 	}
-	if now.Before(v.refreshFailureUntil) {
-		return v.cachedKeyAfterRefreshFailure(keyID, now, known)
+	if known && v.refreshInFlight && !now.After(v.keysUntil.Add(maxIdentityTTL)) {
+		v.mu.Unlock()
+		return key, nil
 	}
+	if now.Before(v.refreshFailureUntil) {
+		fallback, fallbackErr := v.cachedKeyAfterRefreshFailureLocked(keyID, now)
+		v.mu.Unlock()
+		return fallback, fallbackErr
+	}
+	v.mu.Unlock()
 
-	requestCtx, cancel := context.WithTimeout(ctx, v.timeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, v.hubURL+identityJWKSPath, nil)
+	keys, err := v.refreshJWKS(ctx)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return v.cachedKeyAfterRefreshFailureLocked(keyID, v.now())
+	}
+	key, ok := keys[keyID]
+	if !ok {
+		v.mu.Lock()
+		v.unknownKidRefreshUntil = v.now().Add(identityJWKSRefreshBackoff)
+		v.mu.Unlock()
+		return nil, errors.New("identity assertion key ID is unknown")
+	}
+	return key, nil
+}
+
+func (v *identityVerifier) refreshJWKS(ctx context.Context) (map[string]ed25519.PublicKey, error) {
+	result := v.refreshLoads.DoChan("jwks", func() (any, error) {
+		v.mu.Lock()
+		v.refreshInFlight = true
+		v.mu.Unlock()
+		timeout := v.timeout
+		if timeout <= 0 || timeout > identityJWKSLoadTimeout {
+			timeout = identityJWKSLoadTimeout
+		}
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+		keys, err := v.fetchJWKS(refreshCtx)
+
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		v.refreshInFlight = false
+		if err != nil {
+			v.refreshFailureUntil = v.now().Add(identityJWKSRefreshBackoff)
+			return nil, err
+		}
+		v.keys = keys
+		v.keysUntil = v.now().Add(identityJWKSCacheTTL)
+		v.refreshFailureUntil = time.Time{}
+		v.unknownKidRefreshUntil = time.Time{}
+		return keys, nil
+	})
+	select {
+	case loaded := <-result:
+		if loaded.Err != nil {
+			return nil, loaded.Err
+		}
+		keys, ok := loaded.Val.(map[string]ed25519.PublicKey)
+		if !ok {
+			return nil, errors.New("identity JWKS refresh returned an invalid key set")
+		}
+		return keys, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (v *identityVerifier) fetchJWKS(ctx context.Context) (map[string]ed25519.PublicKey, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, v.hubURL+identityJWKSPath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create identity JWKS request: %w", err)
 	}
 	response, err := v.client.Do(request)
 	if err != nil {
-		return v.failJWKSRefresh(keyID, known)
+		return nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return v.failJWKSRefresh(keyID, known)
+		return nil, fmt.Errorf("identity JWKS endpoint returned HTTP %d", response.StatusCode)
 	}
 	var document identityJWKSet
-	if err := json.NewDecoder(io.LimitReader(response.Body, maxIdentityJWKSBytes)).Decode(&document); err != nil || len(document.Keys) == 0 || len(document.Keys) > maxIdentityJWKSKeys {
-		return v.failJWKSRefresh(keyID, known)
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxIdentityJWKSBytes)).Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode identity JWKS: %w", err)
+	}
+	if len(document.Keys) == 0 || len(document.Keys) > maxIdentityJWKSKeys {
+		return nil, errors.New("identity JWKS has an invalid key count")
 	}
 	keys := make(map[string]ed25519.PublicKey, len(document.Keys))
 	for _, jwk := range document.Keys {
 		if jwk.KeyType != "OKP" || jwk.Curve != "Ed25519" || jwk.Use != "sig" || jwk.Algorithm != "EdDSA" || strings.TrimSpace(jwk.KeyID) == "" || strings.ContainsAny(jwk.KeyID, "\r\n") {
-			return v.failJWKSRefresh(keyID, known)
+			return nil, errors.New("identity JWKS contains an invalid key")
 		}
 		publicKey, err := base64.RawURLEncoding.DecodeString(jwk.X)
 		if err != nil || len(publicKey) != ed25519.PublicKeySize {
-			return v.failJWKSRefresh(keyID, known)
+			return nil, errors.New("identity JWKS contains an invalid public key")
 		}
 		if _, duplicate := keys[jwk.KeyID]; duplicate {
-			return v.failJWKSRefresh(keyID, known)
+			return nil, errors.New("identity JWKS contains a duplicate key ID")
 		}
 		keys[jwk.KeyID] = ed25519.PublicKey(publicKey)
 	}
-	v.keys = keys
-	v.keysUntil = v.now().Add(identityJWKSCacheTTL)
-	v.refreshFailureUntil = time.Time{}
-	key, ok := keys[keyID]
-	if !ok {
-		v.unknownKidRefreshUntil = v.now().Add(identityJWKSRefreshBackoff)
-		return nil, errors.New("identity assertion key ID is unknown")
-	}
-	v.unknownKidRefreshUntil = time.Time{}
-	return key, nil
+	return keys, nil
 }
 
-// failJWKSRefresh briefly suppresses repeated hub requests during an outage.
-// A known key may remain usable through one maximum assertion lifetime after
-// the last successful JWKS fetch; the JWT's own exp is still checked on every
-// verification. Unknown kids never inherit trust from a cached key set.
-func (v *identityVerifier) failJWKSRefresh(keyID string, known bool) (ed25519.PublicKey, error) {
-	v.refreshFailureUntil = v.now().Add(identityJWKSRefreshBackoff)
-	return v.cachedKeyAfterRefreshFailure(keyID, v.now(), known)
-}
-
-func (v *identityVerifier) cachedKeyAfterRefreshFailure(keyID string, now time.Time, known bool) (ed25519.PublicKey, error) {
+// cachedKeyAfterRefreshFailureLocked retains a known verification key only
+// through one maximum assertion lifetime after its last successful JWKS fetch.
+// Callers must hold v.mu.
+func (v *identityVerifier) cachedKeyAfterRefreshFailureLocked(keyID string, now time.Time) (ed25519.PublicKey, error) {
+	key, known := v.keys[keyID]
 	if known && !now.After(v.keysUntil.Add(maxIdentityTTL)) {
-		if key, ok := v.keys[keyID]; ok {
-			return key, nil
-		}
+		return key, nil
 	}
 	if !known {
 		return nil, errors.New("identity assertion key ID is unknown")

@@ -15,12 +15,15 @@ import (
 	"testing"
 
 	authnv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
@@ -194,5 +197,142 @@ func TestActionProofAppAuthGrantRejectsMalformedBody(t *testing.T) {
 		if _, _, err := actionProofAppAuthGrant(request); err == nil {
 			t.Errorf("accepted malformed authentication-grant body %q", body)
 		}
+	}
+}
+
+func TestBindAppAccessTargetAllowsOnlySafeMissingRuntimeProofs(t *testing.T) {
+	projectGVR := schema.GroupVersionResource{Group: "ai.railgrid.ai", Version: "v1alpha1", Resource: "projects"}
+	instanceGVR := schema.GroupVersionResource{Group: "infrastructure.railgrid.ai", Version: "v1alpha1", Resource: "instances"}
+	projectWithBinding := func(environment, binding string) *unstructured.Unstructured {
+		resourceBinding := map[string]any{
+			"name": binding, "provider": "app-studio", "kind": "providerResource",
+			"resourceRef": map[string]any{
+				"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Instance",
+				"resource": "instances", "name": "demo-" + binding,
+			},
+		}
+		env := map[string]any{"name": environment, "bindings": []any{resourceBinding}}
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project",
+			"metadata": map[string]any{"name": "demo", "uid": "project-uid"},
+			"spec":     map[string]any{"environments": []any{env}},
+		}}
+	}
+	instance := func(name, ownerName, ownerUID string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Instance",
+			"metadata": map[string]any{
+				"name": name, "uid": "instance-uid",
+				"labels": map[string]any{"app-studio.railgrid.ai/project": "demo"},
+				"ownerReferences": []any{map[string]any{
+					"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project", "name": ownerName, "uid": ownerUID,
+				}},
+			},
+		}}
+	}
+	makeRoute := func(verb string) dataplane.SubresourceRequest {
+		return dataplane.SubresourceRequest{
+			Request: dataplane.Request{ClusterID: "tenant1", Resource: "projects", Name: "demo", Verb: verb},
+			Group:   "ai.railgrid.ai", APIVersion: "v1alpha1",
+		}
+	}
+	newClaims := func(operation, method string) actionproof.Claims {
+		return actionproof.Claims{
+			Method:             method,
+			AppAccessOperation: operation, AppAccessGroup: "infrastructure.railgrid.ai", AppAccessResource: "instances",
+			AppAccessName: "caller-chosen", AppAccessUID: "caller-uid", AppAccessProject: "demo",
+			AppAccessProjectUID: "caller-project-uid", AppAccessUser: "user-bob", AppAccessGrant: "grant-bob",
+		}
+	}
+	newClient := func(objects ...runtime.Object) dynamic.Interface {
+		return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+			projectGVR: "ProjectList", instanceGVR: "InstanceList",
+		}, objects...)
+	}
+	duplicateEnvironmentProject := projectWithBinding("production", "prod")
+	duplicateEnvironmentSpec := duplicateEnvironmentProject.Object["spec"].(map[string]any)
+	duplicateEnvironmentSpec["environments"] = append([]any{map[string]any{"name": "production"}}, duplicateEnvironmentSpec["environments"].([]any)...)
+	malformedEnvironmentProject := projectWithBinding("production", "prod")
+	malformedEnvironment := malformedEnvironmentProject.Object["spec"].(map[string]any)["environments"].([]any)[0].(map[string]any)
+	malformedEnvironment["name"] = " production "
+
+	for _, tc := range []struct {
+		name         string
+		verb         string
+		operation    string
+		sourceMethod string
+		wantName     string
+		project      *unstructured.Unstructured
+		instance     *unstructured.Unstructured
+		apiFailure   bool
+		missingOwner bool
+		wantCleared  bool
+		wantError    bool
+	}{
+		{name: "live production binding", verb: "publishing", operation: "list", sourceMethod: http.MethodGet, wantName: "demo-prod", project: projectWithBinding("production", "prod"), instance: instance("demo-prod", "demo", "project-uid")},
+		{name: "live development binding", verb: "preview", operation: "list", sourceMethod: http.MethodGet, wantName: "demo-dev", project: projectWithBinding("development", "dev"), instance: instance("demo-dev", "demo", "project-uid")},
+		{name: "new project without runtime", verb: "publishing", operation: "list", sourceMethod: http.MethodGet, project: &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project", "metadata": map[string]any{"name": "demo", "uid": "project-uid"},
+		}}, wantCleared: true},
+		{name: "missing production instance reset", verb: "publishing", operation: "reset", sourceMethod: http.MethodDelete, project: projectWithBinding("production", "prod"), wantCleared: true},
+		{name: "missing development instance read", verb: "preview", operation: "list", sourceMethod: http.MethodGet, project: projectWithBinding("development", "dev"), wantCleared: true},
+		{name: "preview policy POST with missing runtime reaches provider without broker target", verb: "preview", operation: "list", sourceMethod: http.MethodPost, project: projectWithBinding("development", "dev"), wantCleared: true},
+		{name: "publishing policy POST with missing runtime reaches provider without broker target", verb: "publishing", operation: "list", sourceMethod: http.MethodPost, project: projectWithBinding("production", "prod"), wantCleared: true},
+		{name: "duplicate target environments fail closed", verb: "publishing", operation: "list", sourceMethod: http.MethodPost, project: duplicateEnvironmentProject, wantError: true},
+		{name: "malformed environment name fails closed", verb: "publishing", operation: "list", sourceMethod: http.MethodPost, project: malformedEnvironmentProject, wantError: true},
+		{name: "foreign owner reference cannot back a write", verb: "publishing", operation: "list", sourceMethod: http.MethodPost, project: projectWithBinding("production", "prod"), instance: instance("demo-prod", "other", "other-project-uid"), wantError: true},
+		{name: "missing owner reference cannot back a write", verb: "preview", operation: "list", sourceMethod: http.MethodPost, project: projectWithBinding("development", "dev"), instance: instance("demo-dev", "demo", "project-uid"), missingOwner: true, wantError: true},
+		{name: "owner reference without matching project uid cannot back a write", verb: "publishing", operation: "list", sourceMethod: http.MethodPost, project: projectWithBinding("production", "prod"), instance: instance("demo-prod", "demo", "old-project-uid"), wantError: true},
+		{name: "instance API failure fails closed on write", verb: "publishing", operation: "list", sourceMethod: http.MethodPost, project: projectWithBinding("production", "prod"), apiFailure: true, wantError: true},
+		{name: "grant mutation cannot omit missing target", verb: "authentication-grants", operation: "create", sourceMethod: http.MethodPost, project: projectWithBinding("production", "prod"), wantError: true},
+		{name: "grant mutation rejects forged owner reference", verb: "authentication-grants", operation: "create", sourceMethod: http.MethodPost, project: projectWithBinding("production", "prod"), instance: instance("demo-prod", "other", "other-project-uid"), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := []runtime.Object{tc.project}
+			if tc.instance != nil {
+				if tc.missingOwner {
+					unstructured.RemoveNestedField(tc.instance.Object, "metadata", "ownerReferences")
+				}
+				objects = append(objects, tc.instance)
+			}
+			client := newClient(objects...)
+			if tc.apiFailure {
+				client.(*fake.FakeDynamicClient).PrependReactor("get", "instances", func(ktesting.Action) (bool, runtime.Object, error) {
+					return true, nil, errors.New("temporary API failure")
+				})
+			}
+			claims := newClaims(tc.operation, tc.sourceMethod)
+			err := bindAppAccessTarget(context.Background(), client, makeRoute(tc.verb), &claims)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("bind error=%v, wantError=%v", err, tc.wantError)
+			}
+			if tc.wantCleared {
+				if err != nil || claims.AppAccessOperation != "" || claims.AppAccessGroup != "" || claims.AppAccessResource != "" ||
+					claims.AppAccessName != "" || claims.AppAccessUID != "" || claims.AppAccessProject != "" ||
+					claims.AppAccessProjectUID != "" || claims.AppAccessUser != "" || claims.AppAccessGrant != "" {
+					t.Fatalf("missing runtime did not clear the entire broker target: claims=%+v err=%v", claims, err)
+				}
+				return
+			}
+			if tc.wantError {
+				return
+			}
+			if claims.AppAccessName != tc.wantName || claims.AppAccessUID != "instance-uid" || claims.AppAccessProjectUID != "project-uid" {
+				t.Fatalf("did not bind persisted production Instance identity: %+v", claims)
+			}
+		})
+	}
+
+	// A not-found response for a resource endpoint is not proof that the
+	// Project's named runtime is absent. It has no object identity details and
+	// must not be downgraded to a no-broker proof.
+	malformedAPIClient := newClient(projectWithBinding("production", "prod"))
+	malformedAPIClient.(*fake.FakeDynamicClient).PrependReactor("get", "instances", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "instances"}, "")
+	})
+	claims := newClaims("list", http.MethodGet)
+	claims.Method = http.MethodPost
+	if err := bindAppAccessTarget(context.Background(), malformedAPIClient, makeRoute("publishing"), &claims); err == nil {
+		t.Fatal("resource-level not found was treated as an absent runtime")
 	}
 }

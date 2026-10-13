@@ -49,6 +49,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/actionproof"
 	"github.com/railgrid/railgrid/pkg/hub/admin"
 	"github.com/railgrid/railgrid/pkg/hub/appauth"
 	"github.com/railgrid/railgrid/pkg/hub/bootstrap"
@@ -387,6 +388,7 @@ func (s *Server) Run(ctx context.Context) error {
 		previewBrowserSessionStore *browsersession.Store
 		appCodeStore               *sharedstore.AppCodeStore
 		previewAppCodeStore        *sharedstore.AppCodeStore
+		actionProofUses            actionproof.UseStore
 		sharedStores               []*sharedstore.Store
 	)
 	if kcpConfig != nil {
@@ -406,11 +408,16 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating isolated preview app-code store: %w", err)
 		}
+		proofUseStore, err := sharedstore.New(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace, sharedstore.ActionProofUseKind)
+		if err != nil {
+			return fmt.Errorf("creating shared action-proof redemption store: %w", err)
+		}
+		actionProofUses = sharedstore.NewActionProofUseStore(proofUseStore)
 		browserSessionStore = browsersession.New(browsersession.Config{Backend: sessionBackend})
 		previewBrowserSessionStore = browsersession.New(browsersession.Config{Backend: previewSessionBackend})
 		sharedStores = append(sharedStores,
 			sessionBackend.Store(), appCodeStore.Store(),
-			previewSessionBackend.Store(), previewAppCodeStore.Store(),
+			previewSessionBackend.Store(), previewAppCodeStore.Store(), proofUseStore,
 		)
 		logger.Info("Browser sessions and app-access codes are shared across replicas",
 			"workspace", kcppaths.SystemControllers, "namespace", kcp.HubSystemNamespace)
@@ -880,6 +887,7 @@ func (s *Server) Run(ctx context.Context) error {
 			hubAccessGrants := hubaccess.NewStore(userClient)
 			hubAccessGate := &hubaccess.Gate{
 				ActionProof:     actionProofVerifier,
+				ActionProofUses: actionProofUses,
 				Human:           userResolver,
 				Verify:          catalogWorkloads.verifyHubAccessCaller,
 				Providers:       providerRegistry,

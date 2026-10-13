@@ -1145,8 +1145,8 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			if gateEnv == nil {
 				t.Fatal("seed has no gateDeployment component")
 			}
-			if got := containerField(t, gateDeployment, "imagePullPolicy"); got != "${railgrid.accessProxyImagePullPolicy}" {
-				t.Errorf("gate imagePullPolicy = %q, want the platform pull-policy token", got)
+			if got := containerField(t, gateDeployment, "imagePullPolicy"); got != "" {
+				t.Errorf("gate imagePullPolicy = %q, want Kubernetes image-based defaulting", got)
 			}
 			wantEnv := map[string]string{
 				"RAILGRID_ACCESS_PROXY_MODE": "${schema.spec.access}",
@@ -1210,6 +1210,9 @@ func containerField(t *testing.T, deployment map[string]any, field string) strin
 		t.Fatal("deployment has no containers")
 	}
 	container, _ := containers[0].(map[string]any)
+	if _, present := container[field]; !present {
+		return ""
+	}
 	value, ok := container[field].(string)
 	if !ok {
 		t.Fatalf("first deployment container has no string %s field", field)

@@ -17,6 +17,7 @@ limitations under the License.
 package accessproxy
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,8 +56,11 @@ type identityFakeHub struct {
 	fail                  error
 	assertion             string
 	exchanges             []identityExchangeRequest
+	exchangeStatuses      []int
+	loseExchangeReply     bool
 	jwksCalls             int
 	jwksAttempts          int
+	jwksStatuses          []int
 	jwksOverride          *identityJWKSet
 	exchangeAuthorization []string
 }
@@ -102,6 +106,11 @@ func (f *identityFakeHub) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == identityJWKSPath:
+		if len(f.jwksStatuses) != 0 {
+			status := f.jwksStatuses[0]
+			f.jwksStatuses = f.jwksStatuses[1:]
+			return jsonResponse(status, map[string]string{"error": "temporarily unavailable"}), nil
+		}
 		f.jwksCalls++
 		if f.jwksOverride != nil {
 			return jsonResponse(http.StatusOK, f.jwksOverride), nil
@@ -114,6 +123,11 @@ func (f *identityFakeHub) RoundTrip(r *http.Request) (*http.Response, error) {
 			return jsonResponse(http.StatusBadRequest, map[string]string{}), nil
 		}
 		f.exchanges = append(f.exchanges, request)
+		if len(f.exchangeStatuses) != 0 {
+			status := f.exchangeStatuses[0]
+			f.exchangeStatuses = f.exchangeStatuses[1:]
+			return jsonResponse(status, map[string]string{"error": "temporarily unavailable"}), nil
+		}
 		if !validIdentityCodeVerifier(request.CodeVerifier) {
 			return jsonResponse(http.StatusBadRequest, map[string]string{}), nil
 		}
@@ -123,6 +137,10 @@ func (f *identityFakeHub) RoundTrip(r *http.Request) (*http.Response, error) {
 		f.used = true
 		if f.codeChallenge != "" && subtle.ConstantTimeCompare([]byte(identityCodeChallenge(request.CodeVerifier)), []byte(f.codeChallenge)) != 1 {
 			return jsonResponse(http.StatusGone, map[string]string{}), nil
+		}
+		if f.loseExchangeReply {
+			f.loseExchangeReply = false
+			return nil, errors.New("simulated connection loss after identity code commit")
 		}
 		return jsonResponse(http.StatusOK, map[string]any{"assertion": f.assertion, "expiresIn": 900, "user": map[string]string{"name": "Riley"}}), nil
 	default:
@@ -134,6 +152,24 @@ func (f *identityFakeHub) failWith(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fail = err
+}
+
+func (f *identityFakeHub) failNextExchangeWithStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exchangeStatuses = append(f.exchangeStatuses, status)
+}
+
+func (f *identityFakeHub) loseNextExchangeReplyAfterCommit() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loseExchangeReply = true
+}
+
+func (f *identityFakeHub) failNextJWKSWithStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksStatuses = append(f.jwksStatuses, status)
 }
 
 func (f *identityFakeHub) exchangeCount() int {
@@ -616,6 +652,151 @@ func TestIdentityCallbackRequiresCookieVerifierAndRejectsWrongVerifier(t *testin
 	})
 }
 
+func TestIdentityCallbackRetriesTransientHubFailureWithOriginalState(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := newIdentityFakeHub(t, now)
+	p := newIdentityProxy(t, identityConfig(upstream.URL, hub))
+	p.now = func() time.Time { return now }
+	p.identityVerifier.now = p.now
+	_, stateCookie, state := startIdentityLogin(t, p, "/retry")
+	stateCookieValue := stateCookie.Value
+	statePayload, validStateCookie := decodeReturnState(stateCookie.Value)
+	if !validStateCookie {
+		t.Fatal("could not decode original identity state cookie")
+	}
+	hub.failNextExchangeWithStatus(http.StatusServiceUnavailable)
+	callbackURL := IdentityCallbackPath + "?code=" + url.QueryEscape(hub.code) + "&state=" + url.QueryEscape(state)
+
+	first := doRequest(p, appRequest(callbackURL, stateCookie))
+	if first.Code != http.StatusServiceUnavailable || first.Header().Get("Retry-After") != "1" ||
+		!strings.Contains(first.Body.String(), "refresh this page to retry") {
+		t.Fatalf("first transient callback = %d retry-after=%q body=%q", first.Code, first.Header().Get("Retry-After"), first.Body.String())
+	}
+	if first.Header().Get("Location") != "" {
+		t.Fatalf("transient callback redirected automatically to %q", first.Header().Get("Location"))
+	}
+	for _, cookie := range first.Result().Cookies() {
+		if cookie.Name == identityReturnCookieName(state) && cookie.MaxAge < 0 {
+			t.Fatal("transient callback cleared the state cookie needed for retry")
+		}
+	}
+	if stateCookie.Value != stateCookieValue {
+		t.Fatal("test state cookie value changed before retry")
+	}
+	p.mu.Lock()
+	_, reservedAfterFailure := p.usedStates[state]
+	p.mu.Unlock()
+	if reservedAfterFailure {
+		t.Fatal("transient callback left the local state reservation wedged")
+	}
+
+	second := doRequest(p, appRequest(callbackURL, stateCookie))
+	if second.Code != http.StatusFound || second.Header().Get("Location") != "/retry" {
+		t.Fatalf("callback retry with original state = %d location=%q body=%q", second.Code, second.Header().Get("Location"), second.Body.String())
+	}
+	if len(hub.exchanges) != 2 || hub.exchanges[0].CodeVerifier != hub.exchanges[1].CodeVerifier ||
+		hub.exchanges[0].CodeVerifier != statePayload.CodeVerifier {
+		t.Fatalf("retry did not reuse the original verifier: %+v", hub.exchanges)
+	}
+
+	replay := doRequest(p, appRequest(callbackURL, stateCookie))
+	if replay.Code != http.StatusBadRequest {
+		t.Fatalf("successful callback replay = %d body=%q, want 400", replay.Code, replay.Body.String())
+	}
+	if got := hub.exchangeCount(); got != 2 {
+		t.Fatalf("exchange count after retry and replay = %d, want 2", got)
+	}
+}
+
+func TestIdentityCallbackUnknownCommitRetriesToFreshAuthorize(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := newIdentityFakeHub(t, now)
+	p := newIdentityProxy(t, identityConfig(upstream.URL, hub))
+	p.now = func() time.Time { return now }
+	p.identityVerifier.now = p.now
+	_, stateCookie, state := startIdentityLogin(t, p, "/retry-after-commit")
+	hub.loseNextExchangeReplyAfterCommit()
+	callbackURL := IdentityCallbackPath + "?code=" + url.QueryEscape(hub.code) + "&state=" + url.QueryEscape(state)
+
+	first := doRequest(p, appRequest(callbackURL, stateCookie))
+	if first.Code != http.StatusBadGateway || first.Header().Get("Retry-After") != "1" || first.Header().Get("Location") != "" {
+		t.Fatalf("lost exchange response = %d retry-after=%q location=%q body=%q", first.Code, first.Header().Get("Retry-After"), first.Header().Get("Location"), first.Body.String())
+	}
+	if !hub.used {
+		t.Fatal("fake hub did not commit the code before dropping the response")
+	}
+	for _, cookie := range first.Result().Cookies() {
+		if cookie.Name == identityReturnCookieName(state) && cookie.MaxAge < 0 {
+			t.Fatal("ambiguous transport failure cleared the original state cookie")
+		}
+	}
+
+	second := doRequest(p, appRequest(callbackURL, stateCookie))
+	if second.Code != http.StatusFound || !strings.Contains(second.Header().Get("Location"), identityAuthorizePath) {
+		t.Fatalf("retry after unknown commit = %d location=%q body=%q; want fresh authorize after hub 410", second.Code, second.Header().Get("Location"), second.Body.String())
+	}
+	clearedOldCookie := false
+	for _, cookie := range second.Result().Cookies() {
+		if cookie.Name == identityReturnCookieName(state) && cookie.MaxAge < 0 {
+			clearedOldCookie = true
+		}
+	}
+	if !clearedOldCookie {
+		t.Fatal("410 retry did not clear the consumed state's cookie")
+	}
+	if got := hub.exchangeCount(); got != 2 {
+		t.Fatalf("exchange count after unknown commit retry = %d, want 2", got)
+	}
+}
+
+func TestIdentityCallbackRetriesPostCommitJWKSFailureToFreshAuthorize(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := newIdentityFakeHub(t, now)
+	p := newIdentityProxy(t, identityConfig(upstream.URL, hub))
+	p.now = func() time.Time { return now }
+	p.identityVerifier.now = p.now
+	_, stateCookie, state := startIdentityLogin(t, p, "/retry-jwks")
+	hub.failNextJWKSWithStatus(http.StatusServiceUnavailable)
+	callbackURL := IdentityCallbackPath + "?code=" + url.QueryEscape(hub.code) + "&state=" + url.QueryEscape(state)
+
+	first := doRequest(p, appRequest(callbackURL, stateCookie))
+	if first.Code != http.StatusBadGateway || first.Header().Get("Retry-After") != "1" || first.Header().Get("Location") != "" ||
+		!strings.Contains(first.Body.String(), "refresh this page to retry") {
+		t.Fatalf("post-commit JWKS failure = %d retry-after=%q location=%q body=%q", first.Code, first.Header().Get("Retry-After"), first.Header().Get("Location"), first.Body.String())
+	}
+	if !hub.used || hub.exchangeCount() != 1 || hub.jwksAttempts != 1 {
+		t.Fatalf("post-commit failure did not reach exchange/JWKS in order: used=%v exchanges=%d jwks=%d", hub.used, hub.exchangeCount(), hub.jwksAttempts)
+	}
+	for _, cookie := range first.Result().Cookies() {
+		if cookie.Name == identityReturnCookieName(state) && cookie.MaxAge < 0 {
+			t.Fatal("post-commit verifier failure cleared the original state cookie")
+		}
+		if cookie.Name == IdentitySessionCookieName && cookie.MaxAge >= 0 {
+			t.Fatal("post-commit verifier failure issued an identity session cookie")
+		}
+	}
+
+	second := doRequest(p, appRequest(callbackURL, stateCookie))
+	if second.Code != http.StatusFound || !strings.Contains(second.Header().Get("Location"), identityAuthorizePath) {
+		t.Fatalf("retry after post-commit JWKS failure = %d location=%q body=%q; want fresh authorize after hub 410", second.Code, second.Header().Get("Location"), second.Body.String())
+	}
+	clearedOldCookie := false
+	for _, cookie := range second.Result().Cookies() {
+		if cookie.Name == identityReturnCookieName(state) && cookie.MaxAge < 0 {
+			clearedOldCookie = true
+		}
+	}
+	if !clearedOldCookie {
+		t.Fatal("410 retry after post-commit JWKS failure did not clear the consumed state's cookie")
+	}
+	if got := hub.exchangeCount(); got != 2 {
+		t.Fatalf("exchange count after post-commit JWKS retry = %d, want 2", got)
+	}
+}
+
 func TestIdentityAssertionOnlyReachesAPIAndReplacesSpoofedHeader(t *testing.T) {
 	upstream, record := newUpstream(t, nil)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -864,6 +1045,202 @@ func TestStaleKnownIdentityKeySupportsFreshAssertionUntilItsExpiry(t *testing.T)
 	}
 }
 
+func TestIdentityVerifierKeepsCachedKeyAvailableDuringJWKSRefresh(t *testing.T) {
+	start := time.Now().UTC().Truncate(time.Second)
+	now := start
+	hub := newIdentityFakeHub(t, start)
+	transport := newBlockingJWKSRoundTripper(hub)
+	verifier := &identityVerifier{
+		issuer: testAuthIssuer, audience: testAuthAppID, environment: testAuthEnv,
+		instanceUID: testAuthInstanceUID, hubURL: testHubURL,
+		client: &http.Client{Transport: transport}, timeout: time.Second,
+		now: func() time.Time { return now },
+	}
+	if _, err := verifier.signingKey(context.Background(), hub.kid); err != nil {
+		t.Fatalf("prime JWKS cache: %v", err)
+	}
+	now = start.Add(identityJWKSCacheTTL + time.Second)
+	transport.setBlocked(true)
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := verifier.signingKey(context.Background(), hub.kid)
+		refreshDone <- err
+	}()
+	<-transport.started
+
+	knownDone := make(chan error, 1)
+	go func() {
+		_, err := verifier.signingKey(context.Background(), hub.kid)
+		knownDone <- err
+	}()
+	select {
+	case err := <-knownDone:
+		if err != nil {
+			t.Fatalf("cached key failed during refresh: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("cached-key lookup blocked behind the JWKS HTTP request")
+	}
+	close(transport.release)
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("JWKS refresh: %v", err)
+	}
+}
+
+func TestIdentityVerifierRefreshIsIndependentOfFirstCallerCancellation(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := newIdentityFakeHub(t, now)
+	transport := newBlockingJWKSRoundTripper(hub)
+	transport.setBlocked(true)
+	verifier := &identityVerifier{
+		issuer: testAuthIssuer, audience: testAuthAppID, environment: testAuthEnv,
+		instanceUID: testAuthInstanceUID, hubURL: testHubURL,
+		client: &http.Client{Transport: transport}, timeout: time.Second,
+		now: func() time.Time { return now },
+	}
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := verifier.verify(firstCtx, hub.assertion)
+		firstDone <- err
+	}()
+	<-transport.started
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := verifier.verify(context.Background(), hub.assertion)
+		secondDone <- err
+	}()
+	<-secondStarted
+	time.Sleep(25 * time.Millisecond)
+	cancelFirst()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first verifier caller error = %v, want context canceled", err)
+	}
+	select {
+	case err := <-secondDone:
+		t.Fatalf("first caller cancellation ended the shared refresh: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(transport.release)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second verifier caller did not receive the refreshed key: %v", err)
+	}
+	if got := transport.attemptCount(); got != 1 {
+		t.Fatalf("coalesced verification made %d JWKS requests, want one", got)
+	}
+}
+
+func TestIdentityVerifierChecksClaimsBeforeFetchingUnknownKey(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := newIdentityFakeHub(t, now)
+	verifier := &identityVerifier{
+		issuer: testAuthIssuer, audience: testAuthAppID, environment: testAuthEnv,
+		instanceUID: testAuthInstanceUID, hubURL: testHubURL,
+		client: &http.Client{Transport: hub}, timeout: time.Second, now: func() time.Time { return now },
+	}
+	claims := identityJWTClaims{
+		Issuer: "https://attacker.example/auth/apps/identity", Subject: "valid-shaped-user",
+		IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Minute).Unix(), AppID: testAuthAppID,
+		Environment: testAuthEnv, InstanceUID: testAuthInstanceUID,
+	}
+	assertion := signIdentityAssertion(t, hub.private, claims, testAuthAppID, "unknown-key")
+	if _, err := verifier.verify(context.Background(), assertion); err == nil {
+		t.Fatal("wrong issuer assertion was accepted")
+	}
+	hub.mu.Lock()
+	attempts := hub.jwksAttempts
+	hub.mu.Unlock()
+	if attempts != 0 {
+		t.Fatalf("invalid claims triggered %d JWKS requests, want none", attempts)
+	}
+}
+
+func TestIdentityVerifierChecksSignatureEncodingBeforeFetchingUnknownKey(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	hub := newIdentityFakeHub(t, now)
+	verifier := &identityVerifier{
+		issuer: testAuthIssuer, audience: testAuthAppID, environment: testAuthEnv,
+		instanceUID: testAuthInstanceUID, hubURL: testHubURL,
+		client: &http.Client{Transport: hub}, timeout: time.Second, now: func() time.Time { return now },
+	}
+	claims := identityJWTClaims{
+		Issuer: testAuthIssuer, Subject: "valid-shaped-user", IssuedAt: now.Unix(),
+		ExpiresAt: now.Add(time.Minute).Unix(), AppID: testAuthAppID,
+		Environment: testAuthEnv, InstanceUID: testAuthInstanceUID,
+	}
+	validShape := signIdentityAssertion(t, hub.private, claims, testAuthAppID, "unknown-key")
+	for name, signature := range map[string]string{
+		"invalid base64": "!",
+		"wrong length":   base64.RawURLEncoding.EncodeToString([]byte("short")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			parts := strings.Split(validShape, ".")
+			parts[2] = signature
+			if _, err := verifier.verify(context.Background(), strings.Join(parts, ".")); err == nil {
+				t.Fatal("malformed signature was accepted")
+			}
+			hub.mu.Lock()
+			attempts := hub.jwksAttempts
+			hub.mu.Unlock()
+			if attempts != 0 {
+				t.Fatalf("malformed signature triggered %d JWKS requests, want none", attempts)
+			}
+		})
+	}
+}
+
+type blockingJWKSRoundTripper struct {
+	mu      sync.Mutex
+	block   bool
+	attempt int
+	hub     *identityFakeHub
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingJWKSRoundTripper(hub *identityFakeHub) *blockingJWKSRoundTripper {
+	return &blockingJWKSRoundTripper{
+		hub: hub, started: make(chan struct{}), release: make(chan struct{}),
+	}
+}
+
+func (r *blockingJWKSRoundTripper) setBlocked(blocked bool) {
+	r.mu.Lock()
+	r.block = blocked
+	r.mu.Unlock()
+}
+
+func (r *blockingJWKSRoundTripper) attemptCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attempt
+}
+
+func (r *blockingJWKSRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.attempt++
+	blocked := r.block
+	r.mu.Unlock()
+	if blocked {
+		r.once.Do(func() { close(r.started) })
+		select {
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		case <-r.release:
+		}
+	}
+	return jsonResponse(http.StatusOK, identityJWKSet{Keys: []identityJWK{{
+		KeyType: "OKP", Curve: "Ed25519", Use: "sig", Algorithm: "EdDSA",
+		KeyID: r.hub.kid, X: base64.RawURLEncoding.EncodeToString(r.hub.public),
+	}}}), nil
+}
+
 func TestIdentityLogoutRequiresExactOriginAndOnlyClearsLocalSession(t *testing.T) {
 	upstream, _ := newUpstream(t, nil)
 	now := time.Now().UTC().Truncate(time.Second)
@@ -938,6 +1315,7 @@ func TestRailgridAuthConfigurationFailsClosedWhenRequiredValuesAreMissing(t *tes
 		"mismatched environment":      func(config *Config) { config.AuthEnvironment = "production" },
 		"no public hub":               func(config *Config) { config.HubPublicURL = "" },
 		"hub base path":               func(config *Config) { config.HubURL += "/proxy" },
+		"plain HTTP non-loopback hub": func(config *Config) { config.HubURL = "http://hub.internal.test" },
 		"public hub query":            func(config *Config) { config.HubPublicURL += "?tenant=wrong" },
 		"noncanonical origin":         func(config *Config) { config.AuthOrigin += "/" },
 	} {
@@ -949,6 +1327,16 @@ func TestRailgridAuthConfigurationFailsClosedWhenRequiredValuesAreMissing(t *tes
 				t.Fatal("invalid auth configuration was accepted")
 			}
 		})
+	}
+}
+
+func TestRailgridAuthAllowsLoopbackHTTPHub(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	config := identityConfig(upstream.URL, newIdentityFakeHub(t, time.Now()))
+	config.HubURL = "http://127.0.0.1:9443"
+	config.AllowNonClusterTargets = true
+	if _, err := New(config); err != nil {
+		t.Fatalf("loopback HTTP hub should remain usable for local development: %v", err)
 	}
 }
 

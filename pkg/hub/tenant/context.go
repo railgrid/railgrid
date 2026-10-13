@@ -141,6 +141,9 @@ type DelegatedCall struct {
 	// ServiceAccount token. The tenant resolver must prefer this verified
 	// person over the provider's bearer identity.
 	ActionProof bool
+	// ActionProofNonce identifies the proof after its mutating capability use
+	// was durably claimed by the hub. It is empty for replayable GET calls.
+	ActionProofNonce string
 }
 
 type delegatedCallKey struct{}

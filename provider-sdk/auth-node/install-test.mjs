@@ -25,6 +25,7 @@ try {
     'pack', '--json', '--pack-destination', scratch,
   ], { cwd: packageDir, encoding: 'utf8' }));
   const metadata = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'));
+  assert.equal(metadata.name, '@railgrid/auth-node');
   assert.equal(artifact.name, metadata.name);
   assert.equal(artifact.version, metadata.version);
 

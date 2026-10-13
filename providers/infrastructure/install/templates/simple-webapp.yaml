@@ -407,7 +407,6 @@ spec:
                 containers:
                   - name: gate
                     image: ${railgrid.accessProxyImage}
-                    imagePullPolicy: ${railgrid.accessProxyImagePullPolicy}
                     env:
                       - name: RAILGRID_ACCESS_PROXY_MODE
                         value: ${schema.spec.access}

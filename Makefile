@@ -746,7 +746,7 @@ verify-ci-selection: ## Test CI change selection and completion gates (requires 
 	@python3 -m unittest discover -s hack/ci -p 'test_*.py' -v
 
 verify-workflows: $(ACTIONLINT) ## Validate CI workflows with pinned Actionlint
-	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml .github/workflows/macos.yaml
+	@$(ACTIONLINT) -shellcheck= -pyflakes= .github/workflows/ci.yaml .github/workflows/e2e.yaml .github/workflows/images.yaml .github/workflows/helm-images.yaml .github/workflows/macos.yaml .github/workflows/auth-node-release.yaml
 
 $(ACTIONLINT):
 	GOBIN=$(TOOLS_GOBIN_DIR) $(GO_INSTALL) github.com/rhysd/actionlint/cmd/actionlint actionlint $(ACTIONLINT_VER)
@@ -3030,17 +3030,17 @@ pack-railgrid-auth-sdk: ## Pack the Railgrid Auth SDK locally without publishing
 	cd provider-sdk/auth-node && npm pack --pack-destination $(abspath $(BINDIR))/sdk
 
 test-railgrid-auth: test-railgrid-auth-sdk ## Verify first-party app authentication across hub and providers
-	go test -count=1 ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	go test -count=1 ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/actionproof ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
 	cd providers/infrastructure && go test -count=1 ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver ./internal/huborigin
 	cd providers/app-studio && go test -count=1 ./api ./bindings ./controller/project ./skills
 
 fix-lint-railgrid-auth: $(GOLANGCI_LINT) ## Format and auto-fix app authentication packages
-	$(GOLANGCI_LINT) run --fix ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	$(GOLANGCI_LINT) run --fix ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/actionproof ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
 	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver ./internal/huborigin
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./api ./bindings ./controller/project ./skills
 
 lint-railgrid-auth: $(GOLANGCI_LINT) ## Lint app authentication packages
-	$(GOLANGCI_LINT) run ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
+	$(GOLANGCI_LINT) run ./pkg/hub ./cmd/railgrid-hub ./pkg/hub/appauth ./pkg/hub/actionproof ./pkg/hub/hubaccess ./pkg/hub/serviceaccounts ./pkg/hub/sharedstore
 	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run ./accessproxy ./controller/instance ./install ./backend/kro ./instancespec ./mcpserver ./internal/huborigin
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./bindings ./controller/project ./skills
 

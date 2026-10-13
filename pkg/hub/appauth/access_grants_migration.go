@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/kcp-dev/sdk/apis/core"
@@ -37,8 +38,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/multicluster-runtime/pkg/builder"
@@ -500,12 +503,41 @@ type appAccessGrantMigrationReconciler struct {
 	handler *AppAccessGrantHandler
 }
 
+func appAccessMigrationCandidate(obj client.Object) bool {
+	return obj != nil && segmentRE.MatchString(obj.GetName()) && segmentRE.MatchString(obj.GetLabels()[appAccessProject])
+}
+
+func appAccessMigrationInstancePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return appAccessMigrationCandidate(e.Object)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldInstance, oldOK := e.ObjectOld.(*unstructured.Unstructured)
+			newInstance, newOK := e.ObjectNew.(*unstructured.Unstructured)
+			if !oldOK || !newOK || (!appAccessMigrationCandidate(oldInstance) && !appAccessMigrationCandidate(newInstance)) {
+				return false
+			}
+			return oldInstance.GetGeneration() != newInstance.GetGeneration() ||
+				!reflect.DeepEqual(oldInstance.GetLabels(), newInstance.GetLabels()) ||
+				!reflect.DeepEqual(oldInstance.GetOwnerReferences(), newInstance.GetOwnerReferences()) ||
+				(oldInstance.GetDeletionTimestamp() == nil) != (newInstance.GetDeletionTimestamp() == nil)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return appAccessMigrationCandidate(e.Object)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return appAccessMigrationCandidate(e.Object)
+		},
+	}
+}
+
 func (r *appAccessGrantMigrationReconciler) setupWithManager(mgr mcmanager.Manager, name string) error {
 	instance := &unstructured.Unstructured{}
 	instance.SetGroupVersionKind(appAccessMigrationInstanceGVK)
 	if err := builder.ControllerManagedBy(mgr).
 		Named(name).
-		For(instance).
+		For(instance, builder.WithPredicates(appAccessMigrationInstancePredicate())).
 		Complete(r); err != nil {
 		return fmt.Errorf("appauth: registering Instance grant migration controller: %w", err)
 	}
@@ -523,7 +555,7 @@ func (r *appAccessGrantMigrationReconciler) reconcileInstance(ctx context.Contex
 	if r.handler == nil || !segmentRE.MatchString(clusterID) || !segmentRE.MatchString(name) {
 		return fmt.Errorf("appauth: invalid Instance grant migration target")
 	}
-	client, err := r.handler.clients(clusterID)
+	client, err := r.handler.workspaceClient(clusterID)
 	if err != nil {
 		return err
 	}

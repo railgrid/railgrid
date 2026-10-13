@@ -175,7 +175,7 @@ func (h *Handler) HandleIdentityAuthorize(w http.ResponseWriter, r *http.Request
 	}
 	if !allowed {
 		h.renderError(w, http.StatusForbidden, "App access denied",
-			"Your account does not have access to this application. Ask the app owner to share it with you.")
+			"Your account is not approved to sign in to this application. Ask the app owner to approve Railgrid sign-in for your account.")
 		return
 	}
 
@@ -203,7 +203,7 @@ func (h *Handler) HandleIdentityAuthorize(w http.ResponseWriter, r *http.Request
 	}
 	if !uidAllowed {
 		h.renderError(w, http.StatusForbidden, "App access denied",
-			"Your account does not have access to this application. Ask the app owner to share it with you.")
+			"Your account is not approved to sign in to this application. Ask the app owner to approve Railgrid sign-in for your account.")
 		return
 	}
 	member, err := h.identityEnvironmentAllowed(r.Context(), session.Identity, input.Ref, app)
@@ -260,14 +260,31 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	record, ok := h.codes.Take(r.Context(), req.Code)
-	if !ok || record.Purpose != IdentityPurpose || record.Ref.key() != ref.key() ||
-		record.RedirectOrigin != origin || record.AppID != req.AppID || record.InstanceUID == "" ||
-		!validIdentityCodeChallenge(record.CodeChallenge) || !identityCodeVerifierMatches(req.CodeVerifier, record.CodeChallenge) ||
-		record.Identity.UserID == "" || record.Identity.RBACIdentity == "" || record.Identity.AppScope != "" ||
-		!h.now().Before(record.ExpiresAt) {
+	inspected, ok, err := h.codes.Peek(r.Context(), req.Code)
+	if err != nil {
+		klog.FromContext(r.Context()).Error(err, "app identity code lookup failed")
+		http.Error(w, "app sign-in is temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !ok || !validIdentityCodeRecord(inspected, req, ref, origin, h.now()) {
 		http.Error(w, "app sign-in expired", http.StatusGone)
 		return
+	}
+	record := inspected
+	// Take is the cross-replica one-winner commit. Keep the code readable while
+	// transient identity/account/SAR/key dependencies are checked so a 503 can
+	// be retried with the same callback. The record comparison also fences an
+	// unexpected replacement between Peek and Take.
+	consume := func() bool {
+		record, ok := h.codes.Take(r.Context(), req.Code)
+		return ok && sameIdentityCodeRecord(record, inspected)
+	}
+	reject := func(status int, message string) {
+		if !consume() {
+			http.Error(w, "app sign-in expired", http.StatusGone)
+			return
+		}
+		http.Error(w, message, status)
 	}
 	active, err := h.activeIdentityAccount(r.Context(), record.Identity)
 	if err != nil {
@@ -275,7 +292,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !active {
-		http.Error(w, "app account is no longer active", http.StatusForbidden)
+		reject(http.StatusForbidden, "app account is no longer active")
 		return
 	}
 
@@ -285,7 +302,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 	app, err := h.identityApp(r.Context(), ref)
 	if err != nil {
 		if errors.Is(err, ErrInstanceNotPublished) {
-			http.Error(w, "app sign-in expired", http.StatusGone)
+			reject(http.StatusGone, "app sign-in expired")
 			return
 		}
 		http.Error(w, "app sign-in is temporarily unavailable", http.StatusServiceUnavailable)
@@ -293,7 +310,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 	}
 	if !validIdentityApp(app) || app.InstanceUID != record.InstanceUID || app.AppID != record.AppID ||
 		app.Environment != record.Environment || app.PublishedOrigin != record.RedirectOrigin {
-		http.Error(w, "app sign-in expired", http.StatusGone)
+		reject(http.StatusGone, "app sign-in expired")
 		return
 	}
 	member, err := h.identityEnvironmentAllowed(r.Context(), record.Identity, ref, app)
@@ -302,7 +319,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !member {
-		http.Error(w, "workspace member access required", http.StatusForbidden)
+		reject(http.StatusForbidden, "workspace member access required")
 		return
 	}
 	allowed, err := h.authorize(r.Context(), record.Identity, ref)
@@ -311,7 +328,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !allowed {
-		http.Error(w, "app access denied", http.StatusForbidden)
+		reject(http.StatusForbidden, "app access denied")
 		return
 	}
 	uidAllowed, err := h.authorizeIdentityAccess(r.Context(), record.Identity, ref, app.AppID, app.InstanceUID)
@@ -320,7 +337,7 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !uidAllowed {
-		http.Error(w, "app access denied", http.StatusForbidden)
+		reject(http.StatusForbidden, "app access denied")
 		return
 	}
 
@@ -328,6 +345,10 @@ func (h *Handler) HandleIdentityExchange(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		klog.FromContext(r.Context()).Error(err, "app identity assertion signing failed")
 		http.Error(w, "app sign-in is temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !consume() {
+		http.Error(w, "app sign-in expired", http.StatusGone)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -389,6 +410,25 @@ func (h *Handler) HandleIdentityJWKS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(identityJWKS{Keys: keys})
+}
+
+func validIdentityCodeRecord(record CodeRecord, req identityExchangeRequest, ref InstanceRef, origin string, now time.Time) bool {
+	return record.Purpose == IdentityPurpose && record.Ref == ref &&
+		record.RedirectOrigin == origin && record.AppID == req.AppID && record.InstanceUID != "" &&
+		validIdentityCodeChallenge(record.CodeChallenge) && identityCodeVerifierMatches(req.CodeVerifier, record.CodeChallenge) &&
+		record.Identity.UserID != "" && record.Identity.RBACIdentity != "" && record.Identity.AppScope == "" &&
+		now.Before(record.ExpiresAt)
+}
+
+func sameIdentityCodeRecord(a, b CodeRecord) bool {
+	return a.Purpose == b.Purpose && a.Ref == b.Ref && a.RedirectHost == b.RedirectHost &&
+		a.RedirectOrigin == b.RedirectOrigin && a.AppID == b.AppID && a.Environment == b.Environment &&
+		a.InstanceUID == b.InstanceUID && a.CodeChallenge == b.CodeChallenge &&
+		a.Identity.AppScope == b.Identity.AppScope && a.Identity.AppExpiresAt.Equal(b.Identity.AppExpiresAt) &&
+		a.Identity.UserID == b.Identity.UserID && a.Identity.Email == b.Identity.Email && a.Identity.Name == b.Identity.Name &&
+		a.Identity.RBACIdentity == b.Identity.RBACIdentity && a.Identity.Issuer == b.Identity.Issuer &&
+		a.Identity.Subject == b.Identity.Subject && a.Identity.AuthType == b.Identity.AuthType &&
+		a.ExpiresAt.Equal(b.ExpiresAt)
 }
 
 func parseIdentityAuthorizeInput(u *url.URL) (identityAuthorizeInput, error) {
@@ -598,13 +638,13 @@ func (h *Handler) activeIdentityAccount(ctx context.Context, identity browserses
 		account.RBACIdentity == identity.RBACIdentity, nil
 }
 
-// authorizeIdentityAccess adds a Project- and Instance-UID-specific SAR to
-// the ordinary name-based access SAR. Old grants can remain in the workspace
-// until garbage collection finishes, but cannot match either replacement UID.
+// authorizeIdentityAccess adds a domain-separated Project- and Instance-UID
+// SAR for authentication issuance to the ordinary name-based access SAR.
+// Publication grants and stale identity grants cannot satisfy this check.
 func (h *Handler) authorizeIdentityAccess(ctx context.Context, identity browsersession.Identity, ref InstanceRef, appID, instanceUID string) (bool, error) {
 	user := strings.TrimSpace(identity.RBACIdentity)
 	projectUID, _, hasProjectUID := strings.Cut(appID, "/")
-	subresource, validUIDs := identityAppAccessSubresource(projectUID, instanceUID)
+	subresource, validUIDs := authenticationAppAccessSubresource(projectUID, instanceUID)
 	if user == "" || !validAppID(appID) || !hasProjectUID || !validUIDs {
 		return false, nil
 	}

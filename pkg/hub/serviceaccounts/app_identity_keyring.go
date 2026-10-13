@@ -45,6 +45,7 @@ const (
 	appIdentityPreviousKeysField = "previous-public-keys"
 	appIdentityKeyRotationGrace  = 15 * time.Minute
 	appIdentityKeySnapshotTTL    = 10 * time.Second
+	appIdentityKeyLoadTimeout    = 10 * time.Second
 )
 
 var errAppIdentityKeySnapshotInvalidated = errors.New("app identity key snapshot was invalidated")
@@ -143,7 +144,13 @@ func (r *AppIdentityKeyRing) Snapshot(ctx context.Context) (AppIdentityKeySnapsh
 			}
 			r.cacheMu.Unlock()
 
-			secret, err := r.getOrCreate(ctx)
+			// One disconnected request must not cancel a refresh shared by every
+			// waiter. The detached context keeps request values for logging/tracing
+			// but gets its own hard bound; each waiter still selects on its context
+			// below and can return independently.
+			loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appIdentityKeyLoadTimeout)
+			defer cancel()
+			secret, err := r.getOrCreate(loadCtx)
 			if err != nil {
 				return nil, err
 			}

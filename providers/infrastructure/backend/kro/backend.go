@@ -130,8 +130,6 @@ func New(runtime dynamic.Interface) *Backend {
 // gate fronts every published app.
 const DefaultAccessProxyImage = "ghcr.io/railgrid/railgrid-access-proxy:latest"
 
-var accessProxyDigestRE = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
-
 // accessGateTokens resolves the access-gate token family (see rgd.go). The
 // hub URLs may legitimately be empty on hubs that never publish privately;
 // the gate only requires them in private mode, so empty substitution renders
@@ -140,10 +138,6 @@ func accessGateTokens() map[string]string {
 	image := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_PROXY_IMAGE"))
 	if image == "" {
 		image = DefaultAccessProxyImage
-	}
-	imagePullPolicy := "Always"
-	if accessProxyDigestRE.MatchString(image) {
-		imagePullPolicy = "IfNotPresent"
 	}
 	hubURL := strings.TrimSpace(os.Getenv("RAILGRID_ACCESS_HUB_URL"))
 	if hubURL == "" {
@@ -163,11 +157,10 @@ func accessGateTokens() map[string]string {
 		hubInsecure = "true"
 	}
 	return map[string]string{
-		accessProxyImageToken:           image,
-		accessProxyImagePullPolicyToken: imagePullPolicy,
-		hubURLToken:                     hubURL,
-		hubPublicURLToken:               hubPublicURL,
-		hubInsecureToken:                hubInsecure,
+		accessProxyImageToken: image,
+		hubURLToken:           hubURL,
+		hubPublicURLToken:     hubPublicURL,
+		hubInsecureToken:      hubInsecure,
 	}
 }
 

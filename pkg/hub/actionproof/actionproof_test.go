@@ -18,7 +18,10 @@ package actionproof
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,6 +97,37 @@ func TestSignAndVerify(t *testing.T) {
 	}
 	if got.ProofVersion != proofVersion || got.ExpiresAt-got.IssuedAt != int64(defaultTTL/time.Second) || len(got.Nonce) != 32 {
 		t.Fatalf("proof lifetime/version/nonce = %d/%d/%q", got.ProofVersion, got.ExpiresAt-got.IssuedAt, got.Nonce)
+	}
+}
+
+func TestVerifierRejectsAuthenticallySignedV1Proof(t *testing.T) {
+	now := time.Date(2026, time.October, 13, 12, 0, 0, 0, time.UTC)
+	claims := testClaims()
+	claims.ProofVersion = 1
+	claims.IssuedAt = now.Unix()
+	claims.ExpiresAt = now.Add(defaultTTL).Unix()
+	claims.Nonce = strings.Repeat("a", 32)
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := proofKey(context.Background(), testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyMAC := hmac.New(sha256.New, key)
+	_, _ = legacyMAC.Write([]byte("railgrid-hub-action-proof-v1\x00"))
+	_, _ = legacyMAC.Write(payload)
+	token := base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(legacyMAC.Sum(nil))
+
+	verifier := &Verifier{
+		Keys:          testKey,
+		Authenticate:  func(context.Context, *http.Request, Claims) error { return nil },
+		ValidateScope: func(context.Context, Claims) error { return nil },
+		Now:           func() time.Time { return now.Add(time.Second) },
+	}
+	if _, err := verifier.Verify(context.Background(), proofRequest(token)); err == nil {
+		t.Fatal("Verifier accepted a valid v1 proof after durable redemption was enabled")
 	}
 }
 
@@ -270,6 +304,14 @@ func TestAppAccessClaimsBindLegacyReadsAndAuthenticationGrantAudience(t *testing
 				t.Fatal("Sign accepted authentication grant for a different user or audience")
 			}
 		})
+	}
+}
+
+func TestAcceptedUntilIncludesVerifierClockSkew(t *testing.T) {
+	claims := Claims{ExpiresAt: 1_800_000_000}
+	want := time.Unix(claims.ExpiresAt, 0).Add(maxClockSkew)
+	if got := AcceptedUntil(claims); !got.Equal(want) {
+		t.Fatalf("AcceptedUntil=%s, want %s", got, want)
 	}
 }
 

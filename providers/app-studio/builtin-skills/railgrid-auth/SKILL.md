@@ -17,7 +17,7 @@ an implementation discussion.
 Railgrid's app-auth gate owns login, logout, the browser session cookie, and
 the signed app identity header. The generated app owns its `/api/me` route and
 all user-owned records. Add the pinned server dependency
-`"@railgrid/auth-node": "npm:@crwilhit/railgrid-auth-node@0.1.1"`, then use the
+`"@railgrid/auth-node": "0.1.1"`, then use the
 SDK's Express/Connect middleware to verify `X-Railgrid-App-Identity`. Use the
 opaque `user.id` as the database key. `displayName` is optional and is only for
 presentation. Do not use email as the key, persist the assertion, put it in a
