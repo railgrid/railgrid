@@ -23,6 +23,14 @@ export function rememberAppAccessNext(next: unknown): void {
 }
 
 /**
+ * Returns the pending app continuation without consuming it.
+ */
+export function peekAppAccessNext(): string | null {
+  const next = sessionStorage.getItem(STORAGE_KEY)
+  return validAppAccessNext(next) ? next : null
+}
+
+/**
  * Returns the pending authorize continuation (removing it), or null.
  * Callers navigate with window.location.assign — the target is a hub route,
  * not an SPA route.
