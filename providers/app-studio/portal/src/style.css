@@ -91,6 +91,7 @@ details[open] > summary .landing-prompt-chevron {
   /* Shared layer order for App Studio overlays. Components should consume
      these tokens instead of introducing one-off numeric z-index values. */
   --app-studio-z-dropdown: 20;
+  --k-ai-model-picker-z: var(--app-studio-z-dropdown);
   --app-studio-z-menu: 30;
   --app-studio-z-modal-backdrop: calc(var(--k-layer-modal, 2147483000) - 1);
   --app-studio-z-modal: var(--k-layer-modal, 2147483000);

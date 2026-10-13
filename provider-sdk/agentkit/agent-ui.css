@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 19;
+  --railgrid-agent-ui-version: 20;
 }
 
 /* ── AI workbench pane ────────────────────────────────────────────────────
@@ -1421,7 +1421,7 @@ button.k-workbench-tab {
 .k-ai-model-picker__icon { width: 14px; height: 14px; flex-shrink: 0; }
 .k-ai-model-picker__chevron { width: 12px; height: 12px; flex-shrink: 0; }
 .k-ai-model-picker__chevron.is-open { transform: rotate(180deg); }
-.k-ai-model-picker__menu { position: absolute; bottom: 36px; right: 0; width: 288px; max-height: 288px; overflow-y: auto; z-index: var(--k-layer-menu, 1000); }
+.k-ai-model-picker__menu { position: absolute; bottom: 36px; right: 0; width: 288px; max-height: 288px; overflow-y: auto; z-index: var(--k-ai-model-picker-z, var(--k-layer-menu, 1000)); }
 .k-ai-model-picker__option { align-items: flex-start; }
 .k-ai-model-picker__option.is-active { background: var(--color-surface-overlay); }
 .k-ai-model-picker__details { flex: 1; min-width: 0; }
@@ -1431,9 +1431,12 @@ button.k-workbench-tab {
 @media (max-width: 767px) { .k-ai-model-picker__menu { position: fixed; inset: auto 8px 8px; width: auto; max-height: calc(100dvh - 16px); } }
 @media (pointer: coarse) { .k-ai-model-picker__trigger, .k-ai-model-picker__option { min-height: 44px; } }
 
+/* Contained menus intentionally stay inside the composer at every breakpoint.
+ * A viewport-wide mobile menu can sit beneath the host navigation rail. Bound
+ * long lists to the available viewport height and scroll inside the menu. */
 .k-ai-model-picker--contained { flex: 1; max-width: 100%; }
 .k-ai-model-picker--contained .k-ai-model-picker__trigger { display: flex; margin-left: auto; }
-.k-ai-model-picker--contained .k-ai-model-picker__menu { position: absolute; inset: auto 0 calc(100% + 4px) auto; width: 288px; max-width: 100%; }
+.k-ai-model-picker--contained .k-ai-model-picker__menu { position: absolute; inset: auto 0 calc(100% + 4px) auto; width: 288px; max-width: 100%; max-height: min(288px, 40dvh); }
 
 .k-model-collection { display: grid; gap: 16px; min-width: 0; }
 .k-model-collection__toolbar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }

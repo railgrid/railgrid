@@ -56,6 +56,8 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 		{model: "gpt-5.6-luna", wantEffort: "none", wantPresent: true},
 		{model: "gpt-6-luna", wantEffort: "none", wantPresent: true},
 		{model: "gpt-6-sol"},
+		{model: "gpt6-sol"},
+		{model: "openai/gpt6.1-sol"},
 		{model: "openai/gpt-6-sol"},
 		{model: "gpt-6.1-sol"},
 		{model: "gpt-5.4"},
