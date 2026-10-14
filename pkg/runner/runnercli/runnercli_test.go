@@ -23,7 +23,7 @@ import (
 )
 
 // TestDefaultsAreTheCodexPath: every command line that predates --harness must
-// keep behaving exactly as it did, including the Codex version pin.
+// keep selecting Codex, without imposing an exact version.
 func TestDefaultsAreTheCodexPath(t *testing.T) {
 	opts := DefaultOptions()
 	if opts.Harness != HarnessCodex {
@@ -32,8 +32,8 @@ func TestDefaultsAreTheCodexPath(t *testing.T) {
 	if err := opts.Validate(); err != nil {
 		t.Fatalf("the default options were rejected: %v", err)
 	}
-	if opts.VersionPin != DefaultCodexVersionPin {
-		t.Errorf("version pin = %q, want the Codex default %q", opts.VersionPin, DefaultCodexVersionPin)
+	if opts.VersionPin != "" {
+		t.Errorf("version pin = %q, want unpinned", opts.VersionPin)
 	}
 	if opts.CodexBinary != DefaultCodexBinary {
 		t.Errorf("codex binary = %q", opts.CodexBinary)
@@ -45,15 +45,12 @@ func TestDefaultsAreTheCodexPath(t *testing.T) {
 	if err := empty.Validate(); err != nil {
 		t.Fatalf("an unset harness was rejected: %v", err)
 	}
-	if empty.Harness != HarnessCodex || empty.VersionPin != DefaultCodexVersionPin {
+	if empty.Harness != HarnessCodex || empty.VersionPin != "" {
 		t.Errorf("unset harness normalized to %+v", empty)
 	}
 }
 
-// TestCodexKeepsItsPinAndClaudeDoesNot: the Codex pin is a real contract with a
-// tested app-server protocol; Claude Code self-updates, so pinning it by
-// default would leave every runner unready out of the box.
-func TestCodexKeepsItsPinAndClaudeDoesNot(t *testing.T) {
+func TestHarnessVersionPinsAreOptional(t *testing.T) {
 	claudeOpts := Options{Harness: HarnessClaude}
 	if err := claudeOpts.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -66,12 +63,14 @@ func TestCodexKeepsItsPinAndClaudeDoesNot(t *testing.T) {
 	}
 
 	// An explicit pin is honoured for either harness.
-	pinned := Options{Harness: HarnessClaude, VersionPin: "2.1.273"}
-	if err := pinned.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-	if pinned.VersionPin != "2.1.273" {
-		t.Errorf("an explicit pin was overwritten: %q", pinned.VersionPin)
+	for _, harnessName := range Harnesses {
+		pinned := Options{Harness: harnessName, VersionPin: "1.2.3"}
+		if err := pinned.Validate(); err != nil {
+			t.Fatalf("Validate %s: %v", harnessName, err)
+		}
+		if pinned.VersionPin != "1.2.3" {
+			t.Errorf("%s: an explicit pin was overwritten: %q", harnessName, pinned.VersionPin)
+		}
 	}
 }
 

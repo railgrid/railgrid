@@ -300,7 +300,7 @@ func TestNewDefaultsTheBinaryAndLeavesTheVersionUnpinned(t *testing.T) {
 	if filepath.Base(adapter.cfg.Binary) != "claude" {
 		t.Errorf("binary = %q, want a path ending in claude", adapter.cfg.Binary)
 	}
-	// Unlike Codex there is no built-in pin: Claude Code self-updates fast
+	// There is no built-in pin: Claude Code self-updates fast
 	// enough that a constant here would make every runner unready by default.
 	if adapter.cfg.ExpectedVersion != "" {
 		t.Errorf("expected version = %q, want unpinned", adapter.cfg.ExpectedVersion)

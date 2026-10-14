@@ -50,9 +50,6 @@ const (
 
 	// DefaultCodexBinary is the Codex executable looked up on PATH.
 	DefaultCodexBinary = "codex"
-	// DefaultCodexVersionPin is the Codex version the adapter probes for. It
-	// applies ONLY to the Codex harness: Claude Code has no default pin.
-	DefaultCodexVersionPin = "0.155.1"
 	// DefaultClaudeBinary is the Claude Code executable looked up on PATH.
 	DefaultClaudeBinary = "claude"
 )
@@ -76,8 +73,8 @@ type Options struct {
 
 	// Harness selects the adapter: "codex" (default) or "claude".
 	Harness string
-	// VersionPin applies to the SELECTED harness. Empty means the harness
-	// default, which is a pinned version for Codex and no pin for Claude Code.
+	// VersionPin optionally requires an exact version of the selected harness.
+	// Empty means no version pin.
 	VersionPin string
 
 	CodexHome   string
@@ -128,9 +125,6 @@ func (o *Options) Validate() error {
 	case HarnessCodex:
 		if o.CodexBinary == "" {
 			o.CodexBinary = DefaultCodexBinary
-		}
-		if o.VersionPin == "" {
-			o.VersionPin = DefaultCodexVersionPin
 		}
 	case HarnessClaude:
 		if o.ClaudeBinary == "" {

@@ -61,16 +61,22 @@ commands. It requires Git, OpenSSL, Python 3, and Codex. It does not enroll a
 Service, send credentials, or start a coding task. Its setup can be repeated
 without replacing the token or resetting the fixture repository.
 
+On Linux, also complete the [Codex sandbox prerequisites](edge-harness.md#codex-sandbox-prerequisites-on-linux),
+including Ubuntu's Bubblewrap/AppArmor setup and a namespace smoke test as the
+runner account. These host prerequisites apply to standalone runners too.
+
 Install the Codex executable for this dedicated account. Create the runner's
 Codex home as a new owner-only directory, then use the supported Codex login
 flow with `CODEX_HOME` set to that directory. Do not copy an interactive
-developer home into it. The runner's default expected Codex version is
-`0.155.1`; override it only when the installed harness is intentionally pinned
-to another version:
+developer home into it. By default the runner accepts any Codex version and
+checks readiness through the app-server handshake. To require an exact version,
+pass `--version-pin <codex-version>` to `railgrid-runner` (see the run examples
+below); a mismatch leaves the harness not ready.
 
-```sh
-./bin/railgrid-runner --version-pin <codex-version> --help
-```
+Unpinned readiness does not validate the full attempt protocol: methods used
+later in a task may still be incompatible. No supported version range is
+asserted by this check. For controlled deployments, validate an end-to-end task
+with the installed release and pin that version explicitly.
 
 The runner checks the executable version and app-server handshake during
 startup without making a model call. It checks the caller's Codex credential
@@ -365,10 +371,9 @@ railgrid runner run \
 the adapter refuses a home containing `settings.json`, `hooks`, `plugins`,
 `mcp.json`, `skills`, `agents`, `commands`, `output-styles` or any symlink.
 
-`--version-pin` applies to whichever harness is selected. Codex keeps its
-built-in pin of `0.155.1`; Claude Code has **no** default pin, because it
-self-updates on a fast cadence and a stale constant would leave every runner
-unready. Set one explicitly if you want the version checked.
+`--version-pin` applies to whichever harness is selected. Neither Codex nor
+Claude Code has a default pin. Set one explicitly if you want an exact version
+checked; readiness still checks the harness protocol without a pin.
 
 The capabilities response advertises a single harness entry named
 `claude-code`, with the executable's version and its readiness reasons.

@@ -53,7 +53,7 @@ func run() error {
 	flags.StringVar(&opts.Harness, "harness", runnercli.HarnessCodex,
 		"coding harness to serve: "+strings.Join(runnercli.Harnesses, " or ")+" (one per runner process)")
 	flags.StringVar(&opts.VersionPin, "version-pin", "",
-		"expected harness version; empty uses the selected harness default (Codex "+runnercli.DefaultCodexVersionPin+"; Claude Code unpinned)")
+		"expected harness version; empty accepts any version")
 	flags.StringVar(&opts.CodexHome, "codex-home", "", "runner-owned CODEX_HOME directory")
 	flags.StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
 	flags.StringVar(&opts.ClaudeHome, "claude-home", "", "runner-owned CLAUDE_CONFIG_DIR directory")

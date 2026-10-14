@@ -86,7 +86,7 @@ fixture or an unmanaged host, as described in docs/local-runner.md.`,
 	cmd.Flags().StringVar(&opts.Harness, "harness", runnercli.HarnessCodex,
 		"Coding harness to serve: "+strings.Join(runnercli.Harnesses, " or ")+". One harness per runner process.")
 	cmd.Flags().StringVar(&opts.VersionPin, "version-pin", "",
-		"Expected harness version; empty uses the selected harness default (Codex "+runnercli.DefaultCodexVersionPin+"; Claude Code unpinned)")
+		"Expected harness version; empty accepts any version")
 	cmd.Flags().StringVar(&opts.CodexHome, "codex-home", "", "Runner-owned CODEX_HOME directory (default <state-dir>/codex-home)")
 	cmd.Flags().StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
 	cmd.Flags().StringVar(&opts.ClaudeHome, "claude-home", "", "Runner-owned CLAUDE_CONFIG_DIR directory (default <state-dir>/claude-home)")
