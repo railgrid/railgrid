@@ -14,6 +14,7 @@ import { hashFor, type Route } from '../router'
 import type { AppStore } from '../store'
 
 export interface AgentsRuntime {
+  domPrefix?: string
   store: ShallowRef<AppStore>
   api: ShallowRef<ApiClient>
   route: Ref<Route>
@@ -53,6 +54,13 @@ export function useStoreRevision(getStore: () => AppStore): Ref<number> {
     bound = null
   })
   return revision
+}
+
+// The persistent overlay and a routed agent can coexist in the same light
+// DOM. Scope IDs (including deferred Teleport targets) to their owning surface.
+export function useAgentDOMID(): (id: string) => string {
+  const prefix = useAgentsRuntime()?.domPrefix || ''
+  return id => `${prefix}${id}`
 }
 
 export interface AuthoritySnapshot {

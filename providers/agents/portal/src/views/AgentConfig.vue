@@ -52,8 +52,10 @@ import {
   type HarnessWorkspace,
 } from '../types'
 import { queueAgentConfigSave } from '../vue/config-save-queue'
-import { useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../vue/runtime'
+import { useAgentDOMID, useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../vue/runtime'
 import Automation from './Automation.vue'
+
+const domID = useAgentDOMID()
 
 const AUTONOMY_MODES: { id: Autonomy; label: string; blurb: string }[] = [
   { id: 'suggest', label: 'Suggest', blurb: 'Consequential tool calls wait for approval; memory, ask, wait, notify, and schedule-list built-ins remain available.' },
@@ -481,7 +483,7 @@ function newerEdits(region: ManualSaveRegion): boolean {
 }
 
 function feedbackDescription(region: SaveRegion, dirty = false): string | undefined {
-  return feedbackStatus(region, dirty) === 'idle' ? undefined : `agent-${region}-save-feedback`
+  return feedbackStatus(region, dirty) === 'idle' ? undefined : domID(`agent-${region}-save-feedback`)
 }
 
 function hydrate(source: Agent): void {
@@ -985,22 +987,22 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
   <AIWorkbenchPane body-overflow="visible" class="agents-config-pane" title="Config" description="Configure this agent’s identity, execution, and limits.">
   <div v-if="!agent" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
   <template v-else>
-    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-persona-heading" title="Persona" description="Who this agent is and how it should behave on every run.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-persona-heading')" title="Persona" description="Who this agent is and how it should behave on every run.">
       <label>Display name<input v-model="displayName" class="k-input" /></label>
       <label>Description<input v-model="description" class="k-input" placeholder="What this agent is for — shown to you, not to the model." /></label>
       <label>System prompt<textarea v-model="systemPrompt" class="k-input" rows="6" placeholder="You are a concise assistant that…"></textarea></label>
       <div class="agents-form-actions">
         <button class="k-btn k-btn--primary" type="button" :disabled="saveState.persona.status === 'pending'" :aria-busy="saveState.persona.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('persona', personaDirty)" @click="savePersona"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.persona.status === 'pending' ? 'Saving persona…' : 'Save persona' }}</button>
-        <ConfigSaveFeedback id="agent-persona-save-feedback" action="persona" :status="feedbackStatus('persona', personaDirty)" :newer-edits="newerEdits('persona')" :error="feedbackError('persona')" />
+        <ConfigSaveFeedback :id="domID('agent-persona-save-feedback')" action="persona" :status="feedbackStatus('persona', personaDirty)" :newer-edits="newerEdits('persona')" :error="feedbackError('persona')" />
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-backend-heading" title="Backend" description="Choose where this agent runs its turns.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-backend-heading')" title="Backend" description="Choose where this agent runs its turns.">
       <fieldset class="agents-cap-fs">
         <legend>Execution backend</legend>
         <div class="agents-radiocards">
           <label v-for="mode in BACKEND_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === backendType }">
-            <input v-model="backendType" type="radio" name="backend-type" :value="mode.id" />
+            <input v-model="backendType" type="radio" :name="domID('backend-type')" :value="mode.id" />
             <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ mode.blurb }}</span>
           </label>
         </div>
@@ -1019,56 +1021,56 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </div>
           <div class="agents-grid2">
             <label>
-              <span id="agent-harness-edge-label">Machine *</span>
-              <FormSelect v-model="harnessEdge" :options="edgeOptions" :required="true" labelledby="agent-harness-edge-label" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="['agent-harness-edge-hint', hostEdges.length === 0 ? 'agent-harness-edge-empty' : '', harnessError && !harnessEdge ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
-              <span id="agent-harness-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
-              <span v-if="hostEdges.length === 0" id="agent-harness-edge-empty" class="agents-hint">No Linux or macOS machine in this workspace yet.
+              <span :id="domID('agent-harness-edge-label')">Machine *</span>
+              <FormSelect v-model="harnessEdge" :options="edgeOptions" :required="true" :labelledby="domID('agent-harness-edge-label')" :invalid="Boolean(harnessError) && !harnessEdge" :describedby="[domID('agent-harness-edge-hint'), hostEdges.length === 0 ? domID('agent-harness-edge-empty') : '', harnessError && !harnessEdge ? domID('agent-backend-error') : ''].filter(Boolean).join(' ')" />
+              <span :id="domID('agent-harness-edge-hint')" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
+              <span v-if="hostEdges.length === 0" :id="domID('agent-harness-edge-empty')" class="agents-hint">No Linux or macOS machine in this workspace yet.
                 <a :href="portalHref('/providers/edges/connect/edge', api.tenant())" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Connect a machine (new tab)</a>
                 <button type="button" class="k-btn k-btn--ghost" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Checking machines…' : 'Check again' }}</button>
                 Keep this tab open to retain your changes.</span>
             </label>
             <label>
-              <span id="agent-harness-credential-label">Harness credential *</span>
-              <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" id="agent-harness-credential-read-error" class="k-inline-notification k-inline-notification--error" role="alert">
+              <span :id="domID('agent-harness-credential-label')">Harness credential *</span>
+              <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" :id="domID('agent-harness-credential-read-error')" class="k-inline-notification k-inline-notification--error" role="alert">
                 <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load harness identities. {{ credentialSlice.error }}</span></span>
                 <button class="k-inline-notification__action" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
               </div>
-              <div v-else-if="!credentialSlice.hasSnapshot" id="agent-harness-credential-loading" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading harness identities…</div>
+              <div v-else-if="!credentialSlice.hasSnapshot" :id="domID('agent-harness-credential-loading')" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading harness identities…</div>
               <template v-else>
                 <div v-if="credentialSlice.error" class="k-inline-notification k-inline-notification--warning" role="status">
                   <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded harness identities. {{ credentialSlice.error }}</span></span>
                   <button class="k-inline-notification__action" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Check again' }}</button>
                 </div>
-                <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" labelledby="agent-harness-credential-label" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="['agent-harness-credential-hint', harnessCredentials.length === 0 ? 'agent-harness-credential-empty' : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? 'agent-backend-error' : ''].filter(Boolean).join(' ')" />
-                <span v-if="harnessCredentials.length === 0" id="agent-harness-credential-empty" class="agents-hint">{{ credentialSlice.error ? 'No harness identities in the last loaded snapshot.' : 'No harness identities yet.' }}
+                <FormSelect v-model="harnessCredential" :options="harnessCredentialOptions" :required="true" :labelledby="domID('agent-harness-credential-label')" :invalid="Boolean(harnessError) && Boolean(harnessEdge) && !harnessCredential" :describedby="[domID('agent-harness-credential-hint'), harnessCredentials.length === 0 ? domID('agent-harness-credential-empty') : '', harnessError && Boolean(harnessEdge) && !harnessCredential ? domID('agent-backend-error') : ''].filter(Boolean).join(' ')" />
+                <span v-if="harnessCredentials.length === 0" :id="domID('agent-harness-credential-empty')" class="agents-hint">{{ credentialSlice.error ? 'No harness identities in the last loaded snapshot.' : 'No harness identities yet.' }}
                   <a :href="portalHref('/providers/agents/#/create/model/harness', api.tenant())" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Add harness identity (new tab)</a>
                   <button type="button" class="k-btn k-btn--ghost" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Checking identities…' : 'Check again' }}</button>
                   Keep this tab open to retain your changes.</span>
               </template>
-              <span id="agent-harness-credential-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
+              <span :id="domID('agent-harness-credential-hint')" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
             </label>
           </div>
           <div class="agents-grid2">
             <label>
-              <span id="agent-harness-model-label">Model</span>
-              <input id="agent-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" aria-labelledby="agent-harness-model-label" aria-describedby="agent-harness-model-hint" />
-              <span id="agent-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
+              <span :id="domID('agent-harness-model-label')">Model</span>
+              <input :id="domID('agent-harness-model')" v-model="harnessModel" class="k-input" placeholder="Harness default" :aria-labelledby="domID('agent-harness-model-label')" :aria-describedby="domID('agent-harness-model-hint')" />
+              <span :id="domID('agent-harness-model-hint')" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
             </label>
             <label>
-              <span id="agent-harness-workspace-label">Working directory</span>
-              <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" labelledby="agent-harness-workspace-label" />
+              <span :id="domID('agent-harness-workspace-label')">Working directory</span>
+              <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" :labelledby="domID('agent-harness-workspace-label')" />
             </label>
           </div>
           <label>
-            <span id="agent-harness-github-label">GitHub connection</span>
-            <FormSelect v-model="harnessGitHubConnection" :options="githubConnectionOptions" labelledby="agent-harness-github-label" describedby="agent-harness-github-hint" />
-            <span id="agent-harness-github-hint" class="agents-hint">Optional — its token reaches the harness as GH_TOKEN for each turn and never touches the machine, so `gh` can read and review pull requests as that connection.</span>
+            <span :id="domID('agent-harness-github-label')">GitHub connection</span>
+            <FormSelect v-model="harnessGitHubConnection" :options="githubConnectionOptions" :labelledby="domID('agent-harness-github-label')" :describedby="domID('agent-harness-github-hint')" />
+            <span :id="domID('agent-harness-github-hint')" class="agents-hint">Optional — its token reaches the harness as GH_TOKEN for each turn and never touches the machine, so `gh` can read and review pull requests as that connection.</span>
           </label>
         </template>
       </template>
 
-      <div v-if="harnessError" id="agent-backend-error" class="agents-fielderr" role="alert">{{ harnessError }}</div>
-      <p v-if="backendPolicyBlocker" id="agent-backend-policy-blocker" class="agents-hint agents-warn-inline" role="status">
+      <div v-if="harnessError" :id="domID('agent-backend-error')" class="agents-fielderr" role="alert">{{ harnessError }}</div>
+      <p v-if="backendPolicyBlocker" :id="domID('agent-backend-policy-blocker')" class="agents-hint agents-warn-inline" role="status">
         {{ backendPolicyBlocker }} Save a supported policy before changing this agent to a coding harness.
       </p>
 
@@ -1087,12 +1089,12 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
 
       <div class="agents-form-actions">
-        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.backend.status === 'pending' || Boolean(backendPolicyBlocker) || (backendType === 'harness' && !credentialSlice.hasSnapshot)" :aria-busy="saveState.backend.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessError ? 'agent-backend-error' : '', backendPolicyBlocker ? 'agent-backend-policy-blocker' : '', backendType === 'harness' && !credentialSlice.hasSnapshot ? (credentialSlice.error ? 'agent-harness-credential-read-error' : 'agent-harness-credential-loading') : '', feedbackDescription('backend', backendDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveBackend"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.backend.status === 'pending' ? 'Saving backend…' : 'Save backend' }}</button>
-        <ConfigSaveFeedback id="agent-backend-save-feedback" action="the backend" :status="feedbackStatus('backend', backendDirty)" :newer-edits="newerEdits('backend')" :error="feedbackError('backend')" />
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.backend.status === 'pending' || Boolean(backendPolicyBlocker) || (backendType === 'harness' && !credentialSlice.hasSnapshot)" :aria-busy="saveState.backend.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessError ? domID('agent-backend-error') : '', backendPolicyBlocker ? 'agent-backend-policy-blocker' : '', backendType === 'harness' && !credentialSlice.hasSnapshot ? (credentialSlice.error ? domID('agent-harness-credential-read-error') : 'agent-harness-credential-loading') : '', feedbackDescription('backend', backendDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveBackend"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.backend.status === 'pending' ? 'Saving backend…' : 'Save backend' }}</button>
+        <ConfigSaveFeedback :id="domID('agent-backend-save-feedback')" action="the backend" :status="feedbackStatus('backend', backendDirty)" :newer-edits="newerEdits('backend')" :error="feedbackError('backend')" />
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" heading-id="agent-model-heading" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
+    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" :heading-id="domID('agent-model-heading')" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
       <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -1103,36 +1105,36 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <label v-if="credentialSlice.hasSnapshot">
-        <span id="agent-model-credential-label">Model credential</span>
-        <FormSelect v-model="modelCredential" :options="credentialOptions" labelledby="agent-model-credential-label" :describedby="credentials.length === 0 ? 'agent-model-credential-empty' : undefined" />
-        <span v-if="credentials.length === 0" id="agent-model-credential-empty" class="agents-hint">No models yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
+        <span :id="domID('agent-model-credential-label')">Model credential</span>
+        <FormSelect v-model="modelCredential" :options="credentialOptions" :labelledby="domID('agent-model-credential-label')" :describedby="credentials.length === 0 ? domID('agent-model-credential-empty') : undefined" />
+        <span v-if="credentials.length === 0" :id="domID('agent-model-credential-empty')" class="agents-hint">No models yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
       </label>
       <div v-if="credentialSlice.hasSnapshot" class="agents-fieldset">
-        <span id="agent-fallbacks-label" class="agents-fieldset-legend">Fallbacks</span>
+        <span :id="domID('agent-fallbacks-label')" class="agents-fieldset-legend">Fallbacks</span>
         <div v-if="fallbacks.length" class="agents-chiprow">
           <span v-for="(fallback, index) in fallbacks" :key="`${fallback}-${index}`" class="agents-chip">
             {{ fallback }}
             <button class="k-icon-action agents-chip-x" :aria-label="`Remove fallback ${fallback}`" type="button" @click="removeFallback(index)"><X :stroke-width="1.75" aria-hidden="true" /></button>
           </span>
         </div>
-        <FormSelect v-if="availableFallbacks.length" class="agents-addselect" :model-value="''" :options="fallbackOptions" labelledby="agent-fallbacks-label" :describedby="fallbacks.length === 0 ? 'agent-fallbacks-empty' : undefined" @update:model-value="addFallback" />
-        <span v-if="fallbacks.length === 0" id="agent-fallbacks-empty" class="agents-hint">None — a model failure fails the run.</span>
+        <FormSelect v-if="availableFallbacks.length" class="agents-addselect" :model-value="''" :options="fallbackOptions" :labelledby="domID('agent-fallbacks-label')" :describedby="fallbacks.length === 0 ? domID('agent-fallbacks-empty') : undefined" @update:model-value="addFallback" />
+        <span v-if="fallbacks.length === 0" :id="domID('agent-fallbacks-empty')" class="agents-hint">None — a model failure fails the run.</span>
       </div>
       <div v-if="credentialSlice.hasSnapshot" class="agents-form-actions">
         <button class="k-btn k-btn--primary" type="button" :disabled="saveState.model.status === 'pending'" :aria-busy="saveState.model.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('model', modelDirty)" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.model.status === 'pending' ? 'Saving model…' : 'Save model' }}</button>
-        <ConfigSaveFeedback id="agent-model-save-feedback" action="model" :status="feedbackStatus('model', modelDirty)" :newer-edits="newerEdits('model')" :error="feedbackError('model')" />
+        <ConfigSaveFeedback :id="domID('agent-model-save-feedback')" action="model" :status="feedbackStatus('model', modelDirty)" :newer-edits="newerEdits('model')" :error="feedbackError('model')" />
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-policy-heading" title="Autonomy &amp; budget" :description="policyDescription">
+    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-policy-heading')" title="Autonomy &amp; budget" :description="policyDescription">
       <fieldset class="agents-cap-fs">
         <legend>Autonomy</legend>
-        <p v-if="harnessPolicyTarget" id="agent-harness-permission-policy" class="agents-hint" role="status">
+        <p v-if="harnessPolicyTarget" :id="domID('agent-harness-permission-policy')" class="agents-hint" role="status">
           Coding harness permission prompts are configured by Claude Code or Codex on the machine. Railgrid cannot gate harness actions; Ask is the only supported Railgrid value for this backend.
         </p>
         <div class="agents-radiocards">
           <label v-for="mode in AUTONOMY_MODES" :key="mode.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: mode.id === autonomy }">
-            <input v-model="autonomy" type="radio" name="autonomy" :value="mode.id" :disabled="harnessPolicyTarget && mode.id !== 'ask'" />
+            <input v-model="autonomy" type="radio" :name="domID('autonomy')" :value="mode.id" :disabled="harnessPolicyTarget && mode.id !== 'ask'" />
             <span class="agents-radiocard-t">{{ mode.label }}</span><span class="agents-radiocard-b">{{ autonomyBlurb(mode.id) }}</span>
           </label>
         </div>
@@ -1140,33 +1142,33 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Budget</span>
         <div class="agents-grid2">
-          <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" aria-label="Monthly budget (USD)" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? 'agent-budget-usd-error' : undefined" /><span v-if="budgetUSDError" id="agent-budget-usd-error" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
-          <label>Monthly token cap<input v-model="budgetTokens" class="k-input" aria-label="Monthly token cap" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? 'agent-budget-tokens-error' : undefined" /><span v-if="budgetTokensError" id="agent-budget-tokens-error" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
+          <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" aria-label="Monthly budget (USD)" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? domID('agent-budget-usd-error') : undefined" /><span v-if="budgetUSDError" :id="domID('agent-budget-usd-error')" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
+          <label>Monthly token cap<input v-model="budgetTokens" class="k-input" aria-label="Monthly token cap" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? domID('agent-budget-tokens-error') : undefined" /><span v-if="budgetTokensError" :id="domID('agent-budget-tokens-error')" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
         </div>
         <p class="agents-hint">Monthly caps apply to either backend and use usage reported by that backend; harness caps depend on usage reported by the runner.</p>
       </div>
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Limits</span>
         <div class="agents-grid2">
-          <label v-if="!harnessPolicyTarget"><span id="agent-max-tool-turns-label">Max tool turns</span><input v-model="maxToolTurns" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-max-tool-turns-label" :aria-invalid="maxToolTurnsValidation.error ? 'true' : undefined" :aria-describedby="['agent-max-tool-turns-hint', maxToolTurnsValidation.error ? 'agent-max-tool-turns-error' : ''].filter(Boolean).join(' ')" /><span id="agent-max-tool-turns-hint" class="agents-hint">How many tool-call rounds one model run may take before it stops. Leave blank for the provider default.</span><span v-if="maxToolTurnsValidation.error" id="agent-max-tool-turns-error" class="agents-fielderr" role="alert">{{ maxToolTurnsValidation.error }}</span></label>
+          <label v-if="!harnessPolicyTarget"><span :id="domID('agent-max-tool-turns-label')">Max tool turns</span><input v-model="maxToolTurns" class="k-input" inputmode="numeric" placeholder="blank = provider default" :aria-labelledby="domID('agent-max-tool-turns-label')" :aria-invalid="maxToolTurnsValidation.error ? 'true' : undefined" :aria-describedby="[domID('agent-max-tool-turns-hint'), maxToolTurnsValidation.error ? domID('agent-max-tool-turns-error') : ''].filter(Boolean).join(' ')" /><span :id="domID('agent-max-tool-turns-hint')" class="agents-hint">How many tool-call rounds one model run may take before it stops. Leave blank for the provider default.</span><span v-if="maxToolTurnsValidation.error" :id="domID('agent-max-tool-turns-error')" class="agents-fielderr" role="alert">{{ maxToolTurnsValidation.error }}</span></label>
           <div v-else class="agents-fieldset" data-harness-tool-turn-limit>
             <span class="agents-fieldset-legend">Model-only limit</span>
             <p v-if="hasToolTurnLimit" class="agents-hint" role="status">This draft still has a {{ maxToolTurns }}-turn cap. A harness owns its tool-call loop, so Railgrid cannot enforce this limit.</p>
             <p v-else class="agents-hint">A harness owns its tool-call loop. Railgrid cannot cap individual tool calls.</p>
             <button v-if="hasToolTurnDraft" class="k-btn k-btn--ghost" type="button" :disabled="saveState.policy.status === 'pending'" @click="maxToolTurns = ''">Clear draft limit</button>
           </div>
-          <label><span id="agent-run-timeout-label">Run timeout (seconds)</span><input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" aria-labelledby="agent-run-timeout-label" :aria-invalid="timeoutSecondsValidation.error ? 'true' : undefined" :aria-describedby="['agent-run-timeout-hint', timeoutSecondsValidation.error ? 'agent-run-timeout-error' : ''].filter(Boolean).join(' ')" /><span id="agent-run-timeout-hint" class="agents-hint">Railgrid stops the run when this wall-clock limit expires. Leave blank for the provider default.</span><span v-if="timeoutSecondsValidation.error" id="agent-run-timeout-error" class="agents-fielderr" role="alert">{{ timeoutSecondsValidation.error }}</span></label>
+          <label><span :id="domID('agent-run-timeout-label')">Run timeout (seconds)</span><input v-model="timeoutSeconds" class="k-input" inputmode="numeric" placeholder="blank = provider default" :aria-labelledby="domID('agent-run-timeout-label')" :aria-invalid="timeoutSecondsValidation.error ? 'true' : undefined" :aria-describedby="[domID('agent-run-timeout-hint'), timeoutSecondsValidation.error ? domID('agent-run-timeout-error') : ''].filter(Boolean).join(' ')" /><span :id="domID('agent-run-timeout-hint')" class="agents-hint">Railgrid stops the run when this wall-clock limit expires. Leave blank for the provider default.</span><span v-if="timeoutSecondsValidation.error" :id="domID('agent-run-timeout-error')" class="agents-fielderr" role="alert">{{ timeoutSecondsValidation.error }}</span></label>
         </div>
       </div>
-      <p v-if="harnessPolicyIssues.length" id="agent-harness-policy-issues" class="agents-fielderr" role="alert">{{ harnessPolicyIssues.join(' ') }}</p>
+      <p v-if="harnessPolicyIssues.length" :id="domID('agent-harness-policy-issues')" class="agents-fielderr" role="alert">{{ harnessPolicyIssues.join(' ') }}</p>
       <div class="agents-form-actions">
-        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.policy.status === 'pending' || harnessPolicyIssues.length > 0 || policyLimitInvalid" :aria-busy="saveState.policy.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessPolicyIssues.length ? 'agent-harness-policy-issues' : '', maxToolTurnsValidation.error && !harnessPolicyTarget ? 'agent-max-tool-turns-error' : '', timeoutSecondsValidation.error ? 'agent-run-timeout-error' : '', feedbackDescription('policy', policyDirty) || ''].filter(Boolean).join(' ') || undefined" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.policy.status === 'pending' ? 'Saving policy…' : 'Save policy' }}</button>
-        <ConfigSaveFeedback id="agent-policy-save-feedback" action="autonomy, budget and limits" :status="feedbackStatus('policy', policyDirty)" :newer-edits="newerEdits('policy')" :error="feedbackError('policy')" />
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.policy.status === 'pending' || harnessPolicyIssues.length > 0 || policyLimitInvalid" :aria-busy="saveState.policy.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessPolicyIssues.length ? domID('agent-harness-policy-issues') : '', maxToolTurnsValidation.error && !harnessPolicyTarget ? domID('agent-max-tool-turns-error') : '', timeoutSecondsValidation.error ? domID('agent-run-timeout-error') : '', feedbackDescription('policy', policyDirty) || ''].filter(Boolean).join(' ') || undefined" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.policy.status === 'pending' ? 'Saving policy…' : 'Save policy' }}</button>
+        <ConfigSaveFeedback :id="domID('agent-policy-save-feedback')" action="autonomy, budget and limits" :status="feedbackStatus('policy', policyDirty)" :newer-edits="newerEdits('policy')" :error="feedbackError('policy')" />
       </div>
     </ResourceSectionCard>
 
-    <Teleport to="#agents-workbench-panel-tools" defer :disabled="!workbenchSections">
-    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-tools-heading" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
+    <Teleport :to="'#' + domID('agents-workbench-panel-tools')" defer :disabled="!workbenchSections">
+    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-tools-heading')" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
       <template #actions><Wrench :stroke-width="1.75" aria-hidden="true" /></template>
       <!-- A harness brings its own tools, and the API REJECTS spec.tools on a
            harness-backed agent. Showing the grants disabled rather than hiding
@@ -1176,7 +1178,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <Circle :stroke-width="1.75" aria-hidden="true" /> This agent uses the coding harness’s own tools. Agent tool grants do not apply; switch to <strong>Model</strong> above to configure tools here.
       </p>
       <template v-else>
-      <ConfigSaveFeedback id="agent-tools-save-feedback" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
+      <ConfigSaveFeedback :id="domID('agent-tools-save-feedback')" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
       <fieldset class="agents-wire-fs">
         <legend><Puzzle :stroke-width="1.75" aria-hidden="true" /> Toolsets</legend>
         <div v-if="toolsetSlice.error && !toolsetSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
@@ -1238,7 +1240,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
     </Teleport>
 
-    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-channels-heading" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-channels-heading')" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
       <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
       <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
@@ -1250,20 +1252,20 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       <p v-if="connectionSlice.hasSnapshot && channelConnections.length === 0" class="agents-hint">No channels yet — add a Telegram / Slack / Discord / email connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
-      <div v-if="connectionSlice.hasSnapshot" class="agents-chan-editor" role="group" aria-labelledby="agent-channels-heading" :aria-describedby="channelError ? 'agent-channels-error' : undefined">
+      <div v-if="connectionSlice.hasSnapshot" class="agents-chan-editor" role="group" :aria-labelledby="domID('agent-channels-heading')" :aria-describedby="channelError ? domID('agent-channels-error') : undefined">
         <div v-for="row in channels" :key="row.key" class="agents-chan-row">
-          <input class="k-input agents-chan-name" placeholder="primary" aria-label="Channel role name" :value="row.name || ''" :aria-invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'true' : undefined" :aria-describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'agent-channels-error' : undefined" @input="patchChannelRow(row.key, { name: ($event.target as HTMLInputElement).value })" />
-          <FormSelect class="agents-chan-conn" :model-value="row.connectionRef" :options="channelOptions" :labelledby="`agent-channel-${row.key}-label`" :invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection'" :describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection' ? 'agent-channels-error' : undefined" @update:model-value="patchChannelRow(row.key, { connectionRef: $event })" />
-          <span :id="`agent-channel-${row.key}-label`" class="sr-only">Channel connection</span>
-          <label class="agents-chan-primary k-checkbox-hit" title="Default channel for output with no channel set"><input type="radio" name="chan-primary" :checked="Boolean(row.primary)" @change="setPrimaryChannel(row.key)" /> primary</label>
+          <input class="k-input agents-chan-name" placeholder="primary" aria-label="Channel role name" :value="row.name || ''" :aria-invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? 'true' : undefined" :aria-describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'name' ? domID('agent-channels-error') : undefined" @input="patchChannelRow(row.key, { name: ($event.target as HTMLInputElement).value })" />
+          <FormSelect class="agents-chan-conn" :model-value="row.connectionRef" :options="channelOptions" :labelledby="domID(`agent-channel-${row.key}-label`)" :invalid="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection'" :describedby="channelErrorTarget?.key === row.key && channelErrorTarget.field === 'connection' ? domID('agent-channels-error') : undefined" @update:model-value="patchChannelRow(row.key, { connectionRef: $event })" />
+          <span :id="domID(`agent-channel-${row.key}-label`)" class="sr-only">Channel connection</span>
+          <label class="agents-chan-primary k-checkbox-hit" title="Default channel for output with no channel set"><input type="radio" :name="domID('chan-primary')" :checked="Boolean(row.primary)" @change="setPrimaryChannel(row.key)" /> primary</label>
           <button class="k-icon-action agents-iconbtn-danger" type="button" :aria-label="`Remove channel ${row.name || ''}`" title="Remove channel" @click="removeChannel(row.key)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button>
         </div>
       </div>
-      <div v-if="connectionSlice.hasSnapshot && channelError" id="agent-channels-error" class="agents-fielderr" role="alert">{{ channelError }}</div>
+      <div v-if="connectionSlice.hasSnapshot && channelError" :id="domID('agent-channels-error')" class="agents-fielderr" role="alert">{{ channelError }}</div>
       <div v-if="connectionSlice.hasSnapshot" class="agents-form-actions">
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="channelConnections.length === 0" @click="addChannel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add channel</button>
-        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.channels.status === 'pending'" :aria-busy="saveState.channels.status === 'pending' ? 'true' : undefined" :aria-describedby="[channelError ? 'agent-channels-error' : '', feedbackDescription('channels', channelsDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveChannels"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.channels.status === 'pending' ? 'Saving channels…' : 'Save channels' }}</button>
-        <ConfigSaveFeedback id="agent-channels-save-feedback" action="channels" :status="feedbackStatus('channels', channelsDirty)" :newer-edits="newerEdits('channels')" :error="feedbackError('channels')" />
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.channels.status === 'pending'" :aria-busy="saveState.channels.status === 'pending' ? 'true' : undefined" :aria-describedby="[channelError ? domID('agent-channels-error') : '', feedbackDescription('channels', channelsDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveChannels"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.channels.status === 'pending' ? 'Saving channels…' : 'Save channels' }}</button>
+        <ConfigSaveFeedback :id="domID('agent-channels-save-feedback')" action="channels" :status="feedbackStatus('channels', channelsDirty)" :newer-edits="newerEdits('channels')" :error="feedbackError('channels')" />
       </div>
       <div v-if="connectionSlice.hasSnapshot && agent.spec?.channels?.length" class="agents-chan-inbound">
         <div v-for="bound in agent.spec.channels" :key="`${bound.name}-${bound.connectionRef}`" class="agents-inbound-line">
@@ -1284,16 +1286,16 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <Teleport to="#agents-workbench-panel-automation" defer :disabled="!workbenchSections">
+    <Teleport :to="'#' + domID('agents-workbench-panel-automation')" defer :disabled="!workbenchSections">
       <Automation :store="store" :api="api" kind="schedule" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
       <Automation :store="store" :api="api" kind="trigger" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
     </Teleport>
 
-    <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" variant="document" heading-id="agent-delegates-heading" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
+    <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" variant="document" :heading-id="domID('agent-delegates-heading')" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
       <div class="agents-checkrow">
         <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>
-      <ConfigSaveFeedback id="agent-delegates-save-feedback" action="delegates" :status="feedbackStatus('delegates')" :error="feedbackError('delegates')" />
+      <ConfigSaveFeedback :id="domID('agent-delegates-save-feedback')" action="delegates" :status="feedbackStatus('delegates')" :error="feedbackError('delegates')" />
     </ResourceSectionCard>
 
     <slot name="destructive-actions" />

@@ -10,6 +10,8 @@ import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vu
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import ModelCollection from '../agentkit/ModelCollection.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
+import WorkspaceAssistantCard from './WorkspaceAssistantCard.vue'
+import type { RailgridContext } from '../types'
 import ModelUsageSection from '../agentkit/ModelUsageSection.vue'
 import ModelConnectionEditor from './ModelConnectionEditor.vue'
 import TechnicalDetails from '../components/TechnicalDetails.vue'
@@ -22,7 +24,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { routeOwned: false, createRoute: false, initialFamily: 'chat' })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { routeOwned: false, createRoute: false, initialFamily: 'chat' })
 const emit = defineEmits<{
   navigate: [route: Route]
   'create-success': [detail: CreateSuccessDetail & Fence]
@@ -343,6 +345,7 @@ defineExpose({ loadCatalog, loadUsage })
           <ResourceTableDeleteButton :label="`Delete ${credential.name}`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
         </template>
       </ModelCollection>
+      <WorkspaceAssistantCard v-if="overlayControl" :store="store" :overlay-control="overlayControl" />
       <ModelUsageSection provider="Agents" available>
 <template #controls><div class="agents-seg" role="group" aria-label="Usage window"><button v-for="days in [7, 30, 90]" :key="days" :class="['k-btn k-btn--ghost', { on: days === windowDays }]" :aria-pressed="days === windowDays" @click="windowDays = days">{{ days }}d</button></div></template>
       <div v-if="usageError && !usageHasSnapshot" class="k-error" role="alert">Usage unavailable: {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>

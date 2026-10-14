@@ -22,7 +22,7 @@ import {
   type Route,
 } from './router'
 import { clearToasts } from './ui/toast'
-import { isHarnessProvider, type Agent, type Connection, type Credential, type RailgridContext, type Toolset, type Webhook } from './types'
+import { isHarnessProvider, type AgentOverlayState, type Agent, type Connection, type Credential, type RailgridContext, type Toolset, type Webhook } from './types'
 import { withCreatedCredential, type AgentCreateDraft, type AgentCredentialFamily } from './agent-create-draft'
 import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
@@ -36,11 +36,11 @@ import Models from './views/Models.vue'
 import Automation from './views/Automation.vue'
 import Webhooks from './views/Webhooks.vue'
 
-const props = defineProps<{ ctx: RailgridContext | null; host: HTMLElement }>()
+const props = defineProps<{ ctx: RailgridContext | null; host: HTMLElement; overlay?: AgentOverlayState }>()
 
 const api = shallowRef(markRaw(new ApiClient()))
 const store = shallowRef(markRaw(new AppStore(api.value)))
-const route = ref<Route>(parseHash())
+const route = ref<Route>(props.overlay ? { kind: 'agent', name: props.overlay.agent, tab: 'chat' } : parseHash())
 const authorityEpoch = ref(0)
 const createSession = ref(0)
 const storeRevision = ref(0)
@@ -60,15 +60,19 @@ let boundStore: AppStore | null = null
 let focusCollectionAfterEdit: 'connections' | 'toolsets' | null = null
 let focusRequest = 0
 
-provideAgentsRuntime({ store, api, route, authorityEpoch, host })
+provideAgentsRuntime({ store, api, route, authorityEpoch, host, domPrefix: props.overlay ? 'overlay-' : '' })
 
 const contextUsable = computed(() => {
   storeRevision.value
   return Boolean(authority?.usable)
 })
+watch(() => props.overlay?.agent, name => {
+  if (name && (route.value.kind !== 'agent' || route.value.name !== name)) route.value = { kind: 'agent', name, tab: 'chat' }
+})
 const workspaceActive = computed(() => contextUsable.value && route.value.kind === 'agent')
 
 function requestWorkspaceLayout(fullBleed: boolean): void {
+  if (props.overlay) return
   props.host.dispatchEvent(new CustomEvent('railgrid-layout-change', {
     detail: { fullBleed },
     bubbles: true,
@@ -153,6 +157,12 @@ function prepareAgentCreateRouteChange(previous: Route, next: Route): void {
 }
 
 function go(next: Route, mode?: 'push' | 'replace'): void {
+  if (props.overlay) {
+    if (next.kind !== 'agent' || next.name !== props.overlay.agent || next.tab !== 'chat') {
+      props.host.dispatchEvent(new CustomEvent('railgrid-overlay-navigate', { detail: { path: hashFor(next) } }))
+    }
+    return
+  }
   const previous = route.value
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
   prepareAgentCreateRouteChange(previous, next)
@@ -213,7 +223,8 @@ function scheduleRouteFocus(next: Route): void {
   const request = ++focusRequest
   void nextTick(() => requestAnimationFrame(() => {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
-    const target = root.value?.querySelector<HTMLElement>('[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-panel-head > h3, .agents-detail-title > h2')
+    const assistantSettings = next.kind === 'menu' && next.menu === 'models' && (props.ctx?.agentOverlay?.settingsOpen || root.value?.querySelector('#workspace-assistant-settings') === document.activeElement)
+    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-panel-head > h3, .agents-detail-title > h2')
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
     target.focus()
@@ -305,7 +316,7 @@ watch(() => props.ctx, applyContext, { immediate: true, flush: 'sync' })
 // hashchange. The host republishes context after hash-only route changes too.
 // Follow that committed URL without rewriting the host's history entry.
 watch(() => props.ctx, () => {
-  if (contextUsable.value) restoreRouteFromHash(false)
+  if (contextUsable.value && !props.overlay) restoreRouteFromHash(false)
 })
 
 type SourceDetail = Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>
@@ -459,6 +470,7 @@ function selectMenu(id: string): void {
 watch(
   () => props.ctx?.subPath,
   (subPath) => {
+    if (props.overlay) return
     const menu = routeForSubPath(subPath)
     if (menu && activeMenu(route.value) !== menu) go({ kind: 'menu', menu }, 'replace')
   },
@@ -468,6 +480,7 @@ watch(
 onMounted(() => {
   requestWorkspaceLayout(workspaceActive.value)
   bindStore(store.value)
+  if (props.overlay) return
   syncHash(route.value)
   window.addEventListener('hashchange', restoreRoute)
   window.addEventListener('popstate', restoreRoute)
@@ -541,6 +554,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
+        :overlay-control="ctx.agentOverlay"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
@@ -557,6 +571,10 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :store="store"
         :api="api"
         :name="route.name"
+        :compact="!!overlay"
+        :composer-only="overlay?.composerOnly"
+        :overlay="!!overlay"
+        :page-context="overlay?.pageContext"
         :tab="route.tab"
         :run-id="route.runID"
         :authority-epoch="authorityEpoch"

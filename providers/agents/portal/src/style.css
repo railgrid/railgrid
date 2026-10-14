@@ -884,3 +884,70 @@ railgrid-provider-agents .agents-webhook-empty { display: flex; flex-direction: 
 
 railgrid-provider-agents .agents-runs-refresh { white-space: nowrap; }
 railgrid-provider-agents .agents-runs-refresh > svg { width: 16px; height: 16px; }
+/* The host owns overlay geometry; Agents keeps its existing conversation and
+   workbench mounted while changing only their presentation. */
+railgrid-provider-agents .agents-chat-shell--compact .agents-composer { padding: 8px; }
+railgrid-provider-agents .agents-chat-shell--compact .agents-chat-main { min-width: 0; }
+
+railgrid-provider-agents .agents-user-content { min-width: 0; }
+railgrid-provider-agents .agents-page-reference { margin-top: 4px; min-width: 0; max-width: 100%; white-space: normal; font-size: 11px; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-page-reference summary { display: flex; align-items: center; gap: 5px; cursor: pointer; list-style: none; min-height: 28px; max-width: 100%; border-radius: var(--radius-sm); }
+railgrid-provider-agents .agents-page-reference summary::-webkit-details-marker { display: none; }
+railgrid-provider-agents .agents-page-reference summary:hover { color: var(--color-text-primary); }
+railgrid-provider-agents .agents-page-reference-prefix, railgrid-provider-agents .agents-page-reference summary svg { flex: none; }
+railgrid-provider-agents .agents-page-reference-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+railgrid-provider-agents .agents-page-reference[open] .agents-page-reference-chevron { transform: rotate(180deg); }
+railgrid-provider-agents .agents-page-reference summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+railgrid-provider-agents .agents-page-reference dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; margin: 6px 0 8px; font-size: 12px; }
+railgrid-provider-agents .agents-page-reference dd { margin: 0; overflow-wrap: anywhere; color: var(--color-text-primary); }
+railgrid-provider-agents .agents-page-reference p { margin: 0 0 4px; line-height: 1.5; }
+@media (pointer: coarse) {
+  railgrid-provider-agents .agents-page-reference summary { min-height: 44px; }
+}
+
+railgrid-provider-agents .agents-assistant-settings { padding: 20px; margin-block: 20px; box-shadow: none; }
+railgrid-provider-agents .agents-assistant-settings h3 { margin: 0 0 16px; font-size: 14px; font-weight: 600; }
+railgrid-provider-agents .agents-assistant-settings form { padding: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 12px 24px; }
+railgrid-provider-agents .agents-assistant-settings__agent { display: grid; gap: 6px; min-width: 0; }
+railgrid-provider-agents .agents-assistant-settings__agent > label { font-size: 12px; font-weight: 600; }
+railgrid-provider-agents .agents-assistant-settings__context { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 36px; font-size: 13px; }
+railgrid-provider-agents .agents-assistant-settings__switch { display: flex; align-items: center; gap: 8px; }
+railgrid-provider-agents .agents-assistant-settings__info { display: contents; }
+railgrid-provider-agents .agents-assistant-settings__info summary { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; cursor: pointer; color: var(--color-text-muted); border-radius: 4px; }
+railgrid-provider-agents .agents-assistant-settings__info summary::-webkit-details-marker { display: none; }
+railgrid-provider-agents .agents-assistant-settings__info summary:hover { color: var(--color-text-primary); background: var(--color-surface-hover); }
+railgrid-provider-agents .agents-assistant-settings__info summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+railgrid-provider-agents .agents-assistant-settings__info p { flex-basis: 100%; margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--color-text-muted); }
+railgrid-provider-agents .agents-assistant-settings__footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+railgrid-provider-agents .agents-assistant-settings__footer > p { margin: 0; font-size: 12px; color: var(--color-text-muted); }
+railgrid-provider-agents .agents-assistant-settings__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+railgrid-provider-agents .agents-assistant-settings__action { padding: 5px 10px; min-height: 30px; font-size: 12px; box-shadow: none; }
+railgrid-provider-agents .agents-assistant-overview-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+@media (max-width: 640px) {
+  railgrid-provider-agents .agents-assistant-settings form { grid-template-columns: minmax(0, 1fr); }
+  railgrid-provider-agents .agents-assistant-settings__footer { align-items: flex-start; flex-direction: column; }
+  railgrid-provider-agents .agents-assistant-settings__actions { align-self: flex-end; }
+}
+@media (pointer: coarse) {
+  railgrid-provider-agents .agents-assistant-settings__action, railgrid-provider-agents .agents-assistant-settings__info summary { min-height: 44px; }
+  railgrid-provider-agents .agents-assistant-settings__info summary { min-width: 44px; }
+}
+
+/* The overlay's thread picker replaces the transcript without remounting it. */
+.agents-overlay-threads { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.agents-overlay-threads__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agents-overlay-threads__heading h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.agents-overlay-threads__new { min-height: 30px; padding: 5px 10px; gap: 6px; font-size: 12px; line-height: 18px; white-space: nowrap; box-shadow: none; }
+.agents-overlay-threads__new:hover { box-shadow: none; }
+.agents-overlay-threads__new:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.agents-overlay-threads__list { margin: 0; padding: 0; list-style: none; }
+.agents-overlay-threads__item { width: 100%; min-height: 36px; gap: 8px; justify-content: flex-start; text-align: left; }
+.agents-overlay-threads__item > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agents-overlay-threads__item > svg { flex-shrink: 0; }
+.agents-overlay-threads__item > small { color: var(--color-text-muted); font-size: 11px; }
+.agents-overlay-threads__item[aria-current] { background: var(--color-accent-subtle); }
+@media (pointer: coarse) { .agents-overlay-threads__item, .agents-overlay-threads__new { min-height: 44px; } }
+
+railgrid-provider-agents .agents-chat-shell--bar .agents-chat-main > :not(.agents-composer) { display: none; }
+railgrid-provider-agents .agents-chat-shell--bar .agents-composer { padding: 0; border: 0; }
+railgrid-provider-agents .agents-chat-shell--bar { height: 100%; }

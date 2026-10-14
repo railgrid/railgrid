@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 24;
+  --railgrid-agent-ui-version: 25;
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
   --k-ai-pane-leave-duration: 190ms;
@@ -917,6 +917,16 @@ button.k-workbench-tab {
   right: 8px;
   bottom: 8px;
   z-index: 2;
+}
+/* Compact chat surfaces reserve space beside the editor, not a second row. */
+.k-ai-composer--compact,
+.k-ai-composer--compact .k-ai-composer__editor { min-height: 44px; }
+.k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 44px; padding: 12px 48px 12px 10px; }
+.k-ai-composer--compact .k-ai-composer__primary { right: 6px; bottom: 6px; }
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-ai-composer--compact,
+  .k-ai-composer--compact .k-ai-composer__editor { min-height: 56px; }
+  .k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 56px; padding: 18px 62px 18px 10px; }
 }
 .k-ai-primary-action {
   display: inline-flex;

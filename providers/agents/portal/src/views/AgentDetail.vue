@@ -24,7 +24,7 @@ import {
   type AgentWorkbenchTabKind,
 } from '../agent-workbench'
 import type { AppStore } from '../store'
-import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import Activity from './Activity.vue'
 import AgentChat from './AgentChat.vue'
 import AgentConfig from './AgentConfig.vue'
@@ -39,6 +39,8 @@ type AIWorkspaceHandle = {
   close: () => void
 }
 
+const domID = useAgentDOMID()
+
 const props = defineProps<{
   store: AppStore
   api: ApiClient
@@ -46,6 +48,10 @@ const props = defineProps<{
   tab: AgentTab
   runId?: string
   authorityEpoch: number
+  compact?: boolean
+  composerOnly?: boolean
+  overlay?: boolean
+  pageContext?: string
 }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
@@ -78,7 +84,11 @@ function isMobileViewport(): boolean {
 // Chat is the route's primary surface, but a wide desktop gets the retained
 // workbench alongside it on first entry. A mobile deep link to a workbench tab
 // is an explicit request for that pane and therefore still opens it.
-const workspaceOpen = ref(props.tab !== 'chat' || !isMobileViewport())
+const workspaceOpen = ref(!props.compact && (props.tab !== 'chat' || !isMobileViewport()))
+watch(() => props.compact, compact => {
+  workspaceOpen.value = !compact && !isMobileViewport()
+  if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
+})
 const initialWorkbenchState = props.tab === 'chat'
   ? createDefaultAgentWorkbenchState()
   : openAgentWorkbenchTab(createDefaultAgentWorkbenchState(), props.tab)
@@ -225,19 +235,20 @@ async function remove(): Promise<void> {
         <div v-else class="agents-resource-body agents-resource-body--workspace">
           <AIWorkspace
             ref="workspace"
-            id="agents-workbench"
+            :id="domID('agents-workbench')"
             class="agents-workspace"
             data-agent-workspace
-            :open="workspaceOpen"
+            :open="workspaceOpen && !compact"
             aria-label="Agent workspace"
             conversation-label="Agent conversation"
             workbench-label="Agent workbench"
             @close="closeWorkbench"
           >
             <template #conversation>
-              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" @navigate="handleChildNavigate">
+              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :composer-only="composerOnly" :page-context="pageContext" @navigate="handleChildNavigate">
                 <template #leading>
                   <ResourceBackLink
+                    v-if="!overlay"
                     class="k-ai-conversation-back"
                     icon-only
                     :href="hashFor({ kind: 'menu', menu: 'agents' })"
@@ -246,7 +257,7 @@ async function remove(): Promise<void> {
                     title="Back to agents"
                     @back="navigate({ kind: 'menu', menu: 'agents' })"
                   />
-                  <span class="k-ai-conversation-header__divider" aria-hidden="true" />
+                  <span v-if="!overlay" class="k-ai-conversation-header__divider" aria-hidden="true" />
                 </template>
                 <template #heading="{ activeSessionLabel }">
                   <AIConversationIdentity class="agents-agent-heading">
@@ -266,9 +277,10 @@ async function remove(): Promise<void> {
                     {{ agent.status.suspendedReason }}
                   </span>
                   <button
+                    v-if="!compact"
                     class="agents-workbench-toggle"
                     type="button"
-                    aria-controls="agents-workbench"
+                    :aria-controls="domID('agents-workbench')"
                     data-agent-workbench-toggle
                     :aria-expanded="workspaceOpen ? 'true' : 'false'"
                     :aria-label="workspaceOpen ? 'Hide workbench' : 'Show workbench'"
@@ -295,7 +307,7 @@ async function remove(): Promise<void> {
                 <template #config>
                   <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections @navigate="handleChildNavigate">
                     <template #destructive-actions>
-                      <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-delete-heading" title="Delete agent" description="Delete this agent and its chat history.">
+                      <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
                         <div class="agents-form-actions">
                           <button
                             class="k-btn k-btn--danger-solid"

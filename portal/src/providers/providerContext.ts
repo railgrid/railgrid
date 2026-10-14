@@ -1,10 +1,22 @@
+import type { PublishPageResource } from '@/portalkit/page-context'
 import { createProviderFetch, type ProviderFetch, type ProviderFetchScope } from './providerFetch'
 
 // The railgridContext shape the host pushes onto a provider's custom element.
 // Both mount points (ProviderFrame.vue for the page, DashboardTile.vue for the
 // tile) build it through createProviderContext so the auth surface a bundle
 // sees is defined in exactly one place.
+export interface AgentOverlayControl {
+  selectedAgent: string | null
+    settingsOpen: boolean
+    followContext: boolean
+    setSettingsOpen: (open: boolean) => void
+    configure: (name: string | null, followContext: boolean) => void
+  select: (name: string | null) => void
+}
+
 export interface ProviderContext {
+  publishPageResource?: PublishPageResource
+  agentOverlay?: AgentOverlayControl
   subPath?: string
   user: unknown
   // tenant is the kcp cluster name of the active workspace.
@@ -27,6 +39,8 @@ export interface ProviderContext {
 }
 
 export interface ProviderContextFields {
+  publishPageResource?: PublishPageResource
+  agentOverlay?: AgentOverlayControl
   subPath?: string
   user: unknown
   tenant: string | null

@@ -14,7 +14,22 @@ import type { AITurnProgressStatus } from './agentkit/conversation'
 
 // ---- host contract ---------------------------------------------------------
 
+export interface AgentOverlayState {
+  agent: string
+  composerOnly?: boolean
+  // A host-curated navigation snapshot, attached only at send time.
+  pageContext?: string
+}
+
 export interface RailgridContext {
+  agentOverlay?: {
+    selectedAgent: string | null
+    settingsOpen: boolean
+    followContext: boolean
+    setSettingsOpen: (open: boolean) => void
+    configure: (name: string | null, followContext: boolean) => void
+    select: (name: string | null) => void
+  }
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).

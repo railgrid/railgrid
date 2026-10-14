@@ -12,9 +12,11 @@ import { ensureAgentUIStyles } from '../agentkit/styles'
 
 withDefaults(defineProps<{
   hasQueuedMessages?: boolean
+  compact?: boolean
   disabled?: boolean
 }>(), {
   hasQueuedMessages: false,
+  compact: false,
   disabled: false,
 })
 
@@ -24,7 +26,7 @@ ensureAgentUIStyles()
 <template>
   <div
     class="k-ai-composer"
-    :class="{ 'k-ai-composer--queued': hasQueuedMessages }"
+    :class="{ 'k-ai-composer--queued': hasQueuedMessages, 'k-ai-composer--compact': compact }"
     :aria-disabled="disabled ? 'true' : undefined"
   >
     <div class="k-ai-composer__editor">

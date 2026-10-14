@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { PublishPageResource } from '../portalkit/page-context'
 import { portalHref } from '../portalkit/navigation'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Boxes, CalendarClock, FileCode2, RefreshCw } from 'lucide-vue-next'
@@ -26,7 +27,7 @@ import {
 import { resolve } from '../view'
 import { REASON_INSTANCE_NOT_FOUND, type Instance, type TemplateView } from '../types'
 
-const props = defineProps<{ instanceName: string; tombstones: ResourceTombstones }>()
+const props = defineProps<{ instanceName: string; tombstones: ResourceTombstones; publishPageResource?: PublishPageResource }>()
 const emit = defineEmits<{ (e: 'navigate', view: string): void }>()
 
 const inst = ref<Instance | null>(null)
@@ -41,6 +42,16 @@ let active = true
 let mounted = false
 let navigatingAway = false
 let acceptedDeletingIdentity: { name: string; uid?: string } | null = null
+
+// Only publish an identity after the page has successfully read it. A failed
+// refresh clears the hint; an old response cannot republish after navigation.
+watch([inst, error, () => props.publishPageResource], ([instance, readError, publish]) => {
+  publish?.(instance && !readError ? {
+    apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', resource: 'instances',
+    name: instance.name, uid: instance.uid, readTool: 'get_instance',
+  } : null)
+}, { immediate: true, flush: 'post' })
+onUnmounted(() => props.publishPageResource?.(null))
 
 const DELETING_MESSAGE = 'Deletion is in progress while provisioned resources are cleaned up.'
 

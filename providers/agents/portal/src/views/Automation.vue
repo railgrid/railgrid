@@ -26,7 +26,7 @@ import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vu
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import { toast } from '../ui/toast'
-import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import TriggerFilterTester from './TriggerFilterTester.vue'
 import { deliveryOutcomeLabel } from './webhook-deliveries'
 
@@ -67,6 +67,8 @@ interface Draft {
   channelRef: string
   suspend: boolean
 }
+
+const domID = useAgentDOMID()
 
 const META: Record<AutomationKind, Meta> = {
   schedule: {
@@ -628,7 +630,7 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
 </script>
 
 <template>
-  <ResourceSectionCard v-if="!formRoute" class="agents-config-sec" :heading-id="`agent-${kind}-heading`" :title="meta.title" :description="meta.blurb">
+  <ResourceSectionCard v-if="!formRoute" class="agents-config-sec" :heading-id="domID(`agent-${kind}-heading`)" :title="meta.title" :description="meta.blurb">
     <template #actions>
       <button class="k-btn k-btn--ghost secondary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New {{ meta.one }}</button>
     </template>
