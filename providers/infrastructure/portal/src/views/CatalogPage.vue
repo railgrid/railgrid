@@ -98,7 +98,7 @@ function selectTemplateRow(row: Record<string, unknown>) {
     <header class="page-head">
       <div>
         <h2 class="page-title">Templates</h2>
-        <p class="page-meta">Pick a template to provision into your tenant scope.</p>
+        <p class="page-meta">Choose a template to provision resources in this workspace.</p>
       </div>
       <button type="button" class="k-btn k-btn--ghost" @click="emit('navigate', 'instances')">My instances <ArrowRight :size="14" aria-hidden="true" /></button>
     </header>

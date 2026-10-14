@@ -439,9 +439,7 @@ function dependencyNotice(p: ProviderDTO): string {
           Providers
         </h1>
         <p class="mt-1 text-sm text-text-muted">
-          Extensions registered with this railgrid instance. Click <strong>Enable</strong>
-          to create an APIBinding in your workspace and unlock the provider's CRs;
-          <strong>Open</strong> launches its UI in the portal.
+          Add capabilities to this workspace. Review access, then enable a provider.
         </p>
       </header>
 

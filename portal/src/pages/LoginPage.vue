@@ -132,7 +132,6 @@ function startOIDCLogin() {
             <Hexagon class="h-10 w-10 text-accent" :stroke-width="1.5" />
           </div>
           <span class="type-display mt-6 text-2xl font-bold tracking-tight text-text-primary">RAILGRID</span>
-          <span class="mt-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-text-muted">Command Center</span>
           <div class="energy-line mt-6 h-px w-24" />
         </div>
       </div>
@@ -154,8 +153,8 @@ function startOIDCLogin() {
         <div class="rounded-xl border border-border-default shadow-sm">
           <div class="space-y-5 rounded-xl bg-surface-raised p-7">
             <div>
-              <h2 class="text-[15px] font-semibold text-text-primary">Sign in</h2>
-              <p class="mt-0.5 text-[12px] text-text-muted">Authenticate to access your cluster</p>
+              <h2 class="text-[15px] font-semibold text-text-primary">Sign in to Railgrid</h2>
+              <p class="mt-0.5 text-[12px] text-text-muted">Access your workspaces, apps, and infrastructure.</p>
             </div>
 
             <!-- Error -->
