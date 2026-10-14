@@ -81,16 +81,15 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // Keep route budgets separate so a tiny registrar cannot hide growth in a
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
-enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// These are ceilings, not snapshots to increase with each UI change. The runtime-only
-// Vue build leaves room for ordinary growth; investigate the module report before
-// changing these limits (see BUNDLE_PERFORMANCE.md).
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_265_800, gzipBytes: 353_400 })
+enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 200_000, gzipBytes: 62_000 })
+// Ceilings retain 3–5 KB gzip above the optimized build (see BUNDLE_PERFORMANCE.md).
+// Do not raise them without first checking the APP_STUDIO_BUNDLE_REPORT=1 module report.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_180_000, gzipBytes: 325_000 })
 // Authentication settings load only when the settings panel opens.
 const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthentication', 'authentication settings')
 const authArtifact = await artifact(manifest[authKey].file)
 enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_363_100, gzipBytes: 384_900 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_275_000, gzipBytes: 357_000 })
 
 if (budgetFailures.length) {
   console.error('Largest emitted assets (gzip bytes):')

@@ -8,7 +8,7 @@ export function bundlePerformance({ report = false } = {}) {
         if (chunk.type !== 'chunk') continue
         for (const [id, module] of Object.entries(chunk.modules)) {
           const normalized = id.replaceAll('\\', '/')
-          if (/\/node_modules\/@vue\/compiler-(core|dom|sfc|ssr)\//.test(normalized)) {
+          if (/\/node_modules\/@vue\/compiler-[\w-]+\//.test(normalized)) {
             this.error(`App Studio must not ship Vue's template compiler: ${normalized}. Use vue.runtime.esm-bundler.js; Vite precompiles the templates.`)
           }
           modules.set(normalized, (modules.get(normalized) ?? 0) + module.renderedLength)
