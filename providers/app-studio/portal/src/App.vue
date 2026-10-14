@@ -10558,7 +10558,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           />
         </div>
 
-        <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage(assistantActiveRunSubmitIntent())">
+        <form class="k-ai-composer-dock" @submit.prevent="sendMessage(assistantActiveRunSubmitIntent())">
           <AIInterrupt
             v-if="pendingFollowUp"
             class="mb-2"
@@ -11975,11 +11975,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 <style scoped>
 .workbench-pane-enter-active,
 .workbench-pane-leave-active {
-  transition: opacity 280ms ease-out;
+  transition: opacity var(--k-ai-pane-enter-duration) ease-out;
 }
 
 .workbench-pane-leave-active {
-  transition-duration: 190ms;
+  transition-duration: var(--k-ai-pane-leave-duration);
 }
 
 .workbench-pane-enter-from,
@@ -11998,11 +11998,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
 @media (min-width: 768px) {
   .workbench-conversation-pane {
-    transition: flex-basis 280ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: flex-basis var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing);
   }
 
   .workbench-conversation-pane.workbench-conversation-leaving {
-    transition-duration: 190ms;
+    transition-duration: var(--k-ai-pane-leave-duration);
   }
 
   .workbench-conversation-pane.transition-none {
@@ -12010,11 +12010,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
   }
 
   .workbench-pane-enter-active {
-    transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1), opacity 280ms ease-out;
+    transition: transform var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing), opacity var(--k-ai-pane-enter-duration) ease-out;
   }
 
   .workbench-pane-leave-active {
-    transition: transform 190ms cubic-bezier(0.16, 1, 0.3, 1), opacity 190ms ease-out;
+    transition: transform var(--k-ai-pane-leave-duration) var(--k-ai-pane-easing), opacity var(--k-ai-pane-leave-duration) ease-out;
   }
 
   .workbench-pane-enter-from,

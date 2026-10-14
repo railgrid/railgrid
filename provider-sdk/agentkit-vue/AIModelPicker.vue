@@ -11,6 +11,7 @@ const props = defineProps<{
   disabled?: boolean
   requireSelection?: boolean
   contained?: boolean
+  description?: string
 }>()
 
 const emit = defineEmits<{
@@ -133,6 +134,8 @@ watch(() => [props.selectedID, props.models.length, props.disabled] as const, ([
       role="combobox"
       class="k-ai-model-picker__trigger"
       :disabled="disabled || models.length === 0"
+      :title="description"
+      :aria-description="description"
       aria-haspopup="listbox"
       :aria-expanded="open"
       :aria-controls="listboxID"

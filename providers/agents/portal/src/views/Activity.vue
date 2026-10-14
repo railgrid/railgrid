@@ -4,9 +4,11 @@ import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
+import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import AIWorkbenchPane from '../agentkit/AIWorkbenchPane.vue'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
-import type { ResourceTableChange, TableFilterDefinition, TableFilterState, TablePageInfo } from '../portalkit/table'
+import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
@@ -57,8 +59,7 @@ const resolvingInbox = ref(new Map<string, InboxDecision>())
 const answerDrafts = reactive<Record<string, string>>({})
 const tablePage = ref(1)
 const tablePageSize = ref(PAGE)
-const tableCursor = ref<string | null>(null)
-const tablePageInfo = ref<TablePageInfo | null>(null)
+const tableQuery = ref('')
 const tableFilters = ref<TableFilterState>({ agent: '', class: '', phase: '', range: '' })
 let refreshTimer = 0
 let requestGeneration = 0
@@ -77,7 +78,13 @@ const agents = computed(() => {
   void revision.value
   return props.store.agents.data
 })
-const agentOptions = computed(() => agents.value.map(item => ({ value: item.metadata.name, label: item.metadata.name })))
+const agentOptions = computed(() => {
+  const names = new Set(agents.value.map(item => item.metadata.name))
+  runs.value.forEach(run => { if (run.agent) names.add(run.agent) })
+  return [...names]
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' }))
+    .map(name => ({ value: name, label: name }))
+})
 const classOptions = [
   { value: 'interactive', label: 'interactive' },
   { value: 'background', label: 'background' },
@@ -114,15 +121,26 @@ const columns = computed(() => [
   { key: 'usage', label: 'Usage', align: 'end' as const },
   { key: 'when', label: 'Created', align: 'end' as const },
 ])
+const searchKeys = ['id', 'agent', 'inputPreview', 'trigger', 'phase', 'class']
 // A run's input can be a whole prompt. The row shows one bounded line of it and
 // discloses a longer cut on hover; the run page has it in full.
+const now = ref(Date.now())
+let rangeClock = 0
 const tableRows = computed(() => runs.value.map(run => ({
   ...run,
   input: runPreview(run.inputPreview, RUN_PREVIEW_CELL_CHARS) || '—',
   fullInput: runPreview(run.inputPreview, RUN_PREVIEW_DISCLOSURE_CHARS) || '—',
   when: run.createdAt,
+  range: RANGES
+    .filter(candidate => candidate.hours > 0 && isWithinRange(run.createdAt, candidate.hours))
+    .map(candidate => candidate.id),
   run,
 })))
+
+function isWithinRange(createdAt: string, hours: number): boolean {
+  const created = Date.parse(createdAt)
+  return Number.isFinite(created) && created >= now.value - hours * 3_600_000
+}
 
 /**
  * ranOnHarness marks only the rows that say so. A run with no recorded backend
@@ -134,19 +152,12 @@ function ranOnHarness(row: Record<string, unknown>): boolean {
   return runHarnessBacked(row.run as RunSummary)
 }
 
-function runFilter(cursor: string | null = tableCursor.value, limit = tablePageSize.value): RunFilter {
-  const hours = RANGES.find(candidate => candidate.id === tableFilters.value.range)?.hours || 0
-  return {
-    agent: props.agent || tableFilters.value.agent || undefined,
-    class: tableFilters.value.class || undefined,
-    phase: tableFilters.value.phase || undefined,
-    since: hours ? new Date(Date.now() - hours * 3_600_000).toISOString() : undefined,
-    cursor: cursor || undefined,
-    limit,
-  }
+function runFilter(): RunFilter {
+  return props.agent ? { agent: props.agent } : {}
 }
 
 async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise<void> {
+  now.value = Date.now()
   if (mode === 'background' && loading.value) {
     backgroundRefreshQueued = true
     return
@@ -157,13 +168,9 @@ async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise
   const authority = captureAuthority()
   const request = runFilter()
   try {
-    const page = await authority.api.listRuns(request)
+    const result = await authority.api.listRuns(request)
     if (generation !== requestGeneration || !authorityIsCurrent(authority)) return
-    runs.value = page.items
-    tablePageInfo.value = {
-      hasNext: !!page.nextCursor,
-      nextCursor: page.nextCursor || null,
-    }
+    runs.value = result.items
     error.value = null
     loaded.value = true
   } catch (cause) {
@@ -177,20 +184,6 @@ async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise
       }
     }
   }
-}
-
-function onTableChange(change: ResourceTableChange): void {
-  requestGeneration += 1
-  backgroundRefreshQueued = false
-  tablePage.value = change.page
-  tablePageSize.value = change.pageSize
-  tableCursor.value = change.cursor
-  tableFilters.value = { ...change.filters }
-  tablePageInfo.value = null
-  runs.value = []
-  loaded.value = false
-  error.value = null
-  void reload('foreground')
 }
 
 // resolve records the user's decision on a pending item. An approval takes a
@@ -258,6 +251,7 @@ function openRun(row: Record<string, unknown>): void {
 }
 
 onMounted(() => {
+  rangeClock = window.setInterval(() => { now.value = Date.now() }, 30_000)
   bindStore(props.store)
   void reload('foreground')
 })
@@ -269,8 +263,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   refreshTimer = 0
   runs.value = []
   tablePage.value = 1
-  tableCursor.value = null
-  tablePageInfo.value = null
+  tableQuery.value = ''
   tableFilters.value = { ...tableFilters.value, agent: '' }
   loaded.value = false
   loading.value = false
@@ -280,6 +273,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   void reload('foreground')
 }, { flush: 'post' })
 onBeforeUnmount(() => {
+  window.clearInterval(rangeClock)
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   if (refreshTimer) window.clearTimeout(refreshTimer)
@@ -288,11 +282,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="agents-panel agents-activity-panel">
-    <div class="agents-panel-head agents-activity-head">
-      <div v-if="!agent"><h1 class="agents-activity-title">Activity</h1><p class="agents-activity-description">Run history and actions waiting for your review.</p></div>
+  <component
+    :is="agent ? AIWorkbenchPane : ResourcePage"
+    :class="agent ? 'agents-runs-pane' : 'agents-panel agents-activity-panel'"
+    :title="agent ? 'Runs' : 'Activity'"
+    :variant="agent ? undefined : 'collection'"
+    :subtitle="agent ? undefined : 'Run history and actions waiting for your review.'"
+    :description="agent ? 'Run history and actions waiting for your review.' : undefined"
+  >
+    <template #actions>
       <button
-        class="k-btn k-btn--ghost secondary agents-filter-refresh"
+        class="k-btn k-btn--text agents-runs-refresh"
         type="button"
         aria-label="Refresh runs"
         :disabled="loading && refreshMode === 'foreground'"
@@ -302,8 +302,7 @@ onBeforeUnmount(() => {
         <RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" />
         {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}
       </button>
-    </div>
-
+    </template>
     <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
       <span>{{ inboxSlice.error }}</span>
       <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
@@ -314,7 +313,7 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
       </div>
       <section v-if="pending.length" class="agents-approvals">
-        <h2 class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h2>
+        <component :is="agent ? 'h3' : 'h2'" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</component>
         <div v-for="item in pending" :key="item.id" class="agents-approval-row k-card">
           <div class="agents-approval-body">
             <div class="agents-approval-prompt">{{ item.prompt }}</div>
@@ -365,20 +364,21 @@ onBeforeUnmount(() => {
       :error="error"
       :stale="loaded && !!error"
       retryable
+      searchable
+      search-placeholder="Search runs…"
+      :search-keys="searchKeys"
       :filters="filters"
-      :filter-values="tableFilters"
-      pagination-mode="server"
-      :page="tablePage"
-      :page-size="tablePageSize"
-      :query="''"
+      v-model:filter-values="tableFilters"
+      pagination-mode="client"
+      paginated
+      v-model:page="tablePage"
+      v-model:page-size="tablePageSize"
+      v-model:query="tableQuery"
       :page-size-options="[25, 50, 100]"
-      :cursor="tableCursor"
-      :page-info="tablePageInfo"
       empty-text="No runs yet. Chat with an agent or fire a schedule to see one here."
       filter-empty-text="No runs match these filters."
       :interactive="true"
       :row-aria-label="row => `Open run ${String(row.id)}`"
-      @change="onTableChange"
       @retry="reload('foreground')"
       @row-click="openRun"
     >
@@ -402,5 +402,5 @@ onBeforeUnmount(() => {
       <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
       <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
     </ResourceTable>
-  </div>
+  </component>
 </template>

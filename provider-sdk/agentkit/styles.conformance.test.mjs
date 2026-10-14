@@ -96,7 +96,7 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
   assert.match(css, /\.k-model-connection\s*[,\{]/)
   assert.match(conversationCSS, /\.k-ai-turn-progress\s*\{/)
 
-  assert.match(coreCSS, /--railgrid-ui-core-version:\s*37;/)
+  assert.match(coreCSS, /--railgrid-ui-core-version:\s*38;/)
   assert.doesNotMatch(coreCSS, /--railgrid-ui-version/)
   assert.match(coreCSS, /\.k-back-action--icon-only\s*\{/)
   assert.doesNotMatch(coreCSS, /\.k-ai-|\.k-workbench-|\.k-model-/)

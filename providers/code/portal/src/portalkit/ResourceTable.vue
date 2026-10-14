@@ -999,6 +999,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
 <template>
   <div
     class="k-table k-table--resource"
+    data-resource-table
     :class="[`k-table--${variant}`, { 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
   >

@@ -5,6 +5,32 @@ import { mountVue, type MountedVue } from './vue-helper'
 const views: MountedVue[] = []
 afterEach(() => { while (views.length) views.pop()?.unmount() })
 describe('tool activity follows the run lifecycle', () => {
+  it.each([false, true])('matches App Studio progress presentation with details=%s and preserves run metadata', async (withDetails) => {
+    const message: ChatMessage = {
+      id: 'turn', role: 'assistant', content: 'The answer.', tools: [], runID: 'run-1',
+      usage: { inputTokens: 100, outputTokens: 25, usdMicros: 1000 },
+      progress: { status: 'completed', durationMS: 4000, trace: withDetails
+        ? [{ kind: 'commentary', id: 'step', content: 'Checking the result.' }] : [] },
+    }
+    const view = await mountVue(ChatMessageView, { message }); views.push(view)
+    const progress = view.element.querySelector('.k-ai-turn-progress--divided')!
+    expect(progress.textContent).toContain('Worked for 4s')
+    expect(view.element.querySelector('.agents-body')?.textContent?.trim()).toBe(withDetails ? 'Checking the result.' : 'The answer.')
+    if (withDetails) {
+      const trigger = progress.querySelector<HTMLButtonElement>('button')!
+      expect(trigger.getAttribute('aria-expanded')).toBe('false')
+      trigger.click()
+      await view.setProps({ message: { ...message } })
+      expect(trigger.getAttribute('aria-expanded')).toBe('true')
+      expect(progress.classList.contains('k-ai-turn-progress--divided')).toBe(true)
+    } else {
+      expect(progress.querySelector('button')).toBeNull()
+    }
+    expect(view.element.querySelector('.agents-message-run-link')?.textContent).toBe('View run')
+    expect(view.element.querySelector('.agents-turn-usage')?.textContent).toContain('100 in')
+    expect(view.element.textContent).toContain('The answer.')
+  })
+
   it.each([
     ['waiting', 'Waiting for approval'], ['aborted', 'Cancelled'],
     ['failed', 'Interrupted'], ['interrupted', 'Interrupted'], ['completed', 'No result recorded'],

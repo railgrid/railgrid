@@ -7,7 +7,11 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 20;
+  --railgrid-agent-ui-version: 24;
+  --k-ai-conversation-content-width: 820px;
+  --k-ai-pane-enter-duration: 280ms;
+  --k-ai-pane-leave-duration: 190ms;
+  --k-ai-pane-easing: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* ── AI workbench pane ────────────────────────────────────────────────────
@@ -350,10 +354,22 @@ button.k-workbench-tab {
   min-width: 0;
   min-height: 100%;
   width: 100%;
-  max-width: 820px;
+  max-width: var(--k-ai-conversation-content-width);
   margin-inline: auto;
   flex-direction: column;
   gap: 20px;
+}
+/* Composer content follows the transcript column; the dock spans the pane. */
+.k-ai-composer-dock {
+  flex: none;
+  min-width: 0;
+  padding: 12px 16px;
+}
+.k-ai-composer-dock > * {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--k-ai-conversation-content-width);
+  margin-inline: auto;
 }
 .k-ai-transcript > * { min-width: 0; }
 .k-ai-conversation-header {
@@ -464,13 +480,34 @@ button.k-workbench-tab {
   width: 100%;
   min-width: 0;
   min-height: 0;
-  grid-template-columns: minmax(280px, var(--k-ai-workspace-conversation-basis, 55%)) 6px minmax(320px, 1fr);
+  grid-template-columns: minmax(0, var(--k-ai-workspace-conversation-basis, 55%)) 6px minmax(0, 1fr);
+  transition: grid-template-columns var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing);
   flex: 1 1 auto;
   overflow: hidden;
   background: color-mix(in srgb, var(--color-surface-raised, #111320) 70%, var(--color-surface, #0a0b12));
 }
 .k-ai-workspace:not(.k-ai-workspace--open) {
-  grid-template-columns: minmax(0, 1fr) 0 0;
+  grid-template-columns: minmax(0, 100%) 0px minmax(0, 1fr);
+  transition-duration: var(--k-ai-pane-leave-duration);
+}
+.k-ai-workspace--resizing { transition: none; }
+.k-ai-workspace-pane-enter-active {
+  transition: transform var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing), opacity var(--k-ai-pane-enter-duration) ease-out;
+}
+.k-ai-workspace-pane-leave-active {
+  transition: transform var(--k-ai-pane-leave-duration) var(--k-ai-pane-easing), opacity var(--k-ai-pane-leave-duration) ease-out;
+}
+.k-ai-workspace-pane-enter-from,
+.k-ai-workspace-pane-leave-to { opacity: 0; transform: translateX(18px); }
+.k-ai-workspace--mobile .k-ai-workspace-pane-leave-active { position: absolute; inset: 0; }
+.k-ai-workspace--mobile .k-ai-workspace-pane-enter-from,
+.k-ai-workspace--mobile .k-ai-workspace-pane-leave-to { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .k-ai-workspace,
+  .k-ai-workspace-pane-enter-active,
+  .k-ai-workspace-pane-leave-active { transition: none; }
+  .k-ai-workspace-pane-enter-from,
+  .k-ai-workspace-pane-leave-to { transform: none; }
 }
 .k-ai-workspace__conversation,
 .k-ai-workspace__workbench {
@@ -478,10 +515,13 @@ button.k-workbench-tab {
   min-height: 0;
 }
 .k-ai-workspace__conversation {
+  grid-column: 1;
   display: flex;
   overflow: hidden;
 }
+.k-ai-workspace__resize { grid-column: 2; }
 .k-ai-workspace__workbench {
+  grid-column: 3;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -955,12 +995,12 @@ button.k-workbench-tab {
   height: auto;
   align-self: stretch;
   flex-shrink: 0;
-  transition: width 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing);
 }
 .k-ai-conversation-rail--desktop { position: absolute; inset: 0 auto 0 0; width: 0; }
 .k-ai-conversation-rail--mobile-open { position: absolute; inset: 0 auto 0 0; display: block; width: 256px; }
 .k-ai-conversation-rail--anchored { width: var(--k-ai-conversation-rail-width); }
-.k-ai-conversation-rail--collapsed { width: 0; transition-duration: 190ms; }
+.k-ai-conversation-rail--collapsed { width: 0; transition-duration: var(--k-ai-pane-leave-duration); }
 .k-ai-conversation-rail__peek { position: absolute; inset: 0 auto 0 0; z-index: 1; width: 16px; cursor: e-resize; }
 .k-ai-conversation-rail__panel {
   position: absolute;
@@ -974,7 +1014,7 @@ button.k-workbench-tab {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: transform 190ms cubic-bezier(0.16, 1, 0.3, 1), opacity 190ms ease-out, visibility 0s linear 190ms;
+  transition: transform var(--k-ai-pane-leave-duration) var(--k-ai-pane-easing), opacity var(--k-ai-pane-leave-duration) ease-out, visibility 0s linear var(--k-ai-pane-leave-duration);
 }
 .k-ai-conversation-rail--resizing,
 .k-ai-conversation-rail--resizing .k-ai-conversation-rail__panel { transition: none; }
@@ -983,7 +1023,7 @@ button.k-workbench-tab {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
-  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1), opacity 280ms ease-out, visibility 0s;
+  transition: transform var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing), opacity var(--k-ai-pane-enter-duration) ease-out, visibility 0s;
 }
 .k-ai-conversation-rail--mobile-open .k-ai-conversation-rail__panel--expanded { width: 256px; }
 @media (max-width: 767px) {
@@ -1446,3 +1486,6 @@ button.k-workbench-tab {
 .k-model-collection__count { flex: 1; color: var(--color-text-muted); font-size: 12px; }
 .k-model-collection__empty { padding: 24px; color: var(--color-text-muted); text-align: center; }
 @media (max-width: 480px) { .k-model-collection__search { flex-basis: 100%; } }
+
+.k-ai-workbench-pane--overflow-visible > .k-ai-workbench-pane__body { overflow: visible; }
+.k-ai-composer__actions--fill { flex: 1; }

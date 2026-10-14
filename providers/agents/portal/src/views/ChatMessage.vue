@@ -310,6 +310,7 @@ onBeforeUnmount(() => { mounted = false })
 
       <template v-if="progressVisible" #progress>
         <AITurnProgress
+          class="k-ai-turn-progress--divided"
           :turn-id="message.id"
           :status="progressStatus"
           :duration="progressDuration"
