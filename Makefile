@@ -3048,3 +3048,7 @@ lint-railgrid-auth: $(GOLANGCI_LINT) ## Lint app authentication packages
 test-railgrid-auth-configuration: ## Verify App Studio authentication settings, grants, and runtime identities
 	cd providers/app-studio && go test -count=1 ./api -run 'Authentication|ToolRegistryListsLocalToolsInOrder|RetiredRouteFixture'
 	cd providers/app-studio && go test -count=1 ./bindings ./controller/project
+
+.PHONY: test-resource-board-visual
+test-resource-board-visual: ## Render resource-board CSS across themes and input modes (requires Playwright)
+	node hack/resource-board-visual.mjs
