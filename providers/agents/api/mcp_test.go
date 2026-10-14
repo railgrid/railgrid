@@ -111,6 +111,8 @@ func TestMCPToolsList(t *testing.T) {
 		"list_model_credentials", "save_model_credential", "delete_model_credential", "test_model_credential",
 		// discovery
 		"list_tool_families",
+		// runs (the attended chat turn is not federated: see mcp_chat_test.go)
+		"run_agent", "get_run", "list_runs",
 	} {
 		if !got[want] {
 			t.Errorf("tools/list missing %q (got %v)", want, out.Tools)
