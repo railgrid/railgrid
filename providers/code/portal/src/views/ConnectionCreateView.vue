@@ -74,7 +74,7 @@ const guidancePrerequisites = computed(() => isGitHub.value
     ]
   : [
       'A GitHub account or organization name that will own repositories.',
-      'A personal access token with permission to create and manage repositories for that owner.',
+      'A personal access token for that owner; see the permission guidance below the token field.',
       'For GitHub Enterprise Server, the API base URL for the instance.',
     ])
 const guidanceValues = computed(() => [
@@ -414,10 +414,20 @@ watch(contextGeneration, () => {
           </p>
           <label class="field" for="code-connection-name"><span class="field-label">Name</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
           <label class="field" for="code-connection-owner"><span class="field-label">Owner (org or user)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
-          <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error' : undefined" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
+          <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error code-connection-token-help' : 'code-connection-token-help'" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
           <label v-else class="field"><span class="field-label">Credential</span><input class="k-input" value="GitHub OAuth — authorized" disabled /></label>
+          <div v-if="!oauthAuthorized" id="code-connection-token-help" class="muted">
+            <p>For a classic token, select <code>repo</code> to manage public and private repositories. The token owner must have access to the GitHub owner above.</p>
+            <p>Add scopes for the features you use:</p>
+            <ul>
+              <li><code>workflow</code> — create or update GitHub Actions workflows, including App Studio builds.</li>
+              <li><code>delete_repo</code> — delete repositories through Railgrid.</li>
+              <li><code>read:packages</code> — view repository packages.</li>
+            </ul>
+            <p><a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener noreferrer">GitHub token setup guide (opens in a new tab)</a>. For organization repositories, check the organization's token policy and authorize SSO if required.</p>
+          </div>
           <label v-if="!oauthAuthorized" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="url" /></label>
-          <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
+          <p class="muted">The token is stored as a Secret in this workspace. After creation, the connection page shows its validation status and GitHub login.</p>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating connection…</span>
         </div>

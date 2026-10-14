@@ -11,6 +11,7 @@ import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
 import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
+import { gettingStartedReadState, shouldAutoOpenGettingStarted } from '@/lib/gettingStarted'
 
 const { scopePath } = useScopedNavigation()
 
@@ -18,7 +19,7 @@ const { scopePath } = useScopedNavigation()
 // ready provider. Each provider may register a
 // <railgrid-dashboard-tile-{name}> custom element in its main.js — that
 // element owns its own data fetch, summary rendering, and click-through
-// URLs. Providers without a tile drop out of the grid entirely.
+// URLs. A provider without a tile still gets a launcher card in the grid.
 //
 // On top of that, the grid is user-customisable: a "Customize" toggle
 // turns tiles into draggable/resizable cells with a remove affordance,
@@ -27,9 +28,6 @@ const { scopePath } = useScopedNavigation()
 // remembered layout against the live provider set on every change, so
 // the per-workspace enablement gate below stays authoritative.
 //
-// The dashboard is edge-agnostic: edge onboarding (the wizard) now lives in the
-// edges provider's own portal, shown there when the workspace has no edges yet.
-
 const providers = useProvidersStore()
 const tenant = useTenantStore()
 const dash = useDashboardLayoutStore()
@@ -111,102 +109,81 @@ watch(
   { immediate: true },
 )
 
-// The initial shimmer covers the providers fetch. The cached layout then
-// renders synchronously, so the grid appears already settled.
-const initializing = computed(() => providers.loading)
+// The guide and dashboard share the same catalog and binding reads. Treat the
+// binding set as empty only after both reads are settled for the active scope.
+const gettingStartedStatus = computed(() => gettingStartedReadState({
+  hasScope: !!tenant.orgUUID && !!tenant.workspaceUUID,
+  catalogLoaded: providers.loaded,
+  catalogLoading: providers.loading,
+  catalogMatchesOrganization: providers.catalogOrgUUID === tenant.orgUUID,
+  catalogError: !!providers.error,
+  bindingsMatchScope: providers.bindingsOrgUUID === tenant.orgUUID &&
+    providers.bindingsWorkspace === tenant.workspaceUUID,
+  bindingsState: providers.bindingsLoadState,
+  bindingsStale: providers.bindingsStale,
+}))
+const enabledBindingCount = computed(() => Object.keys(providers.bindingNamesByProvider).length)
+const workspaceDataReady = computed(() => gettingStartedStatus.value === 'ready')
 
-// --- First-run welcome ---
-//
-// Nothing is enabled by default: every provider ships as a CatalogEntry with an
-// APIExport that must be bound per workspace. So a fresh account's dashboard and
-// side nav are both genuinely empty, and the plain "no providers enabled" line
-// that used to sit here assumed the reader already knew what a provider was.
-// When the workspace has zero bindings we show the guided intro instead.
-//
-// Dismissal is per workspace and local-only: workspaces are independent
-// clusters, so having set one up says nothing about the next, and a display
-// preference doesn't warrant server-side state. Dismissing does not disable the
-// entry point — the header keeps a "Getting started" button so the flow is
-// reachable again, which also makes the local-only storage harmless if it is
-// cleared or the user switches browsers.
+// First-run dismissal is a workspace-local presentation preference. Keep the
+// guide latched once opened so provider/catalog changes do not dismiss it.
 const WELCOME_KEY = 'railgrid:portal:welcome-dismissed'
-
-function readDismissed(): string[] {
+function readDismissedWorkspaces(): string[] {
   try {
     const raw = localStorage.getItem(WELCOME_KEY)
     if (!raw) return []
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
   } catch {
     return []
   }
 }
-
-const dismissedWorkspaces = ref<string[]>(readDismissed())
-
-// Explicitly re-opened from the header. Outranks both the dismissal list and
-// the has-bindings check, so the intro stays reachable once set up.
-const welcomeForced = ref(false)
-
+const dismissedWorkspaces = ref<string[]>(readDismissedWorkspaces())
+const welcomeOpen = ref(false)
 const welcomeDismissed = computed(() =>
   !!tenant.workspaceUUID && dismissedWorkspaces.value.includes(tenant.workspaceUUID),
 )
+const guideForced = ref(false)
+const showWelcome = computed(() => welcomeOpen.value || guideForced.value)
 
-// An empty binding map only means "nothing enabled here" once we know it was
-// fetched for the workspace we're looking at — otherwise the boot fetch and
-// every workspace switch would briefly flash the welcome flow at users who are
-// already set up. `providers.loaded` is not enough: load() flips it before it
-// awaits the bindings call.
-const bindingsCurrent = computed(
-  () => !!tenant.workspaceUUID && providers.bindingsWorkspace === tenant.workspaceUUID,
-)
-
-// Latched, not derived. Enabling a provider from inside step 2 flips
-// hasAnyEnabled, and a plain computed would unmount the wizard the instant the
-// first Enable succeeded — dropping the user onto the dashboard mid-flow,
-// before they ever saw the step confirming what they just turned on. So the
-// condition only ever opens the flow; closing it is the user's decision.
-const welcomeOpen = ref(false)
+// Keep the initial shimmer for the first catalog request, but leave the guide
+// mounted while its own Retry action reloads provider state.
+const initializing = computed(() => providers.loading && !showWelcome.value)
 
 watch(
-  [
-    () => providers.loaded,
-    bindingsCurrent,
-    () => providers.hasAnyEnabled,
-    welcomeDismissed,
-  ] as const,
-  ([loaded, current, anyEnabled, dismissed]) => {
-    if (loaded && current && !anyEnabled && !dismissed) welcomeOpen.value = true
+  [gettingStartedStatus, enabledBindingCount, welcomeDismissed] as const,
+  ([status, enabledCount, dismissed]) => {
+    if (shouldAutoOpenGettingStarted(status, enabledCount, dismissed)) welcomeOpen.value = true
   },
   { immediate: true },
 )
 
-const showWelcome = computed(() => welcomeOpen.value || welcomeForced.value)
+function retryWorkspaceData() {
+  if (tenant.orgUUID) void providers.load(tenant.orgUUID)
+}
+
+function openGettingStarted() {
+  guideForced.value = true
+}
 
 function dismissWelcome() {
-  welcomeForced.value = false
   welcomeOpen.value = false
-  const ws = tenant.workspaceUUID
-  if (!ws || dismissedWorkspaces.value.includes(ws)) return
-  // Cap the list: it grows one entry per workspace ever visited, and only the
-  // recent tail can still matter.
-  const next = [...dismissedWorkspaces.value, ws].slice(-50)
+  guideForced.value = false
+  const workspace = tenant.workspaceUUID
+  if (!workspace || dismissedWorkspaces.value.includes(workspace)) return
+  const next = [...dismissedWorkspaces.value, workspace].slice(-50)
   dismissedWorkspaces.value = next
   try {
     localStorage.setItem(WELCOME_KEY, JSON.stringify(next))
   } catch {
-    // Private-mode/quota failures only cost a repeat showing.
+    // Private-mode or quota failures only cause the guide to appear again.
   }
 }
 
-// Switching workspaces re-evaluates from scratch: the new workspace may be
-// freshly created and needs its own intro, and the latch above must not carry
-// the previous workspace's decision over. bindingsCurrent goes false until the
-// refetch for the new workspace lands, so the latch re-arms on real data.
 watch(
-  () => tenant.workspaceUUID,
+  [() => tenant.orgUUID, () => tenant.workspaceUUID] as const,
   () => {
-    welcomeForced.value = false
+    guideForced.value = false
     welcomeOpen.value = false
   },
 )
@@ -300,21 +277,19 @@ function onGridSelectStart(event: Event) {
     </div>
 
     <template v-else>
-      <!-- Fresh workspace: the guided intro replaces the grid entirely. It is
-           the page at that point, not a banner above an empty one. -->
-      <WelcomeWizard v-if="showWelcome" @dismiss="dismissWelcome" />
-
-      <div v-else-if="gated.length === 0" class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
-        <Puzzle class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
-        <div>
-          <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
-          <div class="mt-1 text-xs">
-            Enable a provider from the <router-link :to="scopePath('/providers')" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary,
-            or walk through the <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-accent hover:bg-transparent hover:text-accent-hover" @click="welcomeForced = true">getting started guide</button>.
-            Each provider is enabled per workspace.
-          </div>
-        </div>
+      <div v-if="!workspaceDataReady" class="mb-6 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" :role="gettingStartedStatus === 'error' ? 'alert' : 'status'">
+        <template v-if="gettingStartedStatus === 'error'">
+          <p>Couldn’t load this workspace’s providers. Try again to see what’s available.</p>
+          <button type="button" class="k-btn k-btn--ghost mt-3" @click="retryWorkspaceData">Retry</button>
+        </template>
+        <p v-else>Loading this workspace’s providers…</p>
       </div>
+      <WelcomeWizard
+        v-if="showWelcome"
+        :key="`${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`"
+        v-show="workspaceDataReady"
+        @dismiss="dismissWelcome"
+      />
 
       <template v-else>
         <!-- Page heading and customize controls. -->
@@ -357,11 +332,12 @@ function onGridSelectStart(event: Event) {
               <button
                 type="button"
                 class="k-btn k-btn--primary min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
-                @click="welcomeForced = true"
+                @click="openGettingStarted"
               >
                 <Rocket class="h-4 w-4" :stroke-width="1.75" /> Getting started
               </button>
               <button
+                v-if="gated.length > 0"
                 type="button"
                 class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="toggleEdit"
@@ -372,6 +348,25 @@ function onGridSelectStart(event: Event) {
           </div>
         </header>
 
+        <div v-if="gated.length === 0 && workspaceDataReady" class="mb-6 flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
+          <Puzzle class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
+          <div>
+            <div v-if="enabledBindingCount > 0" class="font-medium text-text-secondary">No providers are ready to open</div>
+            <div v-else class="font-medium text-text-secondary">No providers enabled in this workspace</div>
+            <div v-if="enabledBindingCount > 0" class="mt-1 text-xs">
+              This workspace has provider access, but none is ready to open from the dashboard yet. Browse the
+              <router-link :to="scopePath('/providers')" class="text-accent hover:text-accent-hover">provider catalog</router-link>
+              for readiness and capability details.
+            </div>
+            <div v-else class="mt-1 text-xs">
+              Browse provider capabilities in the
+              <router-link :to="scopePath('/providers')" class="text-accent hover:text-accent-hover">provider catalog</router-link>.
+              Each provider is enabled per workspace, and some access requests require administrator approval.
+            </div>
+          </div>
+        </div>
+
+        <template v-if="gated.length > 0">
         <!-- Nothing on the grid. Two distinct reasons, so the message must
              match: either the user removed tiles that can be added back
              (addable > 0), or the enabled providers here simply ship no
@@ -434,6 +429,7 @@ function onGridSelectStart(event: Event) {
               />
           </GridItem>
         </GridLayout>
+        </template>
       </template>
     </template>
     </div>

@@ -184,7 +184,8 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
     source: parsed.descriptor.template.content,
     filename,
     id: `behavior-${filename}`,
-    compilerOptions: { bindingMetadata: script.bindings },
+    // The in-memory renderer models nodes, not browser HTML parsing.
+    compilerOptions: { bindingMetadata: script.bindings, hoistStatic: false },
   })
   if (compiled.errors.length) throw compiled.errors[0]
   const code = compiled.code
