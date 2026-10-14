@@ -66,6 +66,67 @@ $ kubectl patch linuxserver build-01 --type=merge -p '{"spec":{"harness":{"mode"
 In the portal, the edge page's **Harness** card is a switch plus a per-harness
 checkbox list. It writes this field and nothing else: no verb, no runner token.
 
+### Codex sandbox prerequisites on Linux
+
+Install the distribution's `bubblewrap` package on the **edge host** before
+using Codex for coding work. Codex uses the first `bwrap` on its process `PATH`;
+without it, Codex falls back to a bundled helper that can fail under Ubuntu's
+AppArmor user-namespace restrictions. A successful harness version/handshake
+check does not prove that sandboxed commands can run.
+
+On Ubuntu 24.04, follow the
+[official OpenAI sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites):
+
+```sh
+sudo apt update
+sudo apt install bubblewrap apparmor-profiles apparmor-utils
+sudo install -m 0644 \
+  /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+  /etc/apparmor.d/bwrap-userns-restrict
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+The last command loads the profile without a reboot; the file in
+`/etc/apparmor.d/` persists across reboots. If the packaged source profile is
+missing, check the distribution/package version before proceeding. Prefer the
+packaged Bubblewrap profile to disabling AppArmor's user-namespace restriction
+system-wide. OpenAI documents that Ubuntu 25.04 ships the profile in the
+`apparmor` package; consult the linked prerequisites for other releases.
+
+Verify as the **actual runner account**, without root privileges, with the same
+`PATH` the runner service uses:
+
+```sh
+command -v bwrap
+bwrap --unshare-user --unshare-net --ro-bind / / \
+  /bin/sh -c 'echo "Sandbox namespace test passed"'
+```
+
+This is a namespace initialization smoke test, not full Codex readiness. Follow
+it with a sandboxed Codex command in a disposable checkout and a small end-to-end
+agent task. If the service environment changed, restart the edge/runner service
+when no attempts are active before repeating those checks.
+
+A characteristic failure is:
+
+```text
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+Inspect host kernel audit logs for AppArmor events at the attempt's timestamp.
+A desktop Codex session might still execute commands through an approved
+unsandboxed fallback while an unattended repository attempt cannot: repository
+attempts do not opt into the interactive permission round-trip. Desktop success
+therefore does not demonstrate that the host sandbox works. Inspect the agent
+run's output and tool errors even when the conversation finished successfully
+and the repository result reports no changes.
+
+This is host administration, not an Agent or coordinator configuration field.
+The Edge Harness controls enable installed harnesses; they do not install OS
+packages or modify AppArmor. An administrator can use a local terminal or
+`railgrid ssh <linux-edge-name>` to run the host commands, subject to the remote
+account's normal `sudo` permissions. Keep Codex's workspace sandbox enabled.
+
 ### What the machine reports
 
 ```console

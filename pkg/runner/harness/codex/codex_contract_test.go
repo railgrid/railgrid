@@ -35,13 +35,13 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
-func TestNewUsesContractDefaultVersionPin(t *testing.T) {
+func TestNewDefaultsToUnpinned(t *testing.T) {
 	adapter, ok := New(Config{Home: t.TempDir()}).(*Adapter)
 	if !ok {
 		t.Fatal("New did not return the Codex adapter")
 	}
-	if adapter.cfg.ExpectedVersion != "0.155.1" {
-		t.Fatalf("default expected Codex version = %q, want 0.155.1", adapter.cfg.ExpectedVersion)
+	if adapter.cfg.ExpectedVersion != "" {
+		t.Fatalf("default expected Codex version = %q, want unpinned", adapter.cfg.ExpectedVersion)
 	}
 }
 

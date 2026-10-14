@@ -61,12 +61,15 @@ commands. It requires Git, OpenSSL, Python 3, and Codex. It does not enroll a
 Service, send credentials, or start a coding task. Its setup can be repeated
 without replacing the token or resetting the fixture repository.
 
+On Linux, also complete the [Codex sandbox prerequisites](edge-harness.md#codex-sandbox-prerequisites-on-linux),
+including Ubuntu's Bubblewrap/AppArmor setup and a namespace smoke test as the
+runner account. These host prerequisites apply to standalone runners too.
+
 Install the Codex executable for this dedicated account. Create the runner's
 Codex home as a new owner-only directory, then use the supported Codex login
 flow with `CODEX_HOME` set to that directory. Do not copy an interactive
-developer home into it. The runner's default expected Codex version is
-`0.155.1`; override it only when the installed harness is intentionally pinned
-to another version:
+developer home into it. The runner accepts any Codex version by default and checks the app-server
+handshake for readiness. To require an exact version, set an explicit pin:
 
 ```sh
 ./bin/railgrid-runner --version-pin <codex-version> --help
@@ -365,10 +368,9 @@ railgrid runner run \
 the adapter refuses a home containing `settings.json`, `hooks`, `plugins`,
 `mcp.json`, `skills`, `agents`, `commands`, `output-styles` or any symlink.
 
-`--version-pin` applies to whichever harness is selected. Codex keeps its
-built-in pin of `0.155.1`; Claude Code has **no** default pin, because it
-self-updates on a fast cadence and a stale constant would leave every runner
-unready. Set one explicitly if you want the version checked.
+`--version-pin` applies to whichever harness is selected. Neither Codex nor
+Claude Code has a default pin. Set one explicitly if you want an exact version
+checked; readiness still checks the harness protocol without a pin.
 
 The capabilities response advertises a single harness entry named
 `claude-code`, with the executable's version and its readiness reasons.

@@ -51,13 +51,12 @@ const (
 	// see pkg/runner/harness/names.go for why both names exist.
 	HarnessName = "codex"
 
-	defaultBinary          = "codex"
-	defaultExpectedVersion = "0.155.1"
-	maxEventData           = 64 << 10
-	maxWireLine            = 2 << 20
-	processStopGrace       = 750 * time.Millisecond
-	processStopTimeout     = 2 * time.Second
-	interruptTimeout       = 1500 * time.Millisecond
+	defaultBinary      = "codex"
+	maxEventData       = 64 << 10
+	maxWireLine        = 2 << 20
+	processStopGrace   = 750 * time.Millisecond
+	processStopTimeout = 2 * time.Second
+	interruptTimeout   = 1500 * time.Millisecond
 
 	// codexAuthFileName is the login session Codex reads from its home.
 	codexAuthFileName = "auth.json"
@@ -112,9 +111,7 @@ func New(cfg Config) harness.Adapter {
 	// See harness.ResolveBinary: the runner account's PATH is not the
 	// operator's interactive PATH.
 	cfg.Binary = harness.ResolveBinary(cfg.Binary)
-	if strings.TrimSpace(cfg.ExpectedVersion) == "" {
-		cfg.ExpectedVersion = defaultExpectedVersion
-	}
+	cfg.ExpectedVersion = strings.TrimSpace(cfg.ExpectedVersion)
 	return &Adapter{cfg: cfg}
 }
 

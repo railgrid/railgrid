@@ -33,13 +33,20 @@ import (
 
 func TestProbeUsesVersionAndHandshakeWithoutModelCall(t *testing.T) {
 	binary := fakeCodexBinary(t, "probe")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte(strings.ReplaceAll(string(data), "0.155.1", "0.160.1")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := New(Config{Binary: binary, Home: t.TempDir()})
 
 	info, err := adapter.Probe(context.Background())
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	if !info.Ready || info.Version != "0.155.1" {
+	if !info.Ready || info.Version != "0.160.1" {
 		t.Fatalf("unexpected probe info: %+v", info)
 	}
 	methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
