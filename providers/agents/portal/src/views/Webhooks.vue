@@ -141,7 +141,8 @@ const routedTriggers = computed(() => {
 const rows = computed<Array<Record<string, unknown>>>(() => slice.value.data.map(item => ({
   id: item.metadata.name,
   name: `${item.spec.displayName || item.metadata.name} ${item.spec.displayName ? item.metadata.name : ''}`,
-  source: sourceLabel(item.spec.source),
+  source: item.spec.source,
+  sourceLabel: sourceLabel(item.spec.source),
   routes: routeCountText(item),
   lastDelivery: lastDeliveryText(item),
   item,
@@ -361,7 +362,7 @@ function cancel(): void {
       <h1 class="k-create-title">Create webhook</h1>
       <p class="k-create-description">One inbound URL for a sender. Triggers on any agent route from it, each firing on the deliveries its filter matches.</p>
     </header>
-    <form class="k-create-surface k-create-surface--guided" novalidate :aria-busy="busy" @submit.prevent="create">
+    <form class="agents-guided-form k-create-surface k-create-surface--guided" novalidate :aria-busy="busy" @submit.prevent="create">
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
           <label for="webhook-create-name">Name *
@@ -486,7 +487,7 @@ function cancel(): void {
     </ResourcePage>
   </div>
 
-  <div v-else class="agents-webhooks-page k-resource-page">
+  <div v-else class="agents-webhooks-page k-resource-page k-resource-page--collection">
     <header class="k-resource-page__header">
       <div class="k-resource-page__heading">
         <h1 class="k-resource-page__title" tabindex="-1" data-webhooks-heading>Webhooks</h1>
@@ -519,8 +520,8 @@ function cancel(): void {
       retryable
       searchable
       search-placeholder="Search webhooks…"
-      :search-keys="['name', 'source']"
-      :filters="[{ key: 'source', label: 'Sender', allLabel: 'All senders', options: SOURCE_OPTIONS.map(option => ({ value: option.label, label: option.label })) }]"
+      :search-keys="['name', 'sourceLabel']"
+      :filters="[{ key: 'source', label: 'Sender', allLabel: 'All senders', options: SOURCE_OPTIONS }]"
       paginated
       :interactive="false"
       @retry="store.load('webhooks')"
@@ -530,6 +531,7 @@ function cancel(): void {
         <code v-if="asWebhook(row).spec.displayName" class="agents-resource-id">{{ asWebhook(row).metadata.name }}</code>
         <span v-if="invalidCondition(asWebhook(row))" class="k-badge agents-badge k-badge--warning agents-badge-warn" :title="invalidCondition(asWebhook(row))?.message">{{ invalidCondition(asWebhook(row))?.reason || 'Invalid' }}</span>
       </template>
+      <template #source="{ row }">{{ row.sourceLabel }}</template>
       <template #routes="{ row }"><span class="muted">{{ row.routes }}</span></template>
       <template #lastDelivery="{ row }">
         <span v-if="asWebhook(row).status?.lastDelivery" class="agents-webhook-last">

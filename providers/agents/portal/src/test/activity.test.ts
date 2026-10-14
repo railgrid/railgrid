@@ -200,6 +200,22 @@ describe('Activity.vue', () => {
     expect(text(view.element.querySelectorAll('.k-table__filter-trigger')[3])).toContain('7d')
   })
 
+  it('ages runs out of time filters without another server event', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    const listRuns = vi.fn().mockResolvedValue({ items: [
+      run({ createdAt: new Date(Date.now() - 86_400_000 + 15_000).toISOString() }),
+    ] })
+    const api = stubApi({ listRuns })
+    const view = await mount(Activity, { store: makeStore(api), api })
+    await chooseRunFilter(view, 3, '24h')
+    await settleTableFilters()
+    expect(view.element.querySelectorAll('.k-table__row')).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await settleVue()
+    expect(view.element.querySelectorAll('.k-table__row')).toHaveLength(0)
+    expect(listRuns).toHaveBeenCalledTimes(1)
+  })
+
   it('scopes the feed to an agent and removes the redundant agent filter', async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' })
     const api = stubApi({ listRuns })

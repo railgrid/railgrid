@@ -151,15 +151,6 @@ railgrid-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 1
 railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
 /* Config follows the shared document pane and App Studio settings rhythm. */
 railgrid-provider-agents .agents-config-pane > .k-ai-workbench-pane__body { overflow: visible; }
-railgrid-provider-agents .agents-config-pane .agents-config-sec {
-  flex: none;
-  gap: 16px;
-  padding: 12px;
-  border-color: var(--color-border-subtle);
-  border-radius: 8px;
-  background: transparent;
-}
-railgrid-provider-agents .agents-config-pane .k-resource-section-card__body { gap: 16px; }
 railgrid-provider-agents .agents-config-pane .agents-fieldset { padding: 0; border: 0; }
 railgrid-provider-agents .agents-config-pane .agents-radiocards { gap: 8px; }
 
@@ -893,14 +884,5 @@ railgrid-provider-agents .agents-webhook-empty { display: flex; flex-direction: 
   railgrid-provider-agents .agents-delivery-detail, railgrid-provider-agents .agents-delivery-routes { padding-left: 0; }
 }
 
-/* Code's collection scaffold: header and table directly on the page canvas. */
-railgrid-provider-agents .agents-webhooks-page { gap: 16px; }
-railgrid-provider-agents .agents-webhooks-page .k-resource-page__title {
-  font-size: 15px;
-  line-height: normal;
-  letter-spacing: normal;
-}
-railgrid-provider-agents .agents-webhooks-page .k-resource-page__subtitle {
-  max-width: 70ch;
-  line-height: 1.5;
-}
+railgrid-provider-agents .agents-runs-refresh { white-space: nowrap; }
+railgrid-provider-agents .agents-runs-refresh > svg { width: 16px; height: 16px; }

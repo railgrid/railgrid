@@ -985,7 +985,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
   <AIWorkbenchPane class="agents-config-pane" title="Config" description="Configure this agent’s identity, execution, and limits.">
   <div v-if="!agent" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
   <template v-else>
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-persona-heading" title="Persona" description="Who this agent is and how it should behave on every run.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-persona-heading" title="Persona" description="Who this agent is and how it should behave on every run.">
       <label>Display name<input v-model="displayName" class="k-input" /></label>
       <label>Description<input v-model="description" class="k-input" placeholder="What this agent is for — shown to you, not to the model." /></label>
       <label>System prompt<textarea v-model="systemPrompt" class="k-input" rows="6" placeholder="You are a concise assistant that…"></textarea></label>
@@ -995,7 +995,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-backend-heading" title="Backend" description="Choose where this agent runs its turns.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-backend-heading" title="Backend" description="Choose where this agent runs its turns.">
       <fieldset class="agents-cap-fs">
         <legend>Execution backend</legend>
         <div class="agents-radiocards">
@@ -1092,7 +1092,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" heading-id="agent-model-heading" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
+    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" heading-id="agent-model-heading" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
       <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
@@ -1124,7 +1124,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-policy-heading" title="Autonomy &amp; budget" :description="policyDescription">
+    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-policy-heading" title="Autonomy &amp; budget" :description="policyDescription">
       <fieldset class="agents-cap-fs">
         <legend>Autonomy</legend>
         <p v-if="harnessPolicyTarget" id="agent-harness-permission-policy" class="agents-hint" role="status">
@@ -1166,7 +1166,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
 
     <Teleport to="#agents-workbench-panel-tools" defer :disabled="!workbenchSections">
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-tools-heading" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-tools-heading" title="Tools &amp; toolsets" description="What this agent can call. Chat always gets a granted tool; background grants also allow it on schedules, triggers, and heartbeats, which run with nobody watching.">
       <template #actions><Wrench :stroke-width="1.75" aria-hidden="true" /></template>
       <!-- A harness brings its own tools, and the API REJECTS spec.tools on a
            harness-backed agent. Showing the grants disabled rather than hiding
@@ -1238,7 +1238,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
     </Teleport>
 
-    <ResourceSectionCard class="agents-config-sec" heading-id="agent-channels-heading" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
+    <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-channels-heading" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
       <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
       <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
@@ -1289,7 +1289,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <Automation :store="store" :api="api" kind="trigger" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
     </Teleport>
 
-    <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" heading-id="agent-delegates-heading" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
+    <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" variant="document" heading-id="agent-delegates-heading" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
       <div class="agents-checkrow">
         <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>

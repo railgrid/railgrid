@@ -4,7 +4,9 @@ import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
+import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import AIWorkbenchPane from '../agentkit/AIWorkbenchPane.vue'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -122,6 +124,8 @@ const columns = computed(() => [
 const searchKeys = ['id', 'agent', 'inputPreview', 'trigger', 'phase', 'class']
 // A run's input can be a whole prompt. The row shows one bounded line of it and
 // discloses a longer cut on hover; the run page has it in full.
+const now = ref(Date.now())
+let rangeClock = 0
 const tableRows = computed(() => runs.value.map(run => ({
   ...run,
   input: runPreview(run.inputPreview, RUN_PREVIEW_CELL_CHARS) || '—',
@@ -135,7 +139,7 @@ const tableRows = computed(() => runs.value.map(run => ({
 
 function isWithinRange(createdAt: string, hours: number): boolean {
   const created = Date.parse(createdAt)
-  return Number.isFinite(created) && created >= Date.now() - hours * 3_600_000
+  return Number.isFinite(created) && created >= now.value - hours * 3_600_000
 }
 
 /**
@@ -153,6 +157,7 @@ function runFilter(): RunFilter {
 }
 
 async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise<void> {
+  now.value = Date.now()
   if (mode === 'background' && loading.value) {
     backgroundRefreshQueued = true
     return
@@ -246,6 +251,7 @@ function openRun(row: Record<string, unknown>): void {
 }
 
 onMounted(() => {
+  rangeClock = window.setInterval(() => { now.value = Date.now() }, 30_000)
   bindStore(props.store)
   void reload('foreground')
 })
@@ -267,6 +273,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   void reload('foreground')
 }, { flush: 'post' })
 onBeforeUnmount(() => {
+  window.clearInterval(rangeClock)
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = null
   if (refreshTimer) window.clearTimeout(refreshTimer)
@@ -275,11 +282,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="agents-panel agents-activity-panel">
-    <div class="agents-panel-head agents-activity-head">
-      <div v-if="!agent"><h1 class="k-resource-page__title">Activity</h1><p class="k-resource-page__subtitle">Run history and actions waiting for your review.</p></div>
+  <component
+    :is="agent ? AIWorkbenchPane : ResourcePage"
+    :class="agent ? 'agents-runs-pane' : 'agents-panel agents-activity-panel'"
+    :title="agent ? 'Runs' : 'Activity'"
+    :variant="agent ? undefined : 'collection'"
+    :subtitle="agent ? undefined : 'Run history and actions waiting for your review.'"
+    :description="agent ? 'Run history and actions waiting for your review.' : undefined"
+  >
+    <template #actions>
       <button
-        class="k-btn k-btn--ghost secondary agents-filter-refresh"
+        class="k-btn k-btn--text agents-runs-refresh"
         type="button"
         aria-label="Refresh runs"
         :disabled="loading && refreshMode === 'foreground'"
@@ -289,8 +302,7 @@ onBeforeUnmount(() => {
         <RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" />
         {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}
       </button>
-    </div>
-
+    </template>
     <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
       <span>{{ inboxSlice.error }}</span>
       <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
@@ -301,7 +313,7 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
       </div>
       <section v-if="pending.length" class="agents-approvals">
-        <h2 class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h2>
+        <component :is="agent ? 'h3' : 'h2'" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</component>
         <div v-for="item in pending" :key="item.id" class="agents-approval-row k-card">
           <div class="agents-approval-body">
             <div class="agents-approval-prompt">{{ item.prompt }}</div>
@@ -390,5 +402,5 @@ onBeforeUnmount(() => {
       <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
       <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
     </ResourceTable>
-  </div>
+  </component>
 </template>

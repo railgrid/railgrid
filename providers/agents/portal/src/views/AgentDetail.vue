@@ -295,7 +295,7 @@ async function remove(): Promise<void> {
                 <template #config>
                   <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections @navigate="handleChildNavigate">
                     <template #destructive-actions>
-                      <ResourceSectionCard class="agents-config-sec" heading-id="agent-delete-heading" title="Delete agent" description="Delete this agent and its chat history.">
+                      <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-delete-heading" title="Delete agent" description="Delete this agent and its chat history.">
                         <div class="agents-form-actions">
                           <button
                             class="k-btn k-btn--danger-solid"

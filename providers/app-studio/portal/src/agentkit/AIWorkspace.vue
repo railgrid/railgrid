@@ -316,35 +316,35 @@ defineExpose({ close: closeWorkbench, open: openWorkbench, toggle, split })
     />
 
     <Transition name="k-ai-workspace-pane">
-    <section
-      ref="workbench"
-      class="k-ai-workspace__workbench"
-      :aria-label="workbenchLabel"
-      :aria-hidden="!open ? 'true' : undefined"
-      :inert="!open"
-      tabindex="-1"
-      v-show="open"
-      data-k-ai-workspace-workbench
-    >
-      <header class="k-ai-workspace__workbench-header">
-        <button
-          v-if="mobileViewport"
-          ref="mobileBack"
-          class="k-ai-workspace__mobile-back"
-          type="button"
-          aria-label="Back to conversation"
-          title="Back to conversation"
-          data-k-ai-workspace-back
-          @click="closeWorkbench"
-        >
-          <ArrowLeft aria-hidden="true" />
-        </button>
-        <slot name="workbench-header" :open="open" :mobile="mobileViewport" :close="closeWorkbench" />
-      </header>
-      <div class="k-ai-workspace__workbench-body">
-        <slot name="workbench" :open="open" :mobile="mobileViewport" />
-      </div>
-    </section>
+      <section
+        ref="workbench"
+        class="k-ai-workspace__workbench"
+        :aria-label="workbenchLabel"
+        :aria-hidden="!open ? 'true' : undefined"
+        :inert="!open"
+        tabindex="-1"
+        v-show="open"
+        data-k-ai-workspace-workbench
+      >
+        <header class="k-ai-workspace__workbench-header">
+          <button
+            v-if="mobileViewport"
+            ref="mobileBack"
+            class="k-ai-workspace__mobile-back"
+            type="button"
+            aria-label="Back to conversation"
+            title="Back to conversation"
+            data-k-ai-workspace-back
+            @click="closeWorkbench"
+          >
+            <ArrowLeft aria-hidden="true" />
+          </button>
+          <slot name="workbench-header" :open="open" :mobile="mobileViewport" :close="closeWorkbench" />
+        </header>
+        <div class="k-ai-workspace__workbench-body">
+          <slot name="workbench" :open="open" :mobile="mobileViewport" />
+        </div>
+      </section>
     </Transition>
   </section>
 </template>

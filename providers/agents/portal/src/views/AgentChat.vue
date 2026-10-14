@@ -1605,6 +1605,7 @@ defineExpose({
                 <div class="k-ai-composer__actions">
                   <AIModelPicker
                     class="agents-chat-model-picker"
+                    description="Sets the default model for this agent."
                     :models="modelChoices"
                     :selectedID="agentModelCredential(agent)"
                     :disabled="modelSwitchDisabled"

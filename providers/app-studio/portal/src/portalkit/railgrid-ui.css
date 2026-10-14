@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 37;
+  --railgrid-ui-core-version: 38;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -3261,3 +3261,24 @@ railgrid-resource-table-filter { display: contents; }
 .k-resource-board:focus-visible, .k-resource-board__lane:focus-visible, .k-resource-board__items:focus-visible, .k-resource-board__reveal:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
 .k-resource-board__hidden-items { max-height: min(60dvh, 320px); overflow-y: auto; padding: 2px; scrollbar-gutter: stable; }
+
+/* Compact collection headers and document sections are shared recipes. */
+.k-resource-page--collection { gap: 16px; }
+.k-resource-page--collection > .k-resource-page__header .k-resource-page__title {
+  font-size: 15px;
+  line-height: normal;
+  letter-spacing: normal;
+}
+.k-resource-page--collection > .k-resource-page__header .k-resource-page__subtitle {
+  max-width: 70ch;
+  line-height: 1.5;
+}
+.k-resource-section-card.k-resource-section-card--document {
+  flex: none;
+  gap: 16px;
+  padding: 12px;
+  border-color: var(--color-border-subtle);
+  border-radius: 8px;
+  background: transparent;
+}
+.k-resource-section-card--document > .k-resource-section-card__body { gap: 16px; }

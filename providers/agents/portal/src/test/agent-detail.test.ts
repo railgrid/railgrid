@@ -268,7 +268,7 @@ describe('agent resource detail conformance', () => {
     }
   })
 
-  it('keeps approval headings adjacent to the resource title on the embedded runs tab', async () => {
+  it('nests approval headings under the Runs workbench title', async () => {
     const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }) })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout', { displayName: 'Scout' })]
@@ -290,7 +290,8 @@ describe('agent resource detail conformance', () => {
 
     expect(headings).toEqual([
       ['H1', 'Scout'],
-      ['H2', 'Needs your attention (1)'],
+      ['H2', 'Runs'],
+      ['H3', 'Needs your attention (1)'],
     ])
   })
 

@@ -94,7 +94,8 @@ enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipByt
 // styling. Model collection logic stays in the lazy ModelsSettings chunk.
 // Shared pane motion and aligned transcript/composer columns measure
 // 1,264,860 raw / 353,108 gzip bytes. Keep the allowance below 1 KB.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_265_000, gzipBytes: 353_300 })
+// Shared collection/document recipes add 552 raw / 131 gzip bytes: 1,265,412 / 353,239.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_265_600, gzipBytes: 353_300 })
 // Baseline total assets measure 1,305,524 raw / 368,042 gzip. The same change
 // adds 18,852 raw / 5,745 gzip; keep 624 raw / 413 gzip bytes of headroom.
 // Authentication settings load only when the settings panel opens. Bound
@@ -110,4 +111,5 @@ enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000
 // Labeled shared toggle: 1,352,452 raw / 382,522 gzip total.
 // Shared picker plus model card/list controls: 1,360,125 raw / 384,385 gzip total.
 // Shared pane motion and composer alignment: 1,362,151 raw / 384,660 gzip.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_362_500, gzipBytes: 384_900 })
+// Shared recipe extraction: 1,362,703 raw / 384,783 gzip; gzip budgets unchanged.
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_363_100, gzipBytes: 384_900 })

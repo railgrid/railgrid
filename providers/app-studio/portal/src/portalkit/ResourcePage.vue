@@ -18,6 +18,7 @@ import { useDelayedLoading } from './useDelayedLoading'
 ensureRailgridUIStyles()
 
 const props = withDefaults(defineProps<{
+  variant?: 'default' | 'collection'
   title: string
   fill?: boolean
   /** Hide only the title/action header while retaining read-state handling. */
@@ -31,6 +32,7 @@ const props = withDefaults(defineProps<{
   stale?: ResourceReadState['stale']
   retryable?: ResourceReadState['retryable']
 }>(), {
+  variant: 'default',
   fill: false,
   showHeader: true,
   kind: '',
@@ -99,7 +101,7 @@ watch(() => props.error, error => {
 <template>
   <section
     class="k-resource-page"
-    :class="{ 'k-resource-page--fill': fill }"
+    :class="{ 'k-resource-page--fill': fill, 'k-resource-page--collection': variant === 'collection' }"
     :aria-busy="ariaBusy"
   >
     <!-- Keep read announcements out of layout while preserving the
