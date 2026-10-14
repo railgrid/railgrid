@@ -9,7 +9,6 @@ import {
   Plus,
   Puzzle,
   Send,
-  Server,
   Star,
   Trash2,
   Wrench,
@@ -24,6 +23,7 @@ import { mutate } from '../mutate'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import { portalHref } from '../portalkit/navigation'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
+import AIWorkbenchPane from '../agentkit/AIWorkbenchPane.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../portalkit/toast'
 import type { Route } from '../router'
@@ -982,6 +982,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 </script>
 
 <template>
+  <AIWorkbenchPane class="agents-config-pane" title="Config" description="Configure this agent’s identity, execution, and limits.">
   <div v-if="!agent" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
   <template v-else>
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-persona-heading" title="Persona" description="Who this agent is and how it should behave on every run.">
@@ -995,7 +996,6 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
 
     <ResourceSectionCard class="agents-config-sec" heading-id="agent-backend-heading" title="Backend" description="Choose where this agent runs its turns.">
-      <template #actions><Server :stroke-width="1.75" aria-hidden="true" /></template>
       <fieldset class="agents-cap-fs">
         <legend>Execution backend</legend>
         <div class="agents-radiocards">
@@ -1298,4 +1298,5 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
     <slot name="destructive-actions" />
   </template>
+  </AIWorkbenchPane>
 </template>

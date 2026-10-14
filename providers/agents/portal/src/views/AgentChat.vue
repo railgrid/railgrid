@@ -1583,14 +1583,14 @@ defineExpose({
           </AITranscript>
         </div>
 
-        <form class="agents-composer" @submit.prevent="send">
+        <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">
           <AIComposer class="agents-composer-surface" :disabled="!hasModel">
             <template #editor>
               <textarea
                 ref="composer"
                 v-model="draft"
                 class="agents-composer-input"
-                rows="3"
+                rows="1"
                 :aria-label="`Message ${name}`"
                 aria-describedby="agents-composer-help"
                 :title="composerHelp"
@@ -1601,6 +1601,19 @@ defineExpose({
                 @compositionend="onCompositionEnd"
                 @keydown="onComposerKeydown"
               ></textarea>
+              <div v-if="isModelBackend" class="k-ai-composer__controls">
+                <div class="k-ai-composer__actions">
+                  <AIModelPicker
+                    class="agents-chat-model-picker"
+                    :models="modelChoices"
+                    :selectedID="agentModelCredential(agent)"
+                    :disabled="modelSwitchDisabled"
+                    require-selection
+                    contained
+                    @select="selectModelCredential"
+                  />
+                </div>
+              </div>
               <span id="agents-composer-help" class="sr-only">{{ composerHelp }}</span>
             </template>
             <template #primary>
@@ -1620,24 +1633,12 @@ defineExpose({
                 :disabled="!hasModel || modelSaving || !draft.trim()"
               />
             </template>
-            <template v-if="isModelBackend" #footer>
-              <AIModelPicker
-                class="agents-chat-model-picker"
-                :models="modelChoices"
-                :selectedID="agentModelCredential(agent)"
-                :disabled="modelSwitchDisabled"
-                require-selection
-                contained
-                @select="selectModelCredential"
-              />
-            </template>
-            <template v-if="isModelBackend" #help>
+            <template v-if="isModelBackend && (modelSaveError || modelSaving || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
               <span v-if="modelSaveError" role="alert">{{ modelSaveError }}</span>
               <span v-else-if="modelSaving" role="status">Saving model…</span>
               <span v-else-if="store.credentials.loading">Loading models…</span>
               <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>
               <button v-else-if="!modelChoices.length" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="emit('navigate', { kind: 'menu', menu: 'models' })">Connect a model</button>
-              <span v-else>Changes save as this agent’s default for future turns.</span>
             </template>
           </AIComposer>
         </form>

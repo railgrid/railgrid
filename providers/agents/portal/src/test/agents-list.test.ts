@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AgentsList from '../views/AgentsList.vue'
 import { agentFixture, makeStore, stubApi } from './helpers'
 import { mountVue, settleVue, text } from './vue-helper'
+
+const AGENTS_LAYOUT_PREFERENCE_KEY = 'railgrid:agents:agents:layout'
 
 describe('agents list card semantics', () => {
   it('uses a native primary link and keeps explicit actions independent', async () => {
@@ -49,7 +51,7 @@ describe('agents list refresh resilience', () => {
     await settleVue()
 
     expect(text(mounted.element.querySelector('.agents-card'))).toContain('scout')
-    expect(mounted.element.querySelector('[role=status]')).toBeNull()
+    expect(mounted.element.querySelector('.k-loading-reveal')).toBeNull()
   })
 
   it('keeps populated and empty authoritative snapshots visible with truthful states', async () => {
@@ -114,5 +116,104 @@ describe('agents list refresh resilience', () => {
     const failedMounted = await mountVue(AgentsList, { store: failed, api })
     expect(text(failedMounted.element.querySelector('.agents-state-error'))).toContain('Could not load model credentials')
     expect(failedMounted.element.querySelector('.agents-state-error button')).not.toBeNull()
+  })
+})
+
+describe('agents list layouts', () => {
+  beforeEach(() => localStorage.removeItem(AGENTS_LAYOUT_PREFERENCE_KEY))
+  afterEach(() => localStorage.removeItem(AGENTS_LAYOUT_PREFERENCE_KEY))
+
+  it('defaults to cards and persists a switch to List', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+
+    expect(localStorage.getItem(AGENTS_LAYOUT_PREFERENCE_KEY)).toBeNull()
+    expect(mounted.element.querySelector('.agents-grid')).not.toBeNull()
+    expect(mounted.element.querySelector('.k-table__table')).toBeNull()
+
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout: Cards"]')!.click()
+    await settleVue()
+    document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="false"]')!.click()
+    await settleVue()
+
+    expect(mounted.element.querySelector('.agents-grid')).toBeNull()
+    expect(mounted.element.querySelector('.k-table__table')).not.toBeNull()
+    expect(mounted.element.querySelector('.agents-layout-search')).toBeNull()
+    expect(mounted.element.querySelectorAll('.k-table__search-input')).toHaveLength(1)
+    expect(localStorage.getItem(AGENTS_LAYOUT_PREFERENCE_KEY)).toBe('list')
+    mounted.unmount()
+
+    const restoredStore = makeStore(api)
+    restoredStore.agents.data = [agentFixture('scout')]
+    restoredStore.agents.loaded = true
+    restoredStore.agents.hasSnapshot = true
+    const restored = await mountVue(AgentsList, { store: restoredStore, api })
+    expect(restored.element.querySelector('.k-table__table')).not.toBeNull()
+  })
+
+  it('uses one shared query across cards and the built-in table search', async () => {
+    localStorage.setItem(AGENTS_LAYOUT_PREFERENCE_KEY, 'list')
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout'), agentFixture('codex')]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+
+    const row = mounted.element.querySelector<HTMLElement>('.k-table__row')!
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(mounted.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'chat' }])
+    expect(mounted.element.querySelector('button[aria-label="Open agent scout"]')).not.toBeNull()
+    expect(mounted.element.querySelector('button[aria-label="View runs for agent scout"]')).not.toBeNull()
+    expect(mounted.element.querySelector('button[aria-label="Delete agent scout"]')).not.toBeNull()
+
+    const search = mounted.element.querySelector<HTMLInputElement>('.k-table__search-input')!
+    search.value = 'no matching agent'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 140))
+    await settleVue()
+    expect(text(mounted.element.querySelector('.k-table'))).toContain('No agents match your search.')
+
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout: List"]')!.click()
+    await settleVue()
+    document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="false"]')!.click()
+    await settleVue()
+    expect(mounted.element.querySelector<HTMLInputElement>('.agents-layout-search input')?.value).toBe('no matching agent')
+    expect(text(mounted.element.querySelector('.agents-layout-empty'))).toBe('No agents match your search.')
+  })
+
+  it('clears list-only filters with an explanation when switching to Cards', async () => {
+    localStorage.setItem(AGENTS_LAYOUT_PREFERENCE_KEY, 'list')
+    const api = stubApi()
+    const store = makeStore(api)
+    const harness = agentFixture('codex', {
+      backend: { type: 'harness', harness: { edgeRef: { kind: 'MacOSServer', name: 'mini' }, credentialRef: 'codex' } },
+    })
+    store.agents.data = [agentFixture('scout'), harness]
+    store.agents.loaded = true
+    store.agents.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+
+    mounted.element.querySelector<HTMLButtonElement>('.k-table__filter-trigger')!.click()
+    await settleVue()
+    const harnessOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(option => text(option) === 'Coding harness')!
+    harnessOption.click()
+    await new Promise(resolve => setTimeout(resolve, 140))
+    await settleVue()
+    expect(mounted.element.querySelectorAll('.k-table__row')).toHaveLength(1)
+
+    mounted.element.querySelector<HTMLButtonElement>('[aria-label="Agent layout: List"]')!.click()
+    await settleVue()
+    document.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="false"]')!.click()
+    await settleVue()
+
+    expect(mounted.element.querySelectorAll('.agents-card')).toHaveLength(2)
+    expect(text(mounted.element.querySelector('.sr-only[role=status]'))).toBe('List filters were cleared for Cards.')
   })
 })

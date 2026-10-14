@@ -220,6 +220,12 @@ describe('Webhooks.vue', () => {
     const view = await mount(Webhooks, { store, api })
     await settleVue()
 
+    expect(view.element.querySelector('h1')?.textContent).toBe('Webhooks')
+    expect(view.element.querySelector('.agents-webhooks-page')?.classList.contains('k-card')).toBe(false)
+    expect(view.element.querySelector('.k-resource-page__actions .k-btn--primary')?.textContent).toContain('New webhook')
+    await vi.waitFor(() => expect(view.element.querySelectorAll('.k-table__row')).toHaveLength(2))
+    const resourceLink = view.element.querySelector<HTMLAnchorElement>('a.k-table-resource-link')!
+    expect(resourceLink.getAttribute('href')).toBe('#/webhooks/github-org/edit')
     const rows = [...view.element.querySelectorAll('.k-table__row')]
     const org = rows.find(row => text(row).includes('GitHub org'))!
     expect(text(org)).toContain('GitHub webhook')
@@ -248,6 +254,8 @@ describe('Webhooks.vue', () => {
     const view = await mount(Webhooks, { store, api, createRoute: true, authorityEpoch: 0, createSession: 1 })
     await settleVue()
 
+    expect(view.element.querySelector('.k-create-body--guided .k-create-fields')).not.toBeNull()
+    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('Available after creation')
     const form = view.element.querySelector<HTMLFormElement>('form')!
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
@@ -265,6 +273,9 @@ describe('Webhooks.vue', () => {
     expect(text(view.element.querySelector('#webhook-create-retention-error'))).toContain('between 0 and 1000')
 
     setValue(retention, '50')
+    await settleVue()
+    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('GitHub webhook')
+    expect(text(view.element.querySelector('.k-create-guidance'))).toContain('Last 50 deliveries')
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue()
     expect(createWebhook).toHaveBeenCalledWith({ name: 'gh', source: 'github', displayName: 'GitHub', deliveryRetention: 50 })

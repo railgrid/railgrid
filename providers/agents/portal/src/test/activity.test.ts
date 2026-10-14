@@ -96,14 +96,18 @@ async function chooseRunFilter(view: MountedVue, index: number, label: string): 
   return trigger
 }
 
+async function settleTableFilters(): Promise<void> {
+  await new Promise(resolve => window.setTimeout(resolve, 150))
+  await settleVue()
+}
+
 describe('Activity.vue', () => {
   it('loads the first feed page and emits navigation from an accessible row', async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' })
     const api = stubApi({ listRuns })
     const view = await mount(Activity, { store: makeStore(api), api })
 
-    expect(listRuns).toHaveBeenCalledWith(expect.objectContaining({ limit: 50 }))
-    expect(listRuns.mock.calls[0][0].since).toBeUndefined()
+    expect(listRuns).toHaveBeenCalledWith({})
     expect(text(view.element.querySelector('.k-table__row'))).toContain('summarise the open PRs')
     expect(text(view.element.querySelector('.agents-phase'))).toContain('Succeeded')
     expect(text(view.element.querySelector('td:first-child'))).toContain('scout')
@@ -174,17 +178,25 @@ describe('Activity.vue', () => {
     expect(listRuns).toHaveBeenCalledTimes(2)
   })
 
-  it('bounds range queries and exposes the current range', async () => {
-    const listRuns = vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' })
+  it('filters the full loaded result by range without narrowing the API request', async () => {
+    const listRuns = vi.fn().mockResolvedValue({ items: [
+      run({ id: 'fresh', inputPreview: 'fresh run', createdAt: new Date(Date.now() - 60_000).toISOString() }),
+      run({ id: 'six-days', inputPreview: 'six day run', createdAt: new Date(Date.now() - 6 * 86_400_000).toISOString() }),
+      run({ id: 'eight-days', inputPreview: 'eight day run', createdAt: new Date(Date.now() - 8 * 86_400_000).toISOString() }),
+    ], nextCursor: '' })
     const api = stubApi({ listRuns })
     const view = await mount(Activity, { store: makeStore(api), api })
-    await chooseRunFilter(view, 3, '7d')
+    expect(view.element.querySelectorAll('.k-table__row')).toHaveLength(3)
 
-    const since = listRuns.mock.calls[1][0].since as string
-    const ageDays = (Date.now() - new Date(since).getTime()) / 86_400_000
-    expect(new Date(since).toISOString()).toBe(since)
-    expect(ageDays).toBeGreaterThan(6.9)
-    expect(ageDays).toBeLessThan(7.1)
+    await chooseRunFilter(view, 3, '7d')
+    await settleTableFilters()
+
+    expect(listRuns).toHaveBeenCalledTimes(1)
+    expect(listRuns).toHaveBeenCalledWith({})
+    const filteredRows = [...view.element.querySelectorAll('.k-table__row')].map(row => text(row))
+    expect(filteredRows).toHaveLength(2)
+    expect(filteredRows.join(' ')).toContain('fresh run')
+    expect(filteredRows.join(' ')).toContain('six day run')
     expect(text(view.element.querySelectorAll('.k-table__filter-trigger')[3])).toContain('7d')
   })
 
@@ -193,55 +205,49 @@ describe('Activity.vue', () => {
     const api = stubApi({ listRuns })
     const view = await mount(Activity, { store: makeStore(api), api, agent: 'scout' })
 
-    expect(listRuns).toHaveBeenCalledWith(expect.objectContaining({ agent: 'scout' }))
+    expect(listRuns).toHaveBeenCalledWith({ agent: 'scout' })
     expect([...view.element.querySelectorAll('.k-table__filter-label')].map(label => text(label))).toEqual(['Class', 'Phase', 'Range'])
   })
 
-  it('uses cursor-backed ResourceTable pagination without inventing a total', async () => {
-    const listRuns = vi.fn()
-      .mockResolvedValueOnce({ items: [run({ id: 'r1', inputPreview: 'first page' })], nextCursor: 'cursor-2' })
-      .mockResolvedValueOnce({ items: [run({ id: 'r2', inputPreview: 'second page' })], nextCursor: '' })
-      .mockResolvedValueOnce({ items: [run({ id: 'r1', inputPreview: 'first page' })], nextCursor: 'cursor-2' })
+  it('paginates, searches, and filters beyond the first 50 loaded runs', async () => {
+    const items = Array.from({ length: 63 }, (_, index) => run({
+      id: `run-${String(index).padStart(2, '0')}`,
+      agent: index === 61 ? 'api-bot' : 'scout',
+      class: index === 61 ? 'background' : 'interactive',
+      inputPreview: index === 61 ? 'search target beyond page fifty' : `activity record ${index}`,
+      createdAt: new Date(Date.now() - index * 1_000).toISOString(),
+    }))
+    const listRuns = vi.fn().mockResolvedValue({ items, nextCursor: '' })
     const api = stubApi({ listRuns })
     const view = await mount(Activity, { store: makeStore(api), api })
     const shell = view.element.querySelector<HTMLTableElement>('table[aria-label="Runs"]')!.closest<HTMLElement>('.k-table--resource')!
 
-    expect(shell.querySelectorAll('.k-table__filter')).toHaveLength(4)
-    expect(text(shell.querySelector('.k-table__page-indicator'))).toBe('Page 1')
-    expect(text(shell.querySelector('.k-table__range'))).toContain('Showing 1–1')
+    expect(listRuns).toHaveBeenCalledTimes(1)
+    expect(listRuns).toHaveBeenCalledWith({})
+    expect(shell.querySelectorAll('.k-table__row')).toHaveLength(50)
+    expect(text(shell.querySelector('.k-table__range'))).toContain('Showing 1–50 of 63')
 
     shell.querySelector<HTMLButtonElement>('button[aria-label="Next page"]')!.click()
     await settleVue()
-    expect(listRuns.mock.calls[1][0]).toEqual(expect.objectContaining({ cursor: 'cursor-2', limit: 50 }))
-    expect(text(shell.querySelector('.k-table__row'))).toContain('second page')
-    expect(text(shell.querySelector('.k-table__page-indicator'))).toBe('Page 2')
+    expect(shell.querySelectorAll('.k-table__row')).toHaveLength(13)
+    expect(text(shell.querySelector('.k-table__row'))).toContain('activity record 50')
 
-    shell.querySelector<HTMLButtonElement>('button[aria-label="Previous page"]')!.click()
+    const search = shell.querySelector<HTMLInputElement>('.k-table__search-input')!
+    vi.useFakeTimers()
+    setValue(search, 'search target beyond page fifty')
     await settleVue()
-    expect(listRuns.mock.calls[2][0].cursor).toBeUndefined()
-    expect(text(shell.querySelector('.k-table__row'))).toContain('first page')
-  })
-
-  it('keeps the backend next-page affordance when a filtered cursor page is empty', async () => {
-    const listRuns = vi.fn()
-      .mockResolvedValueOnce({ items: [run()], nextCursor: '' })
-      .mockResolvedValueOnce({ items: [], nextCursor: 'filtered-cursor-2' })
-      .mockResolvedValueOnce({ items: [run({ id: 'r2', class: 'background', inputPreview: 'filtered second page' })], nextCursor: '' })
-    const api = stubApi({ listRuns })
-    const view = await mount(Activity, { store: makeStore(api), api })
+    await vi.advanceTimersByTimeAsync(150)
+    await settleVue()
+    vi.useRealTimers()
+    expect(shell.querySelectorAll('.k-table__row')).toHaveLength(1)
+    expect(text(shell.querySelector('.k-table__row'))).toContain('search target beyond page fifty')
+    expect(text(shell.querySelector('.k-table__range'))).toContain('Showing 1–1 of 1')
 
     await chooseRunFilter(view, 1, 'background')
-    const next = view.element.querySelector<HTMLButtonElement>('button[aria-label="Next page"]')!
-    expect(text(view.element.querySelector('tbody'))).toContain('No runs match these filters')
-    expect(next.disabled).toBe(false)
-
-    next.click()
-    await settleVue()
-    expect(listRuns.mock.calls[2][0]).toEqual(expect.objectContaining({
-      class: 'background',
-      cursor: 'filtered-cursor-2',
-    }))
-    expect(text(view.element.querySelector('.k-table__row'))).toContain('filtered second page')
+    await settleTableFilters()
+    expect(shell.querySelectorAll('.k-table__row')).toHaveLength(1)
+    expect(text(shell.querySelector('.k-table__row'))).toContain('search target beyond page fifty')
+    expect(listRuns).toHaveBeenCalledTimes(1)
   })
 
   it('renders Running as an in-progress warning tone in the feed', async () => {

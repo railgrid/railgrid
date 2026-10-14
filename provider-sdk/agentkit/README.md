@@ -54,7 +54,7 @@ when unused Vue components can be eliminated by the bundler.
 
 Core PortalKit uses `--railgrid-ui-core-version: 36` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
-AgentKit presentation style/runtime version is 15 (the `AGENT_UI_VERSION`
+AgentKit presentation style/runtime version is 23 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
 does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
@@ -95,3 +95,16 @@ component preserves provider keyboard, drag, and close events.
 App Studio. Providers supply admitted items and own tab state, routes,
 persistence, and reorder policy. Closing a tab is a presentation action, not
 resource deletion.
+
+## Pane motion
+
+AgentKit owns pane motion through `--k-ai-pane-enter-duration` (280ms),
+`--k-ai-pane-leave-duration` (190ms), and `--k-ai-pane-easing`. The shared
+conversation rail, `AIWorkspace` right pane, and App Studio's custom split layout
+consume these tokens. Keep layout-specific transitions with their components;
+do not add independent provider timing settings. Resizing remains immediate and
+pane transitions respect `prefers-reduced-motion`.
+
+Conversation transcripts and composer docks share `--k-ai-conversation-content-width`
+(820px). Apply `k-ai-composer-dock` to the composer form so its composer, queued
+messages, and inline prompts stay aligned with the transcript at every pane width.

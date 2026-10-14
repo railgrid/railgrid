@@ -315,11 +315,13 @@ defineExpose({ close: closeWorkbench, open: openWorkbench, toggle, split })
       @keydown="handleResizeKeydown"
     />
 
+    <Transition name="k-ai-workspace-pane">
     <section
       ref="workbench"
       class="k-ai-workspace__workbench"
       :aria-label="workbenchLabel"
       :aria-hidden="!open ? 'true' : undefined"
+      :inert="!open"
       tabindex="-1"
       v-show="open"
       data-k-ai-workspace-workbench
@@ -343,5 +345,6 @@ defineExpose({ close: closeWorkbench, open: openWorkbench, toggle, split })
         <slot name="workbench" :open="open" :mobile="mobileViewport" />
       </div>
     </section>
+    </Transition>
   </section>
 </template>

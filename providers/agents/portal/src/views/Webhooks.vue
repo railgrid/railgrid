@@ -15,6 +15,7 @@ import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import FormSelect from '../portalkit/FormSelect.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
@@ -96,6 +97,17 @@ const log = ref<InstanceType<typeof WebhookDeliveryLog> | null>(null)
 watch(() => props.createSession, () => {
   draftName.value = ''; draftSource.value = 'webhook'; draftDisplay.value = ''; draftRetention.value = ''
   nameError.value = ''; retentionError.value = ''; editValuesFor.value = ''
+})
+
+const guidanceValues = computed(() => {
+  const retention = parseRetention(draftRetention.value)
+  return [
+    { label: 'Railgrid name', value: draftName.value.trim() || 'Not entered yet', technical: true },
+    { label: 'Display name', value: draftDisplay.value.trim() || draftName.value.trim() || 'Not entered yet' },
+    { label: 'Sender', value: sourceLabel(draftSource.value) },
+    { label: 'Delivery history', value: retention.error ? 'Enter a valid retention limit' : retention.value === 0 ? 'Not retained' : `Last ${retention.value ?? DEFAULT_DELIVERY_RETENTION} deliveries` },
+    { label: 'Inbound URL', value: 'Available after creation' },
+  ]
 })
 
 const slice = computed(() => { revision.value; return { ...props.store.webhooks } })
@@ -349,15 +361,14 @@ function cancel(): void {
       <h1 class="k-create-title">Create webhook</h1>
       <p class="k-create-description">One inbound URL for a sender. Triggers on any agent route from it, each firing on the deliveries its filter matches.</p>
     </header>
-    <form class="agents-obj-form agents-guided-form k-create-surface" novalidate :aria-busy="busy" @submit.prevent="create">
-      <div class="k-create-body">
-        <div class="agents-grid2">
+    <form class="k-create-surface k-create-surface--guided" novalidate :aria-busy="busy" @submit.prevent="create">
+      <div class="k-create-body k-create-body--guided">
+        <div class="k-create-fields">
           <label for="webhook-create-name">Name *
             <input id="webhook-create-name" v-model="draftName" class="k-input" name="name" required aria-required="true" pattern="[a-z0-9-]+" placeholder="github-org" autocomplete="off" :disabled="busy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? 'webhook-create-name-error' : undefined" @input="nameError = ''" />
             <span v-if="nameError" id="webhook-create-name-error" class="agents-fielderr" role="alert">{{ nameError }}</span>
           </label>
           <label>Display name<input v-model="draftDisplay" class="k-input" name="displayName" placeholder="optional" :disabled="busy" /></label>
-        </div>
         <label><span id="webhook-create-source-label">Sender</span><FormSelect v-model="draftSource" :options="SOURCE_OPTIONS" :disabled="busy" labelledby="webhook-create-source-label" describedby="webhook-create-source-hint" name="source" /><span id="webhook-create-source-hint" class="agents-hint">{{ draftSource === 'github' ? 'A repository or organization webhook on GitHub. Triggers routing from it get GitHub’s event catalog in their filter.' : 'Any sender that can POST JSON. Triggers routing from it filter on key=value lines.' }}</span></label>
         <label for="webhook-create-retention">Keep last N deliveries
           <input id="webhook-create-retention" v-model="draftRetention" class="k-input" name="deliveryRetention" type="number" inputmode="numeric" min="0" :max="MAX_DELIVERY_RETENTION" step="1" :placeholder="String(DEFAULT_DELIVERY_RETENTION)" :disabled="busy" :aria-invalid="retentionError ? 'true' : undefined" :aria-describedby="retentionError ? 'webhook-create-retention-error' : 'webhook-create-retention-hint'" @input="retentionError = ''" />
@@ -365,6 +376,16 @@ function cancel(): void {
           <span v-else id="webhook-create-retention-hint" class="agents-hint">How many recent deliveries the provider keeps for the log and the trigger filter tester — fired, filtered or unrouted. Empty uses the provider default ({{ DEFAULT_DELIVERY_RETENTION }}); 0 keeps none.</span>
         </label>
         <p class="agents-hint">The URL is minted once the webhook exists; the next page shows it, ready to paste into the sender.</p>
+        </div>
+        <CreateGuidance
+          title="Name and configure your webhook"
+          description="Choose the sender and delivery history limit. Railgrid creates one inbound URL that triggers on your agents can share."
+          :prerequisites="draftSource === 'github'
+            ? ['Access to the repository or organization’s webhook settings in GitHub.', 'An agent with a trigger to act on matching deliveries.']
+            : ['A service that can send JSON to a webhook URL.', 'An agent with a trigger to act on matching deliveries.']"
+          :values="guidanceValues"
+          :next-steps="['Copy the inbound URL from the webhook details page.', 'Paste the URL into your sender’s webhook settings.', 'Add a trigger to an agent, select this webhook, and configure its filter.', 'Send a test event and review the delivery log.']"
+        />
       </div>
       <div class="k-create-actions">
         <button type="button" class="k-btn k-btn--ghost secondary" :disabled="busy" @click="cancel">Cancel</button>
@@ -465,12 +486,16 @@ function cancel(): void {
     </ResourcePage>
   </div>
 
-  <div v-else class="agents-panel k-card agents-route-panel">
-    <div class="agents-panel-head">
-      <h3 tabindex="-1" data-webhooks-heading><WebhookIcon :stroke-width="1.75" aria-hidden="true" /> Webhooks</h3>
-      <button v-if="!showFirstRun" class="k-btn k-btn--ghost secondary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New webhook</button>
-    </div>
-    <p class="muted">Inbound URLs for GitHub or any sender. Triggers on your agents route from a webhook and fire on the deliveries their filter matches.</p>
+  <div v-else class="agents-webhooks-page k-resource-page">
+    <header class="k-resource-page__header">
+      <div class="k-resource-page__heading">
+        <h1 class="k-resource-page__title" tabindex="-1" data-webhooks-heading>Webhooks</h1>
+        <p class="k-resource-page__subtitle">Receive events from GitHub or other services and route matching deliveries to your agents.</p>
+      </div>
+      <div v-if="!showFirstRun" class="k-resource-page__actions">
+        <button class="k-btn k-btn--primary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New webhook</button>
+      </div>
+    </header>
     <FirstRunGuide
       v-if="showFirstRun"
       title="Create your first webhook"
@@ -495,11 +520,13 @@ function cancel(): void {
       searchable
       search-placeholder="Search webhooks…"
       :search-keys="['name', 'source']"
+      :filters="[{ key: 'source', label: 'Sender', allLabel: 'All senders', options: SOURCE_OPTIONS.map(option => ({ value: option.label, label: option.label })) }]"
+      paginated
       :interactive="false"
       @retry="store.load('webhooks')"
     >
       <template #name="{ row }">
-        <span class="agents-resource-name" :title="asWebhook(row).metadata.name">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</span>
+        <a class="k-table-resource-link" :href="hashFor({ kind: 'edit', resource: 'webhook', name: asWebhook(row).metadata.name })" :title="asWebhook(row).metadata.name" @click.prevent="openDetail(asWebhook(row))">{{ asWebhook(row).spec.displayName || asWebhook(row).metadata.name }}</a>
         <code v-if="asWebhook(row).spec.displayName" class="agents-resource-id">{{ asWebhook(row).metadata.name }}</code>
         <span v-if="invalidCondition(asWebhook(row))" class="k-badge agents-badge k-badge--warning agents-badge-warn" :title="invalidCondition(asWebhook(row))?.message">{{ invalidCondition(asWebhook(row))?.reason || 'Invalid' }}</span>
       </template>
