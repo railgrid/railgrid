@@ -11,10 +11,12 @@ import { ensureAgentUIStyles } from '../agentkit/styles'
 
 withDefaults(defineProps<{
   variant?: 'document' | 'tool'
+  bodyOverflow?: 'auto' | 'visible'
   title?: string
   description?: string
 }>(), {
   variant: 'document',
+  bodyOverflow: 'auto',
   title: undefined,
   description: undefined,
 })
@@ -25,7 +27,7 @@ ensureAgentUIStyles()
 <template>
   <section
     class="k-ai-workbench-canvas k-ai-workbench-pane"
-    :class="`k-ai-workbench-pane--${variant}`"
+    :class="[`k-ai-workbench-pane--${variant}`, { 'k-ai-workbench-pane--overflow-visible': bodyOverflow === 'visible' }]"
   >
     <header
       v-if="variant === 'document' && (title || description || $slots.actions)"

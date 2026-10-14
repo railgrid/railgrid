@@ -982,7 +982,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 </script>
 
 <template>
-  <AIWorkbenchPane class="agents-config-pane" title="Config" description="Configure this agent’s identity, execution, and limits.">
+  <AIWorkbenchPane body-overflow="visible" class="agents-config-pane" title="Config" description="Configure this agent’s identity, execution, and limits.">
   <div v-if="!agent" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
   <template v-else>
     <ResourceSectionCard class="agents-config-sec" variant="document" heading-id="agent-persona-heading" title="Persona" description="Who this agent is and how it should behave on every run.">

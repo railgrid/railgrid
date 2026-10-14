@@ -95,7 +95,8 @@ enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipByt
 // Shared pane motion and aligned transcript/composer columns measure
 // 1,264,860 raw / 353,108 gzip bytes. Keep the allowance below 1 KB.
 // Shared collection/document recipes add 552 raw / 131 gzip bytes: 1,265,412 / 353,239.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_265_600, gzipBytes: 353_300 })
+// Shared overflow/action options: 1,265,658 raw / 353,309 gzip (+246 / +70).
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_265_800, gzipBytes: 353_400 })
 // Baseline total assets measure 1,305,524 raw / 368,042 gzip. The same change
 // adds 18,852 raw / 5,745 gzip; keep 624 raw / 413 gzip bytes of headroom.
 // Authentication settings load only when the settings panel opens. Bound

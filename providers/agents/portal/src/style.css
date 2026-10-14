@@ -150,7 +150,6 @@ railgrid-provider-agents .agents-workbench-header { min-width: 0; }
 railgrid-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 100%; }
 railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
 /* Config follows the shared document pane and App Studio settings rhythm. */
-railgrid-provider-agents .agents-config-pane > .k-ai-workbench-pane__body { overflow: visible; }
 railgrid-provider-agents .agents-config-pane .agents-fieldset { padding: 0; border: 0; }
 railgrid-provider-agents .agents-config-pane .agents-radiocards { gap: 8px; }
 
@@ -178,7 +177,7 @@ railgrid-provider-agents .agents-panel form, railgrid-provider-agents .agents-ob
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 railgrid-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
-:where(railgrid-provider-agents) label:not(:where(.agents-model-create label, .k-table label)) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+:where(railgrid-provider-agents) label:not(:where(.agents-model-create label, [data-resource-table] label)) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 railgrid-provider-agents .agents-grid2 {
   display: grid;
   /* Keep two columns at most, and stack before either field shrinks below 20rem. */
@@ -441,7 +440,6 @@ railgrid-provider-agents .agents-approval-answer { min-width: 0; flex: 1 1 16rem
 
 /* composer */
 railgrid-provider-agents .agents-composer-surface { min-width: 0; }
-railgrid-provider-agents .agents-composer-surface .k-ai-composer__actions { flex: 1; }
 
 /* --- connection picker + type-driven form --- */
 railgrid-provider-agents .agents-conn-picker { display: flex; flex-direction: column; gap: 12px; }

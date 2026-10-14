@@ -54,7 +54,7 @@ when unused Vue components can be eliminated by the bundler.
 
 Core PortalKit uses `--railgrid-ui-core-version: 36` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
-AgentKit presentation style/runtime version is 23 (the `AGENT_UI_VERSION`
+AgentKit presentation style/runtime version is 24 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
 does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
@@ -108,3 +108,6 @@ pane transitions respect `prefers-reduced-motion`.
 Conversation transcripts and composer docks share `--k-ai-conversation-content-width`
 (820px). Apply `k-ai-composer-dock` to the composer form so its composer, queued
 messages, and inline prompts stay aligned with the transcript at every pane width.
+
+`AIWorkbenchPane` accepts `bodyOverflow="visible"` when its parent owns scrolling.
+Use `k-ai-composer__actions--fill` for an actions group that fills the available controls row.

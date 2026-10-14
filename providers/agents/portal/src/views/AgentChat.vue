@@ -1602,7 +1602,7 @@ defineExpose({
                 @keydown="onComposerKeydown"
               ></textarea>
               <div v-if="isModelBackend" class="k-ai-composer__controls">
-                <div class="k-ai-composer__actions">
+                <div class="k-ai-composer__actions k-ai-composer__actions--fill">
                   <AIModelPicker
                     class="agents-chat-model-picker"
                     description="Sets the default model for this agent."
