@@ -18,6 +18,7 @@ import {
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
 import { createProviderRouteFocus } from '@/providers/providerRouteFocus'
+import { createPageResourcePublisher } from '@/providers/pageResourcePublisher'
 import { createProviderContext } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
@@ -238,7 +239,7 @@ watch(
 // pushState does not emit hashchange, and clicking a provider's sidebar entry
 // can clear its fragment while leaving subPath unchanged.
 watch(
-  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext, props.subPath, router.currentRoute.value.hash] as const,
+  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext] : []), props.subPath, router.currentRoute.value.hash] as const,
   () => {
     if (elementRef.value) routeFocus.before(elementRef.value, props.subPath || '')
     pushContext()
@@ -414,24 +415,23 @@ function pushContext() {
       // upstream guarantees this object is re-pushed when the URL
       // changes (browser back / forward / refresh).
       subPath: props.subPath,
-      publishPageResource: resource => {
-        if (ownerGeneration !== mountGeneration || el !== elementRef.value ||
-          contextGeneration !== routeContext.generation || routeContext.state !== 'ready' || !accessAllowed.value ||
-          resourceScope !== JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath])) return
-        pageResource.publish(resourceSource, resourceScope, resource)
-      },
+      publishPageResource: createPageResourcePublisher(providerName,
+        () => ownerGeneration === mountGeneration && el === elementRef.value &&
+          contextGeneration === routeContext.generation && routeContext.state === 'ready' && accessAllowed.value &&
+          resourceScope === JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath]),
+        resource => pageResource.publish(resourceSource, resourceScope, resource)),
       ...(providerName === 'agents' ? { agentOverlay: {
         selectedAgent: agentOverlay.selectedAgent,
         settingsOpen: agentOverlay.settingsOpen,
         followContext: agentOverlay.followContext,
         setSettingsOpen: (open: boolean) => {
-          if (contextGeneration === routeContext.generation && accessAllowed.value) agentOverlay.settingsOpen = open
+          if (contextGeneration === routeContext.generation && accessAllowed.value) agentOverlay.setSettingsOpen(open)
         },
         configure: (name: string | null, followContext: boolean) => {
           if (contextGeneration !== routeContext.generation || !accessAllowed.value) return
           agentOverlay.setFollowContext(followContext)
           agentOverlay.select(name)
-          agentOverlay.settingsOpen = false
+          agentOverlay.setSettingsOpen(false)
         },
         select: (name: string | null) => {
           if (contextGeneration === routeContext.generation && accessAllowed.value) {

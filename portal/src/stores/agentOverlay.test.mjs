@@ -56,6 +56,50 @@ test('selection and context preference are isolated by user, organization and wo
   assert.notEqual(overlayPreferenceKey('a:b', 'c', 'd'), overlayPreferenceKey('a', 'b:c', 'd'))
 })
 
+test('navigation closes the surface without persisting a minimized preference', () => {
+  values.clear()
+  setActivePinia(createPinia())
+  const auth = useAuthStore(), tenant = useTenantStore(), overlay = useAgentOverlayStore()
+  auth.user = { userId: 'navigation-user' }
+  tenant.orgUUID = 'org-a'; tenant.workspaceUUID = 'workspace-a'
+  overlay.select('scout')
+  overlay.setDockVisible(true)
+  const saved = localStorage.getItem(overlay.preferenceKey)
+  overlay.closeForNavigation({ settings: true })
+  assert.equal(overlay.open, false)
+  assert.equal(overlay.dockVisible, false)
+  assert.equal(overlay.settingsOpen, true)
+  assert.equal(overlay.minimized, false)
+  assert.equal(localStorage.getItem(overlay.preferenceKey), saved)
+  overlay.setSettingsOpen(false)
+  assert.equal(overlay.settingsOpen, false)
+  overlay.setMinimized(false)
+  assert.equal(overlay.open, true)
+  overlay.closeForNavigation()
+  assert.equal(overlay.open, false)
+  assert.equal(overlay.settingsOpen, false)
+  tenant.workspaceUUID = 'workspace-b'
+  tenant.workspaceUUID = 'workspace-a'
+  assert.equal(overlay.open, true)
+  assert.equal(overlay.selectedAgent, 'scout')
+})
+
+test('authority changes clear transient layout and settings state', () => {
+  values.clear()
+  setActivePinia(createPinia())
+  const auth = useAuthStore(), tenant = useTenantStore(), overlay = useAgentOverlayStore()
+  auth.user = { userId: 'layout-user' }
+  tenant.orgUUID = 'org-a'; tenant.workspaceUUID = 'workspace-a'
+  overlay.select('scout')
+  overlay.setDockVisible(true)
+  overlay.setSettingsOpen(true)
+  tenant.workspaceUUID = 'workspace-b'
+  assert.equal(overlay.dockVisible, false)
+  assert.equal(overlay.settingsOpen, false)
+  assert.equal(overlay.open, false)
+  assert.equal(overlay.selectedAgent, null)
+})
+
 test('page resource snapshots allowlist metadata and ignore cleanup from a retired publisher', () => {
   setActivePinia(createPinia())
   const store = usePageResourceStore(), oldOwner = {}, owner = {}

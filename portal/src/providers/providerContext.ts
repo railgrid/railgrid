@@ -5,12 +5,13 @@ import { createProviderFetch, type ProviderFetch, type ProviderFetchScope } from
 // Both mount points (ProviderFrame.vue for the page, DashboardTile.vue for the
 // tile) build it through createProviderContext so the auth surface a bundle
 // sees is defined in exactly one place.
+// Injected only for the Agents provider, never other providers.
 export interface AgentOverlayControl {
   selectedAgent: string | null
-    settingsOpen: boolean
-    followContext: boolean
-    setSettingsOpen: (open: boolean) => void
-    configure: (name: string | null, followContext: boolean) => void
+  settingsOpen: boolean
+  followContext: boolean
+  setSettingsOpen: (open: boolean) => void
+  configure: (name: string | null, followContext: boolean) => void
   select: (name: string | null) => void
 }
 

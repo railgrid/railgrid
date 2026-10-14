@@ -74,10 +74,14 @@ const bottom = computed(() => `${toastBottomOffsetPx({
 })}px`)
 // Navigation identity only: no DOM scraping, query parameters, credentials,
 // forms, or page text. Providers can publish richer curated summaries later.
+// Labels remain reference data; bounding them limits model input size, not authority.
+function boundedLabel(value: string, limit: number): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().slice(0, limit)
+}
 const pageContext = computed(() => JSON.stringify({
   resource: resourceHint.value,
-  workspace: tenant.activeWorkspace?.displayName || tenant.workspaceUUID,
-  provider: typeof route.params.name === 'string' ? route.params.name : null,
+  workspace: boundedLabel(tenant.activeWorkspace?.displayName || tenant.workspaceUUID || '', 128),
+  provider: typeof route.params.name === 'string' ? boundedLabel(route.params.name, 63) : null,
   path: route.path.slice(0, 1024),
   view: route.hash.startsWith('#/') ? route.hash.split('?')[0]!.slice(0, 512) : null,
 }))
@@ -96,15 +100,19 @@ function clear(): void {
   loading.value = false
   error.value = ''
 }
-function pushContext(): void {
+function pushOverlayState(): void {
   if (!element || !allowed.value || !overlay.selectedAgent) return
-  const owner = generation
-  const key = authorityKey.value
   element.overlayState = {
     agent: overlay.selectedAgent,
     composerOnly: !expanded.value,
     pageContext: overlay.followContext ? pageContext.value : undefined,
   }
+}
+function pushContext(): void {
+  if (!element || !allowed.value || !overlay.selectedAgent) return
+  const owner = generation
+  const key = authorityKey.value
+  pushOverlayState()
   element.railgridContext = createProviderContext({
     user: auth.user, tenant: auth.clusterName, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID,
     theme: theme.resolved, basePath: '/ui/providers/agents',
@@ -145,7 +153,7 @@ async function mountAgent(): Promise<void> {
       const path = (event as CustomEvent<{ path?: string }>).detail?.path
       if (!path?.startsWith('#/')) return
       element?.dispatchEvent(new Event('railgrid-chat-handoff'))
-      overlay.open = false
+      overlay.closeForNavigation()
       void router.push(scopePath('/providers/agents') + path)
     })
     mount.value.appendChild(candidate)
@@ -159,10 +167,12 @@ watch([allowed, dedicatedChat, authorityKey, () => overlay.selectedAgent], () =>
   clear()
 }, { flush: 'sync' })
 watch([visible, authorityKey, () => overlay.selectedAgent, mount, retry], () => { void mountAgent() }, { flush: 'post' })
-watch(expanded, () => { if (element) element.overlayState = { agent: overlay.selectedAgent!, composerOnly: !expanded.value, pageContext: overlay.followContext ? pageContext.value : undefined } })
-watch([visible, () => overlay.open], ([show, open]) => { overlay.dockVisible = show && open }, { immediate: true })
+// Navigation and context sharing must not replace the provider's fetch wrapper
+// or reset its API/store watchers while a conversation is streaming.
+watch([expanded, () => overlay.followContext, pageContext], pushOverlayState, { flush: 'sync' })
+watch([visible, () => overlay.open], ([show, open]) => { overlay.setDockVisible(show && open) }, { immediate: true })
 watch(authorityKey, () => { expanded.value = false })
-watch([() => auth.token, () => theme.resolved, () => overlay.followContext, pageContext], pushContext, { flush: 'sync' })
+watch([() => auth.token, () => theme.resolved], pushContext, { flush: 'sync' })
 
 watch(() => overlay.open, async open => {
   if (open) {
@@ -176,13 +186,12 @@ function minimize(): void {
 }
 function assistantAction(id: string): void {
   if (id === 'remove') { overlay.select(null); return }
-  overlay.open = false
-  overlay.settingsOpen = true
+  overlay.closeForNavigation({ settings: true })
   void router.push(scopePath('/providers/agents') + '#/models')
 }
 function openDedicated(): void {
   element?.dispatchEvent(new Event('railgrid-chat-handoff'))
-  overlay.open = false
+  overlay.closeForNavigation()
   void router.push(scopePath('/providers/agents') + '#/agents/' + encodeURIComponent(overlay.selectedAgent || '') + '/chat')
 }
 const size = ref({ width: 720, height: 560 })
@@ -239,7 +248,7 @@ function animatePanel(node: Element, done: () => void, opening: boolean): void {
 }
 function enterPanel(node: Element, done: () => void): void { animatePanel(node, done, true) }
 function leavePanel(node: Element, done: () => void): void { animatePanel(node, done, false) }
-onBeforeUnmount(() => { overlay.dockVisible = false; cancelPanelMotion(); clear() })
+onBeforeUnmount(() => { overlay.setDockVisible(false); cancelPanelMotion(); clear() })
 </script>
 
 <template>

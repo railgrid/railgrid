@@ -26,6 +26,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     selectedAgent.value = null
     open.value = false
     settingsOpen.value = false
+    dockVisible.value = false
     followContext.value = true
     minimized.value = false
     if (!key) return
@@ -49,6 +50,15 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     save()
   }
   function setMinimized(value: boolean): void { minimized.value = value; open.value = !value && !!selectedAgent.value; save() }
+  // Navigation hides the transient surface without changing the user's saved
+  // minimized preference. Returning/reloading can still restore the assistant.
+  function closeForNavigation(options: { settings?: boolean } = {}): void {
+    open.value = false
+    dockVisible.value = false
+    settingsOpen.value = options.settings === true
+  }
+  function setSettingsOpen(value: boolean): void { settingsOpen.value = value }
+  function setDockVisible(value: boolean): void { dockVisible.value = value }
   function setFollowContext(value: boolean): void { followContext.value = value; save() }
-  return { selectedAgent, open, minimized, dockVisible, setMinimized, settingsOpen, followContext, preferenceKey, select, setFollowContext }
+  return { selectedAgent, open, minimized, dockVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext }
 })
