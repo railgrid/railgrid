@@ -247,9 +247,12 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, fmt.Errorf("s3 get %s: %w", key, classify(err))
 	}
 	defer func() { _ = obj.Close() }()
-	data, err := io.ReadAll(obj)
+	data, err := io.ReadAll(io.LimitReader(obj, MaxObjectBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("s3 read %s: %w", key, classify(err))
+	}
+	if int64(len(data)) > MaxObjectBytes {
+		return nil, fmt.Errorf("s3 object %s: %w (%d bytes)", key, ErrTooLarge, MaxObjectBytes)
 	}
 	return data, nil
 }
@@ -296,11 +299,15 @@ func classify(err error) error {
 	}
 	resp := minio.ToErrorResponse(err)
 	switch resp.Code {
-	case "NoSuchKey", "NotFound", "NoSuchBucket":
+	case "NoSuchKey", "NotFound":
 		return fmt.Errorf("%w: %s", ErrNotFound, resp.Code)
+	case "NoSuchBucket":
+		// A missing bucket is a deployment fault, not a missing object: a
+		// consumer must not wait out its arrival window on it.
+		return err
 	}
 	var target minio.ErrorResponse
-	if errors.As(err, &target) && target.StatusCode == 404 {
+	if errors.As(err, &target) && target.StatusCode == 404 && target.Code == "" {
 		return fmt.Errorf("%w: %s", ErrNotFound, target.Message)
 	}
 	return err

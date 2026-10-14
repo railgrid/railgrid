@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,11 +38,11 @@ const objectPrefix = "commit-bundles/"
 // commit-bundles/<scope key>/<bundle name>.json.
 //
 // The per-scope quota is checked with a prefix listing immediately before
-// the write. Two replicas storing into one scope at the same instant can
-// both pass that check, so the limits are enforced to within the number of
-// concurrent writers rather than exactly; the sweeper and consume-and-delete
-// keep the overshoot transient. FileStore serialises the same check with a
-// filesystem lock, which an object store has no equivalent of.
+// the write and again right after it: an object store has no equivalent of
+// the filesystem lock FileStore serialises the check with, so concurrent
+// writers can all pass the first check, and the second one decides who
+// yields (backOutIfOverQuota). Orphans are reclaimed by a bucket lifecycle
+// rule, not by this process.
 type ObjectStore struct {
 	backend  objectstore.Backend
 	notifier notifier
@@ -139,8 +140,60 @@ func (s *ObjectStore) put(ctx context.Context, scope string, files []File, isola
 	if err := s.backend.Put(ctx, objectKey, data); err != nil {
 		return BundleRef{}, fmt.Errorf("store bundle: %w", err)
 	}
+	if err := s.backOutIfOverQuota(ctx, key, objectKey); err != nil {
+		return BundleRef{}, err
+	}
 	s.notifier.announce(scope, bundle.Name)
 	return ref, nil
+}
+
+// backOutIfOverQuota closes the check-then-write race. After its own write
+// a writer lists the scope again; if concurrent writers pushed it over a
+// limit, the objects whose keys sort last are the ones that do not fit, and
+// a writer whose own object is among them deletes it and reports the quota.
+// Every racer sees the same listing, or a prefix of it, and applies the same
+// rule, so they agree on who yields without a lock. A listing that fails or
+// is truncated leaves the stored object alone: a successful write is not
+// failed on a re-check the store could not complete.
+func (s *ObjectStore) backOutIfOverQuota(ctx context.Context, scopeKey, ownKey string) error {
+	type entry struct {
+		key  string
+		size int64
+	}
+	var entries []entry
+	const maxScanEntries = MaxScopeBundles*4 + 64
+	scanned := 0
+	err := s.backend.List(ctx, objectPrefix+scopeKey+"/", func(obj objectstore.Object) error {
+		scanned++
+		if strings.HasSuffix(obj.Key, ".json") {
+			entries = append(entries, entry{key: obj.Key, size: obj.Size})
+		}
+		if scanned >= maxScanEntries {
+			return errStopListing
+		}
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	count := len(entries)
+	var usedBytes int64
+	for _, e := range entries {
+		usedBytes += e.size
+	}
+	for count > 0 && (count > MaxScopeBundles || usedBytes > MaxScopeBytes) {
+		last := entries[count-1]
+		if last.key == ownKey {
+			if err := s.backend.Delete(ctx, ownKey); err != nil {
+				return fmt.Errorf("%w: concurrent writers exceeded the scope limits, and backing out failed: %v", ErrScopeQuotaExceeded, err)
+			}
+			return fmt.Errorf("%w: concurrent writers exceeded the scope limits", ErrScopeQuotaExceeded)
+		}
+		count--
+		usedBytes -= last.size
+	}
+	return nil
 }
 
 // errStopListing ends a prefix listing early once a limit is known to be hit.
@@ -248,7 +301,9 @@ func (s *ObjectStore) Delete(ctx context.Context, scope, name, digest string) er
 	return nil
 }
 
-// Sweep removes bundles last written more than maxAge before now.
+// Sweep removes bundles last written more than maxAge before now. The
+// provider does not run it on a clock for this store (a bucket lifecycle
+// rule expires orphans instead); it exists for tests and manual cleanup.
 func (s *ObjectStore) Sweep(ctx context.Context, now time.Time, maxAge time.Duration) (int, error) {
 	if s == nil {
 		return 0, errors.New("bundle store is nil")

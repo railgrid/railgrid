@@ -134,12 +134,12 @@ func runServe() {
 	// The two transient stores (commit bundles, staged git snapshots) are the
 	// only state the provider keeps outside kcp. Which backend they use is
 	// what decides whether the provider may run more than one replica.
-	bundles, snapshots, err := newTransientStores(context.Background())
+	stores, err := newTransientStores(context.Background())
 	if err != nil {
 		log.Fatalf("transient stores: %v", err)
 	}
-	log.Printf("commit bundle store: %s", bundles)
-	log.Printf("snapshot store: %s", snapshots)
+	log.Printf("commit bundle store: %s", stores.bundles)
+	log.Printf("snapshot store: %s", stores.snapshots)
 
 	// One client factory, two halves. The MCP tools act with the CALLER's own
 	// bearer, which the hub aggregate forwards with each tool call:
@@ -168,7 +168,7 @@ func runServe() {
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
 		Tenant:  tenantCallers,
-		Bundles: bundles,
+		Bundles: stores.bundles,
 	})
 
 	dist, err := portalFS()
@@ -197,8 +197,8 @@ func runServe() {
 
 	codeActions := actions.New(providerCallers, backends)
 	codeActions.Credentials = credentials
-	codeActions.Bundles = bundles
-	codeActions.Snapshots = snapshots
+	codeActions.Bundles = stores.bundles
+	codeActions.Snapshots = stores.snapshots
 	// Class (d) is three fixed paths under /oauth/, so the flow registers them
 	// on a sub-mux of its own and serve mounts that as the whole class.
 	oauthRoutes := http.NewServeMux()
@@ -245,11 +245,11 @@ func runServe() {
 		}
 	}()
 
-	if err := startControllerManager(ctx, kcpConfig, backends, bundles, snapshots, vwState); err != nil {
+	if err := startControllerManager(ctx, kcpConfig, backends, stores, vwState); err != nil {
 		if errors.Is(err, errControllerDisabled) {
 			log.Printf("controller manager: disabled (no kubeconfig); set CODE_KUBECONFIG to enable")
 			// No leader term will run the sweepers, so this process does.
-			runSweepers(ctx, bundles, snapshots)
+			stores.runSweepers(ctx)
 		} else {
 			log.Printf("controller manager: NOT started: %v", err)
 		}

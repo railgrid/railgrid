@@ -36,6 +36,14 @@ import (
 // ErrNotFound reports that no object exists at the requested key.
 var ErrNotFound = errors.New("object not found")
 
+// ErrTooLarge reports an object above MaxObjectBytes.
+var ErrTooLarge = errors.New("object exceeds the size limit")
+
+// MaxObjectBytes bounds what one Get buffers. Every store writes well below
+// it (a commit bundle is at most 48 MiB of decoded content, a snapshot 36
+// MiB serialized), so only a foreign or corrupt object trips it.
+const MaxObjectBytes = 64 << 20
+
 // IsNotFound reports whether err means the object does not exist.
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)

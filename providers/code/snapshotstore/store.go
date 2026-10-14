@@ -28,6 +28,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"regexp"
 	"time"
 )
@@ -42,6 +43,14 @@ const (
 	// hold at once, counting expired entries that have not been reclaimed.
 	MaxPerTenant      = 16
 	MaxBytesPerTenant = 256 << 20
+	// DefaultSweepInterval is how often RunSweeper reclaims expired
+	// snapshots from a store that has no lifecycle rule of its own.
+	DefaultSweepInterval = time.Hour
+	// ttlSkew is the clock disagreement tolerated between this process and
+	// an external object store. A writer treats an entry as reusable only if
+	// it is at least this far from expiring, so it never hands out a ref a
+	// reader on another replica then judges expired.
+	ttlSkew = 2 * time.Minute
 )
 
 var (
@@ -111,7 +120,8 @@ func verify(data []byte, ref string) error {
 		return ErrTooLarge
 	}
 	if Ref(data) != ref {
-		return errors.New("snapshot digest mismatch")
+		// Bytes that do not hash to ref are not the snapshot asked for.
+		return fmt.Errorf("%w: digest mismatch", ErrNotFound)
 	}
 	return nil
 }

@@ -168,6 +168,7 @@ func (s *FileStore) Find(ctx context.Context, cluster, ref string) ([]byte, erro
 		return nil, ErrNotFound
 	}
 	now := time.Now()
+	var lastErr error
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -176,6 +177,12 @@ func (s *FileStore) Find(ctx context.Context, cluster, ref string) ([]byte, erro
 		if err == nil {
 			return data, nil
 		}
+		if !errors.Is(err, ErrNotFound) {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, ErrNotFound
 }

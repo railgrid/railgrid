@@ -77,7 +77,7 @@ func (s *ObjectStore) Stage(ctx context.Context, cluster, scope string, data []b
 	key := snapshotKey(cluster, scope, ref)
 	now := time.Now()
 	if info, err := s.backend.Stat(ctx, key); err == nil {
-		if now.Sub(info.LastModified) <= TTL {
+		if now.Sub(info.LastModified) <= TTL-ttlSkew {
 			return ref, nil
 		}
 	} else if !objectstore.IsNotFound(err) {
@@ -152,11 +152,21 @@ func (s *ObjectStore) Find(ctx context.Context, cluster, ref string) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("list snapshots: %w", err)
 	}
+	// A candidate that is not the snapshot (expired, tampered) is skipped; a
+	// read that failed for another reason is reported, so a caller can tell
+	// a transient store error from a snapshot that is gone.
+	var lastErr error
 	for _, key := range candidates {
 		data, err := s.readLive(ctx, key, ref, now)
 		if err == nil {
 			return data, nil
 		}
+		if !errors.Is(err, ErrNotFound) {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, ErrNotFound
 }
@@ -185,7 +195,9 @@ func (s *ObjectStore) readLive(ctx context.Context, key, ref string, now time.Ti
 	return data, nil
 }
 
-// Sweep removes every snapshot that expired before now.
+// Sweep removes every snapshot that expired before now. The provider does
+// not run it on a clock for this store (a bucket lifecycle rule expires
+// them instead); it exists for tests and manual cleanup.
 func (s *ObjectStore) Sweep(ctx context.Context, now time.Time) (int, error) {
 	var expired []string
 	err := s.backend.List(ctx, objectPrefix, func(obj objectstore.Object) error {

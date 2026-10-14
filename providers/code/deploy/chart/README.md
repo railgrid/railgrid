@@ -28,6 +28,26 @@ helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider
   --set catalogEntry.enabled=true
 ```
 
+## S3 bucket lifecycle
+
+With `bundleStore.backend: s3` the provider deletes a bundle or snapshot
+once it is consumed, but it does not sweep what a crash or an abandoned
+request left behind: that is the bucket's job. Expire the two prefixes after
+one day (bundles are consumed within minutes and snapshots within an hour):
+
+```json
+{"Rules": [
+  {"ID": "railgrid-code-bundles",   "Status": "Enabled", "Filter": {"Prefix": "commit-bundles/"}, "Expiration": {"Days": 1}},
+  {"ID": "railgrid-code-snapshots", "Status": "Enabled", "Filter": {"Prefix": "git-snapshots/"},  "Expiration": {"Days": 1}}
+]}
+```
+
+Prepend `bundleStore.s3.prefix` to both prefixes if one is set. On AWS:
+`aws s3api put-bucket-lifecycle-configuration --bucket <bucket>
+--lifecycle-configuration file://lifecycle.json`; on MinIO: `mc ilm rule add
+--expire-days 1 --prefix commit-bundles/ <alias>/<bucket>` and the same for
+`git-snapshots/`.
+
 ## Values
 
 | Key | Default | Notes |
@@ -60,7 +80,7 @@ helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider
 | `tenant` |  | Tenant credential resolution. Empty → the provider default ("default"), the namespace the portal writes Connection token Secrets into. Override only if an admin pushes credential Secrets into a namespace tenants cannot write to. |
 | `tenant.credentialsNamespace` | `""` |  |
 | `bundleStore` |  | RepositoryCommit source bundles and staged git snapshots: the only state the provider keeps outside kcp. A CR stores only a reference/digest; the bytes live here until the controller consumes them, and expire on a TTL otherwise. |
-| `bundleStore.backend` | `file` | `file`: a volume at `bundleStore.path`, correct for `replicaCount: 1` only. `s3`: any S3-compatible bucket every replica reaches (AWS S3, MinIO, Ceph RGW, …), required for `replicaCount > 1`; no volume is mounted. |
+| `bundleStore.backend` | `file` | `file`: a volume at `bundleStore.path`, correct for `replicaCount: 1` only. `s3`: any S3-compatible bucket every replica reaches (AWS S3, MinIO, Ceph RGW, …), required for `replicaCount > 1`; no volume is mounted. With `s3` the provider runs no orphan sweep: give the bucket a lifecycle rule (see "S3 bucket lifecycle" below). |
 | `bundleStore.path` | `/var/lib/railgrid-code/commit-bundles` | Mount path for `backend: file`. |
 | `bundleStore.existingClaim` | `""` | Use an existing PVC instead of rendering one (`backend: file`). |
 | `bundleStore.emptyDir` | `false` | Explicit non-durable fallback for throwaway/dev deployments (`backend: file`). |

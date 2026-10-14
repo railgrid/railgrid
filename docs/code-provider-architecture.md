@@ -203,7 +203,21 @@ a crash orphaned after `DefaultSweepMaxAge`. Both this store and the snapshot
 store (`snapshotstore/`) sit behind one backend seam (`objectstore/`):
 `file` keeps them on a local volume and is correct for one replica only, `s3`
 keeps them in a bucket every replica reaches and is what the chart requires
-for `replicaCount > 1`. If the bundle is gone
+for `replicaCount > 1`.
+
+**Sweepers.** §5.8 of `AGENTS.md` bans timer loops over kcp objects; these
+stores hold no kcp objects, which is why the hourly orphan sweep is the one
+clock the provider keeps. It is argued, not assumed: every artifact here is
+expendable by construction (the CR is the authority and a consumer whose
+bundle is gone fails and is retried by its author), the sweep touches only
+the provider's own directory, and it runs on the leader for the term so no
+two replicas compete. It runs for the `file` backend only, where nothing
+else can expire a directory. With `s3` the provider runs no sweep at all: a
+bucket lifecycle rule expires `commit-bundles/` and `git-snapshots/` after a
+day (the chart README spells it out), which needs no code, no leader and no
+agreement between the provider's clock and the store's. The snapshot store
+still reclaims a tenant's expired entries inline when that tenant stages
+again; that is part of the write, not a loop. If the bundle is gone
 the commit fails and is retried by its author; nothing is unrecoverable, which
 is exactly the condition the carve-out sets. Running more than one replica
 without shared storage for this directory means a commit can land on a replica

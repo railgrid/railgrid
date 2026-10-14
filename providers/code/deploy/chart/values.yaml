@@ -90,7 +90,9 @@ bundleStore:
   #         only, because every replica would have its own copy.
   #   s3    Any S3-compatible bucket (AWS S3, MinIO, Ceph RGW, …) that every
   #         replica reaches. Required for replicaCount > 1. No volume is
-  #         mounted; the file settings below are ignored.
+  #         mounted; the file settings below are ignored. The provider runs
+  #         no orphan sweep on a bucket: give it a lifecycle rule expiring
+  #         commit-bundles/ and git-snapshots/ after a day (chart README).
   backend: file
   path: /var/lib/railgrid-code/commit-bundles
   # Use an existing PVC instead of rendering one.

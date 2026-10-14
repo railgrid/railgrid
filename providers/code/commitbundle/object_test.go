@@ -222,3 +222,38 @@ func TestObjectStoreNotifiesArrivals(t *testing.T) {
 		t.Fatal("bundle was not announced")
 	}
 }
+
+// backOutIfOverQuota is what closes the check-then-write race: of the
+// objects that do not fit, the ones whose keys sort last yield.
+func TestObjectStoreBacksOutOnlyTheLastWritersOverQuota(t *testing.T) {
+	store, backend := newObjectStore(t)
+	ctx := context.Background()
+	key, _ := scopeKey("root:acme")
+	keys := make([]string, 0, MaxScopeBundles+2)
+	for i := 0; i < MaxScopeBundles+2; i++ {
+		k := bundleObjectKey(key, fmt.Sprintf("bundle-stage-%03d", i))
+		if err := backend.Put(ctx, k, []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	// Two objects over: the two last-sorting keys yield, nothing else does.
+	if err := store.backOutIfOverQuota(ctx, key, keys[0]); err != nil {
+		t.Fatalf("first-sorting writer backed out: %v", err)
+	}
+	if _, err := backend.Stat(ctx, keys[0]); err != nil {
+		t.Fatalf("first-sorting object removed: %v", err)
+	}
+	for _, own := range keys[len(keys)-2:] {
+		if err := store.backOutIfOverQuota(ctx, key, own); !IsQuotaExceeded(err) {
+			t.Fatalf("last-sorting writer %s kept its object: %v", own, err)
+		}
+		if _, err := backend.Stat(ctx, own); !objectstore.IsNotFound(err) {
+			t.Fatalf("yielding writer left its object behind: %v", err)
+		}
+	}
+	// Back within limits: nobody yields.
+	if err := store.backOutIfOverQuota(ctx, key, keys[MaxScopeBundles-1]); err != nil {
+		t.Fatalf("writer backed out of a scope within quota: %v", err)
+	}
+}

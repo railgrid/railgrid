@@ -46,6 +46,10 @@ code_bundle_store = (
 if code_bundle_store not in ('file', 's3'):
     fail('--code-bundle-store must be one of: file, s3')
 code_minio_enabled = code_bundle_store == 's3'
+# Same variables the Makefile's code-minio-serve reads, so an override
+# reaches the readiness probe and the server alike.
+code_minio_port = int(os.getenv('CODE_MINIO_PORT', '59000'))
+code_minio_console_port = int(os.getenv('CODE_MINIO_CONSOLE_PORT', '59001'))
 
 kcp_image = cfg.get('kcp-image', '') or os.getenv('RAILGRID_KCP_IMAGE', '')
 # Universal sandbox stays opt-in locally. Resolve one mode for both the
@@ -314,9 +318,9 @@ if code_minio_enabled:
         deps=['Makefile'],
         readiness_probe=probe(
             period_secs=2,
-            http_get=http_get_action(port=59000, path='/minio/health/live'),
+            http_get=http_get_action(port=code_minio_port, path='/minio/health/live'),
         ),
-        links=[link('http://127.0.0.1:59001', 'MinIO console')],
+        links=[link('http://127.0.0.1:%d' % code_minio_console_port, 'MinIO console')],
         labels=['providers-code'],
     )
 

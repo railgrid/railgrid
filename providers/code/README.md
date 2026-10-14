@@ -238,8 +238,12 @@ both in one bucket of any S3-compatible service (`CODE_S3_ENDPOINT`,
 `CODE_S3_BUCKET`, optional `CODE_S3_REGION`/`CODE_S3_PREFIX`,
 `CODE_S3_USE_SSL`, static `CODE_S3_ACCESS_KEY_ID`/`CODE_S3_SECRET_ACCESS_KEY`
 or the AWS credential chain) and is what the chart requires for
-`replicaCount > 1`; there the quota is checked against a listing immediately
-before the write, so concurrent stagers can overshoot it by their number.
+`replicaCount > 1`. There the quota is checked against a listing before the
+write and again after it: concurrent stagers can all pass the first check,
+and on the second the ones whose objects sort last back theirs out and get
+the 429, so the scope settles within its limits without a lock. The hourly
+orphan sweep runs for `file` only; a bucket gets a lifecycle rule instead
+(chart README).
 The Tilt dev loop runs one replica on `file` by default; `make tilt
 CODE_BUNDLE_STORE=s3` adds a local MinIO (built from source into
 `hack/tools`) and runs the provider on `s3`, and `make test-code-s3` drives

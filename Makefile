@@ -19,8 +19,10 @@ KCP := $(TOOLSDIR)/kcp-$(KCP_VER)
 
 # MinIO for the code provider's optional S3 dev loop (make tilt
 # CODE_BUNDLE_STORE=s3). MinIO stopped publishing container images, so the
-# server is built from source like dex; the version is a Go pseudo-version
-# of github.com/minio/minio master.
+# server is built from source like dex; the version is a pinned Go
+# pseudo-version of github.com/minio/minio master, verified against the Go
+# checksum database like any module. MinIO is AGPL-3.0: dev/test tooling
+# ONLY, never baked into a release image or chart.
 MINIO_VER := v0.0.0-20260212201848-7aac2a2c5b7c
 MINIO := $(TOOLSDIR)/minio-$(MINIO_VER)
 KCP_DATA_DIR := .kcp
@@ -802,7 +804,7 @@ $(DEX):
 $(MINIO):
 	@mkdir -p $(TOOLSDIR)
 	@echo "Building MinIO $(MINIO_VER) (takes about a minute)..."
-	GOWORK=off GOFLAGS=-mod=mod GOBIN=$(TOOLS_GOBIN_DIR) go install github.com/minio/minio@$(MINIO_VER)
+	GOWORK=off GOBIN=$(TOOLS_GOBIN_DIR) go install github.com/minio/minio@$(MINIO_VER)
 	mv $(TOOLSDIR)/minio $(MINIO)
 	ln -sf $(notdir $(MINIO)) $(TOOLSDIR)/minio
 	@echo "MinIO binary: $(MINIO)"
@@ -2412,6 +2414,18 @@ CODE_S3_BUCKET ?= railgrid-code
 # MinIO above; point it at any S3-compatible service to override, setting
 # CODE_S3_ACCESS_KEY_ID / CODE_S3_SECRET_ACCESS_KEY in the environment.
 CODE_S3_ENDPOINT ?= http://127.0.0.1:$(CODE_MINIO_PORT)
+# The dev credentials and bucket auto-creation apply only while the endpoint
+# is the local MinIO. Against any other service the credentials must be
+# supplied explicitly and the bucket must already exist.
+ifeq ($(CODE_S3_ENDPOINT),http://127.0.0.1:$(CODE_MINIO_PORT))
+CODE_S3_DEV_ACCESS_KEY := $(CODE_MINIO_ACCESS_KEY)
+CODE_S3_DEV_SECRET_KEY := $(CODE_MINIO_SECRET_KEY)
+CODE_S3_DEV_CREATE_BUCKET := true
+else
+CODE_S3_DEV_ACCESS_KEY :=
+CODE_S3_DEV_SECRET_KEY :=
+CODE_S3_DEV_CREATE_BUCKET := false
+endif
 
 code-minio-serve: $(MINIO) ## Run local MinIO in the foreground for CODE_BUNDLE_STORE=s3 (Tilt's code-minio resource)
 	@mkdir -p "$(CODE_MINIO_DATA_DIR)"
@@ -2425,8 +2439,8 @@ test-code-s3: ## Run the code provider's S3-gated store tests against the local 
 		echo "ERROR: no S3 service at $(CODE_S3_ENDPOINT); start one with: make code-minio-serve"; exit 1; }
 	cd providers/code && \
 		CODE_TEST_S3_ENDPOINT=$(CODE_S3_ENDPOINT) CODE_TEST_S3_BUCKET=$(CODE_S3_BUCKET)-test \
-		CODE_S3_ACCESS_KEY_ID=$${CODE_S3_ACCESS_KEY_ID:-$(CODE_MINIO_ACCESS_KEY)} \
-		CODE_S3_SECRET_ACCESS_KEY=$${CODE_S3_SECRET_ACCESS_KEY:-$(CODE_MINIO_SECRET_KEY)} \
+		CODE_S3_ACCESS_KEY_ID=$${CODE_S3_ACCESS_KEY_ID:-$(CODE_S3_DEV_ACCESS_KEY)} \
+		CODE_S3_SECRET_ACCESS_KEY=$${CODE_S3_SECRET_ACCESS_KEY:-$(CODE_S3_DEV_SECRET_KEY)} \
 		go test -count=1 -run 'AgainstS3|AgainstService' ./objectstore/ ./commitbundle/ ./snapshotstore/
 
 .PHONY: serve-provider-code code-minio-serve test-code-s3
@@ -2449,9 +2463,9 @@ serve-provider-code: ## Run the already-built code provider
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	CODE_S3_ENDPOINT=$(CODE_S3_ENDPOINT) \
 	CODE_S3_BUCKET=$(CODE_S3_BUCKET) \
-	CODE_S3_ACCESS_KEY_ID=$${CODE_S3_ACCESS_KEY_ID:-$(CODE_MINIO_ACCESS_KEY)} \
-	CODE_S3_SECRET_ACCESS_KEY=$${CODE_S3_SECRET_ACCESS_KEY:-$(CODE_MINIO_SECRET_KEY)} \
-	CODE_S3_CREATE_BUCKET=$${CODE_S3_CREATE_BUCKET:-true} \
+	CODE_S3_ACCESS_KEY_ID=$${CODE_S3_ACCESS_KEY_ID:-$(CODE_S3_DEV_ACCESS_KEY)} \
+	CODE_S3_SECRET_ACCESS_KEY=$${CODE_S3_SECRET_ACCESS_KEY:-$(CODE_S3_DEV_SECRET_KEY)} \
+	CODE_S3_CREATE_BUCKET=$${CODE_S3_CREATE_BUCKET:-$(CODE_S3_DEV_CREATE_BUCKET)} \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
 	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
