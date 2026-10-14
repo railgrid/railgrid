@@ -30,7 +30,7 @@ Counts represent the supplied filtered collection, not workspace totals. Consume
 
 ## Layout and responsive behavior
 
-Horizontal overflow preserves readable cards on small screens. Each visible lane has independently scrollable content. Shared canonical CSS owns spacing and geometry.
+Horizontal overflow preserves readable cards on small screens. Each visible lane has independently scrollable content. Lanes are transparent groupings: their headings and spacing separate workflows without adding a surface between the containing section and its cards. Hidden columns use a narrower group of compact, unbordered reveal buttons; coarse pointers retain 44px targets. Shared canonical CSS owns spacing and geometry.
 
 ## Accessibility
 
