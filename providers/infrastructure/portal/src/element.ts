@@ -1,3 +1,4 @@
+import type { PublishPageResource } from './portalkit/page-context'
 import type { ProviderFetch } from './portalkit/tenant'
 
 // InfrastructureElement is the custom element the railgrid portal
@@ -11,6 +12,7 @@ import App from './App.vue'
 import DashboardTile from './DashboardTile.vue'
 
 export interface RailgridContext {
+  publishPageResource?: PublishPageResource
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).

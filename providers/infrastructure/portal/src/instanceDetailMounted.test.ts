@@ -87,6 +87,27 @@ describe('mounted Infrastructure instance detail deletion behavior', () => {
     vi.useRealTimers()
   })
 
+  it('publishes only the loaded resource identity and clears it on read failure and unmount', async () => {
+    const publish = vi.fn()
+    app = createApp(InstanceDetailPage, {
+      instanceName: instance.name, tombstones: createResourceTombstones(), publishPageResource: publish,
+    })
+    app.mount(host)
+    await flush()
+    expect(publish).toHaveBeenLastCalledWith({
+      apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', resource: 'instances',
+      name: instance.name, uid: instance.uid, readTool: 'get_instance',
+    })
+    expect(JSON.stringify(publish.mock.calls)).not.toContain('retained-value')
+    vi.mocked(api.getInstance).mockRejectedValueOnce(new Error('Read denied'))
+    host.querySelector<HTMLButtonElement>('.instance-detail__actions > button')!.click()
+    await flush()
+    expect(publish).toHaveBeenLastCalledWith(null)
+    app.unmount()
+    app = null
+    expect(publish).toHaveBeenLastCalledWith(null)
+  })
+
   it('keeps the successful snapshot and header actions stable during a background poll', async () => {
     vi.useFakeTimers()
     const backgroundRequest = deferred<Instance>()

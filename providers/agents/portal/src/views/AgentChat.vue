@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { PAGE_CONTEXT_MARKER } from '../pageContext'
+import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw } from 'lucide-vue-next'
+import { AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw } from 'lucide-vue-next'
 import { ApiError, type ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import AIModelPicker from '../agentkit/AIModelPicker.vue'
@@ -20,8 +22,10 @@ import { agentHarnessBacked, agentModelCredential, sessionLabel, type ChatMessag
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
-import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
+
+const domID = useAgentDOMID()
 
 const LIVE_RUN_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 const TERMINAL_RUN_PHASES = new Set(['Succeeded', 'Failed', 'Aborted'])
@@ -50,7 +54,7 @@ interface ConversationRailHandle {
   expanded?: boolean
 }
 
-const props = defineProps<{ store: AppStore; api: ApiClient; name: string }>()
+const props = defineProps<{ store: AppStore; api: ApiClient; name: string; compact?: boolean; composerOnly?: boolean; pageContext?: string }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
 // The standalone chat keeps its Conversation heading. AgentDetail supplies a
 // leading navigation control, compact identity heading, and actions when the
@@ -71,6 +75,35 @@ const streaming = ref(false)
 const messagesLoading = ref(false)
 const loadError = ref<string | null>(null)
 const draft = ref('')
+const chatHost = useAgentsRuntime()?.host
+const compactThreadsOpen = ref(false)
+const threadQuery = ref('')
+const threadSearch = ref<HTMLInputElement | null>(null)
+const compactThreads = computed(() => conversationItems.value.filter(thread =>
+  (thread.title || 'New chat').toLocaleLowerCase().includes(threadQuery.value.trim().toLocaleLowerCase())))
+function setCompactThreads(open: boolean): void {
+  if (!props.compact) return
+  compactThreadsOpen.value = open
+  chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-threads-state', { detail: { open } }))
+  void nextTick(() => open ? threadSearch.value?.focus() : composer.value?.focus())
+}
+function engageOverlay(): void {
+  if (props.compact) chatHost?.value?.dispatchEvent(new Event('railgrid-overlay-engage'))
+}
+watch(() => props.composerOnly, only => {
+  if (!only) return
+  compactThreadsOpen.value = false
+  chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-threads-state', { detail: { open: false } }))
+})
+function toggleCompactThreads(): void {
+  setCompactThreads(!compactThreadsOpen.value)
+  if (compactThreadsOpen.value) void loadSessions()
+}
+function handoffKey(): string {
+  const authority = props.api.contextAuthority()
+  return JSON.stringify([authority.userKey, authority.tenantKey, props.name])
+}
+function offerDraft(): void { offerChatDraft(handoffKey(), draft.value) }
 const orphanRun = ref<RunSummary | null>(null)
 const orphanError = ref<string | null>(null)
 const orphanHasSnapshot = ref(false)
@@ -97,6 +130,7 @@ let streamingID = ''
 let deltaBuffer = ''
 let flushHandle = 0
 let atBottom = true
+let logResizeObserver: ResizeObserver | null = null
 let composing = false
 let messageSequence = 0
 let openSerial = 0
@@ -614,6 +648,8 @@ async function openAgent(): Promise<void> {
   loadError.value = null
 
   if (!name) return
+  const transferredDraft = chatHost?.value ? takeChatDraft(handoffKey) : undefined
+  if (transferredDraft !== undefined) draft.value = transferredDraft
   let wanted = ''
   try {
     wanted = localStorage.getItem(sessionKey(name, api)) || ''
@@ -776,8 +812,14 @@ async function cancelLiveRun(
 }
 
 async function send(): Promise<void> {
-  const text = draft.value.trim()
-  if (!text || streaming.value || modelSaving.value || !hasModel.value) return
+  engageOverlay()
+  const draftText = draft.value.trim()
+  if (!draftText || streaming.value || modelSaving.value || !hasModel.value) return
+  // Snapshot before awaiting. This is quoted user context, never system policy
+  // or authorization. Persisting it in the message keeps reloads auditable.
+  const text = props.pageContext
+    ? `${draftText}${PAGE_CONTEXT_MARKER}${props.pageContext}`
+    : draftText
   claimChatOwnership()
   // Sending takes ownership of the transcript synchronously. A history read
   // that started before this turn must not replace the newly streamed messages
@@ -1219,11 +1261,13 @@ function newChat(): void {
 
 function selectConversation(id: string): void {
   closeMobileRail()
+  setCompactThreads(false)
   void switchSession(id)
 }
 
 function createConversation(): void {
   closeMobileRail()
+  setCompactThreads(false)
   newChat()
 }
 
@@ -1350,13 +1394,16 @@ function bindServer(store: AppStore | null): void {
 
 function onScroll(event: Event): void {
   const element = event.target as HTMLElement
+  if (!element.clientHeight) return
   atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 48
 }
 
 function scrollToBottom(): void {
   if (!atBottom) return
   void nextTick(() => {
-    if (atBottom && log.value) log.value.scrollTop = log.value.scrollHeight
+    if (atBottom && log.value?.clientHeight) {
+      log.value.scrollTop = log.value.scrollHeight
+    }
   })
 }
 
@@ -1395,16 +1442,30 @@ watch(() => conversationRail.value?.expanded, (expanded) => {
   void nextTick(() => mobileRailTrigger.value?.focus())
 })
 watch(revision, () => queueMicrotask(maybeAutoSend))
+watch(log, element => {
+  logResizeObserver?.disconnect()
+  if (element && typeof ResizeObserver !== 'undefined') {
+    logResizeObserver = new ResizeObserver(scrollToBottom)
+    logResizeObserver.observe(element)
+  }
+  scrollToBottom()
+}, { flush: 'post' })
 watch(messages, scrollToBottom)
+watch(draft, resizeComposer)
 
 onMounted(() => {
   mounted = true
+  chatHost?.value?.addEventListener('railgrid-chat-handoff', offerDraft)
+  chatHost?.value?.addEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
   bindServer(props.store)
   window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
 })
 
 onBeforeUnmount(() => {
+  chatHost?.value?.removeEventListener('railgrid-chat-handoff', offerDraft)
+  chatHost?.value?.removeEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
+  logResizeObserver?.disconnect()
   clearDetachedStarts()
   mounted = false
   initializedFor = ''
@@ -1420,17 +1481,19 @@ defineExpose({
 </script>
 
 <template>
-  <div class="agents-chat-shell">
+  <div class="agents-chat-shell" :class="{ 'agents-chat-shell--compact': compact, 'agents-chat-shell--bar': composerOnly }">
     <AIConversationHeader
+      v-if="!compact"
       class="agents-chat-head"
       :class="{ 'agents-chat-head--agent': $slots.heading }"
       aria-label="Conversation controls"
     >
       <button
+        v-if="!compact"
         ref="mobileRailTrigger"
         class="agents-mobile-rail-toggle"
         type="button"
-        aria-controls="agents-conversation-rail"
+        :aria-controls="domID('agents-conversation-rail')"
         :aria-label="$slots.heading ? 'Open conversations' : undefined"
         :aria-expanded="mobileRailOpen ? 'true' : 'false'"
         @click="toggleMobileRail"
@@ -1442,12 +1505,13 @@ defineExpose({
         </template>
       </button>
       <button
+        v-if="!compact"
         class="agents-desktop-rail-toggle"
         type="button"
         aria-label="Toggle conversation panel"
         title="Toggle conversation panel"
         :aria-expanded="conversationRailExpanded"
-        aria-controls="agents-conversation-rail"
+        :aria-controls="domID('agents-conversation-rail')"
         @click="toggleDesktopRail"
       >
         <PanelLeft aria-hidden="true" />
@@ -1461,12 +1525,13 @@ defineExpose({
       </slot>
       <span v-if="selectingSessionID" class="muted" role="status">Loading conversation…</span>
       <div v-if="$slots.actions" class="agents-chat-actions agents-detail-actions" role="group" aria-label="Agent workspace actions">
-        <slot name="actions" />
+        <slot name="actions" :has-draft="!!draft.trim()" :streaming="streaming" />
       </div>
     </AIConversationHeader>
 
     <AIConversationLayout class="agents-chat" aria-label="Agent conversation">
       <div
+        v-show="!compact"
         class="agents-conversation-rail-shell"
         :class="{ 'is-open': mobileRailOpen }"
         @keydown.capture.esc="handleRailShellEscape"
@@ -1480,7 +1545,7 @@ defineExpose({
         ></button>
         <AIConversationRail
           ref="conversationRail"
-          panel-id="agents-conversation-rail"
+          :panel-id="domID('agents-conversation-rail')"
           :threads="conversationItems"
           :active-thread-i-d="sessionID"
           :loading="sessionsLoading && !sessionsHasSnapshot"
@@ -1495,7 +1560,24 @@ defineExpose({
         />
       </div>
 
-      <div class="agents-chat-main">
+      <section v-if="compact && compactThreadsOpen" class="agents-overlay-threads" aria-label="Agent threads">
+        <header class="agents-overlay-threads__heading">
+          <h2>Threads</h2>
+          <button class="k-btn k-btn--primary agents-overlay-threads__new" type="button" :disabled="!!selectingSessionID" @click="createConversation"><SquarePen :size="14" aria-hidden="true" /> New chat</button>
+        </header>
+        <input ref="threadSearch" v-model="threadQuery" class="k-input" type="search" aria-label="Search threads" placeholder="Search threads" />
+        <div v-if="sessionsError" role="alert">Could not refresh threads. <button class="k-btn k-btn--text" type="button" :disabled="sessionsLoading" @click="loadSessions()">Retry</button></div>
+        <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading threads…</p>
+        <ul v-else-if="compactThreads.length" class="agents-overlay-threads__list">
+          <li v-for="thread in compactThreads" :key="thread.id">
+            <button class="k-btn k-btn--text agents-overlay-threads__item" type="button" :aria-current="thread.id === sessionID ? 'true' : undefined" :title="thread.title" :disabled="!!selectingSessionID" @click="selectConversation(thread.id)">
+              <MessageSquare :size="15" aria-hidden="true" /><span>{{ thread.title || 'New chat' }}</span><small v-if="thread.id === sessionID">Current</small>
+            </button>
+          </li>
+        </ul>
+        <p v-else>No threads match your search.</p>
+      </section>
+      <div v-show="!compactThreadsOpen" class="agents-chat-main">
         <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
           <span><AlertCircle aria-hidden="true" /> Could not load conversations: {{ sessionsError }}</span>
           <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
@@ -1584,7 +1666,7 @@ defineExpose({
         </div>
 
         <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">
-          <AIComposer class="agents-composer-surface" :disabled="!hasModel">
+          <AIComposer :compact="compact" class="agents-composer-surface" :disabled="!hasModel">
             <template #editor>
               <textarea
                 ref="composer"
@@ -1592,16 +1674,17 @@ defineExpose({
                 class="agents-composer-input"
                 rows="1"
                 :aria-label="`Message ${name}`"
-                aria-describedby="agents-composer-help"
+                :aria-describedby="domID('agents-composer-help')"
                 :title="composerHelp"
-                :placeholder="`Message ${name}…`"
+                :placeholder="compact ? `Ask ${name}…` : `Message ${name}…`"
+                @focus="engageOverlay"
                 :disabled="!hasModel"
                 @input="resizeComposer"
                 @compositionstart="onCompositionStart"
                 @compositionend="onCompositionEnd"
                 @keydown="onComposerKeydown"
               ></textarea>
-              <div v-if="isModelBackend" class="k-ai-composer__controls">
+              <div v-if="isModelBackend && !composerOnly" class="k-ai-composer__controls">
                 <div class="k-ai-composer__actions k-ai-composer__actions--fill">
                   <AIModelPicker
                     class="agents-chat-model-picker"
@@ -1615,7 +1698,7 @@ defineExpose({
                   />
                 </div>
               </div>
-              <span id="agents-composer-help" class="sr-only">{{ composerHelp }}</span>
+              <span :id="domID('agents-composer-help')" class="sr-only">{{ composerHelp }}</span>
             </template>
             <template #primary>
               <AIPrimaryAction

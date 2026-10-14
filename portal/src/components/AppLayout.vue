@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAgentOverlayStore } from '@/stores/agentOverlay'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { ref, onMounted, onUnmounted, computed, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -156,7 +157,9 @@ const mainClass = computed(() => [
   layoutProps.fullBleed ? 'overflow-hidden p-0' : 'overflow-y-auto px-4 py-5 sm:px-8',
 ])
 
+const assistantOverlay = useAgentOverlayStore()
 const mainStyle = computed(() => {
+  if (assistantOverlay.dockVisible) return { paddingBottom: `calc(${layoutProps.fullBleed ? '0px' : mainPaddingBottom.value || '0px'} + 96px)` }
   if (layoutProps.fullBleed || !mainPaddingBottom.value) return undefined
   return { paddingBottom: mainPaddingBottom.value }
 })

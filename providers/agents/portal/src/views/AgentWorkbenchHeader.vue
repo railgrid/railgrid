@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useAgentDOMID } from '../vue/runtime'
 import { CalendarClock, Gauge, GripVertical, Plus, SlidersHorizontal, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, ref, watch, type Component } from 'vue'
 import AIWorkbenchTabs from '../agentkit/AIWorkbenchTabs.vue'
@@ -8,6 +9,8 @@ import type {
   AgentWorkbenchTabDropPlacement,
   AgentWorkbenchTabKind,
 } from '../agent-workbench'
+
+const domID = useAgentDOMID()
 
 const props = defineProps<{
   tabs: readonly AgentWorkbenchTabDescriptor[]
@@ -46,11 +49,11 @@ const tabItems = computed<AIWorkbenchTabView[]>(() => props.tabs.map(tab => ({
 })))
 
 function tabID(tab: AgentWorkbenchTabKind): string {
-  return `agents-workbench-tab-${tab}`
+  return domID(`agents-workbench-tab-${tab}`)
 }
 
 function panelID(tab: AgentWorkbenchTabKind): string {
-  return `agents-workbench-panel-${tab}`
+  return domID(`agents-workbench-panel-${tab}`)
 }
 
 function tabIcon(tab: string): Component {

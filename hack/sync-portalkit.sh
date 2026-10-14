@@ -18,7 +18,7 @@ TS_SRC="$ROOT/provider-sdk/portalkit"
 TS_PORTALS=(
   "providers/quickstart/portal"
 )
-TS_FILES=(navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
+TS_FILES=(page-context.ts navigation.ts dashboardtile.ts railgrid-ui.css form-select.ts icons.ts kube.ts modal.ts resource-table-filter.ts styles.ts tabs.ts tenant.ts toast.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -70,7 +70,7 @@ AGENTKIT_VUE_FILES=(
 )
 
 # Plain assets from the vanilla kit are shared by both portal styles.
-VUE_SHARED_FILES=(navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts)
+VUE_SHARED_FILES=(page-context.ts navigation.ts dashboardtile.ts railgrid-ui.css icons.ts kube.ts page-state.ts styles.ts tabs.ts tenant.ts)
 ALL_PORTALS=("${TS_PORTALS[@]}" "${VUE_PORTALS[@]}")
 HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 

@@ -4,7 +4,7 @@ import DashboardTile from './views/DashboardTile.vue'
 import type { ApiClient } from './api'
 import type { Route } from './router'
 import type { AppStore } from './store'
-import type { RailgridContext } from './types'
+import type { AgentOverlayState, RailgridContext } from './types'
 
 type AgentsExposed = ComponentPublicInstance & {
   api?: ApiClient
@@ -21,7 +21,7 @@ type AgentsExposed = ComponentPublicInstance & {
  * tokens continue to cascade into the provider.
  */
 export class AgentsElement extends HTMLElement {
-  private readonly state = reactive<{ context: RailgridContext | null }>({ context: null })
+  private readonly state = reactive<{ context: RailgridContext | null; overlay?: AgentOverlayState }>({ context: null })
   private app: VueApp | null = null
   private instance: AgentsExposed | null = null
   private mountPoint: HTMLDivElement | null = null
@@ -36,6 +36,10 @@ export class AgentsElement extends HTMLElement {
   get railgridContext(): RailgridContext | null {
     return this.state.context
   }
+
+  // Set before connecting. Presentation changes never replace the Vue app.
+  set overlayState(value: AgentOverlayState | undefined) { this.state.overlay = value }
+  get overlayState(): AgentOverlayState | undefined { return this.state.overlay }
 
   get api(): ApiClient | undefined { return this.exposed('api') as ApiClient | undefined }
   get store(): AppStore | undefined { return this.exposed('store') as AppStore | undefined }
@@ -52,6 +56,7 @@ export class AgentsElement extends HTMLElement {
       render: () => h(App, {
         ref: (instance: unknown) => { this.instance = instance as AgentsExposed | null },
         ctx: this.state.context,
+        overlay: this.state.overlay,
         host: this,
       }),
     })

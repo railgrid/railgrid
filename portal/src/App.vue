@@ -14,6 +14,7 @@ import { SESSION_EXPIRED_EVENT } from '@/auth/session'
 import { useLayoutInsets } from '@/composables/useLayoutInsets'
 import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
+import AgentOverlay from '@/components/AgentOverlay.vue'
 import TerminalDock from '@/components/TerminalDock.vue'
 import PkConfirmDialog from '@/portalkit/ConfirmDialog.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
@@ -228,6 +229,7 @@ watch(
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
   <TerminalDock v-show="!hideTerminalDock && !scopeBlocked" />
+  <AgentOverlay />
   <PkConfirmDialog />
   <ToastHost owner="primary" />
 </template>

@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { splitPageContext } from '../pageContext'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 import {
   Check,
+  ChevronDown,
   CircleHelp,
   FileSearch,
   GitCommitHorizontal,
@@ -43,6 +45,7 @@ const emit = defineEmits<{
   recovery: [target: FailureRecoveryTarget]
 }>()
 
+const userMessage = computed(() => splitPageContext(props.message.role === 'user' ? props.message.content : ''))
 const visualizations = computed(() => messageVisualizations(props.message))
 
 // The answer lives with the card that asks for it: one question is on screen at
@@ -390,7 +393,18 @@ onBeforeUnmount(() => { mounted = false })
       class="agents-body k-ai-prose"
       v-html="assistantHTML"
     ></div>
-    <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-body">{{ message.content }}</div>
+    <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-user-content">
+      <div v-if="userMessage.text" class="agents-body">{{ userMessage.text }}</div>
+      <details v-if="userMessage.reference" class="agents-page-reference">
+        <summary :title="userMessage.reference.label"><FileSearch :size="13" aria-hidden="true" /><span class="agents-page-reference-prefix">Context ·</span><span class="agents-page-reference-label">{{ userMessage.reference.label }}</span><ChevronDown class="agents-page-reference-chevron" :size="12" aria-hidden="true" /></summary>
+        <dl><dt>Workspace</dt><dd>{{ userMessage.reference.workspace }}</dd><dt>Page</dt><dd>{{ userMessage.reference.label }}</dd><dt>Location</dt><dd>{{ userMessage.reference.path }}{{ userMessage.reference.view || '' }}</dd></dl>
+        <template v-if="userMessage.reference.resource">
+          <dl><dt>Resource</dt><dd>{{ userMessage.reference.resource.kind }} / {{ userMessage.reference.resource.name }}</dd><dt>API</dt><dd>{{ userMessage.reference.resource.apiVersion }}</dd><template v-if="userMessage.reference.resource.readTool"><dt>Read tool</dt><dd>{{ userMessage.reference.resource.readTool }}</dd></template></dl>
+          <p>Resource reference shared. The agent can read live details using its available tools. Page contents and configuration weren’t included.</p>
+        </template>
+        <p v-else>Page location shared; page contents weren’t included.</p>
+      </details>
+    </div>
 
     <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 
