@@ -566,7 +566,7 @@ func TestFileStoreSweepRemovesOnlyOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed, err := store.Sweep(time.Now(), DefaultSweepMaxAge)
+	removed, err := store.Sweep(context.Background(), time.Now(), DefaultSweepMaxAge)
 	if err != nil {
 		t.Fatalf("Sweep returned error: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestFileStoreSweepRemovesStaleIsolatedBundleWithoutTouchingFreshCopy(t *tes
 	if err := os.Chtimes(store.path(key, stale.Name), old, old); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := store.Sweep(time.Now(), DefaultSweepMaxAge)
+	removed, err := store.Sweep(context.Background(), time.Now(), DefaultSweepMaxAge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,9 +668,9 @@ func TestNotifyAnnouncesArrivalsUntilContextEnds(t *testing.T) {
 	cancel()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		store.mu.Lock()
-		watchers := len(store.watchers)
-		store.mu.Unlock()
+		store.notifier.mu.Lock()
+		watchers := len(store.notifier.watchers)
+		store.notifier.mu.Unlock()
 		if watchers == 0 {
 			break
 		}

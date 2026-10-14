@@ -1,139 +1,76 @@
-// Copyright 2026 The Railgrid Authors.
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
+/*
+Copyright 2026 The Railgrid Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package actions
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"os"
-	"path/filepath"
-	"regexp"
-	"sync"
-	"time"
 
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/snapshotstore"
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
-var snapshotDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)
-var snapshotMu sync.Mutex
-
-const snapshotTTL = time.Hour
-
-// Staging is a bounded artifact upload endpoint, separate from the small action
-// inputs. Its opaque handle is scoped to tenant, resource identities and
-// caller. The caller is the identity kcp stamped on the request — there is no
-// bearer on an action — qualified by the logical cluster a ServiceAccount
-// lives in, because two providers' ServiceAccounts spell their names
-// identically and must not share a staging directory.
-func (s *Server) snapshotScope(caller dataplane.ProxiedIdentity, cluster string, in Input) string {
-	root := s.SnapshotDir
-	if root == "" {
-		root = filepath.Join(os.TempDir(), "railgrid-code-snapshots")
-	}
-	tenant := sha256.Sum256([]byte(cluster))
-	scope := sha256.Sum256([]byte(in.RepositoryUID + "\x00" + in.ConnectionUID + "\x00" + caller.User + "\x00" + caller.ClusterName()))
-	return filepath.Join(root, hex.EncodeToString(tenant[:]), hex.EncodeToString(scope[:]))
+// snapshotScope names who staged a snapshot inside a tenant: the repository,
+// the connection and the caller (a ServiceAccount also carries the logical
+// cluster it lives in, since two providers' accounts can spell their names
+// identically). The store hashes it; only the same caller on the same
+// repository and connection reads the snapshot back through loadSnapshot.
+func (s *Server) snapshotScope(caller dataplane.ProxiedIdentity, in Input) string {
+	return in.RepositoryUID + "\x00" + in.ConnectionUID + "\x00" + caller.User + "\x00" + caller.ClusterName()
 }
-func (s *Server) stage(caller dataplane.ProxiedIdentity, cluster string, in Input) (any, error) {
+
+// stage serves the stage-snapshot verb: it stores the serialized snapshot
+// and answers with its content reference, which the caller then puts on the
+// PullRequest's desired head for the controller to find.
+func (s *Server) stage(ctx context.Context, caller dataplane.ProxiedIdentity, cluster string, in Input) (any, error) {
 	if in.Snapshot == nil || len(in.Snapshot.Bundle) == 0 || len(in.Snapshot.Bundle) > 25<<20 {
 		return nil, errors.New("invalid snapshot upload")
+	}
+	if s.Snapshots == nil {
+		return nil, errors.New("snapshot store is unavailable")
 	}
 	data, err := json.Marshal(in.Snapshot)
 	if err != nil || len(data) > MaxInputBytes {
 		return nil, errors.New("snapshot upload exceeds limit")
 	}
-	digest := sha256.Sum256(data)
-	ref := hex.EncodeToString(digest[:])
-	scope := s.snapshotScope(caller, cluster, in)
-	snapshotMu.Lock()
-	defer snapshotMu.Unlock()
-	if err = os.MkdirAll(scope, 0700); err != nil {
-		return nil, err
-	}
-	tenantRoot := filepath.Dir(scope)
-	count := 0
-	var size int64
-	// The private tenant directory contains only scoped snapshots written here.
-	err = filepath.WalkDir(tenantRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return errors.New("invalid snapshot storage entry")
-		}
-		if time.Since(info.ModTime()) > snapshotTTL {
-			return os.Remove(path)
-		}
-		count++
-		size += info.Size()
-		return nil
-	})
+	ref, err := s.Snapshots.Stage(ctx, cluster, s.snapshotScope(caller, in), data)
 	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(scope, ref+".json")
-	if _, err = os.Stat(path); err == nil {
-		return map[string]any{"bundleRef": ref}, nil
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	if count >= 16 || size+int64(len(data)) > 256<<20 {
-		return nil, errors.New("tenant snapshot quota reached")
-	}
-	temp, err := os.CreateTemp(scope, "upload-")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.Remove(temp.Name()) }()
-	if _, err = temp.Write(data); err != nil {
-		_ = temp.Close()
-		return nil, err
-	}
-	if err = temp.Close(); err != nil {
-		return nil, err
-	}
-	if err = os.Rename(temp.Name(), path); err != nil {
 		return nil, err
 	}
 	return map[string]any{"bundleRef": ref}, nil
 }
-func (s *Server) loadSnapshot(caller dataplane.ProxiedIdentity, cluster string, in Input) (backend.Snapshot, error) {
+
+// loadSnapshot reads back a snapshot this caller staged for this repository
+// and connection.
+func (s *Server) loadSnapshot(ctx context.Context, caller dataplane.ProxiedIdentity, cluster string, in Input) (backend.Snapshot, error) {
 	var snapshot backend.Snapshot
-	if !snapshotDigest.MatchString(in.BundleRef) {
-		return snapshot, errors.New("invalid snapshot reference")
+	if !snapshotstore.ValidRef(in.BundleRef) {
+		return snapshot, snapshotstore.ErrInvalidRef
 	}
-	file, err := os.Open(filepath.Join(s.snapshotScope(caller, cluster, in), in.BundleRef+".json"))
+	if s.Snapshots == nil {
+		return snapshot, errors.New("snapshot store is unavailable")
+	}
+	data, err := s.Snapshots.Load(ctx, cluster, s.snapshotScope(caller, in), in.BundleRef)
 	if err != nil {
 		return snapshot, err
 	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || time.Since(info.ModTime()) > snapshotTTL || info.Size() > MaxInputBytes {
-		return snapshot, errors.New("snapshot unavailable or expired")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, MaxInputBytes+1))
-	if err != nil || len(data) > MaxInputBytes {
-		return snapshot, errors.New("snapshot exceeds limit")
-	}
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != in.BundleRef {
-		return snapshot, errors.New("snapshot digest mismatch")
-	}
-	if err = json.Unmarshal(data, &snapshot); err != nil {
+	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return snapshot, err
 	}
 	return snapshot, nil
@@ -144,38 +81,17 @@ func (s *Server) loadSnapshot(caller dataplane.ProxiedIdentity, cluster string, 
 // the same bytes are the same snapshot wherever they were put. It is how a
 // controller reconciling a PullRequest's desired head reaches the bundle the
 // coordinator staged for it.
-func FindStaged(dir, cluster, ref string) (backend.Snapshot, error) {
+func FindStaged(ctx context.Context, store snapshotstore.Store, cluster, ref string) (backend.Snapshot, error) {
 	var snapshot backend.Snapshot
-	if dir == "" || cluster == "" || !snapshotDigest.MatchString(ref) {
-		return snapshot, errors.New("invalid snapshot reference")
+	if store == nil {
+		return snapshot, errors.New("snapshot store is unavailable")
 	}
-	tenant := sha256.Sum256([]byte(cluster))
-	tenantRoot := filepath.Join(dir, hex.EncodeToString(tenant[:]))
-	entries, err := os.ReadDir(tenantRoot)
+	data, err := store.Find(ctx, cluster, ref)
 	if err != nil {
-		return snapshot, errors.New("snapshot unavailable or expired")
+		return snapshot, err
 	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		path := filepath.Join(tenantRoot, entry.Name(), ref+".json")
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() || time.Since(info.ModTime()) > snapshotTTL || info.Size() > MaxInputBytes {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		digest := sha256.Sum256(data)
-		if hex.EncodeToString(digest[:]) != ref {
-			continue
-		}
-		if err := json.Unmarshal(data, &snapshot); err != nil {
-			return backend.Snapshot{}, err
-		}
-		return snapshot, nil
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return backend.Snapshot{}, err
 	}
-	return snapshot, errors.New("snapshot unavailable or expired")
+	return snapshot, nil
 }
