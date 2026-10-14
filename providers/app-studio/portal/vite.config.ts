@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
+import { bundlePerformance } from './scripts/bundle-performance.mjs'
 
 // Nested lazy routes must not cause Rollup to export Vite's shared preload
 // helper from the classic bootstrap. Give the bootstrap its own helper module;
@@ -47,6 +48,7 @@ export default defineConfig({
     vue(),
     tailwindcss(),
     isolateClassicBootstrap(),
+    bundlePerformance({ report: process.env.APP_STUDIO_BUNDLE_REPORT === '1' }),
   ],
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
@@ -66,7 +68,9 @@ export default defineConfig({
       // image build.
       '@': resolve(__dirname, 'src'),
       'lucide-vue-next': resolve(__dirname, 'node_modules', 'lucide-vue-next', 'dist', 'esm', 'lucide-vue-next.js'),
-      vue: resolve(__dirname, 'node_modules', 'vue', 'dist', 'vue.esm-bundler.js'),
+      // Vite precompiles every SFC. Shipping the full Vue build also downloads
+      // and parses its unused template compiler on the page AND dashboard.
+      vue: resolve(__dirname, 'node_modules', 'vue', 'dist', 'vue.runtime.esm-bundler.js'),
     },
   },
   build: {

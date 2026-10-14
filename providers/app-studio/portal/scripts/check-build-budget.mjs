@@ -24,11 +24,14 @@ async function artifacts(names) {
   return Promise.all(names.map(artifact))
 }
 
+const budgetFailures = []
+
 function enforce(label, items, budget) {
   const size = totalArtifactSize(items)
-  console.log(`${label}: ${size.rawBytes} bytes raw, ${size.gzipBytes} bytes gzip`)
+  console.log(`${label}: ${size.rawBytes} bytes raw, ${size.gzipBytes} bytes gzip`
+    + ` (headroom: ${budget.rawBytes - size.rawBytes} raw / ${budget.gzipBytes - size.gzipBytes} gzip bytes)`)
   if (size.rawBytes > budget.rawBytes || size.gzipBytes > budget.gzipBytes) {
-    throw new Error(`${label} exceeds budget (${budget.rawBytes} raw / ${budget.gzipBytes} gzip bytes)`)
+    budgetFailures.push(`${label} exceeds budget (${budget.rawBytes} raw / ${budget.gzipBytes} gzip bytes)`)
   }
 }
 
@@ -78,43 +81,20 @@ const allArtifacts = await Promise.all(artifactNames.map(artifact))
 // Keep route budgets separate so a tiny registrar cannot hide growth in a
 // lazy chunk, and keep a total budget to prevent duplication across routes.
 enforce('App Studio bootstrap', bootstrapArtifacts, { rawBytes: 12_000, gzipBytes: 5_000 })
-enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 310_000, gzipBytes: 100_000 })
-// Baseline af32e06a measures 1,230,052 raw / 342,558 gzip on the page path.
-// Scoped drafts, bounded storage/identity cleanup, attachment ownership, and
-// command evidence add 18,852 raw / 5,748 gzip bytes. Keep 596 raw / 394 gzip
-// bytes of local headroom. Review fixes account for 5,808 raw / 1,620 gzip bytes.
-// The auth-compatible creation flow and guarded composer handoff measure
-// 1,257,303 raw / 350,530 gzip bytes; keep the bootstrap/tile budgets unchanged.
-// Integrations search, grouped resources, and readable permission review add
-// 2,374 raw / 529 gzip bytes over the prior local baseline. Measured page:
-// 1,258,306 raw / 351,517 gzip; retain a bounded allowance for this feature.
-// Shared workbench overflow controls and layout refinements measure
-// 1,260,036 raw / 352,204 gzip. Keep less than 1 KB of headroom.
-// Shared model picker and card/list collection controls add bounded AgentKit
-// styling. Model collection logic stays in the lazy ModelsSettings chunk.
-// Shared pane motion and aligned transcript/composer columns measure
-// 1,264,860 raw / 353,108 gzip bytes. Keep the allowance below 1 KB.
-// Shared collection/document recipes add 552 raw / 131 gzip bytes: 1,265,412 / 353,239.
-// Shared overflow/action options: 1,265,658 raw / 353,309 gzip (+246 / +70).
-// Shared compact composer: 1,266,215 raw / 353,394 gzip (+557 / +85).
-// Preserve the prior 142 raw / 91 gzip bytes of headroom.
-enforce('App Studio page path', pageArtifacts, { rawBytes: 1_266_357, gzipBytes: 353_485 })
-// Baseline total assets measure 1,305,524 raw / 368,042 gzip. The same change
-// adds 18,852 raw / 5,745 gzip; keep 624 raw / 413 gzip bytes of headroom.
-// Authentication settings load only when the settings panel opens. Bound
-// this new chunk separately and add only its explicit allowance to the total.
-// Auth capability states, guarded disable confirmation, and deferred access
-// management measure 16,072 raw / 4,723 gzip bytes in the settings-only chunk.
+enforce('App Studio dashboard path', tileArtifacts, { rawBytes: 200_000, gzipBytes: 62_000 })
+// Ceilings retain 3–5 KB gzip above the optimized build (see BUNDLE_PERFORMANCE.md).
+// Do not raise them without first checking the APP_STUDIO_BUNDLE_REPORT=1 module report.
+enforce('App Studio page path', pageArtifacts, { rawBytes: 1_180_000, gzipBytes: 325_000 })
+// Authentication settings load only when the settings panel opens.
 const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthentication', 'authentication settings')
 const authArtifact = await artifact(manifest[authKey].file)
 enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
-// Combined assets measure 1,349,179 raw / 380,776 gzip bytes.
-// The same Integrations change applies to total assets; bootstrap and tile
-// budgets stay fixed.
-// Labeled shared toggle: 1,352,452 raw / 382,522 gzip total.
-// Shared picker plus model card/list controls: 1,360,125 raw / 384,385 gzip total.
-// Shared pane motion and composer alignment: 1,362,151 raw / 384,660 gzip.
-// Shared recipe extraction: 1,362,703 raw / 384,783 gzip; gzip budgets unchanged.
-// Shared compact composer: 1,363,506 raw / 384,940 gzip. Apply the same
-// +557 raw / +85 gzip allowance; bootstrap, tile and settings stay unchanged.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_363_657, gzipBytes: 384_985 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_275_000, gzipBytes: 357_000 })
+
+if (budgetFailures.length) {
+  console.error('Largest emitted assets (gzip bytes):')
+  for (const item of [...allArtifacts].sort((a, b) => b.gzipBytes - a.gzipBytes).slice(0, 10)) {
+    console.error(`  ${item.gzipBytes}  ${item.name}`)
+  }
+  throw new Error(`${budgetFailures.join('\n')}\nRun APP_STUDIO_BUNDLE_REPORT=1 make build-app-studio-provider-portal from the repo root to inspect module costs. See providers/app-studio/portal/BUNDLE_PERFORMANCE.md.`)
+}
