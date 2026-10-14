@@ -37,19 +37,30 @@ import (
 // and permission failures keep their own class — mapping them all to 502 made
 // a user's own bad input look like an upstream outage.
 func writeResourceError(w http.ResponseWriter, err error) {
+	code, reason := errorClass(err)
+	writeStatus(w, code, reason, err.Error())
+}
+
+// errorClass is the HTTP class of a failure: a requestError's own, a tenant
+// API error's by kind, anything else an upstream failure. One mapping, so the
+// REST handlers and the MCP chat tool report the same condition the same way.
+func errorClass(err error) (code int, reason string) {
+	if re, ok := errors.AsType[*requestError](err); ok {
+		return re.code, re.reason
+	}
 	switch {
 	case apierrors.IsNotFound(err):
-		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
+		return http.StatusNotFound, "NotFound"
 	case apierrors.IsAlreadyExists(err), apierrors.IsConflict(err):
-		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+		return http.StatusConflict, "Conflict"
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return http.StatusBadRequest, "BadRequest"
 	case apierrors.IsForbidden(err):
-		writeStatus(w, http.StatusForbidden, "Forbidden", err.Error())
+		return http.StatusForbidden, "Forbidden"
 	case apierrors.IsUnauthorized(err):
-		writeStatus(w, http.StatusUnauthorized, "Unauthorized", err.Error())
+		return http.StatusUnauthorized, "Unauthorized"
 	default:
-		writeStatus(w, http.StatusBadGateway, "UpstreamError", err.Error())
+		return http.StatusBadGateway, "UpstreamError"
 	}
 }
 
@@ -372,10 +383,6 @@ func errConflict(msg string) error   { return &requestError{http.StatusConflict,
 // writeUpdateError maps requestError to its own class before falling back to
 // the tenant-API mapping.
 func writeUpdateError(w http.ResponseWriter, err error) {
-	if re, ok := errors.AsType[*requestError](err); ok {
-		writeStatus(w, re.code, re.reason, re.msg)
-		return
-	}
 	writeResourceError(w, err)
 }
 

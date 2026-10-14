@@ -111,8 +111,8 @@ func TestMCPToolsList(t *testing.T) {
 		"list_model_credentials", "save_model_credential", "delete_model_credential", "test_model_credential",
 		// discovery
 		"list_tool_families",
-		// runs + the attended chat turn
-		"run_agent", "get_run", "list_runs", "chat",
+		// runs (the attended chat turn is not federated: see mcp_chat_test.go)
+		"run_agent", "get_run", "list_runs",
 	} {
 		if !got[want] {
 			t.Errorf("tools/list missing %q (got %v)", want, out.Tools)
@@ -145,7 +145,6 @@ func TestMCPToolInputSchemas(t *testing.T) {
 		"create_webhook":  {"name", "source"},
 		"delete_trigger":  {"name"},
 		"create_agent":    {"name"},
-		"chat":            {"agent", "message"},
 	}
 	for _, tool := range out.Tools {
 		if strings.TrimSpace(tool.Description) == "" {

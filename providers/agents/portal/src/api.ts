@@ -907,8 +907,13 @@ interface ChatRPCMessage {
 // chatFrameFromRPC maps one JSON-RPC message of the chat tool call onto the
 // chat event the verb would have streamed: a progress notification's _meta
 // carries one event, the call's structured result is the terminal event, and
-// anything else on the stream is not a chat frame. A JSON-RPC error or a tool
-// error (isError) is thrown as the ApiError the chat view already presents.
+// anything else on the stream is not a chat frame.
+//
+// A refusal before the turn started arrives as a tool error (isError) whose
+// structured "error" frame carries the HTTP class the verb would have
+// answered with (code + reason); it is thrown as the same ApiError the
+// transport path builds (presentRequestFailure), so a missing agent is a 404
+// on either route. A JSON-RPC error has no class and reads as upstream.
 export function chatFrameFromRPC(msg: unknown): SSEEvent | null {
   if (!msg || typeof msg !== 'object') return null
   const m = msg as ChatRPCMessage
@@ -918,17 +923,24 @@ export function chatFrameFromRPC(msg: unknown): SSEEvent | null {
     return typeof meta?.event === 'string' ? { event: meta.event, data: meta.data } : null
   }
   if (m.error) {
-    throw new ApiError(502, m.error.message || 'chat failed')
+    throw chatRefusal(502, m.error.message || 'chat failed', '')
   }
   if (m.result) {
-    if (m.result.isError) {
-      const text = m.result.content?.find((c) => c.type === 'text')?.text
-      throw new ApiError(502, text || 'chat failed')
-    }
     const sc = m.result.structuredContent
+    if (m.result.isError) {
+      const data = (sc?.event === 'error' ? sc.data : undefined) as { message?: string; code?: number; reason?: string } | undefined
+      const text = m.result.content?.find((c) => c.type === 'text')?.text
+      const status = typeof data?.code === 'number' ? data.code : 502
+      throw chatRefusal(status, data?.message || text || 'chat failed', data?.reason || '')
+    }
     return typeof sc?.event === 'string' ? { event: sc.event, data: sc.data } : null
   }
   return null
+}
+
+function chatRefusal(status: number, diagnostic: string, reason: string): ApiError {
+  const failure = presentRequestFailure(status, diagnostic, reason)
+  return new ApiError(status, failure.message, failure.technicalDiagnostic, reason)
 }
 
 // readSSE turns a byte stream into parsed SSE events.

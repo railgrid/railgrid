@@ -39,7 +39,7 @@ spec:
         kind: Agent
         verbs:
           - name: chat
-            description: "Hold an interactive conversation with the agent."
+            description: "Credential-less chat turn: the agent runs without the hub's aggregate MCP tools (clusters, servers, instances), because a verb carries no caller bearer. The portal uses the chat tool on the provider's MCP endpoint instead."
             stream: true
           - name: run
             description: "Start an unattended run of the agent."

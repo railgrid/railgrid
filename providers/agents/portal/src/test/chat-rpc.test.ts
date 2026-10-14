@@ -28,11 +28,35 @@ describe('chatFrameFromRPC', () => {
     })).toEqual({ event: 'done', data: { runID: 'r1', status: 'completed' } })
   })
 
-  it('throws the tool error and the JSON-RPC error as an ApiError', () => {
-    expect(() => chatFrameFromRPC({ id: 1, result: { isError: true, content: [{ type: 'text', text: 'agents.agents.railgrid.ai "scout" not found' }] } }))
-      .toThrow(ApiError)
-    expect(() => chatFrameFromRPC({ id: 1, result: { isError: true, content: [{ type: 'text', text: 'no such agent' }] } }))
-      .toThrow('no such agent')
-    expect(() => chatFrameFromRPC({ id: 1, error: { code: -32602, message: 'invalid params' } })).toThrow('invalid params')
+  it('throws a classified refusal with the status the verb would have answered', () => {
+    const notFound = {
+      id: 1,
+      result: {
+        isError: true,
+        content: [{ type: 'text', text: 'agents.agents.railgrid.ai "scout" not found' }],
+        structuredContent: { event: 'error', data: { message: 'agents.agents.railgrid.ai "scout" not found', code: 404, reason: 'NotFound' } },
+      },
+    }
+    expect(() => chatFrameFromRPC(notFound)).toThrow(ApiError)
+    try {
+      chatFrameFromRPC(notFound)
+    } catch (e) {
+      expect((e as ApiError).status).toBe(404)
+      expect((e as ApiError).reason).toBe('NotFound')
+    }
+    try {
+      chatFrameFromRPC({ id: 1, result: { isError: true, content: [{ type: 'text' }], structuredContent: { event: 'error', data: { message: 'message is required', code: 400, reason: 'BadRequest' } } } })
+    } catch (e) {
+      expect((e as ApiError).status).toBe(400)
+    }
+  })
+
+  it('reads an unclassified tool error and a JSON-RPC error as upstream', () => {
+    try {
+      chatFrameFromRPC({ id: 1, result: { isError: true, content: [{ type: 'text', text: 'no such agent' }] } })
+    } catch (e) {
+      expect((e as ApiError).status).toBe(502)
+    }
+    expect(() => chatFrameFromRPC({ id: 1, error: { code: -32602, message: 'invalid params' } })).toThrow(ApiError)
   })
 })

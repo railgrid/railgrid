@@ -26,16 +26,23 @@ import (
 // carries no caller credential — kcp stamps the caller's identity and the gate
 // acts as the provider — so a chat run through it cannot dial the hub's
 // aggregate MCP endpoint, which the edges family does AS THE CALLING USER. The
-// MCP class is the one route that still carries the caller's bearer (the hub's
-// service proxy and its aggregate both forward it), so the portal sends a chat
-// turn here: the same grammar as the verb (chatTurn), with each event
-// delivered as an MCP progress notification and the terminal frame as the
-// call's result.
+// MCP class is the one route that still carries the caller's bearer, so the
+// portal sends a chat turn here: the same grammar as the verb (chatTurn), with
+// each event delivered as an MCP progress notification and the terminal frame
+// as the call's result.
 //
 // It is interactive by trigger, so it gets the agent's interactive tool grant
 // and the edges family, under the same approval gating as a verb-driven chat.
-// A human is who it is for: the portal, or a person's own MCP client. An agent
-// that wants to delegate work uses run_agent, which is unattended by design.
+// That grant is for a person: the portal, or a person's own MCP client. It is
+// therefore NOT on the federated surface. The hub's aggregate dials this
+// endpoint through its own federation client, which carries the bearer and the
+// cluster but never a resolved user; the hub's service proxy — the route the
+// portal takes — strips any inbound X-Railgrid-User and stamps the identity it
+// resolved. The tool is registered only when that stamp is present
+// (fromServiceProxy), so an agent run that reaches the aggregate (as the user,
+// with the edges family) finds no agents__chat there: it cannot obtain another
+// agent's interactive grant, and a chat cannot recurse into a chat. Delegation
+// between agents is run_agent, unattended by design.
 
 type chatInput struct {
 	Agent     string `json:"agent" jsonschema:"Name of the agent to talk to (see list_agents)"`
@@ -44,15 +51,33 @@ type chatInput struct {
 }
 
 // chatEventMetaKey is where a progress notification carries the chat event
-// (and chatEventDataMetaKey its payload) in the notification's _meta, so a
-// client needs no convention beyond "read the frame out of _meta".
+// (and chatDataMetaKey its payload) in the notification's _meta, so a client
+// needs no convention beyond "read the frame out of _meta".
 const (
 	chatEventMetaKey = "event"
 	chatDataMetaKey  = "data"
 )
 
-// registerChatMCPTool adds the chat tool.
+// headerRailgridUser is the caller identity the hub's service proxy resolves
+// and stamps on a request it forwards to this provider's backend. The
+// aggregate's federation client does not set it.
+const headerRailgridUser = "X-Railgrid-User"
+
+// fromServiceProxy reports whether the request reached /mcp through the hub's
+// service proxy (a direct caller: the portal, a person's MCP client) rather
+// than the aggregate's federation. The proxy always strips an inbound
+// X-Railgrid-User and sets its own, so the header's presence is the proxy's
+// stamp, not the caller's claim.
+func fromServiceProxy(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get(headerRailgridUser)) != ""
+}
+
+// registerChatMCPTool adds the chat tool for direct callers; a federated
+// request gets no such tool (see the package comment above).
 func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
+	if !fromServiceProxy(r) {
+		return
+	}
 	yes := true
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "chat",
@@ -62,15 +87,23 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			"Pass a progress token to receive the turn's events (deltas, tool calls) as progress notifications; the result is the terminal event — " +
 			"done, error, or approval_required when the agent paused for your approval or to ask a question (resolve those in the portal). " +
 			"To hand an agent a task unattended, use run_agent instead.",
-		Annotations: &mcp.ToolAnnotations{IdempotentHint: false, OpenWorldHint: &yes},
+		Annotations: &mcp.ToolAnnotations{
+			// The turn may run write-capable tools as the caller (gated by the
+			// agent's approval rules, not by this tool), so say so rather than
+			// leave it to the default.
+			ReadOnlyHint:    false,
+			DestructiveHint: &yes,
+			IdempotentHint:  false,
+			OpenWorldHint:   &yes,
+		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in chatInput) (*mcp.CallToolResult, chatFrame, error) {
 		c, err := s.mcpClient(r)
 		if err != nil {
-			return nil, chatFrame{}, err
+			return chatRefused(err)
 		}
 		message := strings.TrimSpace(in.Message)
 		if message == "" {
-			return nil, chatFrame{}, errBadRequest("message is required")
+			return chatRefused(errBadRequest("message is required"))
 		}
 		sessionID := strings.TrimSpace(in.SessionID)
 		if sessionID == "" {
@@ -78,11 +111,11 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		}
 		id := s.mcpIdentity(ctx, r)
 		if id.workspaceUUID == "" {
-			return nil, chatFrame{}, errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry")
+			return chatRefused(errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry"))
 		}
 		agent, err := c.Agents().Get(ctx, strings.TrimSpace(in.Agent), metav1.GetOptions{})
 		if err != nil {
-			return nil, chatFrame{}, err
+			return chatRefused(err)
 		}
 
 		// Events ride progress notifications on the call's own stream (the SDK
@@ -123,4 +156,19 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		// that routes the notifications — survive WithoutCancel.
 		return nil, s.chatTurn(context.WithoutCancel(ctx), run, emit), nil
 	})
+}
+
+// chatRefused answers a failure before the turn started: a tool error for the
+// model's sake, and an "error" frame carrying the HTTP class the verb would
+// have answered with (errorClass) as the structured result, so the portal
+// presents a missing agent as 404 and a bad request as 400 on either route
+// instead of flattening every refusal into an upstream failure.
+func chatRefused(err error) (*mcp.CallToolResult, chatFrame, error) {
+	code, reason := errorClass(err)
+	return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+		}, chatFrame{Event: "error", Data: map[string]any{
+			"message": err.Error(), "code": code, "reason": reason,
+		}}, nil
 }

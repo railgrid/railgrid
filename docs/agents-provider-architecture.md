@@ -257,6 +257,11 @@ and tools are edited inside the agent, next to a live chat playground.
   caller credential, so a chat run through it has nobody to dial the aggregate
   as. Both run the same turn (`chatTurn`); the tool streams the turn's events
   as MCP progress notifications and returns the terminal frame as its result.
+  The tool is served only to direct callers of the provider's `/mcp` — the
+  hub's service proxy stamps the resolved `X-Railgrid-User`, which the
+  aggregate's federation never carries — so it is not on the federated
+  surface: an agent run reaching the aggregate cannot call `agents__chat` to
+  obtain another agent's interactive grant, and the tree cannot recurse.
 - **Own MCP surface** — the provider serves `/mcp` (streamable HTTP,
   stateless, per-request identity), which the hub aggregate federates as
   `agents__*` tools. It covers the **whole configuration surface** — whatever
