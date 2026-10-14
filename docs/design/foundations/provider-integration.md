@@ -35,7 +35,7 @@ Standalone bundles call `ensureRailgridUIStyles()`. The helper's
 `RAILGRID_UI_CORE_VERSION` and `RAILGRID_UI_CORE_VERSION_MARKER` in
 `provider-sdk/portalkit/styles.ts` define the core contract. A host stylesheet is
 accepted only when computed root markers include `--railgrid-ui-canonical: 1` and
-a compatible core version 36 `--railgrid-ui-core-version`. A stale or unversioned `#k-railgrid-ui`
+a a core version compatible with `RAILGRID_UI_CORE_VERSION` `--railgrid-ui-core-version`. A stale or unversioned `#k-railgrid-ui`
 remains untouched while canonical CSS imported through Vite's `?inline`
 loader is appended under a versioned fallback ID with
 `data-railgrid-ui-source="portalkit-fallback"`. The runtime fallback may be
