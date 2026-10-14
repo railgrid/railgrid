@@ -111,6 +111,9 @@ func New(cfg Config) harness.Adapter {
 	// See harness.ResolveBinary: the runner account's PATH is not the
 	// operator's interactive PATH.
 	cfg.Binary = harness.ResolveBinary(cfg.Binary)
+	// An empty pin accepts any installed version. The readiness handshake does
+	// not validate the full attempt protocol; pin a release validated by the operator
+	// when that compatibility guarantee is required.
 	cfg.ExpectedVersion = strings.TrimSpace(cfg.ExpectedVersion)
 	return &Adapter{cfg: cfg}
 }

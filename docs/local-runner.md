@@ -68,12 +68,15 @@ runner account. These host prerequisites apply to standalone runners too.
 Install the Codex executable for this dedicated account. Create the runner's
 Codex home as a new owner-only directory, then use the supported Codex login
 flow with `CODEX_HOME` set to that directory. Do not copy an interactive
-developer home into it. The runner accepts any Codex version by default and checks the app-server
-handshake for readiness. To require an exact version, set an explicit pin:
+developer home into it. By default the runner accepts any Codex version and
+checks readiness through the app-server handshake. To require an exact version,
+pass `--version-pin <codex-version>` to `railgrid-runner` (see the run examples
+below); a mismatch leaves the harness not ready.
 
-```sh
-./bin/railgrid-runner --version-pin <codex-version> --help
-```
+Unpinned readiness does not validate the full attempt protocol: methods used
+later in a task may still be incompatible. No supported version range is
+asserted by this check. For controlled deployments, validate an end-to-end task
+with the installed release and pin that version explicitly.
 
 The runner checks the executable version and app-server handshake during
 startup without making a model call. It checks the caller's Codex credential

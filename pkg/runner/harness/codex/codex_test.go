@@ -32,14 +32,7 @@ import (
 )
 
 func TestProbeUsesVersionAndHandshakeWithoutModelCall(t *testing.T) {
-	binary := fakeCodexBinary(t, "probe")
-	data, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(binary, []byte(strings.ReplaceAll(string(data), "0.155.1", "0.160.1")), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	binary := fakeCodexBinaryWithVersion(t, "probe", "0.160.1")
 	adapter := New(Config{Binary: binary, Home: t.TempDir()})
 
 	info, err := adapter.Probe(context.Background())
@@ -446,13 +439,23 @@ func fakeCodexBinaryWithDecisionFile(t *testing.T, scenario, decisionFile string
 	return binary
 }
 
+func fakeCodexBinaryWithVersion(t *testing.T, scenario, version string) string {
+	t.Helper()
+	return fakeCodexBinaryWithVersionAndEnvFile(t, scenario, version, "")
+}
+
 func fakeCodexBinaryWithEnvFile(t *testing.T, scenario, envFile string) string {
+	t.Helper()
+	return fakeCodexBinaryWithVersionAndEnvFile(t, scenario, "0.155.1", envFile)
+}
+
+func fakeCodexBinaryWithVersionAndEnvFile(t *testing.T, scenario, version, envFile string) string {
 	t.Helper()
 	dir := t.TempDir()
 	methodsFile := filepath.Join(dir, "methods")
 	requestsFile := filepath.Join(dir, "requests")
 	script := filepath.Join(dir, "codex")
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.155.1; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nRAILGRID_FAKE_CODEX_CHILD=1 exec %q -test.run=TestFakeAppServerProcess\n", filepath.Join(dir, "argv"), os.Args[0])
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli %q; exit 0; fi\nprintf '%%s\\n' \"$@\" > %q\nRAILGRID_FAKE_CODEX_CHILD=1 exec %q -test.run=TestFakeAppServerProcess\n", version, filepath.Join(dir, "argv"), os.Args[0])
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
 		t.Fatal(err)
 	}

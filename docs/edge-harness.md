@@ -74,6 +74,11 @@ without it, Codex falls back to a bundled helper that can fail under Ubuntu's
 AppArmor user-namespace restrictions. A successful harness version/handshake
 check does not prove that sandboxed commands can run.
 
+The package names and profile paths below were checked against the linked
+OpenAI documentation on 2026-10-14; these host-administration commands were not
+executed on an Ubuntu 24.04 host as part of this change. Confirm the installed
+distribution packages before applying them.
+
 On Ubuntu 24.04, follow the
 [official OpenAI sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing#prerequisites):
 
