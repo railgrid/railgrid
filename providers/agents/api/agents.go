@@ -565,7 +565,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	runCtx, clientGone := detachedStreamContext(r)
 
 	seq := 0
-	sse := func(event string, payload any) {
+	sse := func(event string, payload map[string]any) {
 		if clientGone() {
 			return
 		}
@@ -580,9 +580,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	// The runID goes out first so a dropped stream can reconcile against
 	// GET /api/runs/{id}.
 	runID := uuid.NewString()
-	sse("start", map[string]string{"runID": runID, "sessionID": req.SessionID})
+	sse("start", map[string]any{"runID": runID, "sessionID": req.SessionID})
 
-	res, err := s.executeTask(runCtx, taskRun{
+	frame := s.chatTurn(runCtx, taskRun{
 		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
@@ -590,80 +590,103 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		// credential, and the edges family dials the hub's aggregate MCP
 		// endpoint AS THE CALLING USER — there is nobody to dial it as. The
 		// run still reaches instance-backed tools, as this provider (see
-		// dataPlaneFor).
+		// dataPlaneFor). A chat that needs the edges family goes through the
+		// MCP class instead — the `chat` tool (mcp_chat.go), which the portal
+		// uses — because that is the one route that carries the bearer.
 		// ClusterID addresses the tenant workspace on the data plane — without
 		// it an instance-backed tool (self-hosted search, a browser instance)
 		// has no way to compose its URL.
 		ClusterID: id.clusterID,
-		OnRunStarted: func(startedAt time.Time) {
-			sse("run_started", map[string]any{
-				"runID": runID, "sessionID": req.SessionID, "status": "running",
-				"startedAt": startedAt,
-			})
-		},
-		OnAssistantMessage: func(message backend.AssistantMessage, createdAt time.Time) {
-			// Failed model attempts still reach the API callback so active timing is
-			// accounted for, but their partial deltas are not a classified transcript
-			// phase. The terminal error frame carries that partial output instead.
-			if !message.Complete {
-				return
-			}
-			phase := "final"
-			if message.HasToolCalls {
-				phase = "commentary"
-			}
-			sse("assistant_message", map[string]any{
-				"runID": runID, "phase": phase, "content": message.Content,
-				"createdAt": createdAt, "segmentDurationMS": message.Duration.Milliseconds(),
-			})
-		},
-		OnDelta: func(delta string) {
-			sse("delta", map[string]string{"text": delta})
-		},
-		OnToolStart: func(callID, toolName, args string) {
-			sse("tool_start", map[string]any{"id": callID, "name": toolName, "args": redactArgs(args)})
-		},
-		OnTool: func(ev backend.ToolEvent) {
-			sse("tool_end", map[string]any{
-				"id": ev.ID, "name": ev.Name, "args": redactArgs(ev.Args), "result": safeTruncate(ev.Result, 8*1024),
-				"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
-			})
-		},
-	})
+	}, sse)
+	sse(frame.Event, frame.Data)
+}
+
+// chatFrame is one event of the chat grammar: the same (event, data) pairs
+// the chat verb streams as SSE frames and the MCP `chat` tool delivers as
+// progress notifications, with the terminal frame as the call's result.
+type chatFrame struct {
+	Event string         `json:"event" jsonschema:"One of done, error or approval_required"`
+	Data  map[string]any `json:"data" jsonschema:"The event's payload, as the chat verb would stream it"`
+}
+
+// chatTurn executes one assistant turn and reports it through the chat event
+// grammar. The caller has already sent "start" (it owns the run id and the
+// response framing); chatTurn emits run_started, assistant_message, delta,
+// tool_start and tool_end as the turn proceeds, and returns exactly one
+// terminal frame — done, error or approval_required — rather than emitting it,
+// so each transport delivers it its own way: the verb as the last SSE frame,
+// the MCP tool as the call's structured result.
+//
+// Both transports share this so the portal sees one grammar whichever route
+// carried the message; what differs between them is only the access the run
+// executes with (see runAccess).
+func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event string, data map[string]any)) chatFrame {
+	runID, sessionID := run.RunID, run.SessionID
+	run.OnRunStarted = func(startedAt time.Time) {
+		emit("run_started", map[string]any{
+			"runID": runID, "sessionID": sessionID, "status": "running",
+			"startedAt": startedAt,
+		})
+	}
+	run.OnAssistantMessage = func(message backend.AssistantMessage, createdAt time.Time) {
+		// Failed model attempts still reach the API callback so active timing is
+		// accounted for, but their partial deltas are not a classified transcript
+		// phase. The terminal error frame carries that partial output instead.
+		if !message.Complete {
+			return
+		}
+		phase := "final"
+		if message.HasToolCalls {
+			phase = "commentary"
+		}
+		emit("assistant_message", map[string]any{
+			"runID": runID, "phase": phase, "content": message.Content,
+			"createdAt": createdAt, "segmentDurationMS": message.Duration.Milliseconds(),
+		})
+	}
+	run.OnDelta = func(delta string) {
+		emit("delta", map[string]any{"text": delta})
+	}
+	run.OnToolStart = func(callID, toolName, args string) {
+		emit("tool_start", map[string]any{"id": callID, "name": toolName, "args": redactArgs(args)})
+	}
+	run.OnTool = func(ev backend.ToolEvent) {
+		emit("tool_end", map[string]any{
+			"id": ev.ID, "name": ev.Name, "args": redactArgs(ev.Args), "result": safeTruncate(ev.Result, 8*1024),
+			"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
+		})
+	}
+
+	res, err := s.executeTask(ctx, run)
 	if err != nil {
 		status := "failed"
 		if res.Phase == store.RunPhaseAborted {
 			status = "aborted"
 		}
+		message := err.Error()
 		if s.credentialsError(err) {
-			sse("error", map[string]any{
-				"runID": runID, "message": "no model configured — open Model settings to add one",
-				"status": status, "startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
-			})
-		} else {
-			sse("error", map[string]any{
-				"runID": runID, "message": err.Error(), "status": status,
-				"startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
-			})
+			message = "no model configured — open Model settings to add one"
 		}
-		return
+		return chatFrame{Event: "error", Data: map[string]any{
+			"runID": runID, "message": message, "status": status,
+			"startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
+		}}
 	}
 	// Paused, for one of two reasons the portal renders differently: a gated
 	// tool call it can approve or deny, or a question the turn asked, which
 	// wants an answer and has no tool to show. The kind says which; sending
 	// both as "approval_required" produced an approval card naming no tool.
 	if res.Pending != nil {
-		sse("approval_required", map[string]any{
+		return chatFrame{Event: "approval_required", Data: map[string]any{
 			"runID": runID, "inboxID": res.Pending.InboxID,
 			"kind": res.Pending.Kind,
 			"tool": res.Pending.Tool, "args": redactArgs(res.Pending.Args),
 			"question": res.Pending.Question,
 			"content":  res.Content, "status": "waiting", "startedAt": res.StartedAt,
 			"durationMS": res.DurationMS,
-		})
-		return
+		}}
 	}
-	sse("done", map[string]any{
+	return chatFrame{Event: "done", Data: map[string]any{
 		"runID": runID, "content": res.Content, "finalContent": res.FinalContent,
 		"status": "completed", "startedAt": res.StartedAt, "finishedAt": res.FinishedAt,
 		"durationMS": res.DurationMS,
@@ -671,7 +694,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			"inputTokens": res.Usage.InputTokens, "outputTokens": res.Usage.OutputTokens,
 			"usdMicros": res.Usage.USDMicros,
 		},
-	})
+	}}
 }
 
 // deleteSession wipes one chat session's transcript. It is the `session` verb

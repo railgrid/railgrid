@@ -647,21 +647,47 @@ export class ApiClient {
 
   // ---- streams -------------------------------------------------------------
 
-  // chatStream POSTs a message and yields parsed SSE frames as they arrive. The
-  // caller drives the loop and applies deltas/tool events/errors. `signal`
-  // aborts the fetch so a Stop button can drop the stream immediately. The
-  // stream rides the kube path like every other verb: kcp's reverse proxy
-  // flushes as the provider writes.
+  // chatStream sends one conversation turn and yields the chat events as they
+  // arrive. The caller drives the loop and applies deltas/tool events/errors.
+  // `signal` aborts the fetch so a Stop button can drop the stream immediately.
+  //
+  // It is the one request that does NOT ride the kube path. A verb carries no
+  // caller credential, and the turn needs the caller's bearer so the agent can
+  // reach the hub's aggregate MCP endpoint — the workspace's clusters and
+  // servers — as the person typing. The provider's own MCP endpoint is the one
+  // route the hub forwards the bearer on, so the turn is the `chat` tool there:
+  // each event is a progress notification carrying the frame in its _meta,
+  // and the terminal frame (done / error / approval_required) is the call's
+  // result. Both are mapped back onto the same SSEEvent shape the verb used.
   async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
-    const r = await this.fetch(this.verb(AGENTS, agent, 'chat'), {
+    const r = await this.fetch(this.url('/mcp'), {
       method: 'POST',
       credentials: 'same-origin',
-      headers: this.headers(true),
-      body: JSON.stringify({ message, sessionID: sessionID || undefined }),
+      // Streamable HTTP requires both; the server answers the call as SSE.
+      headers: { ...this.headers(true), Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: CHAT_CALL_ID,
+        method: 'tools/call',
+        params: {
+          name: 'chat',
+          arguments: { agent, message, sessionId: sessionID || undefined },
+          _meta: { progressToken: CHAT_CALL_ID },
+        },
+      }),
       signal,
     })
     if (!r.ok || !r.body) throw await this.fail(r)
-    yield* readSSE(r.body, signal)
+    if (!(r.headers.get('content-type') || '').includes('text/event-stream')) {
+      // A server that answered in one piece: the terminal frame only.
+      const frame = chatFrameFromRPC(await r.json())
+      if (frame) yield frame
+      return
+    }
+    for await (const ev of readSSE(r.body, signal)) {
+      const frame = chatFrameFromRPC(ev.data)
+      if (frame) yield frame
+    }
   }
 
   // eventStream follows run and inbox activity for every agent the caller can
@@ -862,6 +888,48 @@ function mergeUsage(days: number, parts: UsageResponse[]): UsageResponse {
   }
 }
 
+
+// CHAT_CALL_ID is the JSON-RPC id of the chat tool call and, doubling as its
+// progress token, what every progress notification of the turn is keyed on.
+const CHAT_CALL_ID = 1
+
+interface ChatRPCMessage {
+  method?: string
+  params?: { progressToken?: unknown; _meta?: { event?: unknown; data?: unknown } }
+  result?: {
+    isError?: boolean
+    content?: { type: string; text?: string }[]
+    structuredContent?: { event?: unknown; data?: unknown }
+  }
+  error?: { message?: string }
+}
+
+// chatFrameFromRPC maps one JSON-RPC message of the chat tool call onto the
+// chat event the verb would have streamed: a progress notification's _meta
+// carries one event, the call's structured result is the terminal event, and
+// anything else on the stream is not a chat frame. A JSON-RPC error or a tool
+// error (isError) is thrown as the ApiError the chat view already presents.
+export function chatFrameFromRPC(msg: unknown): SSEEvent | null {
+  if (!msg || typeof msg !== 'object') return null
+  const m = msg as ChatRPCMessage
+  if (m.method === 'notifications/progress') {
+    if (m.params?.progressToken !== CHAT_CALL_ID) return null
+    const meta = m.params._meta
+    return typeof meta?.event === 'string' ? { event: meta.event, data: meta.data } : null
+  }
+  if (m.error) {
+    throw new ApiError(502, m.error.message || 'chat failed')
+  }
+  if (m.result) {
+    if (m.result.isError) {
+      const text = m.result.content?.find((c) => c.type === 'text')?.text
+      throw new ApiError(502, text || 'chat failed')
+    }
+    const sc = m.result.structuredContent
+    return typeof sc?.event === 'string' ? { event: sc.event, data: sc.data } : null
+  }
+  return null
+}
 
 // readSSE turns a byte stream into parsed SSE events.
 //

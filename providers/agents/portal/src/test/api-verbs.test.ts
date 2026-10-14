@@ -1,6 +1,8 @@
 // Every provider verb is a kcp custom subresource on the bound object, fetched
 // on the hub's kcp front door like any other kube path. There is no hub-proxied
-// spelling left: only /oauth/providers still goes through the service proxy.
+// spelling left: only /oauth/providers and the chat turn — the `chat` tool on
+// the provider's /mcp, the one route that carries the caller's bearer — go
+// through the service proxy.
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { ApiClient } from '../api'
@@ -103,14 +105,21 @@ describe('verbs are kube paths', () => {
     }
   })
 
-  it('streams chat on the same kube path', async () => {
+  it('sends chat as the chat tool on the provider MCP endpoint', async () => {
+    // Chat is the one request off the kube path: a verb carries no caller
+    // credential, and the turn needs the bearer for the edges family. The
+    // service proxy forwards it to the provider's own /mcp.
     const { api, calls } = clientWithRecorder()
     // No body on the stub: the stream fails after the fetch, which is all
     // this asserts on.
     await expect(async () => {
       for await (const _ of api.chatStream('scout', 'hi', 'default')) { /* drain */ }
     }).rejects.toThrow()
-    expect(calls).toEqual([{ method: 'POST', url: `${KUBE}/agents/scout/chat` }])
+    expect(calls).toEqual([{ method: 'POST', url: '/services/providers/agents/mcp' }])
+    expect(bodies.get(0)).toEqual({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'chat', arguments: { agent: 'scout', message: 'hi', sessionId: 'default' }, _meta: { progressToken: 1 } },
+    })
   })
 
   it('refuses a tail segment the provider would refuse', () => {

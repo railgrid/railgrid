@@ -288,9 +288,11 @@ type deleteScheduleOutput struct {
 func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 	// The rest of the configuration surface (triggers, toolsets, connections,
 	// credentials, agent lifecycle, discovery) lives in mcp_config.go; running an
-	// agent and reading runs back live in mcp_runs.go.
+	// agent and reading runs back live in mcp_runs.go; the attended chat turn
+	// the portal uses lives in mcp_chat.go.
 	s.registerConfigMCPTools(srv, r)
 	s.registerRunMCPTools(srv, r)
+	s.registerChatMCPTool(srv, r)
 
 	yes := true
 	no := false
