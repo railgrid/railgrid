@@ -1,3 +1,4 @@
+import type { PublishPageResource } from './portalkit/page-context'
 import type { ProviderFetch } from './portalkit/tenant'
 
 // TypeScript mirrors of the kro Go package's portal-facing types.
@@ -127,6 +128,7 @@ export interface InstanceChild {
 }
 
 export interface RailgridContext {
+  publishPageResource?: PublishPageResource
   // fetch is the host-owned transport: it injects Authorization and the
   // tenant headers and refuses paths outside this provider's allow list.
   // Send every hub request through portalkit providerFetch(ctx).

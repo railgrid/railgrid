@@ -174,6 +174,7 @@ function provisioned(name: string) {
       <InstanceDetailPage
         :key="`instance:${contextVersion}:${route.id}`"
         :instance-name="route.id"
+        :publish-page-resource="ctx?.publishPageResource"
         :tombstones="instanceTombstones"
         @navigate="legacyNavigate"
       />

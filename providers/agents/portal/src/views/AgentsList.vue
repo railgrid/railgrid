@@ -172,10 +172,13 @@ function openAgentRow(row: Record<string, unknown>): void {
   <div class="agents-menu">
     <div class="agents-panel-head">
       <h3>Agents</h3>
+      <div class="agents-assistant-overview-actions">
       <button v-if="!showFirstRun" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
         <Plus aria-hidden="true" /> New agent
       </button>
+      </div>
     </div>
+
 
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
       <AlertCircle aria-hidden="true" />
