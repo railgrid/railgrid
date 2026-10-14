@@ -1,3 +1,12 @@
+{{- if not (has .Values.bundleStore.backend (list "file" "s3")) }}
+{{- fail (printf "bundleStore.backend must be \"file\" or \"s3\", got %q" .Values.bundleStore.backend) }}
+{{- end }}
+{{- if and (gt (int .Values.replicaCount) 1) (ne .Values.bundleStore.backend "s3") }}
+{{- fail "code replicaCount > 1 requires bundleStore.backend=s3: commit bundles and staged snapshots on a per-pod volume are invisible to the leader replica that consumes them" }}
+{{- end }}
+{{- if and (eq .Values.bundleStore.backend "s3") (or (not .Values.bundleStore.s3.endpoint) (not .Values.bundleStore.s3.bucket)) }}
+{{- fail "bundleStore.backend=s3 requires bundleStore.s3.endpoint and bundleStore.s3.bucket" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -103,8 +112,47 @@ spec:
             # provider kubeconfig (mounted below).
             - name: RAILGRID_PROVIDER_KUBECONFIG
               value: /var/run/secrets/railgrid/railgrid-provider-kubeconfig
+            # Where commit bundles and staged snapshots live (see
+            # bundleStore in values.yaml). "s3" is what allows replicaCount > 1.
+            - name: CODE_BUNDLE_STORE
+              value: {{ .Values.bundleStore.backend | quote }}
+            {{- if eq .Values.bundleStore.backend "s3" }}
+            - name: CODE_S3_ENDPOINT
+              value: {{ .Values.bundleStore.s3.endpoint | quote }}
+            - name: CODE_S3_BUCKET
+              value: {{ .Values.bundleStore.s3.bucket | quote }}
+            {{- with .Values.bundleStore.s3.region }}
+            - name: CODE_S3_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.bundleStore.s3.prefix }}
+            - name: CODE_S3_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            - name: CODE_S3_USE_SSL
+              value: {{ .Values.bundleStore.s3.useSSL | quote }}
+            {{- if .Values.bundleStore.s3.createBucket }}
+            - name: CODE_S3_CREATE_BUCKET
+              value: "true"
+            {{- end }}
+            {{- with .Values.bundleStore.s3.credentialsSecretRef }}
+            {{- if .name }}
+            - name: CODE_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name | quote }}
+                  key: {{ .accessKeyIdKey | quote }}
+            - name: CODE_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name | quote }}
+                  key: {{ .secretAccessKeyKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- else }}
             - name: CODE_COMMIT_BUNDLE_DIR
               value: {{ .Values.bundleStore.path | quote }}
+            {{- end }}
             {{- if .Values.catalogEntry.enabled }}
             # The same CatalogEntry the init container applies. serve reads it
             # too: spec.export.resources[].verbs and .actions are the
@@ -150,8 +198,10 @@ spec:
               mountPath: /etc/railgrid/catalogentry
               readOnly: true
             {{- end }}
+            {{- if eq .Values.bundleStore.backend "file" }}
             - name: commit-bundles
               mountPath: {{ .Values.bundleStore.path | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
@@ -171,6 +221,7 @@ spec:
           configMap:
             name: {{ include "code.fullname" . }}-catalogentry
         {{- end }}
+        {{- if eq .Values.bundleStore.backend "file" }}
         - name: commit-bundles
           {{- if .Values.bundleStore.existingClaim }}
           persistentVolumeClaim:
@@ -181,6 +232,7 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "code.fullname" . }}-commit-bundles
           {{- end }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

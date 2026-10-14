@@ -223,14 +223,32 @@ and a separate commit intent stages its own handle. Previously issued
 content-addressed handles remain readable by `commit`.
 Staging is limited to 32 stored bundle or temporary files and 512 MiB of
 serialized JSON bytes per logical cluster, whichever limit is reached first.
-The limit is enforced under a persistent filesystem lock shared by processes
-using the same bundle volume. A full scope returns retryable HTTP 429 with
-`bundle_quota_exceeded`; back off and retry the failed stage request. Once a
-stage succeeds, keep and reuse its handle and the same `requestID` for commit
-retries instead of staging the payload again. Commit and checkout controllers
-remove bundles when their resources finish; abandoned uploads are swept hourly
-after 24 hours. The bundle volume used by multiple provider replicas must
-support cross-process `flock` locking.
+A full scope returns retryable HTTP 429 with `bundle_quota_exceeded`; back off
+and retry the failed stage request. Once a stage succeeds, keep and reuse its
+handle and the same `requestID` for commit retries instead of staging the
+payload again. Commit and checkout controllers remove bundles when their
+resources finish; abandoned uploads are swept hourly after 24 hours.
+
+Where the bytes live is `CODE_BUNDLE_STORE` (chart: `bundleStore.backend`).
+`file`, the default, keeps bundles and staged snapshots under
+`CODE_COMMIT_BUNDLE_DIR` and is correct for exactly one replica: the replica
+that accepted the upload and the leader replica that consumes it must read
+the same bytes, and the quota is enforced under a filesystem lock. `s3` keeps
+both in one bucket of any S3-compatible service (`CODE_S3_ENDPOINT`,
+`CODE_S3_BUCKET`, optional `CODE_S3_REGION`/`CODE_S3_PREFIX`,
+`CODE_S3_USE_SSL`, static `CODE_S3_ACCESS_KEY_ID`/`CODE_S3_SECRET_ACCESS_KEY`
+or the AWS credential chain) and is what the chart requires for
+`replicaCount > 1`. There the quota is checked against a listing before the
+write and again after it: concurrent stagers can all pass the first check,
+and on the second the ones whose objects sort last back theirs out and get
+the 429, so the scope settles within its limits without a lock. The hourly
+orphan sweep runs for `file` only; a bucket gets a lifecycle rule instead
+(chart README).
+The Tilt dev loop runs one replica on `file` by default; `make tilt
+CODE_BUNDLE_STORE=s3` adds a local MinIO (built from source into
+`hack/tools`) and runs the provider on `s3`, and `make test-code-s3` drives
+the three stores through it (the same env-gated tests run against any
+reachable S3-compatible service; see `objectstore/s3_test.go`).
 The third goes the other way: `checkout`, gated on `repositories/checkout`,
 reads the tree at a ref (`{repositoryUID, ref?, binaryEncoding?}`) and returns
 the files inline, the same `{repositoryRef, name, phase, ref, commitSHA,

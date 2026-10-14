@@ -37,6 +37,7 @@ import (
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/commitbundle"
+	"github.com/railgrid/provider-code/snapshotstore"
 	"github.com/railgrid/provider-code/tenant"
 	"github.com/railgrid/provider-sdk/actionwire"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -199,7 +200,7 @@ type Server struct {
 	// verbs write into. A RepositoryCommit is only a pointer at it.
 	Bundles       commitbundle.Store
 	Credentials   tenant.CredentialResolver
-	SnapshotDir   string
+	Snapshots     snapshotstore.Store
 	slots         chan struct{}
 	snapshotSlots chan struct{}
 }
@@ -371,7 +372,7 @@ func (s *Server) run(ctx context.Context, provider dynamic.Interface, identity d
 	var output any
 	switch req.Verb {
 	case StageSnapshot:
-		output, err = s.stage(identity, req.ClusterID, in)
+		output, err = s.stage(ctx, identity, req.ClusterID, in)
 	case "branches":
 		lister, ok := implementation.(backend.BranchLister)
 		if !ok {
@@ -403,7 +404,7 @@ func (s *Server) run(ctx context.Context, provider dynamic.Interface, identity d
 		if !ok || in.Snapshot != nil || in.BundleRef == "" {
 			return nil, wireError("invalid_snapshot")
 		}
-		snapshot, loadErr := s.loadSnapshot(identity, req.ClusterID, in)
+		snapshot, loadErr := s.loadSnapshot(ctx, identity, req.ClusterID, in)
 		if loadErr != nil {
 			return nil, wireError("snapshot_unavailable")
 		}

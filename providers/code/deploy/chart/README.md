@@ -28,6 +28,26 @@ helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider
   --set catalogEntry.enabled=true
 ```
 
+## S3 bucket lifecycle
+
+With `bundleStore.backend: s3` the provider deletes a bundle or snapshot
+once it is consumed, but it does not sweep what a crash or an abandoned
+request left behind: that is the bucket's job. Expire the two prefixes after
+one day (bundles are consumed within minutes and snapshots within an hour):
+
+```json
+{"Rules": [
+  {"ID": "railgrid-code-bundles",   "Status": "Enabled", "Filter": {"Prefix": "commit-bundles/"}, "Expiration": {"Days": 1}},
+  {"ID": "railgrid-code-snapshots", "Status": "Enabled", "Filter": {"Prefix": "git-snapshots/"},  "Expiration": {"Days": 1}}
+]}
+```
+
+Prepend `bundleStore.s3.prefix` to both prefixes if one is set. On AWS:
+`aws s3api put-bucket-lifecycle-configuration --bucket <bucket>
+--lifecycle-configuration file://lifecycle.json`; on MinIO: `mc ilm rule add
+--expire-days 1 --prefix commit-bundles/ <alias>/<bucket>` and the same for
+`git-snapshots/`.
+
 ## Values
 
 | Key | Default | Notes |
@@ -36,7 +56,7 @@ helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider
 | `image.repository` | `ghcr.io/railgrid/railgrid-code-provider` |  |
 | `image.tag` | `""` |  |
 | `image.pullPolicy` | `IfNotPresent` |  |
-| `replicaCount` | `1` | Number of Deployment replicas. Keep this at 1 unless bundleStore.existingClaim points at shared storage: commit_files writes provider-owned bundles to disk and the RepositoryCommit controller must read the same bytes. |
+| `replicaCount` | `1` | Number of Deployment replicas. More than 1 requires `bundleStore.backend=s3` (the chart refuses to render otherwise): the replica that accepts an upload and the leader replica that consumes it must read the same bytes, and a per-pod volume cannot provide that. |
 | `service` |  |  |
 | `service.type` | `ClusterIP` |  |
 | `service.port` | `8083` |  |
@@ -59,13 +79,23 @@ helm upgrade --install code oci://ghcr.io/railgrid/charts/railgrid-code-provider
 | `githubOAuth.scopes` | `""` | Comma-separated scopes. Empty → provider default (repo,delete_repo,read:org,admin:public_key,read:packages). delete_repo is required for the provider to remove repositories it created. |
 | `tenant` |  | Tenant credential resolution. Empty → the provider default ("default"), the namespace the portal writes Connection token Secrets into. Override only if an admin pushes credential Secrets into a namespace tenants cannot write to. |
 | `tenant.credentialsNamespace` | `""` |  |
-| `bundleStore` |  | RepositoryCommit source bundles. The CR stores only a bundle ref/digest; the generated file contents live here until the controller commits them. |
-| `bundleStore.path` | `/var/lib/railgrid-code/commit-bundles` |  |
-| `bundleStore.existingClaim` | `""` | Use an existing PVC instead of rendering one. |
-| `bundleStore.emptyDir` | `false` | Explicit non-durable fallback for throwaway/dev deployments. |
+| `bundleStore` |  | RepositoryCommit source bundles and staged git snapshots: the only state the provider keeps outside kcp. A CR stores only a reference/digest; the bytes live here until the controller consumes them, and expire on a TTL otherwise. |
+| `bundleStore.backend` | `file` | `file`: a volume at `bundleStore.path`, correct for `replicaCount: 1` only. `s3`: any S3-compatible bucket every replica reaches (AWS S3, MinIO, Ceph RGW, …), required for `replicaCount > 1`; no volume is mounted. With `s3` the provider runs no orphan sweep: give the bucket a lifecycle rule (see "S3 bucket lifecycle" below). |
+| `bundleStore.path` | `/var/lib/railgrid-code/commit-bundles` | Mount path for `backend: file`. |
+| `bundleStore.existingClaim` | `""` | Use an existing PVC instead of rendering one (`backend: file`). |
+| `bundleStore.emptyDir` | `false` | Explicit non-durable fallback for throwaway/dev deployments (`backend: file`). |
 | `bundleStore.persistence.enabled` | `true` |  |
 | `bundleStore.persistence.size` | `1Gi` |  |
 | `bundleStore.persistence.storageClassName` | `""` |  |
+| `bundleStore.s3.endpoint` | `""` | `host[:port]`, or a URL whose scheme decides TLS. AWS: `s3.<region>.amazonaws.com`. |
+| `bundleStore.s3.bucket` | `""` | Bucket name. Must exist unless `createBucket` is set. |
+| `bundleStore.s3.region` | `""` | Needed by AWS; most other services ignore it. |
+| `bundleStore.s3.prefix` | `""` | Key prefix inside the bucket, so one bucket can be shared. |
+| `bundleStore.s3.useSSL` | `true` | Talk TLS to the endpoint. `false` for a plain-HTTP in-cluster MinIO. |
+| `bundleStore.s3.createBucket` | `false` | Create the bucket when missing. Dev loops only; provision production buckets outside the chart. |
+| `bundleStore.s3.credentialsSecretRef.name` | `""` | Secret holding static credentials. Empty → the AWS credential chain (IRSA / pod identity / `AWS_*` variables, e.g. from `envFromSecret`). |
+| `bundleStore.s3.credentialsSecretRef.accessKeyIdKey` | `accessKeyId` |  |
+| `bundleStore.s3.credentialsSecretRef.secretAccessKeyKey` | `secretAccessKey` |  |
 | `catalogEntry` |  | When true, the chart renders the CatalogEntry (which registers the provider with the hub) into a ConfigMap that the init container applies into the provider workspace via the provider kubeconfig. The CatalogEntry is a kcp resource, so it is NOT applied to the hosting cluster this chart installs i… |
 | `catalogEntry.enabled` | `true` |  |
 | `serviceAccount` |  |  |

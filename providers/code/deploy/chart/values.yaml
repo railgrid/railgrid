@@ -8,9 +8,10 @@ image:
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
-# Number of Deployment replicas. Keep this at 1 unless bundleStore.existingClaim
-# points at shared storage: commit_files writes provider-owned bundles to disk
-# and the RepositoryCommit controller must read the same bytes.
+# Number of Deployment replicas. More than 1 requires bundleStore.backend=s3
+# (the chart refuses to render otherwise): the replica that accepts an upload
+# and the leader replica that consumes it must read the same bytes, and a
+# per-pod volume cannot provide that.
 replicaCount: 1
 
 service:
@@ -80,9 +81,19 @@ githubOAuth:
 tenant:
   credentialsNamespace: ""
 
-# RepositoryCommit source bundles. The CR stores only a bundle ref/digest; the
-# generated file contents live here until the controller commits them.
+# RepositoryCommit source bundles and staged git snapshots: the only state the
+# provider keeps outside kcp. A CR stores only a reference/digest; the bytes
+# live here until the controller consumes them, and expire on a TTL otherwise.
 bundleStore:
+  # Where the bytes live.
+  #   file  A volume mounted at bundleStore.path. Correct for replicaCount: 1
+  #         only, because every replica would have its own copy.
+  #   s3    Any S3-compatible bucket (AWS S3, MinIO, Ceph RGW, …) that every
+  #         replica reaches. Required for replicaCount > 1. No volume is
+  #         mounted; the file settings below are ignored. The provider runs
+  #         no orphan sweep on a bucket: give it a lifecycle rule expiring
+  #         commit-bundles/ and git-snapshots/ after a day (chart README).
+  backend: file
   path: /var/lib/railgrid-code/commit-bundles
   # Use an existing PVC instead of rendering one.
   existingClaim: ""
@@ -94,6 +105,28 @@ bundleStore:
     accessModes:
       - ReadWriteOnce
     storageClassName: ""
+  # Settings for backend: s3.
+  s3:
+    # host[:port], or a URL whose scheme decides TLS. AWS: s3.<region>.amazonaws.com
+    endpoint: ""
+    bucket: ""
+    # Needed by AWS; most other services ignore it.
+    region: ""
+    # Key prefix inside the bucket, so one bucket can be shared.
+    prefix: ""
+    # Talk TLS to the endpoint. Set false for a plain-HTTP in-cluster MinIO.
+    useSSL: true
+    # Create the bucket when it does not exist. For dev loops only; provision
+    # production buckets outside the chart so the provider needs no bucket
+    # admin permission.
+    createBucket: false
+    # Secret holding static credentials. Leave name empty to use the AWS
+    # credential chain instead (IRSA / pod identity / AWS_* variables, e.g.
+    # from envFromSecret).
+    credentialsSecretRef:
+      name: ""
+      accessKeyIdKey: accessKeyId
+      secretAccessKeyKey: secretAccessKey
 
 # When true, the chart renders the CatalogEntry (which registers the provider
 # with the hub) into a ConfigMap that the init container applies into the
