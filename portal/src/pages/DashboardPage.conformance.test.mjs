@@ -5,7 +5,7 @@ import test from 'node:test'
 const page = fs.readFileSync(new URL('./DashboardPage.vue', import.meta.url), 'utf8')
 
 test('dashboard inherits the shared provider page width and padding from AppLayout', () => {
-  assert.match(page, /<AppLayout>\s*<div ref="pageRef">/)
+  assert.match(page, /<AppLayout>\s*<div ref="pageRef" tabindex="-1">/)
   assert.doesNotMatch(page, /<AppLayout\s+full-bleed>/)
   assert.doesNotMatch(page, /class="[^"]*\b(?:px-6|py-5|overflow-y-auto)\b[^"]*"/)
 })
@@ -46,7 +46,7 @@ test('dashboard keeps one Getting Started entry point and preserves its existing
   assert.match(gettingStarted, /@click="openGettingStarted"/)
   assert.match(gettingStarted, /<Rocket\b/)
   assert.match(customize, /class="k-btn k-btn--ghost min-h-11 px-3 text-\[12px\] md:min-h-0 md:py-1\.5"/)
-  assert.match(page, /<WelcomeWizard[\s\S]*v-if="showWelcome"[\s\S]*v-show="workspaceDataReady"[\s\S]*@dismiss="dismissWelcome"/)
+  assert.match(page, /<WelcomeWizard[\s\S]*v-if="showWelcome"[\s\S]*v-show="guideVisible"[\s\S]*@dismiss="dismissWelcome"/)
   assert.doesNotMatch(page, /GoalPicker|startGoals|Choose a starting point/)
   assert.match(page, /v-if="gated\.length === 0 && workspaceDataReady"/)
   assert.match(page, /<template v-if="gated.length > 0">[\s\S]*Nothing on the grid/)
@@ -77,9 +77,9 @@ test('dashboard heading follows the provider page title and responsive action pa
   assert.match(heading, /<div class="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">/)
 })
 
- test('dashboard exposes scoped read failures and retry without replacing the existing wizard', () => {
+test('dashboard exposes scoped read failures and retry without replacing the existing wizard', () => {
   assert.match(page, /gettingStartedStatus === 'error'/)
   assert.match(page, /@click="retryWorkspaceData"/)
   assert.match(page, /function retryWorkspaceData\(\)[\s\S]*providers\.load\(tenant\.orgUUID\)/)
-  assert.match(page, /v-show="workspaceDataReady"/)
+  assert.match(page, /v-show="guideVisible"/)
 })

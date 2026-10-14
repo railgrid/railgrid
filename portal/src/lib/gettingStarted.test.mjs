@@ -30,3 +30,8 @@ test('automatic first-run entry needs an authoritative empty workspace and no sa
   assert.equal(shouldAutoOpenGettingStarted('ready', 0, true), false)
 })
 
+
+test('missing scope is actionable, even with old errors', () => {
+  assert.equal(gettingStartedReadState({ ...readyRead, hasScope: false, catalogError: true }), 'unscoped')
+  assert.equal(shouldAutoOpenGettingStarted('unscoped', 0, false), false)
+})

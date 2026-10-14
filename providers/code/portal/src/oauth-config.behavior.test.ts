@@ -428,6 +428,21 @@ describe('connection creation authority fencing', () => {
     app.unmount()
   })
 
+  it('describes token inputs with a short hint and offers both permission models', async () => {
+    const { app, root } = mount(ConnectionCreateView, {
+      method: 'token', deletions: createResourceDeletions(),
+    })
+    await settle()
+    const input = findNode(root, node => node.props.id === 'code-connection-token')
+    expect(input?.props['aria-describedby']).toBe('code-connection-token-hint')
+    expect(textContent(root)).toContain('fine-grained token')
+    expect(textContent(root)).toContain('Contents: read and write')
+    expect(textContent(root)).toContain('Workflows: read and write')
+    await submit(root)
+    expect(input?.props['aria-describedby']).toBe('code-connection-token-error code-connection-token-hint')
+    app.unmount()
+  })
+
   it('re-reads before mutation and refuses an active normalized name collision', async () => {
     mocks.api.listConnections.mockReset()
       .mockResolvedValueOnce([])

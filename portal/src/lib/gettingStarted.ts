@@ -1,4 +1,4 @@
-export type GettingStartedReadState = 'checking' | 'error' | 'ready'
+export type GettingStartedReadState = 'unscoped' | 'checking' | 'error' | 'ready'
 
 export interface GettingStartedReadInputs {
   hasScope: boolean
@@ -12,9 +12,9 @@ export interface GettingStartedReadInputs {
 }
 
 export function gettingStartedReadState(input: GettingStartedReadInputs): GettingStartedReadState {
+  if (!input.hasScope) return 'unscoped'
   if (input.catalogError || input.bindingsState === 'error') return 'error'
   if (
-    !input.hasScope ||
     !input.catalogLoaded ||
     input.catalogLoading ||
     !input.catalogMatchesOrganization ||

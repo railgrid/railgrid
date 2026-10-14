@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
@@ -146,9 +146,24 @@ const welcomeDismissed = computed(() =>
 const guideForced = ref(false)
 const showWelcome = computed(() => welcomeOpen.value || guideForced.value)
 
+const guideShownScope = ref<string | null>(null)
+const currentScope = computed(() => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`)
+const guideVisible = computed(() => workspaceDataReady.value || (
+  gettingStartedStatus.value !== 'unscoped' &&
+  guideShownScope.value === currentScope.value &&
+  providers.catalogOrgUUID === tenant.orgUUID &&
+  providers.bindingsOrgUUID === tenant.orgUUID &&
+  providers.bindingsWorkspace === tenant.workspaceUUID
+))
+watch([showWelcome, workspaceDataReady, currentScope], ([open, ready, scope]) => {
+  if (open && ready) guideShownScope.value = scope
+}, { immediate: true })
+const readBanner = ref<HTMLElement | null>(null)
+const retrying = ref(false)
+
 // Keep the initial shimmer for the first catalog request, but leave the guide
 // mounted while its own Retry action reloads provider state.
-const initializing = computed(() => providers.loading && !showWelcome.value)
+const initializing = computed(() => providers.loading && !showWelcome.value && !retrying.value && gettingStartedStatus.value !== 'unscoped')
 
 watch(
   [gettingStartedStatus, enabledBindingCount, welcomeDismissed] as const,
@@ -158,8 +173,22 @@ watch(
   { immediate: true },
 )
 
-function retryWorkspaceData() {
-  if (tenant.orgUUID) void providers.load(tenant.orgUUID)
+async function retryWorkspaceData() {
+  if (!tenant.orgUUID || retrying.value) return
+  const scope = currentScope.value
+  const banner = readBanner.value
+  banner?.focus()
+  retrying.value = true
+  try {
+    await providers.load(tenant.orgUUID)
+  } finally {
+    retrying.value = false
+    await nextTick()
+    if (scope === currentScope.value &&
+      (document.activeElement === banner || document.activeElement === document.body)) {
+      (readBanner.value ?? pageRef.value)?.focus()
+    }
+  }
 }
 
 function openGettingStarted() {
@@ -185,6 +214,7 @@ watch(
   () => {
     guideForced.value = false
     welcomeOpen.value = false
+    guideShownScope.value = null
   },
 )
 
@@ -270,24 +300,25 @@ function onGridSelectStart(event: Event) {
 
 <template>
   <AppLayout>
-    <div ref="pageRef">
+    <div ref="pageRef" tabindex="-1">
     <div v-if="initializing" class="mt-20 flex flex-col items-center justify-center">
       <div class="shimmer h-8 w-8 rounded-xl" />
       <div class="shimmer mt-4 h-3 w-40 rounded" />
     </div>
 
     <template v-else>
-      <div v-if="!workspaceDataReady" class="mb-6 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" :role="gettingStartedStatus === 'error' ? 'alert' : 'status'">
+      <div v-if="!workspaceDataReady && (!showWelcome || !guideVisible || gettingStartedStatus === 'error')" ref="readBanner" tabindex="-1" class="mb-6 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite">
         <template v-if="gettingStartedStatus === 'error'">
           <p>Couldn’t load this workspace’s providers. Try again to see what’s available.</p>
           <button type="button" class="k-btn k-btn--ghost mt-3" @click="retryWorkspaceData">Retry</button>
         </template>
+        <p v-else-if="gettingStartedStatus === 'unscoped'">Select a workspace to see its providers.</p>
         <p v-else>Loading this workspace’s providers…</p>
       </div>
       <WelcomeWizard
         v-if="showWelcome"
         :key="`${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`"
-        v-show="workspaceDataReady"
+        v-show="guideVisible"
         @dismiss="dismissWelcome"
       />
 
