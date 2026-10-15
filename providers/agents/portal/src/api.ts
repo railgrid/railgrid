@@ -105,6 +105,11 @@ export interface SSEEvent<T = unknown> {
   data: T
 }
 
+export interface MessagePage {
+  items: TranscriptMessage[]
+  nextCursor?: string
+}
+
 export interface RunPage {
   items: RunSummary[]
   nextCursor?: string
@@ -392,8 +397,12 @@ export class ApiClient {
     this.listVerb<SessionMeta>(this.verb(AGENTS, agent, 'sessions'))
   deleteSession = (agent: string, session: string): Promise<void> =>
     this.sendVerb('DELETE', this.verbTail(this.verb(AGENTS, agent, 'session'), session))
-  listMessages = (agent: string, session: string, limit = 200): Promise<TranscriptMessage[]> =>
-    this.listVerb<TranscriptMessage>(this.verb(AGENTS, agent, 'messages', { query: { session, limit } }))
+  listMessagePage = async (agent: string, session: string, cursor = '', limit = 200): Promise<MessagePage> => {
+    const page = await this.getVerb<MessagePage>(this.verb(AGENTS, agent, 'messages', { query: { session, limit, ...(cursor ? { cursor } : {}) } }))
+    return { items: page.items || [], nextCursor: page.nextCursor }
+  }
+  listMessages = async (agent: string, session: string, limit = 200): Promise<TranscriptMessage[]> =>
+    (await this.listMessagePage(agent, session, '', limit)).items
 
   // Model credentials are ModelCredential objects in the tenant workspace,
   // written through kcp; the API key stays in the Secret each one points at.

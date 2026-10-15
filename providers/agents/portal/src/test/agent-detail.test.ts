@@ -23,6 +23,60 @@ function stubViewport(mobile: boolean): () => void {
 }
 
 describe('agent resource detail conformance', () => {
+  it.each([768, 800, 845, 846, 1000])('keeps the initial chat visible in a %ipx container', async width => {
+    const restoreViewport = stubViewport(false)
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width, height: 600 } as DOMRect)
+    let view: Awaited<ReturnType<typeof mountVue>> | undefined
+    try {
+      const api = stubApi()
+      const store = makeStore(api)
+      store.agents.data = [agentFixture('scout')]
+      Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+      view = await mountVue(AgentDetail, { store, api, name: 'scout', tab: 'chat', authorityEpoch: 1 })
+      await settleVue()
+      const conversation = view.element.querySelector('[data-k-ai-workspace-conversation]')!
+      expect(conversation.getAttribute('aria-hidden')).not.toBe('true')
+      const toggle = view.element.querySelector<HTMLButtonElement>('[data-agent-workbench-toggle]')!
+      expect(toggle.getAttribute('aria-expanded')).toBe(String(width >= 846))
+      if (width < 846) {
+        toggle.click()
+        await settleVue()
+        expect(conversation.getAttribute('aria-hidden')).toBe('true')
+        expect(view.element.querySelector('[data-k-ai-workspace-workbench]')?.getAttribute('aria-hidden')).toBeNull()
+        await view.setProps({ tab: 'config' })
+        window.dispatchEvent(new Event('resize'))
+        await settleVue()
+        expect(conversation.getAttribute('aria-hidden')).toBe('true')
+      }
+    } finally {
+      view?.unmount()
+      bounds.mockRestore()
+      restoreViewport()
+    }
+  })
+
+  it.each([767, 768, 999, 1000])('uses the md workbench breakpoint at %ipx', async width => {
+    const restoreViewport = stubViewport(false)
+    vi.mocked(window.matchMedia).mockImplementation(media => ({
+      matches: width <= Number(media.match(/max-width: (\d+)px/)?.[1] || 0),
+      media, onchange: null, addListener: vi.fn(), removeListener: vi.fn(),
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    }))
+    let view: Awaited<ReturnType<typeof mountVue>> | undefined
+    try {
+      const api = stubApi()
+      const store = makeStore(api)
+      store.agents.data = [agentFixture('scout')]
+      Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+      view = await mountVue(AgentDetail, { store, api, name: 'scout', tab: 'chat', authorityEpoch: 1 })
+      expect(view.element.querySelector('[data-agent-workbench-toggle]')?.getAttribute('aria-expanded')).toBe(String(width >= 768))
+      expect(window.matchMedia).toHaveBeenCalledWith('(max-width: 767px)')
+    } finally {
+      view?.unmount()
+      restoreViewport()
+    }
+  })
+
   it('uses the shared conversation header and opens Config by default on desktop', async () => {
     const restoreViewport = stubViewport(false)
     try {
@@ -290,6 +344,7 @@ describe('agent resource detail conformance', () => {
 
     expect(headings).toEqual([
       ['H1', 'Scout'],
+      ['H2', 'Start a conversation with Scout'],
       ['H2', 'Runs'],
       ['H3', 'Needs your attention (1)'],
     ])

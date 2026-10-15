@@ -951,3 +951,97 @@ railgrid-provider-agents .agents-assistant-overview-actions { display: flex; ali
 railgrid-provider-agents .agents-chat-shell--bar .agents-chat-main > :not(.agents-composer) { display: none; }
 railgrid-provider-agents .agents-chat-shell--bar .agents-composer { padding: 0; border: 0; }
 railgrid-provider-agents .agents-chat-shell--bar { height: 100%; }
+
+/* Conversation navigation stays outside the scrolling transcript. */
+railgrid-provider-agents .agents-history-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px; }
+railgrid-provider-agents .agents-chat-welcome {
+  padding: 32px 0;
+  max-width: 60ch;
+}
+railgrid-provider-agents .agents-chat-welcome h2 {
+  margin: 0 0 12px;
+  color: var(--color-text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+railgrid-provider-agents .agents-chat-welcome p {
+  margin: 0 0 28px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+railgrid-provider-agents .agents-chat-starters {
+  display: grid;
+  border-top: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-chat-starter {
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 64px;
+  padding: 16px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.6;
+  white-space: normal;
+}
+railgrid-provider-agents .agents-chat-starter > span { min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-chat-starter > svg { color: var(--color-accent); }
+railgrid-provider-agents .agents-chat-starter:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  border-color: var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+railgrid-provider-agents .agents-chat-starter:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+railgrid-provider-agents .agents-chat-starter:disabled {
+  cursor: default;
+  opacity: 0.5;
+  background: transparent;
+}
+
+/* Zero-height anchor keeps the transcript full-height; only the button catches input. */
+railgrid-provider-agents .agents-return-latest-anchor {
+  position: relative;
+  flex: 0 0 0;
+  height: 0;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1;
+}
+railgrid-provider-agents .agents-return-latest {
+  position: absolute;
+  bottom: 8px;
+  pointer-events: auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: var(--color-border-default);
+  background: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+}
+railgrid-provider-agents .agents-return-latest:hover {
+  color: var(--color-accent);
+  background: var(--color-surface-hover);
+}
+railgrid-provider-agents .agents-return-latest:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  railgrid-provider-agents .agents-return-latest { width: 44px; height: 44px; }
+}

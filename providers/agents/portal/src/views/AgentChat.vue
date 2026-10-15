@@ -2,7 +2,7 @@
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw } from 'lucide-vue-next'
+import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw } from 'lucide-vue-next'
 import { ApiError, type ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import AIModelPicker from '../agentkit/AIModelPicker.vue'
@@ -18,7 +18,7 @@ import type { Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
-import { agentHarnessBacked, agentModelCredential, sessionLabel, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import { agentHarnessBacked, agentModelCredential, sessionLabel, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
@@ -74,6 +74,19 @@ const selectingSessionID = ref('')
 const streaming = ref(false)
 const messagesLoading = ref(false)
 const loadError = ref<string | null>(null)
+const olderCursor = ref('')
+const olderLoading = ref(false)
+const olderError = ref('')
+let historyItems: TranscriptMessage[] = []
+let olderReadSerial = 0
+function resetOlderHistory(): void {
+  olderReadSerial += 1
+  olderCursor.value = ''
+  olderLoading.value = false
+  olderError.value = ''
+  historyItems = []
+}
+watch(sessionID, resetOlderHistory, { flush: 'sync' })
 const draft = ref('')
 const chatHost = useAgentsRuntime()?.host
 const compactThreadsOpen = ref(false)
@@ -129,7 +142,7 @@ let liveRunSessionID = ''
 let streamingID = ''
 let deltaBuffer = ''
 let flushHandle = 0
-let atBottom = true
+const atBottom = ref(true)
 let logResizeObserver: ResizeObserver | null = null
 let composing = false
 let messageSequence = 0
@@ -600,18 +613,21 @@ async function loadMessages(session: string, name = props.name, api = props.api)
   const serial = ++messageReadSerial
   if (streaming.value || !session) return false
   messagesLoading.value = true
+  resetOlderHistory()
   try {
-    const items = await api.listMessages(name, session)
+    const page = await api.listMessagePage(name, session)
     if (
       serial !== messageReadSerial ||
       !contextIsCurrent(name, api) ||
       sessionID.value !== session ||
       streaming.value
     ) return false
-    messages.value = rebuildTranscript(items.slice().reverse())
+    historyItems = page.items.slice().reverse()
+    olderCursor.value = page.nextCursor || ''
+    messages.value = rebuildTranscript(historyItems)
     messagesHasSnapshot.value = true
     loadError.value = null
-    atBottom = true
+    atBottom.value = true
   } catch (error) {
     if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
     loadError.value = (error as Error).message
@@ -625,6 +641,77 @@ async function loadMessages(session: string, name = props.name, api = props.api)
   void findOrphanRun(session, name, api)
   return true
 }
+
+async function loadEarlierMessages(): Promise<void> {
+  if (!olderCursor.value || olderLoading.value || messagesLoading.value || streaming.value) return
+  const name = props.name
+  const api = props.api
+  const session = sessionID.value
+  const serial = ++olderReadSerial
+  const readSerial = messageReadSerial
+  const isCurrent = () => serial === olderReadSerial && readSerial === messageReadSerial
+    && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value
+  olderLoading.value = true
+  olderError.value = ''
+  try {
+    const page = await api.listMessagePage(name, session, olderCursor.value)
+    if (!isCurrent()) return
+    const element = log.value
+    const height = element?.scrollHeight || 0
+    const top = element?.scrollTop || 0
+    // Retain turns sent since the last persisted snapshot.
+    const persistedIDs = new Set(rebuildTranscript(historyItems).map(item => item.id))
+    const liveMessages = messages.value.filter(item => !persistedIDs.has(item.id))
+    const seen = new Set(historyItems.map(item => item.id))
+    historyItems = [...page.items.slice().reverse().filter(item => !seen.has(item.id)), ...historyItems]
+    atBottom.value = false
+    const currentByID = new Map(messages.value.map(message => [message.id, message]))
+    const projected = rebuildTranscript(historyItems)
+    const projectedIDs = new Set(projected.map(message => message.id))
+    // A page can split one run: prepending its earlier rows changes the
+    // projected message ID. Carry recovered state to the combined turn too.
+    const displacedByRun = new Map(messages.value
+      .filter(message => message.runID && persistedIDs.has(message.id) && !projectedIDs.has(message.id))
+      .map(message => [message.runID, message]))
+    messages.value = [...projected.map(message => {
+      const current = currentByID.get(message.id) || (message.runID ? displacedByRun.get(message.runID) : undefined)
+      if (!current) return message
+      const trace = new Map((message.progress?.trace || []).map(block => [block.id, block]))
+      for (const block of current.progress?.trace || []) trace.set(block.id, block)
+      return {
+        ...message,
+        approval: current.approval,
+        error: current.error,
+        usage: current.usage,
+        ...(current.progress ? { progress: { ...message.progress, ...current.progress, trace: [...trace.values()] } } : {}),
+      }
+    }), ...liveMessages]
+    olderCursor.value = page.nextCursor || ''
+    await nextTick()
+    if (isCurrent() && element === log.value && element) {
+      element.scrollTop = top + element.scrollHeight - height
+    }
+  } catch (error) {
+    if (isCurrent()) olderError.value = (error as Error).message
+  } finally {
+    if (serial === olderReadSerial) olderLoading.value = false
+  }
+}
+
+function returnToLatest(): void {
+  atBottom.value = true
+  scrollToBottom()
+  log.value?.focus({ preventScroll: true })
+}
+
+function applyStarterPrompt(prompt: string): void {
+  draft.value = prompt
+  void nextTick(() => composer.value?.focus())
+}
+const starterPrompts = [
+  'What can you help me with, and which tools can you use?',
+  'Help me plan a task. Ask me about my goal and constraints first.',
+]
 
 async function openAgent(): Promise<void> {
   const name = props.name
@@ -821,6 +908,9 @@ async function send(): Promise<void> {
     ? `${draftText}${PAGE_CONTEXT_MARKER}${props.pageContext}`
     : draftText
   claimChatOwnership()
+  olderReadSerial += 1
+  olderLoading.value = false
+  olderError.value = ''
   // Sending takes ownership of the transcript synchronously. A history read
   // that started before this turn must not replace the newly streamed messages
   // if it settles after a fast response completes.
@@ -859,7 +949,7 @@ async function send(): Promise<void> {
   ]
   messagesHasSnapshot.value = true
   streaming.value = true
-  atBottom = true
+  atBottom.value = true
   resizeComposer()
 
   try {
@@ -1395,13 +1485,13 @@ function bindServer(store: AppStore | null): void {
 function onScroll(event: Event): void {
   const element = event.target as HTMLElement
   if (!element.clientHeight) return
-  atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 48
+  atBottom.value = element.scrollHeight - element.scrollTop - element.clientHeight < 48
 }
 
 function scrollToBottom(): void {
-  if (!atBottom) return
+  if (!atBottom.value) return
   void nextTick(() => {
-    if (atBottom && log.value?.clientHeight) {
+    if (atBottom.value && log.value?.clientHeight) {
       log.value.scrollTop = log.value.scrollHeight
     }
   })
@@ -1649,6 +1739,12 @@ defineExpose({
           @scroll="onScroll"
         >
           <AITranscript>
+            <div v-if="olderCursor || olderError" class="agents-history-controls" role="group" aria-label="Older conversation history">
+              <button v-if="olderCursor" type="button" class="k-btn k-btn--ghost secondary" :disabled="olderLoading || messagesLoading || streaming" @click="loadEarlierMessages">
+                {{ olderLoading ? 'Loading earlier messages…' : 'Load earlier messages' }}
+              </button>
+              <p v-if="olderError" class="muted" role="alert">Could not load earlier messages. {{ olderError }} Try again.</p>
+            </div>
             <ChatMessageView
               v-for="message in messages"
               :key="message.id"
@@ -1661,8 +1757,36 @@ defineExpose({
               @recovery="navigateForFailure"
             />
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
-            <p v-if="messagesHasSnapshot && messages.length === 0" class="muted" role="status" aria-live="polite" aria-atomic="true">No messages yet. Say hi.</p>
+            <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
+              <h2 role="status" aria-live="polite">Start a conversation with {{ agent?.spec.displayName || name }}</h2>
+              <p class="muted">{{ agent?.spec.description || 'Share a goal, ask a question, or explore what this agent can help you do.' }}</p>
+              <div class="agents-chat-starters" role="group" aria-label="Starter prompts">
+                <button
+                  v-for="prompt in starterPrompts"
+                  :key="prompt"
+                  type="button"
+                  class="k-ai-launcher__card agents-chat-starter"
+                  :disabled="!hasModel || !!draft"
+                  @click="applyStarterPrompt(prompt)"
+                >
+                  <span>{{ prompt }}</span>
+                  <ArrowUpRight :size="16" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+              </div>
+            </section>
           </AITranscript>
+        </div>
+
+        <div v-if="!atBottom && messages.length" class="agents-return-latest-anchor">
+          <button
+            type="button"
+            class="k-btn agents-return-latest"
+            aria-label="Return to latest"
+            title="Return to latest"
+            @click="returnToLatest"
+          >
+            <ArrowDown :size="18" :stroke-width="1.75" aria-hidden="true" />
+          </button>
         </div>
 
         <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">

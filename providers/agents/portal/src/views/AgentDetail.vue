@@ -77,16 +77,19 @@ const readError = computed(() => {
 })
 function isMobileViewport(): boolean {
   if (typeof window === 'undefined') return false
-  if (typeof window.matchMedia === 'function') return window.matchMedia('(max-width: 999px)').matches
-  return window.innerWidth <= 999
+  if (typeof window.matchMedia === 'function') return window.matchMedia('(max-width: 767px)').matches
+  return window.innerWidth <= 767
 }
 
 // Chat is the route's primary surface, but a wide desktop gets the retained
 // workbench alongside it on first entry. A mobile deep link to a workbench tab
 // is an explicit request for that pane and therefore still opens it.
+const workbenchExplicitlyOpened = ref(props.tab !== 'chat')
+const workspaceCompact = ref(isMobileViewport())
 const workspaceOpen = ref(!props.compact && (props.tab !== 'chat' || !isMobileViewport()))
 watch(() => props.compact, compact => {
-  workspaceOpen.value = !compact && !isMobileViewport()
+  workbenchExplicitlyOpened.value = false
+  workspaceOpen.value = !compact && !workspaceCompact.value
   if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
 })
 const initialWorkbenchState = props.tab === 'chat'
@@ -105,6 +108,7 @@ function ensureWorkbenchSurfaceMounted(tab: AgentWorkbenchTabKind): void {
 }
 
 watch(() => props.tab, tab => {
+  workbenchExplicitlyOpened.value = tab !== 'chat'
   if (tab !== 'chat') {
     workbench.value = openAgentWorkbenchTab(workbench.value, tab)
     workspaceOpen.value = true
@@ -122,6 +126,7 @@ function toggleWorkbench(event: MouseEvent): void {
     workspace.value?.close()
     return
   }
+  workbenchExplicitlyOpened.value = true
   workspace.value?.open(trigger)
   workspaceOpen.value = true
   ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
@@ -130,12 +135,19 @@ function toggleWorkbench(event: MouseEvent): void {
   }
 }
 
+function onWorkspaceCompactChange(compact: boolean): void {
+  workspaceCompact.value = compact
+  if (compact && !workbenchExplicitlyOpened.value) workspaceOpen.value = false
+}
+
 function closeWorkbench(): void {
+  workbenchExplicitlyOpened.value = false
   workspaceOpen.value = false
   navigate({ kind: 'agent', name: props.name, tab: 'chat' })
 }
 
 function selectWorkbenchTab(tab: WorkbenchTab): void {
+  workbenchExplicitlyOpened.value = true
   workbench.value = activateAgentWorkbenchTab(workbench.value, tab)
   workspaceOpen.value = true
   ensureWorkbenchSurfaceMounted(tab)
@@ -143,12 +155,14 @@ function selectWorkbenchTab(tab: WorkbenchTab): void {
 }
 
 function openWorkbenchLauncherTab(): void {
+  workbenchExplicitlyOpened.value = true
   workspace.value?.open()
   workspaceOpen.value = true
   workbench.value = openAgentWorkbenchLauncher(workbench.value)
 }
 
 function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
+  workbenchExplicitlyOpened.value = true
   workbench.value = selectAgentWorkbenchLauncherTab(workbench.value, tab)
   workspaceOpen.value = true
   ensureWorkbenchSurfaceMounted(tab)
@@ -156,6 +170,7 @@ function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
 }
 
 function closeWorkbenchTab(tab: WorkbenchTab): void {
+  workbenchExplicitlyOpened.value = true
   const wasActive = workbench.value.activeTabID === tab
   workbench.value = closeAgentWorkbenchTab(workbench.value, tab)
   if (wasActive && workbench.value.activeTabID !== 'launcher') {
@@ -239,9 +254,11 @@ async function remove(): Promise<void> {
             class="agents-workspace"
             data-agent-workspace
             :open="workspaceOpen && !compact"
+            :mobile-breakpoint="767"
             aria-label="Agent workspace"
             conversation-label="Agent conversation"
             workbench-label="Agent workbench"
+            @compact-change="onWorkspaceCompactChange"
             @close="closeWorkbench"
           >
             <template #conversation>

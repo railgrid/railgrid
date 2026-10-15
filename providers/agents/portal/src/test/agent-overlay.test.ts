@@ -26,7 +26,7 @@ async function mountOverlay() {
   mounted.push(element)
   await settleVue(6)
   vi.spyOn(element.api!, 'listSessions').mockResolvedValue([])
-  vi.spyOn(element.api!, 'listMessages').mockResolvedValue([])
+  vi.spyOn(element.api!, 'listMessagePage').mockResolvedValue({ items: [] })
   vi.spyOn(element.api!, 'listRuns').mockResolvedValue({ items: [] })
   element.store!.agents.data = [agentFixture()]
   element.store!.agents.loaded = element.store!.agents.hasSnapshot = true
@@ -84,7 +84,7 @@ describe('persistent agent overlay', () => {
     expect(element.querySelector('textarea')).toBe(input)
     ;(picker.querySelector('.agents-overlay-threads__item[title="Earlier investigation"]') as HTMLButtonElement).click()
     await settleVue(10)
-    expect(element.api!.listMessages).toHaveBeenCalledWith('scout', 'older')
+    expect(element.api!.listMessagePage).toHaveBeenCalledWith('scout', 'older')
     expect(element.querySelector('.agents-overlay-threads')).toBeNull()
     expect(element.querySelector('textarea')).toBe(input)
     expect(input.value).toBe('Keep this draft')
@@ -128,7 +128,7 @@ describe('persistent agent overlay', () => {
     mounted.push(normal)
     await settleVue(6)
     vi.spyOn(normal.api!, 'listSessions').mockResolvedValue([])
-    vi.spyOn(normal.api!, 'listMessages').mockResolvedValue([])
+    vi.spyOn(normal.api!, 'listMessagePage').mockResolvedValue({ items: [] })
     vi.spyOn(normal.api!, 'listRuns').mockResolvedValue({ items: [] })
     normal.store!.agents.data = [agentFixture()]
     normal.store!.agents.loaded = normal.store!.agents.hasSnapshot = true

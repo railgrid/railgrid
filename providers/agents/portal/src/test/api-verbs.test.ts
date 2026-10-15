@@ -43,6 +43,14 @@ describe('verbs are kube paths', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch })
 
+  it('retains the history cursor and requests 200 messages by default', async () => {
+    const { api, calls } = clientWithRecorder({ items: [{ id: 'm1' }], nextCursor: 'next-page' })
+    expect(await api.listMessagePage('scout', 's1', 'older-page')).toEqual({
+      items: [{ id: 'm1' }], nextCursor: 'next-page',
+    })
+    expect(calls[0].url).toBe(`${KUBE}/agents/scout/messages?session=s1&limit=200&cursor=older-page`)
+  })
+
   it('addresses each verb as a custom subresource on its object', async () => {
     const { api, calls } = clientWithRecorder()
     await api.listSessions('scout')

@@ -1218,7 +1218,7 @@ describe('chat read ownership', () => {
     await settle(4)
 
     const empty = [...view.element.querySelectorAll<HTMLElement>('[role="status"]')]
-      .find(element => text(element).includes('No messages yet'))
+      .find(element => text(element).includes('Start a conversation'))
     expect(empty).not.toBeUndefined()
     expect(empty?.getAttribute('aria-live')).toBe('polite')
   })
@@ -2072,5 +2072,128 @@ describe('conversation model picker', () => {
     await settle()
     expect(el.querySelector('[role="combobox"]')).toBeNull()
     expect(text(el)).not.toContain('default for future turns')
+  })
+})
+
+
+describe('conversation history navigation', () => {
+  const row = (id: string): TranscriptMessage => ({ id, role: 'user', content: id, createdAt: '' })
+  const button = (el: HTMLElement, label: string) => [...el.querySelectorAll<HTMLButtonElement>('button')]
+    .find(item => text(item).includes(label))!
+
+  it('loads cursor pages in order, preserves the viewport, and returns to latest', async () => {
+    const page = vi.fn()
+      .mockResolvedValueOnce({ items: [row('recent')], nextCursor: 'older' })
+      .mockResolvedValueOnce({ items: [row('historical message')], nextCursor: '' })
+    const { el } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1')], listMessagePage: page,
+    })
+    const log = el.querySelector<HTMLElement>('.agents-log')!
+    Object.defineProperties(log, {
+      clientHeight: { value: 200 },
+      scrollHeight: { get: () => text(log).includes('historical message') ? 1200 : 800 },
+    })
+    log.scrollTop = 100
+    button(el, 'Load earlier messages').click()
+    await settle()
+    expect(page).toHaveBeenLastCalledWith('scout', 's1', 'older')
+    expect(log.scrollTop).toBe(500)
+    expect(text(log).indexOf('historical message')).toBeLessThan(text(log).indexOf('recent'))
+    expect(button(el, 'Load earlier messages')).toBeUndefined()
+    const latest = el.querySelector<HTMLButtonElement>('button[aria-label="Return to latest"]')!
+    expect(latest.title).toBe('Return to latest')
+    expect(latest.querySelector('svg')).not.toBeNull()
+    expect(text(latest)).toBe('')
+    latest.click()
+    await settle()
+    expect(log.scrollTop).toBe(log.scrollHeight)
+    expect(el.querySelector('button[aria-label="Return to latest"]')).toBeNull()
+  })
+
+  it.each([false, true])('preserves recovered approvals when a page changes the turn ID: %s', async splitRun => {
+    const run = { id: 'r1', phase: 'PendingApproval', sessionID: 's1', agent: 'scout' }
+    const assistant = (id: string, content: string): TranscriptMessage => ({
+      id, role: 'assistant', content, runID: 'r1', createdAt: '',
+      metadata: { turnPhase: 'commentary', turnStatus: 'running' },
+    })
+    const page = vi.fn()
+      .mockResolvedValueOnce({ items: [assistant('a2', 'Latest progress')], nextCursor: 'older' })
+      .mockResolvedValueOnce({ items: splitRun ? [assistant('a1', 'Earlier progress')] : [row('old')] })
+    const { el } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1')],
+      listMessagePage: page,
+      listRuns: async () => ({ items: [run] }),
+      getRun: async () => ({ ...run, pending: { inboxID: 'i1', kind: 'approval', tool: 'deploy', args: '{}' } }),
+    })
+    expect(button(el, 'Approve')).toBeDefined()
+    button(el, 'Load earlier messages').click()
+    await settle()
+    expect(button(el, 'Approve')).toBeDefined()
+    expect(button(el, 'Deny')).toBeDefined()
+    if (splitRun) expect(text(el)).toContain('Earlier progress')
+    expect(el.querySelectorAll('.agents-msg.assistant')).toHaveLength(1)
+  })
+
+  it('retains new turns when loading history after sending', async () => {
+    const page = vi.fn()
+      .mockResolvedValueOnce({ items: [row('recent')], nextCursor: 'older' })
+      .mockResolvedValueOnce({ items: [row('historical message')] })
+    const { el } = await mountChat(scripted([{ event: 'done', data: { runID: 'r1', content: 'New answer' } }]), {
+      listSessions: async () => [session('s1')], listMessagePage: page,
+    })
+    await send(el, 'New question')
+    button(el, 'Load earlier messages').click()
+    await settle()
+    expect(text(el)).toContain('historical message')
+    expect(text(el)).toContain('New question')
+    expect(text(el)).toContain('New answer')
+  })
+
+  it('ignores older history after switching conversations', async () => {
+    const older = deferred<{ items: TranscriptMessage[] }>()
+    const page = vi.fn()
+      .mockResolvedValueOnce({ items: [row('recent')], nextCursor: 'older' })
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce({ items: [row('other conversation')] })
+    const { el } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1'), session('s2')], listMessagePage: page,
+    })
+    button(el, 'Load earlier messages').click()
+    await settle()
+    await chooseSession(el, 's2')
+    older.resolve({ items: [row('obsolete history')] })
+    await settle()
+    expect(text(el)).toContain('other conversation')
+    expect(text(el)).not.toContain('obsolete history')
+  })
+
+  it('retains the transcript and cursor when an older page fails, then retries', async () => {
+    const page = vi.fn()
+      .mockResolvedValueOnce({ items: [row('recent')], nextCursor: 'older' })
+      .mockRejectedValueOnce(new Error('Offline'))
+      .mockResolvedValueOnce({ items: [row('earlier')] })
+    const { el } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1')], listMessagePage: page,
+    })
+    button(el, 'Load earlier messages').click()
+    await settle()
+    expect(text(el)).toContain('Could not load earlier messages.')
+    expect(text(el)).toContain('recent')
+    button(el, 'Load earlier messages').click()
+    await settle()
+    expect(page).toHaveBeenLastCalledWith('scout', 's1', 'older')
+    expect(text(el)).toContain('earlier')
+    expect(text(el)).not.toContain('Offline')
+  })
+
+  it('puts a starter in the composer without sending', async () => {
+    const stream = vi.fn(scripted([]))
+    const { el } = await mountChat(stream)
+    button(el, 'What can you help me with').click()
+    await settle()
+    const composer = el.querySelector<HTMLTextAreaElement>('textarea')!
+    expect(composer.value).toContain('which tools can you use')
+    expect(document.activeElement).toBe(composer)
+    expect(stream).not.toHaveBeenCalled()
   })
 })
