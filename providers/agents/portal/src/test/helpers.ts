@@ -28,7 +28,7 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     listEdges: empty,
     listInbox: empty,
     listSessions: empty,
-    listMessages: empty,
+    listMessagePage: async () => ({ items: [] }),
     oauthProviders: () => Promise.resolve({ providers: {} }),
     capabilities: () => Promise.resolve({ providers: [] }),
     ...overrides,

@@ -89,7 +89,7 @@ describe('public shell authority rotation', () => {
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
     oldApi.listSessions = vi.fn().mockResolvedValue([])
-    oldApi.listMessages = vi.fn().mockResolvedValue([])
+    oldApi.listMessagePage = vi.fn().mockResolvedValue({ items: [] })
     oldApi.listRuns = vi.fn().mockResolvedValue({ items: [], nextCursor: '' })
     oldApi.chatStream = vi.fn(async function* (_agent, _message, _session, signal) {
       streamSignal = signal

@@ -35,7 +35,9 @@ export default defineConfig({
       '@fontsource/ibm-plex-mono/400.css': `${fontRoot}/@fontsource/ibm-plex-mono/400.css`,
       '@fontsource/ibm-plex-mono/500.css': `${fontRoot}/@fontsource/ibm-plex-mono/500.css`,
       'railgrid-app-main': resolve(repo, 'providers/app-studio/portal/src/main.ts'),
-      'railgrid-agents-main': resolve(repo, 'providers/agents/portal/src/main.ts'),
+      'railgrid-agents-main': resolve(repo, process.env.MODEL_FORM_AGENTS_BUNDLE === '1'
+        ? 'providers/agents/portal/dist/main.js'
+        : 'providers/agents/portal/src/main.ts'),
     },
     dedupe: ['vue'],
   },

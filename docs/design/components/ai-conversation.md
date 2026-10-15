@@ -147,7 +147,11 @@ provides **Back to conversation**. The desktop divider supports pointer and
 keyboard resizing within bounded split percentages. Opening focuses the
 workbench (or its narrow back control), Escape closes it, and closing restores
 focus to the triggering control or visible conversation region. The component
-does not own route state or workbench contents.
+does not own route state or workbench contents. It emits
+`compact-change(compact: boolean)` on initial measurement and when its layout
+changes, accounting for both `mobileBreakpoint` and the measured minimum pane
+widths. Callers can use this event to suppress an automatic workbench open
+without overriding an explicit user open or deep link.
 
 `AIWorkbenchTab` provides the shared `.k-workbench-tab` wrapper and
 `.k-workbench-tab__button` control, including the icon and label layout, ARIA

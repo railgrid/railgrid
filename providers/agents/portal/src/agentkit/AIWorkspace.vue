@@ -47,6 +47,7 @@ const emit = defineEmits<{
   'update:open': [open: boolean]
   close: []
   resize: [split: number]
+  'compact-change': [compact: boolean]
 }>()
 
 ensureAgentUIStyles()
@@ -62,6 +63,7 @@ let pointerID: number | null = null
 let returnFocus: HTMLElement | null = null
 let focusRestorePending = false
 let resizeObserver: ResizeObserver | undefined
+let viewportInitialized = false
 
 const normalizedBounds = computed(() => {
   const min = Math.min(props.minSplit, props.maxSplit)
@@ -115,6 +117,8 @@ function syncViewport(): void {
   const previous = mobileViewport.value
   const next = isMobile()
   mobileViewport.value = next
+  if (!viewportInitialized || previous !== next) emit('compact-change', next)
+  viewportInitialized = true
   // A narrower embedded container can invalidate the split chosen at the
   // previous width. Reconcile it before exposing the new bounds to ARIA or
   // allowing another pointer/keyboard resize.
