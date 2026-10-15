@@ -21,8 +21,11 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/railgrid/provider-app-studio/internal/repositorycreation"
 
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -443,6 +446,9 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 		if view.Message == "" {
 			view.Message = fmt.Sprintf("Repository resource %q failed to reconcile.", ref)
 		}
+	}
+	if attempts, _ := strconv.Atoi(p.Annotations[repositorycreation.AttemptsAnnotation]); view.CanRetryCreation && attempts >= repositorycreation.MaxRetries {
+		view.Message = repositorycreation.LimitMessage
 	}
 	view.Commits, view.commitsErr = projectRepositoryCommits(ctx, list, ref)
 	if view.commitsErr != nil {

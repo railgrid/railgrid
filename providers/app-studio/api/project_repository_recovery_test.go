@@ -14,8 +14,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/railgrid/provider-app-studio/internal/repositorycreation"
 
 	"github.com/gorilla/mux"
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -65,6 +68,7 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, repo := recoveryFixture()
+			p.Annotations = map[string]string{repositorycreation.AttemptsAnnotation: strconv.Itoa(repositorycreation.MaxRetries)}
 			if tc.mutate != nil {
 				tc.mutate(p, repo)
 			}
@@ -79,6 +83,9 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 			})
 			if view.CanRetryCreation != tc.allowed {
 				t.Fatalf("view retryable=%v", view.CanRetryCreation)
+			}
+			if tc.allowed && view.Message != repositorycreation.LimitMessage {
+				t.Fatalf("missing cap guidance: %q", view.Message)
 			}
 			body := `{"connectionRef":"github","retryRepositoryRef":"failed-repo","projectUID":"project-uid"}`
 			call := func() *httptest.ResponseRecorder {
@@ -105,6 +112,9 @@ func TestProjectRepositoryRecovery(t *testing.T) {
 			}
 			if updated.Spec.Repository.RepositoryRef == "failed-repo" || updated.Annotations["ai.railgrid.ai/initialize-repository"] != updated.Spec.Repository.RepositoryRef {
 				t.Fatal("did not reserve new source upload")
+			}
+			if updated.Annotations[repositorycreation.AttemptsAnnotation] != "" {
+				t.Fatal("explicit retry did not reset automatic budget")
 			}
 			old, err := c.Resource(codeRepositoryResource, "").Get(context.Background(), "failed-repo", metav1.GetOptions{})
 			if err != nil {
