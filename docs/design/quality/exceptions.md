@@ -31,3 +31,12 @@ non-color line styles, with an automated light-surface contrast floor; the
 remaining both-theme, color-blind, browser, and assistive-technology review is
 tracked as a [known oddity](known-oddities.md). The exception records the
 boundary, not a promise that the palette is universally accessible.
+
+## Dashboard customization input boundary
+
+By explicit product-owner decision, dashboard tile movement and resizing use
+pointer dragging only. The verbose Move/Make menu actions are intentionally
+removed; there is no keyboard or single-click alternative for those operations.
+Tile removal remains keyboard-operable through the action menu. This is a
+scoped accessibility exception for dashboard arrangement, not a claim of keyboard
+or WCAG conformance and not an exception for other resource actions.
