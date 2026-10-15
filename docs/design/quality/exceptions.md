@@ -37,3 +37,12 @@ The Agents return-to-latest control is an equal-width/height true circle,
 already accepted by the scanner's circle check; it needs no suppressing
 registry entry. This documented exception covers its use as a floating
 conversation control, not a general circular-button recipe.
+
+## Dashboard customization input boundary
+
+By explicit product-owner decision, dashboard tile movement and resizing use
+pointer dragging only. The verbose Move/Make menu actions are intentionally
+removed; there is no keyboard or single-click alternative for those operations.
+Tile removal remains keyboard-operable through the action menu. This is a
+scoped accessibility exception for dashboard arrangement, not a claim of keyboard
+or WCAG conformance and not an exception for other resource actions.

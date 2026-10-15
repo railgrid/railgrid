@@ -205,9 +205,10 @@ describe('public Agents shell routing', () => {
     expect(push).toHaveBeenCalledTimes(1)
     expect(replace).toHaveBeenCalledWith(null, '', '#/create/connection/github')
 
-    buttonWithText(element.querySelector('.agents-conn-form')!, 'connection types').click()
+    buttonWithText(element.querySelector('.agents-conn-form')!, 'Back').click()
     await settleVue()
-    expect(location.hash).toBe('#/create/connection')
+    expect(element.querySelector('.k-wizard-steps [aria-current=step]')?.textContent).toBe('Type')
+    expect(location.hash).toBe('#/create/connection/github')
     expect(push).toHaveBeenCalledTimes(1)
   })
 
