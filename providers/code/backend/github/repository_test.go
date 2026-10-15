@@ -46,7 +46,7 @@ func TestRepositoryCreationIntent(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.Method == "GET" && r.URL.Path == "/api/v3/repos/team/demo":
-					if !tc.exists {
+					if !tc.exists && (!tc.race || posts <= 0) {
 						w.WriteHeader(404)
 						_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
 						return
@@ -76,7 +76,7 @@ func TestRepositoryCreationIntent(t *testing.T) {
 			if (err != nil) != tc.wantError {
 				t.Fatalf("result=%+v error=%v", result, err)
 			}
-			if tc.wantError && tc.exists && !errors.Is(err, backend.ErrRepositoryIdentityConflict) {
+			if tc.wantError && (tc.exists || tc.race) && !errors.Is(err, backend.ErrRepositoryIdentityConflict) {
 				t.Fatalf("collision must expose a recoverable identity conflict: %v", err)
 			}
 			if !tc.wantError && result.RepoID != "42" {

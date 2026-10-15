@@ -177,6 +177,15 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 			created, resp, err = c.Repositories.Create(ctx, "", newRepo)
 		}
 		if err != nil {
+			// Another creator may have taken the name after our GET. Confirm
+			// that collision, but never adopt the winner of the race. Other
+			// validation errors retain their original classification.
+			if repo.Annotations[createOnlyAnnotation] == "true" && resp != nil && resp.StatusCode == http.StatusUnprocessableEntity {
+				remote, _, lookupErr := c.Repositories.Get(ctx, org, repo.Spec.Name)
+				if lookupErr == nil {
+					return backend.RepositoryResult{}, checkRepositoryIdentity(repo, remote)
+				}
+			}
 			return backend.RepositoryResult{}, classify(resp, err)
 		}
 	}

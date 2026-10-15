@@ -12,6 +12,7 @@ package project
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -156,5 +157,125 @@ func TestScopeOf(t *testing.T) {
 	}
 	if scope.OrgUUID != "org-1" || scope.WorkspaceUUID != "ws-1" || scope.ProjectName != "demo" || scope.ProjectUID != "uid-1" {
 		t.Fatalf("scope = %+v", scope)
+	}
+}
+
+func TestEnsureRepositoryRetriesRemoteNameCollisions(t *testing.T) {
+	ctx := context.Background()
+	p := repoProject(false)
+	c := fake.NewClientBuilder().WithScheme(appscheme.NewScheme()).WithObjects(p).Build()
+	r := &Reconciler{}
+	seen := map[string]bool{}
+	// More than one collision must keep progressing, including one on a
+	// generated name. Successful provisioning must stop changing the binding.
+	for attempt := 0; attempt < 3; attempt++ {
+		ref := p.Spec.Repository.RepositoryRef
+		if seen[ref] {
+			t.Fatalf("reused colliding name %q", ref)
+		}
+		seen[ref] = true
+		if _, err := r.ensureRepository(ctx, c, p); err != nil {
+			t.Fatal(err)
+		}
+		repo := &unstructured.Unstructured{}
+		repo.SetGroupVersionKind(repositoryGVK)
+		if err := c.Get(ctx, types.NamespacedName{Name: ref}, repo); err != nil {
+			t.Fatal(err)
+		}
+		repo.SetGeneration(1)
+		repo.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "RepositoryIdentityConflict"}}}
+		if err := c.Update(ctx, repo); err != nil {
+			t.Fatal(err)
+		}
+		before := repo.DeepCopy()
+		if got, err := r.ensureRepository(ctx, c, p); err != nil || got != nil {
+			t.Fatalf("retry: %v %v", got, err)
+		}
+		saved := &aiv1alpha1.Project{}
+		if err := c.Get(ctx, types.NamespacedName{Name: p.Name}, saved); err != nil {
+			t.Fatal(err)
+		}
+		p = saved
+		if p.Spec.Repository.RepositoryRef == ref || p.Spec.Repository.Name != p.Spec.Repository.RepositoryRef || p.Annotations[initializeRepositoryAnnotation] != p.Spec.Repository.RepositoryRef {
+			t.Fatalf("new intent not persisted: %+v", p)
+		}
+		if err := c.Get(ctx, types.NamespacedName{Name: ref}, repo); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(before, repo) {
+			t.Fatal("changed conflicting repository")
+		}
+	}
+	if _, err := r.ensureRepository(ctx, c, p); err != nil {
+		t.Fatal(err)
+	}
+	ref := p.Spec.Repository.RepositoryRef
+	repo := &unstructured.Unstructured{}
+	repo.SetGroupVersionKind(repositoryGVK)
+	if err := c.Get(ctx, types.NamespacedName{Name: ref}, repo); err != nil {
+		t.Fatal(err)
+	}
+	repo.Object["status"] = map[string]any{"repoID": "42", "conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}
+	if err := c.Update(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.ensureRepository(ctx, c, p); err != nil || !repositoryReady(got) {
+		t.Fatalf("ready: %v %v", got, err)
+	}
+	if p.Spec.Repository.RepositoryRef != ref {
+		t.Fatal("renamed confirmed repository")
+	}
+}
+
+func TestEnsureRepositoryDoesNotRetryUnsafeConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*aiv1alpha1.Project, *unstructured.Unstructured)
+	}{
+		{"adopted", func(p *aiv1alpha1.Project, _ *unstructured.Unstructured) { p.Spec.Repository.Adopted = true }},
+		{"confirmed identity", func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
+			r.Object["status"].(map[string]any)["repoID"] = "42"
+		}},
+		{"stale status", func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) { r.SetGeneration(2) }},
+		{"ordinary failure", func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
+			r.Object["status"].(map[string]any)["conditions"] = []any{map[string]any{"type": "Ready", "status": "False", "reason": "EnsureFailed"}}
+		}},
+		{"legacy ownership", func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
+			a := r.GetAnnotations()
+			delete(a, projectRepositoryUIDAnnotation)
+			r.SetAnnotations(a)
+		}},
+		{"legacy intent", func(_ *aiv1alpha1.Project, r *unstructured.Unstructured) {
+			a := r.GetAnnotations()
+			delete(a, "code.railgrid.ai/create-only")
+			r.SetAnnotations(a)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			p := repoProject(false)
+			c := fake.NewClientBuilder().WithScheme(appscheme.NewScheme()).WithObjects(p).Build()
+			r := &Reconciler{}
+			if _, err := r.ensureRepository(ctx, c, p); err != nil {
+				t.Fatal(err)
+			}
+			repo := &unstructured.Unstructured{}
+			repo.SetGroupVersionKind(repositoryGVK)
+			if err := c.Get(ctx, types.NamespacedName{Name: p.Spec.Repository.RepositoryRef}, repo); err != nil {
+				t.Fatal(err)
+			}
+			repo.SetGeneration(1)
+			repo.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "RepositoryIdentityConflict"}}}
+			tc.mutate(p, repo)
+			if err := c.Update(ctx, repo); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := r.ensureRepository(ctx, c, p); err != nil || got == nil {
+				t.Fatalf("got=%v error=%v", got, err)
+			}
+			if p.Spec.Repository.RepositoryRef != "demo-repo" {
+				t.Fatal("changed unsafe binding")
+			}
+		})
 	}
 }

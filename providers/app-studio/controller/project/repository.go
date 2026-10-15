@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -67,6 +69,34 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 		if b.ConnectionRef != "" && connection != b.ConnectionRef {
 			return nil, fmt.Errorf("repository %q uses a different connection", b.RepositoryRef)
 		}
+		if repositoryCreationCollision(p, got) {
+			// Persist the new intent before creating its CR. Optimistic concurrency
+			// prevents two reconcilers from selecting different replacements.
+			// Retain the old CR: an unrecorded remote may exist, and is not ours
+			// to delete or adopt. Each confirmed collision gets another attempt.
+			base := p.Name
+			if len(base) > 50 {
+				base = base[:50]
+			}
+			name := strings.TrimRight(base, "-") + "-" + uuid.NewString()[:12]
+			candidate := &unstructured.Unstructured{}
+			candidate.SetGroupVersionKind(repositoryGVK)
+			if err := c.Get(ctx, types.NamespacedName{Name: name}, candidate); err == nil {
+				return nil, fmt.Errorf("replacement repository %q already exists; retrying", name)
+			} else if !apierrors.IsNotFound(err) {
+				return nil, err
+			}
+			b.RepositoryRef, b.Name = name, name
+			if p.Annotations == nil {
+				p.Annotations = map[string]string{}
+			}
+			p.Annotations[initializeRepositoryAnnotation] = name
+			if err := c.Update(ctx, p); err != nil {
+				return nil, err
+			}
+			// The Project update schedules creation on the next reconciliation.
+			return nil, nil
+		}
 		return got, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -117,6 +147,30 @@ func repositoryReady(repo *unstructured.Unstructured) bool {
 		if t, _ := cm["type"].(string); t == "Ready" {
 			s, _ := cm["status"].(string)
 			return s == "True"
+		}
+	}
+	return false
+}
+
+// Only retry an unconfirmed creation owned by this exact Project incarnation.
+// Identity changes after a successful creation and explicit imports must fail
+// closed, not silently move the project's source to a different repository.
+func repositoryCreationCollision(p *aiv1alpha1.Project, repo *unstructured.Unstructured) bool {
+	if p.Spec.Repository.Adopted || p.UID == "" || p.DeletionTimestamp != nil || repo.GetDeletionTimestamp() != nil ||
+		repo.GetAnnotations()[projectRepositoryUIDAnnotation] != string(p.UID) ||
+		repo.GetAnnotations()["code.railgrid.ai/create-only"] != "true" {
+		return false
+	}
+	id, _, _ := unstructured.NestedString(repo.Object, "status", "repoID")
+	generation, found, _ := unstructured.NestedInt64(repo.Object, "status", "observedGeneration")
+	if id != "" || !found || generation != repo.GetGeneration() {
+		return false
+	}
+	conditions, _, _ := unstructured.NestedSlice(repo.Object, "status", "conditions")
+	for _, condition := range conditions {
+		c, ok := condition.(map[string]any)
+		if ok && c["type"] == "Ready" {
+			return c["status"] == "False" && c["reason"] == "RepositoryIdentityConflict"
 		}
 	}
 	return false
