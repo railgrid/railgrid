@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ActionMenu from '../portalkit/ActionMenu.vue'
 import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { ExternalLink, GitBranch, Link2 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -41,7 +42,7 @@ import {
 const props = defineProps<{ deletions: ResourceDeletions }>()
 const emit = defineEmits<{
   (e: 'open', name: string): void
-  (e: 'create'): void
+  (e: 'create', mode?: 'create' | 'import'): void
   (e: 'create-connection'): void
 }>()
 const deletionScope = 'repository'
@@ -414,9 +415,9 @@ onUnmounted(() => {
         <h2 class="page-title">Repositories</h2>
         <p class="page-meta">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
       </div>
-      <button v-if="!showFirstRun" class="k-btn k-btn--primary" :disabled="!loaded || !connectionsLoaded" @click="emit('create')">
-        New repository
-      </button>
+      <ActionMenu label="Repository options" primary-label="New repository" :disabled="!loaded || !connectionsLoaded"
+        :items="[{ id: 'create', label: 'New repository' }, { id: 'import', label: 'Import repository' }]"
+        @primary="emit('create', 'create')" @select="emit('create', $event === 'import' ? 'import' : 'create')" />
     </header>
 
     <span v-if="connectionsLoading && !connectionsLoaded" class="sr-only" role="status" aria-live="polite">Loading connections…</span>

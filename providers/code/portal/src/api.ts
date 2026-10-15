@@ -912,22 +912,29 @@ export const api = {
     name: string
     connectionRef: string
     repo?: string
+    mode?: 'create' | 'import'
     visibility?: string
     description?: string
     autoInit?: boolean
   }): Promise<Repository> {
     const name = normalizeResourceName(input.name)
+    const remote = (input.repo || input.name).trim()
+    const importing = input.mode === 'import'
+    if (importing && !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(remote)) throw new Error('Enter the repository as owner/repository.')
+    if (!importing && remote.includes('/')) throw new Error('Choose Import existing repository to add owner/repository.')
+    const [owner, repository] = importing ? remote.split('/') : ['', remote]
     const spec: Record<string, unknown> = {
       connectionRef: input.connectionRef,
-      name: input.repo || input.name,
+      name: repository,
     }
-    if (input.visibility) spec.visibility = input.visibility
-    if (input.description) spec.description = input.description
-    if (input.autoInit) spec.autoInit = true
+    if (importing) spec.owner = owner
+    if (!importing && input.visibility) spec.visibility = input.visibility
+    if (!importing && input.description) spec.description = input.description
+    if (!importing && input.autoInit) spec.autoInit = true
     const created = await applyCR({
       apiVersion: `${GROUP}/${VERSION}`,
       kind: 'Repository',
-      metadata: { name },
+      metadata: { name, annotations: { [importing ? 'code.railgrid.ai/existing-only' : 'code.railgrid.ai/create-only']: 'true' } },
       spec,
     })
     return repoFromCR(created)

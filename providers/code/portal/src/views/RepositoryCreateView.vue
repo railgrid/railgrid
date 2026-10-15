@@ -7,10 +7,11 @@ import type { Connection, ErrorResponse, Repository } from '../types'
 import type { ResourceDeletions } from '../refresh'
 import { createFullListReadCoordinator } from '../hybridPagination'
 import { createOperationLocks, operationKey } from '../refresh'
+import FormSelect from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { toast } from '../portalkit/toast'
 
-const props = defineProps<{ deletions: ResourceDeletions }>()
+const props = defineProps<{ deletions: ResourceDeletions; mode?: 'create' | 'import' }>()
 const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'created', name: string): void
@@ -28,15 +29,18 @@ const connectionsError = ref<string | null>(null)
 
 const name = ref('')
 const repo = ref('')
+const mode = computed(() => props.mode || 'create')
+const importing = computed(() => mode.value === 'import')
 const connectionRef = ref('')
 const visibility = ref('private')
 const description = ref('')
 const autoInit = ref(true)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
-type RepositoryField = 'connection' | 'name'
+type RepositoryField = 'connection' | 'name' | 'repo'
 const fieldErrors = ref<Partial<Record<RepositoryField, string>>>({})
-const connectionInput = ref<HTMLSelectElement | null>(null)
+const connectionInput = ref<{ focus: () => void } | null>(null)
+const repoInput = ref<HTMLInputElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const contextGeneration = inject(contextGenerationKey, ref(0))
 
@@ -52,23 +56,33 @@ const connectionChoices = computed(() => connections.value.filter(connection => 
 )))
 const guidanceValues = computed(() => {
   const objectName = name.value.trim() ? normalizeResourceName(name.value) : ''
+  const owner = connectionChoices.value.find(connection => connection.name === connectionRef.value)?.owner
+  const remoteName = repo.value.trim() || name.value.trim()
+  const remoteRepository = importing.value
+    ? repo.value.trim()
+    : owner && remoteName ? `${owner}/${remoteName}` : ''
   return [
-    { label: 'Railgrid object', value: objectName || 'Not entered yet', technical: true },
-    { label: 'GitHub repository', value: repo.value.trim() || objectName || 'Not entered yet', technical: true },
+    { label: 'Name in Railgrid', value: objectName || 'Not entered yet', technical: true },
+    { label: 'GitHub repository', value: remoteRepository || 'Not entered yet', technical: true },
     { label: 'Connection', value: connectionRef.value || 'Not selected yet', technical: true },
-    { label: 'Visibility', value: visibility.value, technical: true },
-    { label: 'Initial content', value: autoInit.value ? 'README' : 'Empty repository' },
+    ...(!importing.value ? [{ label: 'Visibility', value: visibility.value, technical: true },
+    { label: 'Initial content', value: autoInit.value ? 'README' : 'Empty repository' }] : []),
   ]
 })
-const guidancePrerequisites = [
-  'An active GitHub connection in this workspace that is not being deleted.',
-  'Permission for that connection to create repositories for its configured owner.',
-]
-const guidanceNextSteps = [
-  'Railgrid creates the repository through the selected connection and records its remote URL.',
-  'The repository controller reports readiness independently after GitHub accepts the request.',
-  'Add deploy keys and collaborators from the repository detail page after creation.',
-]
+const guidancePrerequisites = computed(() => importing.value ? [
+  'A GitHub connection with access to the repository you want to import.',
+] : [
+  'A GitHub connection in this workspace.',
+  'Permission to create repositories under the connection’s GitHub account or organization.',
+])
+const guidanceNextSteps = computed(() => importing.value ? [
+  'Check the repository detail page for import status and any access errors.',
+  'Removing the imported repository from Railgrid keeps it on GitHub.',
+] : [
+  'Railgrid asks GitHub to create the repository under the connection’s account or organization.',
+  'Check the repository detail page for creation status and any errors.',
+  'Once the repository is ready, you can add deploy keys and collaborators.',
+])
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
@@ -95,7 +109,7 @@ function clearFieldError(field: RepositoryField): void {
 }
 
 function focusField(field: RepositoryField): void {
-  void nextTick(() => (field === 'connection' ? connectionInput.value : nameInput.value)?.focus?.())
+  void nextTick(() => (field === 'connection' ? connectionInput.value : field === 'repo' ? repoInput.value : nameInput.value)?.focus?.())
 }
 
 function setFieldError(field: RepositoryField, message: string): void {
@@ -105,10 +119,12 @@ function setFieldError(field: RepositoryField, message: string): void {
 
 function validateFields(): boolean {
   const errors: Partial<Record<RepositoryField, string>> = {}
-  if (!connectionRef.value) errors.connection = 'Select an active connection.'
-  if (!name.value.trim()) errors.name = 'Enter an object name.'
+  if (!connectionRef.value) errors.connection = 'Select a GitHub connection.'
+  if (!name.value.trim()) errors.name = 'Enter a name for this repository in Railgrid.'
+  if (importing.value && !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo.value.trim())) errors.repo = 'Enter the owner and repository, for example acme/my-service.'
+  if (!importing.value && repo.value.includes('/')) errors.repo = 'Enter only the repository name. To add an existing repository, go back and choose Import repository.'
   fieldErrors.value = errors
-  const first = (['connection', 'name'] as const).find(field => errors[field])
+  const first = (['connection', 'name', 'repo'] as const).find(field => errors[field])
   if (first) focusField(first)
   return !first
 }
@@ -180,18 +196,19 @@ async function submit(): Promise<void> {
   const expectedContext = contextGeneration.value
   formError.value = null
   if (!repositoryLoaded.value || !connectionsLoaded.value) {
-    formError.value = 'Repository data is still loading. Retry failed reads before creating a repository.'
+    formError.value = 'Wait for repositories and connections to load. If loading failed, use the retry buttons above.'
     return
   }
   if (!validateFields()) return
   if (!connectionChoices.value.some(connection => connection.name === connectionRef.value)) {
-    setFieldError('connection', 'Select an active connection before creating a repository.')
+    setFieldError('connection', 'Select an available GitHub connection to continue.')
     return
   }
   const payload = {
     name: name.value,
     connectionRef: connectionRef.value,
-    repo: repo.value || undefined,
+    repo: repo.value.trim() || undefined,
+    mode: mode.value as 'create' | 'import',
     visibility: visibility.value,
     description: description.value || undefined,
     autoInit: autoInit.value,
@@ -220,15 +237,15 @@ async function submit(): Promise<void> {
     connectionsError.value = null
     const existing = allRepositories.find(repository => normalizeResourceName(repository.name) === desiredName)
     if (existing && (existing.deletionTimestamp || props.deletions.has('repository', existing.name, existing.uid))) {
-      setFieldError('name', `Repository "${existing.name}" is still deleting. Wait for it to disappear before recreating it.`)
+      setFieldError('name', `Repository "${existing.name}" is still deleting. Wait for deletion to finish before using this name again.`)
       return
     }
     if (existing) {
-      setFieldError('name', `Repository "${existing.name}" already exists.`)
+      setFieldError('name', `The name "${existing.name}" is already used in this workspace. Choose a different name in Railgrid.`)
       return
     }
     if (props.deletions.has('repository', desiredName)) {
-      setFieldError('name', `Repository "${desiredName}" is still deleting. Wait for it to disappear before recreating it.`)
+      setFieldError('name', `Repository "${desiredName}" is still deleting. Wait for deletion to finish before using this name again.`)
       return
     }
     const currentConnection = currentConnections.find(connection => connection.name === payload.connectionRef)
@@ -239,7 +256,7 @@ async function submit(): Promise<void> {
     if (!isCurrentMutation(generation, expectedContext)) return
     const created = await api.createRepository(payload)
     if (!isCurrentMutation(generation, expectedContext)) return
-    toast('info', `Repository creation requested for ${created.name}.`)
+    toast('info', `Repository ${payload.mode === 'import' ? 'import' : 'creation'} requested for ${created.name}.`)
     emit('created', created.name)
   } catch (e) {
     if (isCurrentMutation(generation, expectedContext)) formError.value = errMessage(e)
@@ -273,54 +290,65 @@ onUnmounted(() => {
       <ArrowLeft :size="14" aria-hidden="true" /> Repositories
     </button>
     <header class="k-create-header">
-      <h2 class="k-create-title">Create repository</h2>
-      <p class="k-create-description">Create a repository through one of your active GitHub connections. Deploy keys and collaborators stay managed on the repository detail page.</p>
+      <h2 class="k-create-title">{{ importing ? 'Import repository' : 'Create repository' }}</h2>
+      <p class="k-create-description">{{ importing ? 'Add an existing GitHub repository to this workspace. Importing leaves its code and settings unchanged.' : 'Create a GitHub repository under the account or organization linked to your connection.' }}</p>
     </header>
 
     <div v-if="(repositoryLoading && !repositoryLoaded) || (connectionsLoading && !connectionsLoaded)" class="panel k-card" role="status" aria-live="polite">
-      Loading repository creation data…
+      Loading repositories and connections…
     </div>
     <div v-if="repositoryError" class="error read-error" role="alert" aria-live="assertive">
       <span>{{ repositoryError }}</span>
       <button class="k-btn k-btn--ghost" type="button" @click="loadRepositories(true)">Retry repositories</button>
     </div>
     <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span>
+      <span>{{ connectionsLoaded ? 'Showing the last loaded connections. ' : '' }}{{ connectionsError }}</span>
       <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
     </div>
     <div v-if="connectionsLoaded && !connectionChoices.length" class="panel k-card">
-      <p class="empty">Add an active connection first, then create repositories under it.</p>
-      <button class="k-btn k-btn--ghost" type="button" @click="emit('create-connection')">Create connection</button>
+      <p class="empty">Add a GitHub connection before creating or importing a repository.</p>
+      <button class="k-btn k-btn--ghost" type="button" @click="emit('create-connection')">Add connection</button>
     </div>
 
     <form class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
-          <label class="field" for="code-repository-connection">
-            <span class="field-label">Connection</span>
-            <select id="code-repository-connection" ref="connectionInput" v-model="connectionRef" class="k-input" :disabled="connectionsLoading && !connectionsLoaded" required aria-required="true" :aria-invalid="fieldErrors.connection ? 'true' : undefined" :aria-describedby="fieldErrors.connection ? 'code-repository-connection-error' : undefined" @change="clearFieldError('connection')">
-              <option v-for="connection in connectionChoices" :key="connection.name" :value="connection.name">{{ connection.name }} ({{ connection.owner }})</option>
-            </select>
+          <div class="field">
+            <label id="code-repository-connection-label" class="field-label" for="code-repository-connection">Connection</label>
+            <FormSelect
+              id="code-repository-connection"
+              ref="connectionInput"
+              v-model="connectionRef"
+              :options="connectionChoices.map(connection => ({ value: connection.name, label: `${connection.name} (${connection.owner})` }))"
+              :disabled="connectionsLoading && !connectionsLoaded"
+              required
+              :invalid="!!fieldErrors.connection"
+              labelledby="code-repository-connection-label"
+              :describedby="fieldErrors.connection ? 'code-repository-connection-error' : undefined"
+              @update:model-value="clearFieldError('connection')"
+            />
             <span v-if="fieldErrors.connection" id="code-repository-connection-error" class="error" role="alert">{{ fieldErrors.connection }}</span>
-          </label>
-          <label class="field" for="code-repository-name"><span class="field-label">Object name</span><input id="code-repository-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-service" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-repository-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-repository-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
-          <label class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" class="k-input" placeholder="my-service" autocomplete="off" /></label>
-          <label class="field">
-            <span class="field-label">Visibility</span>
-            <select v-model="visibility" class="k-input">
-              <option value="private">private</option>
-              <option value="public">public</option>
-              <option value="internal">internal</option>
-            </select>
-          </label>
-          <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
-          <label class="field field-check k-checkbox-hit"><input v-model="autoInit" class="k-checkbox" type="checkbox" /> Initialize with a README</label>
+          </div>
+          <label class="field" for="code-repository-name"><span class="field-label">Name in Railgrid</span><input id="code-repository-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-service" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-repository-name-error code-repository-name-hint' : 'code-repository-name-hint'" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-repository-name-error" class="error" role="alert">{{ fieldErrors.name }}</span><span id="code-repository-name-hint" class="k-create-description">A unique name for this repository in this workspace. It can differ from the GitHub name.</span></label>
+          <label class="field" for="code-repository-remote"><span class="field-label">{{ importing ? 'GitHub repository' : 'GitHub repository name (optional)' }}</span><input id="code-repository-remote" ref="repoInput" v-model="repo" class="k-input" :placeholder="importing ? 'owner/repository' : 'my-service'" autocomplete="off" :required="importing" :aria-required="importing || undefined" :aria-invalid="fieldErrors.repo ? 'true' : undefined" :aria-describedby="fieldErrors.repo ? 'code-repository-remote-error' : 'code-repository-remote-hint'" @input="clearFieldError('repo')" /><span v-if="fieldErrors.repo" id="code-repository-remote-error" class="error" role="alert">{{ fieldErrors.repo }}</span><span v-else id="code-repository-remote-hint" class="k-create-description">{{ importing ? 'Enter owner/repository, for example acme/my-service. Use the repository’s owner, even if the connection belongs to another account.' : 'Leave blank to use the name in Railgrid. Enter only the repository name; the connection supplies the owner.' }}</span></label>
+          <div v-if="!importing" class="field">
+            <label id="code-repository-visibility-label" class="field-label" for="code-repository-visibility">Visibility</label>
+            <FormSelect
+              id="code-repository-visibility"
+              v-model="visibility"
+              :options="[{ value: 'private', label: 'Private' }, { value: 'public', label: 'Public' }, { value: 'internal', label: 'Internal' }]"
+              labelledby="code-repository-visibility-label"
+            />
+          </div>
+          <label v-if="!importing" class="field"><span class="field-label">Description (optional)</span><input v-model="description" class="k-input" autocomplete="off" /></label>
+          <label v-if="!importing" class="field field-check k-checkbox-hit"><input v-model="autoInit" class="k-checkbox" type="checkbox" /> Add a README</label>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
-          <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating repository…</span>
+          <span v-if="submitting" class="sr-only" role="status" aria-live="polite">{{ importing ? 'Requesting repository import…' : 'Requesting repository creation…' }}</span>
         </div>
         <CreateGuidance
-          title="Define the GitHub repository"
-          description="Choose the workspace identity and remote repository settings Railgrid will manage."
+          title="Review repository details"
+          :description="importing ? 'Confirm the GitHub repository and connection before importing.' : 'Confirm where the repository will be created and its initial settings.'"
+          :values-heading="importing ? 'What Railgrid will register' : 'What Railgrid will create'"
           :prerequisites="guidancePrerequisites"
           :values="guidanceValues"
           :next-steps="guidanceNextSteps"
@@ -328,7 +356,7 @@ onUnmounted(() => {
       </div>
       <div class="k-create-actions">
         <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>
-        <button class="k-btn k-btn--primary" type="submit" :disabled="submitting || !connectionChoices.length">{{ submitting ? 'Creating…' : 'Create repository' }}</button>
+        <button class="k-btn k-btn--primary" type="submit" :disabled="submitting || !connectionChoices.length">{{ submitting ? (importing ? 'Importing…' : 'Creating…') : (importing ? 'Import repository' : 'Create repository') }}</button>
       </div>
     </form>
   </section>

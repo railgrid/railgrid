@@ -166,10 +166,10 @@ function navigate(path: string, options: { replace?: boolean } = {}) {
 function startRepositoryConnection(): void {
   const expectedPath = 'create/connection/token'
   const tenantKey = journeyTenantKey()
-  prerequisiteReturnPath.value = 'create/repository'
+  prerequisiteReturnPath.value = route.value.create?.resource === 'repository' && route.value.create.mode === 'import' ? 'import/repository' : 'create/repository'
   prerequisiteExpectedPath.value = expectedPath
   prerequisiteTenantKey.value = tenantKey
-  if (tenantKey) writeCodeReturnIntent(journeyStorage, tenantKey, 'create/repository', expectedPath)
+  if (tenantKey) writeCodeReturnIntent(journeyStorage, tenantKey, prerequisiteReturnPath.value, expectedPath)
   dispatchNavigation(expectedPath)
 }
 
@@ -225,7 +225,8 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
         />
         <RepositoryCreateView
           v-if="route.create?.resource === 'repository'"
-          :key="`${viewGeneration}:create-repository`"
+          :key="`${viewGeneration}:create-repository:${route.create.mode || 'create'}`"
+          :mode="route.create.mode || 'create'"
           :deletions="deletions"
           @cancel="navigate('repositories', { replace: true })"
           @created="(n: string) => navigate('repositories/' + encodeURIComponent(n), { replace: true })"
@@ -253,7 +254,7 @@ function completeConnectionPrerequisite(success: boolean, connectionName?: strin
             :key="`${viewGeneration}:repositories`"
             :deletions="deletions"
             @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))"
-            @create="navigate('create/repository')"
+            @create="(mode?: string) => navigate(mode === 'import' ? 'import/repository' : 'create/repository')"
             @create-connection="startRepositoryConnection"
           />
         </KeepAlive>

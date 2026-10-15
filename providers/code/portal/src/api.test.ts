@@ -696,3 +696,37 @@ describe('connect', () => {
     })
   })
 })
+
+describe('repository registration', () => {
+  it('imports an organization repository with an explicit owner and retention annotation', async () => {
+    setAPIContext({ tenant: 'import-repo', token: 'test-token' })
+    const calls = stubFetch(call => { const body = call.body as { metadata: object }; return response({ ...body, metadata: { ...body.metadata, uid: 'repo-uid' } }) })
+    await api.createRepository({ name: 'providers', connectionRef: 'railgrid-providers', repo: ' railgrid/providers ', mode: 'import', visibility: 'private', autoInit: true })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].body).toMatchObject({
+      metadata: { name: 'providers', annotations: { 'code.railgrid.ai/existing-only': 'true' } },
+      spec: { connectionRef: 'railgrid-providers', owner: 'railgrid', name: 'providers' },
+    })
+    expect((calls[0].body as { spec: unknown }).spec).not.toHaveProperty('autoInit')
+    expect((calls[0].body as { spec: unknown }).spec).not.toHaveProperty('visibility')
+  })
+
+  it('rejects ambiguous paths before making a request', async () => {
+    const calls = stubFetch(() => response({}))
+    for (const repo of ['providers', 'cwilhit/railgrid/providers', 'https://github.com/railgrid/providers']) {
+      await expect(api.createRepository({ name: 'providers', connectionRef: 'pat', repo, mode: 'import' })).rejects.toThrow('owner/repository')
+    }
+    await expect(api.createRepository({ name: 'providers', connectionRef: 'pat', repo: 'railgrid/providers' })).rejects.toThrow('Import existing')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('marks new repositories create-only so a collision cannot adopt or delete an existing remote', async () => {
+    setAPIContext({ tenant: 'create-repo', token: 'test-token' })
+    const calls = stubFetch(call => { const body = call.body as { metadata: object }; return response({ ...body, metadata: { ...body.metadata, uid: 'repo-uid' } }) })
+    await api.createRepository({ name: 'new-repo', connectionRef: 'pat', autoInit: true })
+    expect(calls[0].body).toMatchObject({
+      metadata: { annotations: { 'code.railgrid.ai/create-only': 'true' } },
+      spec: { name: 'new-repo', autoInit: true },
+    })
+  })
+})
