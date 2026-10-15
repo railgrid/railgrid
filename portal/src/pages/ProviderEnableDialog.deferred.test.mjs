@@ -47,6 +47,7 @@ const computed = (getter) => ({ get value() { return getter() } })
 const watch = () => {}
 const onMounted = () => {}
 const defineEmits = () => () => {}
+const defineProps = () => ({ startAtGoal: false })
 const AlertCircle = {}
 const AlertTriangle = {}
 const ArrowLeft = {}
@@ -115,6 +116,8 @@ const tenantStore = { orgUUID: 'org-a', workspaceUUID: 'workspace-a', workspaceM
 const useProvidersStore = () => providerStore
 const useOrgProvidersStore = () => orgProviderStore
 const useTenantStore = () => tenantStore
+const authStore = { user: { userId: 'alice', email: '' }, self: null }
+const useAuthStore = () => authStore
 ${sourceWithoutImports}
 export {
   actionError,
@@ -125,7 +128,9 @@ export {
   onDialogConfirm,
   providerStore,
   tenantStore,
+  authStore,
   toastCalls,
+  ${fileName.includes('WelcomeWizard') ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, canSkipSetup, explore, exploring,' : ''}
 }
 `
   const { outputText } = ts.transpileModule(harness, {
@@ -192,3 +197,264 @@ for (const [index, caller] of callers.entries()) {
     caller.dialogProvider.value = null
   })
 }
+
+
+test('WelcomeWizard orders transitive dependencies and tolerates missing and cyclic catalogs', () => {
+  const caller = callers[1]
+  const items = [
+    { name: 'app-studio', requires: [{ provider: 'code' }, { provider: 'infrastructure' }] },
+    { name: 'code', requires: [{ provider: 'edges' }] },
+    { name: 'edges', requires: [{ provider: 'code' }] },
+  ]
+  caller.providerStore.byName = name => items.find(p => p.name === name)
+  caller.goal.value = 'app-studio'
+  assert.deepEqual(caller.plan.value.map(p => p.name), ['edges', 'code', 'infrastructure', 'app-studio'])
+  assert.equal(caller.plan.value[2].provider, undefined)
+})
+
+test('WelcomeWizard only opens an enabled, ready Provider with UI and satisfied dependencies', () => {
+  const caller = callers[1]
+  const provider = { name: 'edges', ready: false, serving: { ui: {} } }
+  caller.providerStore.byName = () => provider
+  caller.goal.value = 'edges'
+  caller.providerStore.isEnabled = () => true
+  assert.equal(caller.canOpen.value, false)
+  provider.ready = true
+  assert.equal(caller.canOpen.value, true)
+  caller.providerStore.hasMissingDependencies = () => true
+  assert.equal(caller.canOpen.value, false)
+  caller.providerStore.hasMissingDependencies = () => false
+  provider.serving = {}
+  assert.equal(caller.canOpen.value, false)
+  provider.serving = { ui: {} }
+  caller.providerStore.isEnabled = () => false
+  assert.equal(caller.canOpen.value, false)
+})
+
+test('WelcomeWizard restores valid choices per Workspace and ignores corrupt preferences', () => {
+  const caller = callers[1]
+  const storage = new Map()
+  const oldStorage = globalThis.localStorage
+  globalThis.localStorage = { getItem: key => storage.get(key) ?? null }
+  try {
+    storage.set(caller.storageKey.value, JSON.stringify({ audience: 'personal', goal: 'edges', goalExplicit: true, step: 2 }))
+    caller.restore()
+    assert.equal(caller.audience.value, 'personal')
+    assert.equal(caller.goal.value, 'edges')
+    assert.equal(caller.goalExplicit.value, true)
+    assert.equal(caller.step.value, 2)
+    caller.tenantStore.workspaceUUID = 'workspace-b'
+    caller.restore()
+    assert.equal(caller.step.value, 0)
+    assert.equal(caller.goal.value, 'edges')
+    assert.equal(caller.goalExplicit.value, false)
+    storage.set(caller.storageKey.value, JSON.stringify({ audience: 'personal', goal: 'edges', step: 1 }))
+    caller.restore()
+    assert.equal(caller.goal.value, 'edges')
+    assert.equal(caller.goalExplicit.value, true)
+    storage.set(caller.storageKey.value, '{broken')
+    assert.doesNotThrow(() => caller.restore())
+    storage.set(caller.storageKey.value, JSON.stringify({ audience: 'unknown', goal: 'edges', step: 2 }))
+    caller.restore()
+    assert.equal(caller.step.value, 0)
+  } finally {
+    globalThis.localStorage = oldStorage
+    caller.tenantStore.workspaceUUID = 'workspace-a'
+  }
+})
+
+test('WelcomeWizard follows the audience default until a goal is explicitly chosen', () => {
+  const caller = callers[1]
+  caller.audience.value = 'team'
+  caller.goal.value = 'edges'
+  caller.goalExplicit.value = false
+
+  caller.selectAudience('personal')
+  assert.equal(caller.goal.value, 'app-studio')
+  caller.selectAudience('explore')
+  assert.equal(caller.goal.value, 'agents')
+
+  caller.goal.value = 'infrastructure'
+  caller.goalExplicit.value = true
+  caller.selectAudience('team')
+  assert.equal(caller.goal.value, 'infrastructure')
+})
+
+test('WelcomeWizard persists whether the selected goal is intentional', () => {
+  const caller = callers[1]
+  const storage = new Map()
+  const oldStorage = globalThis.localStorage
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  }
+  try {
+    caller.audience.value = 'personal'
+    caller.goal.value = 'edges'
+    caller.goalExplicit.value = true
+    caller.step.value = 1
+    caller.persist()
+    assert.deepEqual(JSON.parse(storage.get(caller.storageKey.value)), {
+      step: 1,
+      audience: 'personal',
+      goal: 'edges',
+      goalExplicit: true,
+    })
+  } finally {
+    globalThis.localStorage = oldStorage
+  }
+})
+
+test('WelcomeWizard forwards accepted compositions to the provider enable request', async () => {
+  const caller = callers[1]
+  const provider = { name: 'app-studio', displayName: 'App Studio', requires: [] }
+  const acceptedClaims = [{ group: 'apps.railgrid.ai', resource: 'projects' }]
+  const acceptedHubAccess = [{ capability: 'provider-proxy', scope: 'workspace' }]
+  const acceptedCompositions = [{ provider: 'code', group: 'code.railgrid.ai', resource: 'repositories' }]
+  const calls = []
+  caller.providerStore.enable = async (...args) => calls.push(args)
+  caller.dialogProvider.value = provider
+  caller.dialogRevision.value += 1
+
+  await caller.onDialogConfirm(acceptedClaims, acceptedHubAccess, acceptedCompositions)
+
+  assert.deepEqual(calls, [[provider, acceptedClaims, acceptedHubAccess, acceptedCompositions]])
+  assert.equal(caller.dialogProvider.value, null)
+})
+
+
+test('WelcomeWizard exploration continues without choosing or enabling a Provider', () => {
+  const caller = callers[1]
+  caller.goalExplicit.value = true
+  caller.goal.value = 'app-studio'
+  caller.step.value = 1
+  caller.explore()
+  assert.equal(caller.step.value, 2)
+  assert.equal(caller.goal.value, 'explore')
+  assert.equal(caller.exploring.value, true)
+  assert.deepEqual(caller.plan.value, [])
+  const oldStorage = globalThis.localStorage
+  globalThis.localStorage = { getItem: () => JSON.stringify({ audience: 'explore', goal: 'explore', step: 2 }) }
+  try {
+    caller.restore()
+    assert.equal(caller.step.value, 2)
+    assert.equal(caller.exploring.value, true)
+  } finally { globalThis.localStorage = oldStorage }
+})
+
+
+test('manual onboarding re-entry opens goals while automatic entry resumes the saved step', () => {
+  const caller = callers[1]
+  const oldStorage = globalThis.localStorage
+  globalThis.localStorage = {
+    getItem: () => JSON.stringify({ audience: 'personal', goal: 'agents', goalExplicit: true, step: 2 }),
+  }
+  try {
+    caller.props.startAtGoal = true
+    caller.restore()
+    assert.equal(caller.step.value, 1)
+    assert.equal(caller.audience.value, 'personal')
+    assert.equal(caller.goal.value, 'agents')
+    caller.props.startAtGoal = false
+    caller.restore()
+    assert.equal(caller.step.value, 2)
+    assert.equal(caller.goal.value, 'agents')
+    globalThis.localStorage.getItem = () => null
+    caller.restore()
+    assert.equal(caller.step.value, 0, 'new automatic entry starts with context')
+    caller.props.startAtGoal = true
+    caller.restore()
+    assert.equal(caller.step.value, 1, 'explicit entry without storage still opens goals')
+  } finally {
+    caller.props.startAtGoal = false
+    globalThis.localStorage = oldStorage
+  }
+})
+
+
+test('only members with current, fully ready prerequisites can bypass setup', () => {
+  const caller = callers[1]
+  const store = caller.providerStore
+  const tenant = caller.tenantStore
+  const beforeStore = { ...store }
+  const beforeTenant = { ...tenant }
+  const items = [
+    { name: 'app-studio', ready: true, serving: { ui: {} }, requires: [{ provider: 'code' }] },
+    { name: 'code', ready: true, requires: [{ provider: 'infrastructure' }] },
+    { name: 'infrastructure', ready: true },
+  ]
+  try {
+    Object.assign(tenant, { activeOrg: { role: 'member' }, activeWorkspace: { role: 'member' } })
+    Object.assign(store, {
+      loaded: true, loading: false, error: null, catalogOrgUUID: tenant.orgUUID,
+      bindingsOrgUUID: tenant.orgUUID, bindingsWorkspace: tenant.workspaceUUID,
+      bindingsLoadState: 'ready', bindingsStale: false,
+      byName: name => items.find(item => item.name === name),
+      isEnabled: () => true, hasMissingDependencies: () => false,
+    })
+    caller.goal.value = 'app-studio'
+    caller.audience.value = 'personal'
+    assert.equal(caller.canSkipSetup.value, true)
+    caller.audience.value = 'team'
+    assert.equal(caller.canSkipSetup.value, false, 'team setup keeps its review even for members')
+    caller.audience.value = 'personal'
+    tenant.activeOrg.role = 'admin'
+    assert.equal(caller.canSkipSetup.value, false)
+    tenant.activeOrg.role = 'member'
+    tenant.activeWorkspace.role = 'admin'
+    assert.equal(caller.canSkipSetup.value, false)
+    tenant.activeWorkspace.role = 'member'
+    store.isEnabled = name => name !== 'infrastructure'
+    assert.equal(caller.canSkipSetup.value, false, 'transitive requirements must be enabled')
+    assert.equal(caller.setupReady.value, false, 'final launch also needs transitive prerequisites')
+    store.isEnabled = () => true
+    items[2].ready = false
+    assert.equal(caller.canSkipSetup.value, false, 'transitive requirements must be ready')
+    items[2].ready = true
+    for (const [key, value] of [['loading', true], ['bindingsStale', true], ['bindingsLoadState', 'error'], ['bindingsWorkspace', 'another-workspace'], ['catalogOrgUUID', 'another-org']]) {
+      const previous = store[key]
+      store[key] = value
+      assert.equal(caller.canSkipSetup.value, false, key)
+      assert.equal(caller.setupReady.value, false, 'final launch: ' + key)
+      store[key] = previous
+    }
+    items[0].serving = {}
+    assert.equal(caller.canSkipSetup.value, false, 'a web UI must exist')
+  } finally {
+    Object.assign(store, beforeStore)
+    Object.assign(tenant, beforeTenant)
+  }
+})
+
+
+test('wizard progress is isolated between accounts in the same Workspace', () => {
+  const caller = callers[1]
+  const original = globalThis.localStorage
+  const saved = new Map()
+  globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) }
+  try {
+    caller.authStore.user.userId = 'alice'
+    caller.audience.value = 'personal'
+    caller.goal.value = 'app-studio'
+    caller.goalExplicit.value = true
+    caller.step.value = 2
+    caller.persist()
+    const aliceKey = caller.storageKey.value
+    caller.authStore.user.userId = 'bob'
+    assert.notEqual(caller.storageKey.value, aliceKey)
+    caller.restore()
+    assert.equal(caller.step.value, 0)
+    assert.equal(caller.audience.value, 'team')
+    caller.authStore.user.userId = 'alice'
+    caller.restore()
+    assert.equal(caller.step.value, 2)
+    assert.equal(caller.audience.value, 'personal')
+    caller.authStore.user.userId = ''
+    assert.equal(caller.storageKey.value, '')
+    caller.persist()
+    assert.equal(saved.has(''), false)
+  } finally {
+    caller.authStore.user.userId = 'alice'
+    globalThis.localStorage = original
+  }
+})

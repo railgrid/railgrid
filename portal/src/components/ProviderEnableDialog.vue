@@ -75,15 +75,24 @@ function canAcceptComposition(): boolean {
   return props.workspaceRole === 'admin' || props.orgRole === 'admin'
 }
 
-// A composition that can only read is described as reading. Anything else
-// creates or changes objects, and says so — including a "<resource>/<verb>"
-// coordinate, which carries no verb list because the call IS the capability.
-function compositionLabel(c: CompositionOption): string {
-  const readOnly = c.verbs.length > 0 && c.verbs.every((v) => v === 'get' || v === 'list' || v === 'watch')
-  const kind = c.resource.charAt(0).toUpperCase() + c.resource.slice(1)
-  return readOnly
-    ? `Read ${kind} (${c.provider}) in this workspace`
-    : `Create and manage ${kind} (${c.provider}) in this workspace`
+// Put a plain-language operation first while keeping the API coordinate and
+// raw verbs visible below it for people who need the technical detail.
+function accessLabel(resource: string, verbs: string[]): string {
+  if (!verbs.length && resource.includes('/')) {
+    return `Run ${resource.slice(resource.lastIndexOf('/') + 1)} on ${resource.slice(0, resource.lastIndexOf('/'))}`
+  }
+  if (!verbs.length) return `Access ${resource}`
+  const labels: Record<string, string> = {
+    get: 'Read',
+    list: 'List',
+    watch: 'Watch for changes',
+    create: 'Create',
+    update: 'Replace',
+    patch: 'Edit',
+    delete: 'Delete',
+    deletecollection: 'Delete all',
+  }
+  return `${verbs.map((verb) => labels[verb] ?? verb).join(', ')}: ${resource}`
 }
 
 // What to print for a requirement's verbs. A "<resource>/<verb>" coordinate
@@ -115,11 +124,21 @@ function hubLabel(h: HubAccessRequest): string {
       return "Read this workspace's member list"
     case 'memberships.invite/org':
       return h.allowInvite
-        ? 'Add people to your organization as members, inviting them by email'
+        ? 'Add people to your organization as members (invite new users by email)'
         : 'Add existing users to your organization as members'
+    case 'app-auth.users.resolve/workspace':
+      return 'Find existing user accounts in this workspace'
+    case 'app-access.grants.manage/workspace':
+      return 'Manage app access grants in this workspace'
     default:
-      return `${h.capability} (${h.scope})`
+      return `${h.capability} (${h.scope === 'org' ? 'organization' : 'workspace'})`
   }
+}
+
+function hubAdminHint(h: HubAccessRequest): string {
+  return h.scope === 'org'
+    ? 'You can enable this Provider, but existing access choices stay unchanged. Only an organization admin can change this request.'
+    : 'You can enable this Provider, but existing access choices stay unchanged. A workspace or organization admin can change this request.'
 }
 
 watch(
@@ -285,7 +304,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <div>
           <h2 id="provider-enable-title" class="text-sm font-semibold text-text-primary">Enable {{ provider.displayName }}</h2>
           <p id="provider-enable-description" class="mt-0.5 text-[11px] text-text-muted">
-            Review what this provider will be able to access in your workspace.
+            Review the access this Provider requests before enabling it.
           </p>
         </div>
         <button ref="closeButton" type="button" class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-primary" :aria-label="dismissLabel" :title="dismissTitle" @click="$emit('cancel')">
@@ -308,12 +327,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <!-- Nothing at all under requires[]: no platform claim and no
              composition. A provider with compositions but no platform claim
              still has something to review, just further down. -->
-        <div v-if="claims.length === 0 && compositions.length === 0" class="rounded-lg border border-border-subtle bg-surface-overlay/50 px-3 py-4 text-center text-xs text-text-muted">
-          This provider does not request access to any tenant resources.
-          Clicking Enable provider will bind its APIs into your workspace.
+        <div v-if="claims.length === 0 && compositions.length === 0 && hubAccess.length === 0" class="rounded-lg border border-border-subtle bg-surface-overlay/50 px-3 py-4 text-center text-xs text-text-muted">
+          This provider requests no additional access to tools or resources in this workspace.
+          Enabling makes it available here.
         </div>
 
         <ul v-else-if="claims.length" class="space-y-2">
+          <li class="text-[11px] font-medium text-text-primary">Tools and resources in this workspace</li>
+          <li class="text-[10px] text-text-muted">Declining access may limit features that rely on it.</li>
           <li
             v-for="c in claims"
             :key="claimKey(c)"
@@ -330,12 +351,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <ShieldCheck class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-                  <span class="font-mono text-[11px] text-text-primary">
-                    {{ c.group ? `${c.group}/` : '' }}{{ c.resource }}
-                  </span>
+                  <span class="text-[11px] text-text-primary">{{ accessLabel(c.resource, c.verbs) }}</span>
                 </div>
-                <p class="mt-0.5 text-[10px] text-text-muted">
-                  Verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
+                <p class="mt-0.5 font-mono text-[10px] text-text-muted">
+                  {{ c.group ? `${c.group}/` : '' }}{{ c.resource }}
+                </p>
+                <p v-if="c.verbs.length" class="mt-0.5 text-[10px] text-text-muted">
+                  Technical verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
                 </p>
               </div>
             </label>
@@ -343,11 +365,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </ul>
 
         <div v-if="compositions.length" class="mt-3">
-          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Building on other providers</p>
+          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Access to other providers</p>
           <p class="mb-2 text-[10px] text-text-muted">
-            {{ provider.displayName }} builds what you ask for out of other providers' resources,
-            in this workspace only. It uses a credential the hub issues for each of your objects —
-            never a standing one of its own — and what you leave unchecked is declined.
+            {{ provider.displayName }} requests access to tools or resources owned by other providers in this workspace.
+            Declining access may limit features that rely on it.
           </p>
           <ul class="space-y-2">
             <li
@@ -364,13 +385,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   @change="toggleComposition(c)"
                 />
                 <div class="min-w-0 flex-1">
-                  <span class="text-[11px] text-text-primary">{{ compositionLabel(c) }}</span>
-                  <p class="mt-0.5 font-mono text-[10px] text-text-muted">{{ c.group }}/{{ c.resource }}</p>
-                  <p class="mt-0.5 text-[10px] text-text-muted">
-                    Verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
+                  <span class="text-[11px] text-text-primary">{{ accessLabel(c.resource, c.verbs) }}</span>
+                  <p class="mt-0.5 font-mono text-[10px] text-text-muted">{{ c.provider }} · {{ c.group }}/{{ c.resource }}</p>
+                  <p v-if="c.verbs.length" class="mt-0.5 text-[10px] text-text-muted">
+                    Technical verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
                   </p>
                   <p v-if="!canAcceptComposition()" class="mt-1 text-[10px] text-warning">
-                    Only a workspace or organization admin can decide this; enabling leaves it as it is.
+                    You can enable this Provider, but existing access choices stay unchanged. A workspace or organization admin can change them.
                   </p>
                 </div>
               </label>
@@ -379,11 +400,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </div>
 
         <div v-if="hubAccess.length" class="mt-3">
-          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Acting for you in railgrid</p>
+          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Railgrid access</p>
           <p class="mb-2 text-[10px] text-text-muted">
-            The provider can do these things as the person using it, and never more than that
-            person may. What you leave unchecked is declined; you can change it by enabling the
-            provider again.
+            These requests let {{ provider.displayName }} use the listed Railgrid actions at the organization or workspace shown for each one.
+            Declining access may limit features that rely on it.
           </p>
           <ul class="space-y-2">
             <li
@@ -401,12 +421,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 />
                 <div class="min-w-0 flex-1">
                   <span class="text-[11px] text-text-primary">{{ hubLabel(h) }}</span>
+                  <p class="mt-0.5 font-mono text-[10px] text-text-muted">{{ h.capability }} / {{ h.scope }}</p>
                   <p class="mt-0.5 text-[10px] text-text-muted">{{ h.reason }}</p>
                   <p v-if="h.capability === 'memberships.invite'" class="mt-0.5 text-[10px] text-text-muted">
                     Only as members, never as admins.
                   </p>
                   <p v-if="!canAcceptHub(h)" class="mt-1 text-[10px] text-warning">
-                    {{ h.scope === 'org' ? 'Only an organization admin can decide this; enabling leaves it as it is.' : 'Only a workspace or organization admin can decide this; enabling leaves it as it is.' }}
+                    {{ hubAdminHint(h) }}
                   </p>
                 </div>
               </label>

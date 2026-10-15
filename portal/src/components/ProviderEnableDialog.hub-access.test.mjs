@@ -102,6 +102,6 @@ test('a member accepts nothing but can still enable', async () => {
 
 test('capabilities read as what the provider may do', async () => {
   const d = await loadDialog({ provider, orgRole: 'admin' })
-  assert.match(d.hubLabel(hubAccess[2]), /inviting them by email/)
+  assert.match(d.hubLabel(hubAccess[2]), /invite new users by email/)
   assert.match(d.hubLabel({ ...hubAccess[2], allowInvite: false }), /existing users/)
 })

@@ -1,0 +1,3 @@
+@import "../../portal/src/assets/main.css";
+/* Match the production portal's Tailwind scan from this isolated fixture root. */
+@source "../../portal/src/**/*.{vue,ts}";

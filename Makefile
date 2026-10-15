@@ -1,4 +1,4 @@
-.PHONY: sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual test-terminal-dock-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
+.PHONY: serve-onboarding-visual test-onboarding-visual sync-portalkit verify-portalkit verify-provider-contract verify-agentkit verify-ui-conformance verify-design-docs verify-tilt-browser-deployment test-portal test-portal-settings-conformance test-create-flow-conformance serve-model-form-visual test-model-form-visual test-terminal-dock-visual build-portal test-macos-agent test-edges-provider test-edges-portal build-macos-agent build-macos-agent-arm64 build-macos-agent-amd64 build-macos-stub build-macos-stub-native build-macos-stub-arm64 build-macos-stub-amd64 verify-macos-edges
 .PHONY: build-access-proxy docker-build-access-proxy load-access-proxy-image
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
 .PHONY: build-app-studio-provider-go
@@ -708,6 +708,12 @@ verify-ui-conformance: test-portal-settings-conformance test-create-flow-conform
 	@node --test provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs provider-sdk/portalkit-vue/ResourceTable.overflow.test.mjs provider-sdk/portalkit-vue/resource-technical.conformance.test.mjs
 	@node hack/verify-ui-conformance.test.mjs
 	@node hack/verify-ui-conformance.mjs
+
+serve-onboarding-visual: ## Serve the isolated real-component onboarding fixture
+	cd portal && npm exec vite -- --config ../hack/onboarding-visual/vite.config.mjs
+
+test-onboarding-visual: ## Verify onboarding geometry and interactions (requires serve-onboarding-visual)
+	node hack/onboarding-visual/check.mjs
 
 serve-model-form-visual: ## Serve the manual App Studio/Agents Models visual fixture
 	MODEL_FORM_FONT_NODE_MODULES="$(if $(MODEL_FORM_FONT_NODE_MODULES),$(MODEL_FORM_FONT_NODE_MODULES),$(CURDIR)/portal/node_modules)" \

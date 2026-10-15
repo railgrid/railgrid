@@ -41,7 +41,7 @@ const __props = ${JSON.stringify(props)}
 const defineProps = () => __props
 const defineEmits = () => (...args) => emitted.push(args)
 ${body}
-export { acceptedComposition, canAcceptComposition, claims, compositionLabel, compositions, compositionKey, onConfirm, toggleComposition, verbsLabel, emitted }
+export { acceptedComposition, canAcceptComposition, claims, accessLabel, compositions, compositionKey, onConfirm, toggleComposition, verbsLabel, emitted }
 `
   const { outputText } = ts.transpileModule(harness, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
@@ -112,9 +112,9 @@ test('a member accepts nothing but can still enable', async () => {
 test('the consent text says what the provider will do, and read-only says read', async () => {
   const d = await loadDialog({ provider, orgRole: 'admin', workspaceRole: 'admin' })
   const [instances, repositories, commits] = d.compositions.value
-  assert.match(d.compositionLabel(instances), /^Create and manage Instances \(infrastructure\) in this workspace$/)
-  assert.match(d.compositionLabel(repositories), /^Create and manage Repositories \(code\) in this workspace$/)
-  assert.match(d.compositionLabel(commits), /^Read Repositorycommits \(code\) in this workspace$/)
+  assert.match(d.accessLabel(instances.resource, instances.verbs), /Create, Replace, Delete: instances$/)
+  assert.match(d.accessLabel(repositories.resource, repositories.verbs), /Create, Replace: repositories$/)
+  assert.match(d.accessLabel(commits.resource, commits.verbs), /^Read, List, Watch for changes: repositorycommits$/)
 })
 
 test('a provider that declares no composition offers none', async () => {
@@ -137,7 +137,7 @@ test('a verb coordinate is never described as read-only or verbless', async () =
     workspaceRole: 'admin',
   })
   const [commit] = d.compositions.value
-  assert.match(d.compositionLabel(commit), /^Create and manage Repositories\/commit \(code\) in this workspace$/)
+  assert.match(d.accessLabel(commit.resource, commit.verbs), /^Run commit on repositories$/)
   assert.equal(d.verbsLabel(commit), 'the call itself')
   d.onConfirm()
   assert.deepEqual(d.emitted.at(-1)[3], [{ provider: 'code', group: 'code.railgrid.ai', resource: 'repositories/commit' }])

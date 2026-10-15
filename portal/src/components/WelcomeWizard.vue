@@ -1,97 +1,149 @@
 <script setup lang="ts">
+// Intent guides setup; enablement always uses the existing consent contract.
+import { computed, ref, watch, nextTick, onMounted } from 'vue'
+import { ArrowLeft, ArrowRight, ChevronRight, Check, Plus, Loader2, Puzzle, Server, Boxes, Building2, Rocket } from 'lucide-vue-next'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-// First-run onboarding for a workspace that has nothing enabled yet.
-//
-// A fresh account lands on the dashboard with an empty grid and an empty side
-// nav, because every provider ships as a CatalogEntry with an APIExport and
-// must be explicitly enabled per workspace. The old empty state was a single
-// grey line pointing at /providers, which assumes the reader already knows
-// what a provider *is*. This replaces it with a three-step flow:
-//
-//   1. Concepts — what an org / workspace / provider / edge actually are.
-//   2. Catalog — the enableable providers, each with its CatalogEntry
-//      description, enabled in place through the normal consent dialog.
-//   3. Done   — what changed and where to go next.
-//
-// Enabling always goes through ProviderEnableDialog: permission claims are a
-// consent decision, and the welcome flow must not become a way to skip it.
-//
-// Dismissal is per workspace (workspaces are independent clusters, so setting
-// one up says nothing about the next) and lives in localStorage — this is a
-// presentation preference, not state worth a round-trip to the hub.
-
-import { computed, ref, watch } from 'vue'
-import {
-  AlertCircle,
-  ArrowLeft,
-  ArrowRight,
-  Boxes,
-  Building2,
-  Check,
-  CheckCircle2,
-  ExternalLink,
-  Loader2,
-  Plus,
-  Puzzle,
-  Rocket,
-  Server,
-  Sparkles,
-} from 'lucide-vue-next'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type AcceptedClaim, type AcceptedHubAccess } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO, type AcceptedClaim, type AcceptedHubAccess, type AcceptedComposition } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/auth'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 
 const { scopePath } = useScopedNavigation()
-
-const emit = defineEmits<{
-  // Raised when the user skips or finishes. The dashboard swaps back to the
-  // normal (now possibly populated) grid.
-  dismiss: []
-}>()
-
+const emit = defineEmits<{ dismiss: [] }>()
+const props = defineProps<{ startAtGoal?: boolean }>()
 const providers = useProvidersStore()
 const tenant = useTenantStore()
-
+const auth = useAuthStore()
 const step = ref(0)
-const steps = ['Concepts', 'Providers', 'Done'] as const
-
-// --- Step 1: concepts -------------------------------------------------------
-
-// Deliberately four cards, in dependency order: you are in an org, which holds
-// workspaces, which hold providers, one of which connects edges. Each line
-// answers "what is it" and "why do I care", nothing more — the docs handle depth.
-const concepts = [
-  {
-    icon: Building2,
-    title: 'Organization',
-    body: 'Who you share with. Members, billing, and access all hang off the org. You always have a personal one.',
-  },
-  {
-    icon: Boxes,
-    title: 'Workspace',
-    body: 'An isolated control plane inside the org. Everything you create — edges, apps, resources — lives in exactly one workspace.',
-  },
-  {
-    icon: Puzzle,
-    title: 'Provider',
-    body: 'An extension that adds APIs and a UI. Enabling one binds its APIs into this workspace and puts it in the side nav. Nothing is on by default.',
-  },
-  {
-    icon: Server,
-    title: 'Edge',
-    body: 'A Kubernetes cluster or Linux host connected back to the hub through a reverse tunnel, so you can reach it without inbound firewall rules.',
-  },
+const audience = ref('team')
+const heading = ref<HTMLElement | null>(null)
+const audiences = [
+  { id: 'team', title: 'A platform for my team', body: 'Choose the tools your team can use in this Workspace.', icon: Building2 },
+  { id: 'personal', title: 'Build and run projects', body: 'Use this Workspace’s tools for apps, agents, and services.', icon: Boxes },
+  { id: 'explore', title: 'I’m evaluating Railgrid', body: 'Find a useful first workflow to try.', icon: Rocket },
 ]
+const goals = [
+  { id: 'app-studio', title: 'Build an app', body: 'Develop an application with AI in App Studio.', icon: Boxes, next: 'Open App Studio', task: 'Describe your app', prerequisite: 'App Studio guides you through model and project setup.' },
+  { id: 'agents', title: 'Run an AI agent', body: 'Create an AI agent with tools and memory.', icon: Rocket, next: 'Open Agents', task: 'Configure an agent', prerequisite: 'Connect a model and choose its tools before running a task.' },
+  { id: 'infrastructure', title: 'Deploy a service', body: 'Start with a configurable application template.', icon: Puzzle, next: 'Open Application Templates', task: 'Choose a service template', prerequisite: 'Have a deployment target and your template’s configuration ready.' },
+  { id: 'edges', title: 'Connect infrastructure', body: 'Reach your servers and clusters through Railgrid.', icon: Server, next: 'Open Edges', task: 'Connect a server or cluster', prerequisite: 'You’ll need permission to install the Railgrid agent on your server or cluster.' },
+]
+function defaultGoalForAudience(value: string) {
+  return value === 'team' ? 'edges' : value === 'explore' ? 'agents' : 'app-studio'
+}
+const goal = ref(defaultGoalForAudience(audience.value))
+const goalExplicit = ref(false)
+function selectAudience(value: string) {
+  audience.value = value
+  if (!goalExplicit.value) goal.value = defaultGoalForAudience(value)
+}
+function selectGoal() {
+  goalExplicit.value = true
+}
+const teamSetup = computed(() => audience.value === 'team')
+const exploring = computed(() => goal.value === 'explore')
+function explore() {
+  goal.value = 'explore'
+  goalExplicit.value = false
+  step.value = 2
+}
+const selectedGoal = computed(() => goals.find(g => g.id === goal.value) ?? goals[0]!)
+const orderedGoals = computed(() => {
+  const first = defaultGoalForAudience(audience.value)
+  return [...goals].sort((a, b) => Number(b.id === first) - Number(a.id === first))
+})
+function categoryIcon(name: string) {
+  const category = providers.categories.find(item => item.name === name)
+  return categoryIcons[category?.icon || ''] ?? fallbackCategoryIcon
+}
+const failedIcons = ref<Record<string, boolean>>({})
+const target = computed(() => providers.byName(goal.value))
+// Read dependencies from the catalog, including transitive requirements. A
+// visited set prevents malformed/cyclic catalogs from trapping the UI.
+const plan = computed(() => {
+  const rows: { name: string; provider?: ProviderDTO }[] = []
+  const seen = new Set<string>()
+  function visit(name: string) {
+    if (seen.has(name)) return
+    seen.add(name)
+    const provider = providers.byName(name)
+    for (const requirement of provider?.requires ?? []) {
+      if (requirement.provider) visit(requirement.provider)
+    }
+    rows.push({ name, provider: provider ?? undefined })
+  }
+  if (!exploring.value) visit(goal.value)
+  return rows
+})
+const canOpen = computed(() => !!target.value?.ready && !!target.value?.serving?.ui && providers.isEnabled(goal.value) && !providers.hasMissingDependencies(target.value))
+// Members consume an existing setup; admins retain the setup preview. Only
+// current Workspace data can justify skipping the prerequisite review.
+const setupDataCurrent = computed(() =>
+  tenant.workspaceMode === 'workspace' && !!tenant.orgUUID && !!tenant.workspaceUUID &&
+  providers.loaded && !providers.loading && !providers.error &&
+  providers.catalogOrgUUID === tenant.orgUUID &&
+  providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
+  providers.bindingsLoadState === 'ready' && !providers.bindingsStale,
+)
+const setupReady = computed(() => setupDataCurrent.value && canOpen.value && plan.value.every(item => !!item.provider?.ready && providers.isEnabled(item.name)),
+)
 
-// --- Step 2: catalog --------------------------------------------------------
-
-const catalog = computed(() => providers.enableable)
-const enabledCount = computed(() => catalog.value.filter((p) => providers.isEnabled(p.name)).length)
-
+const memberJourney = computed(() => !teamSetup.value && tenant.activeWorkspace?.role === 'member' && tenant.activeOrg?.role === 'member')
+const canSkipSetup = computed(() => memberJourney.value && setupReady.value)
+const openLabel = computed(() => target.value?.displayName ? `Open ${target.value.displayName}` : selectedGoal.value.next)
+const teamGoals: Record<string, { title: string; body: string }> = {
+  'app-studio': { title: 'Build apps with AI', body: 'Give your team App Studio for developing applications.' },
+  agents: { title: 'Run AI agents', body: 'Let your team create agents with tools and memory.' },
+  infrastructure: { title: 'Deploy applications', body: 'Provide ready-to-configure application templates.' },
+  edges: { title: 'Connect servers and clusters', body: 'Bring your team’s infrastructure into Railgrid.' },
+}
+function goalTitle(option: typeof goals[number]) { return teamSetup.value ? teamGoals[option.id]!.title : option.title }
+function goalBody(option: typeof goals[number]) { return teamSetup.value ? teamGoals[option.id]!.body : option.body }
+const providerPurpose: Record<string, string> = {
+  'app-studio': 'Build applications with AI.',
+  agents: 'Run AI agents with tools and memory.',
+  infrastructure: 'Provision apps and infrastructure from templates.',
+  edges: 'Connect servers and Kubernetes clusters.',
+  code: 'Connect and manage source repositories.',
+}
+function purpose(name: string, provider?: ProviderDTO) {
+  if (goal.value === 'app-studio' && name === 'code') return 'Manage source repositories for your apps.'
+  if (goal.value === 'app-studio' && name === 'infrastructure') return 'Provide the runtime for your apps.'
+  return providerPurpose[name] || provider?.description || ''
+}
+const requestCopied = ref(false)
+const copyFailed = ref(false)
+const setupRequest = computed(() => `I’d like to ${selectedGoal.value.title.toLowerCase()} in ${tenant.activeWorkspace?.displayName || 'our Workspace'}. Could you make ${target.value?.displayName || selectedGoal.value.next.replace('Open ', '')} and its required tools available? Required Providers: ${plan.value.map(item => item.provider?.displayName || item.name).join(', ')}.`)
+async function copySetupRequest() {
+  requestCopied.value = false
+  copyFailed.value = false
+  try {
+    await navigator.clipboard.writeText(setupRequest.value)
+    requestCopied.value = true
+  } catch { copyFailed.value = true }
+}
+watch(goal, () => { requestCopied.value = false; copyFailed.value = false })
+const title = computed(() => step.value === 0 ? 'What brings you to Railgrid?' : step.value === 1 ? (teamSetup.value ? 'What should your team be able to do?' : 'What would you like to do first?') : exploring.value ? 'Explore at your own pace' : memberJourney.value ? (setupReady.value ? 'You’re ready to get started' : setupDataCurrent.value ? 'Your Workspace needs a little setup' : 'Let’s check what’s available') : teamSetup.value ? 'Set up your team’s Workspace' : 'Set up for your goal')
+const description = computed(() => {
+  if (step.value === 0) return 'Railgrid brings apps, AI agents, and connected infrastructure into one place. Choose a starting point below.'
+  if (step.value === 1) {
+    if (teamSetup.value) return 'Tailor this Workspace with Providers—tools for apps, agents, and infrastructure. Choose a starting point; you can add more later.'
+    if (memberJourney.value && !setupReady.value) return 'Choose what you’d like to do. We’ll check whether your team’s Workspace is ready.'
+    return canSkipSetup.value ? `${target.value?.displayName} is available in this Workspace. Open it to start your task.` : 'Choose a task. We’ll show you the Providers—the tools in this Workspace—that you’ll need.'
+  }
+  if (memberJourney.value && exploring.value) return 'Explore the tools your team has made available from your Workspace dashboard.'
+  if (memberJourney.value) return setupReady.value ? `${target.value?.displayName} is available. Open it to start your task.` : setupDataCurrent.value ? `To ${selectedGoal.value.title.toLowerCase()}, your team needs to make the required tools available. Your Workspace administrator can help.` : 'We couldn’t confirm that the tools for this task are available. Check again before asking your administrator for help.'
+  if (exploring.value) return 'A Workspace groups your projects and resources. Providers add the tools you can use here.'
+  if (teamSetup.value && setupReady.value) return 'These Providers are available in your team’s Workspace. Your team can open them to start creating.'
+  return teamSetup.value ? 'A Workspace groups your team’s projects and resources. Enable these Providers to support your chosen starting point.' : 'Enable the Providers below to make these tools available. You’ll create your app, agent, or service after opening them.'
+})
+function next() { step.value = Math.min(2, step.value + 1) }
+function back() { step.value = Math.max(0, step.value - 1) }
 // Per-provider in-flight flag, so one Enable spinning doesn't disable the rest.
 const busy = ref<Record<string, boolean>>({})
+const enableOperations = new Map<string, symbol>()
 const actionError = ref<string | null>(null)
 const dialogProvider = ref<ProviderDTO | null>(null)
 const dialogRevision = ref(0)
@@ -99,17 +151,12 @@ const dialogScope = computed(
   () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
 )
 
-function categoryIcon(name: string | undefined): unknown {
-  if (!name) return fallbackCategoryIcon
-  const registered = providers.categories.find((c) => c.name === name)
-  if (!registered?.icon) return fallbackCategoryIcon
-  return categoryIcons[registered.icon] ?? fallbackCategoryIcon
-}
-
 function dependencyNotice(p: ProviderDTO): string {
   const missing = providers.missingDependencies(p)
   if (missing.length === 0) return ''
-  return `Enable ${providers.dependencyLabels(missing).join(', ')} first.`
+  return missing.map(name => providers.isEnabled(name)
+    ? `Waiting for ${providers.dependencyLabels([name]).join(', ')} to become ready.`
+    : `Enable ${providers.dependencyLabels([name]).join(', ')} first.`).join(' ')
 }
 
 function openEnableDialog(p: ProviderDTO) {
@@ -134,17 +181,25 @@ watch(dialogScope, () => {
   // independently fences the in-flight write; this only prevents its result
   // or error from changing the new workspace's dialog.
   if (dialogProvider.value) closeEnableDialog()
+  enableOperations.clear()
+  busy.value = {}
 })
 
-async function onDialogConfirm(accept: AcceptedClaim[], acceptHubAccess: AcceptedHubAccess[] = []) {
+async function onDialogConfirm(
+  accept: AcceptedClaim[],
+  acceptHubAccess: AcceptedHubAccess[] = [],
+  acceptCompositions: AcceptedComposition[] = [],
+) {
   const p = dialogProvider.value
   const revision = dialogRevision.value
   const scope = dialogScope.value
   if (!p || busy.value[p.name]) return
+  const operation = Symbol(p.name)
+  enableOperations.set(p.name, operation)
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
-    await providers.enable(p, accept, acceptHubAccess)
+    await providers.enable(p, accept, acceptHubAccess, acceptCompositions)
     if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
       closeEnableDialog()
     }
@@ -160,321 +215,274 @@ async function onDialogConfirm(accept: AcceptedClaim[], acceptHubAccess: Accepte
       })
     }
   } finally {
-    const next = { ...busy.value }
-    delete next[p.name]
-    busy.value = next
+    if (enableOperations.get(p.name) === operation) {
+      enableOperations.delete(p.name)
+      const next = { ...busy.value }
+      delete next[p.name]
+      busy.value = next
+    }
   }
 }
 
-// --- Navigation -------------------------------------------------------------
 
-function next() {
-  if (step.value < steps.length - 1) step.value += 1
+// This is a local presentation preference, never an authorization decision.
+const welcomeUser = computed(() => auth.user?.userId || auth.user?.email || auth.self?.rbacIdentity || '')
+const storageKey = computed(() => welcomeUser.value ? `railgrid:portal:onboarding:user:${encodeURIComponent(welcomeUser.value)}:${dialogScope.value}` : '')
+function restore() {
+  step.value = 0
+  audience.value = 'team'
+  goal.value = defaultGoalForAudience(audience.value)
+  goalExplicit.value = false
+  try {
+    if (!storageKey.value) return
+    const saved = JSON.parse(localStorage.getItem(storageKey.value) || 'null')
+    if (!saved || typeof saved !== 'object' || !audiences.some(a => a.id === saved.audience)) return
+    const validGoal = goals.some(g => g.id === saved.goal)
+    if (saved.goal === 'explore') {
+      if (saved.step !== 2) return
+      audience.value = saved.audience
+      goal.value = 'explore'
+      step.value = 2
+      return
+    }
+    if (!validGoal || (saved.step !== undefined && ![0, 1, 2].includes(saved.step))) return
+    audience.value = saved.audience
+    const savedStep = saved.step ?? 0
+    goalExplicit.value = saved.goalExplicit === true || (saved.goalExplicit === undefined && savedStep > 0)
+    goal.value = goalExplicit.value ? saved.goal : defaultGoalForAudience(saved.audience)
+    step.value = savedStep
+  } catch { /* Storage can be disabled; setup remains usable. */ } finally {
+    // Explicit re-entry starts a new choice; automatic entry resumes progress.
+    if (props.startAtGoal) step.value = 1
+  }
 }
-function back() {
-  if (step.value > 0) step.value -= 1
+watch(storageKey, restore, { immediate: true, flush: 'sync' })
+function persist() {
+  if (!storageKey.value) return
+  try { localStorage.setItem(storageKey.value, JSON.stringify({ step: step.value, audience: audience.value, goal: goal.value, goalExplicit: goalExplicit.value })) } catch { /* Optional preference. */ }
 }
-
-// The provider a "start here" link should point at once the user is done. The
-// first thing they enabled beats an arbitrary pick, so the final step sends
-// them somewhere that actually exists in their nav.
-const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnabled(p.name)) ?? null)
+watch([step, audience, goal, goalExplicit], persist, { immediate: true })
+async function focusStep() {
+  await nextTick()
+  // Move semantic focus without letting the browser hide the progress row.
+  heading.value?.focus({ preventScroll: true })
+  heading.value?.closest('.onboarding')?.scrollIntoView({ block: 'start', behavior: 'instant' })
+}
+onMounted(focusStep)
+watch(step, focusStep)
+const finalActionReason = computed(() => {
+  if (exploring.value) return ''
+  if (canOpen.value && !setupReady.value) return 'Some Providers are unavailable or their status is out of date. Refresh Providers to continue.'
+  if (setupReady.value) return ''
+  const provider = target.value
+  if (!provider) return 'This capability is unavailable in this Workspace. Browse Providers or ask an administrator for help.'
+  if (providers.isEnabled(goal.value)) {
+    if (providers.hasMissingDependencies(provider)) {
+      const waitingFor = providers.dependencyLabels(providers.missingDependencies(provider)).join(', ')
+      return `Waiting for ${waitingFor} to become available in this Workspace.`
+    }
+    if (!provider.ready) return 'This Provider is enabled but unavailable. Refresh its status or ask your administrator for help.'
+    if (!provider.serving?.ui) return 'This Provider has no web interface. Browse Providers for its available access options.'
+  }
+  if (!provider.export?.name || !provider.export?.path) return 'This Provider is unavailable for setup in this Workspace. Ask your administrator for help.'
+  if (providers.hasMissingDependencies(provider)) {
+    const required = providers.dependencyLabels(providers.missingDependencies(provider)).join(', ')
+    return `Enable ${required} first to continue.`
+  }
+  return `Enable ${provider.displayName} to continue.`
+})
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl pb-10 pt-6">
-    <!-- Hero -->
-    <div class="mb-6 flex items-start gap-4">
-      <div class="relative flex h-12 w-12 shrink-0 items-center justify-center">
-        <div class="absolute inset-0 rounded-xl bg-accent/20 blur-md" />
-        <div class="relative flex h-12 w-12 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
-          <Rocket class="h-6 w-6 text-accent" :stroke-width="1.5" />
-        </div>
-      </div>
-      <div class="flex-1">
-        <h1 class="flex items-center gap-2 text-[18px] font-bold text-text-primary">
-          Welcome to Railgrid
-          <Sparkles class="h-4 w-4 text-accent" :stroke-width="1.75" />
-        </h1>
-        <p class="mt-1 text-[12px] text-text-muted">
-          <span class="font-mono text-text-secondary">{{ tenant.activeWorkspace?.displayName || 'This workspace' }}</span>
-          is empty. Two minutes here and it won't be — or
-          <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-text-secondary underline decoration-dotted underline-offset-2 hover:bg-transparent hover:text-text-primary" @click="emit('dismiss')">
-            skip and explore on your own</button>.
-        </p>
-      </div>
-    </div>
-
-    <!-- Step rail. Steps are clickable both ways: this is an intro, not a
-         transaction, so there is no reason to trap someone on step 2. -->
-    <ol class="mb-4 flex items-center gap-2">
-      <li v-for="(label, i) in steps" :key="label" class="flex flex-1 items-center gap-2">
-        <button
-          type="button"
-          class="k-btn k-btn--ghost flex items-center gap-2 border-0 bg-transparent p-0 text-left hover:bg-transparent"
-          @click="step = i"
-        >
-          <span
-            class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold transition-colors"
-            :class="
-              i < step
-                ? 'border-accent/40 bg-accent/15 text-accent'
-                : i === step
-                  ? 'border-accent bg-accent text-on-accent'
-                  : 'border-border-default bg-surface-overlay text-text-muted'
-            "
-          >
-            <Check v-if="i < step" class="h-3 w-3" :stroke-width="2.5" />
-            <template v-else>{{ i + 1 }}</template>
-          </span>
-          <span
-            class="text-[11px] font-medium transition-colors"
-            :class="i === step ? 'text-text-primary' : 'text-text-muted'"
-          >
-            {{ label }}
-          </span>
-        </button>
-        <span v-if="i < steps.length - 1" class="h-px flex-1 bg-border-subtle" />
-      </li>
+  <section class="onboarding" aria-labelledby="onboarding-title">
+    <ol class="k-wizard-steps mb-4" aria-label="Getting started progress">
+      <li class="text-[12px]" v-for="(label, index) in ['About you', 'Your goal', 'Get started']" :key="label" :aria-current="step === index ? 'step' : undefined">{{ label }}</li>
     </ol>
+    <div class="onboarding-body">
+    <h1 id="onboarding-title" ref="heading" tabindex="-1">{{ title }}</h1>
+    <p class="onboarding-description">{{ description }}</p>
 
-    <div class="rounded-xl border border-border-default shadow-sm">
-      <div class="rounded-xl border border-border-subtle bg-surface-raised/80 p-6 backdrop-blur">
-        <!-- ── Step 1: concepts ─────────────────────────────────────────── -->
-        <template v-if="step === 0">
-          <h2 class="text-[13px] font-semibold text-text-primary">The four things worth knowing</h2>
-          <p class="mt-1 text-[11px] text-text-muted">
-            Railgrid is a control plane you extend. Here is the whole vocabulary.
-          </p>
-
-          <ul class="mt-4 grid gap-3 sm:grid-cols-2">
-            <li
-              v-for="c in concepts"
-              :key="c.title"
-              class="rounded-xl border border-border-subtle bg-surface-overlay/40 p-4"
-            >
-              <div class="flex items-center gap-2">
-                <component :is="c.icon" class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                <h3 class="text-[12px] font-semibold text-text-primary">{{ c.title }}</h3>
-              </div>
-              <p class="mt-1.5 text-[11px] leading-relaxed text-text-muted">{{ c.body }}</p>
-            </li>
-          </ul>
-
-          <p class="mt-4 rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2 text-[11px] text-text-muted">
-            Providers are enabled <strong class="font-semibold text-text-secondary">per workspace</strong>.
-            Turning one on here leaves your other workspaces untouched, and you can turn it
-            back off at any time from the catalog.
-          </p>
-        </template>
-
-        <!-- ── Step 2: catalog ──────────────────────────────────────────── -->
-        <template v-else-if="step === 1">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h2 class="text-[13px] font-semibold text-text-primary">Pick what this workspace does</h2>
-              <p class="mt-1 text-[11px] text-text-muted">
-                Enable one or several. Each asks you to review what it can access before anything is bound.
-              </p>
-            </div>
-            <span
-              v-if="catalog.length"
-              class="shrink-0 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-[10px] font-medium text-text-muted"
-            >
-              {{ enabledCount }} / {{ catalog.length }} enabled
-            </span>
-          </div>
-
-          <div
-            v-if="actionError"
-            class="mt-4 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[11px] text-danger"
-          >
-            <AlertCircle class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            <span>{{ actionError }}</span>
-          </div>
-
-          <!-- No enableable providers at all: an operator-side situation the
-               user can't fix from here, so say so plainly instead of showing
-               an empty list that reads like a loading bug. -->
-          <div
-            v-if="catalog.length === 0"
-            class="mt-4 rounded-xl border border-border-subtle bg-surface-overlay/40 p-4 text-[11px] text-text-muted"
-          >
-            <div class="font-medium text-text-secondary">No providers are installed on this instance yet.</div>
-            <div class="mt-1">
-              Providers are installed by whoever operates this hub, as Helm charts that register a
-              CatalogEntry. Until one is installed there is nothing to enable here.
-            </div>
-          </div>
-
-          <ul v-else class="mt-4 space-y-2">
-            <li
-              v-for="p in catalog"
-              :key="p.name"
-              class="rounded-xl border bg-surface-overlay/40 p-4 transition-colors"
-              :class="providers.isEnabled(p.name) ? 'border-accent/30' : 'border-border-subtle hover:border-accent/25'"
-            >
-              <div class="flex items-start gap-3">
-                <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised">
-                  <img
-                    v-if="p.iconURL"
-                    :src="p.iconURL"
-                    alt=""
-                    class="h-5 w-5"
-                    @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')"
-                  />
-                  <Puzzle v-else class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
-                </div>
-
-                <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <h3 class="text-[12px] font-semibold text-text-primary">{{ p.displayName }}</h3>
-                    <span
-                      v-if="p.category"
-                      class="inline-flex items-center gap-1 rounded-sm border border-border-subtle px-1.5 py-px text-[9px] font-medium text-text-muted"
-                    >
-                      <component :is="categoryIcon(p.category)" class="h-2.5 w-2.5" :stroke-width="2" />
-                      {{ p.category }}
-                    </span>
-                    <span
-                      v-if="providers.isEnabled(p.name)"
-                      class="inline-flex items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-accent"
-                    >
-                      <Check class="h-2.5 w-2.5" :stroke-width="2.5" />
-                      Enabled
-                    </span>
-                  </div>
-
-                  <!-- The description is the entire point of this screen: it is
-                       what turns an opaque name into a decision. Fall back to
-                       something honest rather than rendering an empty line. -->
-                  <p class="mt-1 text-[11px] leading-relaxed text-text-muted">
-                    {{ p.description || 'No description published by this provider.' }}
-                  </p>
-
-                  <p v-if="dependencyNotice(p) && !providers.isEnabled(p.name)" class="mt-1.5 text-[10px] text-warning">
-                    {{ dependencyNotice(p) }}
-                  </p>
-                </div>
-
-                <div class="shrink-0">
-                  <router-link
-                    v-if="providers.isEnabled(p.name) && p.serving?.ui"
-                    :to="`/providers/${p.name}`"
-                    class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:text-accent"
-                  >
-                    Open
-                    <ExternalLink class="h-3 w-3" :stroke-width="2" />
-                  </router-link>
-                  <span
-                    v-else-if="providers.isEnabled(p.name)"
-                    class="inline-flex items-center gap-1 text-[11px] font-medium text-accent"
-                  >
-                    <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2" />
-                  </span>
-                  <button
-                    v-else
-                    type="button"
-                    class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-accent disabled:cursor-not-allowed disabled:opacity-50"
-                    :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
-                    :title="dependencyNotice(p)"
-                    @click="openEnableDialog(p)"
-                  >
-                    <Loader2 v-if="busy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
-                    <Plus v-else class="h-3 w-3" :stroke-width="2" />
-                    {{ busy[p.name] ? 'Enabling provider…' : 'Enable provider' }}
-                  </button>
-                </div>
-              </div>
-            </li>
-          </ul>
-        </template>
-
-        <!-- ── Step 3: done ─────────────────────────────────────────────── -->
-        <template v-else>
-          <div class="flex items-start gap-3">
-            <CheckCircle2
-              class="mt-0.5 h-5 w-5 shrink-0"
-              :class="enabledCount > 0 ? 'text-success' : 'text-text-muted'"
-              :stroke-width="1.75"
-            />
-            <div>
-              <h2 class="text-[13px] font-semibold text-text-primary">
-                {{ enabledCount > 0 ? 'Your workspace is set up' : 'Nothing enabled yet — that’s fine' }}
-              </h2>
-              <p class="mt-1 text-[11px] leading-relaxed text-text-muted">
-                <template v-if="enabledCount > 0">
-                  {{ enabledCount }} provider{{ enabledCount === 1 ? '' : 's' }}
-                  {{ enabledCount === 1 ? 'is' : 'are' }} now bound to this workspace. They appear in the
-                  side nav, and any that publish a dashboard tile show up on the dashboard.
-                </template>
-                <template v-else>
-                  You can enable providers whenever you want from the catalog. The dashboard stays
-                  empty until at least one is on.
-                </template>
-              </p>
-            </div>
-          </div>
-
-          <ul class="mt-4 space-y-2 text-[11px] text-text-muted">
-            <li class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
-              <Puzzle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <span>
-                <router-link :to="scopePath('/providers')" class="font-medium text-accent hover:text-accent-hover">Providers</router-link>
-                — the full catalog. Enable and disable anything, any time.
-              </span>
-            </li>
-            <li v-if="firstEnabled?.serving?.ui" class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
-              <ArrowRight class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <span>
-                <router-link
-                  :to="`/providers/${firstEnabled.name}`"
-                  class="font-medium text-accent hover:text-accent-hover"
-                >{{ firstEnabled.displayName }}</router-link>
-                — jump straight into what you just enabled.
-              </span>
-            </li>
-            <li class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-3 py-2">
-              <Boxes class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <span>
-                <router-link :to="scopePath('/settings/workspaces')" class="font-medium text-accent hover:text-accent-hover">Settings</router-link>
-                — add more workspaces, or invite people to the org.
-              </span>
-            </li>
-          </ul>
-        </template>
+    <fieldset v-if="step === 0" class="onboarding-choices">
+      <legend class="sr-only">What brings you to Railgrid?</legend>
+      <label v-for="option in audiences" :key="option.id" class="onboarding-choice k-checkbox-hit" :class="{ selected: audience === option.id }">
+        <component :is="option.icon" :stroke-width="1.5" class="h-5 w-5 shrink-0 text-accent" aria-hidden="true" />
+        <span class="min-w-0 flex-1"><strong>{{ option.title }}</strong><span :id="`onboarding-audience-${option.id}-description`">{{ option.body }}</span></span>
+        <input class="k-checkbox" type="radio" name="onboarding-audience" :checked="audience === option.id" :aria-label="option.title" :aria-describedby="`onboarding-audience-${option.id}-description`" @change="selectAudience(option.id)" />
+      </label>
+    </fieldset>
+    <fieldset v-else-if="step === 1" class="onboarding-choices onboarding-goals">
+      <legend class="sr-only">{{ teamSetup ? "Your team’s starting point" : "Your first goal" }}</legend>
+      <label v-for="option in orderedGoals" :key="option.id" class="onboarding-choice k-checkbox-hit" :class="{ selected: goal === option.id }">
+        <component :is="option.icon" :stroke-width="1.5" class="h-5 w-5 shrink-0 text-accent" aria-hidden="true" />
+        <span class="min-w-0 flex-1"><strong>{{ goalTitle(option) }}</strong><span :id="`onboarding-goal-${option.id}-description`">{{ goalBody(option) }}</span></span>
+        <input v-model="goal" class="k-checkbox" type="radio" name="onboarding-goal" :value="option.id" :aria-label="goalTitle(option)" :aria-describedby="`onboarding-goal-${option.id}-description`" @change="selectGoal" />
+      </label>
+    </fieldset>
+    <div v-else-if="exploring && memberJourney" class="onboarding-explore"><div><h2>Start with what’s available</h2><p class="onboarding-help">Open a tool from your dashboard, or return here when you have a task in mind.</p></div></div>
+    <div v-else-if="exploring" class="onboarding-explore">
+      <Puzzle :stroke-width="1.5" class="h-6 w-6 shrink-0 text-accent" aria-hidden="true" />
+      <div>
+        <h2>Discover what your Workspace can do</h2>
+        <p class="onboarding-help">Browse Providers for building apps, running agents, deploying services, and connecting infrastructure. Each explains what it does and asks you to review its access before enabling it.</p>
+        <p class="onboarding-help">Nothing is enabled by choosing to explore. You can return to Getting started from the dashboard anytime.</p>
       </div>
-
-      <!-- Footer: same controls on every step so the escape hatch never moves. -->
-      <div class="flex items-center justify-between gap-3 border-t border-border-subtle px-6 py-4">
-        <button
-          type="button"
-          class="k-btn k-btn--ghost flex items-center gap-1.5 border-0 bg-transparent px-0 py-0 text-[11px] font-medium text-text-muted transition-colors hover:bg-transparent hover:text-text-secondary"
-          @click="step === 0 ? emit('dismiss') : back()"
-        >
-          <ArrowLeft v-if="step > 0" class="h-3 w-3" :stroke-width="2" />
-          {{ step === 0 ? 'Skip for now' : 'Back' }}
-        </button>
-
-        <button
-          type="button"
-          class="k-btn k-btn--primary group px-4 py-2 text-[12px] active:scale-[0.98]"
-          @click="step === steps.length - 1 ? emit('dismiss') : next()"
-        >
-          <span>{{ step === steps.length - 1 ? 'Go to dashboard' : 'Continue' }}</span>
-          <ArrowRight class="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" :stroke-width="2" />
-        </button>
+    </div>
+    <div v-else-if="memberJourney" class="onboarding-member">
+      <template v-if="setupReady">
+        <h2>{{ selectedGoal.task }}</h2>
+        <p class="onboarding-help">{{ selectedGoal.prerequisite }}</p>
+      </template>
+      <template v-else-if="setupDataCurrent">
+        <h2>Ask your Workspace administrator</h2>
+        <p class="onboarding-help">Copy this request and share it with your administrator. Nothing is sent automatically.</p>
+        <label for="onboarding-setup-request" class="sr-only">Request for your administrator</label>
+        <textarea id="onboarding-setup-request" class="onboarding-request" readonly rows="4" :value="setupRequest" />
+        <button type="button" class="k-btn k-btn--ghost mt-3" @click="copySetupRequest">{{ requestCopied ? 'Request copied' : 'Copy request' }}</button>
+        <p v-if="requestCopied" role="status" class="sr-only">Ready to paste into a message to your administrator.</p>
+        <p v-if="copyFailed" role="alert" class="onboarding-help">Couldn’t copy automatically. Select the request above and copy it manually.</p>
+        <p class="onboarding-help">You can use other available tools now and return to Getting started later.</p>
+      </template>
+      <button v-if="!setupReady" type="button" class="k-btn k-btn--ghost mt-3" :disabled="providers.loading" @click="providers.load()">{{ providers.loading ? 'Checking availability…' : 'Check again' }}</button>
+    </div>
+    <div v-else class="onboarding-preview">
+      <div class="onboarding-capabilities" :aria-busy="providers.loading || Object.values(busy).some(Boolean)">
+      <p v-if="providers.loading" role="status" class="onboarding-help">Refreshing Providers…</p>
+      <div v-if="providers.error" role="alert" class="my-4 text-danger"><p>{{ providers.error }}</p><button type="button" class="k-btn k-btn--ghost" :disabled="providers.loading" @click="providers.load()">Retry loading Providers</button></div>
+      <p v-if="actionError && !dialogProvider" role="alert" class="text-danger">{{ actionError }}</p>
+      <ul class="onboarding-providers">
+        <li v-for="item in plan" :key="item.name" :class="{ 'onboarding-provider-enabled': providers.isEnabled(item.name) }">
+          <div class="onboarding-provider-icon" aria-hidden="true">
+            <img v-if="item.provider?.iconURL && !failedIcons[item.provider.iconURL]" :src="item.provider.iconURL" alt="" @error="failedIcons[item.provider.iconURL] = true" />
+            <Puzzle v-else :stroke-width="1.5" class="h-5 w-5" />
+          </div>
+          <div class="onboarding-provider-copy">
+            <div class="onboarding-provider-heading">
+              <strong>{{ item.provider?.displayName || item.name }}</strong>
+              <span v-if="item.provider?.category" class="onboarding-provider-category font-mono">
+                <component :is="categoryIcon(item.provider.category)" :stroke-width="1.75" class="h-3.5 w-3.5" aria-hidden="true" />{{ item.provider.category }}
+              </span>
+            </div>
+            <p v-if="!item.provider">Not available in this catalog. Ask your administrator to make this Provider available, or choose another goal.</p>
+            <template v-else>
+              <p>{{ purpose(item.name, item.provider) }}</p>
+              <p v-if="providers.isEnabled(item.name) && !item.provider.ready" role="status">Enabled, but not yet available</p>
+              <p v-if="dependencyNotice(item.provider)" class="text-warning">{{ dependencyNotice(item.provider) }}</p>
+              <p v-if="!item.provider.ready && item.provider.readinessMessage">{{ item.provider.readinessMessage }}</p>
+            </template>
+          </div>
+          <span v-if="item.provider && providers.isEnabled(item.name)" role="status" class="onboarding-provider-action inline-flex items-center gap-1.5 text-[13px] text-accent"><Check :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Enabled</span>
+          <button v-else-if="item.provider?.export?.name && item.provider.export.path" type="button" class="k-btn k-btn--ghost onboarding-provider-action shrink-0 text-accent" :aria-label="`${busy[item.name] ? 'Enabling' : 'Enable provider'}: ${item.provider.displayName || item.name}`" :disabled="!!busy[item.name] || providers.hasMissingDependencies(item.provider) || providers.loading" @click="openEnableDialog(item.provider)">
+            <Loader2 v-if="busy[item.name]" :stroke-width="1.75" class="h-4 w-4 animate-spin" aria-hidden="true" /><Plus v-else :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ busy[item.name] ? 'Enabling…' : 'Enable provider' }}
+          </button>
+        </li>
+      </ul>
+      <button v-if="plan.some(item => item.provider && providers.isEnabled(item.name) && !item.provider.ready) || (canOpen && !setupReady)" type="button" class="k-btn k-btn--ghost mb-4" :disabled="providers.loading" @click="providers.load()">Refresh Provider status</button>
+      <p v-if="target && (!target.export?.name || !target.export?.path)" class="onboarding-help">This Provider is unavailable for setup in this Workspace. Ask your administrator for help.</p>
+      <p v-if="target && providers.isEnabled(goal) && !target.serving?.ui" class="onboarding-help">This Provider has no web interface. Open the catalog for its available access options.</p>
+      <div class="onboarding-resources">
+        <details class="onboarding-details">
+          <summary><ChevronRight :stroke-width="1.75" class="onboarding-details-chevron h-3.5 w-3.5" aria-hidden="true" /><span>Setup details</span></summary>
+          <div class="onboarding-details-content">
+            <h2>{{ selectedGoal.task }}</h2>
+            <p class="onboarding-help">{{ selectedGoal.prerequisite }}</p>
+            <p class="onboarding-help">Enabling adds this Provider to this Workspace. Review its requested access, including any organization-level permissions, before continuing.</p>
+            <dl>
+              <template v-for="item in plan" :key="item.name">
+                <dt>{{ item.provider?.displayName || item.name }}</dt>
+                <dd>{{ item.provider?.description || 'Not available in this catalog.' }}</dd>
+              </template>
+            </dl>
+          </div>
+        </details>
+        <router-link :to="scopePath('/providers')" class="text-accent text-[13px]">Browse all Providers</router-link>
+      </div>
       </div>
     </div>
 
-    <ProviderEnableDialog
-      :provider="dialogProvider"
-      :org-role="tenant.activeOrg?.role"
-      :workspace-role="tenant.activeWorkspace?.role"
-      :busy="dialogProvider ? !!busy[dialogProvider.name] : false"
-      :error="dialogProvider ? actionError : null"
-      @cancel="closeEnableDialog"
-      @confirm="onDialogConfirm"
-    />
-  </div>
+    <button v-if="step === 1" type="button" class="k-btn k-btn--ghost mt-4 min-h-11 onboarding-control w-full" @click="explore">Not sure, I’m exploring</button>
+
+    <p v-if="step === 2 && !memberJourney && finalActionReason" id="onboarding-action-reason" class="onboarding-action-reason" role="status" aria-live="polite">{{ finalActionReason }}</p>
+
+    </div>
+    <footer class="onboarding-footer">
+      <button v-if="step > 0" type="button" class="k-btn k-btn--ghost" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
+      <button v-else type="button" class="k-btn k-btn--ghost" @click="emit('dismiss')">Go to dashboard</button>
+      <router-link v-if="step === 1 && canSkipSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
+      <button v-else-if="step < 2" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="next">{{ step === 0 ? 'Continue' : memberJourney ? 'See next steps' : 'Review setup' }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
+      <button v-else-if="memberJourney && (exploring || !setupReady)" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
+      <router-link v-else-if="exploring" :to="scopePath('/providers')" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Explore Providers<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
+      <button v-else-if="teamSetup && setupReady" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">Go to Workspace<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
+      <router-link v-else-if="setupReady && !teamSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
+      <button v-else type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" disabled :aria-describedby="finalActionReason ? 'onboarding-action-reason' : undefined">{{ teamSetup ? "Go to Workspace" : openLabel }}</button>
+    </footer>
+    <ProviderEnableDialog :provider="dialogProvider" :org-role="tenant.activeOrg?.role" :workspace-role="tenant.activeWorkspace?.role" :busy="dialogProvider ? !!busy[dialogProvider.name] : false" :error="dialogProvider ? actionError : null" @cancel="closeEnableDialog" @confirm="onDialogConfirm" />
+  </section>
 </template>
+
+<style scoped>
+.onboarding { display: flex; flex-direction: column; width: 100%; max-width: 640px; min-height: min(540px, calc(100dvh - 40px)); margin: 0 auto; padding: 24px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-primary); }
+.onboarding-request { display: block; width: 100%; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-overlay); color: var(--color-text-primary); font: inherit; font-size: 13px; resize: vertical; }
+.onboarding-body { flex: 1; min-width: 0; }
+h1 { width: fit-content; max-width: 100%; font-size: 16px; line-height: 1.5; font-weight: 600; margin: 0 0 8px; }
+h1:focus { outline: none; }
+h1:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 4px; border-radius: 3px; }
+h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.onboarding-description { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 16px; max-width: 75ch; }
+.onboarding-choices { display: grid; gap: 12px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.onboarding-choice { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); cursor: pointer; }
+.onboarding-choice:hover { background: var(--color-surface-hover); }
+.onboarding-choice.selected { border-color: var(--color-accent); background: var(--color-accent-subtle); }
+.onboarding-choice:focus-within { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.onboarding-choice strong { display: block; font-size: 13px; font-weight: 600; }
+.onboarding-choice span > span { display: block; margin-top: 4px; font-size: 13px; color: var(--color-text-secondary); }
+.onboarding-preview { display: grid; gap: 24px; }
+.onboarding-explore { display: flex; gap: 12px; padding: 16px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); }
+.onboarding-capabilities { min-width: 0; }
+.onboarding-capabilities > .onboarding-help { max-width: 75ch; }
+.onboarding-help, .onboarding-providers p { font-size: 13px; margin-top: 8px; overflow-wrap: anywhere; }
+.onboarding-help, .onboarding-providers p:not(.text-warning) { color: var(--color-text-secondary); }
+.onboarding-providers { display: grid; gap: 12px; list-style: none; padding: 0; margin: 20px 0; }
+.onboarding-providers li { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 20px; border: 1px solid var(--color-border-default); border-radius: 6px; background: color-mix(in srgb, var(--color-surface-overlay) 35%, var(--color-surface-raised)); }
+.onboarding-providers li.onboarding-provider-enabled { border-color: var(--color-accent); }
+.onboarding-provider-icon { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-accent); }
+.onboarding-provider-icon img { width: 20px; height: 20px; object-fit: contain; }
+.onboarding-provider-copy { min-width: 0; }
+.onboarding-provider-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.onboarding-provider-category { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; border: 1px solid var(--color-border-default); border-radius: 3px; color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.onboarding-provider-category svg { flex-shrink: 0; }
+.onboarding-provider-action { justify-self: end; white-space: nowrap; }
+@media (max-width: 600px) { .onboarding-providers li { grid-template-columns: 36px minmax(0, 1fr); gap: 12px; padding: 16px; } .onboarding-provider-icon { width: 36px; height: 36px; } .onboarding-provider-action { grid-column: 2; justify-self: start; } }
+.onboarding-providers strong { font-size: 13px; font-weight: 600; }
+.onboarding-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border-subtle); }
+.onboarding-resources { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; font-size: 13px; }
+.onboarding-details { grid-column: 1 / -1; grid-row: 1; min-width: 0; }
+.onboarding-details summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; width: fit-content; max-width: calc(100% - 144px); min-height: 32px; color: var(--color-text-secondary); }
+.onboarding-details summary::-webkit-details-marker { display: none; }
+.onboarding-details summary:hover { color: var(--color-text-primary); }
+.onboarding-details summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 4px; }
+.onboarding-details-chevron { flex-shrink: 0; }
+.onboarding-details[open] .onboarding-details-chevron { transform: rotate(90deg); }
+.onboarding-details-content { margin-top: 8px; padding: 12px 0 0; border-top: 1px solid var(--color-border-subtle); }
+.onboarding-details dt { font-weight: 600; margin-top: 12px; }
+.onboarding-details dd { color: var(--color-text-secondary); margin: 4px 0 0; overflow-wrap: anywhere; }
+.onboarding-resources > a { grid-column: 2; grid-row: 1; align-self: start; display: inline-flex; align-items: center; min-height: 32px; }
+@media (pointer: coarse), (any-pointer: coarse) { .onboarding-resources summary, .onboarding-resources > a { min-height: 44px; } }
+.onboarding-action-reason { min-height: 18px; margin: 12px 0 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; }
+
+/* Use horizontal space on laptops instead of shrinking text or clipping content.
+   Long catalogs and zoomed/narrow views retain the shell's natural scrolling. */
+@media (min-width: 640px) {
+  .onboarding-goals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .onboarding { padding: 16px; }
+  .onboarding-choice { padding: 10px 12px; }
+  .onboarding-choices { gap: 8px; }
+  .onboarding-preview { gap: 16px; }
+  .onboarding-providers { gap: 8px; margin: 0 0 12px; }
+  .onboarding-providers li { padding: 8px 12px; gap: 12px; }
+  .onboarding-providers p { margin-top: 4px; }
+  .onboarding-footer { margin-top: 8px; padding-top: 12px; }
+  .onboarding-action-reason { margin-top: 6px; }
+}
+@media (pointer: fine) { .onboarding-control { min-height: 36px; } }
+@media (max-width: 480px) { .onboarding { min-height: 0; padding: 16px; } .onboarding-choice { padding: 16px; gap: 12px; } .onboarding-footer > * { flex: 1 1 auto; } }
+</style>

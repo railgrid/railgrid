@@ -247,7 +247,7 @@ test('shell recovery and context status are present without claiming uncondition
   assert.equal((appLayout.match(/aria-label="Open help and community"/g) ?? []).length, 3)
   assert.equal((appLayout.match(/aria-controls="help-support-dialog"/g) ?? []).length, 3)
   assert.equal((appLayout.match(/@click="showHelpModal = true"/g) ?? []).length, 3)
-  assert.match(appLayout, /<HelpSupportModal v-if="showHelpModal" @close="showHelpModal = false" \/>/)
+  assert.match(appLayout, /<HelpSupportModal v-if="!gettingStartedFocused && showHelpModal" @close="showHelpModal = false" \/>/)
   assert.ok((appLayout.match(/@click="retryProviderBindings"/g) ?? []).length >= 3)
   assert.match(appLayout, /providerBindingsStale = computed\(\(\) => providersStore\.bindingsStale\)/)
   assert.match(appLayout, /const contextStatus = computed<ContextStatus>/)

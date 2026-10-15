@@ -71,3 +71,88 @@ when the user visits setup or changes the integration choice. App Studio applies
 this to Git: model setup is required for the assistant journey, while Git can be
 connected later from project settings. Completion copy must describe the services
 actually connected, not imply that skipping established a connection.
+
+
+## Workspace onboarding
+
+The host’s [WelcomeWizard](../../../portal/src/components/WelcomeWizard.vue)
+uses three steps: context, goal, and a starting Workspace preview. Context
+suggests a goal; an explicit goal choice takes precedence. The preview walks
+the live catalog’s requirements in dependency order, reports missing Providers,
+and uses the existing ProviderEnableDialog for each consent decision, including
+cross-Provider composition access. It never enables a bundle implicitly.
+A ready, enabled Provider with a web UI and satisfied dependencies offers a
+Workspace-scoped link into its workflow; enablement is not task completion. Workspace members who are also Organization
+members can launch directly from goal selection when the selected Provider and
+all transitive prerequisites are enabled and ready, with a web UI and current
+Workspace binding data. Admins retain the setup preview. This shortcut performs
+no enablement or permission changes.
+
+**Not sure, I’m exploring** continues to a neutral introduction and the scoped
+Provider catalog without selecting or enabling a Provider. Back returns to goal
+selection. **Go to dashboard** dismisses the guide, and Getting started on the
+dashboard reopens it at **Your goal**, preserving the previous selection. Automatic
+entry happens once per signed-in user in this browser, marked when the guide is
+shown rather than dismissed. Creating or switching Workspaces and reloading an
+unfinished journey do not reopen it. Legacy dismissal history has no account owner and is not assigned to the current
+user. Clearing storage or changing browsers can show it again.
+Choices remain browser-local and scoped by user, Organization, Workspace, and mode;
+changing scope invalidates outstanding consent.
+
+
+While open, Getting started hides all shell navigation positions and persistent
+terminal and agent docks without changing preferences or ending sessions.
+Dismissal or route exit restores the shell. Catalog refreshes keep the wizard
+mounted. Native radio groups, associated descriptions, heading focus, and the
+shared wizard progress recipe support keyboard and screen-reader navigation.
+There is no Workspace eyebrow or top skip action.
+
+All steps share one bordered 640px-maximum card, a common 540px minimum height
+capped by the available viewport, and a footer separated by a subtle divider.
+The body absorbs unused space to keep the card and footer stable across the
+common three-step journey. Use the standard functional type scale: 16px panel
+headings, 13px choice headings, 13px supporting copy, and shared controls.
+
+At widths of 640px and above, goal choices use two columns. Provider setup
+uses a single compact list with names, categories, status, dependency warnings,
+and explicit enable actions. Optional task prerequisites and full Provider
+descriptions are available in the keyboard-accessible **Setup details** disclosure.
+Opening details allows the card to grow naturally. Compact vertical spacing fits the common three-Provider journey at 1280×720 and 1440×800. On phones the
+minimum height is removed. Long catalogs, errors, narrow and zoomed layouts
+retain natural scrolling; never clip content to satisfy a viewport target.
+
+Validation uses portal regression tests and the isolated real-component fixture:
+`make serve-onboarding-visual`, then `make test-onboarding-visual`. Supply
+`PLAYWRIGHT_MODULE` and `CHROMIUM_EXECUTABLE` if these are not installed in the
+usual locations. The fixture uses the production wizard, shell, stores, and
+consent dialog with synthetic catalog data and mocked network actions. It covers
+light/dark laptop, tablet, and phone layouts, card/footer geometry, exploration,
+restoration, and consent forwarding. It does not verify live Provider
+provisioning or completion of downstream tasks.
+
+### Onboarding language and audience
+
+Team setup asks what the team should be able to do, describes Providers as tools
+that tailor a Workspace, and completes at the Workspace dashboard. Individual
+project work keeps task-oriented goals and opens the selected Provider. Selecting
+a team starting point is a presentation preference, not a membership or permission
+change. Direct member launch applies only to the individual-work path.
+
+Provider rows show a short purpose before enablement; supporting Providers explain
+their role in the chosen task. Destination actions use the catalog display name.
+Enabling makes tools available; creating an app, agent, or service happens inside
+the Provider. Permission copy distinguishes Workspace and organization access and
+avoids credential implementation promises. Provider tiles are 36px with 20px icons;
+readable text and the consistent onboarding frame are preserved.
+
+All Provider launch paths require current Workspace bindings and enabled, ready
+transitive prerequisites. Retained stale binding data may display status, but
+cannot enable the launch action.
+
+Members choosing individual project work never see Provider enable controls in
+onboarding. Ready tools open directly from the goal step. Missing or unavailable
+tools lead to an administrator handoff with a copyable request and an always
+available return to the Workspace. Copying does not send a message. Unknown or
+stale availability offers a retry, not a setup diagnosis. Once availability is
+confirmed, the same screen can offer the direct launch. Exploration returns
+members to their existing Workspace tools rather than asking them to enable more.
