@@ -995,7 +995,7 @@ railgrid-provider-agents .agents-chat-starter {
 }
 railgrid-provider-agents .agents-chat-starter > span { min-width: 0; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-chat-starter > svg { color: var(--color-accent); }
-railgrid-provider-agents .agents-chat-starter:hover:not(:disabled) {
+railgrid-provider-agents .agents-chat-starter:hover:not([aria-disabled="true"]) {
   background: color-mix(in srgb, var(--color-accent) 5%, transparent);
   border-color: var(--color-border-subtle);
   color: var(--color-text-primary);
@@ -1005,7 +1005,7 @@ railgrid-provider-agents .agents-chat-starter:focus-visible {
   outline-offset: 3px;
   border-radius: 4px;
 }
-railgrid-provider-agents .agents-chat-starter:disabled {
+railgrid-provider-agents .agents-chat-starter[aria-disabled="true"] {
   cursor: default;
   opacity: 0.5;
   background: transparent;
@@ -1045,3 +1045,5 @@ railgrid-provider-agents .agents-return-latest:focus-visible {
 @media (pointer: coarse) {
   railgrid-provider-agents .agents-return-latest { width: 44px; height: 44px; }
 }
+
+railgrid-provider-agents .agents-chat-welcome .agents-starter-help { margin: 12px 0 0; font-size: 12px; }

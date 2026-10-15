@@ -85,6 +85,7 @@ function resetOlderHistory(): void {
   olderLoading.value = false
   olderError.value = ''
   historyItems = []
+  atBottom.value = true
 }
 watch(sessionID, resetOlderHistory, { flush: 'sync' })
 const draft = ref('')
@@ -613,7 +614,10 @@ async function loadMessages(session: string, name = props.name, api = props.api)
   const serial = ++messageReadSerial
   if (streaming.value || !session) return false
   messagesLoading.value = true
-  resetOlderHistory()
+  // Supersede an in-flight older read without discarding its loaded pages.
+  olderReadSerial += 1
+  olderLoading.value = false
+  olderError.value = ''
   try {
     const page = await api.listMessagePage(name, session)
     if (
@@ -622,12 +626,21 @@ async function loadMessages(session: string, name = props.name, api = props.api)
       sessionID.value !== session ||
       streaming.value
     ) return false
-    historyItems = page.items.slice().reverse()
-    olderCursor.value = page.nextCursor || ''
+    const fresh = page.items.slice().reverse()
+    const freshIDs = new Set(fresh.map(item => item.id))
+    const retained = historyItems.filter(item => !freshIDs.has(item.id))
+    const hadHistory = historyItems.length > 0
+    const wasAtBottom = atBottom.value
+    const scrollTop = log.value?.scrollTop || 0
+    historyItems = [...retained, ...fresh]
+    if (!hadHistory) olderCursor.value = page.nextCursor || ''
     messages.value = rebuildTranscript(historyItems)
     messagesHasSnapshot.value = true
     loadError.value = null
-    atBottom.value = true
+    await nextTick()
+    if (serial === messageReadSerial && contextIsCurrent(name, api) && sessionID.value === session && !wasAtBottom && !atBottom.value && log.value) {
+      log.value.scrollTop = scrollTop
+    }
   } catch (error) {
     if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
     loadError.value = (error as Error).message
@@ -705,9 +718,13 @@ function returnToLatest(): void {
 }
 
 function applyStarterPrompt(prompt: string): void {
+  if (starterPromptHelp.value) return
   draft.value = prompt
   void nextTick(() => composer.value?.focus())
 }
+const starterPromptHelp = computed(() => !hasModel.value
+  ? 'Choose a model to use a starter prompt.'
+  : draft.value ? 'Clear your draft to use a starter prompt.' : '')
 const starterPrompts = [
   'What can you help me with, and which tools can you use?',
   'Help me plan a task. Ask me about my goal and constraints first.',
@@ -1758,21 +1775,23 @@ defineExpose({
             />
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
             <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
-              <h2 role="status" aria-live="polite">Start a conversation with {{ agent?.spec.displayName || name }}</h2>
-              <p class="muted">{{ agent?.spec.description || 'Share a goal, ask a question, or explore what this agent can help you do.' }}</p>
+              <h2>Start a conversation with {{ agent?.spec.displayName || name }}</h2>
+              <p class="muted" role="status" aria-live="polite">{{ agent?.spec.description || 'Share a goal, ask a question, or explore what this agent can help you do.' }}</p>
               <div class="agents-chat-starters" role="group" aria-label="Starter prompts">
                 <button
                   v-for="prompt in starterPrompts"
                   :key="prompt"
                   type="button"
                   class="k-ai-launcher__card agents-chat-starter"
-                  :disabled="!hasModel || !!draft"
+                  :aria-disabled="!!starterPromptHelp"
+                  :aria-describedby="starterPromptHelp ? domID('agents-starter-help') : undefined"
                   @click="applyStarterPrompt(prompt)"
                 >
                   <span>{{ prompt }}</span>
                   <ArrowUpRight :size="16" :stroke-width="1.75" aria-hidden="true" />
                 </button>
               </div>
+              <p v-if="starterPromptHelp" :id="domID('agents-starter-help')" class="muted agents-starter-help">{{ starterPromptHelp }}</p>
             </section>
           </AITranscript>
         </div>

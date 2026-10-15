@@ -140,10 +140,10 @@ describe('typed chat progress projection', () => {
     const startedAt = '2026-09-10T10:00:00Z'
     const api = stubApi({
       listSessions: () => Promise.resolve([session('s1')]),
-      listMessages: () => Promise.resolve([{
+      listMessagePage: async () => ({ items: await (Promise.resolve([{
         id: 'a1', role: 'assistant', content: 'Still working', runID: 'r1',
         metadata: { turnPhase: 'terminal', turnStatus: 'running', startedAt, durationMS: 1250 },
-      }]),
+      }])) }),
       listRuns: vi.fn().mockResolvedValue({
         items: [{
           id: 'r1', agent: 'scout', sessionID: 's1', trigger: 'chat', class: 'interactive', phase: 'Running',
@@ -183,7 +183,7 @@ describe('AgentChat loading and draft behavior', () => {
     const history = deferred<TranscriptMessage[]>()
     const { view } = await mountChat(async function* () {}, {
       listSessions: () => Promise.resolve([session('s1')]),
-      listMessages: () => history.promise,
+      listMessagePage: async () => ({ items: await (history.promise) }),
     })
     await settleVue(3, 1)
 

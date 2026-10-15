@@ -9,6 +9,7 @@ technical boundaries, not a debt baseline:
 
 | Exception | Boundary |
 |---|---|
+| Agents floating Return to latest circle | Explicit user-requested 36px circular scroll control (44px for coarse pointers), scoped to `.agents-return-latest` in `providers/agents/portal/src/style.css`; its zero-height anchor overlays only the button and creates no full-width bar. Other buttons retain the 4px radius. |
 | Chat bubbles at 12–14px | Conversational voice, not chrome |
 | Terminal canvas colors in `TerminalDock.vue` | Terminals are always dark and read as one intentional dark surface |
 | App preview iframe white background | The user's app owns its canvas |
@@ -31,3 +32,8 @@ non-color line styles, with an automated light-surface contrast floor; the
 remaining both-theme, color-blind, browser, and assistive-technology review is
 tracked as a [known oddity](known-oddities.md). The exception records the
 boundary, not a promise that the palette is universally accessible.
+
+The Agents return-to-latest control is an equal-width/height true circle,
+already accepted by the scanner's circle check; it needs no suppressing
+registry entry. This documented exception covers its use as a floating
+conversation control, not a general circular-button recipe.

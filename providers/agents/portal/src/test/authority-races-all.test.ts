@@ -58,7 +58,7 @@ const cases: Case[] = [
       const deletion = vi.fn().mockResolvedValue(undefined)
       api.deleteSession = deletion as ApiClient['deleteSession']
       api.listSessions = vi.fn().mockResolvedValue([{ id: 'session-1', preview: 'Chat', messageCount: 1, createdAt: '', lastActivity: '' }])
-      api.listMessages = vi.fn().mockResolvedValue([])
+      api.listMessagePage = vi.fn().mockResolvedValue({ items: [] })
       api.listRuns = vi.fn().mockResolvedValue({ items: [], nextCursor: '' })
       store.agents.data = [agentFixture('scout')]
       store.agents.loaded = store.agents.hasSnapshot = true

@@ -55,7 +55,7 @@ describe('verbs are kube paths', () => {
     const { api, calls } = clientWithRecorder()
     await api.listSessions('scout')
     await api.deleteSession('scout', 'schedule:daily')
-    await api.listMessages('scout', 's 1', 50)
+    await api.listMessagePage('scout', 's 1', '', 50)
     await api.testCredential('openai', 'gpt-x')
     await api.discoverCredential('openai')
     await api.testConnection('slack')

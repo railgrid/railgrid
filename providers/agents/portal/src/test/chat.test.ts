@@ -217,9 +217,9 @@ describe('chat streaming', () => {
   it('selects another saved thread while a turn continues, then recovers the original run', async () => {
     const gate = deferred<void>()
     const cancelRun = vi.fn()
-    const listMessages = vi.fn(async (_agent: string, sessionID: string) => sessionID === 'other'
+    const listMessagePage = vi.fn(async (_agent: string, sessionID: string) => ({ items: await (sessionID === 'other'
       ? [{ id: 'other-reply', role: 'assistant', content: 'Other thread history' }]
-      : [{ id: 'original-reply', runID: 'running-original', role: 'assistant', content: 'Original progress' }])
+      : [{ id: 'original-reply', runID: 'running-original', role: 'assistant', content: 'Original progress' }]) }))
     const listRuns = vi.fn(async ({ session: sessionID }: { session: string }) => ({ items: sessionID === 'original'
       ? [{ id: 'running-original', sessionID: 'original', phase: 'Running', agent: 'scout' }]
       : [] }))
@@ -230,7 +230,7 @@ describe('chat streaming', () => {
       await gate.promise
     }
     const { el } = await mountChat(chatStream, {
-      cancelRun, listMessages, listRuns, getRun: vi.fn().mockResolvedValue({ id: 'running-original', phase: 'Running' }),
+      cancelRun, listMessagePage, listRuns, getRun: vi.fn().mockResolvedValue({ id: 'running-original', phase: 'Running' }),
       listSessions: () => Promise.resolve([session('original', 'Original thread'), session('other', 'Other thread')]),
     })
     await send(el, 'Continue original work')
@@ -265,16 +265,16 @@ describe('chat streaming', () => {
   })
 
   it('reloads the saved reply when a disconnected turn already completed', async () => {
-    const listMessages = vi.fn().mockResolvedValue([{ id: 'saved-final', runID: 'r1', role: 'assistant', content: 'Complete saved reply' }])
+    const listMessagePage = vi.fn().mockResolvedValue({ items: [{ id: 'saved-final', runID: 'r1', role: 'assistant', content: 'Complete saved reply' }] })
     const { el } = await mountChat(scripted([
       { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
       { event: 'delta', data: { text: 'Partial reply' } },
-    ]), { getRun: vi.fn().mockResolvedValue({ id: 'r1', phase: 'Succeeded' }), listMessages })
+    ]), { getRun: vi.fn().mockResolvedValue({ id: 'r1', phase: 'Succeeded' }), listMessagePage })
 
     await send(el, 'hello')
     await settle(6)
 
-    expect(listMessages).toHaveBeenCalledWith('scout', 's1')
+    expect(listMessagePage).toHaveBeenCalledWith('scout', 's1')
     expect(text(el.querySelector('.agents-log'))).toContain('Complete saved reply')
     expect(text(el.querySelector('.agents-log'))).not.toContain('Partial reply')
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
@@ -923,14 +923,14 @@ describe('chat streaming', () => {
   })
 
   it('refreshes the transcript when a successfully cancelled run becomes terminal', async () => {
-    const listMessages = vi.fn().mockResolvedValue([])
+    const listMessagePage = vi.fn().mockResolvedValue({ items: [] })
     const cancelRun = vi.fn().mockResolvedValue({ id: 'r1', cancelling: true })
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string, signal: AbortSignal) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
     })
-    const { el, store } = await mountChat(chatStream, { cancelRun, listMessages })
-    const readsBeforeSend = listMessages.mock.calls.length
+    const { el, store } = await mountChat(chatStream, { cancelRun, listMessagePage })
+    const readsBeforeSend = listMessagePage.mock.calls.length
 
     await send(el, 'long task')
     el.querySelector<HTMLButtonElement>('.agents-stop')!.click()
@@ -942,38 +942,38 @@ describe('chat streaming', () => {
     }))
     await settle(6)
 
-    expect(listMessages.mock.calls.length).toBeGreaterThan(readsBeforeSend)
-    expect(listMessages).toHaveBeenLastCalledWith('scout', 's1')
+    expect(listMessagePage.mock.calls.length).toBeGreaterThan(readsBeforeSend)
+    expect(listMessagePage).toHaveBeenLastCalledWith('scout', 's1')
   })
 
   it('defers a terminal transcript refresh until an in-flight cancellation settles', async () => {
     const cancellation = deferred<{ id: string; cancelling: boolean }>()
-    const listMessages = vi.fn()
-      .mockResolvedValueOnce([])
-      .mockResolvedValue([{ id: 'final', role: 'assistant', content: 'Authoritative final reply' }])
+    const listMessagePage = vi.fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValue({ items: [{ id: 'final', role: 'assistant', content: 'Authoritative final reply' }] })
     const cancelRun = vi.fn(() => cancellation.promise)
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string, signal: AbortSignal) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
     })
-    const { el, store } = await mountChat(chatStream, { cancelRun, listMessages })
+    const { el, store } = await mountChat(chatStream, { cancelRun, listMessagePage })
 
     await send(el, 'long task')
     el.querySelector<HTMLButtonElement>('.agents-stop')!.click()
     await settle(2)
     expect(cancelRun).toHaveBeenCalledWith('r1')
-    const readsBeforeTerminal = listMessages.mock.calls.length
+    const readsBeforeTerminal = listMessagePage.mock.calls.length
 
     store.dispatchEvent(new CustomEvent('server', {
       detail: { type: 'run', data: { id: 'r1', phase: 'Aborted' } },
     }))
     await settle(3)
-    expect(listMessages).toHaveBeenCalledTimes(readsBeforeTerminal)
+    expect(listMessagePage).toHaveBeenCalledTimes(readsBeforeTerminal)
 
     cancellation.resolve({ id: 'r1', cancelling: true })
     await settle(8)
-    expect(listMessages.mock.calls.length).toBeGreaterThan(readsBeforeTerminal)
-    expect(listMessages).toHaveBeenLastCalledWith('scout', 's1')
+    expect(listMessagePage.mock.calls.length).toBeGreaterThan(readsBeforeTerminal)
+    expect(listMessagePage).toHaveBeenLastCalledWith('scout', 's1')
     expect(text(el)).toContain('Authoritative final reply')
   })
 
@@ -1131,19 +1131,19 @@ describe('chat streaming', () => {
 
   it('keeps an active transcript read alive when deleting another session', async () => {
     const activeHistory = deferred<TranscriptMessage[]>()
-    const listMessages = vi.fn((_agent: string, id: string) => id === 's1'
+    const listMessagePage = vi.fn(async (_agent: string, id: string) => ({ items: await (id === 's1'
       ? activeHistory.promise
-      : Promise.resolve([] as TranscriptMessage[]))
+      : Promise.resolve([] as TranscriptMessage[])) }))
     const deleteSession = vi.fn().mockResolvedValue(undefined)
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const { el } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1', 'Active chat'), session('s2', 'Old chat')]),
-      listMessages,
+      listMessagePage,
       deleteSession,
     })
 
     await settle(2)
-    expect(listMessages).toHaveBeenCalledWith('scout', 's1')
+    expect(listMessagePage).toHaveBeenCalledWith('scout', 's1')
     const oldChat = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
       .find(item => item.querySelector('[data-thread-id="s2"]'))
     expect(oldChat).not.toBeUndefined()
@@ -1210,7 +1210,7 @@ describe('chat streaming', () => {
 
 describe('chat read ownership', () => {
   it('announces a settled empty transcript as a polite status', async () => {
-    const api = stubApi({ listSessions: () => Promise.resolve([]), listMessages: () => Promise.resolve([]) })
+    const api = stubApi({ listSessions: () => Promise.resolve([]), listMessagePage: async () => ({ items: await (Promise.resolve([])) }) })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1218,7 +1218,7 @@ describe('chat read ownership', () => {
     await settle(4)
 
     const empty = [...view.element.querySelectorAll<HTMLElement>('[role="status"]')]
-      .find(element => text(element).includes('Start a conversation'))
+      .find(element => text(element).includes('Share a goal'))
     expect(empty).not.toBeUndefined()
     expect(empty?.getAttribute('aria-live')).toBe('polite')
   })
@@ -1237,7 +1237,7 @@ describe('chat read ownership', () => {
 
     const messageAPI = stubApi({
       listSessions: () => Promise.resolve([session('s1')]),
-      listMessages: () => Promise.reject(new Error('transcript unavailable')),
+      listMessagePage: async () => ({ items: await (Promise.reject(new Error('transcript unavailable'))) }),
     })
     const messageStore = makeStore(messageAPI)
     messageStore.agents.data = [agentFixture('scout')]
@@ -1251,11 +1251,11 @@ describe('chat read ownership', () => {
 
   it('retains a loaded transcript when a background refresh fails', async () => {
     let failMessages = false
-    const listMessages = vi.fn(() => failMessages
+    const listMessagePage = vi.fn(async () => ({ items: await (failMessages
       ? Promise.reject(new Error('transcript refresh unavailable'))
-      : Promise.resolve([{ id: 'm1', role: 'user', content: 'keep this message' }]))
+      : Promise.resolve([{ id: 'm1', role: 'user', content: 'keep this message' }])) }))
     const listRuns = vi.fn().mockResolvedValue({ items: [runRowForRead()] })
-    const api = stubApi({ listSessions: () => Promise.resolve([session('s1')]), listMessages, listRuns })
+    const api = stubApi({ listSessions: () => Promise.resolve([session('s1')]), listMessagePage, listRuns })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1324,10 +1324,10 @@ describe('chat read ownership', () => {
   it('does not let a late message read overwrite a newer session', async () => {
     const first = deferred<Array<{ id: string; role: string; content: string }>>()
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const listMessages = vi.fn((_agent: string, id: string) => id === 's1'
+    const listMessagePage = vi.fn(async (_agent: string, id: string) => ({ items: await (id === 's1'
       ? first.promise
-      : Promise.resolve([{ id: 'new', role: 'user', content: 'new session' }]))
-    const api = stubApi({ listSessions: () => Promise.resolve([session('s1'), session('s2')]), listMessages })
+      : Promise.resolve([{ id: 'new', role: 'user', content: 'new session' }])) }))
+    const api = stubApi({ listSessions: () => Promise.resolve([session('s1'), session('s2')]), listMessagePage })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1351,7 +1351,7 @@ describe('chat read ownership', () => {
     })
     const api = stubApi({
       listSessions: () => Promise.resolve([session('s1')]),
-      listMessages: () => history.promise,
+      listMessagePage: async () => ({ items: await (history.promise) }),
       chatStream,
     })
     const store = makeStore(api)
@@ -1377,10 +1377,10 @@ describe('chat read ownership', () => {
     const listSessions = vi.fn((name: string) => name === 'scout'
       ? scoutSessions.promise
       : Promise.resolve([session('ranger-session', 'Ranger chat')]))
-    const listMessages = vi.fn((_name: string, id: string) => Promise.resolve([
+    const listMessagePage = vi.fn(async (_name: string, id: string) => ({ items: await (Promise.resolve([
       { id: `${id}-message`, role: 'user', content: id },
-    ]))
-    const api = stubApi({ listSessions, listMessages })
+    ])) }))
+    const api = stubApi({ listSessions, listMessagePage })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout'), agentFixture('ranger')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1404,7 +1404,7 @@ describe('chat read ownership', () => {
       : Promise.resolve({ items: [] }))
     const api = stubApi({
       listSessions: () => Promise.resolve([session('s1'), session('s2')]),
-      listMessages: () => Promise.resolve([]),
+      listMessagePage: async () => ({ items: await (Promise.resolve([])) }),
       listRuns,
     })
     const store = makeStore(api)
@@ -1482,12 +1482,12 @@ describe('transcript rehydration', () => {
 
   it('renders reloaded tool turns as the same cards the live stream produces', async () => {
     // The API returns newest-first; the component reverses it.
-    const listMessages = vi.fn().mockResolvedValue([
+    const listMessagePage = vi.fn().mockResolvedValue({ items: [
       { id: '3', role: 'assistant', content: 'done', runID: 'r1' },
       { id: '2', role: 'tool', content: 'ok', runID: 'r1', metadata: { tool: 'web_search', args: '{"q":"railgrid"}', durationMS: 90 } },
       { id: '1', role: 'user', content: 'search', runID: 'r1' },
-    ])
-    const api = stubApi({ listMessages })
+    ] })
+    const api = stubApi({ listMessagePage })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1502,20 +1502,20 @@ describe('transcript rehydration', () => {
     expect(text(card.querySelector('.k-ai-execution-details'))).toContain('web_search')
     expect(text(card)).toContain('90ms')
     // A generous limit is requested so a long session comes back whole.
-    expect(listMessages.mock.calls[0][2] ?? 200).toBeGreaterThanOrEqual(200)
+    expect(listMessagePage.mock.calls[0][2] ?? 200).toBeGreaterThanOrEqual(200)
   })
 
   it('shows one stable run link on the last assistant segment and falls back to an available message', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const listMessages = vi.fn().mockResolvedValue([
+    const listMessagePage = vi.fn().mockResolvedValue({ items: [
       { id: '4', role: 'user', content: 'fallback', runID: 'r2' },
       { id: '3', role: 'assistant', content: 'second segment', runID: 'r1' },
       { id: '2', role: 'assistant', content: 'first segment', runID: 'r1' },
       { id: '1', role: 'user', content: 'request', runID: 'r1' },
-    ])
+    ] })
     const { el } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s1')]),
-      listMessages,
+      listMessagePage,
     })
 
     const links = [...el.querySelectorAll<HTMLButtonElement>('.agents-message-run-link')]
@@ -1546,7 +1546,7 @@ describe('a run still working with nobody attached', () => {
 
   async function mountWith(phase: string, extra: Record<string, unknown> = {}) {
     const listRuns = vi.fn().mockResolvedValue({ items: [runRow({ phase })] })
-    const api = stubApi({ listMessages: () => Promise.resolve([]), listRuns, ...extra })
+    const api = stubApi({ listMessagePage: async () => ({ items: await (Promise.resolve([])) }), listRuns, ...extra })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1619,12 +1619,12 @@ describe('a run still working with nobody attached', () => {
   })
 
   it('clears the banner and reloads the transcript when the run finishes', async () => {
-    const listMessages = vi.fn().mockResolvedValue([])
+    const listMessagePage = vi.fn().mockResolvedValue({ items: [] })
     // Running while the banner is up, terminal once it has finished — the
     // re-check after the reload has to agree, or the banner would reappear.
     let phase = 'Running'
     const listRuns = vi.fn().mockImplementation(() => Promise.resolve({ items: [runRow({ phase })] }))
-    const api = stubApi({ listMessages, listRuns })
+    const api = stubApi({ listMessagePage, listRuns })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1632,7 +1632,7 @@ describe('a run still working with nobody attached', () => {
     const el = view.element
     await settle(4)
     expect(el.querySelector('.agents-orphan-banner')).toBeTruthy()
-    const before = listMessages.mock.calls.length
+    const before = listMessagePage.mock.calls.length
     phase = 'Succeeded'
 
     store.dispatchEvent(
@@ -1641,12 +1641,12 @@ describe('a run still working with nobody attached', () => {
     await settle(4)
 
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
-    expect(listMessages.mock.calls.length).toBeGreaterThan(before)
+    expect(listMessagePage.mock.calls.length).toBeGreaterThan(before)
   })
 
   it('a lookup failure never breaks the transcript', async () => {
     const listRuns = vi.fn().mockRejectedValue(new Error('unavailable'))
-    const api = stubApi({ listMessages: () => Promise.resolve([{ id: '1', role: 'user', content: 'hi' }]), listRuns })
+    const api = stubApi({ listMessagePage: async () => ({ items: await (Promise.resolve([{ id: '1', role: 'user', content: 'hi' }])) }), listRuns })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -1663,7 +1663,7 @@ describe('a run still working with nobody attached', () => {
       .mockResolvedValueOnce({ items: [runRow()] })
       .mockRejectedValueOnce(new Error('run refresh failed'))
     const exposed = ref<{ refreshOrphan: () => Promise<void> } | null>(null)
-    const api = stubApi({ listMessages: () => Promise.resolve([]), listRuns })
+    const api = stubApi({ listMessagePage: async () => ({ items: await (Promise.resolve([])) }), listRuns })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { ref: exposed, store, api, name: 'scout' })
@@ -1776,11 +1776,11 @@ describe('approval handoff after the chat stream closes', () => {
 
   it('projects a terminal run detail when approval lifecycle events arrive late', async () => {
     const finalTranscript = deferred<TranscriptMessage[]>()
-    const listMessages = vi.fn()
-      .mockResolvedValueOnce([])
-      .mockImplementationOnce(() => finalTranscript.promise)
+    const listMessagePage = vi.fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockImplementationOnce(async () => ({ items: await (finalTranscript.promise) }))
     const getRun = vi.fn().mockResolvedValue({ ...pending('stale'), phase: 'Succeeded' })
-    const { el, store } = await mountChat(scripted(frames), { getRun, listMessages })
+    const { el, store } = await mountChat(scripted(frames), { getRun, listMessagePage })
     await send(el, 'describe models')
     expect(text(el.querySelector('.agents-approval'))).toContain('first')
 
@@ -1845,7 +1845,7 @@ describe('approval handoff after the chat stream closes', () => {
     const getRun = vi.fn().mockResolvedValue(pending('restored'))
     const { el } = await mountChat(scripted([]), {
       listSessions: () => Promise.resolve([session('s-approval')]),
-      listMessages: () => Promise.resolve([{ id: 'm1', runID: 'r-approval', role: 'assistant', content: '', metadata: { turnPhase: 'terminal', turnStatus: 'waiting' } }]),
+      listMessagePage: async () => ({ items: await (Promise.resolve([{ id: 'm1', runID: 'r-approval', role: 'assistant', content: '', metadata: { turnPhase: 'terminal', turnStatus: 'waiting' } }])) }),
       listRuns: () => Promise.resolve({ items: [{ id: 'r-approval', phase: 'Running' }] }), getRun,
     })
     await settle(6)
@@ -1945,15 +1945,15 @@ describe('approval handoff after the chat stream closes', () => {
     const listRuns = vi.fn((query: { limit?: number }) => Promise.resolve({
       items: query.limit ? persistedRuns.slice(0, query.limit) : persistedRuns,
     }))
-    const listMessages = vi.fn(() => Promise.resolve([] as TranscriptMessage[]))
+    const listMessagePage = vi.fn(async () => ({ items: await (Promise.resolve([] as TranscriptMessage[])) }))
     const getRun = vi.fn((runID: string) => Promise.resolve(pending('inbox-' + runID, runID)))
-    const { el, store } = await mountChat(chatStream, { listMessages, listRuns, getRun })
+    const { el, store } = await mountChat(chatStream, { listMessagePage, listRuns, getRun })
     await send(el, 'first run')
     await send(el, 'second run')
     await send(el, 'third run')
     expect(el.querySelectorAll('.agents-approval')).toHaveLength(3)
 
-    listMessages.mockResolvedValue(transcript.slice().reverse())
+    listMessagePage.mockResolvedValue({ items: transcript.slice().reverse() })
     persistedRuns = [
       ...Array.from({ length: 5 }, (_, index) => ({ id: 'r-history-' + index, phase: 'Succeeded', sessionID: 's-shared' })),
       { id: 'r-b', phase: 'Running', sessionID: 's-shared' },
@@ -2132,6 +2132,50 @@ describe('conversation history navigation', () => {
     expect(button(el, 'Deny')).toBeDefined()
     if (splitRun) expect(text(el)).toContain('Earlier progress')
     expect(el.querySelectorAll('.agents-msg.assistant')).toHaveLength(1)
+  })
+
+  it.each(['Succeeded', 'Aborted'])('retains older pages and reading position after a %s refresh', async phase => {
+    const recent = { id: 'recent', runID: 'r1', role: 'assistant', content: 'Working' }
+    const page = vi.fn()
+      .mockResolvedValueOnce({ items: [recent], nextCursor: 'older' })
+      .mockResolvedValueOnce({ items: [row('previous page')], nextCursor: 'oldest' })
+      .mockResolvedValueOnce({ items: [{ ...recent, content: 'Final result' }], nextCursor: 'older' })
+      .mockResolvedValueOnce({ items: [row('first page')] })
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1')], listMessagePage: page,
+    })
+    button(el, 'Load earlier messages').click()
+    await settle()
+    const log = el.querySelector<HTMLElement>('.agents-log')!
+    Object.defineProperties(log, { clientHeight: { value: 200 }, scrollHeight: { value: 1200 } })
+    log.scrollTop = 123
+    log.dispatchEvent(new Event('scroll'))
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r1', phase } } }))
+    await settle(8)
+    expect(text(log)).toContain('previous page')
+    expect(text(log)).toContain('Final result')
+    expect(text(log)).not.toContain('Working')
+    expect(log.scrollTop).toBe(123)
+    button(el, 'Load earlier messages').click()
+    await settle()
+    expect(page).toHaveBeenLastCalledWith('scout', 's1', 'oldest')
+    expect(text(log)).toContain('first page')
+  })
+
+  it('explains unavailable starters while retaining keyboard access and heading semantics', async () => {
+    const { el } = await mountChat(scripted([]))
+    const heading = el.querySelector('.agents-chat-welcome h2')!
+    expect(heading.getAttribute('role')).toBeNull()
+    const starter = button(el, 'What can you help me with')
+    starter.click()
+    await settle()
+    expect(starter.disabled).toBe(false)
+    expect(starter.getAttribute('aria-disabled')).toBe('true')
+    expect(text(el)).toContain('Clear your draft to use a starter prompt.')
+    const draft = el.querySelector<HTMLTextAreaElement>('textarea')!.value
+    button(el, 'Help me plan a task').click()
+    await settle()
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(draft)
   })
 
   it('retains new turns when loading history after sending', async () => {
