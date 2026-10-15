@@ -160,9 +160,11 @@ const mainClass = computed(() => [
 
 const assistantOverlay = useAgentOverlayStore()
 const mainStyle = computed(() => {
-  if (gettingStartedFocused.value) return undefined
-  if (assistantOverlay.dockVisible) return { paddingBottom: `calc(${layoutProps.fullBleed ? '0px' : mainPaddingBottom.value || '0px'} + 96px)` }
-  if (layoutProps.fullBleed || !mainPaddingBottom.value) return undefined
+  // Full-bleed workbenches own their viewport; the assistant floats over them.
+  // Shell padding would shrink the workbench and expose a strip of shell background.
+  if (gettingStartedFocused.value || layoutProps.fullBleed) return undefined
+  if (assistantOverlay.dockVisible) return { paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
+  if (!mainPaddingBottom.value) return undefined
   return { paddingBottom: mainPaddingBottom.value }
 })
 

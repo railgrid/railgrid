@@ -43,6 +43,10 @@ Touch targets retain the larger coarse-pointer dimensions. The dedicated Agents
 view keeps its existing conversation header and composer layout. After history loads while the overlay is hidden, opening it scrolls to the latest message once the transcript has measurable height. Subsequent resizing respects a user who scrolled to older messages.
 
 The host owns positioning, shell/terminal clearance, selection, and page context.
+On full-bleed workbenches, the assistant floats over the page without reserving
+space or moving the underlying controls, in both compact and expanded states.
+Overlap is intentional; minimize the assistant to access covered controls.
+Ordinary scrolling pages retain their bottom clearance.
 Agents owns conversation and run behavior. The bundle still loads through the
 shared provider resolver and integrity-aware loader. Requests use an
 Agents-scoped host transport with a synchronous authority fence. Workspace,
