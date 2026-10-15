@@ -256,7 +256,7 @@ test('busy progress stays visible outside the closed menu and is announced', () 
   assert.match(trigger, /'k-table-action--neutral': busy/)
   assert.match(trigger, /<Loader2 v-if="busy" class="k-action-menu__busy"/)
   assert.match(trigger, /:aria-busy="busy \|\| undefined"/)
-  assert.match(trigger, /:data-k-tip="accessibleLabel"/)
+  assert.match(trigger, /:data-k-tip="primaryLabel \? undefined : accessibleLabel"/)
   const beforeMenu = sourceBlock(component, '</button>', '<Teleport to="body">')
   assert.match(beforeMenu, /role="status" aria-live="polite" aria-atomic="true">\{\{ busy \? accessibleLabel : '' \}\}/)
   assert.match(stylesheet, /\.k-table__primary-actions:has\(\.k-table-action--busy\)/)
@@ -414,4 +414,57 @@ test('model search popup Tab returns to its source anchor before native navigati
   const keydown = runInNewContext(`${code}\nonSearchKeydown`, { closeSelector: () => events.push('close'), trigger: { value: { focus: () => events.push('focus') } } })
   keydown({ key: 'Tab', preventDefault: () => events.push('blocked') })
   assert.deepEqual(events, ['close', 'focus'])
+})
+
+
+test('split primary action closes the menu, respects busy/disabled, and keeps Escape focus on the chevron', async () => {
+  const primary = templateBlock(component, '<button\n      v-if="primaryLabel"')
+  const trigger = templateBlock(component, '<button\n      :id="triggerID"')
+  for (const segment of [primary, trigger]) assert.match(segment, /:disabled="unavailable"/)
+  assert.match(primary, /@click="onPrimary"/)
+  const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const executable = ts.transpileModule(script.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const props = reactive({ label: 'Repository options', primaryLabel: 'New repository', items: [{ id: 'import', label: 'Import repository' }] })
+  const emitted = []
+  let focused = false
+  const scope = effectScope()
+  const api = scope.run(() => runInNewContext(`${executable}\n({ open, onPrimary, unavailable, handleTriggerKeydown, handleMenuKeydown })`, {
+    computed, nextTick, ref, watch,
+    defineProps: () => props,
+    withDefaults: (value, defaults) => Object.assign(value, { ...defaults, ...value }),
+    defineEmits: () => (...event) => emitted.push(event),
+    defineExpose: () => {}, useId: () => 'split-test',
+    onMounted: () => {}, onBeforeUnmount: () => {}, ensureRailgridUIStyles: () => {},
+    useAnchoredPopover: () => {
+      const open = ref(false)
+      return { open, triggerRef: ref({ focus: () => { focused = true } }), panelRef: ref(null), panelStyle: ref({}), close: () => { open.value = false } }
+    },
+  }))
+  const key = value => ({ key: value, preventDefault() {} })
+  try {
+    api.handleTriggerKeydown(key('ArrowDown'))
+    assert.equal(api.open.value, true)
+    api.onPrimary()
+    assert.equal(api.open.value, false)
+    assert.deepEqual(emitted, [['primary']])
+    for (const state of ['disabled', 'busy']) {
+      props[state] = true
+      assert.equal(api.unavailable.value, true)
+      api.onPrimary()
+      api.handleTriggerKeydown(key('ArrowDown'))
+      assert.equal(api.open.value, false)
+      assert.deepEqual(emitted, [['primary']])
+      props[state] = false
+      await nextTick()
+    }
+    api.handleTriggerKeydown(key('ArrowDown'))
+    assert.equal(api.open.value, true)
+    api.handleMenuKeydown(key('Escape'))
+    await nextTick()
+    assert.equal(api.open.value, false)
+    assert.equal(focused, true)
+    assert.deepEqual(emitted, [['primary']])
+  } finally { scope.stop() }
 })

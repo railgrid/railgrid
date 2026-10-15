@@ -6,7 +6,7 @@ export interface CodeRoute {
   connection?: string
   create?:
     | { resource: 'connection'; method: ConnectionCreateMethod }
-    | { resource: 'repository' }
+    | { resource: 'repository'; mode?: 'import' }
 }
 
 export interface CodeNavigationDetail {
@@ -46,6 +46,7 @@ export function parseCodeSubPath(subPath: string | null | undefined): CodeRoute 
   if (normalized === 'repositories') return { page: 'repositories' }
 
   const parts = normalized.split('/')
+  if (normalized === 'import/repository') return { page: 'repositories', create: { resource: 'repository', mode: 'import' } }
   if (parts[0] === 'create') {
     if (parts[1] === 'connection' && (parts[2] === 'token' || parts[2] === 'github') && parts.length === 3) {
       return { page: 'connections', create: { resource: 'connection', method: parts[2] } }

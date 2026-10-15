@@ -58,11 +58,13 @@ vi.mock('./portalkit/FirstRunGuide.vue', async () => {
 vi.mock('lucide-vue-next', async () => {
   const { h } = await import('vue')
   const icon = { setup: () => () => h('span', { 'aria-hidden': 'true' }) }
-  return { ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Link2: icon }
+  return { ChevronDown: icon, ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Link2: icon }
 })
 
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionCreateView from './views/ConnectionCreateView.vue'
+import FormSelect from './portalkit/FormSelect.vue'
+import formSelectSource from './portalkit/FormSelect.vue?raw'
 import RepositoryCreateView from './views/RepositoryCreateView.vue'
 import connectionsSource from './views/ConnectionsView.vue?raw'
 import connectionCreateSource from './views/ConnectionCreateView.vue?raw'
@@ -200,6 +202,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
   return new Function('VueRuntime', `${code}\nreturn render`)(VueRuntime) as (ctx: unknown, cache: unknown) => unknown
 }
 
+;(FormSelect as unknown as { render: unknown }).render = compileClientRender(formSelectSource, 'FormSelect.vue')
 ;(ConnectionsView as unknown as { render: unknown }).render = compileClientRender(connectionsSource, 'ConnectionsView.vue')
 ;(ConnectionCreateView as unknown as { render: unknown }).render = compileClientRender(connectionCreateSource, 'ConnectionCreateView.vue')
 ;(RepositoryCreateView as unknown as { render: unknown }).render = compileClientRender(repositoryCreateSource, 'RepositoryCreateView.vue')
@@ -409,6 +412,20 @@ describe('connection creation authority fencing', () => {
     app.unmount()
   })
 
+  it('submits an organization import and hides creation-only settings', async () => {
+    mocks.api.listConnections.mockResolvedValue([activeConnection])
+    const { app, root } = mount(RepositoryCreateView, { deletions: createResourceDeletions(), mode: 'import' })
+    await settle()
+    setInput(root, 'my-service', 'providers')
+    setInput(root, 'owner/repository', 'railgrid/providers')
+    expect(textContent(root)).not.toContain('Visibility')
+    expect(textContent(root)).not.toContain('Add a README')
+    await submit(root)
+    await settle()
+    expect(mocks.api.createRepository).toHaveBeenCalledWith(expect.objectContaining({ mode: 'import', repo: 'railgrid/providers', name: 'providers' }))
+    app.unmount()
+  })
+
   it('reports required repository fields and focuses the first invalid control', async () => {
     mocks.api.listConnections.mockResolvedValue([])
     mocks.api.listRepositories.mockResolvedValue([])
@@ -420,9 +437,9 @@ describe('connection creation authority fencing', () => {
     await submit(root)
     await settle()
 
-    expect(textContent(root)).toContain('Select an active connection.')
-    expect(textContent(root)).toContain('Enter an object name.')
-    const first = findNode(root, node => node.type === 'select' && node.props.id === 'code-repository-connection')
+    expect(textContent(root)).toContain('Select a GitHub connection.')
+    expect(textContent(root)).toContain('Enter a name for this repository in Railgrid.')
+    const first = findNode(root, node => node.type === 'button' && node.props.id === 'code-repository-connection')
     expect(first?.props['aria-invalid']).toBe('true')
     expect(first?.props.focused).toBe(true)
     app.unmount()

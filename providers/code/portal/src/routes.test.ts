@@ -14,6 +14,7 @@ describe('Code provider routes', () => {
   })
 
   it('parses repository creation and preserves encoded detail names', () => {
+    expect(parseCodeSubPath('import/repository')).toEqual({ page: 'repositories', create: { resource: 'repository', mode: 'import' } })
     expect(parseCodeSubPath('create/repository')).toEqual({
       page: 'repositories',
       create: { resource: 'repository' },

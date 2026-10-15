@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 39;
+  --railgrid-ui-core-version: 40;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -701,6 +701,8 @@ html.light .k-create-surface {
   color: var(--color-text-primary, #e9e9f2);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+/* Creation fields share a baseline; dense filters and textareas retain their sizing. */
+:where(.k-create-fields) .k-input:where(:not(textarea)) { min-height: 36px; }
 .k-input::placeholder {
   color: var(--color-text-muted, #8587a1);
 }
@@ -3293,3 +3295,11 @@ railgrid-resource-table-filter { display: contents; }
   .k-wizard-steps--responsive > li { display: flex; align-items: center; min-block-size: 44px; padding: 9px 14px; text-align: start; border-bottom: 0; border-inline-start: 2px solid transparent; }
   .k-wizard-steps--responsive > li[aria-current='step'] { border-inline-start-color: var(--color-accent); }
 }
+
+/* Shared split primary action, using ActionMenu for keyboard and dismissal. */
+.k-action-menu--split { display: inline-flex; align-items: stretch; }
+.k-action-menu--split > .k-action-menu__primary { border-start-end-radius: 0; border-end-end-radius: 0; }
+.k-action-menu--split > .k-action-menu__split-toggle { border-start-start-radius: 0; border-end-start-radius: 0; border-inline-start-color: var(--color-accent-hover, #a18aff); margin-inline-start: -1px; padding-inline: 8px; }
+
+.k-action-menu--split > .k-btn > svg { width: 14px; height: 14px; }
+.k-action-menu--split > .k-btn:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; position: relative; z-index: 1; }

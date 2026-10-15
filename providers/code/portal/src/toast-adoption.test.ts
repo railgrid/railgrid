@@ -14,7 +14,7 @@ describe('Code toast adoption', () => {
     for (const source of sources) expect(source).toContain("import { toast } from '../portalkit/toast'")
     expect(sources.join('\n').match(/\btoast\(/g)).toHaveLength(11)
     expect(connectionCreate).toContain("toast('info', `Connection creation requested for ${created.name}.`)")
-    expect(repositoryCreate).toContain("toast('info', `Repository creation requested for ${created.name}.`)")
+    expect(repositoryCreate).toContain("toast('info', `Repository ${payload.mode === 'import' ? 'import' : 'creation'} requested for ${created.name}.`)")
     expect(repositoryDetail).toContain("toast('info', `Repository connection update requested for ${current.name}.`)")
     expect(repositoryDetail.match(/toast\('info', `Deploy key update requested/g)).toHaveLength(2)
     expect(repositoryDetail.match(/toast\('info', `Collaborator update requested/g)).toHaveLength(2)

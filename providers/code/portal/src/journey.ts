@@ -1,6 +1,6 @@
 export type CodeJourneyAction = 'create-connection' | 'create-repository'
 export type CodeJourneyKind = 'connection' | 'repository'
-export type CodeReturnPath = 'create/repository'
+export type CodeReturnPath = 'create/repository' | 'import/repository'
 
 const CODE_RETURN_INTENT_KEY = 'railgrid:code:return-intent'
 
@@ -54,7 +54,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCodeReturnPath(value: unknown): value is CodeReturnPath {
-  return value === 'create/repository'
+  return value === 'create/repository' || value === 'import/repository'
 }
 
 function readStoredIntents(storage: CodeJourneyStorage): StoredCodeReturnIntents | null {

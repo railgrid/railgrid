@@ -71,3 +71,8 @@ the complete shared overflow-menu behavior. Distribution is checked by
 See [ActionMenu](action-menu.md), [shared k-* recipes](../foundations/recipes.md),
 [accessible interaction policy](../accessibility/interaction.md), and
 [navigation and feedback](../patterns/navigation-and-feedback.md).
+
+The shared `ActionMenu` also accepts `primaryLabel` for a split primary button.
+The primary segment emits `primary`; the chevron opens the same keyboard-accessible
+menu and emits `select` for the chosen action. Both segments share disabled and
+busy state. Code uses this for New repository and Import repository.

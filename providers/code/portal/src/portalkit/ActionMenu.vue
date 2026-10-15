@@ -6,7 +6,7 @@
      Callers own the action mutation and map the emitted id to their behavior. -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { Ellipsis, Loader2 } from 'lucide-vue-next'
+import { ChevronDown, Ellipsis, Loader2, Plus } from 'lucide-vue-next'
 import { ensureRailgridUIStyles } from '../portalkit/styles'
 import { useAnchoredPopover } from './useAnchoredPopover'
 
@@ -31,6 +31,8 @@ const props = withDefaults(defineProps<{
   busyLabel?: string
   /** Optional visible trigger text for actions such as dashboard "Add tile". */
   showLabel?: boolean
+  /** Primary action turns the menu into a shared split button. */
+  primaryLabel?: string
 }>(), {
   disabled: false,
   busy: false,
@@ -44,6 +46,7 @@ const unavailable = computed(() => props.disabled || props.busy)
 
 const emit = defineEmits<{
   select: [id: string]
+  primary: []
 }>()
 
 // Standalone provider portals load the exact canonical recipe through the
@@ -121,6 +124,12 @@ function closeMenuAfterTab(): void {
 function toggleMenu(): void {
   if (open.value) closeMenu()
   else openMenu()
+}
+
+function onPrimary(): void {
+  if (unavailable.value) return
+  closeMenu()
+  emit('primary')
 }
 
 function select(id: string): void {
@@ -252,14 +261,22 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="root" class="k-action-menu">
+  <div ref="root" class="k-action-menu" :class="{ 'k-action-menu--split': primaryLabel }">
+    <button
+      v-if="primaryLabel"
+      type="button"
+      class="k-btn k-btn--primary k-action-menu__primary"
+      :disabled="unavailable"
+      @click="onPrimary"
+    >
+      <Plus :size="16" aria-hidden="true" />{{ primaryLabel }}
+    </button>
     <button
       :id="triggerID"
       ref="trigger"
       type="button"
-      class="k-icon-action k-action-menu__trigger"
-      :class="{ 'k-action-menu__trigger--with-label': showLabel, 'k-table-action--busy': busy, 'k-table-action--neutral': busy }"
-      :data-k-tip="accessibleLabel"
+      :class="[primaryLabel ? 'k-btn k-btn--primary k-action-menu__split-toggle' : 'k-icon-action k-action-menu__trigger', { 'k-action-menu__trigger--with-label': showLabel, 'k-table-action--busy': busy, 'k-table-action--neutral': busy }]"
+      :data-k-tip="primaryLabel ? undefined : accessibleLabel"
       :aria-label="accessibleLabel"
       :aria-busy="busy || undefined"
       :aria-controls="menuID"
@@ -270,6 +287,7 @@ onBeforeUnmount(() => {
       @keydown="handleTriggerKeydown"
     >
       <Loader2 v-if="busy" class="k-action-menu__busy" :size="16" :stroke-width="1.75" aria-hidden="true" />
+      <ChevronDown v-else-if="primaryLabel" :size="16" aria-hidden="true" />
       <Ellipsis v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
       <span v-if="showLabel" class="k-action-menu__trigger-label">{{ accessibleLabel }}</span>
     </button>
