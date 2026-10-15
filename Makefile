@@ -3129,3 +3129,11 @@ test-railgrid-auth-configuration: ## Verify App Studio authentication settings, 
 .PHONY: test-resource-board-visual
 test-resource-board-visual: ## Render resource-board CSS across themes and input modes (requires Playwright)
 	node hack/resource-board-visual.mjs
+
+.PHONY: test-agents-composer-hit-test
+test-agents-composer-hit-test: ## Browser hit-testing regression for compact Agents composer (requires Playwright)
+	node hack/agents-composer-hit-test.mjs
+
+.PHONY: test-agent-overlay-resize
+test-agent-overlay-resize: ## Browser regression for overlay resize (requires Playwright)
+	node hack/agent-overlay-resize-test.mjs

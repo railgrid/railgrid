@@ -923,6 +923,10 @@ button.k-workbench-tab {
 .k-ai-composer--compact .k-ai-composer__editor { min-height: 44px; }
 .k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 44px; padding: 12px 48px 12px 10px; }
 .k-ai-composer--compact .k-ai-composer__primary { right: 6px; bottom: 6px; }
+/* Compact controls overlap the editor row. Empty positioning wrappers must
+ * pass clicks through to the textarea, while controls and menus stay usable. */
+.k-ai-composer--compact .k-ai-composer__controls { pointer-events: none; }
+.k-ai-composer--compact .k-ai-composer__controls :is(button, input, select, textarea, a, [role="menu"], .k-ai-model-picker__menu) { pointer-events: auto; }
 @media (pointer: coarse), (any-pointer: coarse) {
   .k-ai-composer--compact,
   .k-ai-composer--compact .k-ai-composer__editor { min-height: 56px; }
