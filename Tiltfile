@@ -29,7 +29,27 @@ config.define_string('host-log-path', usage='Explicit Tilt console log to bound 
 # EMPTY kcp: no workspaces, no providers, no tenants. Switch back by dropping
 # the flag; the embedded server's .kcp directory is left untouched.
 config.define_string('kcp-image')
+# Run the code provider on its S3 bundle store against a local MinIO instead
+# of a local directory, to exercise the backend a multi-replica deployment
+# needs. Off by default: Tilt runs one replica, and the file store is what
+# that needs.
+#
+#   make tilt CODE_BUNDLE_STORE=s3
+config.define_string('code-bundle-store', usage='Code provider transient store: file (default) or s3 (adds a local MinIO resource)')
 cfg = config.parse()
+
+code_bundle_store = (
+    (cfg.get('code-bundle-store', '') or '').strip().lower()
+    or os.getenv('CODE_BUNDLE_STORE', '').strip().lower()
+    or 'file'
+)
+if code_bundle_store not in ('file', 's3'):
+    fail('--code-bundle-store must be one of: file, s3')
+code_minio_enabled = code_bundle_store == 's3'
+# Same variables the Makefile's code-minio-serve reads, so an override
+# reaches the readiness probe and the server alike.
+code_minio_port = int(os.getenv('CODE_MINIO_PORT', '59000'))
+code_minio_console_port = int(os.getenv('CODE_MINIO_CONSOLE_PORT', '59001'))
 
 kcp_image = cfg.get('kcp-image', '') or os.getenv('RAILGRID_KCP_IMAGE', '')
 # Universal sandbox stays opt-in locally. Resolve one mode for both the
@@ -288,6 +308,22 @@ local_resource(
 )
 
 # --- providers-code (git repository management) ---
+# Optional local MinIO for the code provider's transient stores (commit
+# bundles + staged git snapshots), only with --code-bundle-store=s3. The
+# server is built from source into hack/tools (make code-minio-serve).
+if code_minio_enabled:
+    local_resource(
+        'code-minio',
+        serve_cmd='make code-minio-serve',
+        deps=['Makefile'],
+        readiness_probe=probe(
+            period_secs=2,
+            http_get=http_get_action(port=code_minio_port, path='/minio/health/live'),
+        ),
+        links=[link('http://127.0.0.1:%d' % code_minio_console_port, 'MinIO console')],
+        labels=['providers-code'],
+    )
+
 # Each update builds the binary and initializes its APIs/credentials before
 # Tilt replaces the running process. Registration is an explicit prerequisite.
 # Watch the input admin credential, never the runtime kubeconfig written by
@@ -296,6 +332,7 @@ local_resource(
     'code',
     cmd='make init-provider-code',
     serve_cmd='make serve-provider-code',
+    serve_env={'CODE_BUNDLE_STORE': code_bundle_store},
     deps=[
         'providers/code/main.go',
         'providers/code/assets.go',
@@ -323,7 +360,7 @@ local_resource(
         'providers/code/.env',
         '.kcp/admin.kubeconfig',
     ],
-    resource_deps=['hub', 'code-register'],
+    resource_deps=['hub', 'code-register'] + (['code-minio'] if code_minio_enabled else []),
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8083, path='/readyz'),
@@ -1378,7 +1415,9 @@ local_resource(
 #
 # The hub proxies each provider through ONE fixed URL (localhost:{port}), so
 # these standbys receive no request traffic; what they exercise is the durable
-# coordination the scaling work added: leader election (code), per-edge claim
+# coordination the scaling work added: leader election (code; with
+# --code-bundle-store=s3 both instances also share the MinIO bundle store,
+# which is what a real second replica needs), per-edge claim
 # sharding (kuery), and the tunnel-ownership registry + relay (edges — both
 # instances run with replica routing enabled, POD_IP=127.0.0.1, so the standby
 # sees instance 1's tunnels through the Lease registry instead of flapping
@@ -1394,6 +1433,7 @@ local_resource(
 local_resource(
     'code-2',
     serve_cmd='make run-provider-code CODE_PORT=18083',
+    serve_env={'CODE_BUNDLE_STORE': code_bundle_store},
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['code'],

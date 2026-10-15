@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Intent guides setup; enablement always uses the existing consent contract.
 import { computed, ref, watch, nextTick, onMounted } from 'vue'
-import { ArrowLeft, ArrowRight, ChevronRight, Check, Plus, Loader2, Puzzle, Server, Boxes, Building2, Rocket } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, ChevronRight, Check, Copy, RefreshCw, Plus, Loader2, Puzzle, Server, Boxes, Building2, Rocket } from 'lucide-vue-next'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { toast } from '@/portalkit/toast'
@@ -337,12 +337,14 @@ const finalActionReason = computed(() => {
         <p class="onboarding-help">Copy this request and share it with your administrator. Nothing is sent automatically.</p>
         <label for="onboarding-setup-request" class="sr-only">Request for your administrator</label>
         <textarea id="onboarding-setup-request" class="onboarding-request" readonly rows="4" :value="setupRequest" />
-        <button type="button" class="k-btn k-btn--ghost mt-3" @click="copySetupRequest">{{ requestCopied ? 'Request copied' : 'Copy request' }}</button>
         <p v-if="requestCopied" role="status" class="sr-only">Ready to paste into a message to your administrator.</p>
         <p v-if="copyFailed" role="alert" class="onboarding-help">Couldn’t copy automatically. Select the request above and copy it manually.</p>
-        <p class="onboarding-help">You can use other available tools now and return to Getting started later.</p>
       </template>
-      <button v-if="!setupReady" type="button" class="k-btn k-btn--ghost mt-3" :disabled="providers.loading" @click="providers.load()">{{ providers.loading ? 'Checking availability…' : 'Check again' }}</button>
+      <div v-if="!setupReady" class="onboarding-member-actions">
+        <button v-if="setupDataCurrent" type="button" class="k-btn k-btn--text" @click="copySetupRequest"><component :is="requestCopied ? Check : Copy" :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ requestCopied ? 'Request copied' : 'Copy request' }}</button>
+        <button type="button" class="k-btn k-btn--text" :disabled="providers.loading" @click="providers.load()"><RefreshCw :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ providers.loading ? 'Checking availability…' : 'Check again' }}</button>
+      </div>
+      <p v-if="!setupReady && setupDataCurrent" class="onboarding-help">You can keep using your Workspace while your administrator sets this up.</p>
     </div>
     <div v-else class="onboarding-preview">
       <div class="onboarding-capabilities" :aria-busy="providers.loading || Object.values(busy).some(Boolean)">
@@ -405,7 +407,7 @@ const finalActionReason = computed(() => {
 
     </div>
     <footer class="onboarding-footer">
-      <button v-if="step > 0" type="button" class="k-btn k-btn--ghost" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
+      <button v-if="step > 0" type="button" class="k-btn k-btn--text" @click="back"><ArrowLeft :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Back</button>
       <button v-else type="button" class="k-btn k-btn--ghost" @click="emit('dismiss')">Go to dashboard</button>
       <router-link v-if="step === 1 && canSkipSetup" :to="scopePath(`/providers/${goal}`)" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="emit('dismiss')">{{ openLabel }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></router-link>
       <button v-else-if="step < 2" type="button" class="k-btn k-btn--primary min-h-11 onboarding-control" @click="next">{{ step === 0 ? 'Continue' : memberJourney ? 'See next steps' : 'Review setup' }}<ArrowRight :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" /></button>
@@ -421,7 +423,8 @@ const finalActionReason = computed(() => {
 
 <style scoped>
 .onboarding { display: flex; flex-direction: column; width: 100%; max-width: 640px; min-height: min(540px, calc(100dvh - 40px)); margin: 0 auto; padding: 24px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-primary); }
-.onboarding-request { display: block; width: 100%; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-overlay); color: var(--color-text-primary); font: inherit; font-size: 13px; resize: vertical; }
+.onboarding-member-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; margin: 8px 0 16px; }
+.onboarding-request { display: block; width: 100%; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-secondary); font: inherit; font-size: 13px; line-height: 1.6; resize: vertical; }
 .onboarding-body { flex: 1; min-width: 0; }
 h1 { width: fit-content; max-width: 100%; font-size: 16px; line-height: 1.5; font-weight: 600; margin: 0 0 8px; }
 h1:focus { outline: none; }

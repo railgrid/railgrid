@@ -184,7 +184,8 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
     source: parsed.descriptor.template.content,
     filename,
     id: `behavior-${filename}`,
-    compilerOptions: { bindingMetadata: script.bindings },
+    // The in-memory renderer models nodes, not browser HTML parsing.
+    compilerOptions: { bindingMetadata: script.bindings, hoistStatic: false },
   })
   if (compiled.errors.length) throw compiled.errors[0]
   const code = compiled.code
@@ -424,6 +425,21 @@ describe('connection creation authority fencing', () => {
     const first = findNode(root, node => node.type === 'select' && node.props.id === 'code-repository-connection')
     expect(first?.props['aria-invalid']).toBe('true')
     expect(first?.props.focused).toBe(true)
+    app.unmount()
+  })
+
+  it('describes token inputs with a short hint and offers both permission models', async () => {
+    const { app, root } = mount(ConnectionCreateView, {
+      method: 'token', deletions: createResourceDeletions(),
+    })
+    await settle()
+    const input = findNode(root, node => node.props.id === 'code-connection-token')
+    expect(input?.props['aria-describedby']).toBe('code-connection-token-hint')
+    expect(textContent(root)).toContain('fine-grained token')
+    expect(textContent(root)).toContain('Contents: read and write')
+    expect(textContent(root)).toContain('Workflows: read and write')
+    await submit(root)
+    expect(input?.props['aria-describedby']).toBe('code-connection-token-error code-connection-token-hint')
     app.unmount()
   })
 

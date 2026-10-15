@@ -39,6 +39,7 @@ import (
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
 	"github.com/railgrid/provider-code/controller/shared"
+	"github.com/railgrid/provider-code/snapshotstore"
 )
 
 const (
@@ -64,9 +65,9 @@ const (
 type Reconciler struct {
 	Manager  mcmanager.Manager
 	Backends *backend.Registry
-	// SnapshotDir is where the stage-snapshot verb keeps staged bundles.
-	SnapshotDir string
-	Now         func() time.Time
+	// Snapshots is where the stage-snapshot verb keeps staged bundles.
+	Snapshots snapshotstore.Store
+	Now       func() time.Time
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -281,7 +282,7 @@ func (r *Reconciler) advance(ctx context.Context, host forge, conn *codev1alpha1
 			return permanentError{fmt.Errorf("the head branch moved to %s outside this resource; refusing to overwrite it", current)}
 		}
 	}
-	snapshot, err := actions.FindStaged(r.SnapshotDir, cluster, head.BundleRef)
+	snapshot, err := actions.FindStaged(ctx, r.Snapshots, cluster, head.BundleRef)
 	if err != nil {
 		return fmt.Errorf("staged snapshot %s: %w", head.BundleRef, err)
 	}

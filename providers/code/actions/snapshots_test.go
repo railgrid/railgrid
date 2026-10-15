@@ -6,6 +6,9 @@
 package actions
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,24 +16,31 @@ import (
 	"time"
 
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/snapshotstore"
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 func TestSnapshotHandlesAreScopedExpireAndDetectTampering(t *testing.T) {
 	server := New(nil, nil)
-	server.SnapshotDir = t.TempDir()
+	dir := t.TempDir()
+	store, err := snapshotstore.NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Snapshots = store
+	ctx := context.Background()
 	// The caller is the identity kcp stamped; a ServiceAccount also carries
 	// the logical cluster it lives in.
 	caller := dataplane.ProxiedIdentity{User: "system:serviceaccount:default:actor", Extra: map[string][]string{dataplane.ClusterNameExtra: {"clustera"}}}
 	input := Input{RepositoryUID: "repo-uid", ConnectionUID: "conn-uid", Snapshot: &backend.Snapshot{BaseCommit: "base", Commit: "commit", Tree: "tree", Bundle: []byte("private bundle")}}
-	result, err := server.stage(caller, "tenant-a", input)
+	result, err := server.stage(ctx, caller, "tenant-a", input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input.BundleRef = result.(map[string]any)["bundleRef"].(string)
 	expected := *input.Snapshot
 	input.Snapshot = nil
-	got, err := server.loadSnapshot(caller, "tenant-a", input)
+	got, err := server.loadSnapshot(ctx, caller, "tenant-a", input)
 	if err != nil || !reflect.DeepEqual(got, expected) {
 		t.Fatalf("round trip: %#v %v", got, err)
 	}
@@ -52,22 +62,26 @@ func TestSnapshotHandlesAreScopedExpireAndDetectTampering(t *testing.T) {
 			// the cluster they live in is what tells them apart.
 			other = dataplane.ProxiedIdentity{User: caller.User, Extra: map[string][]string{dataplane.ClusterNameExtra: {"clusterb"}}}
 		}
-		if _, err := server.loadSnapshot(other, cluster, changed); err == nil {
+		if _, err := server.loadSnapshot(ctx, other, cluster, changed); err == nil {
 			t.Fatalf("snapshot crossed %s boundary", kind)
 		}
 	}
-	path := filepath.Join(server.snapshotScope(caller, "tenant-a", input), input.BundleRef+".json")
+	hashed := func(v string) string {
+		sum := sha256.Sum256([]byte(v))
+		return hex.EncodeToString(sum[:])
+	}
+	path := filepath.Join(dir, hashed("tenant-a"), hashed(server.snapshotScope(caller, input)), input.BundleRef+".json")
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.loadSnapshot(caller, "tenant-a", input); err == nil {
+	if _, err := server.loadSnapshot(ctx, caller, "tenant-a", input); err == nil {
 		t.Fatal("expired snapshot accepted")
 	}
 	if err := os.WriteFile(path, []byte(`{"bundle":"Y2hhbmdlZA=="}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.loadSnapshot(caller, "tenant-a", input); err == nil {
+	if _, err := server.loadSnapshot(ctx, caller, "tenant-a", input); err == nil {
 		t.Fatal("tampered snapshot accepted")
 	}
 }

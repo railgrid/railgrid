@@ -9,20 +9,18 @@ package pullrequest
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	codev1alpha1 "github.com/railgrid/provider-code/apis/v1alpha1"
 	"github.com/railgrid/provider-code/backend"
+	"github.com/railgrid/provider-code/snapshotstore"
 )
 
 const (
@@ -79,20 +77,14 @@ func (f *fakeForge) ListComments(_ context.Context, _ *codev1alpha1.Connection, 
 	return &backend.CommentPage{Comments: f.comments}, nil
 }
 
-func stage(t *testing.T, dir, cluster string, snapshot backend.Snapshot) string {
+func stage(t *testing.T, store snapshotstore.Store, cluster string, snapshot backend.Snapshot) string {
 	t.Helper()
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256(data)
-	ref := hex.EncodeToString(digest[:])
-	tenant := sha256.Sum256([]byte(cluster))
-	scope := filepath.Join(dir, hex.EncodeToString(tenant[:]), "some-caller")
-	if err := os.MkdirAll(scope, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scope, ref+".json"), data, 0o600); err != nil {
+	ref, err := store.Stage(context.Background(), cluster, "some-caller", data)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return ref
@@ -110,10 +102,13 @@ func resource(head *codev1alpha1.PullRequestHead) *codev1alpha1.PullRequest {
 // must be the desired head, and it is published with the named subject.
 func TestAdvanceMovesTheBranchUnderAnExpectedHeadLease(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	r := &Reconciler{SnapshotDir: dir}
+	store, err := snapshotstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Snapshots: store}
 	snapshot := backend.Snapshot{BaseCommit: headB, Commit: headA, Tree: tree, Bundle: []byte("bundle")}
-	ref := stage(t, dir, "cluster-1", snapshot)
+	ref := stage(t, store, "cluster-1", snapshot)
 	head := &codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree, BundleRef: ref, Message: "ENG-4: test"}
 
 	forge := &fakeForge{}
@@ -129,7 +124,7 @@ func TestAdvanceMovesTheBranchUnderAnExpectedHeadLease(t *testing.T) {
 	}
 	// A branch that already exists before the first push is not ours to move.
 	taken := &fakeForge{branch: headB}
-	err := r.advance(ctx, taken, nil, backend.Credential{}, nil, "cluster-1", resource(head), head)
+	err = r.advance(ctx, taken, nil, backend.Credential{}, nil, "cluster-1", resource(head), head)
 	var permanent permanentError
 	if !errors.As(err, &permanent) {
 		t.Fatalf("an existing branch was moved: %v", err)

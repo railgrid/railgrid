@@ -35,11 +35,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -211,51 +209,27 @@ type Notifier interface {
 	Notify(ctx context.Context) <-chan Arrival
 }
 
-// FileStore stores bundles as JSON files in a local directory.
+// FileStore stores bundles as JSON files in a local directory. It serves one
+// replica: a second replica has its own directory and never sees this one's
+// bundles. Deployments with more than one replica use ObjectStore.
 type FileStore struct {
 	dir string
 
-	mu       sync.Mutex
-	watchers []chan Arrival
+	notifier notifier
 }
 
 var _ Notifier = (*FileStore)(nil)
-
-// notifyBuffer is how many arrivals a watcher may fall behind by. A drop costs
-// the waiting consumer its fallback wait, never correctness, so the announce
-// path never blocks a Put.
-const notifyBuffer = 64
+var _ Sweeper = (*FileStore)(nil)
 
 // Notify returns a channel that receives an Arrival for every bundle this
 // process publishes, from the moment it is called until ctx is done — a
 // subscription per controller term, so restarting the manager does not leave
-// a watcher behind. A send that would block is dropped rather than queued, so
-// a watcher that stopped draining can never stall a Put; a dropped arrival
-// costs the consumer its own fallback wait, never correctness.
+// a watcher behind.
 func (s *FileStore) Notify(ctx context.Context) <-chan Arrival {
-	ch := make(chan Arrival, notifyBuffer)
 	if s == nil {
-		return ch
+		return make(chan Arrival, notifyBuffer)
 	}
-	s.mu.Lock()
-	s.watchers = append(s.watchers, ch)
-	s.mu.Unlock()
-	if ctx != nil {
-		context.AfterFunc(ctx, func() { s.unwatch(ch) })
-	}
-	return ch
-}
-
-// unwatch drops one subscription.
-func (s *FileStore) unwatch(ch chan Arrival) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, watcher := range s.watchers {
-		if watcher == ch {
-			s.watchers = append(s.watchers[:i], s.watchers[i+1:]...)
-			return
-		}
-	}
+	return s.notifier.Notify(ctx)
 }
 
 // announce tells every watcher that a bundle is readable under scope.
@@ -263,16 +237,7 @@ func (s *FileStore) announce(scope, name string) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	watchers := make([]chan Arrival, len(s.watchers))
-	copy(watchers, s.watchers)
-	s.mu.Unlock()
-	for _, ch := range watchers {
-		select {
-		case ch <- Arrival{Scope: scope, Name: name}:
-		default:
-		}
-	}
+	s.notifier.announce(scope, name)
 }
 
 // NewFileStoreFromEnv builds a filesystem store. CODE_COMMIT_BUNDLE_DIR can be
@@ -302,6 +267,11 @@ func (s *FileStore) Dir() string {
 		return ""
 	}
 	return s.dir
+}
+
+// String names the store for logs.
+func (s *FileStore) String() string {
+	return "file://" + s.Dir()
 }
 
 // Put validates, canonicalizes, and writes an immutable bundle.
@@ -596,7 +566,7 @@ func (s *FileStore) Delete(ctx context.Context, scope, name, digest string) erro
 // maxAge before now. Consumers delete bundles once they reach a terminal
 // state; this only reclaims what a crash or an abandoned request left behind.
 // Scope directories are kept: removing one could race a concurrent Put.
-func (s *FileStore) Sweep(now time.Time, maxAge time.Duration) (int, error) {
+func (s *FileStore) Sweep(_ context.Context, now time.Time, maxAge time.Duration) (int, error) {
 	if s == nil {
 		return 0, errors.New("bundle store is nil")
 	}
@@ -639,27 +609,7 @@ func (s *FileStore) Sweep(now time.Time, maxAge time.Duration) (int, error) {
 // RunSweeper sweeps orphaned bundles once at startup and then every interval
 // until ctx is done.
 func (s *FileStore) RunSweeper(ctx context.Context, interval, maxAge time.Duration) {
-	logger := klog.FromContext(ctx).WithName("commitbundle-sweeper")
-	sweep := func() {
-		removed, err := s.Sweep(time.Now(), maxAge)
-		if err != nil {
-			logger.Error(err, "sweep orphaned bundles", "dir", s.dir)
-		}
-		if removed > 0 {
-			logger.Info("removed orphaned bundles", "count", removed, "maxAge", maxAge)
-		}
-	}
-	sweep()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			sweep()
-		}
-	}
+	RunSweeper(ctx, s, interval, maxAge)
 }
 
 func (s *FileStore) scopeDir(scopeKey string) string {

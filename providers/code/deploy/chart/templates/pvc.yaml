@@ -1,4 +1,4 @@
-{{- if and .Values.bundleStore.persistence.enabled (not .Values.bundleStore.existingClaim) (not .Values.bundleStore.emptyDir) -}}
+{{- if and (eq .Values.bundleStore.backend "file") .Values.bundleStore.persistence.enabled (not .Values.bundleStore.existingClaim) (not .Values.bundleStore.emptyDir) -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
