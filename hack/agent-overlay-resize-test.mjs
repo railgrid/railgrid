@@ -5,10 +5,15 @@ import ts from '../portal/node_modules/typescript/lib/typescript.js'
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright')
 const read = path => readFileSync(new URL('../' + path, import.meta.url), 'utf8')
 const source = read('portal/src/components/AgentOverlay.vue')
-const handlers = source.slice(source.indexOf('const size = ref('), source.indexOf('// Animate the existing panel'))
+const startMarker = source.indexOf('const size = ref(')
+const endMarker = source.indexOf('// Animate the existing panel')
+assert.ok(startMarker >= 0 && endMarker > startMarker, 'resize handler markers not found in AgentOverlay.vue; update this fixture')
+const handlers = source.slice(startMarker, endMarker)
 const helper = read('portal/src/lib/overlayResize.ts').replaceAll('export ', '')
 const js = ts.transpileModule(helper + handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-const css = source.match(/<style scoped>([\s\S]*?)<\/style>/)[1]
+const styleMatch = source.match(/<style scoped>([\s\S]*?)<\/style>/)
+assert.ok(styleMatch, 'scoped styles not found in AgentOverlay.vue; update this fixture')
+const css = styleMatch[1]
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {}) })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
@@ -42,6 +47,15 @@ try {
   const reversed = await panel.boundingBox()
   assert.ok(Math.abs(maximum.width - reversed.width - 20) < 1, 'no width dead zone at viewport limit')
   assert.ok(Math.abs(maximum.height - reversed.height - 10) < 1, 'no height dead zone at viewport limit')
+  // The CSS limit can change while pointer capture remains active.
+  await page.setViewportSize({ width: 1000, height: 700 })
+  await panel.evaluate(el => el.style.maxHeight = '450px')
+  await page.mouse.move(-480, -480)
+  await frame()
+  const changedBounds = await panel.boundingBox()
+  assert.equal(changedBounds.width, 948, 'fresh width bound during drag')
+  assert.equal(changedBounds.height, 440, 'fresh CSS height bound during drag')
+  await panel.evaluate(el => el.style.removeProperty('max-height'))
   await page.mouse.up()
   await frame()
   assert.equal(await page.locator('.agent-overlay--resizing').count(), 0)

@@ -201,9 +201,10 @@ let stopResize: (() => void) | undefined
 function resizeBounds() {
   const host = panel.value!.parentElement!
   const style = getComputedStyle(host)
+  const panelStyle = getComputedStyle(panel.value!)
   return {
     width: host.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
-    height: Math.max(180, window.innerHeight - parseFloat(bottom.value) - 72),
+    height: Math.max(parseFloat(panelStyle.minHeight), parseFloat(panelStyle.maxHeight)),
   }
 }
 function resize(event: PointerEvent): void {
@@ -214,13 +215,16 @@ function resize(event: PointerEvent): void {
   let x = event.clientX, y = event.clientY
   let pending = { width: panel.value.offsetWidth, height: panel.value.offsetHeight }
   let frame = 0
-  const bounds = resizeBounds()
   size.value = pending
   resizing.value = true
-  const flush = () => { frame = 0; size.value = pending }
+  const flush = () => {
+    frame = 0
+    pending = resizeOverlay(pending, 0, 0, resizeBounds())
+    size.value = pending
+  }
   const move = (e: PointerEvent) => {
     if (e.pointerId !== pointerID) return
-    pending = resizeOverlay(pending, e.clientX - x, e.clientY - y, bounds)
+    pending = resizeOverlay(pending, e.clientX - x, e.clientY - y, resizeBounds())
     x = e.clientX
     y = e.clientY
     if (!frame) frame = requestAnimationFrame(flush)
@@ -339,7 +343,7 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
 
 .agent-overlay__launcher { position: absolute; right: 16px; bottom: 0; transition: opacity 140ms ease, transform 200ms ease; pointer-events: auto; width: 48px; height: 48px; padding: 0; border-radius: 50%; margin-left: auto; display: flex; }
 .agent-overlay__launcher--hidden { visibility: hidden; opacity: 0; pointer-events: none; }
-.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: min(var(--overlay-height), calc(100dvh - var(--overlay-bottom) - 72px)); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
+.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: var(--overlay-height); max-height: calc(100dvh - var(--overlay-bottom) - 72px); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
 .agent-overlay__header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--color-border-default); flex-shrink: 0; }
 .agent-overlay__header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .agent-overlay__header > button, .agent-overlay__bar-actions > button { width: 28px; height: 28px; min-height: 28px; padding: 0; }

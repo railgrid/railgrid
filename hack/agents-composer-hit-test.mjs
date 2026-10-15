@@ -48,6 +48,24 @@ try {
     await page.keyboard.press('Control+End')
     await page.keyboard.type(' continued')
     assert.equal(await input.inputValue(), 'A new message continued')
+    // Slot consumers also use native labels/disclosures and custom controls.
+    const controls = page.locator('.k-ai-composer__controls')
+    for (const markup of [
+      '<label><input type="checkbox">Enable tool</label>',
+      '<details><summary>Options</summary><p>Details</p></details>',
+      ...['button', 'combobox', 'listbox', 'menuitem', 'option', 'switch'].map(role => `<span role="${role}" tabindex="0">Custom control</span>`),
+      '<span tabindex="0">Tooltip trigger</span>',
+    ]) {
+      await controls.evaluate((el, html) => {
+        el.innerHTML = html
+        el.dataset.clicked = ''
+        el.firstElementChild.addEventListener('click', () => { el.dataset.clicked = 'yes' })
+      }, markup)
+      await controls.locator('summary, label, span').first().click()
+      assert.equal(await controls.getAttribute('data-clicked'), 'yes', markup)
+      if (markup.startsWith('<label')) assert.equal(await controls.locator('input').isChecked(), true)
+      if (markup.startsWith('<details')) assert.equal(await controls.locator('details').getAttribute('open'), '')
+    }
     console.log(`${theme}/${width}: manual expansion, typing, model picker, send, and focus expansion passed`)
     await context.close()
   }

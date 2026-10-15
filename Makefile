@@ -3137,3 +3137,6 @@ test-agents-composer-hit-test: ## Browser hit-testing regression for compact Age
 .PHONY: test-agent-overlay-resize
 test-agent-overlay-resize: ## Browser regression for overlay resize (requires Playwright)
 	node hack/agent-overlay-resize-test.mjs
+
+.PHONY: test-agent-ui-browser
+test-agent-ui-browser: test-agents-composer-hit-test test-agent-overlay-resize ## Manual Agents browser regressions (requires portal npm dependencies and Playwright)

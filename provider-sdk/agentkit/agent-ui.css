@@ -926,7 +926,9 @@ button.k-workbench-tab {
 /* Compact controls overlap the editor row. Empty positioning wrappers must
  * pass clicks through to the textarea, while controls and menus stay usable. */
 .k-ai-composer--compact .k-ai-composer__controls { pointer-events: none; }
-.k-ai-composer--compact .k-ai-composer__controls :is(button, input, select, textarea, a, [role="menu"], .k-ai-model-picker__menu) { pointer-events: auto; }
+.k-ai-composer--compact .k-ai-composer__controls :is(button, input, select, textarea, a[href], label, summary,
+  [role="button"], [role="combobox"], [role="listbox"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"],
+  [tabindex]:not([tabindex="-1"]), .k-ai-model-picker__menu) { pointer-events: auto; }
 @media (pointer: coarse), (any-pointer: coarse) {
   .k-ai-composer--compact,
   .k-ai-composer--compact .k-ai-composer__editor { min-height: 56px; }
