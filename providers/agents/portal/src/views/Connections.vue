@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertCircle, ArrowLeft, Check, Link, Megaphone, Plug, Plus, Send, Shuffle, Wrench } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, ref, watch, type Component } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch, type Component } from 'vue'
 import type { ApiClient } from '../api'
 import SecretHandoff from '../components/SecretHandoff.vue'
 import { CATEGORY_META, CONN_DEFS, SLACK_SIGNING_SECRET_FIELD, connCategory, connShape, isSecretBearingWebhook, type ConnCategory, type ConnField, type ConnTypeDef } from '../conn-defs'
@@ -39,6 +39,21 @@ const emit = defineEmits<{
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const connMode = ref('')
+const reviewing = ref(false)
+const choosingType = ref(false)
+const stepHeading = ref<HTMLElement | null>(null)
+function focusStep(): void { void nextTick(() => stepHeading.value?.focus()) }
+function backStep(): void {
+  if (reviewing.value) reviewing.value = false
+  else choosingType.value = true
+  focusStep()
+}
+function continueCreate(def: ConnTypeDef): void {
+  if (createBusy.value) return
+  if (reviewing.value) { void create(def); return }
+  reviewing.value = true
+  focusStep()
+}
 const createBusy = ref(false)
 const editBusy = ref(false)
 const actionBusy = ref('')
@@ -108,9 +123,9 @@ function wiring(item: Connection) {
   return wiringState(item, props.store.agents.data, props.store.toolsets.data, props.store.agents.hasSnapshot && !props.store.agents.error, props.store.toolsets.hasSnapshot && !props.store.toolsets.error)
 }
 
-watch(() => props.createType, () => { createValues.value = {}; connMode.value = '' })
+watch(() => props.createType, () => { createValues.value = {}; connMode.value = ''; reviewing.value = false; choosingType.value = false })
 watch(() => props.createSession, () => {
-  createValues.value = {}; connMode.value = ''; editValuesFor.value = ''; editValues.value = {}
+  createValues.value = {}; connMode.value = ''; reviewing.value = false; choosingType.value = false; editValuesFor.value = ''; editValues.value = {}
 })
 watch([() => props.editRoute, () => props.editName, () => revision.value], () => {
   if (!props.editRoute || !props.editName || editValuesFor.value === props.editName) return
@@ -120,6 +135,9 @@ watch([() => props.editRoute, () => props.editName, () => revision.value], () =>
 }, { immediate: true })
 
 function selectType(def: ConnTypeDef): void {
+  choosingType.value = false
+  reviewing.value = false
+  focusStep()
   emit('navigate', { kind: 'create', resource: 'connection', type: def.id })
 }
 function setCreateValue(key: string, value: string): void { createValues.value = { ...createValues.value, [key]: value } }
@@ -248,16 +266,16 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
 </script>
 
 <template>
-  <div v-if="createRoute && !createType" class="k-create-page">
+  <div v-if="createRoute && (!createType || choosingType)" class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Connections</button>
-    <header class="k-create-header"><h1 class="k-create-title">Create connection</h1><p class="k-create-description">Choose the tool, channel, or external service you want agents to use.</p></header>
-    <div class="k-create-surface k-create-surface--wide"><div class="k-create-body"><div class="agents-conn-picker">
+    <header class="k-create-header"><h1 ref="stepHeading" class="k-create-title" tabindex="-1">Create connection</h1><p class="k-create-description">Choose the tool, channel, or external service you want agents to use.</p></header>
+    <div class="k-create-surface k-create-surface--guided"><div class="agents-connection-primary"><ol class="k-wizard-steps k-wizard-steps--responsive" aria-label="Connection setup progress"><li :aria-current="!createType || choosingType ? 'step' : undefined">Type</li><li :aria-current="createType && !choosingType && !reviewing ? 'step' : undefined">Configure</li><li :aria-current="reviewing ? 'step' : undefined">Review</li></ol><div class="k-create-body agents-connection-body"><div class="agents-conn-picker">
       <div v-for="category in (['tool', 'channel', 'connection'] as ConnCategory[])" :key="category" class="agents-conn-group">
         <h2 class="agents-conn-grouphead"><component :is="categoryIcons[category]" :stroke-width="1.75" aria-hidden="true" /> {{ CATEGORY_META[category].label }}s <span class="muted">— {{ CATEGORY_META[category].blurb }}</span></h2>
         <div class="agents-conn-types"><button v-for="definition in CONN_DEFS.filter(item => connCategory(item.id) === category)" :key="definition.id" class="k-btn k-btn--ghost agents-conn-tile" @click="selectType(definition)"><span class="agents-conn-glyph" aria-hidden="true"><Plug :stroke-width="1.75" aria-hidden="true" /></span><span class="agents-conn-name">{{ definition.label }}</span><span class="muted">{{ definition.desc }}</span></button></div>
         <AssistedSearch v-if="category === 'tool'" :store="store" :api="api" @navigate="emit('navigate', $event)" />
       </div>
-    </div></div></div>
+    </div></div></div></div>
   </div>
   <div v-else-if="createRoute && createType === 'assisted-search'" class="agents-menu agents-create-page">
     <AssistedSearch :store="store" :api="api" page :authority-epoch="authorityEpoch" :create-session="createSession" @create-success="forwardCreate" @create-cancel="cancelCreate" />
@@ -269,17 +287,32 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
   <div v-else-if="createRoute && createDef" class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="createBusy" @click="cancelCreate"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Connections</button>
     <header class="k-create-header"><h1 class="k-create-title">Connect {{ createDef.label }}</h1><p class="k-create-description">{{ createDef.desc }}</p></header>
-    <form class="agents-conn-form agents-guided-form k-create-surface k-create-surface--guided" :aria-busy="createBusy" @submit.prevent="create(createDef)">
-      <div class="k-create-body k-create-body--guided"><div class="k-create-fields">
-        <div class="agents-conn-formhead"><button type="button" class="k-btn k-btn--ghost agents-back" :disabled="createBusy" @click="emit('navigate', { kind: 'create', resource: 'connection' })"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> connection types</button></div>
+    <form class="agents-conn-form agents-guided-form k-create-surface k-create-surface--guided" :aria-busy="createBusy" @submit.prevent="continueCreate(createDef)">
+      <div class="agents-connection-workbench"><div class="agents-connection-primary">
+      <ol class="k-wizard-steps k-wizard-steps--responsive" aria-label="Connection setup progress"><li :aria-current="!createType || choosingType ? 'step' : undefined">Type</li><li :aria-current="createType && !choosingType && !reviewing ? 'step' : undefined">Configure</li><li :aria-current="reviewing ? 'step' : undefined">Review</li></ol>
+      <div class="k-create-body agents-connection-body"><div class="k-create-fields agents-resource-fields">
+        <h2 ref="stepHeading" class="agents-form-step-title" tabindex="-1">{{ reviewing ? 'Review connection' : 'Configure connection' }}</h2>
+        <div v-show="!reviewing" class="agents-connection-fields">
+
         <details v-if="createDef.setup" class="agents-setup" open><summary>Before you start — setup steps</summary><ol><li v-for="step in createDef.setup" :key="step" v-html="step" /></ol></details>
-        <label>Name *<input class="k-input" name="name" aria-label="Name" aria-describedby="agents-connection-create-name-hint" required pattern="[a-z0-9-]+" :placeholder="`my-${createDef.id}`" autocomplete="off" :value="createValues.name || ''" :disabled="createBusy" @input="setCreateValue('name', ($event.target as HTMLInputElement).value)" /><span id="agents-connection-create-name-hint" class="agents-hint">A short id you'll reference from agents.</span></label>
-        <fieldset v-if="createDef.modes" class="agents-cap-fs"><legend>Authentication mode</legend><div class="agents-modeseg"><button v-for="mode in createDef.modes" :key="mode.id" type="button" :class="['k-btn k-btn--ghost agents-modebtn', { sel: mode.id === activeMode(createDef)?.id }]" :disabled="createBusy" :aria-pressed="mode.id === activeMode(createDef)?.id" @click="connMode = mode.id">{{ mode.label }}</button></div></fieldset>
+        <label><span class="agents-field-label">Name *</span><input class="k-input" name="name" aria-label="Name" aria-describedby="agents-connection-create-name-hint" required pattern="[a-z0-9-]+" :placeholder="`my-${createDef.id}`" autocomplete="off" :value="createValues.name || ''" :disabled="createBusy" @input="setCreateValue('name', ($event.target as HTMLInputElement).value)" /><span id="agents-connection-create-name-hint" class="agents-hint">A short id you'll reference from agents.</span></label>
+        <fieldset v-if="createDef.modes" class="agents-cap-fs agents-resource-fieldset"><legend>Authentication mode</legend><div class="agents-modeseg"><button v-for="mode in createDef.modes" :key="mode.id" type="button" :class="['k-btn k-btn--ghost agents-modebtn', { sel: mode.id === activeMode(createDef)?.id }]" :disabled="createBusy" :aria-pressed="mode.id === activeMode(createDef)?.id" @click="connMode = mode.id">{{ mode.label }}</button></div></fieldset>
         <div v-if="fieldsFor(createDef).some(field => field.key === 'clientID') === false && activeMode(createDef)?.fields.some(field => field.key === 'clientID') && store.oauthApps.has(createDef.id)" class="agents-platform-note"><Check :stroke-width="1.75" aria-hidden="true" /> Using the platform's {{ createDef.label }} OAuth app — no client id/secret needed. Create it, then click <strong>Connect</strong>.</div>
-        <label v-for="field in fieldsFor(createDef)" :key="field.key">{{ field.label }}{{ field.required ? ' *' : '' }}<input class="k-input" :name="field.key" :aria-label="field.label" :aria-describedby="field.hint ? `agents-connection-create-${field.key}-hint` : undefined" :type="field.password ? 'password' : 'text'" :placeholder="field.placeholder || ''" :required="field.required" autocomplete="off" :value="createValues[field.key] || ''" :disabled="createBusy" @input="setCreateValue(field.key, ($event.target as HTMLInputElement).value)" /><span v-if="field.hint" :id="`agents-connection-create-${field.key}-hint`" class="agents-hint">{{ field.hint }}</span></label>
-        <details v-if="advancedFor(createDef).length" class="agents-adv"><summary>Advanced</summary><label v-for="field in advancedFor(createDef)" :key="field.key">{{ field.label }}{{ field.required ? ' *' : '' }}<input class="k-input" :name="field.key" :aria-label="field.label" :aria-describedby="field.hint ? `agents-connection-create-${field.key}-hint` : undefined" :type="field.password ? 'password' : 'text'" :placeholder="field.placeholder || ''" :required="field.required" autocomplete="off" :value="createValues[field.key] || ''" :disabled="createBusy" @input="setCreateValue(field.key, ($event.target as HTMLInputElement).value)" /><span v-if="field.hint" :id="`agents-connection-create-${field.key}-hint`" class="agents-hint">{{ field.hint }}</span></label></details>
-      </div><CreateGuidance :title="`Connect ${createDef.label}`" description="Prepare the external identity once; agents receive access only when you grant this connection later." :prerequisites="[createDef.setup?.length ? 'Review the provider setup steps shown in the form.' : `Have the ${createDef.label} endpoint or credential ready.`, `Required fields: ${['Name', ...fieldsFor(createDef).filter(field => field.required).map(field => field.label)].join(', ')}.`]" :values="[{ label: 'Connection', value: createValues.name?.trim() || 'Not entered yet', technical: true }, { label: 'Type', value: createDef.label }, { label: 'Mode', value: activeMode(createDef)?.label || 'Default' }, { label: 'Required details', value: `${fieldsFor(createDef).filter(field => field.required && createValues[field.key]?.trim()).length} of ${fieldsFor(createDef).filter(field => field.required).length} entered` }]" :next-steps="['Railgrid stores secret values in this workspace and does not show them after creation.', 'Test or authorize the connection from the Connections page when the type supports it.', 'Grant the connection to an agent directly or add it to a shared toolset.']" /></div>
-      <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Creating…' : 'Create connection' }}</button></div>
+        <label v-for="field in fieldsFor(createDef)" :key="field.key"><span class="agents-field-label">{{ field.label }}{{ field.required ? ' *' : '' }}</span><input class="k-input" :name="field.key" :aria-label="field.label" :aria-describedby="field.hint ? `agents-connection-create-${field.key}-hint` : undefined" :type="field.password ? 'password' : 'text'" :placeholder="field.placeholder || ''" :required="field.required" autocomplete="off" :value="createValues[field.key] || ''" :disabled="createBusy" @input="setCreateValue(field.key, ($event.target as HTMLInputElement).value)" /><span v-if="field.hint" :id="`agents-connection-create-${field.key}-hint`" class="agents-hint">{{ field.hint }}</span></label>
+        <details v-if="advancedFor(createDef).length" class="agents-adv"><summary>Advanced</summary><label v-for="field in advancedFor(createDef)" :key="field.key"><span class="agents-field-label">{{ field.label }}{{ field.required ? ' *' : '' }}</span><input class="k-input" :name="field.key" :aria-label="field.label" :aria-describedby="field.hint ? `agents-connection-create-${field.key}-hint` : undefined" :type="field.password ? 'password' : 'text'" :placeholder="field.placeholder || ''" :required="field.required" autocomplete="off" :value="createValues[field.key] || ''" :disabled="createBusy" @input="setCreateValue(field.key, ($event.target as HTMLInputElement).value)" /><span v-if="field.hint" :id="`agents-connection-create-${field.key}-hint`" class="agents-hint">{{ field.hint }}</span></label></details>
+        </div>
+        <dl v-if="reviewing" class="agents-connection-review">
+          <div><dt>Name</dt><dd><code>{{ createValues.name }}</code></dd></div>
+          <div><dt>Type</dt><dd>{{ createDef.label }}</dd></div>
+          <div v-if="activeMode(createDef)"><dt>Authentication</dt><dd>{{ activeMode(createDef)?.label }}</dd></div>
+          <div><dt>Configuration</dt><dd>Details entered. Credentials and endpoint values are hidden here.</dd></div>
+        </dl>
+        <p v-if="reviewing" class="agents-hint">Create the connection, then grant it to an agent or toolset. OAuth connections need authorization after creation.</p>
+      </div></div>
+      <div class="k-create-actions agents-connection-actions"><button type="button" class="k-btn k-btn--text agents-step-back" :disabled="createBusy" @click="backStep"><ArrowLeft :size="14" aria-hidden="true" /> Back</button><button type="button" class="k-btn k-btn--ghost secondary" :disabled="createBusy" @click="cancelCreate">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="createBusy">{{ createBusy ? 'Creating…' : reviewing ? 'Create connection' : 'Continue' }}</button></div>
+      </div>
+      <aside class="agents-connection-guidance"><CreateGuidance :title="`Connect ${createDef.label}`" description="Prepare the external identity once; agents receive access only when you grant this connection later." :prerequisites="[createDef.setup?.length ? 'Review the provider setup steps shown in the form.' : `Have the ${createDef.label} endpoint or credential ready.`, `Required fields: ${['Name', ...fieldsFor(createDef).filter(field => field.required).map(field => field.label)].join(', ')}.`]" :values="[{ label: 'Connection', value: createValues.name?.trim() || 'Not entered yet', technical: true }, { label: 'Type', value: createDef.label }, { label: 'Mode', value: activeMode(createDef)?.label || 'Default' }, { label: 'Required details', value: `${fieldsFor(createDef).filter(field => field.required && createValues[field.key]?.trim()).length} of ${fieldsFor(createDef).filter(field => field.required).length} entered` }]" :next-steps="['Railgrid stores secret values in this workspace and does not show them after creation.', 'Test or authorize the connection from the Connections page when the type supports it.', 'Grant the connection to an agent directly or add it to a shared toolset.']" /></aside>
+      </div>
     </form>
   </div>
   <div v-else-if="editRoute" class="agents-detail">
@@ -301,14 +334,14 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
           Connection “{{ editName }}” was not found in {{ connections.error ? 'the last loaded workspace snapshot' : 'this workspace' }}.
         </div>
         <ResourceSectionCard v-else title="Connection settings" description="Change the endpoint or display name, or rotate the stored credential.">
-          <form class="agents-conn-form" :aria-busy="editBusy" @submit.prevent="saveEdit(currentEdit)">
-            <div class="k-create-body k-create-fields">
-              <label>Display name<input v-model="editValues.displayName" class="k-input" name="displayName" :placeholder="currentEdit.metadata.name" :disabled="editBusy" /></label>
-              <label v-if="instanceBacked(currentEdit)">Instance name *<input v-model="editValues.instance" class="k-input" name="instance" aria-label="Instance name" aria-describedby="agents-connection-edit-instance-hint" placeholder="search" required autocomplete="off" :disabled="editBusy" /><span id="agents-connection-edit-instance-hint" class="agents-hint">The instance under Infrastructure. Agents reach it over the platform's internal path — there is no URL and no token.</span></label>
-              <label v-else>{{ isSecretBearingWebhook(currentEdit) ? 'Replacement webhook URL' : endpointLabel(currentEdit) }}<input v-model="editValues.endpoint" class="k-input" name="endpoint" :aria-label="isSecretBearingWebhook(currentEdit) ? 'Replacement webhook URL' : endpointLabel(currentEdit)" :aria-describedby="isSecretBearingWebhook(currentEdit) ? 'agents-connection-edit-endpoint-hint' : undefined" :placeholder="isSecretBearingWebhook(currentEdit) ? 'Configured — leave blank to keep it' : ''" :disabled="editBusy" /><span v-if="isSecretBearingWebhook(currentEdit)" id="agents-connection-edit-endpoint-hint" class="agents-hint">Configured; leave blank to keep the current destination.</span></label>
+          <form class="agents-conn-form agents-resource-edit-form" :aria-busy="editBusy" @submit.prevent="saveEdit(currentEdit)">
+            <div class="k-create-body k-create-fields agents-resource-fields">
+              <label><span class="agents-field-label">Display name</span><input v-model="editValues.displayName" class="k-input" name="displayName" :placeholder="currentEdit.metadata.name" :disabled="editBusy" /></label>
+              <label v-if="instanceBacked(currentEdit)"><span class="agents-field-label">Instance name *</span><input v-model="editValues.instance" class="k-input" name="instance" aria-label="Instance name" aria-describedby="agents-connection-edit-instance-hint" placeholder="search" required autocomplete="off" :disabled="editBusy" /><span id="agents-connection-edit-instance-hint" class="agents-hint">The instance under Infrastructure. Agents reach it over the platform's internal path — there is no URL and no token.</span></label>
+              <label v-else><span class="agents-field-label">{{ isSecretBearingWebhook(currentEdit) ? 'Replacement webhook URL' : endpointLabel(currentEdit) }}</span><input v-model="editValues.endpoint" class="k-input" name="endpoint" :aria-label="isSecretBearingWebhook(currentEdit) ? 'Replacement webhook URL' : endpointLabel(currentEdit)" :aria-describedby="isSecretBearingWebhook(currentEdit) ? 'agents-connection-edit-endpoint-hint' : undefined" :placeholder="isSecretBearingWebhook(currentEdit) ? 'Configured — leave blank to keep it' : ''" :disabled="editBusy" /><span v-if="isSecretBearingWebhook(currentEdit)" id="agents-connection-edit-endpoint-hint" class="agents-hint">Configured; leave blank to keep the current destination.</span></label>
               <p v-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook && currentEdit.spec.auth === 'oauth'" class="agents-hint">This is an OAuth connection — use the <Link :stroke-width="1.75" aria-hidden="true" /> button in the table to re-authorize. Client credentials aren't edited here.</p>
-              <label v-else-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook">New {{ connShape(currentEdit).discordBot ? 'bot token' : 'secret / token' }}<input v-model="editValues.secret" class="k-input" name="secret" :aria-label="connShape(currentEdit).discordBot ? 'New bot token' : 'New secret / token'" aria-describedby="agents-connection-edit-secret-hint" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span id="agents-connection-edit-secret-hint" class="agents-hint">Only set this to rotate the credential.</span></label>
-              <label v-if="takesSigningSecret(currentEdit)">{{ SLACK_SIGNING_SECRET_FIELD.label }}<input v-model="editValues.signingSecret" class="k-input" name="signingSecret" :aria-label="SLACK_SIGNING_SECRET_FIELD.label" aria-describedby="agents-connection-edit-signing-secret-hint" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span id="agents-connection-edit-signing-secret-hint" class="agents-hint">{{ SLACK_SIGNING_SECRET_FIELD.hint }}</span></label>
+              <label v-else-if="!instanceBacked(currentEdit) && !connShape(currentEdit).discordWebhook"><span class="agents-field-label">New {{ connShape(currentEdit).discordBot ? 'bot token' : 'secret / token' }}</span><input v-model="editValues.secret" class="k-input" name="secret" :aria-label="connShape(currentEdit).discordBot ? 'New bot token' : 'New secret / token'" aria-describedby="agents-connection-edit-secret-hint" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span id="agents-connection-edit-secret-hint" class="agents-hint">Only set this to rotate the credential.</span></label>
+              <label v-if="takesSigningSecret(currentEdit)"><span class="agents-field-label">{{ SLACK_SIGNING_SECRET_FIELD.label }}</span><input v-model="editValues.signingSecret" class="k-input" name="signingSecret" :aria-label="SLACK_SIGNING_SECRET_FIELD.label" aria-describedby="agents-connection-edit-signing-secret-hint" type="password" placeholder="leave blank to keep the current one" autocomplete="off" :disabled="editBusy" /><span id="agents-connection-edit-signing-secret-hint" class="agents-hint">{{ SLACK_SIGNING_SECRET_FIELD.hint }}</span></label>
             </div>
             <div class="k-create-actions"><button type="button" class="k-btn k-btn--ghost secondary" :disabled="editBusy" @click="cancelEdit">Cancel</button><button class="k-btn k-btn--primary" type="submit" :disabled="editBusy">{{ editBusy ? 'Saving…' : 'Save changes' }}</button></div>
           </form>

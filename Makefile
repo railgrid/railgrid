@@ -3129,3 +3129,7 @@ test-railgrid-auth-configuration: ## Verify App Studio authentication settings, 
 .PHONY: test-resource-board-visual
 test-resource-board-visual: ## Render resource-board CSS across themes and input modes (requires Playwright)
 	node hack/resource-board-visual.mjs
+
+.PHONY: test-agents-forms-visual
+test-agents-forms-visual: ## Check Agents connection stepper and toolset forms against the running Models visual fixture
+	node hack/agents-forms-visual.mjs
