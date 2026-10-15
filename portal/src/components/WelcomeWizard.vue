@@ -3,12 +3,16 @@
 import { computed, ref, watch, nextTick, onMounted } from 'vue'
 import { ArrowLeft, ArrowRight, ChevronRight, Check, Copy, RefreshCw, Plus, Loader2, Puzzle, Server, Boxes, Building2, Rocket } from 'lucide-vue-next'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
+import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
-import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type AcceptedClaim, type AcceptedHubAccess, type AcceptedComposition } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
+import { welcomeIdentity } from '@/lib/firstWelcome'
+import { audienceCopy, defaultGoalForAudience, goalBodyForAudience, goalCopy, goalTitleForAudience, purposeForProvider } from '@/lib/onboardingCopy'
+import { planFor, setupReadyFor } from '@/lib/onboardingPlan'
+import { isConfirmedAdmin, onboardingStorageKey, persistOnboardingState, restoreOnboardingState } from '@/lib/onboardingState'
 
 const { scopePath } = useScopedNavigation()
 const emit = defineEmits<{ dismiss: [] }>()
@@ -19,20 +23,10 @@ const auth = useAuthStore()
 const step = ref(0)
 const audience = ref('team')
 const heading = ref<HTMLElement | null>(null)
-const audiences = [
-  { id: 'team', title: 'A platform for my team', body: 'Choose the tools your team can use in this Workspace.', icon: Building2 },
-  { id: 'personal', title: 'Build and run projects', body: 'Use this Workspace’s tools for apps, agents, and services.', icon: Boxes },
-  { id: 'explore', title: 'I’m evaluating Railgrid', body: 'Find a useful first workflow to try.', icon: Rocket },
-]
-const goals = [
-  { id: 'app-studio', title: 'Build an app', body: 'Develop an application with AI in App Studio.', icon: Boxes, next: 'Open App Studio', task: 'Describe your app', prerequisite: 'App Studio guides you through model and project setup.' },
-  { id: 'agents', title: 'Run an AI agent', body: 'Create an AI agent with tools and memory.', icon: Rocket, next: 'Open Agents', task: 'Configure an agent', prerequisite: 'Connect a model and choose its tools before running a task.' },
-  { id: 'infrastructure', title: 'Deploy a service', body: 'Start with a configurable application template.', icon: Puzzle, next: 'Open Application Templates', task: 'Choose a service template', prerequisite: 'Have a deployment target and your template’s configuration ready.' },
-  { id: 'edges', title: 'Connect infrastructure', body: 'Reach your servers and clusters through Railgrid.', icon: Server, next: 'Open Edges', task: 'Connect a server or cluster', prerequisite: 'You’ll need permission to install the Railgrid agent on your server or cluster.' },
-]
-function defaultGoalForAudience(value: string) {
-  return value === 'team' ? 'edges' : value === 'explore' ? 'agents' : 'app-studio'
-}
+const audienceIcons = { team: Building2, personal: Boxes, explore: Rocket }
+const goalIcons = { 'app-studio': Boxes, agents: Rocket, infrastructure: Puzzle, edges: Server }
+const audiences = audienceCopy.map(option => ({ ...option, icon: audienceIcons[option.id] }))
+const goals = goalCopy.map(option => ({ ...option, icon: goalIcons[option.id] }))
 const goal = ref(defaultGoalForAudience(audience.value))
 const goalExplicit = ref(false)
 function selectAudience(value: string) {
@@ -60,59 +54,27 @@ function categoryIcon(name: string) {
 }
 const failedIcons = ref<Record<string, boolean>>({})
 const target = computed(() => providers.byName(goal.value))
-// Read dependencies from the catalog, including transitive requirements. A
-// visited set prevents malformed/cyclic catalogs from trapping the UI.
-const plan = computed(() => {
-  const rows: { name: string; provider?: ProviderDTO }[] = []
-  const seen = new Set<string>()
-  function visit(name: string) {
-    if (seen.has(name)) return
-    seen.add(name)
-    const provider = providers.byName(name)
-    for (const requirement of provider?.requires ?? []) {
-      if (requirement.provider) visit(requirement.provider)
-    }
-    rows.push({ name, provider: provider ?? undefined })
-  }
-  if (!exploring.value) visit(goal.value)
-  return rows
-})
+const plan = computed(() => planFor(goal.value, providers.byName))
 const canOpen = computed(() => !!target.value?.ready && !!target.value?.serving?.ui && providers.isEnabled(goal.value) && !providers.hasMissingDependencies(target.value))
 // Members consume an existing setup; admins retain the setup preview. Only
 // current Workspace data can justify skipping the prerequisite review.
 const setupDataCurrent = computed(() =>
   tenant.workspaceMode === 'workspace' && !!tenant.orgUUID && !!tenant.workspaceUUID &&
+  (isConfirmedAdmin(tenant.activeWorkspace?.role, tenant.activeOrg?.role) ||
+    (tenant.activeWorkspace?.role === 'member' && tenant.activeOrg?.role === 'member')) &&
   providers.loaded && !providers.loading && !providers.error &&
   providers.catalogOrgUUID === tenant.orgUUID &&
   providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
   providers.bindingsLoadState === 'ready' && !providers.bindingsStale,
 )
-const setupReady = computed(() => setupDataCurrent.value && canOpen.value && plan.value.every(item => !!item.provider?.ready && providers.isEnabled(item.name)),
-)
+const setupReady = computed(() => setupReadyFor(setupDataCurrent.value, canOpen.value, plan.value, providers.isEnabled))
 
-const memberJourney = computed(() => !teamSetup.value && tenant.activeWorkspace?.role === 'member' && tenant.activeOrg?.role === 'member')
-const canSkipSetup = computed(() => memberJourney.value && setupReady.value)
+const memberJourney = computed(() => !isConfirmedAdmin(tenant.activeWorkspace?.role, tenant.activeOrg?.role))
+const canSkipSetup = computed(() => memberJourney.value && !teamSetup.value && setupReady.value)
 const openLabel = computed(() => target.value?.displayName ? `Open ${target.value.displayName}` : selectedGoal.value.next)
-const teamGoals: Record<string, { title: string; body: string }> = {
-  'app-studio': { title: 'Build apps with AI', body: 'Give your team App Studio for developing applications.' },
-  agents: { title: 'Run AI agents', body: 'Let your team create agents with tools and memory.' },
-  infrastructure: { title: 'Deploy applications', body: 'Provide ready-to-configure application templates.' },
-  edges: { title: 'Connect servers and clusters', body: 'Bring your team’s infrastructure into Railgrid.' },
-}
-function goalTitle(option: typeof goals[number]) { return teamSetup.value ? teamGoals[option.id]!.title : option.title }
-function goalBody(option: typeof goals[number]) { return teamSetup.value ? teamGoals[option.id]!.body : option.body }
-const providerPurpose: Record<string, string> = {
-  'app-studio': 'Build applications with AI.',
-  agents: 'Run AI agents with tools and memory.',
-  infrastructure: 'Provision apps and infrastructure from templates.',
-  edges: 'Connect servers and Kubernetes clusters.',
-  code: 'Connect and manage source repositories.',
-}
-function purpose(name: string, provider?: ProviderDTO) {
-  if (goal.value === 'app-studio' && name === 'code') return 'Manage source repositories for your apps.'
-  if (goal.value === 'app-studio' && name === 'infrastructure') return 'Provide the runtime for your apps.'
-  return providerPurpose[name] || provider?.description || ''
-}
+function goalTitle(option: typeof goals[number]) { return goalTitleForAudience(option.id, teamSetup.value) }
+function goalBody(option: typeof goals[number]) { return goalBodyForAudience(option.id, teamSetup.value) }
+function purpose(name: string, provider?: ProviderDTO) { return purposeForProvider(goal.value, name, provider?.description) }
 const requestCopied = ref(false)
 const copyFailed = ref(false)
 const setupRequest = computed(() => `I’d like to ${selectedGoal.value.title.toLowerCase()} in ${tenant.activeWorkspace?.displayName || 'our Workspace'}. Could you make ${target.value?.displayName || selectedGoal.value.next.replace('Open ', '')} and its required tools available? Required Providers: ${plan.value.map(item => item.provider?.displayName || item.name).join(', ')}.`)
@@ -141,16 +103,6 @@ const description = computed(() => {
 })
 function next() { step.value = Math.min(2, step.value + 1) }
 function back() { step.value = Math.max(0, step.value - 1) }
-// Per-provider in-flight flag, so one Enable spinning doesn't disable the rest.
-const busy = ref<Record<string, boolean>>({})
-const enableOperations = new Map<string, symbol>()
-const actionError = ref<string | null>(null)
-const dialogProvider = ref<ProviderDTO | null>(null)
-const dialogRevision = ref(0)
-const dialogScope = computed(
-  () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
-)
-
 function dependencyNotice(p: ProviderDTO): string {
   const missing = providers.missingDependencies(p)
   if (missing.length === 0) return ''
@@ -159,114 +111,58 @@ function dependencyNotice(p: ProviderDTO): string {
     : `Enable ${providers.dependencyLabels([name]).join(', ')} first.`).join(' ')
 }
 
-function openEnableDialog(p: ProviderDTO) {
-  if (busy.value[p.name]) return
-  actionError.value = null
-  if (providers.hasMissingDependencies(p)) {
-    actionError.value = dependencyNotice(p)
+const {
+  busy,
+  actionError,
+  dialogProvider,
+  dialogScope,
+  openEnableDialog: openAdminEnableDialog,
+  closeEnableDialog,
+  onDialogConfirm: confirmEnable,
+} = useProviderEnableFlow({
+  scope: () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
+  enable: (provider, accept, acceptHubAccess, acceptCompositions) =>
+    providers.enable(provider, accept, acceptHubAccess, acceptCompositions),
+  dependencyError: provider => dependencyNotice(provider) || null,
+})
+function openEnableDialog(provider: ProviderDTO) {
+  if (memberJourney.value) return
+  openAdminEnableDialog(provider)
+}
+function onDialogConfirm(...args: Parameters<typeof confirmEnable>) {
+  if (memberJourney.value) {
+    closeEnableDialog()
     return
   }
-  dialogRevision.value += 1
-  dialogProvider.value = p
+  return confirmEnable(...args)
 }
-
-function closeEnableDialog() {
-  dialogRevision.value += 1
-  dialogProvider.value = null
-  actionError.value = null
-}
-
-watch(dialogScope, () => {
-  // A workspace switch invalidates the visible consent decision. The store
-  // independently fences the in-flight write; this only prevents its result
-  // or error from changing the new workspace's dialog.
-  if (dialogProvider.value) closeEnableDialog()
-  enableOperations.clear()
-  busy.value = {}
-})
-
-async function onDialogConfirm(
-  accept: AcceptedClaim[],
-  acceptHubAccess: AcceptedHubAccess[] = [],
-  acceptCompositions: AcceptedComposition[] = [],
-) {
-  const p = dialogProvider.value
-  const revision = dialogRevision.value
-  const scope = dialogScope.value
-  if (!p || busy.value[p.name]) return
-  const operation = Symbol(p.name)
-  enableOperations.set(p.name, operation)
-  busy.value = { ...busy.value, [p.name]: true }
-  actionError.value = null
-  try {
-    await providers.enable(p, accept, acceptHubAccess, acceptCompositions)
-    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
-      closeEnableDialog()
-    }
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
-      actionError.value = message
-    } else if (dialogScope.value === scope) {
-      toast('error', `Could not enable ${p.displayName}: ${message}`, {
-        scope,
-        source: 'provider-enable',
-        dedupeKey: `provider-enable:${p.name}`,
-      })
-    }
-  } finally {
-    if (enableOperations.get(p.name) === operation) {
-      enableOperations.delete(p.name)
-      const next = { ...busy.value }
-      delete next[p.name]
-      busy.value = next
-    }
-  }
-}
+watch(memberJourney, isMember => { if (isMember) closeEnableDialog() })
 
 
 // This is a local presentation preference, never an authorization decision.
-const welcomeUser = computed(() => auth.user?.userId || auth.user?.email || auth.self?.rbacIdentity || '')
-const storageKey = computed(() => welcomeUser.value ? `railgrid:portal:onboarding:user:${encodeURIComponent(welcomeUser.value)}:${dialogScope.value}` : '')
+const welcomeUser = computed(() => welcomeIdentity(auth))
+const storageKey = computed(() => onboardingStorageKey(welcomeUser.value, dialogScope.value))
 function restore() {
-  step.value = 0
-  audience.value = 'team'
-  goal.value = defaultGoalForAudience(audience.value)
-  goalExplicit.value = false
-  try {
-    if (!storageKey.value) return
-    const saved = JSON.parse(localStorage.getItem(storageKey.value) || 'null')
-    if (!saved || typeof saved !== 'object' || !audiences.some(a => a.id === saved.audience)) return
-    const validGoal = goals.some(g => g.id === saved.goal)
-    if (saved.goal === 'explore') {
-      if (saved.step !== 2) return
-      audience.value = saved.audience
-      goal.value = 'explore'
-      step.value = 2
-      return
-    }
-    if (!validGoal || (saved.step !== undefined && ![0, 1, 2].includes(saved.step))) return
-    audience.value = saved.audience
-    const savedStep = saved.step ?? 0
-    goalExplicit.value = saved.goalExplicit === true || (saved.goalExplicit === undefined && savedStep > 0)
-    goal.value = goalExplicit.value ? saved.goal : defaultGoalForAudience(saved.audience)
-    step.value = savedStep
-  } catch { /* Storage can be disabled; setup remains usable. */ } finally {
-    // Explicit re-entry starts a new choice; automatic entry resumes progress.
-    if (props.startAtGoal) step.value = 1
-  }
+  let raw: string | null = null
+  try { if (storageKey.value) raw = localStorage.getItem(storageKey.value) } catch { /* Storage can be disabled; setup remains usable. */ }
+  const state = restoreOnboardingState(raw, props.startAtGoal)
+  step.value = state.step
+  audience.value = state.audience
+  goal.value = state.goal
+  goalExplicit.value = state.goalExplicit
 }
 watch(storageKey, restore, { immediate: true, flush: 'sync' })
 function persist() {
   if (!storageKey.value) return
-  try { localStorage.setItem(storageKey.value, JSON.stringify({ step: step.value, audience: audience.value, goal: goal.value, goalExplicit: goalExplicit.value })) } catch { /* Optional preference. */ }
+  try { localStorage.setItem(storageKey.value, persistOnboardingState({ step: step.value, audience: audience.value, goal: goal.value, goalExplicit: goalExplicit.value })) } catch { /* Optional preference. */ }
 }
 watch([step, audience, goal, goalExplicit], persist, { immediate: true })
 async function focusStep() {
   await nextTick()
   // Move semantic focus without letting the browser hide the progress row.
   heading.value?.focus({ preventScroll: true })
-  heading.value?.closest('.onboarding')?.scrollIntoView({ block: 'start', behavior: 'instant' })
+  const main = heading.value?.closest('main')
+  if (main) main.scrollTop = 0
 }
 onMounted(focusStep)
 watch(step, focusStep)
@@ -294,6 +190,7 @@ const finalActionReason = computed(() => {
 </script>
 
 <template>
+  <div class="onboarding-viewport">
   <section class="onboarding" aria-labelledby="onboarding-title">
     <ol class="k-wizard-steps mb-4" aria-label="Getting started progress">
       <li class="text-[12px]" v-for="(label, index) in ['About you', 'Your goal', 'Get started']" :key="label" :aria-current="step === index ? 'step' : undefined">{{ label }}</li>
@@ -419,9 +316,11 @@ const finalActionReason = computed(() => {
     </footer>
     <ProviderEnableDialog :provider="dialogProvider" :org-role="tenant.activeOrg?.role" :workspace-role="tenant.activeWorkspace?.role" :busy="dialogProvider ? !!busy[dialogProvider.name] : false" :error="dialogProvider ? actionError : null" @cancel="closeEnableDialog" @confirm="onDialogConfirm" />
   </section>
+  </div>
 </template>
 
 <style scoped>
+.onboarding-viewport { display: flex; align-items: center; justify-content: center; width: 100%; min-height: calc(100dvh - 40px); }
 .onboarding { display: flex; flex-direction: column; width: 100%; max-width: 640px; min-height: min(540px, calc(100dvh - 40px)); margin: 0 auto; padding: 24px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-primary); }
 .onboarding-member-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; margin: 8px 0 16px; }
 .onboarding-request { display: block; width: 100%; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-secondary); font: inherit; font-size: 13px; line-height: 1.6; resize: vertical; }

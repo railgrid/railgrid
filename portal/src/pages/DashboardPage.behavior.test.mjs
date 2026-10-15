@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
-import { gettingStartedReadState, shouldAutoOpenGettingStarted } from '../lib/gettingStarted.ts'
+import { gettingStartedReadState } from '../lib/gettingStarted.ts'
 
 const { descriptor } = parse(readFileSync(new URL('./DashboardPage.vue', import.meta.url), 'utf8'))
 const compiled = compileScript(descriptor, { id: 'dashboard-behavior', inlineTemplate: true,
@@ -48,14 +48,14 @@ function scenario({ unscoped = false, error = false, dismissed = false } = {}) {
   let welcomeSeen = dismissed
   const modules = {
     '@/stores/auth': { useAuthStore: () => ({ user: { userId: 'test-user' } }) },
-    '@/lib/firstWelcome': { claimFirstWelcome: () => { if (welcomeSeen) return false; welcomeSeen = true; return true } },
+    '@/lib/firstWelcome': { welcomeIdentity: auth => auth.user?.userId || '', claimFirstWelcome: () => { if (welcomeSeen) return false; welcomeSeen = true; return true } },
     '@/composables/gettingStartedFocus': { useGettingStartedFocus() {} },
     vue: Vue, pinia: { storeToRefs: Vue.toRefs },
     '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: p => p }) },
     '@/stores/providers': { useProvidersStore: () => providers },
     '@/stores/tenant': { useTenantStore: () => tenant },
     '@/stores/dashboardLayout': { useDashboardLayoutStore: () => reactive({ layout: [], addable: [], sync() {} }) },
-    '@/lib/gettingStarted': { gettingStartedReadState, shouldAutoOpenGettingStarted },
+    '@/lib/gettingStarted': { gettingStartedReadState },
     '@/components/WelcomeWizard.vue': { default: wizard },
   }
   const exports = {}

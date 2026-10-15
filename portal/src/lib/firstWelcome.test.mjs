@@ -32,3 +32,16 @@ test('first welcome is user-scoped, survives reload, and ignores unowned legacy 
     assert.equal(api.claimFirstWelcome('private-user'), false, 'session memory works without storage')
   } finally { globalThis.localStorage = original }
 })
+
+
+test('welcome identity waits for the atomic login record and stays stable as self loads', async () => {
+  const { welcomeIdentity } = await load()
+  assert.equal(welcomeIdentity({ self: { rbacIdentity: 'rbac-alice' } }), '')
+  const user = { userId: 'alice', email: 'alice@example.com' }
+  assert.equal(welcomeIdentity({ user }), 'alice')
+  assert.equal(welcomeIdentity({ user, self: { rbacIdentity: 'rbac-alice' } }), 'alice')
+  assert.equal(welcomeIdentity({ user: { userId: '', email: 'bob@example.com' } }), 'bob@example.com')
+  assert.equal(welcomeIdentity({ user: { userId: '', email: '' } }), '')
+  assert.equal(welcomeIdentity({ user: { userId: '', email: '' }, self: { rbacIdentity: 'static-user' } }), 'static-user')
+  assert.equal(welcomeIdentity({ user: null, self: null }), '')
+})

@@ -35,6 +35,17 @@ async function loadCaller(fileName) {
   const script = source.match(/<script setup[^>]*>([\s\S]*?)<\/script>/)?.[1]
   assert.ok(script, `${fileName} should contain a setup script`)
 
+  const flowSource = (await readFile(path.join(portalRoot, 'src/composables/useProviderEnableFlow.ts'), 'utf8'))
+    .replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '')
+  const isWizard = fileName.includes('WelcomeWizard')
+  let helpers = ''
+  if (isWizard) {
+    for (const name of ['onboardingCopy', 'onboardingPlan', 'onboardingState']) {
+      const helper = await readFile(path.join(portalRoot, `src/lib/${name}.ts`), 'utf8')
+      helpers += `\n${helper.replace(/^import[\s\S]*?from ['"][^'"]+['"]\n/gm, '')}`
+    }
+  }
+
   // Compile the real caller script with deterministic doubles for Vue and its
   // stores. This keeps the deferred request behavior under test without
   // copying the caller's fencing logic into a second implementation.
@@ -44,7 +55,8 @@ const useScopedNavigation = () => ({ scopePath: (path) => path })
 
 const ref = (value) => ({ value })
 const computed = (getter) => ({ get value() { return getter() } })
-const watch = () => {}
+const watchCalls = []
+const watch = (source, callback) => watchCalls.push({ source, callback })
 const onMounted = () => {}
 const defineEmits = () => () => {}
 const defineProps = () => ({ startAtGoal: false })
@@ -87,6 +99,7 @@ const providerStore = {
   items: [],
   categories: [],
   enable: async () => undefined,
+  disable: async () => undefined,
   isEnabled: () => false,
   isSelfHosted: () => false,
   isSelfManaged: () => false,
@@ -112,25 +125,30 @@ const orgProviderStore = {
   instructions: async () => null,
   remove: async () => undefined,
 }
-const tenantStore = { orgUUID: 'org-a', workspaceUUID: 'workspace-a', workspaceMode: 'workspace' }
+const tenantStore = { orgUUID: 'org-a', workspaceUUID: 'workspace-a', workspaceMode: 'workspace', activeWorkspace: null, activeOrg: null }
 const useProvidersStore = () => providerStore
 const useOrgProvidersStore = () => orgProviderStore
 const useTenantStore = () => tenantStore
 const authStore = { user: { userId: 'alice', email: '' }, self: null }
 const useAuthStore = () => authStore
+const welcomeIdentity = (auth) => auth.user?.userId || auth.user?.email || auth.self?.rbacIdentity || ''
+${helpers}
+${flowSource}
 ${sourceWithoutImports}
 export {
   actionError,
   busy,
+  openEnableDialog,
   closeEnableDialog,
   dialogProvider,
-  dialogRevision,
+  dialogScope,
   onDialogConfirm,
   providerStore,
   tenantStore,
   authStore,
+  watchCalls,
   toastCalls,
-  ${fileName.includes('WelcomeWizard') ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, canSkipSetup, explore, exploring,' : ''}
+  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations,'}
 }
 `
   const { outputText } = ts.transpileModule(harness, {
@@ -139,7 +157,17 @@ export {
       module: ts.ModuleKind.ESNext,
     },
   })
-  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+  const caller = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+  return {
+    ...caller,
+    setScope(orgUUID, workspaceUUID = 'workspace-a') {
+      caller.tenantStore.orgUUID = orgUUID
+      caller.tenantStore.workspaceUUID = workspaceUUID
+      for (const watchCall of caller.watchCalls) {
+        if (watchCall.source === caller.dialogScope) watchCall.callback()
+      }
+    },
+  }
 }
 
 const callers = await Promise.all([
@@ -152,13 +180,16 @@ for (const [index, caller] of callers.entries()) {
 
   test(`${label} reports a dismissed same-scope deferred failure as a toast`, async () => {
     caller.toastCalls.length = 0
-    caller.tenantStore.orgUUID = 'org-a'
-    caller.tenantStore.workspaceUUID = 'workspace-a'
+    caller.setScope('org-a', 'workspace-a')
     const provider = { name: 'edges', displayName: 'Edges', requires: [] }
+    if (label === 'WelcomeWizard') {
+      caller.tenantStore.activeWorkspace = { role: 'admin' }
+      caller.tenantStore.activeOrg = { role: 'member' }
+    }
     const pending = deferred()
     caller.providerStore.enable = () => pending.promise
-    caller.dialogRevision.value += 1
-    caller.dialogProvider.value = provider
+    caller.openEnableDialog(provider)
+    assert.equal(caller.dialogProvider.value, provider)
 
     const request = caller.onDialogConfirm([])
     await Promise.resolve()
@@ -177,24 +208,26 @@ for (const [index, caller] of callers.entries()) {
 
   test(`${label} drops a deferred failure after a scope change`, async () => {
     caller.toastCalls.length = 0
-    caller.tenantStore.orgUUID = 'org-a'
-    caller.tenantStore.workspaceUUID = 'workspace-a'
+    caller.setScope('org-a', 'workspace-a')
     const provider = { name: 'code', displayName: 'Code', requires: [] }
+    if (label === 'WelcomeWizard') {
+      caller.tenantStore.activeWorkspace = { role: 'admin' }
+      caller.tenantStore.activeOrg = { role: 'member' }
+    }
     const pending = deferred()
     caller.providerStore.enable = () => pending.promise
-    caller.dialogRevision.value += 1
-    caller.dialogProvider.value = provider
+    caller.openEnableDialog(provider)
 
     const request = caller.onDialogConfirm([])
     await Promise.resolve()
-    caller.tenantStore.orgUUID = 'org-b'
+    caller.setScope('org-b')
     pending.reject(new Error('old-scope failure'))
     await request
 
     assert.equal(caller.actionError.value, null)
     assert.equal(caller.toastCalls.length, 0)
-    caller.tenantStore.orgUUID = 'org-a'
-    caller.dialogProvider.value = null
+    caller.setScope('org-a')
+    caller.closeEnableDialog()
   })
 }
 
@@ -210,6 +243,64 @@ test('WelcomeWizard orders transitive dependencies and tolerates missing and cyc
   caller.goal.value = 'app-studio'
   assert.deepEqual(caller.plan.value.map(p => p.name), ['edges', 'code', 'infrastructure', 'app-studio'])
   assert.equal(caller.plan.value[2].provider, undefined)
+})
+
+test('ProvidersPage ignores a deferred disable failure after a same-provider enable starts in the new scope', async () => {
+  const caller = callers[0]
+  caller.setScope('org-a', 'workspace-a')
+  caller.actionError.value = null
+  const provider = { name: 'edges', displayName: 'Edges', requires: [] }
+  const staleDisable = deferred()
+  const currentEnable = deferred()
+  caller.providerStore.disable = () => staleDisable.promise
+  caller.providerStore.enable = () => currentEnable.promise
+
+  const disabling = caller.onDisable(provider)
+  assert.equal(caller.busy.value.edges, true)
+  caller.setScope('org-b')
+  caller.openEnableDialog(provider)
+  const enabling = caller.onDialogConfirm([])
+  assert.equal(caller.busy.value.edges, true)
+
+  staleDisable.reject(new Error('old workspace disable failed'))
+  await disabling
+  assert.equal(caller.busy.value.edges, true, 'the stale disable cannot release the new enable busy state')
+  assert.equal(caller.actionError.value, null, 'the stale disable cannot replace the current scope error')
+
+  currentEnable.resolve()
+  await enabling
+  assert.equal(caller.busy.value.edges, undefined)
+})
+
+test('WelcomeWizard fails closed until admin access is confirmed, including the team audience', () => {
+  const caller = callers[1]
+  const beforeWorkspace = caller.tenantStore.activeWorkspace
+  const beforeOrg = caller.tenantStore.activeOrg
+  const provider = { name: 'edges', displayName: 'Edges', requires: [] }
+  try {
+    caller.audience.value = 'team'
+    caller.tenantStore.activeWorkspace = null
+    caller.tenantStore.activeOrg = null
+    assert.equal(caller.memberJourney.value, true)
+    caller.openEnableDialog(provider)
+    assert.equal(caller.dialogProvider.value, null, 'unknown roles must not open consent')
+    assert.equal(caller.setupDataCurrent.value, false, 'unknown roles need the check-again state')
+
+    caller.tenantStore.activeWorkspace = { role: 'member' }
+    caller.tenantStore.activeOrg = { role: 'member' }
+    assert.equal(caller.memberJourney.value, true)
+    caller.openEnableDialog(provider)
+    assert.equal(caller.dialogProvider.value, null, 'team audience never grants enable access to a member')
+
+    caller.tenantStore.activeWorkspace = { role: 'admin' }
+    assert.equal(caller.memberJourney.value, false)
+    caller.openEnableDialog(provider)
+    assert.equal(caller.dialogProvider.value, provider)
+    caller.closeEnableDialog()
+  } finally {
+    caller.tenantStore.activeWorkspace = beforeWorkspace
+    caller.tenantStore.activeOrg = beforeOrg
+  }
 })
 
 test('WelcomeWizard only opens an enabled, ready Provider with UI and satisfied dependencies', () => {
@@ -307,19 +398,24 @@ test('WelcomeWizard persists whether the selected goal is intentional', () => {
 
 test('WelcomeWizard forwards accepted compositions to the provider enable request', async () => {
   const caller = callers[1]
+  const beforeWorkspace = caller.tenantStore.activeWorkspace
+  const beforeOrg = caller.tenantStore.activeOrg
+  caller.tenantStore.activeWorkspace = { role: 'admin' }
+  caller.tenantStore.activeOrg = { role: 'member' }
   const provider = { name: 'app-studio', displayName: 'App Studio', requires: [] }
   const acceptedClaims = [{ group: 'apps.railgrid.ai', resource: 'projects' }]
   const acceptedHubAccess = [{ capability: 'provider-proxy', scope: 'workspace' }]
   const acceptedCompositions = [{ provider: 'code', group: 'code.railgrid.ai', resource: 'repositories' }]
   const calls = []
   caller.providerStore.enable = async (...args) => calls.push(args)
-  caller.dialogProvider.value = provider
-  caller.dialogRevision.value += 1
+  caller.openEnableDialog(provider)
 
   await caller.onDialogConfirm(acceptedClaims, acceptedHubAccess, acceptedCompositions)
 
   assert.deepEqual(calls, [[provider, acceptedClaims, acceptedHubAccess, acceptedCompositions]])
   assert.equal(caller.dialogProvider.value, null)
+  caller.tenantStore.activeWorkspace = beforeWorkspace
+  caller.tenantStore.activeOrg = beforeOrg
 })
 
 

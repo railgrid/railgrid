@@ -332,37 +332,39 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           Enabling makes it available here.
         </div>
 
-        <ul v-else-if="claims.length" class="space-y-2">
-          <li class="text-[11px] font-medium text-text-primary">Tools and resources in this workspace</li>
-          <li class="text-[10px] text-text-muted">Declining access may limit features that rely on it.</li>
-          <li
-            v-for="c in claims"
-            :key="claimKey(c)"
-            class="rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2"
-          >
-            <label class="k-checkbox-hit flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                class="k-checkbox mt-1"
-                :checked="!!accepted[claimKey(c)]"
-                :disabled="busy"
-                @change="toggle(c)"
-              />
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <ShieldCheck class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-                  <span class="text-[11px] text-text-primary">{{ accessLabel(c.resource, c.verbs) }}</span>
+        <div v-else-if="claims.length">
+          <p class="mb-1.5 text-[11px] font-medium text-text-primary">Tools and resources in this workspace</p>
+          <p class="mb-2 text-[10px] text-text-muted">Declining access may limit features that rely on it.</p>
+          <ul class="space-y-2">
+            <li
+              v-for="c in claims"
+              :key="claimKey(c)"
+              class="rounded-lg border border-border-subtle bg-surface-overlay/30 px-3 py-2"
+            >
+              <label class="k-checkbox-hit flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  class="k-checkbox mt-1"
+                  :checked="!!accepted[claimKey(c)]"
+                  :disabled="busy"
+                  @change="toggle(c)"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <ShieldCheck class="h-3.5 w-3.5 text-success" :stroke-width="2" />
+                    <span class="text-[11px] text-text-primary">{{ accessLabel(c.resource, c.verbs) }}</span>
+                  </div>
+                  <p class="mt-0.5 font-mono text-[10px] text-text-muted">
+                    {{ c.group ? `${c.group}/` : '' }}{{ c.resource }}
+                  </p>
+                  <p v-if="c.verbs.length" class="mt-0.5 text-[10px] text-text-muted">
+                    Technical verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
+                  </p>
                 </div>
-                <p class="mt-0.5 font-mono text-[10px] text-text-muted">
-                  {{ c.group ? `${c.group}/` : '' }}{{ c.resource }}
-                </p>
-                <p v-if="c.verbs.length" class="mt-0.5 text-[10px] text-text-muted">
-                  Technical verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
-                </p>
-              </div>
-            </label>
-          </li>
-        </ul>
+              </label>
+            </li>
+          </ul>
+        </div>
 
         <div v-if="compositions.length" class="mt-3">
           <p class="mb-1.5 text-[11px] font-medium text-text-primary">Access to other providers</p>

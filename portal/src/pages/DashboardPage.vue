@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useGettingStartedFocus } from '@/composables/gettingStartedFocus'
 import { useAuthStore } from '@/stores/auth'
-import { claimFirstWelcome } from '@/lib/firstWelcome'
+import { claimFirstWelcome, welcomeIdentity } from '@/lib/firstWelcome'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
@@ -130,7 +130,7 @@ const enabledBindingCount = computed(() => Object.keys(providers.bindingNamesByP
 const workspaceDataReady = computed(() => gettingStartedStatus.value === 'ready')
 
 // Once per signed-in account in this browser, independent of Workspace.
-const welcomeUser = computed(() => auth.user?.userId || auth.user?.email || auth.self?.rbacIdentity || '')
+const welcomeUser = computed(() => welcomeIdentity(auth))
 const welcomeOpen = ref(false)
 const gettingStartedTrigger = ref<HTMLButtonElement | null>(null)
 const guideForced = ref(false)
@@ -336,7 +336,6 @@ function onGridSelectStart(event: Event) {
                 <RotateCcw class="h-4 w-4" :stroke-width="1.75" /> Reset
               </button>
               <button
-                ref="gettingStartedTrigger"
                 type="button"
                 class="k-btn k-btn--primary min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="toggleEdit"

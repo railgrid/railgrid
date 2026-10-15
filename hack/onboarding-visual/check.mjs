@@ -45,7 +45,7 @@ async function geometry(page) {
     const main = document.querySelector('main')
     const body = document.querySelector('.onboarding-body')
     const progress = document.querySelector('.k-wizard-steps').getBoundingClientRect()
-    return { progressTop: progress.top, mainTop: main.getBoundingClientRect().top, bodyScroll: body.scrollHeight, bodyAvailable: body.clientHeight, width: card.width, height: card.height, footerY: footer.y, scroll: main.scrollHeight, available: main.clientHeight, horizontalOverflow: main.scrollWidth > main.clientWidth || document.documentElement.scrollWidth > innerWidth }
+    return { centerX: card.x + card.width / 2, centerY: card.y + card.height / 2, progressTop: progress.top, mainTop: main.getBoundingClientRect().top, bodyScroll: body.scrollHeight, bodyAvailable: body.clientHeight, width: card.width, height: card.height, footerY: footer.y, scroll: main.scrollHeight, available: main.clientHeight, horizontalOverflow: main.scrollWidth > main.clientWidth || document.documentElement.scrollWidth > innerWidth }
   })
 }
 
@@ -58,6 +58,10 @@ try {
         const current = await geometry(page)
         assert(current.progressTop >= current.mainTop - 1, `${theme} ${width} step ${step}: progress scrolled out of view`)
         assert.equal(current.horizontalOverflow, false, `${theme} ${width} step ${step}: horizontal overflow`)
+        assert(Math.abs(current.centerX - width / 2) <= 1, `${theme} ${width} step ${step}: horizontal centering`)
+        if (current.height <= height - 40) {
+          assert(Math.abs(current.centerY - height / 2) <= 1, `${theme} ${width} step ${step}: vertical centering`)
+        }
         if (width >= 900) {
           assert.equal(current.width, initial.width)
           assert.equal(current.height, initial.height)
@@ -71,9 +75,8 @@ try {
           const details = page.locator('.onboarding-details')
           const summary = details.locator('summary')
           await summary.focus()
-          const catalogY = (await page.getByRole('link', { name: 'Browse all Providers', exact: true }).boundingBox()).y
           await summary.press('Enter')
-          assert.equal((await page.getByRole('link', { name: 'Browse all Providers', exact: true }).boundingBox()).y, catalogY, 'catalog action stays beside the disclosure')
+          assert(Math.abs((await page.getByRole('link', { name: 'Browse all Providers', exact: true }).boundingBox()).y - (await summary.boundingBox()).y) < 12, 'catalog action stays beside the disclosure')
           assert.equal(await details.locator('h2').isVisible(), true, 'setup guidance is accessible')
           assert.match(await details.locator('dl').innerText(), /Application Templates/)
           await summary.press('Enter')

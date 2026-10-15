@@ -16,3 +16,13 @@ export function claimFirstWelcome(user: string): boolean {
   } catch { /* The session marker still prevents repeat prompts. */ }
   return true
 }
+
+// The login record is assigned atomically by the auth store. Wait for it rather
+// than claiming a provisional self identity that changes when login hydrates.
+export function welcomeIdentity(auth: {
+  user?: { userId?: string; email?: string } | null
+  self?: { rbacIdentity?: string } | null
+}): string {
+  if (!auth.user) return ''
+  return auth.user.userId || auth.user.email || auth.self?.rbacIdentity || ''
+}

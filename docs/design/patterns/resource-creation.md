@@ -91,11 +91,18 @@ no enablement or permission changes.
 **Not sure, I’m exploring** continues to a neutral introduction and the scoped
 Provider catalog without selecting or enabling a Provider. Back returns to goal
 selection. **Go to dashboard** dismisses the guide, and Getting started on the
-dashboard reopens it at **Your goal**, preserving the previous selection. Automatic
+dashboard reopens it at **Your goal**, preserving a previous concrete selection.
+A saved exploration choice resets to the audience’s default goal so one radio
+choice is selected on re-entry. Automatic
 entry happens once per signed-in user in this browser, marked when the guide is
 shown rather than dismissed. Creating or switching Workspaces and reloading an
 unfinished journey do not reopen it. Legacy dismissal history has no account owner and is not assigned to the current
-user. Clearing storage or changing browsers can show it again.
+user. This intentionally includes configured Workspaces, so invited members can
+choose their own workflow. On rollout, existing accounts without the new
+account-owned marker also receive this one-time introduction; legacy unowned
+Workspace dismissals cannot safely identify who completed it. This is a
+browser-first-visit preference, not a server-side account creation check.
+Clearing storage or changing browsers can show it again.
 Choices remain browser-local and scoped by user, Organization, Workspace, and mode;
 changing scope invalidates outstanding consent.
 
@@ -107,6 +114,8 @@ mounted. Native radio groups, associated descriptions, heading focus, and the
 shared wizard progress recipe support keyboard and screen-reader navigation.
 There is no Workspace eyebrow or top skip action.
 
+The card is centered horizontally and vertically in the viewport when it fits;
+taller content starts at the top and remains scrollable.
 All steps share one bordered 640px-maximum card, a common 540px minimum height
 capped by the available viewport, and a footer separated by a subtle divider.
 The body absorbs unused space to keep the card and footer stable across the
@@ -136,7 +145,10 @@ Team setup asks what the team should be able to do, describes Providers as tools
 that tailor a Workspace, and completes at the Workspace dashboard. Individual
 project work keeps task-oriented goals and opens the selected Provider. Selecting
 a team starting point is a presentation preference, not a membership or permission
-change. Direct member launch applies only to the individual-work path.
+change. Only confirmed Workspace or Organization admins receive setup controls;
+other users follow the member path regardless of their audience preference.
+Unknown roles keep the availability check pending. Confirmed members using the
+individual-work path can launch ready tools directly after choosing a goal.
 
 Provider rows show a short purpose before enablement; supporting Providers explain
 their role in the chosen task. Destination actions use the catalog display name.
