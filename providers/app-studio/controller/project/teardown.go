@@ -112,7 +112,13 @@ var errProjectAssistantBusy = fmt.Errorf("an assistant turn is still finishing")
 // workspace that has not accepted the claim fails the Get with a RESTMapper
 // miss rather than a 404, so nothing here reads as "already settled".
 func (r *Reconciler) settleRepository(ctx context.Context, c client.Client, p *aiv1alpha1.Project) error {
-	if c == nil || p.Spec.Repository == nil {
+	if c == nil {
+		return nil
+	}
+	if err := releaseSupersededRepository(ctx, c, p); err != nil {
+		return err
+	}
+	if p.Spec.Repository == nil {
 		return nil
 	}
 	ref := strings.TrimSpace(p.Spec.Repository.RepositoryRef)

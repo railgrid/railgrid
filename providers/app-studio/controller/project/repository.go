@@ -13,6 +13,7 @@ package project
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -34,6 +35,8 @@ var repositoryGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: 
 // repositories.
 const projectRepositoryLabel = "app-studio.ai.railgrid.ai/project"
 const projectRepositoryUIDAnnotation = "app-studio.ai.railgrid.ai/project-uid"
+const supersededRepositoryAnnotation = "ai.railgrid.ai/superseded-repository"
+const repositoryNameAttemptsAnnotation = "ai.railgrid.ai/repository-name-attempts"
 
 // ensureRepository creates the Repository CR the spec binding names, if any
 // (autoInit creates the repo on the git host), and returns the observed
@@ -51,6 +54,9 @@ const projectRepositoryUIDAnnotation = "app-studio.ai.railgrid.ai/project-uid"
 // "whichever copy" true without the provider ever holding a per-workspace
 // credential for it.
 func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *aiv1alpha1.Project) (*unstructured.Unstructured, error) {
+	if err := releaseSupersededRepository(ctx, c, p); err != nil {
+		return nil, err
+	}
 	b := p.Spec.Repository
 	if b == nil || strings.TrimSpace(b.RepositoryRef) == "" {
 		return nil, nil
@@ -72,13 +78,25 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 		if repositoryCreationCollision(p, got) {
 			// Persist the new intent before creating its CR. Optimistic concurrency
 			// prevents two reconcilers from selecting different replacements.
-			// Retain the old CR: an unrecorded remote may exist, and is not ours
-			// to delete or adopt. Each confirmed collision gets another attempt.
+			// The generated binding is intentionally controller-managed. Record
+			// cleanup in the same patch; releasing before switching could strand
+			// the Project on an unclaimed CR if the binding write failed.
+			// Keep trying confirmed name collisions and expose the count durably.
+			// Permission/policy failures do not enter this branch; each abandoned
+			// CR is terminal in Code rather than polling the remote indefinitely.
+			attempts := 0
+			if raw := p.Annotations[repositoryNameAttemptsAnnotation]; raw != "" {
+				var err error
+				attempts, err = strconv.Atoi(raw)
+				if err != nil || attempts < 0 {
+					return nil, fmt.Errorf("invalid repository name attempt count %q", raw)
+				}
+			}
 			base := p.Name
 			if len(base) > 50 {
 				base = base[:50]
 			}
-			name := strings.TrimRight(base, "-") + "-" + uuid.NewString()[:12]
+			name := strings.TrimRight(base, "-") + "-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 			candidate := &unstructured.Unstructured{}
 			candidate.SetGroupVersionKind(repositoryGVK)
 			if err := c.Get(ctx, types.NamespacedName{Name: name}, candidate); err == nil {
@@ -86,16 +104,21 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 			} else if !apierrors.IsNotFound(err) {
 				return nil, err
 			}
+			patch := client.MergeFromWithOptions(p.DeepCopy(), client.MergeFromWithOptimisticLock{})
+			previous := b.RepositoryRef
 			b.RepositoryRef, b.Name = name, name
 			if p.Annotations == nil {
 				p.Annotations = map[string]string{}
 			}
 			p.Annotations[initializeRepositoryAnnotation] = name
-			if err := c.Update(ctx, p); err != nil {
+			p.Annotations[supersededRepositoryAnnotation] = previous
+			p.Annotations[repositoryNameAttemptsAnnotation] = strconv.Itoa(attempts + 1)
+			if err := c.Patch(ctx, p, patch); err != nil {
 				return nil, err
 			}
-			// The Project update schedules creation on the next reconciliation.
-			return nil, nil
+			// Cleanup is replayable after a crash. The Project patch schedules
+			// creation of exactly the persisted name on the next reconciliation.
+			return nil, releaseSupersededRepository(ctx, c, p)
 		}
 		return got, nil
 	}
@@ -174,4 +197,37 @@ func repositoryCreationCollision(p *aiv1alpha1.Project, repo *unstructured.Unstr
 		}
 	}
 	return false
+}
+
+// Retain the superseded CR and its remote, but release the project's claim.
+// A durable marker survives failures between the Project and Repository writes;
+// teardown drains it too, including when deletion races with replacement.
+func releaseSupersededRepository(ctx context.Context, c client.Client, p *aiv1alpha1.Project) error {
+	ref := p.Annotations[supersededRepositoryAnnotation]
+	if ref == "" {
+		return nil
+	}
+	if p.Spec.Repository != nil && ref == p.Spec.Repository.RepositoryRef {
+		return fmt.Errorf("cannot release current repository %q", ref)
+	}
+	repo := &unstructured.Unstructured{}
+	repo.SetGroupVersionKind(repositoryGVK)
+	err := c.Get(ctx, types.NamespacedName{Name: ref}, repo)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if err == nil && p.UID != "" && repo.GetLabels()[projectRepositoryLabel] == p.Name && repo.GetAnnotations()[projectRepositoryUIDAnnotation] == string(p.UID) {
+		labels, annotations := repo.GetLabels(), repo.GetAnnotations()
+		delete(labels, projectRepositoryLabel)
+		delete(annotations, projectRepositoryLabel)
+		delete(annotations, projectRepositoryUIDAnnotation)
+		repo.SetLabels(labels)
+		repo.SetAnnotations(annotations)
+		if err := c.Update(ctx, repo); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	patch := client.MergeFromWithOptions(p.DeepCopy(), client.MergeFromWithOptimisticLock{})
+	delete(p.Annotations, supersededRepositoryAnnotation)
+	return c.Patch(ctx, p, patch)
 }

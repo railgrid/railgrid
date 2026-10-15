@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	code "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -112,6 +113,46 @@ func TestCreateOnlyCollisionCannotMutateRemote(t *testing.T) {
 			_, err = New().CommitFiles(context.Background(), conn, cred, repo, backend.RepositoryCommitInput{Files: []backend.RepositoryCommitFile{{Path: "README.md", Content: "do not overwrite"}}})
 			if err == nil {
 				t.Fatal("commit allowed into unowned repository")
+			}
+		})
+	}
+}
+
+func TestCreateRaceConfirmationFailures(t *testing.T) {
+	for _, statusCode := range []int{http.StatusNotFound, http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(fmt.Sprint(statusCode), func(t *testing.T) {
+			gets, posts := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					gets++
+					if gets == 1 {
+						w.WriteHeader(404)
+					} else {
+						w.WriteHeader(statusCode)
+					}
+					_, _ = fmt.Fprint(w, `{"message":"lookup failed"}`)
+					return
+				}
+				if r.Method != http.MethodPost {
+					t.Errorf("unexpected %s", r.Method)
+				}
+				posts++
+				w.WriteHeader(422)
+				_, _ = fmt.Fprint(w, `{"message":"validation failed"}`)
+			}))
+			defer srv.Close()
+			repo := &code.Repository{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{createOnlyAnnotation: "true"}}, Spec: code.RepositorySpec{Name: "demo"}}
+			conn := &code.Connection{Spec: code.ConnectionSpec{Owner: "team", BaseURL: srv.URL}}
+			_, err := New().EnsureRepository(context.Background(), conn, backend.Credential{Token: "test"}, repo)
+			if err == nil || errors.Is(err, backend.ErrRepositoryIdentityConflict) {
+				t.Fatalf("unconfirmed collision must not trigger rename: %v", err)
+			}
+			if statusCode != 404 && !strings.Contains(err.Error(), "confirm repository name collision") {
+				t.Fatalf("lost lookup failure: %v", err)
+			}
+			if posts != 1 || gets != 2 {
+				t.Fatalf("posts=%d gets=%d", posts, gets)
 			}
 		})
 	}

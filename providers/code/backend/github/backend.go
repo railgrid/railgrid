@@ -181,9 +181,13 @@ func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Conne
 			// that collision, but never adopt the winner of the race. Other
 			// validation errors retain their original classification.
 			if repo.Annotations[createOnlyAnnotation] == "true" && resp != nil && resp.StatusCode == http.StatusUnprocessableEntity {
-				remote, _, lookupErr := c.Repositories.Get(ctx, org, repo.Spec.Name)
+				_, lookupResponse, lookupErr := c.Repositories.Get(ctx, org, repo.Spec.Name)
 				if lookupErr == nil {
-					return backend.RepositoryResult{}, checkRepositoryIdentity(repo, remote)
+					// A rejected create can never own the race winner.
+					return backend.RepositoryResult{}, fmt.Errorf("%w: repository %q already exists", backend.ErrRepositoryIdentityConflict, repo.Spec.Name)
+				}
+				if lookupResponse == nil || lookupResponse.StatusCode != http.StatusNotFound {
+					return backend.RepositoryResult{}, fmt.Errorf("confirm repository name collision: %w", classify(lookupResponse, lookupErr))
 				}
 			}
 			return backend.RepositoryResult{}, classify(resp, err)

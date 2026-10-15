@@ -103,12 +103,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return r.fail(ctx, c, &repo, "ConnectionNotReady", notReady)
 	}
 
+	// Identity conflicts cannot be healed by polling GitHub. Retry only when
+	// desired state changes; status/claim-label updates and controller restarts
+	// must not spend API quota on abandoned create-only resources.
+	if repo.Annotations["code.railgrid.ai/create-only"] == "true" && repo.Status.RepoID == "" && repo.Status.ObservedGeneration == repo.Generation {
+		for _, condition := range repo.Status.Conditions {
+			if condition.Type == codev1alpha1.ConditionReady && condition.Status == metav1.ConditionFalse && condition.Reason == "RepositoryIdentityConflict" {
+				return ctrl.Result{}, nil
+			}
+		}
+	}
 	res, err := b.EnsureRepository(ctx, conn, cred, &repo)
 	if err != nil {
 		if wait, msg, ok := shared.RateLimitWait(err, time.Now()); ok {
 			return r.waitForRateLimit(ctx, c, &repo, msg, wait)
 		}
 		if errors.Is(err, backend.ErrRepositoryIdentityConflict) {
+			if repo.Annotations["code.railgrid.ai/create-only"] == "true" && repo.Status.RepoID == "" {
+				return ctrl.Result{}, setNotReady(ctx, c, &repo, "RepositoryIdentityConflict", err.Error())
+			}
 			return r.fail(ctx, c, &repo, "RepositoryIdentityConflict", err.Error())
 		}
 		return r.fail(ctx, c, &repo, "EnsureFailed", err.Error())

@@ -177,12 +177,14 @@ func (c fakeCluster) GetClient() client.Client { return c.c }
 
 type fakeBackend struct {
 	backend.GitBackend
-	ensureErr error
-	deleteErr error
+	ensureErr   error
+	ensureCalls int
+	deleteErr   error
 }
 
 func (b *fakeBackend) Name() string { return "github" }
 func (b *fakeBackend) EnsureRepository(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository) (backend.RepositoryResult, error) {
+	b.ensureCalls++
 	if b.ensureErr != nil {
 		return backend.RepositoryResult{}, b.ensureErr
 	}
@@ -190,4 +192,45 @@ func (b *fakeBackend) EnsureRepository(context.Context, *codev1alpha1.Connection
 }
 func (b *fakeBackend) DeleteRepository(context.Context, *codev1alpha1.Connection, backend.Credential, *codev1alpha1.Repository) error {
 	return b.deleteErr
+}
+
+func TestIdentityConflictStopsPollingUntilSpecChanges(t *testing.T) {
+	f := newRepositoryFixture(t, false)
+	var initial codev1alpha1.Repository
+	if err := f.c.Get(f.ctx, client.ObjectKey{Name: "demo"}, &initial); err != nil {
+		t.Fatal(err)
+	}
+	initial.Annotations = map[string]string{"code.railgrid.ai/create-only": "true"}
+	if err := f.c.Update(f.ctx, &initial); err != nil {
+		t.Fatal(err)
+	}
+	f.backend.ensureErr = backend.ErrRepositoryIdentityConflict
+	for i := 0; i < 3; i++ {
+		result, err := f.r.Reconcile(f.ctx, f.req)
+		if err != nil || result.RequeueAfter != 0 {
+			t.Fatalf("result=%+v error=%v", result, err)
+		}
+	}
+	if f.backend.ensureCalls != 1 {
+		t.Fatalf("GitHub calls=%d", f.backend.ensureCalls)
+	}
+	if f.ready(t).Reason != "RepositoryIdentityConflict" {
+		t.Fatal("missing terminal conflict")
+	}
+	var repo codev1alpha1.Repository
+	if err := f.c.Get(f.ctx, client.ObjectKey{Name: "demo"}, &repo); err != nil {
+		t.Fatal(err)
+	}
+	repo.Generation++
+	repo.Spec.Name = "new-name"
+	if err := f.c.Update(f.ctx, &repo); err != nil {
+		t.Fatal(err)
+	}
+	f.backend.ensureErr = nil
+	if _, err := f.r.Reconcile(f.ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if f.backend.ensureCalls != 2 || f.ready(t).Status != metav1.ConditionTrue {
+		t.Fatal("spec change did not recover")
+	}
 }

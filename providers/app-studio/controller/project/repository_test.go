@@ -12,8 +12,15 @@ package project
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -168,7 +175,7 @@ func TestEnsureRepositoryRetriesRemoteNameCollisions(t *testing.T) {
 	seen := map[string]bool{}
 	// More than one collision must keep progressing, including one on a
 	// generated name. Successful provisioning must stop changing the binding.
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 7; attempt++ {
 		ref := p.Spec.Repository.RepositoryRef
 		if seen[ref] {
 			t.Fatalf("reused colliding name %q", ref)
@@ -202,8 +209,17 @@ func TestEnsureRepositoryRetriesRemoteNameCollisions(t *testing.T) {
 		if err := c.Get(ctx, types.NamespacedName{Name: ref}, repo); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(before, repo) {
-			t.Fatal("changed conflicting repository")
+		if !reflect.DeepEqual(before.Object["spec"], repo.Object["spec"]) || !reflect.DeepEqual(before.Object["status"], repo.Object["status"]) {
+			t.Fatal("changed conflicting repository spec or status")
+		}
+		if repo.GetLabels()[projectRepositoryLabel] != "" || repo.GetAnnotations()[projectRepositoryUIDAnnotation] != "" {
+			t.Fatal("old claim retained")
+		}
+		if p.Annotations[repositoryNameAttemptsAnnotation] != strconv.Itoa(attempt+1) {
+			t.Fatal("attempt not recorded")
+		}
+		if suffix := strings.TrimPrefix(p.Spec.Repository.RepositoryRef, "demo-"); len(suffix) != 12 || strings.Contains(suffix, "-") {
+			t.Fatalf("bad suffix %q", suffix)
 		}
 	}
 	if _, err := r.ensureRepository(ctx, c, p); err != nil {
@@ -277,5 +293,134 @@ func TestEnsureRepositoryDoesNotRetryUnsafeConflicts(t *testing.T) {
 				t.Fatal("changed unsafe binding")
 			}
 		})
+	}
+}
+
+// Inject a crash at each write boundary, then reconstruct the reconciler from
+// persisted state. Cleanup and CR creation must converge without new names.
+func TestRepositoryCollisionCrashRecovery(t *testing.T) {
+	for _, failAt := range []int{1, 2, 3} {
+		for _, deleting := range []bool{false, true} {
+			t.Run(fmt.Sprintf("write-%d-delete-%v", failAt, deleting), func(t *testing.T) {
+				ctx := context.Background()
+				p := repoProject(false)
+				patches := 0
+				inject := false
+				c := fake.NewClientBuilder().WithScheme(appscheme.NewScheme()).WithObjects(p).WithInterceptorFuncs(interceptor.Funcs{
+					Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+						if inject {
+							patches++
+							if patches == failAt {
+								return errors.New("simulated process failure")
+							}
+						}
+						return c.Update(ctx, obj, opts...)
+					},
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						patches++
+						if inject && patches == failAt {
+							return errors.New("simulated process failure")
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				}).Build()
+				r := &Reconciler{}
+				if _, err := r.ensureRepository(ctx, c, p); err != nil {
+					t.Fatal(err)
+				}
+				old := &unstructured.Unstructured{}
+				old.SetGroupVersionKind(repositoryGVK)
+				if err := c.Get(ctx, types.NamespacedName{Name: "demo-repo"}, old); err != nil {
+					t.Fatal(err)
+				}
+				old.SetGeneration(1)
+				old.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "RepositoryIdentityConflict"}}}
+				if err := c.Update(ctx, old); err != nil {
+					t.Fatal(err)
+				}
+				inject = true
+				if _, err := r.ensureRepository(ctx, c, p); err == nil {
+					t.Fatal("expected injected failure")
+				}
+				inject = false
+				if err := c.Get(ctx, types.NamespacedName{Name: p.Name}, p); err != nil {
+					t.Fatal(err)
+				}
+				persisted := p.Spec.Repository.RepositoryRef
+				if failAt == 1 && persisted != "demo-repo" {
+					t.Fatal("failed write changed intent")
+				}
+				if deleting {
+					if err := r.settleRepository(ctx, c, p); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					for i := 0; i < 3; i++ {
+						if _, err := (&Reconciler{}).ensureRepository(ctx, c, p); err != nil {
+							t.Fatal(err)
+						}
+						if err := c.Get(ctx, types.NamespacedName{Name: p.Name}, p); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if failAt > 1 && persisted != p.Spec.Repository.RepositoryRef {
+						t.Fatal("restart selected a second replacement")
+					}
+					list := &unstructured.UnstructuredList{}
+					list.SetGroupVersionKind(repositoryGVK.GroupVersion().WithKind("RepositoryList"))
+					if err := c.List(ctx, list); err != nil {
+						t.Fatal(err)
+					}
+					if len(list.Items) != 2 {
+						t.Fatalf("created %d repositories", len(list.Items))
+					}
+				}
+				if err := c.Get(ctx, types.NamespacedName{Name: "demo-repo"}, old); err != nil {
+					t.Fatal(err)
+				}
+				if old.GetLabels()[projectRepositoryLabel] != "" || old.GetAnnotations()[projectRepositoryUIDAnnotation] != "" {
+					t.Fatal("superseded claim leaked")
+				}
+				if p.Annotations[supersededRepositoryAnnotation] != "" {
+					t.Fatal("cleanup marker not cleared")
+				}
+			})
+		}
+	}
+}
+
+func TestRepositoryReplacementCandidateAlreadyExists(t *testing.T) {
+	ctx := context.Background()
+	p := repoProject(false)
+	c := fake.NewClientBuilder().WithScheme(appscheme.NewScheme()).WithObjects(p).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if obj.GetObjectKind().GroupVersionKind() == repositoryGVK && key.Name != "demo-repo" {
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
+	r := &Reconciler{}
+	if _, err := r.ensureRepository(ctx, c, p); err != nil {
+		t.Fatal(err)
+	}
+	repo := &unstructured.Unstructured{}
+	repo.SetGroupVersionKind(repositoryGVK)
+	if err := c.Get(ctx, types.NamespacedName{Name: "demo-repo"}, repo); err != nil {
+		t.Fatal(err)
+	}
+	repo.SetGeneration(1)
+	repo.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "RepositoryIdentityConflict"}}}
+	if err := c.Update(ctx, repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ensureRepository(ctx, c, p); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("error=%v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: p.Name}, p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Spec.Repository.RepositoryRef != "demo-repo" {
+		t.Fatal("changed intent despite collision")
 	}
 }
