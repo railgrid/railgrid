@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.ai.agent-overlay","title":"Workspace agent overlay prototype","kind":"pattern","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"Opt-in personal browser preference with a resizable compact chat and navigation to the actual Agents chat route. Context contains bounded navigation metadata and an optional Infrastructure instance reference; resource contents and background reasoning are not implemented."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/ai/agent-overlay.md#workspace-agent-overlay-prototype","role":"design"},{"path":"portal/src/components/AgentOverlay.vue","role":"implementation"},{"path":"portal/src/stores/agentOverlay.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentChat.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"test","ref":"make build-agents-provider-portal","status":"passing","evidence":"718 Agents tests and production build passed after rebasing onto current main; the review revision also passes the shared UI and synchronization gates."},{"kind":"test","ref":"make test-portal","status":"passing","evidence":"389 host tests passed, including resource-publisher validation/fencing and overlay-store persistence regressions; host typecheck passed. PortalKit parity, UI conformance, and design-doc gates passed."},{"kind":"browser","ref":"Host portal and built Agents bundle with mocked APIs","status":"passing","evidence":"Re-run on the post-rebase review revision with real host/provider UI and mocked APIs: light/dark desktop (1440px) and touch mobile (390px), Models settings, disclosure, bar expansion/collapse, minimized reload, threads, draft preservation, repeated settings focus, and stable provider context/fetch identity across navigation. This browser run does not establish live model behavior."}]},"relatedDocuments":[{"id":"design.ai.agents-autonomy-and-runs","relation":"see-also","path":"docs/design/ai/agents-autonomy-and-runs.md"}]}
+{"schema":1,"id":"design.ai.agent-overlay","title":"Workspace agent overlay prototype","kind":"pattern","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"Opt-in personal browser preference with a resizable compact chat and navigation to the actual Agents chat route. Context contains bounded navigation metadata and an optional Infrastructure instance reference; resource contents and background reasoning are not implemented."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/ai/agent-overlay.md#workspace-agent-overlay-prototype","role":"design"},{"path":"portal/src/components/AgentOverlay.vue","role":"implementation"},{"path":"portal/src/stores/agentOverlay.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentChat.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"test","ref":"make build-agents-provider-portal","status":"passing","evidence":"718 Agents tests and production build passed after rebasing onto current main; the review revision also passes the shared UI and synchronization gates."},{"kind":"test","ref":"make test-portal","status":"passing","evidence":"389 host tests passed, including resource-publisher validation/fencing and overlay-store persistence regressions; host typecheck passed. PortalKit parity, UI conformance, and design-doc gates passed."},{"kind":"browser","ref":"Host portal and built Agents bundle with mocked APIs","status":"passing","evidence":"Re-run on the post-rebase review revision with real host/provider UI and mocked APIs: light/dark desktop (1440px) and touch mobile (390px), Models settings, disclosure, bar expansion/collapse, minimized reload, threads, draft preservation, repeated settings focus, and stable provider context/fetch identity across navigation. This browser run does not establish live model behavior."},{"kind":"browser","ref":"make test-agent-ui-browser","status":"passing","evidence":"Manual isolated Chromium fixtures cover compact-composer hit testing and native/custom controls at 390px/1280px in both themes, plus resize pointer tracking, min/max reversal, changed CSS/viewport limits during a drag, mobile/keyboard sizing, and capture cleanup. Requires portal npm dependencies and Playwright; not invoked by make verify or CI. Does not verify a live hub."}]},"relatedDocuments":[{"id":"design.ai.agents-autonomy-and-runs","relation":"see-also","path":"docs/design/ai/agents-autonomy-and-runs.md"}]}
 ---
 
 # Workspace agent overlay prototype
@@ -13,7 +13,12 @@ The host mounts the existing Agents element above the router boundary. Its
 `overlayState` property selects the compact conversation without owning browser
 history. The floating launcher minimizes and reopens the retained conversation.
 A top-left resize handle supports dragging and arrow keys; viewport limits keep
-it on screen. **Open full chat in Agents** navigates to the ordinary provider
+it on screen. Dragging disables the height transition and batches updates with
+animation frames. Resize limits use the panel's computed CSS maximum/minimum
+height and current available width, refreshed during the gesture. Reversing at
+a limit responds immediately, without unwinding an oversized stored dimension.
+Pointer cancellation, lost capture, hiding, and unmounting end the gesture.
+**Open full chat in Agents** navigates to the ordinary provider
 chat route. The floating window and launcher are both hidden while that agent's dedicated view is open. There is no fullscreen overlay or embedded full-provider mode.
 The existing session is restored and active runs use the usual recovery path.
 An explicit, short-lived in-memory handoff carries an unsent draft to that same
@@ -31,6 +36,9 @@ ActionMenu. A single header icon toggles page context directly. Its pressed stat
 
 The shared AgentKit composer opts into compact geometry: a single line expands
 with the draft up to the existing height limit, with send/stop beside the editor.
+Empty compact-control positioning wrappers pass clicks through to the editor;
+native and custom interactive descendants remain clickable. This lets manual
+expansion accept a first click in the editor, without requiring focus in the bar.
 Touch targets retain the larger coarse-pointer dimensions. The dedicated Agents
 view keeps its existing conversation header and composer layout. After history loads while the overlay is hidden, opening it scrolls to the latest message once the transcript has measurable height. Subsequent resizing respects a user who scrolled to older messages.
 
@@ -68,3 +76,14 @@ configured tools and existing authorization rules.
   and denied reads retain the existing Agents read-state UI.
 - Browser checks use mocked hub/model responses. They do not prove a live model
   call, live kcp authorization, or a production deployment.
+
+## Focused regression checks
+
+`make test-portal` includes fast unit coverage for resize deltas, minimum sizes,
+viewport limits, and reversing after an overshoot. `make test-agent-ui-browser`
+groups the composer hit-test and resize browser fixtures as **manual evidence
+only**, not an automatic `make verify` or CI gate. Install the portal npm
+dependencies and Playwright/Chromium before running; `PLAYWRIGHT_MODULE` and
+`CHROMIUM_EXECUTABLE` can point to an existing installation. The resize fixture
+checks its source-extraction markers explicitly and fails if the component's
+structure changes. These fixtures do not establish live host/provider behavior.

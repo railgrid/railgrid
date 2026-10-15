@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { resizeOverlay } from '@/lib/overlayResize'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, EyeOff, Hexagon, Maximize2, Minus, RefreshCw, ScanEye } from 'lucide-vue-next'
 import ActionMenu from '@/portalkit/ActionMenu.vue'
@@ -195,21 +196,70 @@ function openDedicated(): void {
   void router.push(scopePath('/providers/agents') + '#/agents/' + encodeURIComponent(overlay.selectedAgent || '') + '/chat')
 }
 const size = ref({ width: 720, height: 560 })
+const resizing = ref(false)
+let stopResize: (() => void) | undefined
+function resizeBounds() {
+  const host = panel.value!.parentElement!
+  const style = getComputedStyle(host)
+  const panelStyle = getComputedStyle(panel.value!)
+  return {
+    width: host.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+    height: Math.max(parseFloat(panelStyle.minHeight), parseFloat(panelStyle.maxHeight)),
+  }
+}
 function resize(event: PointerEvent): void {
+  if (event.button !== 0 || !panel.value) return
+  stopResize?.()
   const handle = event.currentTarget as HTMLElement
-  handle.setPointerCapture(event.pointerId)
-  const start = { x: event.clientX, y: event.clientY, width: panel.value!.offsetWidth, height: panel.value!.offsetHeight }
-  const move = (e: PointerEvent) => { size.value = { width: Math.max(320, start.width + 2 * (start.x - e.clientX)), height: Math.max(280, start.height + start.y - e.clientY) } }
-  const stop = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', stop); handle.removeEventListener('pointercancel', stop) }
+  const pointerID = event.pointerId
+  let x = event.clientX, y = event.clientY
+  let pending = { width: panel.value.offsetWidth, height: panel.value.offsetHeight }
+  let frame = 0
+  size.value = pending
+  resizing.value = true
+  const flush = () => {
+    frame = 0
+    pending = resizeOverlay(pending, 0, 0, resizeBounds())
+    size.value = pending
+  }
+  const move = (e: PointerEvent) => {
+    if (e.pointerId !== pointerID) return
+    pending = resizeOverlay(pending, e.clientX - x, e.clientY - y, resizeBounds())
+    x = e.clientX
+    y = e.clientY
+    if (!frame) frame = requestAnimationFrame(flush)
+  }
+  const stop = () => {
+    if (frame) cancelAnimationFrame(frame)
+    flush()
+    resizing.value = false
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', finish)
+    handle.removeEventListener('pointercancel', finish)
+    handle.removeEventListener('lostpointercapture', finish)
+    if (handle.hasPointerCapture(pointerID)) handle.releasePointerCapture(pointerID)
+    stopResize = undefined
+  }
+  const finish = (e: PointerEvent) => {
+    if (e.pointerId !== pointerID) return
+    if (e.type === 'pointerup') move(e)
+    stop()
+  }
+  stopResize = stop
   handle.addEventListener('pointermove', move)
-  handle.addEventListener('pointerup', stop)
-  handle.addEventListener('pointercancel', stop)
+  handle.addEventListener('pointerup', finish)
+  handle.addEventListener('pointercancel', finish)
+  handle.addEventListener('lostpointercapture', finish)
+  handle.setPointerCapture(pointerID)
 }
 function resizeWithKeys(event: KeyboardEvent): void {
   if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
   event.preventDefault()
-  size.value = { width: Math.max(320, panel.value!.offsetWidth + (event.key === 'ArrowLeft' ? 24 : event.key === 'ArrowRight' ? -24 : 0)), height: Math.max(280, panel.value!.offsetHeight + (event.key === 'ArrowUp' ? 24 : event.key === 'ArrowDown' ? -24 : 0)) }
+  size.value = resizeOverlay(size.value,
+    event.key === 'ArrowLeft' ? -12 : event.key === 'ArrowRight' ? 12 : 0,
+    event.key === 'ArrowUp' ? -24 : event.key === 'ArrowDown' ? 24 : 0, resizeBounds())
 }
+watch([expanded, () => overlay.open, visible], () => { stopResize?.() })
 // Animate the existing panel rather than cloning or remounting the chat.
 // The launcher keeps a measurable box even while visually hidden, so this
 // follows the real destination across sidebar, terminal and mobile layouts.
@@ -248,11 +298,11 @@ function animatePanel(node: Element, done: () => void, opening: boolean): void {
 }
 function enterPanel(node: Element, done: () => void): void { animatePanel(node, done, true) }
 function leavePanel(node: Element, done: () => void): void { animatePanel(node, done, false) }
-onBeforeUnmount(() => { overlay.setDockVisible(false); cancelPanelMotion(); clear() })
+onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPanelMotion(); clear() })
 </script>
 
 <template>
-  <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--minimized': !overlay.open }"
+  <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing }"
     :style="{ '--overlay-width': size.width + 'px', '--overlay-height': size.height + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left }">
     <Transition :css="false" @enter="enterPanel" @leave="leavePanel" @enter-cancelled="cancelPanelMotion" @leave-cancelled="cancelPanelMotion">
     <section v-show="overlay.open" id="railgrid-agent-overlay" ref="panel" class="agent-overlay__panel" tabindex="-1"
@@ -293,7 +343,7 @@ onBeforeUnmount(() => { overlay.setDockVisible(false); cancelPanelMotion(); clea
 
 .agent-overlay__launcher { position: absolute; right: 16px; bottom: 0; transition: opacity 140ms ease, transform 200ms ease; pointer-events: auto; width: 48px; height: 48px; padding: 0; border-radius: 50%; margin-left: auto; display: flex; }
 .agent-overlay__launcher--hidden { visibility: hidden; opacity: 0; pointer-events: none; }
-.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: min(var(--overlay-height), calc(100dvh - var(--overlay-bottom) - 72px)); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
+.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: var(--overlay-height); max-height: calc(100dvh - var(--overlay-bottom) - 72px); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
 .agent-overlay__header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--color-border-default); flex-shrink: 0; }
 .agent-overlay__header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .agent-overlay__header > button, .agent-overlay__bar-actions > button { width: 28px; height: 28px; min-height: 28px; padding: 0; }
@@ -308,7 +358,7 @@ onBeforeUnmount(() => { overlay.setDockVisible(false); cancelPanelMotion(); clea
 @media (max-width: 640px) {
   .agent-overlay { left: 0; right: 0; padding: 0 8px; }
 
-  .agent-overlay__panel { width: calc(100vw - 16px); }
+  .agent-overlay__panel { width: min(var(--overlay-width), calc(100vw - 16px)); }
 
 }
 .agent-overlay--ready .agent-overlay__panel { flex-direction: row; align-items: center; gap: 8px; padding: 8px 12px; height: 64px; min-height: 64px; }
@@ -316,6 +366,7 @@ onBeforeUnmount(() => { overlay.setDockVisible(false); cancelPanelMotion(); clea
 .agent-overlay__brand { flex-shrink: 0; color: var(--color-accent); }
 .agent-overlay__bar-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .agent-overlay__panel { transition: height 180ms cubic-bezier(.16, 1, .3, 1); }
+.agent-overlay--resizing .agent-overlay__panel { transition: none; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .agent-overlay__panel, .agent-overlay__launcher { transition: none; } }
 @media (max-width: 640px) { .agent-overlay__launcher { right: 8px; } .agent-overlay--ready .agent-overlay__panel { gap: 4px; padding: 6px; } .agent-overlay__brand { width: 16px; } }
 </style>
