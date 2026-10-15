@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/railgrid/provider-app-studio/internal/repositorycreation"
+
 	"github.com/google/uuid"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,7 +38,7 @@ var repositoryGVK = schema.GroupVersionKind{Group: "code.railgrid.ai", Version: 
 const projectRepositoryLabel = "app-studio.ai.railgrid.ai/project"
 const projectRepositoryUIDAnnotation = "app-studio.ai.railgrid.ai/project-uid"
 const supersededRepositoryAnnotation = "ai.railgrid.ai/superseded-repository"
-const repositoryNameAttemptsAnnotation = "ai.railgrid.ai/repository-name-attempts"
+const repositoryNameAttemptsAnnotation = repositorycreation.AttemptsAnnotation
 
 // ensureRepository creates the Repository CR the spec binding names, if any
 // (autoInit creates the repo on the git host), and returns the observed
@@ -81,7 +83,7 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 			// The generated binding is intentionally controller-managed. Record
 			// cleanup in the same patch; releasing before switching could strand
 			// the Project on an unclaimed CR if the binding write failed.
-			// Keep trying confirmed name collisions and expose the count durably.
+			// Bound automatic replacements and expose the count durably.
 			// Permission/policy failures do not enter this branch; each abandoned
 			// CR is terminal in Code rather than polling the remote indefinitely.
 			attempts := 0
@@ -91,6 +93,9 @@ func (r *Reconciler) ensureRepository(ctx context.Context, c client.Client, p *a
 				if err != nil || attempts < 0 {
 					return nil, fmt.Errorf("invalid repository name attempt count %q", raw)
 				}
+			}
+			if attempts >= repositorycreation.MaxRetries {
+				return nil, fmt.Errorf("repository creation stopped after %d automatic name retries; review the Git connection and retry from Git settings", repositorycreation.MaxRetries)
 			}
 			base := p.Name
 			if len(base) > 50 {

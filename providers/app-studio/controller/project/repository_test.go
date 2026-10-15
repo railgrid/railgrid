@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/railgrid/provider-app-studio/internal/repositorycreation"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -175,7 +177,7 @@ func TestEnsureRepositoryRetriesRemoteNameCollisions(t *testing.T) {
 	seen := map[string]bool{}
 	// More than one collision must keep progressing, including one on a
 	// generated name. Successful provisioning must stop changing the binding.
-	for attempt := 0; attempt < 7; attempt++ {
+	for attempt := 0; attempt < repositorycreation.MaxRetries; attempt++ {
 		ref := p.Spec.Repository.RepositoryRef
 		if seen[ref] {
 			t.Fatalf("reused colliding name %q", ref)
@@ -422,5 +424,57 @@ func TestRepositoryReplacementCandidateAlreadyExists(t *testing.T) {
 	}
 	if p.Spec.Repository.RepositoryRef != "demo-repo" {
 		t.Fatal("changed intent despite collision")
+	}
+}
+
+func TestRepositoryCollisionRetryLimit(t *testing.T) {
+	for _, count := range []int{repositorycreation.MaxRetries, repositorycreation.MaxRetries + 1} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			ctx := context.Background()
+			p := repoProject(false)
+			p.Annotations = map[string]string{repositoryNameAttemptsAnnotation: strconv.Itoa(count)}
+			c := fake.NewClientBuilder().WithScheme(appscheme.NewScheme()).WithObjects(p).Build()
+			r := &Reconciler{}
+			if _, err := r.ensureRepository(ctx, c, p); err != nil {
+				t.Fatal(err)
+			}
+			repo := &unstructured.Unstructured{}
+			repo.SetGroupVersionKind(repositoryGVK)
+			if err := c.Get(ctx, types.NamespacedName{Name: "demo-repo"}, repo); err != nil {
+				t.Fatal(err)
+			}
+			repo.SetGeneration(1)
+			repo.Object["status"] = map[string]any{"observedGeneration": int64(1), "conditions": []any{map[string]any{"type": "Ready", "status": "False", "reason": "RepositoryIdentityConflict"}}}
+			if err := c.Update(ctx, repo); err != nil {
+				t.Fatal(err)
+			}
+			before := p.DeepCopy()
+			oldRepo := repo.DeepCopy()
+			for i := 0; i < 3; i++ {
+				if _, err := (&Reconciler{}).ensureRepository(ctx, c, p); err == nil || !strings.Contains(err.Error(), "stopped after 5 automatic name retries") {
+					t.Fatalf("limit error=%v", err)
+				}
+				if err := c.Get(ctx, types.NamespacedName{Name: p.Name}, p); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(before, p) {
+					t.Fatal("exhausted retry changed binding or annotations")
+				}
+			}
+			if err := c.Get(ctx, types.NamespacedName{Name: "demo-repo"}, repo); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(oldRepo, repo) {
+				t.Fatal("limit released current claim")
+			}
+			repos := &unstructured.UnstructuredList{}
+			repos.SetGroupVersionKind(repositoryGVK.GroupVersion().WithKind("RepositoryList"))
+			if err := c.List(ctx, repos); err != nil {
+				t.Fatal(err)
+			}
+			if len(repos.Items) != 1 {
+				t.Fatal("created repositories after retry exhaustion")
+			}
+		})
 	}
 }

@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/railgrid/provider-app-studio/internal/repositorycreation"
+
 	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -114,6 +116,8 @@ func (s *Server) putProjectRepository(w http.ResponseWriter, r *http.Request) {
 		if p.Annotations == nil {
 			p.Annotations = map[string]string{}
 		}
+		// An explicit user retry starts a new bounded automatic retry budget.
+		delete(p.Annotations, repositorycreation.AttemptsAnnotation)
 		p.Annotations["ai.railgrid.ai/initialize-repository"] = plan.Ref
 		p.Annotations["ai.railgrid.ai/org-uuid"] = id.orgUUID
 		p.Annotations["ai.railgrid.ai/workspace-uuid"] = id.workspaceUUID
