@@ -415,7 +415,7 @@ onUnmounted(() => {
         <h2 class="page-title">Repositories</h2>
         <p class="page-meta">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
       </div>
-      <ActionMenu label="Repository options" primary-label="New repository" :disabled="!loaded || !connectionsLoaded"
+      <ActionMenu v-if="!showFirstRun" label="Repository options" primary-label="New repository" :disabled="!loaded || !connectionsLoaded"
         :items="[{ id: 'create', label: 'New repository' }, { id: 'import', label: 'Import repository' }]"
         @primary="emit('create', 'create')" @select="emit('create', $event === 'import' ? 'import' : 'create')" />
     </header>
@@ -432,10 +432,12 @@ onUnmounted(() => {
       :title="firstRun.title"
       :description="firstRun.description"
       :primary-label="firstRun.primary.label"
+      :secondary-label="availableConnections.length ? 'Import repository' : undefined"
       :steps="CODE_JOURNEY_STEPS"
       :current-step="firstRun.currentStep"
       journey-label="Code setup path"
       @primary="handleFirstRun(firstRun.primary.action)"
+      @secondary="emit('create', 'import')"
     >
       <template #icon>
         <Link2 v-if="firstRun.currentStep === 0" :stroke-width="1.5" />

@@ -8,6 +8,7 @@
 // path segment) and railgridContext.token (bearer). The one non-kcp call is
 // oauthConfig, which probes the provider backend directly.
 
+import { REMOTE_REPOSITORY_PATTERN } from './repositoryIdentity'
 import {
   createKubeClient,
   isKubeError,
@@ -920,7 +921,7 @@ export const api = {
     const name = normalizeResourceName(input.name)
     const remote = (input.repo || input.name).trim()
     const importing = input.mode === 'import'
-    if (importing && !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(remote)) throw new Error('Enter the repository as owner/repository.')
+    if (importing && !REMOTE_REPOSITORY_PATTERN.test(remote)) throw new Error('Enter the repository as owner/repository.')
     if (!importing && remote.includes('/')) throw new Error('Choose Import existing repository to add owner/repository.')
     const [owner, repository] = importing ? remote.split('/') : ['', remote]
     const spec: Record<string, unknown> = {

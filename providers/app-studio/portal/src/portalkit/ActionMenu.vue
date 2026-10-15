@@ -126,6 +126,12 @@ function toggleMenu(): void {
   else openMenu()
 }
 
+function onPrimary(): void {
+  if (unavailable.value) return
+  closeMenu()
+  emit('primary')
+}
+
 function select(id: string): void {
   const item = props.items.find(candidate => candidate.id === id)
   if (!item || unavailable.value || item.disabled || item.busy) return
@@ -256,7 +262,15 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="root" class="k-action-menu" :class="{ 'k-action-menu--split': primaryLabel }">
-    <button v-if="primaryLabel" type="button" class="k-btn k-btn--primary k-action-menu__primary" :disabled="unavailable" @click="closeMenu(); emit('primary')"><Plus :size="16" aria-hidden="true" />{{ primaryLabel }}</button>
+    <button
+      v-if="primaryLabel"
+      type="button"
+      class="k-btn k-btn--primary k-action-menu__primary"
+      :disabled="unavailable"
+      @click="onPrimary"
+    >
+      <Plus :size="16" aria-hidden="true" />{{ primaryLabel }}
+    </button>
     <button
       :id="triggerID"
       ref="trigger"

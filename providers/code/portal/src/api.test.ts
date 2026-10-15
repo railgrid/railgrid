@@ -713,7 +713,7 @@ describe('repository registration', () => {
 
   it('rejects ambiguous paths before making a request', async () => {
     const calls = stubFetch(() => response({}))
-    for (const repo of ['providers', 'cwilhit/railgrid/providers', 'https://github.com/railgrid/providers']) {
+    for (const repo of ['providers', 'acme/.', 'acme/..', 'cwilhit/railgrid/providers', 'https://github.com/railgrid/providers']) {
       await expect(api.createRepository({ name: 'providers', connectionRef: 'pat', repo, mode: 'import' })).rejects.toThrow('owner/repository')
     }
     await expect(api.createRepository({ name: 'providers', connectionRef: 'pat', repo: 'railgrid/providers' })).rejects.toThrow('Import existing')

@@ -109,3 +109,9 @@ it('connection and repository forms use the shared live guidance rail', () => {
   expect(repositoryCreate).toMatch(/label: 'GitHub repository'/)
   expect(repositoryCreate).toMatch(/label: 'Initial content'/)
 })
+
+it('repository first run owns the actions and offers import only with a connection', () => {
+  expect(repositoryCollection).toContain('<ActionMenu v-if="!showFirstRun"')
+  expect(repositoryCollection).toContain(':secondary-label="availableConnections.length ? \'Import repository\' : undefined"')
+  expect(repositoryCollection).toContain('@secondary="emit(\'create\', \'import\')"')
+})

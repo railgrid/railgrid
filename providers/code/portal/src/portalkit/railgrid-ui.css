@@ -691,7 +691,6 @@ html.light .k-create-surface {
 
 /* ── Input ────────────────────────────────────────────────────────────────*/
 .k-input {
-  min-block-size: 36px;
   box-sizing: border-box;
   width: 100%;
   border-radius: 4px;
@@ -702,6 +701,8 @@ html.light .k-create-surface {
   color: var(--color-text-primary, #e9e9f2);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+/* Creation fields share a baseline; dense filters and textareas retain their sizing. */
+:where(.k-create-fields) .k-input:where(:not(textarea)) { min-height: 36px; }
 .k-input::placeholder {
   color: var(--color-text-muted, #8587a1);
 }

@@ -11,8 +11,10 @@ and radios are the baseline; custom styling is reserved for dense composite
 rows and shared toggle recipes.
 
 The shared `.k-input` recipe uses `box-sizing: border-box` and full available
-width and a 36px minimum height, keeping borders and padding inside the declared width. On coarse-pointer
-input it supplies a minimum 44×44px target. A native checkbox keeps its
+width, keeping borders and padding inside the declared width. Single-line
+controls in `.k-create-fields` have a 36px minimum height; dense filters and
+textareas retain their own sizing. On coarse-pointer input, `.k-input` supplies
+a minimum 44×44px target. A native checkbox keeps its
 14×14px glyph through `.k-checkbox`; when a larger touch target is needed,
 apply `.k-checkbox-hit` to the associated checkbox or radio label so the label
 supplies the minimum 44×44px hit area while the native glyph remains compact.

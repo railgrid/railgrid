@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { REMOTE_REPOSITORY_PATTERN } from '../repositoryIdentity'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
@@ -121,7 +122,7 @@ function validateFields(): boolean {
   const errors: Partial<Record<RepositoryField, string>> = {}
   if (!connectionRef.value) errors.connection = 'Select a GitHub connection.'
   if (!name.value.trim()) errors.name = 'Enter a name for this repository in Railgrid.'
-  if (importing.value && !/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(repo.value.trim())) errors.repo = 'Enter the owner and repository, for example acme/my-service.'
+  if (importing.value && !REMOTE_REPOSITORY_PATTERN.test(repo.value.trim())) errors.repo = 'Enter the owner and repository, for example acme/my-service.'
   if (!importing.value && repo.value.includes('/')) errors.repo = 'Enter only the repository name. To add an existing repository, go back and choose Import repository.'
   fieldErrors.value = errors
   const first = (['connection', 'name', 'repo'] as const).find(field => errors[field])
