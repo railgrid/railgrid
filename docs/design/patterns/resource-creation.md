@@ -53,6 +53,27 @@ immediate primary action, and shows the shortest meaningful journey. Missing
 prerequisites change the current step and action rather than leaving an inert
 empty table.
 
+Agents connection creation uses the shared stepper for **Type → Configure →
+Review**. Type selection retains the existing typed creation route. Returning to Type and
+advancing to Review are local steps within that route: the URL continues to name
+the selected connection type. Reloading that typed URL opens Configure with a
+fresh draft; browser Back/Forward follow route history, not local step history.
+The in-form Back action preserves the draft in memory without persisting secrets
+to browser storage. This is intentional; Type before choosing a connection still
+has its own untyped `/create/connection` route. Back between
+steps preserves the draft when the same type is selected; selecting another type
+resets its credentials and configuration. Continue uses native field validation;
+only the Review step submits creation. Review shows identity and authentication
+mode without echoing credential or endpoint values. Toolset creation remains a
+single focused form. Connection and toolset field regions stay within `42rem`
+while the surrounding route and guidance remain fluid. The connection wizard
+keeps progress, the form body, and actions in one task column with a separate
+context rail, following the Databricks import composition. Below a `900px`
+surface width, guidance follows the task; at `1800px` and above, the optional
+`k-wizard-steps--responsive` recipe presents progress vertically. The form owner
+places that rail beside its body and footer; the canonical step recipe owns its
+borders, active state, and typography.
+
 When domain help is useful, put `CreateGuidance.vue` beside `k-create-fields`
 inside `k-create-surface--guided`. The rail contains only timely prerequisites,
 a live non-secret summary of what Railgrid will create, and controller-owned next

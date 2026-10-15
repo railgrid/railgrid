@@ -223,43 +223,6 @@ function onRemove(name: string) {
   dash.hide(name)
 }
 
-type TileLayoutAction = 'left' | 'right' | 'up' | 'down' | 'narrower' | 'wider' | 'shorter' | 'taller'
-
-function onTileLayoutAction(name: string, action: TileLayoutAction): void {
-  const tile = layout.value.find((item) => item.i === name)
-  if (!tile) return
-
-  const columns = responsiveCols.value
-  switch (action) {
-    case 'left':
-      tile.x = Math.max(0, tile.x - 1)
-      break
-    case 'right':
-      tile.x = Math.min(Math.max(0, columns - tile.w), tile.x + 1)
-      break
-    case 'up':
-      tile.y = Math.max(0, tile.y - 1)
-      break
-    case 'down':
-      tile.y += 1
-      break
-    case 'narrower':
-      tile.w = Math.max(1, tile.w - 1)
-      tile.x = Math.min(tile.x, Math.max(0, columns - tile.w))
-      break
-    case 'wider':
-      tile.w = Math.min(columns - tile.x, tile.w + 1)
-      break
-    case 'shorter':
-      tile.h = Math.max(1, tile.h - 1)
-      break
-    case 'taller':
-      tile.h += 1
-      break
-  }
-  onUserLayoutUpdated()
-}
-
 // Persist geometry only after a user drag/resize settles. GridLayout's
 // layout-updated event also fires for mount and prop-driven responsive reflow,
 // so treating it as an edit would overwrite the authoritative wide layout
@@ -443,7 +406,6 @@ function onGridSelectStart(event: Event) {
                 :provider="providerFor(item.i)!"
                 :edit-mode="editMode"
                 @remove="onRemove"
-                @layout-action="onTileLayoutAction(item.i, $event)"
               />
           </GridItem>
         </GridLayout>

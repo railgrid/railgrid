@@ -170,10 +170,10 @@ function cancelCreate(): void {
     <header class="k-create-header"><h1 class="k-create-title">Create toolset</h1><p class="k-create-description">Bundle reusable tools once, then attach the toolset to any agent.</p></header>
     <form class="agents-toolset-form agents-guided-form k-create-surface k-create-surface--guided" :aria-busy="createBusy" @submit.prevent="save">
       <div class="k-create-body k-create-body--guided">
-        <div class="k-create-fields">
+        <div class="k-create-fields agents-resource-fields">
           <div class="agents-grid2">
-            <label>Name *<input v-model="draftName" class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder="dev-tools" :disabled="createBusy" /></label>
-            <label>Display name<input v-model="draftDisplay" class="k-input" placeholder="optional" :disabled="createBusy" /></label>
+            <label><span class="agents-field-label">Name *</span><input v-model="draftName" class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder="dev-tools" :disabled="createBusy" /></label>
+            <label><span class="agents-field-label">Display name</span><input v-model="draftDisplay" class="k-input" placeholder="optional" :disabled="createBusy" /></label>
           </div>
           <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
             <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
@@ -194,7 +194,7 @@ function cancelCreate(): void {
             <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
             <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
           </div>
-          <fieldset class="agents-cap-fs" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
+          <fieldset class="agents-cap-fs agents-resource-fieldset" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
             <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
             <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
             <span v-if="connectionSlice.hasSnapshot && !connectionSlice.error && !toolConnections.length" class="agents-hint" role="status">No external tool connections are configured. You can add them later; this toolset can still include visualization and cluster edge tools.</span>
@@ -224,9 +224,9 @@ function cancelCreate(): void {
           Toolset “{{ editName }}” was not found in {{ slice.error ? 'the last loaded workspace snapshot' : 'this workspace' }}.
         </div>
         <ResourceSectionCard v-else title="Toolset settings" description="Choose the reusable tools this bundle grants to agents.">
-          <form class="agents-toolset-form" :aria-busy="createBusy" @submit.prevent="save">
-            <div class="k-create-body k-create-fields">
-              <label>Display name<input v-model="draftDisplay" class="k-input" :placeholder="currentEditItem.metadata.name" :disabled="createBusy" /></label>
+          <form class="agents-toolset-form agents-resource-edit-form" :aria-busy="createBusy" @submit.prevent="save">
+            <div class="k-create-body k-create-fields agents-resource-fields">
+              <label><span class="agents-field-label">Display name</span><input v-model="draftDisplay" class="k-input" :placeholder="currentEditItem.metadata.name" :disabled="createBusy" /></label>
               <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
                 <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
                 <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be loaded. Existing assignments are preserved in this draft, but cannot be reviewed until the list loads.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
@@ -246,7 +246,7 @@ function cancelCreate(): void {
                 <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
                 <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
               </div>
-              <fieldset class="agents-cap-fs" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
+              <fieldset class="agents-cap-fs agents-resource-fieldset" aria-describedby="toolset-tools-hint"><legend>Tools</legend><div class="agents-checkrow">
                 <label class="agents-check k-checkbox-hit"><input v-model="draftVisualization" type="checkbox" :disabled="createBusy" /><span class="agents-check-copy"><span>Visualize data</span><span class="agents-hint">Charts in chat from supplied data</span></span></label>
                 <label v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="draftConns.includes(connection.metadata.name)" :disabled="createBusy" @change="toggleConnection(connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.metadata.name }}</span><span class="agents-hint">{{ connection.spec.type }}</span></span></label>
                 <span v-if="connectionSlice.hasSnapshot && !connectionSlice.error && !toolConnections.length" class="agents-hint" role="status">No external tool connections are configured. You can add them later; this toolset can still include visualization and cluster edge tools.</span>

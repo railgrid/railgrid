@@ -177,6 +177,12 @@ railgrid-provider-agents .agents-panel form, railgrid-provider-agents .agents-ob
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 railgrid-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
+/* Bound the task region, not the route shell or its contextual guidance. */
+railgrid-provider-agents .agents-resource-fields { width: 100%; max-width: 42rem; }
+railgrid-provider-agents .agents-resource-fields .agents-field-label,
+railgrid-provider-agents .agents-resource-fields .agents-resource-fieldset > legend { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); }
+railgrid-provider-agents form.agents-resource-edit-form { gap: 0; padding: 0; }
+
 :where(railgrid-provider-agents) label:not(:where(.agents-model-create label, [data-resource-table] label)) { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 railgrid-provider-agents .agents-grid2 {
   display: grid;
@@ -951,3 +957,30 @@ railgrid-provider-agents .agents-assistant-overview-actions { display: flex; ali
 railgrid-provider-agents .agents-chat-shell--bar .agents-chat-main > :not(.agents-composer) { display: none; }
 railgrid-provider-agents .agents-chat-shell--bar .agents-composer { padding: 0; border: 0; }
 railgrid-provider-agents .agents-chat-shell--bar { height: 100%; }
+
+/* Connection setup follows the shared Type / Configure / Review stepper. */
+railgrid-provider-agents .agents-connection-fields { display: flex; flex-direction: column; gap: 14px; }
+railgrid-provider-agents .agents-form-step-title { margin: 0; font-size: 14px; font-weight: 600; }
+railgrid-provider-agents .agents-step-back { margin-right: auto; }
+railgrid-provider-agents .agents-connection-review { display: grid; gap: 14px; margin: 0; }
+railgrid-provider-agents .agents-connection-review dt { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-connection-review dd { margin: 4px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+
+/* Keep progress, the active task, and its actions in one column, alongside
+ * contextual guidance, following the Databricks import workbench. */
+railgrid-provider-agents .agents-connection-workbench { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17.5rem, 22rem); min-width: 0; }
+railgrid-provider-agents .agents-connection-primary { display: flex; flex-direction: column; min-width: 0; }
+railgrid-provider-agents .agents-connection-primary > .agents-connection-body { flex: 1; }
+railgrid-provider-agents .agents-connection-guidance { padding: 18px 18px 18px 0; min-width: 0; }
+railgrid-provider-agents .agents-connection-review > div { padding-bottom: 12px; border-bottom: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-connection-review code { font-family: var(--font-mono); font-size: 12px; }
+@container k-create-surface (max-width: 899px) {
+  railgrid-provider-agents .agents-connection-workbench { grid-template-columns: minmax(0, 1fr); }
+  railgrid-provider-agents .agents-connection-guidance { padding: 0 18px 18px; }
+}
+@container k-create-surface (min-width: 1800px) {
+  railgrid-provider-agents .agents-connection-primary { display: grid; grid-template-columns: 12rem minmax(0, 1fr); grid-template-rows: 1fr auto; }
+  railgrid-provider-agents .agents-connection-primary > ol { grid-column: 1; grid-row: 1 / span 2; }
+  railgrid-provider-agents .agents-connection-primary > .agents-connection-body { grid-column: 2; grid-row: 1; }
+  railgrid-provider-agents .agents-connection-primary > .agents-connection-actions { grid-column: 2; grid-row: 2; }
+}

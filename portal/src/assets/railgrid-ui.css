@@ -3285,3 +3285,11 @@ railgrid-resource-table-filter { display: contents; }
   background: transparent;
 }
 .k-resource-section-card--document > .k-resource-section-card__body { gap: 16px; }
+
+/* Optional progress rail for route-owned wizards on ultrawide surfaces.
+ * The caller owns the task/footer grid; narrow layouts retain the step strip. */
+@container k-create-surface (min-width: 1800px) {
+  .k-wizard-steps--responsive { display: flex; flex-direction: column; align-items: stretch; border-bottom: 0; border-inline-end: 1px solid var(--color-border-subtle); padding: 18px 0; }
+  .k-wizard-steps--responsive > li { display: flex; align-items: center; min-block-size: 44px; padding: 9px 14px; text-align: start; border-bottom: 0; border-inline-start: 2px solid transparent; }
+  .k-wizard-steps--responsive > li[aria-current='step'] { border-inline-start-color: var(--color-accent); }
+}

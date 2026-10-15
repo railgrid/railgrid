@@ -55,7 +55,6 @@ const { scopePath } = useScopedNavigation()
 const props = defineProps<{ provider: ProviderDTO; editMode?: boolean }>()
 const emit = defineEmits<{
   (e: 'remove', name: string): void
-  (e: 'layout-action', action: 'left' | 'right' | 'up' | 'down' | 'narrower' | 'wider' | 'shorter' | 'taller'): void
 }>()
 
 const auth = useAuthStore()
@@ -88,19 +87,9 @@ const quickLinks = computed(() =>
   })),
 )
 
-type TileLayoutAction = 'left' | 'right' | 'up' | 'down' | 'narrower' | 'wider' | 'shorter' | 'taller'
-
 const arrangementItems = computed<ActionMenuItem[]>(() => {
   const label = props.provider.displayName
   return [
-    { id: 'left', label: `Move ${label} tile left` },
-    { id: 'right', label: `Move ${label} tile right` },
-    { id: 'up', label: `Move ${label} tile up` },
-    { id: 'down', label: `Move ${label} tile down` },
-    { id: 'narrower', label: `Make ${label} tile narrower` },
-    { id: 'wider', label: `Make ${label} tile wider` },
-    { id: 'shorter', label: `Make ${label} tile shorter` },
-    { id: 'taller', label: `Make ${label} tile taller` },
     { id: 'remove', label: `Remove ${label} tile`, tone: 'danger' },
   ]
 })
@@ -109,9 +98,6 @@ function onArrangementAction(action: string): void {
   if (action === 'remove') {
     emit('remove', props.provider.name)
     return
-  }
-  if (['left', 'right', 'up', 'down', 'narrower', 'wider', 'shorter', 'taller'].includes(action)) {
-    emit('layout-action', action as TileLayoutAction)
   }
 }
 
@@ -296,7 +282,7 @@ onBeforeUnmount(() => {
       <div v-if="editMode" class="tile-no-drag shrink-0">
         <ActionMenu
           :items="arrangementItems"
-          :label="`Arrange ${provider.displayName} tile`"
+          :label="`${provider.displayName} tile options`"
           @select="onArrangementAction"
         />
       </div>

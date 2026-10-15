@@ -3130,6 +3130,10 @@ test-railgrid-auth-configuration: ## Verify App Studio authentication settings, 
 test-resource-board-visual: ## Render resource-board CSS across themes and input modes (requires Playwright)
 	node hack/resource-board-visual.mjs
 
+.PHONY: test-agents-forms-visual
+test-agents-forms-visual: ## Manual-only Agents form browser checks (start serve-model-form-visual first; requires Playwright)
+	node hack/agents-forms-visual.mjs
+
 .PHONY: test-agents-composer-hit-test
 test-agents-composer-hit-test: ## Browser hit-testing regression for compact Agents composer (requires Playwright)
 	node hack/agents-composer-hit-test.mjs
