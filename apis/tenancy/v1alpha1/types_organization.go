@@ -93,6 +93,13 @@ const (
 	// access ownership to membership management, independently of MCP readiness.
 	OrganizationConditionInitialWorkspaceAccessInitialized = "InitialWorkspaceAccessInitialized"
 
+	// OrganizationConditionCensusBound reports whether the metering census
+	// APIBinding (census.railgrid.ai) has been written inside the ORG
+	// workspace. Only set when the hub runs with --enable-metering; it makes
+	// the org's child workspaces visible to the least-privileged census
+	// controller. Absent (never emitted) when metering is disabled.
+	OrganizationConditionCensusBound = "CensusBound"
+
 	// ReasonAwaitingWorkspaceType marks an Organization whose kcp workspace
 	// has not been created yet because the organization WorkspaceType is
 	// not yet registered.

@@ -46,6 +46,7 @@ type fakeProvisioner struct {
 	railgridBindCalls  []childWorkspaceCall
 	adminCalls         []workspaceAdminCall
 	mcpCalls           []childWorkspaceCall
+	censusCalls        []string
 	clusterCalls       []childWorkspaceCall
 	wsErr              error
 	memErr             error
@@ -54,10 +55,14 @@ type fakeProvisioner struct {
 	railgridBindErr    error
 	adminErr           error
 	mcpErr             error
+	censusErr          error
 	clusterErr         error
 	// clusterHash is the value returned by GetChildWorkspaceClusterName.
 	// Defaults to a fixed test hash; tests can override.
 	clusterHash string
+	// meteringEnabled toggles the Step G2 census binding. Defaults false so
+	// existing tests exercise the non-metering path.
+	meteringEnabled bool
 	// teamWorkspaces is what ListChildTeamWorkspaces answers per org.
 	teamWorkspaces map[string][]string
 }
@@ -169,6 +174,21 @@ func (f *fakeProvisioner) GetChildWorkspaceClusterName(_ context.Context, orgUUI
 		return "test-cluster-hash", nil
 	}
 	return f.clusterHash, nil
+}
+
+func (f *fakeProvisioner) EnsureOrgCensusBinding(_ context.Context, orgUUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.censusCalls = append(f.censusCalls, orgUUID)
+	return f.censusErr
+}
+
+func (f *fakeProvisioner) MeteringEnabled() bool { return f.meteringEnabled }
+
+func (f *fakeProvisioner) CensusCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.censusCalls...)
 }
 
 func (f *fakeProvisioner) WorkspaceCalls() []string {

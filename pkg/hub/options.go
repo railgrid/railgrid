@@ -157,6 +157,13 @@ type Options struct {
 	// binding: RoleRef is immutable, so the hub deletes and recreates it.
 	ProviderWorkspaceClusterAdmin bool
 
+	// EnableMetering, when true, bootstraps contrib-metering into
+	// root:railgrid:system:metering (CRDs, provider/user APIExports, the "billing"
+	// WorkspaceType) and makes the `railgrid-organization` WorkspaceType a billing
+	// boundary by extending "billing". Off by default — this is an opt-in
+	// integration test toggle; leaving it off keeps bootstrap untouched.
+	EnableMetering bool
+
 	// PortalDevURL, when set, reverse-proxies /ui/* to this URL (typically
 	// a Vite dev server, e.g. http://localhost:3000). Takes precedence over the
 	// embedded portal dist (if built with -tags portal_embed).

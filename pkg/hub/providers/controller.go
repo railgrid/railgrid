@@ -693,6 +693,14 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// (pkg/hub/admin) plus the provider's own Helm `init` (railgrid-provider-sdk).
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
 	// so the admin providers API can report where a provider lives.
+	//
+	// The provider's init container creates the CatalogEntry moments BEFORE its
+	// sub-workspace finishes provisioning (spec.cluster is still empty), so the
+	// first reconcile here often resolves to "". Nothing else mutates the
+	// CatalogEntry afterwards, and the informer resync is ~10h — so without a
+	// requeue the registry's WorkspaceCluster would stay empty. Requeue until the
+	// cluster resolves so the registry gets stamped once the workspace goes Ready.
+	var requeueAfter time.Duration
 	switch {
 	case entry.Spec.Export == nil:
 		// No export to bind, so nothing needs the RBAC subject.
@@ -709,10 +717,14 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		// Returns empty until the provider has been onboarded, which is the
 		// correct gate.
 		if cluster, err := r.prov.ResolveWorkspaceCluster(ctx, entry.Name); err != nil {
-			logger.Info("WARNING could not resolve provider workspace cluster", "err", err.Error())
+			logger.Info("WARNING could not resolve provider workspace cluster; will retry", "err", err.Error())
+			requeueAfter = 10 * time.Second
 		} else if cluster != "" {
 			entry.Status.Workspace = providersParentWorkspace + ":" + entry.Name
 			r.reg.SetWorkspaceCluster("", entry.Name, cluster)
+		} else {
+			logger.Info("provider workspace not provisioned yet (spec.cluster empty); will retry")
+			requeueAfter = 10 * time.Second
 		}
 	}
 
@@ -856,7 +868,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		// the SRI resync (and the retry after a failed hash fetch) here.
 		return ctrl.Result{RequeueAfter: UIIntegrityResync}, nil
 	}
-	return ctrl.Result{}, nil
+	// requeueAfter is non-zero while the provider's sub-workspace is still
+	// provisioning, so the registry's WorkspaceCluster gets stamped once it's
+	// Ready (see the ResolveWorkspaceCluster block above). Zero → no requeue.
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // probeBackendHealth builds a same-authority endpoint from backend and the
