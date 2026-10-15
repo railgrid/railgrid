@@ -25,11 +25,3 @@ export function gettingStartedReadState(input: GettingStartedReadInputs): Gettin
   return 'ready'
 }
 
-export function shouldAutoOpenGettingStarted(
-  readState: GettingStartedReadState,
-  enabledBindingCount: number,
-  dismissed: boolean,
-): boolean {
-  return readState === 'ready' && enabledBindingCount === 0 && !dismissed
-}
-

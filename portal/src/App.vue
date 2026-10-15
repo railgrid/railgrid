@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { gettingStartedFocused } from '@/composables/gettingStartedFocus'
 import RouteContextState from '@/components/RouteContextState.vue'
 import { useRouteContextStore } from '@/stores/routeContext'
 import { rememberPortalNext } from '@/auth/portalNext'
@@ -71,8 +72,8 @@ const showTenantErrorInline = computed(() => {
 // follows a bottom navigation dock and the persistent TerminalDock without
 // requiring either component to know about toast rendering.
 const toastBottomOffset = computed(() => `${toastBottomOffsetPx({
-  navigationBottom: layoutInsets.bottom,
-  terminalVisible: !hideTerminalDock.value && terminal.isVisible,
+  navigationBottom: gettingStartedFocused.value ? '0px' : layoutInsets.bottom,
+  terminalVisible: !gettingStartedFocused.value && !hideTerminalDock.value && terminal.isVisible,
   terminalSessionCount: terminal.sessions.length,
   terminalHeight: terminal.panelState.height,
   terminalMinimized: terminal.panelState.isMinimized,
@@ -228,8 +229,8 @@ watch(
        between pages never unmounts the dock. AppLayout (which every page renders)
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
-  <TerminalDock v-show="!hideTerminalDock && !scopeBlocked" />
-  <AgentOverlay />
+  <TerminalDock v-show="!gettingStartedFocused && !hideTerminalDock && !scopeBlocked" />
+  <AgentOverlay v-show="!gettingStartedFocused" />
   <PkConfirmDialog />
   <ToastHost owner="primary" />
 </template>

@@ -58,10 +58,12 @@ test('first-run guide waits for authoritative scoped reads and remains latched a
   assert.match(page, /bindingsMatchScope: providers\.bindingsOrgUUID === tenant\.orgUUID &&\s*providers\.bindingsWorkspace === tenant\.workspaceUUID/)
   assert.match(page, /bindingsState: providers\.bindingsLoadState/)
   assert.match(page, /bindingsStale: providers\.bindingsStale/)
-  assert.match(page, /shouldAutoOpenGettingStarted\(status, enabledCount, dismissed\)\) welcomeOpen\.value = true/)
+  assert.match(page, /status === 'ready' && claimFirstWelcome\(user\)/)
   assert.doesNotMatch(page, /welcomeOpen\.value = false[\s\S]{0,120}enabledCount/)
-  assert.match(page, /\[\(\) => tenant\.orgUUID, \(\) => tenant\.workspaceUUID\][\s\S]*guideForced\.value = false[\s\S]*welcomeOpen\.value = false/)
-  assert.match(page, /function dismissWelcome\(\)[\s\S]*localStorage\.setItem\(WELCOME_KEY/)
+  assert.match(page, /\[currentScope, welcomeUser, \(\) => tenant\.workspaceMode\][\s\S]*guideForced\.value = false[\s\S]*welcomeOpen\.value = false/)
+  assert.match(page, /async function dismissWelcome\(\)[\s\S]*gettingStartedTrigger\.value\?\.focus\(\)/)
+  assert.match(page, /:start-at-goal="guideForced"/)
+  assert.match(page, /useGettingStartedFocus\(computed\(\(\) => showWelcome\.value && guideVisible\.value\)\)/)
 })
 
 test('dashboard heading follows the provider page title and responsive action pattern', () => {

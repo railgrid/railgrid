@@ -918,7 +918,7 @@ test('organization chooser is a standalone full-viewport surface without app chr
 test('standalone chooser hides the persistent terminal dock without unmounting it', () => {
   assert.match(app, /import \{ useRoute, useRouter \} from 'vue-router'/)
   assert.match(app, /const hideTerminalDock = computed\(\s*\(\) => route\.name === 'workspace-chooser' \|\| route\.path === '\/organizations' \|\| route\.path\.startsWith\('\/organizations\/'\),\s*\)/s)
-  assert.match(app, /<TerminalDock v-show="!hideTerminalDock && !scopeBlocked" \/>/)
+  assert.match(app, /<TerminalDock v-show="!gettingStartedFocused && !hideTerminalDock && !scopeBlocked" \/>/)
   assert.doesNotMatch(app, /<TerminalDock v-if=/)
 })
 

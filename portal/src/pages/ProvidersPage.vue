@@ -5,8 +5,8 @@ import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import { confirmDialog } from '@/portalkit/confirm'
-import { toast } from '@/portalkit/toast'
-import { useProvidersStore, type ProviderDTO, type AcceptedClaim, type AcceptedHubAccess, type AcceptedComposition } from '@/stores/providers'
+import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
+import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -18,6 +18,7 @@ const { scopePath } = useScopedNavigation()
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
+const disableOperations = new Map<string, symbol>()
 
 // Two views of the same catalog: what you can turn on ("Catalog"), and what you
 // can run yourself ("Self-Hosting"). They are separate tabs rather than one list
@@ -311,19 +312,27 @@ function categoryIcon(name: string | null): unknown {
   return categoryIcons[name] ?? fallbackCategoryIcon
 }
 
-// per-provider in-flight flag so Enable/Disable buttons can show a spinner
-// without coupling to the global loading state.
-const busy = ref<Record<string, boolean>>({})
-const actionError = ref<string | null>(null)
-
-// The Enable confirmation dialog is shown for one provider at a time. Null
-// when closed. The user reviews permission claims here before the APIBinding
-// is actually POSTed.
-const dialogProvider = ref<ProviderDTO | null>(null)
-const dialogRevision = ref(0)
-const dialogScope = computed(
-  () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
-)
+// The shared flow owns consent, per-provider busy state, and stale-response
+// fencing for both this page and the onboarding wizard.
+const {
+  busy,
+  actionError,
+  dialogProvider,
+  dialogScope,
+  openEnableDialog,
+  closeEnableDialog,
+  onDialogConfirm,
+} = useProviderEnableFlow({
+  scope: () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
+  enable: (p, accept, acceptHubAccess, acceptCompositions) =>
+    providers.enable(p, accept, acceptHubAccess, acceptCompositions),
+  dependencyError: (p) => {
+    const missing = providers.missingDependencies(p)
+    return missing.length > 0
+      ? `${p.displayName} requires ${providers.dependencyLabels(missing).join(', ')} to be enabled first.`
+      : null
+  },
+})
 
 // Always refetch on mount. The store's initial load happens at app boot
 // (App.vue), but new CatalogEntry installs are common while the portal is
@@ -338,29 +347,9 @@ onMounted(() => {
   orgProviders.loadInstallTargets()
 })
 
-function openEnableDialog(p: ProviderDTO) {
-  if (busy.value[p.name]) return
-  actionError.value = null
-  const missing = providers.missingDependencies(p)
-  if (missing.length > 0) {
-    actionError.value = `${p.displayName} requires ${providers.dependencyLabels(missing).join(', ')} to be enabled first.`
-    return
-  }
-  dialogRevision.value += 1
-  dialogProvider.value = p
-}
-
-function closeEnableDialog() {
-  dialogRevision.value += 1
-  dialogProvider.value = null
-  actionError.value = null
-}
-
 watch(dialogScope, () => {
-  // Provider enables are fenced by the store, but a context switch can happen
-  // while the request is waiting on the hub. Close the old consent surface so
-  // its eventual result cannot be applied to the new workspace.
-  if (dialogProvider.value) closeEnableDialog()
+  // Install instructions are scoped to this organization and workspace.
+  disableOperations.clear()
   selfHostRequestGeneration += 1
   activeRegistration.value = null
   selfHostError.value = null
@@ -374,52 +363,26 @@ watch(selectedEdgeKey, () => {
   selfHostError.value = null
 })
 
-async function onDialogConfirm(
-  accept: AcceptedClaim[],
-  acceptHubAccess: AcceptedHubAccess[] = [],
-  acceptCompositions: AcceptedComposition[] = [],
-) {
-  const p = dialogProvider.value
-  const revision = dialogRevision.value
-  const scope = dialogScope.value
-  if (!p || busy.value[p.name]) return
-  busy.value = { ...busy.value, [p.name]: true }
-  actionError.value = null
-  try {
-    await providers.enable(p, accept, acceptHubAccess, acceptCompositions)
-    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
-      closeEnableDialog()
-    }
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    if (dialogRevision.value === revision && dialogProvider.value === p && dialogScope.value === scope) {
-      actionError.value = message
-    } else if (dialogScope.value === scope) {
-      toast('error', `Could not enable ${p.displayName}: ${message}`, {
-        scope,
-        source: 'provider-enable',
-        dedupeKey: `provider-enable:${p.name}`,
-      })
-    }
-  } finally {
-    const next = { ...busy.value }
-    delete next[p.name]
-    busy.value = next
-  }
-}
-
 async function onDisable(p: ProviderDTO) {
   if (busy.value[p.name]) return
+  const operation = Symbol(p.name)
+  const scope = dialogScope.value
+  disableOperations.set(p.name, operation)
   busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
     await providers.disable(p)
   } catch (e) {
-    actionError.value = e instanceof Error ? e.message : String(e)
+    if (disableOperations.get(p.name) === operation && dialogScope.value === scope) {
+      actionError.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
-    const next = { ...busy.value }
-    delete next[p.name]
-    busy.value = next
+    if (disableOperations.get(p.name) === operation) {
+      disableOperations.delete(p.name)
+      const next = { ...busy.value }
+      delete next[p.name]
+      busy.value = next
+    }
   }
 }
 

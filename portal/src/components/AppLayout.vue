@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { gettingStartedFocused } from '@/composables/gettingStartedFocus'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { ref, onMounted, onUnmounted, computed, watch, watchEffect } from 'vue'
@@ -159,6 +160,7 @@ const mainClass = computed(() => [
 
 const assistantOverlay = useAgentOverlayStore()
 const mainStyle = computed(() => {
+  if (gettingStartedFocused.value) return undefined
   if (assistantOverlay.dockVisible) return { paddingBottom: `calc(${layoutProps.fullBleed ? '0px' : mainPaddingBottom.value || '0px'} + 96px)` }
   if (layoutProps.fullBleed || !mainPaddingBottom.value) return undefined
   return { paddingBottom: mainPaddingBottom.value }
@@ -393,25 +395,25 @@ const contextStatus = computed<ContextStatus>(() => {
 </script>
 
 <template>
-  <div class="relative flex h-screen bg-surface" :class="layoutClass" :style="layoutInsetsStyle">
+  <div class="relative flex h-screen bg-surface" :class="layoutClass" :style="gettingStartedFocused ? undefined : layoutInsetsStyle">
     <span :id="dockHintId" class="sr-only">{{ dockHintText }}</span>
     <!-- Edge snap hint overlays -->
     <Transition name="fade">
-      <div v-if="nearEdge === 'left'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 left-0 z-[60] rounded-r-xl bg-accent/10 border-r border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'left'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 left-0 z-[60] rounded-r-xl bg-accent/10 border-r border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="nearEdge === 'right'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 right-0 z-[60] rounded-l-xl bg-accent/10 border-l border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'right'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 right-0 z-[60] rounded-l-xl bg-accent/10 border-l border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="nearEdge === 'top'" class="fixed inset-x-0 top-0 z-[60] h-11 rounded-b-xl bg-accent/10 border-b border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'top'" class="fixed inset-x-0 top-0 z-[60] h-11 rounded-b-xl bg-accent/10 border-b border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="nearEdge === 'bottom'" class="fixed inset-x-0 bottom-0 z-[60] h-11 rounded-t-xl bg-accent/10 border-t border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'bottom'" class="fixed inset-x-0 bottom-0 z-[60] h-11 rounded-t-xl bg-accent/10 border-t border-accent/40" />
     </Transition>
 
     <!-- VERTICAL SIDEBAR (left or right) -->
     <aside
-      v-if="isVerticalDock"
+      v-if="!gettingStartedFocused && isVerticalDock"
       ref="dockedRef"
       class="relative z-50 flex h-full flex-shrink-0 flex-col overflow-hidden border-border-default bg-surface-raised py-3 px-2 transition-[width] duration-200"
       :class="[dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l', sidebarExpanded ? 'w-52' : 'w-14']"
@@ -811,7 +813,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
     <!-- HORIZONTAL BAR (top or bottom) -->
     <nav
-      v-if="isHorizontalDock"
+      v-if="!gettingStartedFocused && isHorizontalDock"
       ref="dockedRef"
       aria-label="Primary navigation"
       class="railgrid-shell-horizontal relative z-50 flex min-w-0 w-full flex-shrink-0 items-center gap-1.5 overflow-hidden border-border-default bg-surface-raised px-4 py-1.5"
@@ -1007,7 +1009,7 @@ const contextStatus = computed<ContextStatus>(() => {
 
     <!-- FLOATING MODE (also shown during drag) -->
     <div
-      v-if="showFloat"
+      v-if="!gettingStartedFocused && showFloat"
       ref="floatRef"
       class="fixed z-50 select-none"
       :class="{
@@ -1143,8 +1145,8 @@ const contextStatus = computed<ContextStatus>(() => {
     </div>
 
     <!-- CLI quickstart modal -->
-    <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />
-    <HelpSupportModal v-if="showHelpModal" @close="showHelpModal = false" />
+    <CliQuickstartModal v-if="!gettingStartedFocused && showCliModal" @close="showCliModal = false" />
+    <HelpSupportModal v-if="!gettingStartedFocused && showHelpModal" @close="showHelpModal = false" />
 
   </div>
 </template>

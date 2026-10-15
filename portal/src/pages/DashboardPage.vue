@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useGettingStartedFocus } from '@/composables/gettingStartedFocus'
+import { useAuthStore } from '@/stores/auth'
+import { claimFirstWelcome, welcomeIdentity } from '@/lib/firstWelcome'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
@@ -11,7 +14,7 @@ import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
 import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
-import { gettingStartedReadState, shouldAutoOpenGettingStarted } from '@/lib/gettingStarted'
+import { gettingStartedReadState } from '@/lib/gettingStarted'
 
 const { scopePath } = useScopedNavigation()
 
@@ -30,6 +33,7 @@ const { scopePath } = useScopedNavigation()
 //
 const providers = useProvidersStore()
 const tenant = useTenantStore()
+const auth = useAuthStore()
 const dash = useDashboardLayoutStore()
 const { layout, addable } = storeToRefs(dash)
 
@@ -125,24 +129,10 @@ const gettingStartedStatus = computed(() => gettingStartedReadState({
 const enabledBindingCount = computed(() => Object.keys(providers.bindingNamesByProvider).length)
 const workspaceDataReady = computed(() => gettingStartedStatus.value === 'ready')
 
-// First-run dismissal is a workspace-local presentation preference. Keep the
-// guide latched once opened so provider/catalog changes do not dismiss it.
-const WELCOME_KEY = 'railgrid:portal:welcome-dismissed'
-function readDismissedWorkspaces(): string[] {
-  try {
-    const raw = localStorage.getItem(WELCOME_KEY)
-    if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
-  } catch {
-    return []
-  }
-}
-const dismissedWorkspaces = ref<string[]>(readDismissedWorkspaces())
+// Once per signed-in account in this browser, independent of Workspace.
+const welcomeUser = computed(() => welcomeIdentity(auth))
 const welcomeOpen = ref(false)
-const welcomeDismissed = computed(() =>
-  !!tenant.workspaceUUID && dismissedWorkspaces.value.includes(tenant.workspaceUUID),
-)
+const gettingStartedTrigger = ref<HTMLButtonElement | null>(null)
 const guideForced = ref(false)
 const showWelcome = computed(() => welcomeOpen.value || guideForced.value)
 
@@ -158,6 +148,7 @@ const guideVisible = computed(() => workspaceDataReady.value || (
 watch([showWelcome, workspaceDataReady, currentScope], ([open, ready, scope]) => {
   if (open && ready) guideShownScope.value = scope
 }, { immediate: true })
+useGettingStartedFocus(computed(() => showWelcome.value && guideVisible.value))
 const readBanner = ref<HTMLElement | null>(null)
 const retrying = ref(false)
 
@@ -166,9 +157,9 @@ const retrying = ref(false)
 const initializing = computed(() => providers.loading && !showWelcome.value && !retrying.value && gettingStartedStatus.value !== 'unscoped')
 
 watch(
-  [gettingStartedStatus, enabledBindingCount, welcomeDismissed] as const,
-  ([status, enabledCount, dismissed]) => {
-    if (shouldAutoOpenGettingStarted(status, enabledCount, dismissed)) welcomeOpen.value = true
+  [gettingStartedStatus, welcomeUser, currentScope] as const,
+  ([status, user]) => {
+    if (status === 'ready' && claimFirstWelcome(user)) welcomeOpen.value = true
   },
   { immediate: true },
 )
@@ -195,27 +186,21 @@ function openGettingStarted() {
   guideForced.value = true
 }
 
-function dismissWelcome() {
+async function dismissWelcome() {
   welcomeOpen.value = false
   guideForced.value = false
-  const workspace = tenant.workspaceUUID
-  if (!workspace || dismissedWorkspaces.value.includes(workspace)) return
-  const next = [...dismissedWorkspaces.value, workspace].slice(-50)
-  dismissedWorkspaces.value = next
-  try {
-    localStorage.setItem(WELCOME_KEY, JSON.stringify(next))
-  } catch {
-    // Private-mode or quota failures only cause the guide to appear again.
-  }
+  await nextTick()
+  gettingStartedTrigger.value?.focus()
 }
 
 watch(
-  [() => tenant.orgUUID, () => tenant.workspaceUUID] as const,
+  [currentScope, welcomeUser, () => tenant.workspaceMode] as const,
   () => {
     guideForced.value = false
     welcomeOpen.value = false
     guideShownScope.value = null
   },
+  { flush: 'sync' },
 )
 
 const providerFor = (name: string) => providers.byName(name)
@@ -319,6 +304,7 @@ function onGridSelectStart(event: Event) {
         v-if="showWelcome"
         :key="`${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}`"
         v-show="guideVisible"
+        :start-at-goal="guideForced"
         @dismiss="dismissWelcome"
       />
 
@@ -361,6 +347,7 @@ function onGridSelectStart(event: Event) {
               <!-- Re-entry point for the intro. Kept out of edit mode so the
                    customize controls stay a single coherent group. -->
               <button
+                ref="gettingStartedTrigger"
                 type="button"
                 class="k-btn k-btn--primary min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="openGettingStarted"
