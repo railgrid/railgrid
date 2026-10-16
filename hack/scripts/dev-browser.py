@@ -149,6 +149,23 @@ class Setup:
             print('Waiting for ' + label, flush=True)
             time.sleep(min(2, self.remaining()))
 
+    def catalog(self, names):
+        admin = ['kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig')]
+        server = 'https://localhost:' + str(self.config['ports']['KCP_PORT']) + '/clusters/'
+        def read(workspace, *resource):
+            return json.loads(self.command(admin + ['--server=' + server + workspace,
+                '--insecure-skip-tls-verify', 'get', *resource, '-o', 'json']))
+        catalog = {entry['metadata']['name']: entry['spec'] for entry in items(read('root:railgrid:system:providers', 'catalogentries'))}
+        for name in sorted(set(names).difference(catalog)):
+            # Standalone external providers self-register in their own workspace,
+            # which the hub watches directly. Do not duplicate their CatalogEntry
+            # in system:providers or replace its runtime serving URLs.
+            entry = read('root:railgrid:providers:' + name, 'catalogentries', name)
+            if entry.get('metadata', {}).get('name') != name or 'spec' not in entry:
+                raise ValueError('Missing registered CatalogEntry for ' + name)
+            catalog[name] = entry['spec']
+        return catalog
+
     def ready(self):
         self.wait_resource('(Tiltfile)')
         self.wait_resource('hub')
@@ -173,13 +190,7 @@ class Setup:
         workspaces = self.retry('initial development workspace', lambda: [w for w in items(self.api('/api/orgs/' + org + '/workspaces')) if w.get('clusterName') and not w.get('deletionRequestedAt')])
         workspace = sorted(workspaces, key=lambda w: w['uuid'])[0]
         prefix = '/api/orgs/' + org + '/workspaces/' + workspace['uuid']
-        raw = self.command(['kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig'),
-            '--server=https://localhost:' + str(self.config['ports']['KCP_PORT']) + '/clusters/root:railgrid:system:providers',
-            '--insecure-skip-tls-verify', 'get', 'catalogentries', '-o', 'json'])
-        catalog = {entry['metadata']['name']: entry['spec'] for entry in items(json.loads(raw))}
-        missing = set(names).difference(catalog)
-        if missing:
-            raise ValueError('Missing registered CatalogEntries: ' + ', '.join(sorted(missing)))
+        catalog = self.catalog(names)
         for name in provider_order(catalog, names):
             self.retry('enable ' + name, lambda name=name: self.api(prefix + '/providers/' + name + '/enable', enable_body(catalog[name])))
         def bindings_ready():

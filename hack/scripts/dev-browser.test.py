@@ -12,6 +12,16 @@ spec.loader.exec_module(m)
 
 
 class BrowserTest(unittest.TestCase):
+    def test_external_provider_catalog_is_read_from_its_own_workspace(self):
+        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        setup = m.Setup(config)
+        external = {'metadata': {'name': 'planner'}, 'spec': {'serving': {'backend': {'url': 'http://127.0.0.1:20341'}}}}
+        setup.command = Mock(side_effect=[json.dumps({'items': []}), json.dumps(external)])
+        self.assertEqual(setup.catalog(['planner']), {'planner': external['spec']})
+        args = setup.command.call_args.args[0]
+        self.assertIn('--server=https://localhost:6443/clusters/root:railgrid:providers:planner', args)
+        self.assertNotIn('apply', args)
+
     def test_down_does_not_wait_for_ready_lock(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)), patch.object(m.sys, 'argv', ['dev-browser.py', 'down']):
             state = Path(tmp) / '.kcp'
