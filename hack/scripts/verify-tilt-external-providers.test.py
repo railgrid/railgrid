@@ -20,7 +20,7 @@ def loader(filename):
 
 
 class ExternalProviders(unittest.TestCase):
-    def run_loader(self, filename, value=None, env='', exists=True, context='kind-railgrid-kro'):
+    def run_loader(self, filename, value=None, env='', exists=True, context='kind-railgrid-kro', hub_port=9443):
         configure = Mock(return_value=['example'])
         load = Mock(return_value={'railgrid_providers': configure})
 
@@ -32,6 +32,7 @@ class ExternalProviders(unittest.TestCase):
             'os': os, 'load_dynamic': load, 'fail': fail, 'print': Mock(),
             'k8s_context': lambda: context, 'allow_k8s_contexts': Mock(),
             'preview_kro_context': 'kind-railgrid-kro',
+            'hub_port': hub_port, 'hub_internal_url': 'https://host.docker.internal:%s' % hub_port,
             'hub_namespace': 'railgrid-system', 'KCP_ADMIN_KUBECONFIG': '/admin.kubeconfig',
         }
         with patch.dict(os.environ, {'RAILGRID_EXTERNAL_PROVIDERS_DIR': env}, clear=True), \
@@ -61,6 +62,13 @@ class ExternalProviders(unittest.TestCase):
                         self.assertEqual(call.kwargs['selection'], 'all')
                         self.assertTrue(call.kwargs['skip_unconfigured'])
                         self.assertIn('resource_deps', call.kwargs)
+
+    def test_checkout_hub_port_reaches_external_provider_runtime(self):
+        _, configure = self.run_loader('Tiltfile', '../providers', hub_port=39443)
+        options = configure.call_args.kwargs
+        self.assertEqual(options['hub_url'], 'https://host.docker.internal:39443')
+        self.assertEqual(options['kcp_loopback_proxy'], 'host.docker.internal:39443')
+        self.assertEqual(options['lifecycle_env']['RAILGRID_PROVIDER_KCP_SERVER'], options['hub_url'])
 
     def test_missing_library_fails_with_path(self):
         for filename in ('Tiltfile', 'Tiltfile.cluster'):

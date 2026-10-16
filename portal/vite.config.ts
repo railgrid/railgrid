@@ -19,16 +19,16 @@ export default defineConfig(() => ({
     port: 3000,
     proxy: {
       '/apis': {
-        target: 'https://localhost:9443',
+        target: process.env.VITE_HUB_URL || 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
         ws: true,
         headers: {
-          Origin: 'https://localhost:9443',
+          Origin: process.env.VITE_HUB_URL || 'https://localhost:9443',
         },
       },
       '/healthz': {
-        target: 'https://localhost:9443',
+        target: process.env.VITE_HUB_URL || 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
       },
@@ -36,7 +36,7 @@ export default defineConfig(() => ({
       // proxy. All must route to the hub in dev so the iframe + handshake
       // observe the same same-origin guarantee they have in production.
       '/api/providers': {
-        target: 'https://localhost:9443',
+        target: process.env.VITE_HUB_URL || 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
       },
@@ -45,18 +45,18 @@ export default defineConfig(() => ({
       // Vite port gets a Vite 404 for these calls — which the disable flow
       // used to swallow as success, making Disable a silent no-op in dev.
       '/api/orgs': {
-        target: 'https://localhost:9443',
+        target: process.env.VITE_HUB_URL || 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
       },
       '/services/providers': {
-        target: 'https://localhost:9443',
+        target: process.env.VITE_HUB_URL || 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
         ws: true,
       },
       '/ui/providers': {
-        target: 'https://localhost:9443',
+        target: process.env.VITE_HUB_URL || 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
         // Mirror of pkg/hub/providers/proxy.go:isAssetPath — only forward

@@ -42,6 +42,8 @@ import (
 // EmbeddedKCPOptions contains configuration for the embedded kcp server.
 type EmbeddedKCPOptions struct {
 	RootDir          string
+	EtcdClientPort   string
+	EtcdPeerPort     string
 	SecurePort       int
 	BindAddress      string
 	BatteriesInclude []string
@@ -254,6 +256,12 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 
 	// Enable embedded etcd.
 	kcpOpts.EmbeddedEtcd.Enabled = true
+	if e.opts.EtcdClientPort != "" {
+		kcpOpts.EmbeddedEtcd.ClientPort = e.opts.EtcdClientPort
+	}
+	if e.opts.EtcdPeerPort != "" {
+		kcpOpts.EmbeddedEtcd.PeerPort = e.opts.EtcdPeerPort
+	}
 
 	// Complete options.
 	completedOpts, err := kcpOpts.Complete(ctx, e.opts.RootDir)

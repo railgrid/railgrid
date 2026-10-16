@@ -169,6 +169,8 @@ type Options struct {
 	// Embedded kcp options
 	EmbeddedKCP         bool   // Enable embedded kcp server
 	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)
+	KCPEtcdClientPort   string
+	KCPEtcdPeerPort     string
 	KCPSecurePort       int    // Secure port for kcp API server (default: 6443)
 	KCPBindAddress      string // Bind address for kcp API server (default: "127.0.0.1")
 	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")

@@ -2,6 +2,23 @@
 # Replaces: make run-hub-embedded-static (terminal 1) + make dev-portal (terminal 2)
 # Usage: tilt up
 
+# Persisted by the same checkout-aware launcher used by `make tilt`.
+# A bare `tilt up` can load this too, but Tilt's own API port is selected
+# before Tiltfile evaluation; use `make tilt` when another Tilt is running.
+for provider in ['quickstart', 'infrastructure', 'code', 'kuery', 'app-studio', 'agents', 'edges']:
+    watch_file('providers/' + provider + '/manifest.yaml')
+checkout_env = decode_json(str(local(['python3', 'hack/scripts/tilt-checkout.py', 'env'], quiet=True)))
+for key, value in checkout_env.items():
+    os.putenv(key, value)
+
+def dev_port(name, default):
+    return int(os.getenv(name, str(default)))
+
+hub_port = dev_port('HUB_PORT', 9443)
+kcp_port = dev_port('KCP_PORT', 6443)
+portal_port = dev_port('PORTAL_PORT', 3000)
+hub_internal_url = 'https://host.docker.internal:%s' % hub_port
+
 trigger_mode(TRIGGER_MODE_AUTO)
 
 # Providers developed in another repository join this session when their
@@ -70,7 +87,7 @@ kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 # allowing a developer to put trusted DNS/TLS in front of the same dynamic
 # virtual-host routing. The public app port may be explicitly empty when the
 # external endpoint uses the normal HTTPS port.
-railgrid_hub_external_url = os.getenv('RAILGRID_HUB_EXTERNAL_URL', 'https://console.127.0.0.1.sslip.io:9443')
+railgrid_hub_external_url = os.getenv('RAILGRID_HUB_EXTERNAL_URL', os.getenv('DEV_HUB_URL', 'https://console.127.0.0.1.sslip.io:9443'))
 preview_app_base_domain = os.getenv('RAILGRID_APP_BASE_DOMAIN', 'apps.127.0.0.1.sslip.io')
 preview_gateway_port = os.getenv('PREVIEW_GATEWAY_PORT', '10443')
 preview_app_public_port = os.getenv('RAILGRID_APP_PUBLIC_PORT', preview_gateway_port)
@@ -78,7 +95,7 @@ preview_app_public_port_suffix = (':' + preview_app_public_port) if preview_app_
 preview_app_frame_source = 'https://*.' + preview_app_base_domain + preview_app_public_port_suffix
 preview_hub_public_url = os.getenv(
     'RAILGRID_ACCESS_HUB_PUBLIC_URL',
-    'https://console.127.0.0.1.sslip.io:9443',
+    os.getenv('DEV_HUB_URL', 'https://console.127.0.0.1.sslip.io:9443'),
 )
 preview_hub_public_host = preview_hub_public_url.replace('https://', '').replace('http://', '').split('/')[0].split(':')[0]
 # CoreDNS sends browser-worker traffic directly to Envoy's ClusterIP. Expose
@@ -111,7 +128,7 @@ local_resource(
     # Reconcile the locked dependencies on startup and manifest changes. A
     # node_modules directory can exist even when an install is incomplete.
     cmd='cd portal && npm ci --include=dev --no-audit --no-fund',
-    serve_cmd='make dev-portal ARGS=--strictPort',
+    serve_cmd='make dev-portal ARGS="--strictPort --port %s"' % portal_port,
     deps=[
         # Vite handles source changes with HMR; do not reinstall on each edit.
         'portal/package.json',
@@ -130,7 +147,7 @@ local_resource(
 if kcp_image:
     local_resource(
         'kcp',
-        serve_cmd='hack/kcp-external.sh %s %s 6443' % (kcp_image, kcp_external_root),
+        serve_cmd='hack/kcp-external.sh %s %s %s %s' % (kcp_image, kcp_external_root, kcp_port, os.getenv('KCP_EXTERNAL_CONTAINER', 'railgrid-kcp-external')),
         readiness_probe=probe(
             period_secs=5,
             initial_delay_secs=10,
@@ -141,7 +158,7 @@ if kcp_image:
     kcp_server_flags = '  --external-kcp-kubeconfig=' + kcp_external_kubeconfig
     hub_deps = ['portal', 'kcp']
 else:
-    kcp_server_flags = '  --embedded-kcp \\\n  --kcp-root-dir=.kcp \\\n  --kcp-secure-port=6443'
+    kcp_server_flags = ' --embedded-kcp --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380))
     hub_deps = ['portal']
 
 # ---------------------------------------------------------------------------
@@ -149,7 +166,7 @@ local_resource(
     'hub',
     cmd='''
 make certs && \
-go build -o bin/railgrid-hub ./cmd/railgrid-hub
+make build-hub
 ''',
     serve_cmd=('''./bin/railgrid-hub \
   --serving-cert-file=certs/apiserver.crt \
@@ -160,16 +177,22 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
   --static-auth-token=dev-token2 \
   --admin-users=railgrid:static:47b9dce0e91570a1 \
 %s \
-  --portal-dev-url=http://localhost:3000 \
+  --listen-addr=:%s \
+  --data-dir=%s \
+  --portal-dev-url=http://localhost:%s \
   --portal-frame-source=%s \
   --published-apps-domain=%s \
   --kubeconfig=.railgrid-kro.kubeconfig \
-  --hub-internal-url=https://host.docker.internal:9443
+  --hub-internal-url=%s
 ''' % (
         railgrid_hub_external_url,
         kcp_server_flags,
+        hub_port,
+        os.getenv('HUB_DATA_DIR', '/tmp/railgrid-data'),
+        portal_port,
         preview_app_frame_source,
         preview_app_base_domain,
+        hub_internal_url,
     )),
     deps=[
         'cmd/railgrid-hub',
@@ -241,14 +264,14 @@ go build -o bin/railgrid-hub ./cmd/railgrid-hub
 preview_gateway_name = 'app-studio-preview'
 preview_gateway_namespace = 'envoy-gateway-system'
 preview_kro_kubeconfig = '.railgrid-kro.kubeconfig'
-preview_kro_kind_name = 'railgrid-kro'
+preview_kro_kind_name = os.getenv('KRO_KIND_NAME', 'railgrid-kro')
 preview_kro_context = 'kind-' + preview_kro_kind_name
 preview_kro_node = preview_kro_kind_name + '-control-plane'
-access_proxy_image = 'ghcr.io/railgrid/railgrid-access-proxy:dev'
+access_proxy_image = os.getenv('ACCESS_PROXY_IMAGE', 'ghcr.io/railgrid/railgrid-access-proxy:dev')
 access_proxy_image_repository = 'ghcr.io/railgrid/railgrid-access-proxy'
-dev_agent_image = 'ghcr.io/railgrid/railgrid-dev-agent:latest'
+dev_agent_image = os.getenv('DEV_AGENT_IMAGE', 'ghcr.io/railgrid/railgrid-dev-agent:latest')
 dev_agent_image_repository = 'ghcr.io/railgrid/railgrid-dev-agent'
-universal_dev_image = 'ghcr.io/railgrid/railgrid-universal-dev:latest'
+universal_dev_image = os.getenv('UNIVERSAL_DEV_IMAGE', 'ghcr.io/railgrid/railgrid-universal-dev:latest')
 universal_dev_image_repository = 'ghcr.io/railgrid/railgrid-universal-dev'
 # Host address as seen FROM INSIDE the railgrid-kro containers. Resolve
 # host.docker.internal inside the node first: on Docker Desktop/OrbStack the
@@ -272,7 +295,7 @@ local_resource(
     resource_deps=['hub'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8081, path='/healthz'),
+        http_get=http_get_action(port=dev_port('QUICKSTART_PORT', 8081), path='/healthz'),
     ),
     labels=['providers-quickstart'],
 )
@@ -363,7 +386,7 @@ local_resource(
     resource_deps=['hub', 'code-register'] + (['code-minio'] if code_minio_enabled else []),
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8083, path='/readyz'),
+        http_get=http_get_action(port=dev_port('CODE_PORT', 8083), path='/readyz'),
     ),
     labels=['providers-code'],
 )
@@ -484,7 +507,7 @@ local_resource(
     ),
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8085, path='/healthz'),
+        http_get=http_get_action(port=dev_port('APP_STUDIO_PORT', 8085), path='/healthz'),
     ),
     labels=['providers-app-studio'],
 )
@@ -580,7 +603,7 @@ local_resource(
     resource_deps=['hub', 'agents-db'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8087, path='/healthz'),
+        http_get=http_get_action(port=dev_port('AGENTS_PORT', 8087), path='/healthz'),
     ),
     labels=['providers-agents'],
 )
@@ -772,7 +795,7 @@ local_resource(
     resource_deps=['hub', 'kuery-db'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8084, path='/healthz'),
+        http_get=http_get_action(port=dev_port('KUERY_PORT', 8084), path='/healthz'),
     ),
     labels=['providers-kuery'],
 )
@@ -982,7 +1005,7 @@ RAILGRID_GATEWAY_NAME={gateway_name} \
 RAILGRID_GATEWAY_NAMESPACE={gateway_namespace} \
 RAILGRID_APP_BASE_DOMAIN={base_domain} \
 RAILGRID_APP_PUBLIC_PORT={public_port} \
-RAILGRID_ACCESS_HUB_URL="https://$host_gateway:9443" \
+RAILGRID_ACCESS_HUB_URL="https://$host_gateway:{hub_port}" \
 RAILGRID_ACCESS_HUB_PUBLIC_URL={hub_public_url} \
 RAILGRID_ACCESS_HUB_INSECURE=true \
 {access_proxy_env}
@@ -996,6 +1019,7 @@ make run-provider-infrastructure
                    gateway_namespace=preview_gateway_namespace,
                    base_domain=preview_app_base_domain,
                    public_port=preview_app_public_port,
+                   hub_port=hub_port,
                    hub_public_url=preview_hub_public_url,
                    access_proxy_digest_script=infrastructure_access_proxy_digest_script,
                    access_proxy_env=infrastructure_access_proxy_env,
@@ -1051,7 +1075,7 @@ make run-provider-infrastructure
     resource_deps=infrastructure_resource_deps,
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8082, path='/healthz'),
+        http_get=http_get_action(port=dev_port('KROMC_PORT', 8082), path='/healthz'),
     ),
     labels=['providers-kro'],
 )
@@ -1286,7 +1310,7 @@ local_resource(
     resource_deps=['hub'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=8088, path='/healthz'),
+        http_get=http_get_action(port=dev_port('EDGES_PORT', 8088), path='/healthz'),
     ),
     labels=['edges'],
 )
@@ -1322,19 +1346,8 @@ local_resource(
 )
 local_resource(
     'edge-kube-create',
-    # Drop any saved agent kubeconfig from a previous hub/kcp incarnation
-    # before re-creating. A stale ~/.railgrid/agent-<edge>.kubeconfig points at
-    # an old workspace + revoked SA token; the agent would load it, skip
-    # re-registration, and fail every call with "workspace access not
-    # permitted" (User ""). Clearing it forces a fresh join-token exchange.
-    #
-    # Same for the railgrid kubectl context: `railgrid login` deliberately keeps a
-    # previously selected workspace (pkg/cli/cmd/login.go), so after a kcp
-    # rebuild the kept logical-cluster ID no longer exists and every request
-    # 403s — kubectl apply then dies with "failed to download openapi:
-    # unknown". Deleting the context first makes login land on the fresh home
-    # workspace. Dev-only trade-off: a `railgrid use` selection is reset too.
-    cmd='kubectl config delete-context railgrid >/dev/null 2>&1 || true; kubectl config delete-cluster railgrid >/dev/null 2>&1 || true; rm -f ~/.railgrid/agent-dev-edge-kube-1.kubeconfig ~/.railgrid/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
+    # Checkout-specific names keep saved agent credentials separate.
+    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -1354,9 +1367,7 @@ local_resource(
 
 local_resource(
     'edge-server-create',
-    # Same stale-kubeconfig + stale-workspace cleanup as edge-kube-create
-    # (see note there).
-    cmd='kubectl config delete-context railgrid >/dev/null 2>&1 || true; kubectl config delete-cluster railgrid >/dev/null 2>&1 || true; rm -f ~/.railgrid/agent-dev-edge-server-1.kubeconfig ~/.railgrid/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
+    cmd='make dev-login-static && make dev-edge-create TYPE=server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -1379,7 +1390,7 @@ local_resource(
 # named --name=openssh-server doesn't collide.
 local_resource(
     'ssh-server',
-    serve_cmd='docker rm -f openssh-server >/dev/null 2>&1; make dev-run-ssh-server',
+    serve_cmd='docker rm -f %s >/dev/null 2>&1; make dev-run-ssh-server' % os.getenv('DEV_SSH_CONTAINER', 'openssh-server'),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     labels=['edges'],
@@ -1406,7 +1417,7 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['ha-kube-deploy'],
-    links=[link('http://localhost:8123', 'Home Assistant')],
+    links=[link('http://localhost:%s' % dev_port('HA_FORWARD_PORT', 8123), 'Home Assistant')],
     labels=['edges'],
 )
 
@@ -1432,40 +1443,40 @@ local_resource(
 
 local_resource(
     'code-2',
-    serve_cmd='make run-provider-code CODE_PORT=18083',
+    serve_cmd='make run-provider-code CODE_PORT=%s' % dev_port('CODE_REPLICA_PORT', 18083),
     serve_env={'CODE_BUNDLE_STORE': code_bundle_store},
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['code'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=18083, path='/healthz'),
+        http_get=http_get_action(port=dev_port('CODE_REPLICA_PORT', 18083), path='/healthz'),
     ),
     labels=['replicas'],
 )
 
 local_resource(
     'kuery-2',
-    serve_cmd='make run-provider-kuery KUERY_PORT=18084',
+    serve_cmd='make run-provider-kuery KUERY_PORT=%s' % dev_port('KUERY_REPLICA_PORT', 18084),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['kuery'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=18084, path='/healthz'),
+        http_get=http_get_action(port=dev_port('KUERY_REPLICA_PORT', 18084), path='/healthz'),
     ),
     labels=['replicas'],
 )
 
 local_resource(
     'edges-2',
-    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s POD_NAME=edges-local-2 make run-provider-edges EDGES_PORT=18088 EDGES_INTERNAL_PORT=18090' % railgrid_hub_external_url,
+    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s POD_NAME=edges-local-2 make run-provider-edges EDGES_PORT=%s EDGES_INTERNAL_PORT=%s' % (railgrid_hub_external_url, dev_port('EDGES_REPLICA_PORT', 18088), dev_port('EDGES_REPLICA_INTERNAL_PORT', 18090)),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['edges'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=18088, path='/healthz'),
+        http_get=http_get_action(port=dev_port('EDGES_REPLICA_PORT', 18088), path='/healthz'),
     ),
     labels=['replicas'],
 )
@@ -1499,14 +1510,14 @@ for external_providers_dir in external_providers_dirs.split(','):
         # Empty (e.g. `make tilt EXTERNAL_PROVIDERS=`) means every provider.
         selection=cfg.get('external-providers', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS', '') or 'all',
         context=preview_kro_context,
-        hub_url='https://host.docker.internal:9443',
+        hub_url=hub_internal_url,
         hub_insecure=True,
         # The dev serving cert is self-signed, so it is its own CA. Providers
         # that refuse an unverified hub (Factory) trust it through this.
         hub_ca_file=os.path.abspath('certs/apiserver.crt'),
         lifecycle_env={
             'RAILGRID_KCP_KUBECONFIG': os.path.abspath('.kcp/admin.kubeconfig'),
-            'RAILGRID_PROVIDER_KCP_SERVER': 'https://host.docker.internal:9443',
+            'RAILGRID_PROVIDER_KCP_SERVER': hub_internal_url,
             'RAILGRID_PROVIDER_KCP_INSECURE': 'true',
         },
         resource_deps=['hub', 'kro-mgmt-up'],
@@ -1518,6 +1529,6 @@ for external_providers_dir in external_providers_dirs.split(','):
         host_ports=True,
         # Embedded kcp advertises 127.0.0.1:6443 virtual-workspace URLs;
         # bridge that port in each pod to the hub, which relays them.
-        kcp_loopback_proxy='host.docker.internal:9443',
+        kcp_loopback_proxy='host.docker.internal:%s' % hub_port,
     )
     print('  external providers: %s (from %s)' % (', '.join(external_providers), external_providers_dir))

@@ -284,7 +284,7 @@ run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub +
 	RAILGRID_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=edges \
-	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/edges/manifest.yaml \
+	RAILGRID_CATALOGENTRY_FILE=$(abspath $(EDGES_MANIFEST)) \
 	RAILGRID_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
 	RAILGRID_DEV_MODE=true \
 		$(BINDIR)/edges-provider serve
@@ -836,7 +836,10 @@ dev-login-static: build-railgrid ## Login using static token auth (for use with 
 # Values: kubernetes (default) | server
 TYPE ?= kubernetes
 # Default DEV_EDGE_NAME is per-type so kubernetes and server edges can coexist.
-DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1)
+DEV_SSH_CONTAINER ?= openssh-server
+DEV_SSH_PORT ?= 2222
+HA_FORWARD_PORT ?= 8123
+DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1)$(if $(RAILGRID_TILT_CHECKOUT),-$(RAILGRID_TILT_CHECKOUT))
 
 dev-edge-create: build-railgrid ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
@@ -859,19 +862,19 @@ ifeq ($(TYPE),server)
 		--edge-name=$(RAILGRID_EDGE_NAME) \
 		--cluster=$(RAILGRID_EDGE_CLUSTER) \
 		--type=server \
-		--ssh-proxy-port=2222 \
+		--ssh-proxy-port=$(DEV_SSH_PORT) \
 		--ssh-user=railgrid \
 		--ssh-password=password \
 		$(if $(DEV_EDGE_HARNESS),--harness=$(DEV_EDGE_HARNESS))
 else
-	hack/scripts/ensure-kind-cluster.sh
+	hack/scripts/ensure-kind-cluster.sh $(DEV_AGENT_KIND)
 	$(BINDIR)/railgrid agent run \
 		--hub-url=$(DEV_HUB_URL) \
 		--hub-insecure-skip-tls-verify \
 		--token=$(RAILGRID_EDGE_JOIN_TOKEN) \
 		--tunnel-url=$(DEV_HUB_URL) \
 		--edge-name=$(RAILGRID_EDGE_NAME) \
-		--kubeconfig=.kubeconfig-railgrid-agent \
+		--kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) \
 		--cluster=$(RAILGRID_EDGE_CLUSTER) \
 		--type=kubernetes
 endif
@@ -926,14 +929,14 @@ run-dex: $(DEX) certs ## Run Dex OIDC server
 
 dev-run-ssh-server:
 	docker run \
-  --name=openssh-server \
+  --name=$(DEV_SSH_CONTAINER) \
   -e PUID=1000 \
   -e PGID=1000 \
   -e TZ=Etc/UTC \
   -e PASSWORD_ACCESS=true \
   -e USER_PASSWORD=password \
   -e USER_NAME=railgrid \
-  -p 2222:2222 \
+  -p $(DEV_SSH_PORT):2222 \
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
@@ -1011,7 +1014,7 @@ HA_NAMESPACE  ?= home
 HA_KUBECONFIG ?= .kubeconfig-railgrid-agent
 
 dev-deploy-homeassistant: ## Deploy Home Assistant into the railgrid-agent kind cluster
-	hack/scripts/ensure-kind-cluster.sh
+	hack/scripts/ensure-kind-cluster.sh $(DEV_AGENT_KIND)
 	kubectl --kubeconfig=$(HA_KUBECONFIG) apply -k $(HA_MANIFESTS)
 	@echo "Waiting for Home Assistant (first boot pulls a ~1.5GB image)..."
 	kubectl --kubeconfig=$(HA_KUBECONFIG) -n $(HA_NAMESPACE) \
@@ -1022,7 +1025,7 @@ dev-deploy-homeassistant: ## Deploy Home Assistant into the railgrid-agent kind 
 dev-homeassistant-forward: ## Port-forward Home Assistant to localhost:8123 (onboarding + token)
 	@echo "Home Assistant → http://localhost:8123 (profile → Security → Long-lived access tokens)"
 	kubectl --kubeconfig=$(HA_KUBECONFIG) -n $(HA_NAMESPACE) \
-		port-forward svc/home-assistant 8123:8123
+		port-forward svc/home-assistant $(HA_FORWARD_PORT):8123
 
 dev-undeploy-homeassistant: ## Remove Home Assistant (keeps the PVC's data unless you delete the ns)
 	kubectl --kubeconfig=$(HA_KUBECONFIG) delete -k $(HA_MANIFESTS) --ignore-not-found
@@ -1165,39 +1168,25 @@ KCP_IMAGE ?=
 ## local MinIO (built from source into hack/tools) instead of a local directory,
 ## so the multi-replica path can be tested; the default stays file (one replica).
 
-tilt: ## Run Tiltfile (embedded binary mode); see tilt-cluster for the in-cluster stack
-	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	@# Tilt refuses a second instance on its API port, but its own message
-	@# suggests TILT_PORT to run both — which is wrong here: the two stacks
-	@# fight over :9443 and the shared .kcp state dir. Say so instead.
-	@if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:$(TILT_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "ERROR: a Tilt instance is already running (port $(TILT_PORT))."; \
-		echo "       Only one stack at a time — both bind :9443 and share .kcp/."; \
-		echo "       Stop the other one first: tilt down -f Tiltfile.cluster"; \
-		exit 1; \
-	fi
-	@# A stray railgrid-hub or leftover port-forward on :9443 gets no such check
-	@# from Tilt; it surfaces as an opaque bind failure inside the `hub`
-	@# resource long after `tilt up` looks healthy.
-	@if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:9443 -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "ERROR: something is already listening on :9443 — stop it before starting the hub."; \
-		lsof -nP -iTCP:9443 -sTCP:LISTEN; \
-		exit 1; \
-	fi
+tilt: ## Run the dev stack with automatic checkout-specific ports and resource names
+	python3 hack/scripts/tilt-checkout.py
+
+.PHONY: tilt-start tilt-status test-tilt-checkout
+tilt-status: ## Print this checkout's persisted dev ports and identity
+	python3 hack/scripts/tilt-checkout.py status
+test-tilt-checkout:
+	python3 hack/scripts/tilt-checkout.test.py
+
+# Internal target: the launcher has selected the Tilt API port before startup.
+tilt-start:
 	@mkdir -p "$(TILT_TMPDIR)"
-	@# External providers run as pods in railgrid-kro. Create it before
-	@# `tilt up` for the same reason tilt-cluster does: Tilt caches its
-	@# kube client at startup. kro-mgmt-up later finds and reuses it.
-ifneq ($(EXTERNAL_PROVIDERS_DIR),)
 	@kind get clusters 2>/dev/null | grep -qx "$(KRO_KIND_NAME)" || kind create cluster --name "$(KRO_KIND_NAME)" --kubeconfig "$(KRO_KIND_KUBECONFIG)"
 	@kind get kubeconfig --name "$(KRO_KIND_NAME)" > "$(KRO_KIND_KUBECONFIG)"
+	python3 hack/scripts/tilt-checkout.py dns
 	KUBECONFIG="$(KRO_KIND_KUBECONFIG):$${KUBECONFIG:-$$HOME/.kube/config}" TMPDIR="$(TILT_TMPDIR)" \
-		tilt up -f Tiltfile --context "kind-$(KRO_KIND_NAME)" -- \
+		tilt up -f Tiltfile --port "$(TILT_PORT)" --context "kind-$(KRO_KIND_NAME)" -- \
 		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)" \
 		--kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
-else
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile -- --kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
-endif
 
 ## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
@@ -1268,7 +1257,7 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	RAILGRID_HUB_URL=$(QUICKSTART_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=quickstart \
-	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/quickstart/manifest.yaml \
+	RAILGRID_CATALOGENTRY_FILE=$(abspath $(QUICKSTART_MANIFEST)) \
 	RAILGRID_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 		$(BINDIR)/quickstart-provider
 
@@ -1800,7 +1789,7 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	RAILGRID_HUB_URL=$(KUERY_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=kuery \
-	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/kuery/manifest.yaml \
+	RAILGRID_CATALOGENTRY_FILE=$(abspath $(KUERY_MANIFEST)) \
 	RAILGRID_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_STORE_DRIVER=postgres \
 	KUERY_STORE_DSN="$$STORE_DSN" \
@@ -1959,7 +1948,7 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \
-	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/infrastructure/manifest.yaml \
+	RAILGRID_CATALOGENTRY_FILE=$(abspath $(KROMC_MANIFEST)) \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)} \
 	RAILGRID_APP_BASE_DOMAIN=$${RAILGRID_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
@@ -2116,7 +2105,7 @@ run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
-		RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/app-studio/manifest.yaml \
+		RAILGRID_CATALOGENTRY_FILE=$(abspath $(APP_STUDIO_MANIFEST)) \
 		RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
@@ -2132,7 +2121,7 @@ run-provider-app-studio-prebuilt: app-studio-db-up app-studio-preview-bridge-dev
 		RAILGRID_ACTIONS_EXTERNAL_URL="$${RAILGRID_ACTIONS_EXTERNAL_URL}" \
 		RAILGRID_HUB_INSECURE=true \
 		RAILGRID_PROVIDER_NAME=app-studio \
-		RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/app-studio/manifest.yaml \
+		RAILGRID_CATALOGENTRY_FILE=$(abspath $(APP_STUDIO_MANIFEST)) \
 		RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
@@ -2245,7 +2234,7 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
-	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/agents/manifest.yaml \
+	RAILGRID_CATALOGENTRY_FILE=$(abspath $(AGENTS_MANIFEST)) \
 	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(AGENTS_PROVIDER_KUBECONFIG)} \
 	AGENTS_DATABASE_URL="$$AGENTS_DATABASE_URL" \
 	AGENTS_IN_MEMORY_STORE="$$AGENTS_IN_MEMORY_STORE" \
@@ -2464,7 +2453,7 @@ serve-provider-code: ## Run the already-built code provider
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=code \
-	RAILGRID_CATALOGENTRY_FILE=$(CURDIR)/providers/code/manifest.yaml \
+	RAILGRID_CATALOGENTRY_FILE=$(abspath $(CODE_MANIFEST)) \
 	CODE_BUNDLE_STORE=$(CODE_BUNDLE_STORE) \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
 	CODE_S3_ENDPOINT=$(CODE_S3_ENDPOINT) \
@@ -2893,14 +2882,16 @@ docker-build-agent: ## Build railgrid-agent container image
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t ghcr.io/railgrid/railgrid-agent:$(VERSION) .
 
+ACCESS_PROXY_IMAGE ?= ghcr.io/railgrid/railgrid-access-proxy:$(VERSION)
+
 docker-build-access-proxy: ## Build published-app access-proxy container image (infrastructure module)
 	docker build -f providers/infrastructure/Dockerfile.access-proxy \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) .
+		-t $(ACCESS_PROXY_IMAGE) .
 
 load-access-proxy-image: docker-build-access-proxy ## Load the published-app access-proxy image into the local kind runtime cluster
-	@echo ">>> loading ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) into kind cluster $(KRO_KIND_NAME)"
-	kind load docker-image ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) --name $(KRO_KIND_NAME)
+	@echo ">>> loading $(ACCESS_PROXY_IMAGE) into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image $(ACCESS_PROXY_IMAGE) --name $(KRO_KIND_NAME)
 
 docker-push-hub: docker-build-hub ## Build and push railgrid-hub container image
 	docker push ghcr.io/railgrid/railgrid-hub:$(VERSION)
@@ -2928,7 +2919,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: test-tilt-checkout test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 
