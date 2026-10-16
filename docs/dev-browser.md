@@ -5,7 +5,7 @@ Start `make tilt` in the checkout and keep it running. In another shell run
 resources, waits for the configured providers, logs in as the existing Tilt
 development identity, and enables providers in its personal development
 workspace. Dependencies are enabled first. Setup is repeatable and has a
-20-minute total timeout (`DEV_BROWSER_TIMEOUT` in seconds).
+20-minute provider initialization timeout (`DEV_BROWSER_TIMEOUT` in seconds).
 
 The command writes `.kcp/dev-browser.json` with the portal URL, org/workspace,
 provider list and a private token-file reference. A browser agent opens the URL
@@ -63,3 +63,9 @@ access; it is not a generic hook for untrusted ticket content.
 The companion private-provider repository provides the same commands and owns
 its Railgrid checkout under `.railgrid-dev`. Screenshot files belong in the
 provider task checkout, not inside that companion checkout.
+
+Port reservations use the OS account’s home directory rather than the process’s
+`HOME` or `XDG_STATE_HOME`. This lets an Edge harness retain its private home
+while sharing reservations with ordinary checkouts on the same host. A saved
+configuration that conflicts with another checkout fails explicitly; clean up
+that old stack before removing its ignored checkout state and allocating anew.

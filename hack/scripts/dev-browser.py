@@ -97,7 +97,13 @@ class Setup:
         print('Waiting for Tilt resource ' + name, flush=True)
         while True:
             self.remaining()
-            resource = json.loads(self.tilt('get', 'uiresource', name, '-o', 'json'))
+            try:
+                resource = json.loads(self.tilt('get', 'uiresource', name, '-o', 'json'))
+            except ValueError:
+                # make tilt creates the kind cluster before opening its API.
+                # A concurrently invoked ready command must wait for that API.
+                time.sleep(min(2, self.remaining()))
+                continue
             status = resource.get('status', {})
             if status.get('updateStatus') == 'error' and not status.get('queued'):
                 raise ValueError(f'Tilt resource {name} failed; inspect `tilt logs {name} --port {self.port}` and retry make dev-browser-ready')
@@ -187,10 +193,13 @@ class Setup:
 
 def main():
     path = ROOT / '.kcp/tilt-checkout.json'
-    if not path.exists():
-        if sys.argv[1:] == ['down']:
-            return
-        raise ValueError('Start make tilt in this checkout first')
+    if not path.exists() and sys.argv[1:] == ['down']:
+        return
+    deadline = time.monotonic() + 60
+    while not path.exists():
+        if time.monotonic() >= deadline:
+            raise ValueError('Start make tilt in this checkout first; no checkout configuration appeared within 60 seconds')
+        time.sleep(1)
     config = json.loads(path.read_text())
     if config.get('root') != str(ROOT) or config.get('legacy'):
         raise ValueError('Browser setup/cleanup requires a fresh isolated checkout; shared legacy stacks are not managed')

@@ -6,6 +6,7 @@ import json
 import ipaddress
 import re
 import os
+import pwd
 from pathlib import Path
 import socket
 import subprocess
@@ -39,8 +40,15 @@ def ephemeral_range():
     return (49152, 65535)
 
 
+def registry_directory():
+    # Coding harnesses give processes a private HOME/XDG_STATE_HOME. Port
+    # claims belong to the OS account sharing the host network, not that
+    # process's synthetic home. Keep ordinary checkouts and runners together.
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / '.local/state/railgrid'
+
+
 def allocate_ports(root, saved=None):
-    registry_dir = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'railgrid'
+    registry_dir = registry_directory()
     registry_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     registry = registry_dir / 'tilt-ports.json'
     with (registry_dir / 'tilt-ports.lock').open('a') as lock:
