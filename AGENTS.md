@@ -919,3 +919,25 @@ Linear and Databricks implementation, build, codegen, portal copies and release
 automation live in `railgrid/providers`. Do not recreate their source directories
 or add private-repository access to public CI. They remain hub-managed provider
 installations; source ownership does not imply self-hosting-only support.
+
+## Agent screenshots against the real application
+
+For every change affecting visible UI, keep `make tilt` running in this checkout
+and run `make dev-browser-ready`. Read `.kcp/dev-browser.json` for the portal URL,
+development org/workspace and private token-file reference. Use browser tools to
+open that URL and sign in through the existing token-login form. Never publish
+the token or include it in a URL or screenshot.
+
+Inspect the affected flow against the running backend; choose interactions and
+screenshots based on the change. Development records are allowed. Fixture pages
+and intercepted/mocked backend responses do not count as live verification.
+No predefined Playwright test is required. Capture affected states and relevant
+viewport/theme variants. Save PNG/JPEG images in `artifacts/screenshots/` (eight
+files maximum, 2 MiB each, 8 MiB total) and include captioned Markdown image
+references in the final response/PR description. The runner publishes these
+files separately from Git. Explain deployment/browser/integration blockers and
+mark live verification incomplete if it could not be performed.
+
+Run `make dev-browser-down` when finished; keep the stack while awaiting a user
+answer. Setup needs no external integration credentials. Configure integrations
+only when the changed flow actually uses them. See `docs/dev-browser.md`.

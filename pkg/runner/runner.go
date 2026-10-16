@@ -204,6 +204,11 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	r.mu.Lock()
+	for _, attempt := range r.state.Attempts {
+		r.scheduleCleanupLocked(attempt)
+	}
+	r.mu.Unlock()
 	return r, nil
 }
 
@@ -1297,6 +1302,7 @@ func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker strin
 		delete(r.credentials, attempt.Receipt.AttemptID)
 	}
 	_ = r.persistLocked()
+	r.scheduleCleanupLocked(attempt)
 }
 
 func (r *Runner) appendEventLocked(attemptID, eventType, message string, data json.RawMessage) (Event, error) {

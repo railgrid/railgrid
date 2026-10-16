@@ -1177,11 +1177,20 @@ KCP_IMAGE ?=
 tilt: ## Run the dev stack with automatic checkout-specific ports and resource names
 	python3 hack/scripts/tilt-checkout.py
 
+# Browser setup leaves navigation and evidence selection to the coding agent.
+.PHONY: dev-browser-ready dev-browser-down test-dev-browser
+dev-browser-ready: ## Prepare the running isolated stack for agent-driven browser inspection
+	python3 hack/scripts/dev-browser.py ready
+dev-browser-down: ## Stop only this checkout's owned dev resources, retaining evidence
+	python3 hack/scripts/dev-browser.py down
+test-dev-browser:
+	python3 hack/scripts/dev-browser.test.py
+
 .PHONY: tilt tilt-start tilt-status
 .PHONY: test-tilt-checkout
 tilt-status: ## Print this checkout's persisted dev ports and identity
 	python3 hack/scripts/tilt-checkout.py status
-test-tilt-checkout:
+test-tilt-checkout: test-dev-browser
 	python3 hack/scripts/tilt-checkout.test.py
 
 # Internal target: the launcher has selected the Tilt API port before startup.

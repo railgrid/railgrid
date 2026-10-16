@@ -303,6 +303,7 @@ local_resource(
 local_resource(
     'quickstart-register',
     cmd='make install-provider-quickstart',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -394,6 +395,7 @@ local_resource(
 local_resource(
     'code-register',
     cmd='make install-provider-code',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -523,6 +525,7 @@ local_resource(
 local_resource(
     'app-studio-register',
     cmd='make install-provider-app-studio',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -611,6 +614,7 @@ local_resource(
 local_resource(
     'agents-register',
     cmd='make install-provider-agents',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -811,6 +815,7 @@ local_resource(
 local_resource(
     'kuery-register',
     cmd='make install-provider-kuery',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -1083,6 +1088,7 @@ make run-provider-infrastructure
 local_resource(
     'infrastructure-register',
     cmd='make install-provider-infrastructure',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -1318,6 +1324,7 @@ local_resource(
 local_resource(
     'edges-register',
     cmd='make install-provider-edges',
+    allow_parallel=True,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],

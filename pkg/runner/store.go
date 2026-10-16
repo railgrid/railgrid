@@ -47,6 +47,9 @@ type persistedState struct {
 }
 
 type attemptRecord struct {
+	CleanupDone    bool `json:"cleanupDone,omitempty"`
+	cleanupRunning bool
+
 	Receipt       Receipt        `json:"receipt"`
 	Start         StartRequest   `json:"start"`
 	Fingerprint   string         `json:"fingerprint"`
