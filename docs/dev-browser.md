@@ -8,7 +8,9 @@ workspace. Dependencies are enabled first. Setup is repeatable and has a
 20-minute provider initialization timeout (`DEV_BROWSER_TIMEOUT` in seconds).
 
 The command writes `.kcp/dev-browser.json` with the portal URL, org/workspace,
-provider list and a private token-file reference. A browser agent opens the URL
+provider list and a mode-0600 token-file reference. The static development token
+is intentionally public in Tilt configuration; file privacy prevents accidental
+artifact publication, not access by other local users. A browser agent opens the URL
 and uses the normal token-login form. It chooses its own interactions and
 screenshots based on the UI change; there is no predefined browser scenario.
 The development stack uses self-signed TLS, so configure the browser context to
@@ -49,16 +51,28 @@ Repositories opt in to terminal runner cleanup with `.railgrid/runner.json`:
 {"cleanup": ["make", "dev-browser-down"]}
 ```
 
-The runner reads that command from the approved base commit and runs it in the
-resulting checkout after success, failure or cancellation, including cancellation
-while parked for a question. It never runs it merely because a question needs
-an answer or the runner shuts down with a resumable attempt. Cleanup has its own
-five-minute deadline and process group, independent of cancelled harness
-contexts. Output stays in the private `.railgrid-cleanup.log`; completion or
-failure is reported as a runner progress event. Failed/interrupted cleanup is
-retried when the runner restarts. Cleanup must be idempotent and scope all
-resources explicitly. It executes trusted repository code with runner-host
-access; it is not a generic hook for untrusted ticket content.
+The runner reads that command and exports executable source from the approved
+base commit into a temporary directory. It runs there with a restricted
+environment (no inherited GitHub, LLM or runner credential variables), passing
+`RAILGRID_CLEANUP_ROOT` as the retained task checkout to clean. Hooks must use
+that path only for state, never execute modified files from it. This happens
+after success, failure or cancellation, including cancellation while parked for
+a question. It never runs merely because a question needs an answer or the
+runner shuts down with a resumable attempt. POSIX process-group support is
+required; Windows reports cleanup unsupported without launching the hook.
+
+Cleanup has a five-minute deadline and process group independent of harness
+cancellation. Output stays in the private `.railgrid-cleanup.log`; status/error
+and attempt count are stored in runner state, with failures also in service
+logs. No events are appended after the terminal event. Failed/interrupted
+cleanup retries on restart, at most three attempts and two concurrent hooks.
+Historical attempts created before this feature are not retroactively cleaned.
+Hooks must be idempotent, since a crash can occur between deletion and persisting
+success. They execute approved repository code with runner-host access.
+
+Provider registration resources permit parallel scheduling so bootstrap does
+not wait behind unrelated cold image builds in Tilt's global local-resource
+queue. Bootstrap itself still orders register/init and waits for readiness.
 
 The companion private-provider repository provides the same commands and owns
 its Railgrid checkout under `.railgrid-dev`. Screenshot files belong in the

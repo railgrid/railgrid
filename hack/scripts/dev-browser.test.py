@@ -12,6 +12,61 @@ spec.loader.exec_module(m)
 
 
 class BrowserTest(unittest.TestCase):
+    def test_down_does_not_wait_for_ready_lock(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)), patch.object(m.sys, 'argv', ['dev-browser.py', 'down']):
+            state = Path(tmp) / '.kcp'
+            state.mkdir()
+            (state / 'tilt-checkout.json').write_text(json.dumps({'root': tmp, 'legacy': False}))
+            with (state / 'dev-browser.lock').open('a') as held:
+                m.fcntl.flock(held, m.fcntl.LOCK_EX)
+                with patch.object(m.checkout, 'stop_owned') as stop:
+                    m.main()
+                    stop.assert_called_once()
+
+    def test_signal_during_launch_is_forwarded_after_owner_is_durable(self):
+        c = m.checkout
+        with tempfile.TemporaryDirectory() as tmp, patch.object(c, 'ROOT', Path(tmp)):
+            (Path(tmp) / '.kcp').mkdir()
+            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': c.PORTS}
+            handlers = {}
+            child = Mock(pid=1234)
+            child.poll.return_value = None
+            child.wait.return_value = 0
+            def launch(*args, **kwargs):
+                handlers[c.signal.SIGTERM](c.signal.SIGTERM, None)
+                return child
+            def kill(pid, signum):
+                record = json.loads((Path(tmp) / '.kcp/tilt-owner.json').read_text())
+                self.assertEqual((record['pid'], record['birth']), (1234, 'birth'))
+            with patch.object(c, 'settings', return_value=config), patch.object(c, 'manifests', return_value={}), patch.object(c, 'check_ports'), patch.object(c, 'process_identity', return_value='birth'), patch.object(c.signal, 'signal', side_effect=lambda signum, fn: handlers.update({signum: fn})), patch.object(c.subprocess, 'Popen', side_effect=launch), patch.object(c.os, 'killpg', side_effect=kill) as signal_group, patch.object(c.sys, 'argv', ['tilt-checkout.py']):
+                with self.assertRaises(SystemExit):
+                    c.main()
+                signal_group.assert_called_once_with(1234, c.signal.SIGTERM)
+
+    def test_timeout_and_url_ignore_host_overrides(self):
+        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        with patch.dict(os.environ, {'DEV_HUB_URL': 'https://production.example', 'DEV_BROWSER_TIMEOUT': 'bad'}):
+            with self.assertRaisesRegex(ValueError, 'DEV_BROWSER_TIMEOUT'):
+                m.Setup(config)
+        with patch.dict(os.environ, {'DEV_HUB_URL': 'https://production.example'}):
+            self.assertEqual(m.Setup(config).url, 'https://console-abc.127.0.0.1.sslip.io:9443')
+
+    def test_cleanup_continues_after_cluster_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.checkout.PORTS}
+            record = root / '.kcp/tilt-owner.json'
+            m.checkout.write_owner(record, {'root': tmp, 'resources': m.checkout.owned_resources(config)})
+            def remove(args, **kwargs):
+                if args[:2] == ['kind', 'delete']:
+                    raise m.subprocess.CalledProcessError(1, args)
+            with patch.object(m.checkout.subprocess, 'run', side_effect=remove) as run, patch.object(m.checkout.subprocess, 'check_output', return_value='railgrid-agents-pg-first\n'):
+                with self.assertRaisesRegex(ValueError, 'kind cluster railgrid-kro-first'):
+                    m.checkout.stop_owned(config)
+            self.assertIn(['docker', 'rm', '-f', 'railgrid-agents-pg-first'], [c.args[0] for c in run.call_args_list])
+            self.assertTrue(record.exists())
+
     def test_dependency_order_and_missing_dependency(self):
         catalog = {'app': {'requires': [{'provider': 'code'}]}, 'code': {}}
         self.assertEqual(m.provider_order(catalog, ['app', 'code']), ['code', 'app'])

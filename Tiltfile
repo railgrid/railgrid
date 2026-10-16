@@ -173,9 +173,9 @@ make build-hub
   --serving-key-file=certs/apiserver.key \
   --hub-external-url=%s \
   --dev-mode -v 4 \
-  --static-auth-token=dev-token \
+  --static-auth-token=$DEV_STATIC_TOKEN \
   --static-auth-token=dev-token2 \
-  --admin-users=railgrid:static:47b9dce0e91570a1 \
+  --admin-users=$DEV_STATIC_ADMIN \
 %s \
   --listen-addr=:%s \
   --data-dir=%s \

@@ -32,7 +32,7 @@ func cleanupSource(t *testing.T) (string, string) {
 	if err := os.Mkdir(filepath.Join(dir, ".railgrid"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".railgrid/runner.json"), []byte(`{"cleanup":["sh","-c","echo cleaned > cleanup-marker"]}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".railgrid/runner.json"), []byte(`{"cleanup":["sh","-c","echo cleaned > \"$RAILGRID_CLEANUP_ROOT/cleanup-marker\""]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := gitOutput(context.Background(), dir, "add", ".railgrid/runner.json"); err != nil {
@@ -108,5 +108,91 @@ func TestTerminalCleanupAndQuestionRetention(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+func TestCleanupRunsApprovedFilesWithoutHostCredentials(t *testing.T) {
+	dir, _ := cleanupSource(t)
+	script := filepath.Join(dir, "cleanup.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n[ -z \"$OPENAI_API_KEY$GITHUB_TOKEN$PYTHONPATH\" ] || exit 2\necho approved > \"$RAILGRID_CLEANUP_ROOT/result\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".railgrid/runner.json"), []byte(`{"cleanup":["sh","cleanup.sh"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitOutput(context.Background(), dir, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitOutput(context.Background(), dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "approved script"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := gitOutput(context.Background(), dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("exit 42\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"OPENAI_API_KEY", "GITHUB_TOKEN", "PYTHONPATH"} {
+		t.Setenv(key, "must-not-inherit")
+	}
+	if err := runRepositoryCleanup(dir, base); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "result"))
+	if err != nil || string(data) != "approved\n" {
+		t.Fatalf("result=%q err=%v", data, err)
+	}
+}
+
+func TestCleanupRetriesAreBoundedAndDoNotEmitTerminalEvents(t *testing.T) {
+	source, commit := cleanupSource(t)
+	adapter := &fakeAdapter{run: func(context.Context, harness.Launch, harness.Emit) (harness.Result, error) {
+		return harness.Result{Phase: string(PhaseFailed)}, nil
+	}}
+	runner := newTestRunner(t, adapter, source, commit)
+	receipt, err := runner.Start(context.Background(), testStartRequest(commit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForPhase(t, runner, receipt.AttemptID, PhaseFailed)
+	for count := 1; count <= 3; count++ {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			runner.mu.Lock()
+			a := runner.state.Attempts[receipt.AttemptID]
+			running := a.cleanupRunning
+			if !running {
+				if a.CleanupAttempts != count {
+					t.Fatalf("attempts=%d want %d", a.CleanupAttempts, count)
+				}
+				// Simulate an interrupted or failed hook being recovered on restart.
+				a.CleanupDone = false
+				runner.scheduleCleanupLocked(a)
+				if count == 3 && a.cleanupRunning {
+					t.Fatal("exceeded retry limit")
+				}
+				runner.mu.Unlock()
+				break
+			}
+			runner.mu.Unlock()
+			if time.Now().After(deadline) {
+				t.Fatal("cleanup did not finish")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	events := runner.state.Events[receipt.AttemptID]
+	if events[len(events)-1].Type != EventFailed {
+		t.Fatalf("last event = %s", events[len(events)-1].Type)
+	}
+	a := runner.state.Attempts[receipt.AttemptID]
+	a.CleanupAttempts = 0
+	a.CleanupEligible = false
+	runner.scheduleCleanupLocked(a)
+	if a.cleanupRunning {
+		t.Fatal("scheduled historical attempt")
 	}
 }

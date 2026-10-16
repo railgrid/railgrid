@@ -13,8 +13,9 @@ import ssl
 import urllib.error
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[2]
-_spec = importlib.util.spec_from_file_location('checkout', ROOT / 'hack/scripts/tilt-checkout.py')
+SOURCE = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get('RAILGRID_CLEANUP_ROOT', SOURCE)).resolve()
+_spec = importlib.util.spec_from_file_location('checkout', SOURCE / 'hack/scripts/tilt-checkout.py')
 checkout = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checkout)
 
@@ -68,11 +69,15 @@ class Setup:
         self.port = str(config['ports']['TILT_PORT'])
         self.url = checkout.environment(config)['DEV_HUB_URL']
         # Tilt's development identity, also available through its token login UI.
-        self.token = 'dev-token'
-        self.deadline = time.monotonic() + int(os.environ.get('DEV_BROWSER_TIMEOUT', '1200'))
-        self.opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}),
-            urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+        self.token = self.env['DEV_STATIC_TOKEN']
+        try:
+            timeout = int(os.environ.get('DEV_BROWSER_TIMEOUT', '1200'))
+            if timeout <= 0:
+                raise ValueError()
+        except ValueError:
+            raise ValueError('DEV_BROWSER_TIMEOUT must be a positive integer number of seconds') from None
+        self.deadline = time.monotonic() + timeout
+        self.opener = None
 
     def remaining(self):
         remaining = int(self.deadline - time.monotonic())
@@ -121,6 +126,10 @@ class Setup:
         request = urllib.request.Request(self.url + path,
             data=None if body is None else json.dumps(body).encode(),
             headers=headers)
+        if self.opener is None:
+            self.opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}),
+                urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(ROOT / 'certs/apiserver.crt'))))
         with self.opener.open(request, timeout=min(10, self.remaining())) as response:
             data = response.read()
             return json.loads(data) if data else {}
@@ -192,6 +201,8 @@ class Setup:
 
 
 def main():
+    if sys.argv[1:] not in (['ready'], ['down']):
+        raise ValueError('usage: dev-browser.py ready|down')
     path = ROOT / '.kcp/tilt-checkout.json'
     if not path.exists() and sys.argv[1:] == ['down']:
         return
@@ -203,14 +214,16 @@ def main():
     config = json.loads(path.read_text())
     if config.get('root') != str(ROOT) or config.get('legacy'):
         raise ValueError('Browser setup/cleanup requires a fresh isolated checkout; shared legacy stacks are not managed')
+    if sys.argv[1:] == ['down']:
+        # Stop resources even when setup is still polling readiness. Setup
+        # creates tenant records only; it cannot restart deployment processes.
+        checkout.stop_owned(config)
+        return
     with (ROOT / '.kcp/dev-browser.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if sys.argv[1:] == ['down']:
-            checkout.stop_owned(config)
-        else:
-            # Never leave a stale success marker after failed setup.
-            (ROOT / '.kcp/dev-browser.json').unlink(missing_ok=True)
-            Setup(config).ready()
+        # Never leave a stale success marker after failed setup.
+        (ROOT / '.kcp/dev-browser.json').unlink(missing_ok=True)
+        Setup(config).ready()
 
 
 if __name__ == '__main__':

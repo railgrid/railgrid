@@ -24,7 +24,7 @@ import (
 	"syscall"
 )
 
-func configureCleanupProcess(cmd *exec.Cmd) {
+func configureCleanupProcess(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -33,4 +33,5 @@ func configureCleanupProcess(cmd *exec.Cmd) {
 		}
 		return err
 	}
+	return nil
 }

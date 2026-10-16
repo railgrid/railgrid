@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,7 @@ import (
 )
 
 // repositoryCleanup is deliberately read from the approved base, not the
-// agent's edited worktree. The command runs against the resulting worktree.
+// agent's edited worktree. Executable files are exported from that same base.
 // It is an opt-in contract for trusted repository code, not a sandbox escape
 // available to an untrusted ticket or a generated file.
 var errNoRepositoryCleanup = errors.New("repository has no cleanup hook")
@@ -68,9 +69,30 @@ func runRepositoryCleanup(workdir, base string) error {
 	if len(config.Cleanup) > 32 || config.Cleanup[0] == "" {
 		return errors.New("invalid repository cleanup command")
 	}
+	trusted, err := os.MkdirTemp("", "railgrid-cleanup-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(trusted) }()
+	archive := filepath.Join(trusted, "source.tar")
+	if _, err := gitOutput(ctx, workdir, "archive", "--format=tar", "--output="+archive, base); err != nil {
+		return fmt.Errorf("export approved cleanup source: %w", err)
+	}
+	source := filepath.Join(trusted, "source")
+	if err := os.Mkdir(source, 0700); err != nil {
+		return err
+	}
+	unpack := exec.CommandContext(ctx, "tar", "-xf", archive, "-C", source)
+	unpack.Env = cleanupEnvironment(workdir)
+	if err := unpack.Run(); err != nil {
+		return fmt.Errorf("extract approved cleanup source: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, config.Cleanup[0], config.Cleanup[1:]...)
-	cmd.Dir = workdir
-	configureCleanupProcess(cmd)
+	cmd.Dir = source
+	cmd.Env = cleanupEnvironment(workdir)
+	if err := configureCleanupProcess(cmd); err != nil {
+		return err
+	}
 	cmd.WaitDelay = time.Second
 	// Child output can contain secrets. Do not attach it to receipts or PRs.
 	logPath := filepath.Join(workdir, ".railgrid-cleanup.log")
@@ -94,17 +116,39 @@ func runRepositoryCleanup(workdir, base string) error {
 	return nil
 }
 
-// Called under r.mu after terminal state is durable. Cleanup never consumes a
-// cancelled harness context, and never runs while a user question is parked.
+// cleanupEnvironment intentionally excludes credentials and language/tool injection
+// variables. Repository code receives a target path, never executable task files.
+func cleanupEnvironment(workdir string) []string {
+	env := []string{"LANG=C.UTF-8", "RAILGRID_CLEANUP_ROOT=" + workdir}
+	for _, key := range []string{"PATH", "HOME", "TMPDIR", "DOCKER_HOST", "DOCKER_CONTEXT", "XDG_RUNTIME_DIR"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
+// Called under r.mu after terminal state is durable. No post-terminal SSE
+// events: lifecycle maintenance is recorded in durable state and service logs.
 func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
-	if !attempt.Receipt.Phase.IsTerminal() || attempt.CleanupDone || attempt.cleanupRunning || attempt.Receipt.Workdir == "" {
+	if !attempt.CleanupEligible || !attempt.Receipt.Phase.IsTerminal() || attempt.CleanupDone || attempt.cleanupRunning || attempt.Receipt.Workdir == "" || attempt.CleanupAttempts >= 3 {
 		return
 	}
 	attempt.cleanupRunning = true
+	attempt.CleanupAttempts++
+	if err := r.persistLocked(); err != nil {
+		attempt.cleanupRunning = false
+		attempt.CleanupAttempts--
+		log.Printf("persist cleanup scheduling: %v", err)
+		return
+	}
 	id, workdir, base := attempt.Receipt.AttemptID, attempt.Receipt.Workdir, attempt.Start.BaseCommit
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
+		// Bound startup work even when many terminal attempts need recovery.
+		r.cleanupSlots <- struct{}{}
+		defer func() { <-r.cleanupSlots }()
 		err := runRepositoryCleanup(workdir, base)
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -114,15 +158,13 @@ func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
 		}
 		current.cleanupRunning = false
 		current.CleanupDone = err == nil || errors.Is(err, errNoRepositoryCleanup)
-		if errors.Is(err, errNoRepositoryCleanup) {
-			_ = r.persistLocked()
-			return
+		current.CleanupError = ""
+		if !current.CleanupDone {
+			current.CleanupError = err.Error()
+			log.Printf("repository cleanup %s incomplete: %s", id, err)
 		}
-		message := "Repository cleanup complete"
-		if err != nil {
-			message = "Repository cleanup incomplete: " + err.Error()
+		if err := r.persistLocked(); err != nil {
+			log.Printf("persist cleanup result %s: %v", id, err)
 		}
-		_, _ = r.appendEventLocked(id, EventProgress, message, nil)
-		_ = r.persistLocked()
 	}()
 }

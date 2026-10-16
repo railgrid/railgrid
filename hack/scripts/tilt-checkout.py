@@ -126,12 +126,15 @@ def settings(root=ROOT):
 
 
 def environment(config):
+    # One static development identity shared by Tilt and browser bootstrap.
+    token = 'dev-token'
+    auth = {'DEV_STATIC_TOKEN': token, 'DEV_STATIC_ADMIN': 'railgrid:static:' + hashlib.sha256(('static-token/' + token).encode()).hexdigest()[:16]}
     if config['legacy']:
-        return {}
+        return auth
     root = Path(config['root'])
     key = config['key']
     p = config['ports']
-    env = {k: str(v) for k, v in p.items()}
+    env = dict(auth, **{k: str(v) for k, v in p.items()})
     # Git worktrees use a .git file; some Go toolchains only recognize a
     # directory and accidentally inspect an ancestor. Make stamps our version.
     if (root / '.git').is_file():
@@ -244,6 +247,16 @@ def owned_resources(config):
                 'APP_STUDIO_POSTGRES_CONTAINER', 'AGENTS_POSTGRES_CONTAINER', 'KUERY_POSTGRES_CONTAINER')]}
 
 
+def write_owner(path, record):
+    temporary = path.with_suffix('.tmp')
+    with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), 'w') as out:
+        os.fchmod(out.fileno(), 0o600)
+        out.write(json.dumps(record) + '\n')
+        out.flush()
+        os.fsync(out.fileno())
+    temporary.replace(path)
+
+
 def stop_owned(config):
     root = Path(config['root'])
     record_path = root / '.kcp/tilt-owner.json'
@@ -272,12 +285,24 @@ def stop_owned(config):
         # An explicit private kubeconfig prevents kind from editing the user's
         # default kubeconfig, even after the original launcher has exited.
         env['KUBECONFIG'] = str(root / '.kcp/tilt-client.kubeconfig')
+        failures = []
+        def remove(args, label):
+            try:
+                subprocess.run(args, env=env, check=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                failures.append(label)
         for name in record['resources']['clusters']:
-            subprocess.run(['kind', 'delete', 'cluster', '--name', name], env=env, check=True, timeout=120)
-        existing = subprocess.check_output(['docker', 'ps', '-a', '--format', '{{.Names}}'], text=True, timeout=30).splitlines()
+            remove(['kind', 'delete', 'cluster', '--name', name], 'kind cluster ' + name)
+        try:
+            existing = subprocess.check_output(['docker', 'ps', '-a', '--format', '{{.Names}}'], text=True, timeout=30).splitlines()
+        except (OSError, subprocess.SubprocessError):
+            existing = []
+            failures.append('Docker container discovery')
         for name in record['resources']['containers']:
             if name in existing:
-                subprocess.run(['docker', 'rm', '-f', name], check=True, timeout=60)
+                remove(['docker', 'rm', '-f', name], 'container ' + name)
+        if failures:
+            raise ValueError('Cleanup incomplete; retry make dev-browser-down: ' + ', '.join(failures))
         record_path.unlink()
 
 
@@ -321,16 +346,21 @@ def main():
             # Record intended names before launch, including partially created
             # resources when startup fails. Every name is checkout-specific.
             record = {'root': str(ROOT), 'resources': owned_resources(config)}
-            record_path.write_text(json.dumps(record) + '\n')
-            record_path.chmod(0o600)
+            write_owner(record_path, record)
+            pending = []
+            child = None
+            def terminate(signum, frame):
+                if child is None:
+                    pending.append(signum)
+                elif child.poll() is None:
+                    os.killpg(child.pid, signum)
+            signal.signal(signal.SIGTERM, terminate)
+            signal.signal(signal.SIGINT, terminate)
             child = subprocess.Popen(command, cwd=ROOT, env=process_env, start_new_session=True)
             record.update(pid=child.pid, birth=process_identity(child.pid))
-            record_path.write_text(json.dumps(record) + '\n')
-        def terminate(signum, frame):
-            if child.poll() is None:
-                os.killpg(child.pid, signum)
-        signal.signal(signal.SIGTERM, terminate)
-        signal.signal(signal.SIGINT, terminate)
+            write_owner(record_path, record)
+            for signum in pending:
+                terminate(signum, None)
         sys.exit(child.wait())
 
 

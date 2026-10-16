@@ -161,7 +161,7 @@ class CheckoutTest(unittest.TestCase):
             (root / '.kcp/admin.kubeconfig').touch()
             config = m.settings(root)
             self.assertTrue(config['legacy'])
-            self.assertEqual(m.environment(config), {})
+            self.assertEqual(set(m.environment(config)), {'DEV_STATIC_TOKEN', 'DEV_STATIC_ADMIN'})
             self.assertEqual(m.manifests(config), {})
 
     def test_copied_runtime_state_is_not_silently_reused(self):

@@ -18,6 +18,6 @@ limitations under the License.
 
 package runner
 
-import "os/exec"
+import ("os/exec"; "errors")
 
-func configureCleanupProcess(cmd *exec.Cmd) {}
+func configureCleanupProcess(cmd *exec.Cmd) error { return errors.New("repository cleanup hooks require POSIX process-group support; unsupported on Windows") }
