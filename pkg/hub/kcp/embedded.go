@@ -22,6 +22,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,8 +43,8 @@ import (
 // EmbeddedKCPOptions contains configuration for the embedded kcp server.
 type EmbeddedKCPOptions struct {
 	RootDir          string
-	EtcdClientPort   string
-	EtcdPeerPort     string
+	EtcdClientPort   int // Zero preserves the embedded etcd default.
+	EtcdPeerPort     int // Zero preserves the embedded etcd default.
 	SecurePort       int
 	BindAddress      string
 	BatteriesInclude []string
@@ -152,6 +153,9 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 
 	// Create kcp server options.
 	kcpOpts := serveroptions.NewOptions(e.opts.RootDir)
+	if err := configureEmbeddedEtcd(kcpOpts, e.opts.EtcdClientPort, e.opts.EtcdPeerPort); err != nil {
+		return err
+	}
 
 	// Configure secure serving.
 	kcpOpts.GenericControlPlane.SecureServing.BindPort = e.opts.SecurePort
@@ -254,15 +258,6 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	// Configure batteries.
 	kcpOpts.Extra.BatteriesIncluded = e.opts.BatteriesInclude
 
-	// Enable embedded etcd.
-	kcpOpts.EmbeddedEtcd.Enabled = true
-	if e.opts.EtcdClientPort != "" {
-		kcpOpts.EmbeddedEtcd.ClientPort = e.opts.EtcdClientPort
-	}
-	if e.opts.EtcdPeerPort != "" {
-		kcpOpts.EmbeddedEtcd.PeerPort = e.opts.EtcdPeerPort
-	}
-
 	// Complete options.
 	completedOpts, err := kcpOpts.Complete(ctx, e.opts.RootDir)
 	if err != nil {
@@ -364,4 +359,22 @@ func (e *EmbeddedKCP) AdminConfig() *rest.Config {
 // AdminKubeconfigPath returns the path to the admin kubeconfig file.
 func (e *EmbeddedKCP) AdminKubeconfigPath() string {
 	return filepath.Join(e.opts.RootDir, "admin.kubeconfig")
+}
+
+// configureEmbeddedEtcd validates explicit ports before startup and preserves
+// kcp's defaults when the caller leaves either port unset.
+func configureEmbeddedEtcd(opts *serveroptions.Options, clientPort, peerPort int) error {
+	for name, port := range map[string]int{"client": clientPort, "peer": peerPort} {
+		if port < 0 || port > 65535 {
+			return fmt.Errorf("embedded etcd %s port must be between 1 and 65535, or 0 for the default", name)
+		}
+	}
+	opts.EmbeddedEtcd.Enabled = true
+	if clientPort != 0 {
+		opts.EmbeddedEtcd.ClientPort = strconv.Itoa(clientPort)
+	}
+	if peerPort != 0 {
+		opts.EmbeddedEtcd.PeerPort = strconv.Itoa(peerPort)
+	}
+	return nil
 }

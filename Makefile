@@ -841,6 +841,12 @@ DEV_SSH_PORT ?= 2222
 HA_FORWARD_PORT ?= 8123
 DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1)$(if $(RAILGRID_TILT_CHECKOUT),-$(RAILGRID_TILT_CHECKOUT))
 
+.PHONY: dev-edge-clean-credentials
+dev-edge-clean-credentials: ## Clear only the selected dev edge's stale credentials and current dev context
+	@kubectl config delete-context railgrid >/dev/null 2>&1 || true
+	@kubectl config delete-cluster railgrid >/dev/null 2>&1 || true
+	rm -f "$(HOME)/.railgrid/agent-$(DEV_EDGE_NAME).kubeconfig" "$(HOME)/.railgrid/agent-$(DEV_EDGE_NAME).json"
+
 dev-edge-create: build-railgrid ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
 
@@ -1171,7 +1177,8 @@ KCP_IMAGE ?=
 tilt: ## Run the dev stack with automatic checkout-specific ports and resource names
 	python3 hack/scripts/tilt-checkout.py
 
-.PHONY: tilt-start tilt-status test-tilt-checkout
+.PHONY: tilt tilt-start tilt-status
+.PHONY: test-tilt-checkout
 tilt-status: ## Print this checkout's persisted dev ports and identity
 	python3 hack/scripts/tilt-checkout.py status
 test-tilt-checkout:
@@ -1179,7 +1186,11 @@ test-tilt-checkout:
 
 # Internal target: the launcher has selected the Tilt API port before startup.
 tilt-start:
+ifeq ($(RAILGRID_TILT_CHECKOUT),)
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+endif
 	@mkdir -p "$(TILT_TMPDIR)"
+ifneq ($(strip $(RAILGRID_TILT_CHECKOUT)$(EXTERNAL_PROVIDERS_DIR)),)
 	@kind get clusters 2>/dev/null | grep -qx "$(KRO_KIND_NAME)" || kind create cluster --name "$(KRO_KIND_NAME)" --kubeconfig "$(KRO_KIND_KUBECONFIG)"
 	@kind get kubeconfig --name "$(KRO_KIND_NAME)" > "$(KRO_KIND_KUBECONFIG)"
 	python3 hack/scripts/tilt-checkout.py dns
@@ -1187,6 +1198,10 @@ tilt-start:
 		tilt up -f Tiltfile --port "$(TILT_PORT)" --context "kind-$(KRO_KIND_NAME)" -- \
 		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)" \
 		--kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
+
+else
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile --port "$(TILT_PORT)" -- --kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
+endif
 
 ## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)

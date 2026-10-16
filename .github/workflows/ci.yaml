@@ -271,6 +271,7 @@ jobs:
       run: make test-app-studio-harness-scripts
     - name: Verify Tilt harness wiring
       run: |
+        make test-tilt-checkout
         make test-tilt-app-studio-sequence
         python3 hack/scripts/verify-tilt-sandbox-default.test.py
 

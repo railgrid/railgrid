@@ -7,7 +7,7 @@
 # before Tiltfile evaluation; use `make tilt` when another Tilt is running.
 for provider in ['quickstart', 'infrastructure', 'code', 'kuery', 'app-studio', 'agents', 'edges']:
     watch_file('providers/' + provider + '/manifest.yaml')
-checkout_env = decode_json(str(local(['python3', 'hack/scripts/tilt-checkout.py', 'env'], quiet=True)))
+checkout_env = decode_json(str(local(['python3', 'hack/scripts/tilt-checkout.py', 'prepare-env'], quiet=True)))
 for key, value in checkout_env.items():
     os.putenv(key, value)
 
@@ -1347,7 +1347,7 @@ local_resource(
 local_resource(
     'edge-kube-create',
     # Checkout-specific names keep saved agent credentials separate.
-    cmd='make dev-login-static && make dev-edge-create TYPE=kubernetes',
+    cmd='make dev-edge-clean-credentials TYPE=kubernetes && make dev-login-static && make dev-edge-create TYPE=kubernetes',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -1367,7 +1367,7 @@ local_resource(
 
 local_resource(
     'edge-server-create',
-    cmd='make dev-login-static && make dev-edge-create TYPE=server',
+    cmd='make dev-edge-clean-credentials TYPE=server && make dev-login-static && make dev-edge-create TYPE=server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],

@@ -99,8 +99,8 @@ func main() {
 	// Embedded kcp flags
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")
 	cmd.Flags().StringVar(&opts.KCPRootDir, "kcp-root-dir", "", "Root directory for embedded kcp data (default: <data-dir>/kcp)")
-	cmd.Flags().StringVar(&opts.KCPEtcdClientPort, "kcp-etcd-client-port", "", "Embedded etcd client port (default: 2379)")
-	cmd.Flags().StringVar(&opts.KCPEtcdPeerPort, "kcp-etcd-peer-port", "", "Embedded etcd peer port (default: 2380)")
+	cmd.Flags().IntVar(&opts.KCPEtcdClientPort, "kcp-etcd-client-port", 0, "Embedded etcd client port (default: 2379)")
+	cmd.Flags().IntVar(&opts.KCPEtcdPeerPort, "kcp-etcd-peer-port", 0, "Embedded etcd peer port (default: 2380)")
 	cmd.Flags().IntVar(&opts.KCPSecurePort, "kcp-secure-port", opts.KCPSecurePort, "Secure port for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPBindAddress, "kcp-bind-address", opts.KCPBindAddress, "Bind address for embedded kcp API server (default: 127.0.0.1, use 0.0.0.0 for all interfaces)")
 	cmd.Flags().StringVar(&opts.KCPShardExternalURL, "kcp-shard-external-url", opts.KCPShardExternalURL, "URL embedded kcp writes to Shard.spec.externalURL for outside consumers to dial. Defaults to kcp's auto-detected address; override for kind-pod consumers (e.g. https://host.docker.internal:6443).")

@@ -3,6 +3,8 @@
 import fcntl
 import hashlib
 import json
+import ipaddress
+import re
 import os
 from pathlib import Path
 import socket
@@ -24,25 +26,64 @@ PORTS = {'TILT_PORT': 10350, 'HUB_PORT': 9443, 'KCP_PORT': 6443,
          'PLANNER_PORT': 18091, 'FACTORY_PORT': 18092, 'DATABRICKS_PORT': 18093}
 
 
-def allocate_ports():
-    # Hold all sockets until the whole allocation is made to prevent duplicates.
-    sockets, ports = [], {}
-    try:
-        for key in PORTS:
-            sock = socket.socket()
-            sockets.append(sock)
-            sock.bind(('127.0.0.1', 0))
-            ports[key] = sock.getsockname()[1]
+def ephemeral_range():
+    path = Path('/proc/sys/net/ipv4/ip_local_port_range')
+    if path.exists():
+        return tuple(map(int, path.read_text().split()))
+    # BSD/macOS use the IANA dynamic range by default. Query customized hosts.
+    if sys.platform == 'darwin':
+        return tuple(int(subprocess.check_output(['sysctl', '-n', key], text=True))
+                     for key in ['net.inet.ip.portrange.first', 'net.inet.ip.portrange.last'])
+    return (49152, 65535)
+
+
+def allocate_ports(root, saved=None):
+    registry_dir = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'railgrid'
+    registry_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    registry = registry_dir / 'tilt-ports.json'
+    with (registry_dir / 'tilt-ports.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        entries = json.loads(registry.read_text()) if registry.exists() else {}
+        # Stopped checkouts retain their claims; deleted checkouts release them.
+        entries = {owner: ports for owner, ports in entries.items() if Path(owner).exists()}
+        claimed = {port for owner, ports in entries.items() if owner != str(root)
+                   for port in ports.values()}
+        ports = saved or entries.get(str(root))
+        if ports:
+            if claimed.intersection(ports.values()):
+                raise ValueError('Saved Tilt ports conflict with another checkout in ' + str(registry))
+        else:
+            first, last = ephemeral_range()
+            ports = {}
+            for key in PORTS:
+                for candidate in range(20000, 30000):
+                    if candidate in claimed or first <= candidate <= last:
+                        continue
+                    with socket.socket() as sock:
+                        try:
+                            sock.bind(('127.0.0.1', candidate))
+                        except OSError:
+                            continue
+                    ports[key] = candidate
+                    claimed.add(candidate)
+                    break
+                else:
+                    raise ValueError('No free Tilt port in 20000-29999 outside the host ephemeral range')
+        entries[str(root)] = ports
+        temporary = registry.with_suffix('.tmp')
+        temporary.write_text(json.dumps(entries, indent=2) + '\n')
+        temporary.chmod(0o600)
+        temporary.replace(registry)
         return ports
-    finally:
-        for sock in sockets:
-            sock.close()
 
 
 def check_ports(config):
+    ports = config['ports']
     if config['legacy']:
-        return
-    for name, port in config['ports'].items():
+        # Preserve the original launch guards; provider DBs may already run.
+        ports = {key: int(os.environ.get(key, PORTS[key]))
+                 for key in ['TILT_PORT', 'HUB_PORT', 'KCP_PORT']}
+    for name, port in ports.items():
         with socket.socket() as sock:
             try:
                 sock.bind(('127.0.0.1', port))
@@ -60,13 +101,15 @@ def settings(root=ROOT):
             config = json.loads(path.read_text())
             if config['root'] != str(root):
                 raise ValueError('Copied Tilt state belongs to another checkout; remove the copied .kcp before starting')
+            if not config['legacy']:
+                allocate_ports(root, config['ports'])
             return config
         # Existing dev installations retain their ports, names, and state.
         # Fresh checkouts always get independent resources, even if dev is down.
         legacy = (state / 'admin.kubeconfig').exists()
         key = hashlib.sha256(str(root).encode()).hexdigest()[:12]
         config = {'root': str(root), 'legacy': legacy, 'key': key,
-                  'ports': PORTS if legacy else allocate_ports()}
+                  'ports': PORTS if legacy else allocate_ports(root)}
         path.write_text(json.dumps(config, indent=2) + '\n')
         path.chmod(0o600)
         return config
@@ -81,8 +124,9 @@ def environment(config):
     env = {k: str(v) for k, v in p.items()}
     # Git worktrees use a .git file; some Go toolchains only recognize a
     # directory and accidentally inspect an ancestor. Make stamps our version.
-    flags = os.environ.get('GOFLAGS', '')
-    env['GOFLAGS'] = flags if '-buildvcs=false' in flags.split() else (flags + ' -buildvcs=false').strip()
+    if (root / '.git').is_file():
+        flags = os.environ.get('GOFLAGS', '')
+        env['GOFLAGS'] = flags if '-buildvcs=false' in flags.split() else (flags + ' -buildvcs=false').strip()
     hub = f"https://console-{key}.127.0.0.1.sslip.io:{p['HUB_PORT']}"
     env.update(DEV_HUB_URL=hub, RAILGRID_HUB_EXTERNAL_URL=hub,
                RAILGRID_ACCESS_HUB_PUBLIC_URL=hub,
@@ -110,23 +154,28 @@ def environment(config):
     return env
 
 
-def manifests(config):
+def manifests(config, write=True):
     if config['legacy']:
         return {}
     root = Path(config['root'])
     directory = root / '.kcp/tilt-manifests'
-    directory.mkdir(exist_ok=True)
+    if write:
+        directory.mkdir(exist_ok=True)
     env = {}
     for name, prefix in [('quickstart', 'QUICKSTART'), ('infrastructure', 'KROMC'),
                          ('code', 'CODE'), ('kuery', 'KUERY'), ('app-studio', 'APP_STUDIO'),
                          ('agents', 'AGENTS'), ('edges', 'EDGES')]:
-        source = (root / 'providers' / name / 'manifest.yaml').read_text()
-        port = config['ports'][prefix + '_PORT']
-        for host in ['localhost', '127.0.0.1']:
-            source = source.replace(f'{host}:{PORTS[prefix + "_PORT"]}', f'{host}:{port}')
         path = directory / (name + '.yaml')
-        if not path.exists() or path.read_text() != source:
-            path.write_text(source)
+        if write:
+            source = (root / 'providers' / name / 'manifest.yaml').read_text()
+            port = config['ports'][prefix + '_PORT']
+            old = PORTS[prefix + '_PORT']
+            source, count = re.subn(rf'(?<=://)(localhost|127\.0\.0\.1):{old}(?=[/\s"\'?#]|$)',
+                                    lambda match: f'{match[1]}:{port}', source)
+            if count == 0:
+                raise ValueError(f'providers/{name}/manifest.yaml has no loopback:{old} URL to rewrite')
+            if not path.exists() or path.read_text() != source:
+                path.write_text(source)
         env[prefix + '_MANIFEST'] = str(path)
     return env
 
@@ -134,20 +183,28 @@ def manifests(config):
 def configure_host_dns(config):
     if config['legacy']:
         return
-    import ipaddress
-    import re
+    if os.environ.get('KIND_EXPERIMENTAL_PROVIDER', 'docker') != 'docker':
+        raise ValueError('Checkout Tilt DNS setup requires the Docker kind provider')
     node = 'railgrid-kro-' + config['key'] + '-control-plane'
     result = subprocess.run(['docker', 'exec', node, 'getent', 'ahostsv4', 'host.docker.internal'],
                             text=True, capture_output=True)
     if result.returncode == 0 and result.stdout.strip():
         address = result.stdout.split()[0]
     else:
-        networks = json.loads(subprocess.check_output(['docker', 'inspect', node], text=True))[0]['NetworkSettings']['Networks']
-        address = networks['kind']['Gateway']
+        nodes = json.loads(subprocess.check_output(['docker', 'inspect', node], text=True))
+        networks = nodes[0].get('NetworkSettings', {}).get('Networks', {}) if nodes else {}
+        network = os.environ.get('KIND_EXPERIMENTAL_DOCKER_NETWORK')
+        gateways = {entry.get('Gateway') for name, entry in networks.items()
+                    if entry.get('Gateway') and (not network or name == network)}
+        if len(gateways) != 1:
+            raise ValueError(f'Cannot resolve host.docker.internal for {node}: expected one network gateway; set KIND_EXPERIMENTAL_DOCKER_NETWORK for ambiguous networks')
+        address = gateways.pop()
     address = str(ipaddress.IPv4Address(address))
-    kubectl = ['kubectl', '--kubeconfig', str(ROOT / '.railgrid-kro.kubeconfig'), '-n', 'kube-system']
+    kubectl = ['kubectl', '--kubeconfig', str(Path(config['root']) / '.railgrid-kro.kubeconfig'), '-n', 'kube-system']
     cm = json.loads(subprocess.check_output(kubectl + ['get', 'configmap', 'coredns', '-o', 'json'], text=True))
-    original = cm['data']['Corefile']
+    original = cm.get('data', {}).get('Corefile')
+    if not original:
+        raise ValueError('CoreDNS ConfigMap has no Corefile')
     corefile = re.sub(r'(?ms)^# railgrid-host-dns\n.*?^# railgrid-host-dns-end\n?', '', original)
     corefile = corefile.rstrip() + f'\n\n# railgrid-host-dns\nhost.docker.internal:53 {{\n    hosts {{\n        {address} host.docker.internal\n    }}\n}}\n# railgrid-host-dns-end\n'
     if corefile != original:
@@ -157,17 +214,23 @@ def configure_host_dns(config):
 
 
 def main():
+    if sys.argv[1:] == ['env']:
+        config = json.loads((ROOT / '.kcp/tilt-checkout.json').read_text())
+        if config['root'] != str(ROOT):
+            raise ValueError('Tilt state belongs to another checkout')
+        print(json.dumps(dict(environment(config), **manifests(config, write=False))))
+        return
     config = settings()
+    if sys.argv[1:] == ['status']:
+        print(json.dumps(config, indent=2))
+        return
     env = environment(config)
     env.update(manifests(config))
     if sys.argv[1:] == ['dns']:
         configure_host_dns(config)
         return
-    if sys.argv[1:] == ['env']:
+    if sys.argv[1:] == ['prepare-env']:
         print(json.dumps(env))
-        return
-    if sys.argv[1:] == ['status']:
-        print(json.dumps(config, indent=2))
         return
     with (ROOT / '.kcp/tilt-run.lock').open('w') as lock:
         try:
@@ -181,8 +244,12 @@ def main():
         sys.exit(result.returncode)
 
 
-if __name__ == '__main__':
+def cli():
     try:
         main()
-    except ValueError as error:
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))
+
+
+if __name__ == '__main__':
+    cli()
