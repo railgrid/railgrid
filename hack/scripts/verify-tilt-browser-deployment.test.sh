@@ -97,7 +97,7 @@ require(
 )
 require(
     "load-access-proxy-image: docker-build-access-proxy" in makefile
-    and "kind load docker-image ghcr.io/railgrid/railgrid-access-proxy:$(VERSION) --name $(KRO_KIND_NAME)" in makefile,
+    and "kind load docker-image $(ACCESS_PROXY_IMAGE) --name $(KRO_KIND_NAME)" in makefile,
     "Makefile must build and locally load the requested access-proxy tag",
 )
 require(

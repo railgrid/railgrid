@@ -25,13 +25,44 @@ register, init and unregister. The workloads start once the hub is up
 providers itself: it passes the stack's details to the provider repository's
 Tilt library, which does that work.
 
-Both stacks support this. With `make tilt-cluster` the providers run in the
-`kcp-tilt` cluster next to the in-cluster hub. With the default `make tilt`
-stack they run in the `railgrid-kro` kind cluster, which `make tilt` creates
-before Tilt starts. They reach the host hub at `https://host.docker.internal:9443`,
-which also relays their kcp access, because the embedded kcp listens only on
-loopback. A direct `tilt up -f Tiltfile` with these flags must use
-`--context kind-railgrid-kro`; the Tiltfile refuses any other context.
+## Independent checkouts
+
+Run `make tilt` from each checkout. Fresh checkouts automatically get separate
+ports, kind clusters, Docker container names, kubeconfigs, and state. Startup
+also configures the kind cluster to resolve `host.docker.internal` to the host. No stack
+name or special runner profile is required. `make tilt-status` shows the saved
+ports and checkout identity; the Tilt dashboard URL is also printed at startup.
+The settings persist in `.kcp/tilt-checkout.json` so restarts keep the same URLs.
+New allocations use ports 20000–29999, excluding the host's ephemeral range.
+A locked per-user registry at `$XDG_STATE_HOME/railgrid/tilt-ports.json`
+(default `~/.local/state/railgrid/tilt-ports.json`) prevents other checkouts from
+claiming a stopped stack's saved ports. Deleted checkouts release their claims
+on the next allocation. The registry coordinates this user's checkouts; other
+programs can still occupy a saved port.
+Do not copy `.kcp` between checkouts. An occupied saved port fails startup with
+its name and number; stop the process using it before restarting.
+
+Existing checkouts with `.kcp/admin.kubeconfig` keep their previous defaults,
+kcp/port conflict checks, and conditional cluster preparation (only when
+external providers are configured). Fresh isolated checkouts always prepare
+their own kind cluster, so they cannot inherit another checkout's context.
+The Go VCS-stamping workaround applies only to Git worktrees (`.git` is a file);
+ordinary clones keep normal Go build stamping.
+
+`tilt-checkout.py env` only reads prepared settings. Tiltfile loading uses the
+explicit `prepare-env` operation to refresh derived provider manifests.
+This applies to the ordinary `make tilt` stack; `make tilt-cluster` still uses
+its existing cluster configuration. Bare `tilt up` selects its API port before
+reading the Tiltfile, so use `make tilt` for automatic concurrent startup.
+
+External providers run in the checkout's kind cluster and reach its host hub
+through `host.docker.internal` on the allocated hub port. Their Tilt library
+must honor `<PROVIDER>_PORT` for port forwarding and
+`RAILGRID_TILT_KCP_LOOPBACK_PORT` for the embedded-kcp bridge. Update the
+private providers checkout alongside this change. Provider registration and
+initialization remain the ordinary manual Tilt actions. This creates a real,
+independent development environment; it does not copy tenant data or credentials
+from the existing environment.
 
 ## Settings
 

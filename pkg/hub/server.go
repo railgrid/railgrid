@@ -176,6 +176,8 @@ func (s *Server) Run(ctx context.Context) error {
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
 			RootDir:                  kcpRootDir,
 			SecurePort:               s.opts.KCPSecurePort,
+			EtcdClientPort:           s.opts.KCPEtcdClientPort,
+			EtcdPeerPort:             s.opts.KCPEtcdPeerPort,
 			BindAddress:              s.opts.KCPBindAddress,
 			BatteriesInclude:         batteries,
 			TLSCertFile:              s.opts.KCPTLSCertFile,
