@@ -149,6 +149,36 @@ class Setup:
             print('Waiting for ' + label, flush=True)
             time.sleep(min(2, self.remaining()))
 
+    def wait_provider(self, name):
+        # Applying a Provider is not provisioning it. Ready is written only
+        # after its workspace, ServiceAccount and credential Secret exist.
+        print('Waiting for provider provisioning: ' + name, flush=True)
+        reason = 'controller has not reported readiness'
+        while True:
+            try:
+                self.remaining()
+                provider = json.loads(self.command([
+                    'kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig'),
+                    '--server=https://localhost:' + str(self.config['ports']['KCP_PORT'])
+                    + '/clusters/root:railgrid:system:providers',
+                    '--insecure-skip-tls-verify', '--request-timeout=5s',
+                    'get', 'providers.admin.railgrid.ai', name, '-o', 'json']))
+                generation = provider.get('metadata', {}).get('generation')
+                for condition in provider.get('status', {}).get('conditions', []):
+                    if condition.get('type') == 'Ready':
+                        if (condition.get('status') == 'True' and generation is not None
+                                and condition.get('observedGeneration') == generation):
+                            return
+                        reason = 'Ready is false or belongs to an older generation'
+            except (ValueError, subprocess.TimeoutExpired):
+                # Discovery and connections can disappear during a hub restart.
+                reason = 'provider API is not available'
+            except TimeoutError:
+                raise TimeoutError(f'Provider {name} provisioning timed out ({reason}); '
+                    f'inspect this checkout’s hub logs with tilt logs hub --port {self.port}, '
+                    'then retry make dev-browser-ready') from None
+            time.sleep(min(2, max(0, self.deadline - time.monotonic())))
+
     def catalog(self, names):
         admin = ['kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig')]
         server = 'https://localhost:' + str(self.config['ports']['KCP_PORT']) + '/clusters/'
@@ -177,6 +207,8 @@ class Setup:
         for name in names:
             self.wait_resource('hub')
             for action in ('register', 'init'):
+                if action == 'init':
+                    self.wait_provider(name)
                 resource = name + '-' + action
                 state = json.loads(self.tilt('get', 'uiresource', resource, '-o', 'json'))
                 if not any(c.get('type') == 'Ready' and c.get('status') == 'True' for c in state.get('status', {}).get('conditions', [])):

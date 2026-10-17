@@ -1184,6 +1184,7 @@ dev-browser-ready: ## Prepare the running isolated stack for agent-driven browse
 dev-browser-down: ## Stop only this checkout's owned dev resources, retaining evidence
 	python3 hack/scripts/dev-browser.py down
 test-dev-browser:
+	python3 hack/scripts/write-kind-kubeconfig.test.py
 	python3 hack/scripts/dev-browser.test.py
 
 .PHONY: tilt tilt-start tilt-status
@@ -1201,7 +1202,7 @@ endif
 	@mkdir -p "$(TILT_TMPDIR)"
 ifneq ($(strip $(RAILGRID_TILT_CHECKOUT)$(EXTERNAL_PROVIDERS_DIR)),)
 	@kind get clusters 2>/dev/null | grep -qx "$(KRO_KIND_NAME)" || kind create cluster --name "$(KRO_KIND_NAME)" --kubeconfig "$(KRO_KIND_KUBECONFIG)"
-	@kind get kubeconfig --name "$(KRO_KIND_NAME)" > "$(KRO_KIND_KUBECONFIG)"
+	@python3 hack/scripts/write-kind-kubeconfig.py "$(KRO_KIND_NAME)" "$(KRO_KIND_KUBECONFIG)"
 	python3 hack/scripts/tilt-checkout.py dns
 	KUBECONFIG="$(KRO_KIND_KUBECONFIG):$${KUBECONFIG:-$$HOME/.kube/config}" TMPDIR="$(TILT_TMPDIR)" \
 		tilt up -f Tiltfile --port "$(TILT_PORT)" --context "kind-$(KRO_KIND_NAME)" -- \
@@ -2708,7 +2709,7 @@ dev-kro-up: ## Bring up the railgrid-kro kind cluster + install upstream kro
 		kind create cluster --name $(KRO_KIND_NAME) --kubeconfig $(KRO_KIND_KUBECONFIG); \
 	else \
 		echo ">>> kind cluster $(KRO_KIND_NAME) already exists"; \
-		kind get kubeconfig --name $(KRO_KIND_NAME) > $(KRO_KIND_KUBECONFIG); \
+		python3 hack/scripts/write-kind-kubeconfig.py "$(KRO_KIND_NAME)" "$(KRO_KIND_KUBECONFIG)"; \
 	fi
 	@# Standard Gateway API CRDs (GatewayClass/Gateway/HTTPRoute/ReferenceGrant).
 	@# This target is the owner the preview-gateway script relies on: it renders

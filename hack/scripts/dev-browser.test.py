@@ -12,6 +12,33 @@ spec.loader.exec_module(m)
 
 
 class BrowserTest(unittest.TestCase):
+    def test_provisioning_wait_handles_restart_pending_and_stale_readiness(self):
+        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        setup = m.Setup(config)
+        def status(generation=None):
+            conditions = [] if generation is None else [
+                {'type': 'Ready', 'status': 'True', 'observedGeneration': generation}]
+            return json.dumps({'metadata': {'generation': 2}, 'status': {'conditions': conditions}})
+        setup.command = Mock(side_effect=[ValueError('API restarting'), status(), status(1), status(2)])
+        with patch.object(m.time, 'sleep') as sleep:
+            setup.wait_provider('agents')
+        self.assertEqual(sleep.call_count, 3)
+        self.assertEqual(setup.command.call_count, 4)
+        args = setup.command.call_args.args[0]
+        self.assertIn('providers.admin.railgrid.ai', args)
+        self.assertIn('--server=https://localhost:6443/clusters/root:railgrid:system:providers', args)
+        self.assertIn(str(m.ROOT / '.kcp/admin.kubeconfig'), args)
+
+    def test_provisioning_timeout_names_provider_and_diagnostics(self):
+        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        setup = m.Setup(config)
+        setup.command = Mock(return_value=json.dumps({'metadata': {'generation': 1}}))
+        setup.remaining = Mock(side_effect=[10, TimeoutError('expired')])
+        with patch.object(m.time, 'sleep'):
+            with self.assertRaisesRegex(TimeoutError, 'Provider agents provisioning timed out.*tilt logs hub'):
+                setup.wait_provider('agents')
+        self.assertEqual(setup.command.call_count, 1)
+
     def test_external_provider_catalog_is_read_from_its_own_workspace(self):
         config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
@@ -125,8 +152,11 @@ class BrowserTest(unittest.TestCase):
             setup = m.Setup(config)
             completed = set()
             triggered = []
+            provisioned = set()
             def tilt(*args):
                 if args[0] == 'trigger':
+                    if args[1] == 'planner-init':
+                        self.assertIn('planner', provisioned)
                     triggered.append(args[1])
                     completed.add(args[1])
                     return ''
@@ -143,7 +173,14 @@ class BrowserTest(unittest.TestCase):
             setup.tilt = Mock(side_effect=tilt)
             setup.api = Mock(side_effect=api)
             setup.wait_resource = Mock()
-            setup.command = Mock(return_value=json.dumps({'items': [{'metadata': {'name': 'planner'}, 'spec': {}}]}))
+            def command(args):
+                if 'providers.admin.railgrid.ai' in args:
+                    self.assertIn('planner-register', completed)
+                    provisioned.add('planner')
+                    return json.dumps({'metadata': {'generation': 1}, 'status': {'conditions': [
+                        {'type': 'Ready', 'status': 'True', 'observedGeneration': 1}]}})
+                return json.dumps({'items': [{'metadata': {'name': 'planner'}, 'spec': {}}]})
+            setup.command = Mock(side_effect=command)
             provider = Path(tmp) / 'providers/planner'
             provider.mkdir(parents=True)
             previous_cwd = Path.cwd()
