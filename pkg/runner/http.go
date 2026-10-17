@@ -156,7 +156,17 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		return
 	}
 	events := append([]Event(nil), r.state.Events[attemptID]...)
-	if err := cursorGap(events, after); err != nil {
+	var replay *eventReplay
+	gap := cursorGap(events, after)
+	if gap != nil && gap.Code == ErrorCursorExpired && attempt.EventJournalBytes > 0 {
+		var replayErr error
+		replay, replayErr = r.store.replayEvents(request.Context(), attemptID, attempt.EventJournalBytes, after, attempt.Receipt.Cursor)
+		if replayErr == nil {
+			gap = nil
+			defer func() { _ = replay.file.Close() }()
+		}
+	}
+	if err := gap; err != nil {
 		receipt := receiptForResponse(attempt.Receipt)
 		r.mu.Unlock()
 		err.Receipt = &receipt
@@ -185,8 +195,29 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 	w.Header().Set("Connection", "keep-alive")
 	flusher, _ := w.(http.Flusher)
 	last := after
+	if replay != nil {
+		for {
+			if request.Context().Err() != nil {
+				return
+			}
+			event, err := replay.next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return
+			}
+			if err := writeSSE(w, event); err != nil {
+				return
+			}
+			last = event.Cursor
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
 	for _, event := range events {
-		if event.Cursor <= after {
+		if event.Cursor <= last {
 			continue
 		}
 		if err := writeSSE(w, event); err != nil {
@@ -211,6 +242,11 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		case event := <-updates:
 			if event.Cursor <= last {
 				continue
+			}
+			// A slow subscriber can overflow its live buffer. End at the last
+			// contiguous cursor; reconnect replays the missing events from disk.
+			if event.Cursor != last+1 {
+				return
 			}
 			if err := writeSSE(w, event); err != nil {
 				return

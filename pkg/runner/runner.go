@@ -1332,6 +1332,13 @@ func (r *Runner) appendEventLocked(attemptID, eventType, message string, data js
 		cursor = events[len(events)-1].Cursor
 	}
 	event := Event{Cursor: cursor + 1, Timestamp: eventNow(), AttemptEpoch: attempt.Receipt.AttemptEpoch, Type: eventType, Message: boundedMessage(message), Data: cloneRaw(data)}
+	// Persist the event before exposing its cursor. MaxEvents bounds only the
+	// hot cache; reconnecting consumers can replay the committed disk prefix.
+	end, err := r.store.appendEvent(attemptID, attempt.EventJournalBytes, events, event)
+	if err != nil {
+		return Event{}, err
+	}
+	attempt.EventJournalBytes = end
 	events = append(events, event)
 	if len(events) > r.cfg.MaxEvents {
 		events = events[len(events)-r.cfg.MaxEvents:]

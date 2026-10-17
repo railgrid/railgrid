@@ -47,11 +47,13 @@ type persistedState struct {
 }
 
 type attemptRecord struct {
-	CleanupEligible bool   `json:"cleanupEligible,omitempty"`
-	CleanupAttempts int    `json:"cleanupAttempts,omitempty"`
-	CleanupError    string `json:"cleanupError,omitempty"`
-	CleanupDone     bool   `json:"cleanupDone,omitempty"`
-	cleanupRunning  bool
+	// EventJournalBytes commits the durable replay prefix alongside the receipt.
+	EventJournalBytes int64  `json:"eventJournalBytes,omitempty"`
+	CleanupEligible   bool   `json:"cleanupEligible,omitempty"`
+	CleanupAttempts   int    `json:"cleanupAttempts,omitempty"`
+	CleanupError      string `json:"cleanupError,omitempty"`
+	CleanupDone       bool   `json:"cleanupDone,omitempty"`
+	cleanupRunning    bool
 
 	Receipt       Receipt        `json:"receipt"`
 	Start         StartRequest   `json:"start"`

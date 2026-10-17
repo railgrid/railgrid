@@ -687,12 +687,19 @@ policy.
 
 ## Limits and verification boundary
 
-The default bounds are 256 retained events per attempt, 64 KiB per event
+The default bounds are 256 cached events per attempt, 64 KiB per event
 payload, 2 MiB per JSON request body, and 32 MiB per artifact. Configuration
 can lower or raise these limits within the implementation's accepted values;
 callers should use the advertised protocol response and error code as the
 authority. The runner supports at most one harness turn per execution and one
 simultaneous execution by default.
+
+Protocol events are also retained in a private, append-only journal alongside
+the attempt state. Reconnecting consumers replay from their last cursor even
+after the memory cache rolls over or the runner restarts. Journals have the same
+lifetime as attempt state and remain subject to the attempt output limit.
+Events already discarded by an older runner cannot be reconstructed; those
+cursors still report unavailable history rather than silently losing output.
 
 Independent focused Git-fetch and race invocation tests passed. The full runner
 executor checks (runner tests, race, lint, vet, and build) also passed, along
