@@ -700,7 +700,13 @@ after the memory cache rolls over or the runner restarts. Responses are split
 at complete event boundaries around 8 MiB (a single larger event is sent alone),
 so large histories reconnect before reaching the client’s 64 MiB stream limit.
 Journals have the same
-lifetime as attempt state and remain subject to the attempt output limit.
+lifetime as attempt state. Journals have a 256 MiB byte cap, with an additional
+1 MiB reserved for terminal/needs-input events; reaching the cap fails the
+attempt explicitly. The separate configured harness output limit still applies.
+Unowned journals are removed on acceptance rollback and startup recovery.
+Active attempts reuse journal handles; pending journal writes are synced before
+state commits their offsets. Sparse in-memory cursor indexes avoid repeatedly
+scanning the full history and are rebuilt lazily after restart.
 Events already discarded by an older runner cannot be reconstructed; those
 cursors still report unavailable history rather than silently losing output.
 

@@ -115,6 +115,7 @@ func TestEventJournalCommittedPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.closeJournals() })
 	first := Event{Cursor: 1, Type: EventProgress, Message: "saved"}
 	offset, err := store.appendEvent("attempt", 0, nil, first)
 	if err != nil {
@@ -168,6 +169,7 @@ func TestEventJournalSeedsOnlyRetainedLegacyHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.closeJournals() })
 	end, err := store.appendEvent("legacy", 0, []Event{{Cursor: 4}, {Cursor: 5}}, Event{Cursor: 6})
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +276,7 @@ func TestEventReplayDoesNotReuseOmittedFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.closeJournals() })
 	events := []Event{
 		{Cursor: 1, Type: EventProgress, Message: "old message", Data: json.RawMessage(`{"result":"old answer"}`)},
 		{Cursor: 2, Type: EventProgress, Data: json.RawMessage(`{"short":true}`)},
@@ -305,5 +308,173 @@ func TestEventReplayDoesNotReuseOmittedFields(t *testing.T) {
 		if err := replay.file.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestJournalLimitReservesFinalEvent(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.closeJournals() }()
+	f, err := os.Create(store.eventPath("limit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxJournalBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.appendEvent("limit", maxJournalBytes, nil, Event{Cursor: 1, Type: EventProgress}); err == nil {
+		t.Fatal("accepted progress past cap")
+	}
+	end, err := store.appendEvent("limit", maxJournalBytes, nil, Event{Cursor: 1, Type: EventFailed})
+	if err != nil || end <= maxJournalBytes {
+		t.Fatalf("reserved final event: %d %v", end, err)
+	}
+	if _, err := store.appendEvent("limit", maxJournalBytes+journalControlReserve, nil, Event{Cursor: 2, Type: EventFailed}); err == nil {
+		t.Fatal("exceeded absolute cap")
+	}
+}
+
+func TestJournalOwnershipAndHandleReuse(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.closeJournals() }()
+	end, err := store.appendEvent("owned", 0, nil, Event{Cursor: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := store.journals["owned"].file
+	if _, err := store.appendEvent("owned", end, nil, Event{Cursor: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if first != store.journals["owned"].file {
+		t.Fatal("did not reuse handle")
+	}
+	if _, err := store.appendEvent("orphan", 0, nil, Event{Cursor: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.closeJournals(); err != nil {
+		t.Fatal(err)
+	}
+	state := emptyPersistedState()
+	state.Attempts["owned"] = &attemptRecord{}
+	if err := store.pruneJournals(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.eventPath("owned")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.eventPath("orphan")); !os.IsNotExist(err) {
+		t.Fatalf("orphan remains: %v", err)
+	}
+	if err := store.removeEvents("owned"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.eventPath("owned")); !os.IsNotExist(err) {
+		t.Fatalf("removed attempt journal remains: %v", err)
+	}
+}
+
+func TestJournalSparseReplayAfterRestart(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.closeJournals() }()
+	var end int64
+	for cursor := uint64(1); cursor <= 800; cursor++ {
+		end, err = store.appendEvent("indexed", end, nil, Event{Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.syncJournals(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.closeJournals(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newStateStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, current := range []*stateStore{store, reopened} {
+		for _, after := range []uint64{770, 780} {
+			replay, err := current.replayEvents(context.Background(), "indexed", end, after, 800)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := replay.next()
+			if err != nil || event.Cursor != after+1 {
+				t.Fatalf("indexed replay: %+v %v", event, err)
+			}
+			if err := replay.file.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		positions := current.eventIndex["indexed"]
+		if len(positions) != 4 || positions[3].cursor != 769 || positions[3].offset == 0 {
+			t.Fatalf("missing index: %+v", positions)
+		}
+	}
+}
+
+func TestFinishReportsJournalFailure(t *testing.T) {
+	source, commit := testGitSource(t)
+	r := newTestRunner(t, &fakeAdapter{}, source, commit)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	attempt := &attemptRecord{Receipt: Receipt{AttemptID: "broken", Phase: PhaseRunning}}
+	r.state.Attempts["broken"] = attempt
+	// Force open to fail without relying on permissions (tests may run as root).
+	if err := os.Mkdir(r.store.eventPath("broken"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r.finishLocked(attempt, PhaseCompleted, "", nil)
+	if attempt.Receipt.Phase != PhaseFailed || attempt.Receipt.LastError == nil || !strings.Contains(attempt.Receipt.Blocker, "event journal unavailable") {
+		t.Fatalf("silent failure: %+v", attempt.Receipt)
+	}
+	saved, err := r.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Attempts["broken"].Receipt.LastError == nil {
+		t.Fatal("error not persisted")
+	}
+}
+
+func TestJournalSyncFailureDoesNotCommitState(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := emptyPersistedState()
+	if err := store.save(state); err != nil {
+		t.Fatal(err)
+	}
+	end, err := store.appendEvent("attempt", 0, nil, Event{Cursor: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Attempts["attempt"] = &attemptRecord{EventJournalBytes: end}
+	// A closed dirty handle injects a deterministic Sync failure.
+	if err := store.journals["attempt"].file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.save(state); err == nil {
+		t.Fatal("committed offset before journal sync")
+	}
+	saved, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := saved.Attempts["attempt"]; exists {
+		t.Fatal("unsynced journal committed")
 	}
 }

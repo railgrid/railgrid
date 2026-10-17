@@ -17,10 +17,12 @@ limitations under the License.
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,29 +36,26 @@ func (s *stateStore) eventPath(attemptID string) string {
 	return filepath.Join(s.dir, "events-"+hex.EncodeToString(sum[:])+".jsonl")
 }
 
-// The state file commits an offset, so a partial/uncommitted tail after a crash
-// is ignored by readers and replaced by the next append. Old state has no
-// journal: seed only its retained prefix, without inventing lost events.
-func (s *stateStore) appendEvent(id string, offset int64, retained []Event, event Event) (int64, error) {
-	f, err := os.OpenFile(s.eventPath(id), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return offset, fmt.Errorf("open event journal: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return offset, err
-	}
-	if info.Size() < offset {
-		return offset, fmt.Errorf("event journal is shorter than its committed prefix")
-	}
-	if err := f.Truncate(offset); err != nil {
-		return offset, err
-	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return offset, err
-	}
-	encoder := json.NewEncoder(f)
+// Bound journal disk usage independently of optional harness output limits.
+const maxJournalBytes int64 = 256 << 20
+const journalControlReserve int64 = 1 << 20
+
+type journalWriter struct {
+	file  *os.File
+	end   int64
+	dirty bool
+}
+type journalPosition struct {
+	cursor uint64
+	offset int64
+}
+
+// The state file commits an offset, so uncommitted crash tails are replaced
+// when opening a writer. Legacy state seeds only retained events. The caller
+// holds the runner mutex; active attempts reuse their open handles.
+func (s *stateStore) appendEvent(id string, offset int64, retained []Event, event Event) (end int64, err error) {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
 	if offset == 0 {
 		for _, old := range retained {
 			if err := encoder.Encode(old); err != nil {
@@ -67,12 +66,129 @@ func (s *stateStore) appendEvent(id string, offset int64, retained []Event, even
 	if err := encoder.Encode(event); err != nil {
 		return offset, err
 	}
-	if err := f.Sync(); err != nil {
+	limit := maxJournalBytes
+	switch event.Type {
+	case EventCompleted, EventFailed, EventCancelled, EventNeedsInput:
+		limit += journalControlReserve
+	}
+	if offset > limit-int64(encoded.Len()) {
+		return offset, errors.New("event journal byte limit exceeded")
+	}
+	writer := s.journals[id]
+	if writer == nil || writer.end != offset {
+		if writer != nil {
+			delete(s.eventIndex, id)
+		}
+		if err := s.closeJournal(id); err != nil {
+			return offset, err
+		}
+		f, err := os.OpenFile(s.eventPath(id), os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return offset, fmt.Errorf("open event journal: %w", err)
+		}
+		good := false
+		defer func() {
+			if !good {
+				_ = f.Close()
+			}
+		}()
+		info, err := f.Stat()
+		if err != nil {
+			return offset, err
+		}
+		if info.Size() < offset {
+			return offset, errors.New("event journal is shorter than its committed prefix")
+		}
+		if err := f.Truncate(offset); err != nil {
+			return offset, err
+		}
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return offset, err
+		}
+		writer = &journalWriter{file: f, end: offset}
+		s.journals[id] = writer
+		good = true
+	}
+	if _, err := writer.file.Write(encoded.Bytes()); err != nil {
+		_ = s.closeJournal(id)
 		return offset, err
 	}
-	// stateStore.save subsequently syncs this same directory after committing
-	// the receipt and offset, including the journal's directory entry.
-	return f.Seek(0, io.SeekCurrent)
+	writer.end += int64(encoded.Len())
+	writer.dirty = true
+	// A legacy seed can contain several records; let the first replay index it.
+	if len(retained) == 0 || offset != 0 {
+		s.indexEvent(id, event.Cursor, offset)
+	}
+	return writer.end, nil
+}
+
+func (s *stateStore) indexEvent(id string, cursor uint64, offset int64) {
+	if cursor%256 != 1 {
+		return
+	}
+	positions := s.eventIndex[id]
+	if len(positions) == 0 || positions[len(positions)-1].cursor < cursor {
+		s.eventIndex[id] = append(positions, journalPosition{cursor, offset})
+	}
+}
+
+func (s *stateStore) syncJournals() error {
+	for _, writer := range s.journals {
+		if writer.dirty {
+			if err := writer.file.Sync(); err != nil {
+				return fmt.Errorf("sync event journal: %w", err)
+			}
+			writer.dirty = false
+		}
+	}
+	return nil
+}
+func (s *stateStore) closeJournal(id string) error {
+	writer := s.journals[id]
+	if writer == nil {
+		return nil
+	}
+	delete(s.journals, id)
+	return writer.file.Close()
+}
+func (s *stateStore) closeJournals() error {
+	var err error
+	for id := range s.journals {
+		err = errors.Join(err, s.closeJournal(id))
+	}
+	return err
+}
+func (s *stateStore) removeEvents(id string) error {
+	err := s.closeJournal(id)
+	delete(s.eventIndex, id)
+	removeErr := os.Remove(s.eventPath(id))
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(err, removeErr)
+}
+
+// A crash before state acceptance can leave an unowned journal. Only remove
+// files in our private journal namespace, never worktrees or other artifacts.
+func (s *stateStore) pruneJournals(state persistedState) error {
+	owned := map[string]bool{}
+	for id, attempt := range state.Attempts {
+		if attempt != nil {
+			owned[s.eventPath(id)] = true
+		}
+	}
+	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if !owned[path] {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type eventReplay struct {
@@ -87,18 +203,27 @@ func (s *stateStore) replayEvents(ctx context.Context, id string, bytes int64, a
 	if err != nil {
 		return nil, err
 	}
-	replay := &eventReplay{file: f, decoder: json.NewDecoder(io.NewSectionReader(f, 0, bytes)), through: through}
+	var start int64
+	for _, position := range s.eventIndex[id] {
+		if position.cursor > after+1 || position.offset >= bytes {
+			break
+		}
+		start = position.offset
+	}
+	replay := &eventReplay{file: f, decoder: json.NewDecoder(io.NewSectionReader(f, start, bytes-start)), through: through}
 	for {
 		if err := ctx.Err(); err != nil {
 			_ = f.Close()
 			return nil, err
 		}
+		offset := start + replay.decoder.InputOffset()
 		// Omitted JSON fields must not inherit values from an earlier event.
 		replay.nextEvent = Event{}
 		if err := replay.decoder.Decode(&replay.nextEvent); err != nil {
 			_ = f.Close()
 			return nil, err
 		}
+		s.indexEvent(id, replay.nextEvent.Cursor, offset)
 		if replay.nextEvent.Cursor > after {
 			break
 		}

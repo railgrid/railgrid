@@ -80,8 +80,10 @@ type reservationRecord struct {
 }
 
 type stateStore struct {
-	dir  string
-	path string
+	dir        string
+	path       string
+	journals   map[string]*journalWriter
+	eventIndex map[string][]journalPosition
 }
 
 func newStateStore(dir string) (*stateStore, error) {
@@ -91,7 +93,7 @@ func newStateStore(dir string) (*stateStore, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("protect runner state directory: %w", err)
 	}
-	return &stateStore{dir: dir, path: filepath.Join(dir, "state.json")}, nil
+	return &stateStore{dir: dir, path: filepath.Join(dir, "state.json"), journals: map[string]*journalWriter{}, eventIndex: map[string][]journalPosition{}}, nil
 }
 
 func (s *stateStore) load() (persistedState, error) {
@@ -193,6 +195,9 @@ func validSessionID(sessionID string) bool {
 }
 
 func (s *stateStore) save(state persistedState) error {
+	if err := s.syncJournals(); err != nil {
+		return err
+	}
 	state.Version = stateVersion
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
