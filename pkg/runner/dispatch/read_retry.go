@@ -66,9 +66,23 @@ const maxReadOutage = 5 * time.Minute
 type readOutage struct {
 	started time.Time
 	delay   time.Duration
+	last    error
+}
+
+// contextError preserves outage diagnostics regardless of whether cancellation
+// is observed in the timer, at the next loop boundary, or by a stream read.
+func (o *readOutage) contextError(err error) error {
+	if o.last != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return fmt.Errorf("%w (last runner read failure: %v)", err, o.last)
+	}
+	return err
 }
 
 func (o *readOutage) wait(ctx context.Context, obs Observer, last error) error {
+	// A context error from a later read must not replace the transport failure.
+	if o.last == nil || (!errors.Is(last, context.Canceled) && !errors.Is(last, context.DeadlineExceeded)) {
+		o.last = last
+	}
 	if o.started.IsZero() {
 		o.started = time.Now()
 	}
@@ -76,12 +90,12 @@ func (o *readOutage) wait(ctx context.Context, obs Observer, last error) error {
 	defer cancel()
 	err := waitReadRetry(retryCtx, obs, &o.delay)
 	if ctx.Err() != nil {
-		return fmt.Errorf("%w (last runner read failure: %v)", ctx.Err(), last)
+		return o.contextError(ctx.Err())
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("runner read outage exceeded %s: %w", maxReadOutage, last)
+		return fmt.Errorf("runner read outage exceeded %s: %w", maxReadOutage, o.last)
 	}
-	return err
+	return o.contextError(err)
 }
 
 // Back off read failures, while polling the caller's durable cancellation flag
@@ -123,16 +137,16 @@ func retryReadDuring[T any](ctx context.Context, obs Observer, outage *readOutag
 	var zero T
 	for {
 		if err := ctx.Err(); err != nil {
-			return zero, err
+			return zero, outage.contextError(err)
 		}
 		if obs != nil {
 			if err := obs.Aborted(ctx); err != nil {
-				return zero, err
+				return zero, outage.contextError(err)
 			}
 		}
 		result, err := read()
 		if err == nil || !retryableRead(err) {
-			return result, err
+			return result, outage.contextError(err)
 		}
 		if err := outage.wait(ctx, obs, err); err != nil {
 			return zero, err

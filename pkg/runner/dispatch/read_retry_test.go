@@ -394,3 +394,74 @@ func TestCancelPreservesReceiptOnReadFailure(t *testing.T) {
 		})
 	}
 }
+
+// Opening a stream does not end an outage. Cancellation on the resumed read
+// must retain the failed open's diagnostic in both live and replay consumers.
+func TestStreamCancellationRetainsOutage(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		t.Run(map[bool]string{false: "follow", true: "replay"}[replay], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := &flakyReader{fakeRunner: &fakeRunner{}}
+				calls := 0
+				f.events = func(context.Context, string, uint64) (Stream, error) {
+					calls++
+					if calls == 1 {
+						return nil, &client.HTTPError{StatusCode: 502}
+					}
+					return &sliceStream{err: context.Canceled}, nil
+				}
+				var err error
+				if replay {
+					_, err = RestoreSnapshot(context.Background(), f, Position{AttemptID: "attempt-1", Cursor: 1}, nil)
+				} else {
+					_, err = Follow(context.Background(), f, receipt(runner.PhaseRunning), Position{}, nil)
+				}
+				if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "502") {
+					t.Fatalf("lost cancellation or transport error: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestReadLoopCancellationRetainsSharedOutage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		outage := &readOutage{}
+		if err := outage.wait(context.Background(), nil, &client.HTTPError{StatusCode: 502}); err != nil {
+			t.Fatal(err)
+		}
+		for _, location := range []string{"loop", "observer", "read"} {
+			ctx, cancel := context.WithCancel(context.Background())
+			obs := &recorder{}
+			if location == "loop" {
+				cancel()
+			}
+			if location == "observer" {
+				obs.abort = context.Canceled
+			}
+			_, err := retryReadDuring(ctx, obs, outage, func() (int, error) {
+				if location != "read" {
+					t.Fatal("read after cancellation")
+				}
+				return 0, context.Canceled
+			})
+			cancel()
+			if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "502") {
+				t.Fatalf("%s lost diagnostic: %v", location, err)
+			}
+		}
+	})
+}
+
+func TestCancelDescribesProtocolFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &flakyReader{fakeRunner: &fakeRunner{receipt: receipt(runner.PhaseCancelling)}}
+		refusal := &runner.Error{Code: runner.ErrorUnavailable, Message: "inspection refused"}
+		f.inspect = func(context.Context, string) (runner.Receipt, error) { return runner.Receipt{}, refusal }
+		got, err := Cancel(context.Background(), f, runner.CancelRequest{AttemptID: "attempt-1"})
+		if got == nil || got.Phase != runner.PhaseCancelling || !errors.Is(err, refusal) ||
+			!strings.Contains(err.Error(), "inspection refused") || !strings.Contains(err.Error(), string(refusal.Code)) {
+			t.Fatalf("receipt=%+v err=%v", got, err)
+		}
+	})
+}
