@@ -160,6 +160,7 @@ var agentsSchema = []string{
 	// credential) and its verified Git result. NULL on every conversational
 	// run, which is every row written before repository runs existed.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS repository JSONB`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS harness_settings JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS result JSONB`,
 	// A run handed back to the queue after a transient refusal: how many times,
 	// and when it may be claimed again. Zero / NULL on every row written before
@@ -841,6 +842,12 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			return err
 		}
 	}
+	var harnessSettings any
+	if run.HarnessSettings != nil {
+		if harnessSettings, err = marshalJSONB(run.HarnessSettings); err != nil {
+			return err
+		}
+	}
 	var repository, result any
 	if run.Repository != nil {
 		if repository, err = marshalJSONB(run.Repository); err != nil {
@@ -856,8 +863,8 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
 			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-			 backend, attempt_id, harness_session_id, repository, result, retries, retry_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+			 backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
 			retries=EXCLUDED.retries, retry_at=EXCLUDED.retry_at,
@@ -868,12 +875,13 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			worked_duration_ms=EXCLUDED.worked_duration_ms,
 			backend=EXCLUDED.backend, attempt_id=EXCLUDED.attempt_id,
 			harness_session_id=EXCLUDED.harness_session_id,
-			repository=EXCLUDED.repository, result=EXCLUDED.result`,
+			repository=EXCLUDED.repository, result=EXCLUDED.result,
+			harness_settings=COALESCE(agents_runs.harness_settings, EXCLUDED.harness_settings)`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt))
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings)
 	if err != nil {
 		return err
 	}
@@ -884,7 +892,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result, retries, retry_at`
+		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1102,7 +1110,7 @@ func scanRun(r rowScanner) (Run, error) { return scanScopedRun(r, nil) }
 func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var run Run
 	var phase string
-	var checkpoint, sources, delivery, repository, result []byte
+	var checkpoint, sources, delivery, repository, result, harnessSettings []byte
 	var started, finished, cancelAt, retryAt sql.NullTime
 	var worked sql.NullInt64
 	dest := []any{}
@@ -1112,7 +1120,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
 		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt,
-		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt)
+		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt, &harnessSettings)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
@@ -1134,6 +1142,11 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	if len(delivery) > 0 {
 		if err := json.Unmarshal(delivery, &run.Delivery); err != nil {
 			return Run{}, fmt.Errorf("decode run delivery: %w", err)
+		}
+	}
+	if len(harnessSettings) > 0 {
+		if err := json.Unmarshal(harnessSettings, &run.HarnessSettings); err != nil {
+			return Run{}, fmt.Errorf("decode harness settings: %w", err)
 		}
 	}
 	if len(repository) > 0 {

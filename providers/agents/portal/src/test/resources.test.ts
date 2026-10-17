@@ -182,12 +182,12 @@ describe('agents', () => {
       // A credential the model backend would have used is ignored: the caller
       // asked for a harness, and a leftover chat credential is not part of one.
       modelCredential: 'primary',
-      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', model: 'sonnet', workspace: 'ephemeral' },
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-codex', model: 'gpt-6-luna', reasoningEffort: 'max', workspace: 'ephemeral' },
     })
     const spec = (kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec
     expect(spec.backend).toEqual({
       type: 'harness',
-      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude', model: 'sonnet', workspace: 'ephemeral' },
+      harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-codex', model: 'gpt-6-luna', reasoningEffort: 'max', workspace: 'ephemeral' },
     })
     expect(spec.backend).not.toHaveProperty('model')
   })
@@ -248,7 +248,7 @@ describe('agents', () => {
       spec: {
         backend: {
           type: 'harness',
-          harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex' },
+          harness: { edgeRef: { kind: 'MacOSServer', name: 'mini-02' }, credentialRef: 'my-codex', model: null, reasoningEffort: null },
           model: null,
         },
         tools: null,

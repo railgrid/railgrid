@@ -518,6 +518,28 @@ worktree and with network access disabled. The runner's single execution slot
 and any configured resource reservations are released when the attempt reaches
 a terminal phase.
 
+### Per-agent model and reasoning effort
+
+Harness-backed Agents accept `spec.backend.harness.model` and optional
+`spec.backend.harness.reasoningEffort`. For example, a Codex Agent can select
+`gpt-6-luna` with `reasoningEffort: max`. Blank fields retain harness defaults.
+Explicit effort is supported only by Codex. The adapter checks the selected
+model's advertised efforts through the installed app-server's `model/list`
+before starting a turn; unsupported combinations fail with the supported values.
+
+The Agents `run` verb accepts optional `model` and `reasoningEffort` overrides.
+Omitted fields inherit the Agent; explicitly empty fields select the harness
+default. Agents persist these resolved choices in `spec.harnessSettings` on the
+Run and in the durable run store. Retries and recovery use that snapshot, and
+run details show both choices. Runner `Start` carries `reasoningEffort` alongside
+`model`; the saved start request retains it through restart and resume.
+Codex receives `effort` on every `turn/start`, including resumed turns. No
+`model_reasoning_effort` key is added to the runner's managed configuration.
+
+The opt-in `TestLiveReasoningEffortSessionMetadata` test takes a credential-file
+path from `RAILGRID_CODEX_LIVE_AUTH_FILE`, uses a temporary Codex home, and checks
+persisted turn metadata for a new and resumed session without logging transcripts.
+
 ## Observe, cancel, and resume
 
 `Start` durably persists an accepted receipt before returning. Follow the

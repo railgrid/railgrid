@@ -62,6 +62,7 @@ const modelCredential = ref(initialDraft.modelCredential)
 const harnessEdge = ref(initialDraft.harnessEdge)
 const harnessCredential = ref(initialDraft.harnessCredential)
 const harnessModel = ref(initialDraft.harnessModel)
+const harnessReasoningEffort = ref(initialDraft.harnessReasoningEffort)
 const harnessWorkspace = ref<HarnessWorkspace>(initialDraft.harnessWorkspace)
 const harnessGitHubConnection = ref(initialDraft.harnessGitHubConnection)
 const systemPrompt = ref(initialDraft.systemPrompt)
@@ -205,6 +206,7 @@ function addCredential(family: AgentCredentialFamily): void {
       harnessEdge: harnessEdge.value,
       harnessCredential: harnessCredential.value,
       harnessModel: harnessModel.value,
+      harnessReasoningEffort: harnessReasoningEffort.value,
       harnessWorkspace: harnessWorkspace.value,
       harnessGitHubConnection: harnessGitHubConnection.value,
       systemPrompt: systemPrompt.value,
@@ -256,6 +258,7 @@ async function submit(): Promise<void> {
       edgeRef: { kind: edge.kind as 'LinuxServer' | 'MacOSServer', name: edge.name },
       credentialRef: harnessCredential.value,
       ...(harnessModel.value.trim() ? { model: harnessModel.value.trim() } : {}),
+      ...(harnessReasoningEffort.value.trim() ? { reasoningEffort: harnessReasoningEffort.value.trim() } : {}),
       workspace: harnessWorkspace.value,
       ...(harnessGitHubConnection.value ? { githubConnectionRef: harnessGitHubConnection.value } : {}),
     }
@@ -433,6 +436,11 @@ async function submit(): Promise<void> {
                   <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
                   <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
                 </label>
+            <label>
+              <span id="agent-create-harness-effort-label">Reasoning effort</span>
+              <input v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label" aria-describedby="agent-create-harness-effort-hint" />
+              <span id="agent-create-harness-effort-hint" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
+            </label>
 
                 <label>
                   <span id="agent-create-workspace-label">Working directory</span>

@@ -124,6 +124,12 @@ spec:
                           (e.g. "sonnet"). Empty leaves the harness's own default alone.
                         maxLength: 253
                         type: string
+                      reasoningEffort:
+                        description: ReasoningEffort selects Codex reasoning effort.
+                          Empty uses the harness default.
+                        maxLength: 32
+                        pattern: ^$|^[a-z][a-z0-9_-]*$
+                        type: string
                       workspace:
                         default: persistent
                         description: |-

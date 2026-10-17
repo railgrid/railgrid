@@ -607,8 +607,21 @@ func (b *background) submitRun(ctx context.Context, job executor.Job) (string, e
 	now := time.Now().UTC()
 	runID := uuid.NewString()
 	scope := b.scopeFor(ctx, job.ClusterID, job.AgentRef)
-	err := b.server.saveNewRun(ctx, job.ClusterID, scope, store.Run{
-		ID: runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
+	dyn, err := b.scoped(ctx, job.ClusterID)
+	if err != nil {
+		return "", err
+	}
+	object, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, job.AgentRef, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	agent, err := fromU[agentsv1alpha1.Agent](object)
+	if err != nil {
+		return "", err
+	}
+	err = b.server.saveNewRun(ctx, job.ClusterID, scope, store.Run{
+		HarnessSettings: resolveHarnessSettings(agent, nil),
+		ID:              runID, AgentName: job.AgentRef, SessionID: job.SessionID, Trigger: job.Trigger,
 		Phase: store.RunPhasePending, Input: job.Task, CreatedAt: now, UpdatedAt: now,
 		Delivery: &store.RunDelivery{
 			SourceName: job.SourceName, ReplyTarget: job.ReplyTarget,
@@ -877,6 +890,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// recovery sweep) while it sat in the queue; starting it now would
 	// resurrect a run the user already saw end.
 	var repository *repositoryAttempt
+	var harnessSettings *store.HarnessSettings
 	var retries int
 	if job.RunID != "" {
 		if stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID); gerr == nil {
@@ -889,6 +903,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 			// dispatch of one fails with the retry message rather than
 			// starting a workspace turn in its place.
 			repository = repositoryAttemptFromStored(stored.Repository)
+			harnessSettings = stored.HarnessSettings
 			// A run picked up for the second time carries how many times it
 			// was handed back, which is what bounds handing it back again.
 			retries = stored.Retries
@@ -901,11 +916,12 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// Recorded on the run so a crash mid-flight can still be reported to
 		// whoever is waiting — the goroutine that knows this is the thing a
 		// restart destroys.
-		ReplyTarget:  job.ReplyTarget,
-		DeliveryKind: string(job.Kind),
-		Repository:   repository,
-		Retries:      retries,
-		MaxAttempts:  b.maxAttemptsFor(ctx, dyn, job),
+		ReplyTarget:     job.ReplyTarget,
+		DeliveryKind:    string(job.Kind),
+		Repository:      repository,
+		HarnessSettings: harnessSettings,
+		Retries:         retries,
+		MaxAttempts:     b.maxAttemptsFor(ctx, dyn, job),
 	}
 	// There is no user to act as here, so the run acts as the AGENT's own
 	// ServiceAccount through the virtual workspace.

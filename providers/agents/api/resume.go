@@ -125,7 +125,8 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		Worker: ck.Worker,
 		// A repository run's coordinates come back off the record; the clone
 		// source does not, and a re-join does not need it.
-		Repository: repositoryAttemptFromStored(run.Repository),
+		Repository:      repositoryAttemptFromStored(run.Repository),
+		HarnessSettings: run.HarnessSettings,
 	}
 	access.applyTo(&tr)
 	// Only an approval resume pre-authorizes a call. A recovery checkpoint has no

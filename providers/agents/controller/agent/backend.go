@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"strings"
 
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -93,6 +95,9 @@ func (r *Reconciler) validateBackend(ctx context.Context, c client.Client, agent
 			"model credential %q has provider %q, which is a chat endpoint; a harness-backed agent needs a credential whose provider is %q or %q",
 			cfg.CredentialRef, cred.Spec.Provider,
 			agentsv1alpha1.ModelProviderClaudeCode, agentsv1alpha1.ModelProviderCodex), out, nil
+	}
+	if err := runnerharness.ValidateReasoningEffort(llm.HarnessAdvertisedName(cred.Spec.Provider), cfg.ReasoningEffort); err != nil {
+		return agentsv1alpha1.ReasonInvalidSpec, err.Error(), out, nil
 	}
 	if !meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady) {
 		return agentsv1alpha1.ReasonModelCredentialNotReady, fmt.Sprintf(

@@ -519,8 +519,10 @@ func TestFakeAppServerProcess(t *testing.T) {
 				continue
 			}
 			writeResponse(map[string]any{"id": id, "result": map[string]any{"userAgent": "fake", "codexHome": os.Getenv("CODEX_HOME"), "platformFamily": "unix", "platformOs": "linux"}})
+		case "model/list":
+			writeResponse(map[string]any{"id": id, "result": map[string]any{"data": []any{map[string]any{"id": "gpt-6-luna", "model": "gpt-6-luna", "supportedReasoningEfforts": []any{map[string]any{"reasoningEffort": "max"}, map[string]any{"reasoningEffort": "low"}}}}}})
 		case "thread/start":
-			writeResponse(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "thread-1"}}})
+			writeResponse(map[string]any{"id": id, "result": map[string]any{"model": "gpt-6-luna", "thread": map[string]any{"id": "thread-1"}}})
 		case "thread/resume":
 			if scenario == "missing-resume" {
 				writeResponse(map[string]any{"id": id, "error": map[string]any{"code": -32602, "message": "thread not found"}})
@@ -530,7 +532,7 @@ func TestFakeAppServerProcess(t *testing.T) {
 				if scenario == "foreign-resume" {
 					resumeID = "thread-foreign"
 				}
-				writeResponse(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": resumeID}}})
+				writeResponse(map[string]any{"id": id, "result": map[string]any{"model": "gpt-6-luna", "thread": map[string]any{"id": resumeID}}})
 			}
 		case "turn/start":
 			writeResponse(map[string]any{"id": id, "result": map[string]any{"turn": map[string]any{"id": "turn-1", "status": "inProgress"}}})
@@ -653,4 +655,40 @@ func readJSONFile(t *testing.T, path string) map[string]any {
 		t.Fatalf("decode json file: %v", err)
 	}
 	return value
+}
+
+func TestReasoningEffortOnNewAndResumedTurns(t *testing.T) {
+	for _, session := range []string{"", "thread-1"} {
+		t.Run("session="+session, func(t *testing.T) {
+			for _, effort := range []string{"", "max", "unsupported"} {
+				t.Run("effort="+effort, func(t *testing.T) {
+					binary := fakeCodexBinary(t, "success")
+					adapter := New(Config{Binary: binary, Home: t.TempDir()})
+					_, err := adapter.Run(t.Context(), harness.Launch{AttemptID: "test", Workdir: t.TempDir(), Instructions: "hello", Model: "gpt-6-luna", ReasoningEffort: effort, SessionID: session, Credential: testCredential()}, func(harness.Event) error { return nil })
+					if effort == "unsupported" {
+						if err == nil || !strings.Contains(err.Error(), "not supported") {
+							t.Fatalf("error = %v", err)
+						}
+					} else if err != nil {
+						t.Fatal(err)
+					}
+					turns := 0
+					for _, req := range readJSONLines(t, filepath.Join(filepath.Dir(binary), "requests")) {
+						if req["method"] != "turn/start" {
+							continue
+						}
+						turns++
+						params := req["params"].(map[string]any)
+						value, present := params["effort"]
+						if effort == "" && present || effort != "" && value != effort {
+							t.Fatalf("effort = %v, present=%v", value, present)
+						}
+					}
+					if effort == "unsupported" && turns != 0 || effort != "unsupported" && turns != 1 {
+						t.Fatalf("turns = %d", turns)
+					}
+				})
+			}
+		})
+	}
 }

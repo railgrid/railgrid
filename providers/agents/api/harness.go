@@ -46,6 +46,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner"
 	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
@@ -451,6 +452,10 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		return harnessTurn{}, fmt.Errorf("model credential %q has provider %q, which is not a harness identity; a harness-backed agent needs %q or %q",
 			credName, cred.Spec.Provider, agentsv1alpha1.ModelProviderClaudeCode, agentsv1alpha1.ModelProviderCodex)
 	}
+	settings := resolveHarnessSettings(agent, run.HarnessSettings)
+	if err := runnerharness.ValidateReasoningEffort(advertised, settings.ReasoningEffort); err != nil {
+		return harnessTurn{}, err
+	}
 	backendKey := harnessBackendKey(run.ClusterID, cfg.EdgeRef.Kind, cfg.EdgeRef.Name, advertised)
 	identity, err := llm.LoadHarnessIdentity(ctx, run.Creds, credName)
 	if err != nil {
@@ -489,7 +494,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	if run.Repository != nil {
 		return s.repositoryHarnessTurn(run, runID, sessionID, cont, repositoryTurnDeps{
 			dispatcher: dispatcher, backendKey: backendKey, service: service, advertised: advertised,
-			model: strings.TrimSpace(cfg.Model), identity: identity, environment: environment,
+			model: settings.Model, reasoningEffort: settings.ReasoningEffort, identity: identity, environment: environment,
 		})
 	}
 
@@ -521,7 +526,8 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		BackendKey:      backendKey,
 		WorkspaceID:     harnessWorkspaceIDForTask(agent, runID, taskID),
 		RequiredHarness: advertised,
-		Model:           strings.TrimSpace(cfg.Model),
+		Model:           settings.Model,
+		ReasoningEffort: settings.ReasoningEffort,
 		Credential:      identity,
 		Environment:     environment,
 		Provenance: map[string]any{
@@ -537,13 +543,14 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 // repositoryTurnDeps is what harnessBackendFor resolved before the two
 // attempt shapes part ways: the runner, its identity, and the harness.
 type repositoryTurnDeps struct {
-	dispatcher  dispatch.Runner
-	backendKey  string
-	service     string
-	advertised  string
-	model       string
-	identity    llm.HarnessIdentity
-	environment []runner.EnvironmentVariable
+	dispatcher      dispatch.Runner
+	backendKey      string
+	service         string
+	advertised      string
+	model           string
+	reasoningEffort string
+	identity        llm.HarnessIdentity
+	environment     []runner.EnvironmentVariable
 }
 
 // harnessEnvironment is what the harness child runs with beyond its model
@@ -640,6 +647,7 @@ func (s *Server) repositoryHarnessTurn(run taskRun, runID, sessionID string, con
 		BackendKey:      deps.backendKey,
 		RequiredHarness: deps.advertised,
 		Model:           deps.model,
+		ReasoningEffort: deps.reasoningEffort,
 		Credential:      deps.identity,
 		Environment:     deps.environment,
 		Provenance: map[string]any{

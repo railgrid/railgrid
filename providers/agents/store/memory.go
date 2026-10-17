@@ -773,6 +773,13 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	if old, ok := m.runs[key]; ok && old.CancelRequested {
 		run.CancelRequested, run.CancelRequestedAt = true, old.CancelRequestedAt
 	}
+	if old, ok := m.runs[key]; ok && old.HarnessSettings != nil {
+		run.HarnessSettings = old.HarnessSettings
+	}
+	if run.HarnessSettings != nil {
+		copy := *run.HarnessSettings
+		run.HarnessSettings = &copy
+	}
 	m.runs[key] = run
 	if !exists && run.IdempotencyKey != "" {
 		m.idempotencyPrimary[key] = true

@@ -122,17 +122,25 @@ const (
 	RunPhaseAborted         RunPhase = "Aborted"
 )
 
+// HarnessSettings records resolved per-run choices. Empty fields deliberately
+// retain the harness default; a non-nil snapshot never re-inherits Agent edits.
+type HarnessSettings struct {
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+}
+
 // Run is the durable execution record. Checkpoint is an opaque engine-owned
 // JSON payload (Eino interrupt/resume state) so the store needs no knowledge of
 // chat/tool types. ParentRunID links sub-agent runs for delegation lineage.
 type Run struct {
-	ID          string   `json:"id"`
-	AgentName   string   `json:"agentName"`
-	SessionID   string   `json:"sessionID,omitempty"`
-	Trigger     string   `json:"trigger"`
-	ParentRunID string   `json:"parentRunID,omitempty"`
-	Phase       RunPhase `json:"phase"`
-	Attempt     int      `json:"attempt,omitempty"`
+	HarnessSettings *HarnessSettings `json:"harnessSettings,omitempty"`
+	ID              string           `json:"id"`
+	AgentName       string           `json:"agentName"`
+	SessionID       string           `json:"sessionID,omitempty"`
+	Trigger         string           `json:"trigger"`
+	ParentRunID     string           `json:"parentRunID,omitempty"`
+	Phase           RunPhase         `json:"phase"`
+	Attempt         int              `json:"attempt,omitempty"`
 	// Retries counts how many times this run was handed back to the queue after
 	// a transient refusal (a runner at capacity, a runner not yet ready) instead
 	// of being failed. It is distinct from Attempt, which counts recoveries of a

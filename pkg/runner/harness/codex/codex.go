@@ -289,6 +289,17 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 		return result, err
 	}
 
+	if launch.ReasoningEffort != "" {
+		var thread struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(threadResponse.Result, &thread); err != nil {
+			return result, fmt.Errorf("reading resolved Codex model: %w", err)
+		}
+		if err := validateModelEffort(ctx, conn, state, thread.Model, launch.ReasoningEffort); err != nil {
+			return result, err
+		}
+	}
 	turnParams := a.turnStartParams(launch, state.sessionID)
 	turnResponse, callErr := conn.call(ctx, "turn/start", turnParams, state.handle)
 	if callErr != nil {
@@ -384,6 +395,9 @@ func (a *Adapter) ensureHome() error {
 }
 
 func validateLaunch(launch harness.Launch) error {
+	if err := harness.ValidateReasoningEffort(HarnessName, launch.ReasoningEffort); err != nil {
+		return err
+	}
 	if strings.TrimSpace(launch.Workdir) == "" {
 		return errors.New("codex launch workdir is required")
 	}
@@ -442,6 +456,9 @@ func (a *Adapter) turnStartParams(launch harness.Launch, sessionID string) map[s
 	}
 	if model := a.model(launch); model != "" {
 		params["model"] = model
+	}
+	if launch.ReasoningEffort != "" {
+		params["effort"] = launch.ReasoningEffort
 	}
 	return params
 }

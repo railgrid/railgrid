@@ -78,6 +78,7 @@ type runStep struct {
 // present as arrays (never null/absent) so a client can map over them without
 // guarding every empty case.
 type runDetail struct {
+	HarnessSettings *store.HarnessSettings `json:"harnessSettings,omitempty"`
 	runSummary
 	Input string `json:"input,omitempty"`
 	// Output is the run's answer, so a caller that polled the phase reads the
@@ -184,6 +185,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 		detail.Harness = &runHarnessInfo{AttemptID: run.AttemptID, SessionID: run.HarnessSessionID}
 	}
 	detail.Repository, detail.Result = run.Repository, run.Result
+	detail.HarnessSettings = run.HarnessSettings
 	if run.Phase == store.RunPhasePendingApproval && len(run.Checkpoint) > 0 {
 		var ck runCheckpoint
 		if json.Unmarshal(run.Checkpoint, &ck) == nil {

@@ -321,6 +321,13 @@ func (r *Runner) Close() error {
 // Start accepts an approved attempt and returns once its receipt and accepted
 // event have been durably persisted. Execution continues asynchronously.
 func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, error) {
+	if request.ReasoningEffort != "" {
+		for _, h := range r.Capabilities().Harnesses {
+			if err := harness.ValidateReasoningEffort(h.Name, request.ReasoningEffort); err != nil {
+				return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
+			}
+		}
+	}
 	if err := validateProtocolVersion(request.ProtocolVersion); err != nil {
 		return Receipt{}, protocolError(ErrorUnsupportedVersion, false, err.Error(), nil)
 	}
@@ -831,12 +838,13 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 		sessionID = attempt.Start.SessionID
 	}
 	launch := harness.Launch{
-		AttemptID:    attemptID,
-		Workdir:      attempt.Receipt.Workdir,
-		SessionID:    sessionID,
-		Instructions: instructions,
-		Model:        model,
-		Credential:   credential,
+		AttemptID:       attemptID,
+		Workdir:         attempt.Receipt.Workdir,
+		SessionID:       sessionID,
+		Instructions:    instructions,
+		Model:           model,
+		ReasoningEffort: attempt.Start.ReasoningEffort,
+		Credential:      credential,
 	}
 	if attempt.Start.AskPermission {
 		// The adapter reaches a human through the runner, which is the only

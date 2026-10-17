@@ -98,6 +98,7 @@ interface BackendSnapshot {
   edge: string
   credentialRef: string
   model: string
+  reasoningEffort: string
   workspace: HarnessWorkspace
   githubConnectionRef: string
 }
@@ -139,6 +140,7 @@ const backendType = ref<AgentBackendType>(AGENT_BACKEND_MODEL)
 const harnessEdge = ref('')
 const harnessCredential = ref('')
 const harnessModel = ref('')
+const harnessReasoningEffort = ref('')
 const harnessWorkspace = ref<HarnessWorkspace>('persistent')
 const harnessGitHubConnection = ref('')
 const harnessError = ref('')
@@ -321,6 +323,7 @@ function backendSnapshot(source: Agent): BackendSnapshot {
     edge: edgeKey(harness?.edgeRef?.kind || '', harness?.edgeRef?.name || ''),
     credentialRef: harness?.credentialRef || '',
     model: harness?.model || '',
+    reasoningEffort: harness?.reasoningEffort || '',
     workspace: harness?.workspace || 'persistent',
     githubConnectionRef: harness?.githubConnectionRef || '',
   }
@@ -356,6 +359,7 @@ const backendDraft = computed<BackendSnapshot>(() => ({
   edge: backendType.value === AGENT_BACKEND_HARNESS ? harnessEdge.value : '',
   credentialRef: backendType.value === AGENT_BACKEND_HARNESS ? harnessCredential.value : '',
   model: backendType.value === AGENT_BACKEND_HARNESS ? harnessModel.value.trim() : '',
+  reasoningEffort: backendType.value === AGENT_BACKEND_HARNESS ? harnessReasoningEffort.value.trim() : '',
   workspace: backendType.value === AGENT_BACKEND_HARNESS ? harnessWorkspace.value : 'persistent',
   githubConnectionRef: backendType.value === AGENT_BACKEND_HARNESS ? harnessGitHubConnection.value : '',
 }))
@@ -497,6 +501,7 @@ function hydrate(source: Agent): void {
   harnessEdge.value = backend.edge
   harnessCredential.value = backend.credentialRef
   harnessModel.value = backend.model
+  harnessReasoningEffort.value = backend.reasoningEffort
   harnessWorkspace.value = backend.workspace
   harnessGitHubConnection.value = backend.githubConnectionRef
   harnessError.value = ''
@@ -658,6 +663,7 @@ function saveBackend(): void {
       credentialRef: snapshot.credentialRef,
       workspace: snapshot.workspace,
       ...(snapshot.model ? { model: snapshot.model } : {}),
+      ...(snapshot.reasoningEffort ? { reasoningEffort: snapshot.reasoningEffort } : {}),
       ...(snapshot.githubConnectionRef ? { githubConnectionRef: snapshot.githubConnectionRef } : {}),
     }
     void saveRegion(
@@ -1055,6 +1061,11 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
               <span :id="domID('agent-harness-model-label')">Model</span>
               <input :id="domID('agent-harness-model')" v-model="harnessModel" class="k-input" placeholder="Harness default" :aria-labelledby="domID('agent-harness-model-label')" :aria-describedby="domID('agent-harness-model-hint')" />
               <span :id="domID('agent-harness-model-hint')" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
+            </label>
+            <label>
+              <span :id="domID('agent-harness-effort-label')">Reasoning effort</span>
+              <input v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" :aria-labelledby="domID('agent-harness-effort-label')" :aria-describedby="domID('agent-harness-effort-hint')" />
+              <span :id="domID('agent-harness-effort-hint')" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
             </label>
             <label>
               <span :id="domID('agent-harness-workspace-label')">Working directory</span>

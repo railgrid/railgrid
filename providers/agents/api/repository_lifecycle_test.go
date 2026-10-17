@@ -187,6 +187,10 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 	dispatcher := &repositoryLifecycleDispatcher{artifacts: artifacts, bodies: bodies}
 	s, run := repositoryLifecycleRun(t, dispatcher)
 
+	run.Agent.Spec.Backend.Harness.Model = "changed-agent-model"
+	run.Agent.Spec.Backend.Harness.ReasoningEffort = "low"
+	run.HarnessSettings = &store.HarnessSettings{Model: "gpt-6-luna", ReasoningEffort: "max"}
+
 	res, err := s.runTurn(t.Context(), run, nil)
 	if err != nil {
 		t.Fatalf("runTurn: %v", err)
@@ -201,6 +205,10 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 		t.Fatalf("starts = %d", len(dispatcher.starts))
 	}
 	req := dispatcher.starts[0]
+	if req.Model != "gpt-6-luna" || req.ReasoningEffort != "max" {
+		t.Fatalf("dispatch changed snapshot: model=%q effort=%q", req.Model, req.ReasoningEffort)
+	}
+
 	switch {
 	case req.RepositoryID != "railgrid" || req.BaseCommit != lifecycleBase || !req.ExportGitResult:
 		t.Errorf("start = %+v, want a repository attempt", req)
@@ -230,6 +238,10 @@ func TestRepositoryRunLifecycleStoresTheVerifiedResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if stored.HarnessSettings == nil || *stored.HarnessSettings != *run.HarnessSettings {
+		t.Fatalf("stored settings = %+v", stored.HarnessSettings)
+	}
+
 	if stored.Phase != store.RunPhaseSucceeded || stored.Backend != agentsv1alpha1.AgentBackendHarness || stored.AttemptID != run.RunID {
 		t.Fatalf("stored = %+v", stored)
 	}

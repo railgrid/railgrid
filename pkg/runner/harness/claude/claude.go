@@ -269,6 +269,9 @@ func (a *Adapter) probeVersion(ctx context.Context) (string, error) {
 // returned in every outcome — including failures — so a caller can always
 // resume rather than silently starting a second conversation.
 func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {
+	if err := harness.ValidateReasoningEffort(HarnessName, launch.ReasoningEffort); err != nil {
+		return harness.Result{}, err
+	}
 	var result harness.Result
 	if err := a.ensureHome(); err != nil {
 		return result, err

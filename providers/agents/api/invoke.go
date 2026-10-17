@@ -51,6 +51,8 @@ const (
 )
 
 type invokeRunRequest struct {
+	Model           *string `json:"model,omitempty"`
+	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
 	// Task is the prompt the agent runs. Required.
 	Task string `json:"task"`
 	// SessionID continues an existing conversation; empty starts a fresh one, so
@@ -161,8 +163,26 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	settings := resolveHarnessSettings(agent, nil)
+	if req.Model != nil || req.ReasoningEffort != nil {
+		if settings == nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "model and reasoningEffort overrides require a harness-backed agent")
+			return
+		}
+		if req.Model != nil {
+			settings.Model = strings.TrimSpace(*req.Model)
+		}
+		if req.ReasoningEffort != nil {
+			settings.ReasoningEffort = *req.ReasoningEffort
+		}
+	}
+	if settings != nil && (len(settings.Model) > 253 || len(settings.ReasoningEffort) > 32) {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "model or reasoningEffort exceeds its length limit")
+		return
+	}
 	tr := taskRun{
-		SessionID: strings.TrimSpace(req.SessionID), Task: req.Task,
+		HarnessSettings: settings,
+		SessionID:       strings.TrimSpace(req.SessionID), Task: req.Task,
 		Trigger:        agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey: req.IdempotencyKey,
 		Callback:       req.Callback,
