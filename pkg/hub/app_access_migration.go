@@ -23,12 +23,12 @@ import (
 	"github.com/railgrid/provider-sdk/apiexportprovider"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
-	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/railgrid/railgrid/pkg/hub/appauth"
+	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 )
 
 func newAppAccessGrantMigrationManager(ctx context.Context, providersConfig, kcpConfig *rest.Config, scheme *runtime.Scheme, grants *appauth.AppAccessGrantHandler) (mcmanager.Manager, error) {
@@ -41,11 +41,10 @@ func newAppAccessGrantMigrationManager(ctx context.Context, providersConfig, kcp
 	// This manager is rebuilt for each leader term. Controller names are
 	// unique within the manager; process-global validation must not prevent
 	// a later term from rebuilding the same controller.
-	skipNameValidation := true
 	mgr, err := mcmanager.New(watchConfig, provider, manager.Options{
 		Scheme:     scheme,
 		Metrics:    metricsserver.Options{BindAddress: "0"},
-		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
+		Controller: leaderelection.ControllerOptions(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating app-access migration catalog manager: %w", err)

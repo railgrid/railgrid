@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 )
 
 const (
@@ -169,7 +170,8 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 // runs the manager in a goroutine alongside the multicluster managers.
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {
 	return manager.New(cfg, manager.Options{
-		Scheme: scheme,
+		Controller: leaderelection.ControllerOptions(),
+		Scheme:     scheme,
 		// Serialize access initialization across hub replicas. A stale in-flight
 		// writer must not replay grants after another replica hands access off.
 		LeaderElection:          true,

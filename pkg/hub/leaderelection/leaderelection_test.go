@@ -23,6 +23,8 @@ import (
 	"time"
 
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
@@ -158,5 +160,39 @@ func TestRunRequiresLeaseCoordinates(t *testing.T) {
 	err := runWithClient(context.Background(), Options{Identity: "replica-a"}, client, func(context.Context) {})
 	if err == nil {
 		t.Fatal("expected an error when Namespace and Name are unset")
+	}
+}
+
+// Exercise actual controller construction, not just election callbacks: the
+// runtime keeps controller names globally after a term has stopped.
+func TestControllersCanBeRebuiltAfterLeadershipTerm(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		terms := 0
+		err := runWithClient(ctx, fastOptions("rebuilding-replica"), kubefake.NewClientset(), func(context.Context) {
+			opts := controller.Options{Reconciler: reconcile.Func(func(context.Context, reconcile.Request) (reconcile.Result, error) {
+				return reconcile.Result{}, nil
+			})}
+			opts.DefaultFromConfig(ControllerOptions())
+			_, err := controller.NewUnmanaged("repeated-leader-term", opts)
+			if err != nil {
+				t.Errorf("term %d: %v", terms+1, err)
+				cancel()
+				return
+			}
+			terms++
+			if terms == 2 {
+				cancel()
+			}
+		})
+		if terms != 2 {
+			t.Errorf("constructed controllers in %d terms, want 2", terms)
+		}
+		result <- err
+	}()
+	if err := <-result; err != nil {
+		t.Fatal(err)
 	}
 }
