@@ -55,11 +55,12 @@ const (
 // Runner is the generic local execution service. It owns protocol state and
 // workspace/resource boundaries; harness.Adapter owns the child process.
 type Runner struct {
-	cfg     Config
-	adapter harness.Adapter
-	store   *stateStore
-	state   persistedState
-	lock    *processLock
+	cleanupSlots chan struct{}
+	cfg          Config
+	adapter      harness.Adapter
+	store        *stateStore
+	state        persistedState
+	lock         *processLock
 
 	mu          sync.Mutex
 	running     map[string]context.CancelFunc
@@ -183,6 +184,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		capabilities.Reasons = append(capabilities.Reasons, "harness is not ready")
 	}
 	r := &Runner{
+		cleanupSlots: make(chan struct{}, 2),
 		cfg:          cfg,
 		adapter:      adapter,
 		store:        store,
@@ -204,6 +206,11 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	r.mu.Lock()
+	for _, attempt := range r.state.Attempts {
+		r.scheduleCleanupLocked(attempt)
+	}
+	r.mu.Unlock()
 	return r, nil
 }
 
@@ -388,11 +395,12 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 		UpdatedAt:       now,
 	}
 	r.state.Attempts[request.AttemptID] = &attemptRecord{
-		Receipt:       receipt,
-		Start:         cloneStartRequest(request),
-		Fingerprint:   fingerprint,
-		Resources:     resourceNames(request.Resources),
-		ArtifactSpecs: append([]ArtifactSpec(nil), request.Artifacts...),
+		CleanupEligible: true,
+		Receipt:         receipt,
+		Start:           cloneStartRequest(request),
+		Fingerprint:     fingerprint,
+		Resources:       resourceNames(request.Resources),
+		ArtifactSpecs:   append([]ArtifactSpec(nil), request.Artifacts...),
 	}
 	r.credentials[request.AttemptID] = credential
 	r.state.Operations[opKey] = operationRecord{Fingerprint: fingerprint, AttemptID: request.AttemptID}
@@ -1297,6 +1305,7 @@ func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker strin
 		delete(r.credentials, attempt.Receipt.AttemptID)
 	}
 	_ = r.persistLocked()
+	r.scheduleCleanupLocked(attempt)
 }
 
 func (r *Runner) appendEventLocked(attemptID, eventType, message string, data json.RawMessage) (Event, error) {

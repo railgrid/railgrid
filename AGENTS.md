@@ -919,3 +919,12 @@ Linear and Databricks implementation, build, codegen, portal copies and release
 automation live in `railgrid/providers`. Do not recreate their source directories
 or add private-repository access to public CI. They remain hub-managed provider
 installations; source ownership does not imply self-hosting-only support.
+
+## Agent screenshots against the real application
+
+For visible UI changes follow [docs/dev-browser.md](docs/dev-browser.md): start
+`make tilt`, run `make dev-browser-ready`, inspect against the live backend,
+save captioned evidence under `artifacts/screenshots/`, then run
+`make dev-browser-down`. Retain the stack while awaiting a user answer. Never
+publish the dev token. Fixture pages and mocked backends do not count; report
+blockers and mark incomplete verification explicitly.

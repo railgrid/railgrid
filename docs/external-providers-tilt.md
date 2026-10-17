@@ -34,8 +34,9 @@ name or special runner profile is required. `make tilt-status` shows the saved
 ports and checkout identity; the Tilt dashboard URL is also printed at startup.
 The settings persist in `.kcp/tilt-checkout.json` so restarts keep the same URLs.
 New allocations use ports 20000–29999, excluding the host's ephemeral range.
-A locked per-user registry at `$XDG_STATE_HOME/railgrid/tilt-ports.json`
-(default `~/.local/state/railgrid/tilt-ports.json`) prevents other checkouts from
+A locked per-user registry at `~/.local/state/railgrid/tilt-ports.json`
+uses the OS account’s home even when a harness overrides `HOME` or
+`XDG_STATE_HOME`. It prevents other checkouts from
 claiming a stopped stack's saved ports. Deleted checkouts release their claims
 on the next allocation. The registry coordinates this user's checkouts; other
 programs can still occupy a saved port.

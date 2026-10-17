@@ -6,10 +6,13 @@ import json
 import ipaddress
 import re
 import os
+import pwd
 from pathlib import Path
 import socket
 import subprocess
 import sys
+import signal
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTS = {'TILT_PORT': 10350, 'HUB_PORT': 9443, 'KCP_PORT': 6443,
@@ -37,8 +40,15 @@ def ephemeral_range():
     return (49152, 65535)
 
 
+def registry_directory():
+    # Coding harnesses give processes a private HOME/XDG_STATE_HOME. Port
+    # claims belong to the OS account sharing the host network, not that
+    # process's synthetic home. Keep ordinary checkouts and runners together.
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / '.local/state/railgrid'
+
+
 def allocate_ports(root, saved=None):
-    registry_dir = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'railgrid'
+    registry_dir = registry_directory()
     registry_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     registry = registry_dir / 'tilt-ports.json'
     with (registry_dir / 'tilt-ports.lock').open('a') as lock:
@@ -116,12 +126,15 @@ def settings(root=ROOT):
 
 
 def environment(config):
+    # One static development identity shared by Tilt and browser bootstrap.
+    token = 'dev-token'
+    auth = {'DEV_STATIC_TOKEN': token, 'DEV_STATIC_ADMIN': 'railgrid:static:' + hashlib.sha256(('static-token/' + token).encode()).hexdigest()[:16]}
     if config['legacy']:
-        return {}
+        return auth
     root = Path(config['root'])
     key = config['key']
     p = config['ports']
-    env = {k: str(v) for k, v in p.items()}
+    env = dict(auth, **{k: str(v) for k, v in p.items()})
     # Git worktrees use a .git file; some Go toolchains only recognize a
     # directory and accidentally inspect an ancestor. Make stamps our version.
     if (root / '.git').is_file():
@@ -213,6 +226,86 @@ def configure_host_dns(config):
         subprocess.run(kubectl + ['rollout', 'status', 'deployment/coredns', '--timeout=120s'], check=True)
 
 
+def process_identity(pid):
+    # Linux runner hosts expose an unambiguous process birth time. Refuse to
+    # signal by PID alone: a stale checkout must not kill a reused PID.
+    if not Path('/proc').exists():
+        result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='], capture_output=True, text=True)
+        return result.stdout.strip() or None
+    path = Path('/proc') / str(pid) / 'stat'
+    try:
+        return path.read_text().rsplit(')', 1)[1].split()[19]
+    except FileNotFoundError:
+        return None
+
+
+def owned_resources(config):
+    env = environment(config)
+    return {'clusters': [env['KRO_KIND_NAME'], env['DEV_AGENT_KIND']],
+            'containers': [env[key] for key in (
+                'KCP_EXTERNAL_CONTAINER', 'DEV_SSH_CONTAINER',
+                'APP_STUDIO_POSTGRES_CONTAINER', 'AGENTS_POSTGRES_CONTAINER', 'KUERY_POSTGRES_CONTAINER')]}
+
+
+def write_owner(path, record):
+    temporary = path.with_suffix('.tmp')
+    with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), 'w') as out:
+        os.fchmod(out.fileno(), 0o600)
+        out.write(json.dumps(record) + '\n')
+        out.flush()
+        os.fsync(out.fileno())
+    temporary.replace(path)
+
+
+def stop_owned(config):
+    root = Path(config['root'])
+    record_path = root / '.kcp/tilt-owner.json'
+    if not record_path.exists():
+        return
+    if config['legacy']:
+        raise ValueError('Refusing cleanup of a shared legacy Tilt stack')
+    # Serialize with startup, including the full cleanup, so a new generation
+    # cannot start between stopping processes and removing containers.
+    with (root / '.kcp/tilt-owner.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        record = json.loads(record_path.read_text())
+        if record.get('root') != str(root) or record.get('resources') != owned_resources(config):
+            raise ValueError('Tilt ownership record does not match this checkout')
+        pid = record.get('pid')
+        if pid and process_identity(pid) is not None:
+            if process_identity(pid) != record.get('birth') or os.getpgid(pid) != pid:
+                raise ValueError('Tilt process identity changed; refusing to signal it')
+            os.killpg(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 30
+            while process_identity(pid) == record['birth'] and time.monotonic() < deadline:
+                time.sleep(0.2)
+            if process_identity(pid) == record['birth']:
+                os.killpg(pid, signal.SIGKILL)
+        env = dict(os.environ, **environment(config))
+        # An explicit private kubeconfig prevents kind from editing the user's
+        # default kubeconfig, even after the original launcher has exited.
+        env['KUBECONFIG'] = str(root / '.kcp/tilt-client.kubeconfig')
+        failures = []
+        def remove(args, label):
+            try:
+                subprocess.run(args, env=env, check=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                failures.append(label)
+        for name in record['resources']['clusters']:
+            remove(['kind', 'delete', 'cluster', '--name', name], 'kind cluster ' + name)
+        try:
+            existing = subprocess.check_output(['docker', 'ps', '-a', '--format', '{{.Names}}'], text=True, timeout=30).splitlines()
+        except (OSError, subprocess.SubprocessError):
+            existing = []
+            failures.append('Docker container discovery')
+        for name in record['resources']['containers']:
+            if name in existing:
+                remove(['docker', 'rm', '-f', name], 'container ' + name)
+        if failures:
+            raise ValueError('Cleanup incomplete; retry make dev-browser-down: ' + ', '.join(failures))
+        record_path.unlink()
+
+
 def main():
     if sys.argv[1:] == ['env']:
         config = json.loads((ROOT / '.kcp/tilt-checkout.json').read_text())
@@ -240,8 +333,35 @@ def main():
         check_ports(config)
         process_env = dict(os.environ, **env)
         command = ['make', 'tilt-start']
-        result = subprocess.run(command, cwd=ROOT, env=process_env)
-        sys.exit(result.returncode)
+        if config['legacy']:
+            result = subprocess.run(command, cwd=ROOT, env=process_env)
+            sys.exit(result.returncode)
+        with (ROOT / '.kcp/tilt-owner.lock').open('a') as owner_lock:
+            fcntl.flock(owner_lock, fcntl.LOCK_EX)
+            record_path = ROOT / '.kcp/tilt-owner.json'
+            if record_path.exists():
+                old = json.loads(record_path.read_text())
+                if old.get('pid') and process_identity(old['pid']) is not None:
+                    raise ValueError('Recorded Tilt process is still running; run make dev-browser-down first')
+            # Record intended names before launch, including partially created
+            # resources when startup fails. Every name is checkout-specific.
+            record = {'root': str(ROOT), 'resources': owned_resources(config)}
+            write_owner(record_path, record)
+            pending = []
+            child = None
+            def terminate(signum, frame):
+                if child is None:
+                    pending.append(signum)
+                elif child.poll() is None:
+                    os.killpg(child.pid, signum)
+            signal.signal(signal.SIGTERM, terminate)
+            signal.signal(signal.SIGINT, terminate)
+            child = subprocess.Popen(command, cwd=ROOT, env=process_env, start_new_session=True)
+            record.update(pid=child.pid, birth=process_identity(child.pid))
+            write_owner(record_path, record)
+            for signum in pending:
+                terminate(signum, None)
+        sys.exit(child.wait())
 
 
 def cli():

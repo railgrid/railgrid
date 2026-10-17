@@ -18,11 +18,19 @@ spec.loader.exec_module(m)
 
 class CheckoutTest(unittest.TestCase):
     def setUp(self):
+        self.registry_directory = m.registry_directory
         state = tempfile.TemporaryDirectory()
         self.addCleanup(state.cleanup)
-        env = patch.dict(m.os.environ, {'XDG_STATE_HOME': state.name})
+        env = patch.object(m, 'registry_directory', return_value=Path(state.name) / 'railgrid')
         env.start()
         self.addCleanup(env.stop)
+
+    def test_registry_ignores_harness_home_and_xdg_overrides(self):
+        # The helper itself must use the account identity, even when the
+        # runner deliberately moves HOME and XDG state into its own area.
+        account_home = Path(m.pwd.getpwuid(m.os.getuid()).pw_dir)
+        with patch.dict(m.os.environ, {'HOME': '/private-runner-home', 'XDG_STATE_HOME': '/private-runner-state'}):
+            self.assertEqual(self.registry_directory(), account_home / '.local/state/railgrid')
 
     def test_registry_reserves_stopped_checkouts_and_serializes_allocations(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
@@ -153,7 +161,7 @@ class CheckoutTest(unittest.TestCase):
             (root / '.kcp/admin.kubeconfig').touch()
             config = m.settings(root)
             self.assertTrue(config['legacy'])
-            self.assertEqual(m.environment(config), {})
+            self.assertEqual(set(m.environment(config)), {'DEV_STATIC_TOKEN', 'DEV_STATIC_ADMIN'})
             self.assertEqual(m.manifests(config), {})
 
     def test_copied_runtime_state_is_not_silently_reused(self):

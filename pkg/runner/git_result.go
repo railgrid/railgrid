@@ -138,6 +138,7 @@ func (r *Runner) finishGitResultLocked(attempt *attemptRecord, result gitResultE
 		}
 		return err
 	}
+	r.scheduleCleanupLocked(attempt)
 	return nil
 }
 
