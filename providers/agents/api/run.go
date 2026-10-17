@@ -320,11 +320,10 @@ func (s *Server) callerAccess(ctx context.Context, c *agentsclient.Client, id id
 // runAccess), what to run, where the answer goes, and the callbacks a live
 // caller wants. ParentRunID links sub-agent (delegation) runs.
 type taskRun struct {
-	HarnessSettings *store.HarnessSettings
-	Creds           llm.CredentialResolver
-	CR              tools.CRAccess
-	Scope           store.Scope
-	Agent           *agentsv1alpha1.Agent
+	Creds llm.CredentialResolver
+	CR    tools.CRAccess
+	Scope store.Scope
+	Agent *agentsv1alpha1.Agent
 
 	// RunID pre-assigns the run's ID (async run-now, chat's SSE start event,
 	// resume). Empty → generated.
@@ -369,7 +368,8 @@ type taskRun struct {
 	// commit, no history, no harness session, a Git result on completion. The
 	// clone source it carries is dispatch data — held here for the turn and
 	// never persisted; a run rebuilt from its record carries none.
-	Repository *repositoryAttempt
+	Repository      *repositoryAttempt
+	HarnessSettings *store.HarnessSettings
 
 	// Worker, when non-nil, marks this run as a spawned sub-agent worker and
 	// carries the constraints its parent imposed (depth, narrowed families,

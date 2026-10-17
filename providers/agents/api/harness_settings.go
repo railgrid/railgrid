@@ -9,7 +9,10 @@
 package api
 
 import (
+	"fmt"
 	"strings"
+
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/store"
@@ -17,11 +20,35 @@ import (
 
 func resolveHarnessSettings(agent *agentsv1alpha1.Agent, snapshot *store.HarnessSettings) *store.HarnessSettings {
 	if snapshot != nil {
-		copy := *snapshot
-		return &copy
+		dup := *snapshot
+		return &dup
 	}
 	if cfg := agent.Spec.Harness(); cfg != nil {
 		return &store.HarnessSettings{Model: strings.TrimSpace(cfg.Model), ReasoningEffort: cfg.ReasoningEffort}
 	}
 	return nil
+}
+
+// invokeHarnessSettings validates overrides before admission or persistence.
+func invokeHarnessSettings(agent *agentsv1alpha1.Agent, model, effort *string) (*store.HarnessSettings, error) {
+	settings := resolveHarnessSettings(agent, nil)
+	if settings == nil {
+		if model != nil || effort != nil {
+			return nil, fmt.Errorf("model and reasoningEffort overrides require a harness-backed agent")
+		}
+		return nil, nil
+	}
+	if model != nil {
+		settings.Model = strings.TrimSpace(*model)
+	}
+	if effort != nil {
+		settings.ReasoningEffort = strings.TrimSpace(*effort)
+	}
+	if len(settings.Model) > 253 {
+		return nil, fmt.Errorf("model exceeds its length limit")
+	}
+	if err := runnerharness.ValidateReasoningEffort("codex", settings.ReasoningEffort); err != nil {
+		return nil, err
+	}
+	return settings, nil
 }

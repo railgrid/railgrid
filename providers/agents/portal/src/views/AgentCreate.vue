@@ -436,11 +436,11 @@ async function submit(): Promise<void> {
                   <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
                   <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
                 </label>
-            <label>
-              <span id="agent-create-harness-effort-label">Reasoning effort</span>
-              <input v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label" aria-describedby="agent-create-harness-effort-hint" />
-              <span id="agent-create-harness-effort-hint" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
-            </label>
+                <label>
+                  <span id="agent-create-harness-effort-label">Reasoning effort</span>
+                  <input id="agent-create-harness-effort" :disabled="busy" pattern="[a-z][a-z0-9_-]*" v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label" aria-describedby="agent-create-harness-effort-hint" />
+                  <span id="agent-create-harness-effort-hint" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
+                </label>
 
                 <label>
                   <span id="agent-create-workspace-label">Working directory</span>

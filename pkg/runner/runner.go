@@ -321,15 +321,17 @@ func (r *Runner) Close() error {
 // Start accepts an approved attempt and returns once its receipt and accepted
 // event have been durably persisted. Execution continues asynchronously.
 func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, error) {
-	if request.ReasoningEffort != "" {
-		for _, h := range r.Capabilities().Harnesses {
-			if err := harness.ValidateReasoningEffort(h.Name, request.ReasoningEffort); err != nil {
-				return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
-			}
-		}
-	}
 	if err := validateProtocolVersion(request.ProtocolVersion); err != nil {
 		return Receipt{}, protocolError(ErrorUnsupportedVersion, false, err.Error(), nil)
+	}
+	if request.ReasoningEffort != "" {
+		name := request.RequiredHarness
+		if advertised := r.Capabilities().Harnesses; name == "" && len(advertised) == 1 {
+			name = advertised[0].Name
+		}
+		if err := harness.ValidateReasoningEffort(name, request.ReasoningEffort); err != nil {
+			return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
+		}
 	}
 	if err := validateStartRequest(request); err != nil {
 		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)

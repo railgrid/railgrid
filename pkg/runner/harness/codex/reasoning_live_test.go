@@ -14,15 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package codex adapts the Codex app-server protocol to the runner harness.
-//
-// # Credentials
-//
-// The Codex login session is supplied by the caller with every launch
-// (harness.Launch.Credential) and materialized as the worker home's auth.json
-// for the duration of that one launch. Nothing on the host stays signed in, so
-// authentication is an outcome of an attempt rather than a property of the
-// runner: Probe never reports on it.
 package codex
 
 import (

@@ -51,7 +51,9 @@ const (
 )
 
 type invokeRunRequest struct {
-	Model           *string `json:"model,omitempty"`
+	// Model overrides the Agent model for this run; omitted inherits, empty selects the harness default.
+	Model *string `json:"model,omitempty"`
+	// ReasoningEffort follows the same inheritance rules and requires the existing run permission.
 	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
 	// Task is the prompt the agent runs. Required.
 	Task string `json:"task"`
@@ -163,21 +165,9 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	settings := resolveHarnessSettings(agent, nil)
-	if req.Model != nil || req.ReasoningEffort != nil {
-		if settings == nil {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "model and reasoningEffort overrides require a harness-backed agent")
-			return
-		}
-		if req.Model != nil {
-			settings.Model = strings.TrimSpace(*req.Model)
-		}
-		if req.ReasoningEffort != nil {
-			settings.ReasoningEffort = *req.ReasoningEffort
-		}
-	}
-	if settings != nil && (len(settings.Model) > 253 || len(settings.ReasoningEffort) > 32) {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "model or reasoningEffort exceeds its length limit")
+	settings, err := invokeHarnessSettings(agent, req.Model, req.ReasoningEffort)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
 	tr := taskRun{

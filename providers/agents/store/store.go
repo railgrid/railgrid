@@ -133,14 +133,13 @@ type HarnessSettings struct {
 // JSON payload (Eino interrupt/resume state) so the store needs no knowledge of
 // chat/tool types. ParentRunID links sub-agent runs for delegation lineage.
 type Run struct {
-	HarnessSettings *HarnessSettings `json:"harnessSettings,omitempty"`
-	ID              string           `json:"id"`
-	AgentName       string           `json:"agentName"`
-	SessionID       string           `json:"sessionID,omitempty"`
-	Trigger         string           `json:"trigger"`
-	ParentRunID     string           `json:"parentRunID,omitempty"`
-	Phase           RunPhase         `json:"phase"`
-	Attempt         int              `json:"attempt,omitempty"`
+	ID          string   `json:"id"`
+	AgentName   string   `json:"agentName"`
+	SessionID   string   `json:"sessionID,omitempty"`
+	Trigger     string   `json:"trigger"`
+	ParentRunID string   `json:"parentRunID,omitempty"`
+	Phase       RunPhase `json:"phase"`
+	Attempt     int      `json:"attempt,omitempty"`
 	// Retries counts how many times this run was handed back to the queue after
 	// a transient refusal (a runner at capacity, a runner not yet ready) instead
 	// of being failed. It is distinct from Attempt, which counts recoveries of a
@@ -173,7 +172,8 @@ type Run struct {
 	// the agent's spec: an agent re-pointed from one backend to the other must
 	// not make its history unreadable, and the two carry different resume
 	// coordinates.
-	Backend string `json:"backend,omitempty"`
+	Backend         string           `json:"backend,omitempty"`
+	HarnessSettings *HarnessSettings `json:"harnessSettings,omitempty"`
 	// AttemptID is the runner attempt one harness-backed run IS. It is the run's
 	// own id today, but it is stored rather than assumed: the coordinate a
 	// cancel, an inspect and a resume all address must survive a change of that

@@ -294,10 +294,10 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(threadResponse.Result, &thread); err != nil {
-			return result, fmt.Errorf("reading resolved Codex model: %w", err)
+			return resultForError(fmt.Errorf("reading resolved Codex model: %w", err), state), nil
 		}
 		if err := validateModelEffort(ctx, conn, state, thread.Model, launch.ReasoningEffort); err != nil {
-			return result, err
+			return resultForError(err, state), nil
 		}
 	}
 	turnParams := a.turnStartParams(launch, state.sessionID)

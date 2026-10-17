@@ -664,10 +664,10 @@ func TestReasoningEffortOnNewAndResumedTurns(t *testing.T) {
 				t.Run("effort="+effort, func(t *testing.T) {
 					binary := fakeCodexBinary(t, "success")
 					adapter := New(Config{Binary: binary, Home: t.TempDir()})
-					_, err := adapter.Run(t.Context(), harness.Launch{AttemptID: "test", Workdir: t.TempDir(), Instructions: "hello", Model: "gpt-6-luna", ReasoningEffort: effort, SessionID: session, Credential: testCredential()}, func(harness.Event) error { return nil })
+					result, err := adapter.Run(t.Context(), harness.Launch{AttemptID: "test", Workdir: t.TempDir(), Instructions: "hello", Model: "gpt-6-luna", ReasoningEffort: effort, SessionID: session, Credential: testCredential()}, func(harness.Event) error { return nil })
 					if effort == "unsupported" {
-						if err == nil || !strings.Contains(err.Error(), "not supported") {
-							t.Fatalf("error = %v", err)
+						if err != nil || result.Phase != "failed" || result.SessionID != "thread-1" || !strings.Contains(result.Blocker, "not supported") {
+							t.Fatalf("result = %+v, error = %v", result, err)
 						}
 					} else if err != nil {
 						t.Fatal(err)

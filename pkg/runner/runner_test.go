@@ -854,3 +854,29 @@ func runGit(t *testing.T, dir string, args ...string) []byte {
 	}
 	return output
 }
+
+func TestHTTPStartRejectsReasoningEffort(t *testing.T) {
+	source, commit := testGitSource(t)
+	r := newTestRunner(t, &fakeAdapter{name: "codex"}, source, commit)
+	for _, tc := range []struct{ name, effort, required, version, code string }{
+		{"malformed", "MAX!", "codex", ProtocolVersion, string(ErrorInvalidRequest)},
+		{"other-harness", "max", "claude", ProtocolVersion, string(ErrorInvalidRequest)},
+		{"version-first", "MAX!", "codex", "unsupported", string(ErrorUnsupportedVersion)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := testStartRequest(commit)
+			body.ReasoningEffort, body.RequiredHarness, body.ProtocolVersion = tc.effort, tc.required, tc.version
+			data, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://localhost/runner/v1/attempts", strings.NewReader(string(data)))
+			req.Header.Set("Authorization", "Bearer "+r.cfg.Token)
+			response := httptest.NewRecorder()
+			r.Handler().ServeHTTP(response, req)
+			if response.Code < 400 || !strings.Contains(response.Body.String(), tc.code) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}

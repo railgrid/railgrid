@@ -536,6 +536,29 @@ run details show both choices. Runner `Start` carries `reasoningEffort` alongsid
 Codex receives `effort` on every `turn/start`, including resumed turns. No
 `model_reasoning_effort` key is added to the runner's managed configuration.
 
+Overrides are covered by the existing permission to invoke the Agent's `run`
+verb; they do not grant access to other credentials, machines, or tools. Existing
+run admission and budgets still apply. Values are trimmed; reasoning effort
+must be empty or a lowercase identifier of at most 32 characters.
+
+Only harness-backed Agents acquire this snapshot at submission. Model-backed
+runs have no harness snapshot. If their Agent changes to a harness backend while
+queued, the first harness execution resolves the current choices. Similarly,
+legacy stored runs with NULL settings resolve the current Agent on their first
+execution after upgrade. The first non-NULL snapshot then remains fixed; even
+an explicitly empty snapshot is preserved. This does not freeze the Agent's
+entire backend configuration.
+
+The generated Factory permission policy requires Factory's Agent-delegation
+migration ([providers PR #75](https://github.com/railgrid/providers/pull/75),
+manifest commit
+[`f663ccf`](https://github.com/railgrid/providers/commit/f663ccf723291e6f18f9218b290887e02f31011b)).
+That manifest replaces the Edges requirement with Agents; the policy intentionally
+matches it. Deploy that Factory migration before applying this policy. Then
+upgrade runners and Agents before enabling Factory reasoning overrides
+([providers PR #78](https://github.com/railgrid/providers/pull/78)).
+Do not apply this policy while an older Factory still requires Edges.
+
 The opt-in `TestLiveReasoningEffortSessionMetadata` test takes a credential-file
 path from `RAILGRID_CODEX_LIVE_AUTH_FILE`, uses a temporary Codex home, and checks
 persisted turn metadata for a new and resumed session without logging transcripts.

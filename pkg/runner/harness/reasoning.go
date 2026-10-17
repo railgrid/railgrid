@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package harness defines the public execution seam for runner adapters.
 package harness
 
 import (

@@ -1064,7 +1064,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             </label>
             <label>
               <span :id="domID('agent-harness-effort-label')">Reasoning effort</span>
-              <input v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" :aria-labelledby="domID('agent-harness-effort-label')" :aria-describedby="domID('agent-harness-effort-hint')" />
+              <input :id="domID('agent-harness-effort')" pattern="[a-z][a-z0-9_-]*" v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" :aria-labelledby="domID('agent-harness-effort-label')" :aria-describedby="domID('agent-harness-effort-hint')" />
               <span :id="domID('agent-harness-effort-hint')" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
             </label>
             <label>

@@ -777,8 +777,8 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 		run.HarnessSettings = old.HarnessSettings
 	}
 	if run.HarnessSettings != nil {
-		copy := *run.HarnessSettings
-		run.HarnessSettings = &copy
+		dup := *run.HarnessSettings
+		run.HarnessSettings = &dup
 	}
 	m.runs[key] = run
 	if !exists && run.IdempotencyKey != "" {

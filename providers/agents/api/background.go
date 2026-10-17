@@ -613,7 +613,7 @@ func (b *background) submitRun(ctx context.Context, job executor.Job) (string, e
 	}
 	object, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, job.AgentRef, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read agent %q while submitting run: %w", job.AgentRef, err)
 	}
 	agent, err := fromU[agentsv1alpha1.Agent](object)
 	if err != nil {
@@ -893,21 +893,23 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	var harnessSettings *store.HarnessSettings
 	var retries int
 	if job.RunID != "" {
-		if stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID); gerr == nil {
-			if stored.CancelRequested || stored.Phase != store.RunPhasePending {
-				log.Printf("background: job %s/%s: run %s is %s (cancelRequested=%t); not starting it", job.Kind, job.SourceName, job.RunID, stored.Phase, stored.CancelRequested)
-				return nil
-			}
-			// A repository run picked up here never has its clone source any
-			// more — that died with the process that accepted it — so a fresh
-			// dispatch of one fails with the retry message rather than
-			// starting a workspace turn in its place.
-			repository = repositoryAttemptFromStored(stored.Repository)
-			harnessSettings = stored.HarnessSettings
-			// A run picked up for the second time carries how many times it
-			// was handed back, which is what bounds handing it back again.
-			retries = stored.Retries
+		stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID)
+		if gerr != nil {
+			return fmt.Errorf("read queued run %s before dispatch: %w", job.RunID, gerr)
 		}
+		if stored.CancelRequested || stored.Phase != store.RunPhasePending {
+			log.Printf("background: job %s/%s: run %s is %s (cancelRequested=%t); not starting it", job.Kind, job.SourceName, job.RunID, stored.Phase, stored.CancelRequested)
+			return nil
+		}
+		// A repository run picked up here never has its clone source any
+		// more — that died with the process that accepted it — so a fresh
+		// dispatch of one fails with the retry message rather than
+		// starting a workspace turn in its place.
+		repository = repositoryAttemptFromStored(stored.Repository)
+		harnessSettings = stored.HarnessSettings
+		// A run picked up for the second time carries how many times it
+		// was handed back, which is what bounds handing it back again.
+		retries = stored.Retries
 	}
 	tr := taskRun{
 		Scope: scope, Agent: agent, RunID: job.RunID,

@@ -78,7 +78,6 @@ type runStep struct {
 // present as arrays (never null/absent) so a client can map over them without
 // guarding every empty case.
 type runDetail struct {
-	HarnessSettings *store.HarnessSettings `json:"harnessSettings,omitempty"`
 	runSummary
 	Input string `json:"input,omitempty"`
 	// Output is the run's answer, so a caller that polled the phase reads the
@@ -92,7 +91,8 @@ type runDetail struct {
 	// coordinates somebody debugging it needs: the runner attempt this run IS,
 	// and the harness session its turn ran in. Without them a failed run can be
 	// seen but not correlated with anything on the machine that ran it.
-	Harness *runHarnessInfo `json:"harness,omitempty"`
+	Harness         *runHarnessInfo        `json:"harness,omitempty"`
+	HarnessSettings *store.HarnessSettings `json:"harnessSettings,omitempty"`
 	// Repository and Result are present only for a repository run: what it ran
 	// against, and — once it succeeded — the verified Git result whose
 	// artifacts the `artifact` verb serves. Same shapes as the Run object's

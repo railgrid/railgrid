@@ -160,6 +160,8 @@ var agentsSchema = []string{
 	// credential) and its verified Git result. NULL on every conversational
 	// run, which is every row written before repository runs existed.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS repository JSONB`,
+	// Legacy NULL rows resolve live Agent settings on first harness execution;
+	// SaveRun preserves the first non-NULL snapshot, including empty settings.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS harness_settings JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS result JSONB`,
 	// A run handed back to the queue after a transient refusal: how many times,
