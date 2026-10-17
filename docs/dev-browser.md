@@ -83,3 +83,9 @@ Port reservations use the OS accountâ€™s home directory rather than the processâ
 while sharing reservations with ordinary checkouts on the same host. A saved
 configuration that conflicts with another checkout fails explicitly; clean up
 that old stack before removing its ignored checkout state and allocating anew.
+
+The `screenshotsDirectory` value in `.kcp/dev-browser.json` is an absolute
+path at the Git checkout root. Use it even when running tools from a provider
+subdirectory. PR image links must be root-relative
+`artifacts/screenshots/name.png`; `providers/<name>/artifacts/screenshots/`
+is not exported by the runner.

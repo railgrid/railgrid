@@ -149,6 +149,7 @@ class BrowserTest(unittest.TestCase):
             self.assertEqual(triggered, ['planner-register', 'planner-init'])
             info = json.loads((Path(tmp) / '.kcp/dev-browser.json').read_text())
             self.assertEqual(info['providers'], ['planner'])
+            self.assertEqual(info['screenshotsDirectory'], str(Path(tmp) / 'artifacts/screenshots'))
             self.assertIn('/ui/org/ws/', info['portalURL'])
             self.assertNotIn('dev-token', json.dumps(info))
             setup.wait_resource.side_effect = ValueError('provider failed readiness')

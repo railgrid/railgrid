@@ -204,7 +204,7 @@ class Setup:
         info = {'portalURL': self.url + '/ui/' + org + '/' + workspace['uuid'] + '/',
                 'orgUUID': org, 'workspaceUUID': workspace['uuid'], 'clusterName': workspace['clusterName'],
                 'tokenFile': str(token_path), 'providers': names,
-                'screenshotsDirectory': 'artifacts/screenshots',
+                'screenshotsDirectory': str(ROOT / 'artifacts/screenshots'),
                 'integrations': 'External credentials are not configured by this command. Configure only those required by the change.'}
         write_private(ROOT / '.kcp/dev-browser.json', json.dumps(info, indent=2) + '\n')
         print('Browser environment ready: ' + info['portalURL'])
