@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/klog/v2"
+
 	"github.com/railgrid/railgrid/pkg/runner"
 	"github.com/railgrid/railgrid/pkg/runner/client"
 )
@@ -45,7 +47,11 @@ func retryableRead(err error) bool {
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
 		case http.StatusInternalServerError:
-			return resourceResolutionTimeout(httpErr.Body)
+			if resourceResolutionTimeout(httpErr.Body) {
+				klog.V(1).InfoS("Recognized retryable kcp resource-resolution timeout", "statusCode", httpErr.StatusCode)
+				return true
+			}
+			return false
 		case http.StatusRequestTimeout,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return true
@@ -165,6 +171,10 @@ func inspectWithRetry(ctx context.Context, r Runner, attemptID string, obs Obser
 // their HTTP timeout status. Match this specific Kubernetes Status envelope,
 // not arbitrary 500s or bodies that merely mention a timeout. Remove this
 // compatibility case when kcp preserves the original timeout classification.
+// Captured during Factory smoke run RAI-13 (railgrid/railgrid#888):
+// https://github.com/railgrid/railgrid/pull/888
+// If kcp rewords the response, this match stops applying; the captured wording
+// is pinned by TestKCPResolutionTimeoutRecovery.
 func resourceResolutionTimeout(body []byte) bool {
 	var status struct {
 		Kind       string `json:"kind"`

@@ -22,7 +22,9 @@ import "sigs.k8s.io/controller-runtime/pkg/config"
 // terms. controller-runtime's default name registry is process-global and never
 // forgets stopped controllers. Use only for managers owned by Run's callback:
 // Run waits for the previous callback to finish before starting the next term.
-// Controller names must still be distinct within each term.
+// Callers must keep controller names distinct within each term. Skipping
+// validation disables that check even within one manager; duplicates would
+// silently share metrics and log labels.
 func ControllerOptions() config.Controller {
 	skip := true
 	return config.Controller{SkipNameValidation: &skip}

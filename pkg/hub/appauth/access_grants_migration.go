@@ -37,7 +37,6 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -51,6 +50,7 @@ import (
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
@@ -466,11 +466,10 @@ func (r *appAccessGrantMigrationSource) newChildManager(descriptor appAccessMigr
 	if err != nil {
 		return nil, fmt.Errorf("creating Infrastructure APIExport provider for %q: %w", descriptor.path, err)
 	}
-	skipNameValidation := true
 	childManager, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:     r.scheme,
 		Metrics:    metricsserver.Options{BindAddress: "0"},
-		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
+		Controller: leaderelection.ControllerOptions(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating Infrastructure grant migration manager for %q: %w", descriptor.path, err)
