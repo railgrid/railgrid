@@ -268,14 +268,14 @@ func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) 
 // park, reporting them through obs, and then reads the receipt — which is the
 // authority on how it ended.
 //
-// The loop reconnects after quiet streams and temporary Edge transport failures,
-// preserving the consumed cursor. Read retries use capped backoff and honor the
-// caller’s deadline and durable cancellation. The runner ends a stream
-// itself after a silent interval so a caller resumes from its cursor rather
-// than holding one connection open for the length of a coding turn. Each
-// reconnect is also where the two things that must not be skipped happen: the
-// caller's cancel flag is consulted, and the receipt is re-read in case the
+// Quiet-stream reconnection is expected: the runner closes silent streams so
+// callers can check cancellation and re-read the receipt, including when an
 // attempt ended during the quiet.
+//
+// Transport failures instead retry with capped backoff, preserving the consumed
+// cursor. Retries honor caller deadlines and durable cancellation and stop after
+// five minutes without recovery. Stream progress or a clean drain resets that
+// outage budget; merely opening another connection does not.
 func Follow(ctx context.Context, r Runner, receipt runner.Receipt, from Position, obs Observer) (Outcome, error) {
 	return followStream(ctx, r, receipt, from, obs, newStream(obs, from.Cursor), false)
 }
@@ -327,12 +327,14 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 	// the flag a runner whose cursor stays ahead — because the events it
 	// counted have already been dropped — would be re-read forever.
 	caughtUp := false
-	var streamRetryDelay time.Duration
+	outage := &readOutage{}
 	for {
 		if err := obs.Aborted(ctx); err != nil {
 			return s.outcome(receipt, pos), err
 		}
-		stream, err := eventsWithRetry(ctx, r, attemptID, s.cursor, obs)
+		stream, err := retryReadDuring(ctx, obs, outage, func() (Stream, error) {
+			return r.Events(ctx, attemptID, s.cursor)
+		})
 		if err != nil {
 			return s.outcome(receipt, pos),
 				Describe("following the attempt", err)
@@ -340,8 +342,10 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 		before := s.cursor
 		terminal, quiet, err := drain(ctx, stream, s, strictHistory)
 		_ = stream.Close()
+		if s.cursor > before || err == nil {
+			*outage = readOutage{}
+		}
 		if s.cursor > before {
-			streamRetryDelay = 0
 			caughtUp = false
 		}
 		switch {
@@ -369,8 +373,10 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 				continue
 			}
 			if retryableRead(err) {
-				obs.Checkpoint(s.snapshot(pos))
-				if retryErr := waitReadRetry(ctx, obs, &streamRetryDelay); retryErr != nil {
+				if s.cursor > before || outage.delay == 0 {
+					obs.Checkpoint(s.snapshot(pos))
+				}
+				if retryErr := outage.wait(ctx, obs, err); retryErr != nil {
 					return s.outcome(receipt, pos), retryErr
 				}
 				continue
@@ -500,7 +506,7 @@ func Cancel(ctx context.Context, r Runner, req runner.CancelRequest) (*runner.Re
 			return &receipt, fmt.Errorf("attempt %s is %s, not cancelled: %w", req.AttemptID, receipt.Phase, ctx.Err())
 		case <-time.After(cancelPoll):
 		}
-		receipt, err = r.Inspect(ctx, req.AttemptID)
+		receipt, err = inspectWithRetry(ctx, r, req.AttemptID, nil)
 		if err != nil {
 			return nil, Describe("observing the cancelled attempt", err)
 		}

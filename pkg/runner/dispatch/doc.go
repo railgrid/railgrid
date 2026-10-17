@@ -36,7 +36,9 @@ limitations under the License.
 //   - The RECEIPT is the authority on how an attempt ended. A terminal event is
 //     a reason to go and read it, never a conclusion in itself.
 //   - Temporary Edge transport failures retry read-only status/event requests
-//     with capped backoff until the caller cancels or its deadline expires.
+//     with capped backoff, bounded by five minutes of consecutive outage,
+//     caller cancellation, and the caller deadline. Expected quiet-stream
+//     reconnections are not transport failures.
 //     Reconnection preserves the consumed cursor and never starts another attempt.
 //   - The receipt's session id is authoritative, because a harness may fork its
 //     session on a resume. Whatever is chained next is chained onto what the

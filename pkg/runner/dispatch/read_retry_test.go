@@ -162,7 +162,7 @@ func TestReadRetryHonorsDeadlineAndDurableCancellation(t *testing.T) {
 }
 
 func TestReadRetryPreservesPermanentErrors(t *testing.T) {
-	for _, err := range []error{&client.HTTPError{StatusCode: 401}, &client.HTTPError{StatusCode: 403}, &client.HTTPError{StatusCode: 404},
+	for _, err := range []error{&client.HTTPError{StatusCode: 500}, &client.HTTPError{StatusCode: 429}, &client.HTTPError{StatusCode: 401}, &client.HTTPError{StatusCode: 403}, &client.HTTPError{StatusCode: 404},
 		&runner.Error{Code: runner.ErrorUnavailable}, &runner.Error{Code: runner.ErrorCursorExpired, Retryable: true, SnapshotRequired: true}, errors.New("invalid event")} {
 		calls := 0
 		_, got := retryRead(context.Background(), nil, func() (runner.Receipt, error) { calls++; return runner.Receipt{}, err })
@@ -220,6 +220,91 @@ func TestRejoinRetriesInspectionWithoutRedispatch(t *testing.T) {
 		out, err := Rejoin(ctxWithTimeout(t), f, Position{AttemptID: "attempt-1"}, nil)
 		if err != nil || !out.Completed() || calls != 2 || len(base.starts)+len(base.resumes) != 0 {
 			t.Fatalf("rejoin failed or redispatched: %+v %v calls=%d", out, err, calls)
+		}
+	})
+}
+
+// Persistent failures are bounded even for callers without a deadline. Opening
+// a stream successfully between failed reads must not renew the outage budget.
+func TestPersistentReadOutage(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "inspection", true: "stream"}[stream], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				failure := &client.HTTPError{StatusCode: 502}
+				obs := &recorder{}
+				f := &flakyReader{fakeRunner: &fakeRunner{receipt: receipt(runner.PhaseRunning)}}
+				f.inspect = func(context.Context, string) (runner.Receipt, error) { return runner.Receipt{}, failure }
+				calls := 0
+				f.events = func(context.Context, string, uint64) (Stream, error) {
+					calls++
+					// Exercise alternating connection failures and failed stream reads.
+					if calls%2 == 0 {
+						return nil, failure
+					}
+					return &sliceStream{err: failure}, nil
+				}
+				var err error
+				if stream {
+					_, err = Follow(context.Background(), f, receipt(runner.PhaseRunning), Position{}, obs)
+					if len(obs.checkpoints) != 1 {
+						t.Fatalf("redundant checkpoints: %d", len(obs.checkpoints))
+					}
+				} else {
+					_, err = inspectWithRetry(context.Background(), f, "attempt-1", nil)
+				}
+				if !errors.Is(err, failure) || !strings.Contains(err.Error(), "outage exceeded") {
+					t.Fatalf("lost last error or outage diagnostic: %v", err)
+				}
+				if elapsed := time.Since(start); elapsed != maxReadOutage {
+					t.Fatalf("outage lasted %s", elapsed)
+				}
+			})
+		})
+	}
+}
+
+func TestCancelRetriesObservationOnly(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		base := &fakeRunner{receipt: receipt(runner.PhaseRunning)}
+		f := &flakyReader{fakeRunner: base}
+		calls := 0
+		f.inspect = func(context.Context, string) (runner.Receipt, error) {
+			calls++
+			if calls == 1 {
+				return runner.Receipt{}, &client.HTTPError{StatusCode: 502}
+			}
+			return receipt(runner.PhaseCancelled), nil
+		}
+		got, err := Cancel(context.Background(), f, runner.CancelRequest{AttemptID: "attempt-1"})
+		if err != nil || got == nil || got.Phase != runner.PhaseCancelled || calls != 2 || len(base.cancels) != 1 {
+			t.Fatalf("receipt=%+v err=%v reads=%d mutations=%d", got, err, calls, len(base.cancels))
+		}
+	})
+}
+
+type countingCancellation struct {
+	Noop
+	checks int
+	stopAt time.Time
+}
+
+func (o *countingCancellation) Aborted(context.Context) error {
+	o.checks++
+	if !time.Now().Before(o.stopAt) {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestBackoffCancellationPolling(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		obs := &countingCancellation{stopAt: start.Add(3500 * time.Millisecond)}
+		delay := 5 * time.Second
+		err := waitReadRetry(context.Background(), obs, &delay)
+		if !errors.Is(err, context.Canceled) || time.Since(start) > 4500*time.Millisecond || obs.checks > 5 {
+			t.Fatalf("err=%v elapsed=%s durable reads=%d", err, time.Since(start), obs.checks)
 		}
 	})
 }

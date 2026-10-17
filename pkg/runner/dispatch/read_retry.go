@@ -19,6 +19,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -31,7 +32,7 @@ import (
 
 // Only read operations use this policy. An unreachable Edge says nothing
 // about whether an accepted attempt is still running. Keep following it until
-// the caller's deadline/cancellation, rather than dispatching duplicate work.
+// recovery, cancellation, or the outage limit, without dispatching duplicate work.
 func retryableRead(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
@@ -42,7 +43,7 @@ func retryableRead(err error) bool {
 	var httpErr *client.HTTPError
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
-		case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError,
+		case http.StatusRequestTimeout,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return true
 		default:
@@ -56,6 +57,31 @@ func retryableRead(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
+}
+
+const maxReadOutage = 5 * time.Minute
+
+// readOutage is shared across opening and draining a stream. Opening a
+// connection alone is not evidence that a broken event feed has recovered.
+type readOutage struct {
+	started time.Time
+	delay   time.Duration
+}
+
+func (o *readOutage) wait(ctx context.Context, obs Observer, last error) error {
+	if o.started.IsZero() {
+		o.started = time.Now()
+	}
+	retryCtx, cancel := context.WithDeadline(ctx, o.started.Add(maxReadOutage))
+	defer cancel()
+	err := waitReadRetry(retryCtx, obs, &o.delay)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("runner read outage exceeded %s: %w", maxReadOutage, last)
+	}
+	return err
 }
 
 // Back off read failures, while polling the caller's durable cancellation flag
@@ -76,7 +102,7 @@ func waitReadRetry(ctx context.Context, obs Observer, delay *time.Duration) erro
 				return err
 			}
 		}
-		interval := min(remaining, quietPoll)
+		interval := min(remaining, time.Second)
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -90,8 +116,11 @@ func waitReadRetry(ctx context.Context, obs Observer, delay *time.Duration) erro
 }
 
 func retryRead[T any](ctx context.Context, obs Observer, read func() (T, error)) (T, error) {
+	return retryReadDuring(ctx, obs, &readOutage{}, read)
+}
+
+func retryReadDuring[T any](ctx context.Context, obs Observer, outage *readOutage, read func() (T, error)) (T, error) {
 	var zero T
-	var delay time.Duration
 	for {
 		if err := ctx.Err(); err != nil {
 			return zero, err
@@ -105,7 +134,7 @@ func retryRead[T any](ctx context.Context, obs Observer, read func() (T, error))
 		if err == nil || !retryableRead(err) {
 			return result, err
 		}
-		if err := waitReadRetry(ctx, obs, &delay); err != nil {
+		if err := outage.wait(ctx, obs, err); err != nil {
 			return zero, err
 		}
 	}
