@@ -27,6 +27,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Journals live with private runner state and have the same lifetime as their
@@ -39,6 +40,24 @@ func (s *stateStore) eventPath(attemptID string) string {
 // Bound journal disk usage independently of optional harness output limits.
 const maxJournalBytes int64 = 256 << 20
 const journalControlReserve int64 = 1 << 20
+const maxTotalJournalBytes int64 = 2 << 30
+const totalJournalControlReserve int64 = 16 << 20
+
+// Journal accounting is guarded by the runner mutex. Index lookups have a
+// separate mutex so replay scanning never holds the shared runner lock.
+func (s *stateStore) accountJournal(path string, size int64) {
+	s.totalJournalBytes += size - s.journalSizes[path]
+	if size == 0 {
+		delete(s.journalSizes, path)
+	} else {
+		s.journalSizes[path] = size
+	}
+}
+func (s *stateStore) clearEventIndex(id string) {
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	delete(s.eventIndex, id)
+}
 
 type journalWriter struct {
 	file  *os.File
@@ -67,9 +86,11 @@ func (s *stateStore) appendEvent(id string, offset int64, retained []Event, even
 		return offset, err
 	}
 	limit := maxJournalBytes
+	totalLimit := maxTotalJournalBytes
 	switch event.Type {
 	case EventCompleted, EventFailed, EventCancelled, EventNeedsInput:
 		limit += journalControlReserve
+		totalLimit += totalJournalControlReserve
 	}
 	if offset > limit-int64(encoded.Len()) {
 		return offset, errors.New("event journal byte limit exceeded")
@@ -77,7 +98,7 @@ func (s *stateStore) appendEvent(id string, offset int64, retained []Event, even
 	writer := s.journals[id]
 	if writer == nil || writer.end != offset {
 		if writer != nil {
-			delete(s.eventIndex, id)
+			s.clearEventIndex(id)
 		}
 		if err := s.closeJournal(id); err != nil {
 			return offset, err
@@ -105,13 +126,19 @@ func (s *stateStore) appendEvent(id string, offset int64, retained []Event, even
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
 			return offset, err
 		}
+		s.accountJournal(s.eventPath(id), offset)
 		writer = &journalWriter{file: f, end: offset}
 		s.journals[id] = writer
 		good = true
 	}
-	if _, err := writer.file.Write(encoded.Bytes()); err != nil {
+	if s.totalJournalBytes > totalLimit-int64(encoded.Len()) {
+		return offset, errors.New("aggregate event journal storage limit exceeded")
+	}
+	n, writeErr := writer.file.Write(encoded.Bytes())
+	s.accountJournal(s.eventPath(id), writer.end+int64(n))
+	if writeErr != nil {
 		_ = s.closeJournal(id)
-		return offset, err
+		return offset, writeErr
 	}
 	writer.end += int64(encoded.Len())
 	writer.dirty = true
@@ -126,10 +153,17 @@ func (s *stateStore) indexEvent(id string, cursor uint64, offset int64) {
 	if cursor%256 != 1 {
 		return
 	}
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
 	positions := s.eventIndex[id]
-	if len(positions) == 0 || positions[len(positions)-1].cursor < cursor {
-		s.eventIndex[id] = append(positions, journalPosition{cursor, offset})
+	i := sort.Search(len(positions), func(i int) bool { return positions[i].cursor >= cursor })
+	if i < len(positions) && positions[i].cursor == cursor {
+		return
 	}
+	positions = append(positions, journalPosition{})
+	copy(positions[i+1:], positions[i:])
+	positions[i] = journalPosition{cursor, offset}
+	s.eventIndex[id] = positions
 }
 
 func (s *stateStore) syncJournals() error {
@@ -160,10 +194,13 @@ func (s *stateStore) closeJournals() error {
 }
 func (s *stateStore) removeEvents(id string) error {
 	err := s.closeJournal(id)
-	delete(s.eventIndex, id)
+	s.clearEventIndex(id)
 	removeErr := os.Remove(s.eventPath(id))
 	if errors.Is(removeErr, os.ErrNotExist) {
 		removeErr = nil
+	}
+	if removeErr == nil {
+		s.accountJournal(s.eventPath(id), 0)
 	}
 	return errors.Join(err, removeErr)
 }
@@ -186,6 +223,7 @@ func (s *stateStore) pruneJournals(state persistedState) error {
 			if err := os.Remove(path); err != nil {
 				return err
 			}
+			s.accountJournal(path, 0)
 		}
 	}
 	return nil
@@ -204,12 +242,14 @@ func (s *stateStore) replayEvents(ctx context.Context, id string, bytes int64, a
 		return nil, err
 	}
 	var start int64
+	s.indexMu.Lock()
 	for _, position := range s.eventIndex[id] {
 		if position.cursor > after+1 || position.offset >= bytes {
 			break
 		}
 		start = position.offset
 	}
+	s.indexMu.Unlock()
 	replay := &eventReplay{file: f, decoder: json.NewDecoder(io.NewSectionReader(f, start, bytes-start)), through: through}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -247,6 +287,9 @@ func (r *eventReplay) next() (Event, error) {
 		// value. Keep lookahead from overwriting the event being returned.
 		r.nextEvent = Event{}
 		if err := r.decoder.Decode(&r.nextEvent); err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
 			return Event{}, err
 		}
 		if r.nextEvent.Cursor != event.Cursor+1 {

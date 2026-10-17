@@ -17,10 +17,12 @@ limitations under the License.
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -476,5 +478,179 @@ func TestJournalSyncFailureDoesNotCommitState(t *testing.T) {
 	}
 	if _, exists := saved.Attempts["attempt"]; exists {
 		t.Fatal("unsynced journal committed")
+	}
+}
+
+func TestAggregateJournalLimitAfterRestart(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sparse files exercise startup accounting without allocating GiBs of disk.
+	for i := 0; i < 8; i++ {
+		f, err := os.Create(store.eventPath(fmt.Sprintf("old-%d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(maxJournalBytes); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err = newStateStore(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.closeJournals() }()
+	if err := store.loadJournalUsage(); err != nil {
+		t.Fatal(err)
+	}
+	if store.totalJournalBytes != maxTotalJournalBytes {
+		t.Fatalf("restart accounting: %d", store.totalJournalBytes)
+	}
+	if _, err := store.appendEvent("new", 0, nil, Event{Cursor: 1, Type: EventProgress}); err == nil {
+		t.Fatal("exceeded aggregate cap")
+	}
+	end, err := store.appendEvent("new", 0, nil, Event{Cursor: 1, Type: EventFailed})
+	if err != nil {
+		t.Fatalf("no aggregate control reserve: %v", err)
+	}
+	if store.totalJournalBytes != maxTotalJournalBytes+end {
+		t.Fatal("append not accounted")
+	}
+	store.accountJournal("reserved", totalJournalControlReserve)
+	if _, err := store.appendEvent("new", end, nil, Event{Cursor: 2, Type: EventFailed}); err == nil {
+		t.Fatal("exceeded absolute aggregate cap")
+	}
+	store.accountJournal("reserved", 0)
+	if err := store.removeEvents("old-0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.appendEvent("new", end, nil, Event{Cursor: 2, Type: EventProgress}); err != nil {
+		t.Fatalf("removal did not release capacity: %v", err)
+	}
+	if err := store.closeJournals(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pruneJournals(emptyPersistedState()); err != nil {
+		t.Fatal(err)
+	}
+	if store.totalJournalBytes != 0 {
+		t.Fatalf("orphan accounting: %d", store.totalJournalBytes)
+	}
+}
+
+func TestColdReplayDoesNotHoldRunnerLock(t *testing.T) {
+	source, commit := testGitSource(t)
+	r := newTestRunner(t, &fakeAdapter{}, source, commit)
+	r.mu.Lock()
+	r.cfg.MaxEvents = 2
+	r.state.Attempts["cold"] = &attemptRecord{Receipt: Receipt{AttemptID: "cold", Phase: PhaseCompleted}}
+	for i := 0; i < 300; i++ {
+		if _, err := r.appendEventLocked("cold", EventProgress, "", nil); err != nil {
+			r.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	r.store.clearEventIndex("cold")
+	r.mu.Unlock()
+	// Block index access to model a stalled replay, then prove Inspect can
+	// acquire the runner lock while the HTTP request is waiting to scan.
+	r.store.indexMu.Lock()
+	done := make(chan struct{})
+	response := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		r.serveEvents(response, httptest.NewRequest(http.MethodGet, "/?after=1", nil), "cold")
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	subscribed := false
+	for time.Now().Before(deadline) {
+		if r.mu.TryLock() {
+			subscribed = len(r.subscribers["cold"]) > 0
+			r.mu.Unlock()
+			if subscribed {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !subscribed {
+		r.store.indexMu.Unlock()
+		<-done
+		t.Fatal("replay blocked the runner state lock")
+	}
+	_, inspectErr := r.Inspect(context.Background(), "cold")
+	r.store.indexMu.Unlock()
+	<-done
+	if inspectErr != nil {
+		t.Fatal(inspectErr)
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("replay: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestJournalReplayFailureIsDiagnosable(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+	source, commit := testGitSource(t)
+	r := newTestRunner(t, &fakeAdapter{}, source, commit)
+	r.state.Attempts["missing"] = &attemptRecord{EventJournalBytes: 100, Receipt: Receipt{AttemptID: "missing", Phase: PhaseCompleted, Cursor: 3}}
+	r.state.Events["missing"] = []Event{{Cursor: 3}}
+	response := httptest.NewRecorder()
+	r.serveEvents(response, httptest.NewRequest(http.MethodGet, "/?after=0", nil), "missing")
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "event journal replay failed") || strings.Contains(response.Body.String(), string(ErrorCursorExpired)) {
+		t.Fatalf("journal loss reported as expiry: %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(logs.String(), "event journal replay for missing after 0 failed") {
+		t.Fatal("missing replay diagnostic")
+	}
+	// Deliver one event before encountering a corrupt record during lookahead.
+	var corruptEnd int64
+	for cursor := uint64(1); cursor <= 2; cursor++ {
+		var err error
+		corruptEnd, err = r.store.appendEvent("corrupt", corruptEnd, nil, Event{Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.store.closeJournal("corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(r.store.eventPath("corrupt"), os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{broken"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.state.Attempts["corrupt"] = &attemptRecord{EventJournalBytes: corruptEnd + 7, Receipt: Receipt{AttemptID: "corrupt", Phase: PhaseCompleted, Cursor: 3}}
+	r.state.Events["corrupt"] = []Event{{Cursor: 3}}
+	response = httptest.NewRecorder()
+	r.serveEvents(response, httptest.NewRequest(http.MethodGet, "/?after=0", nil), "corrupt")
+	if !strings.Contains(response.Body.String(), "id: 1\n") || !strings.Contains(logs.String(), "event journal replay for corrupt aborted after cursor 1") {
+		t.Fatalf("missing mid-stream diagnostic: %s; %s", response.Body.String(), logs.String())
+	}
+	// Unexpected EOF before the committed cursor must not look like a clean page.
+	store := r.store
+	end, err := store.appendEvent("short", 0, nil, Event{Cursor: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := store.replayEvents(context.Background(), "short", end, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = replay.file.Close() }()
+	if _, err := replay.next(); err != io.ErrUnexpectedEOF {
+		t.Fatalf("truncation looked like completion: %v", err)
 	}
 }

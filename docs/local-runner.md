@@ -707,6 +707,22 @@ Unowned journals are removed on acceptance rollback and startup recovery.
 Active attempts reuse journal handles; pending journal writes are synced before
 state commits their offsets. Sparse in-memory cursor indexes avoid repeatedly
 scanning the full history and are rebuilt lazily after restart.
+
+Journal storage across retained attempts is capped at 2 GiB, with a further
+16 MiB reserved for terminal/needs-input events. Accounting includes retained
+journals after restart. At capacity, additional progress fails explicitly;
+cleanup does not delete replay history before Factory can consume it.
+Replay scans run outside the runner state lock, using a committed byte/cursor
+snapshot and a separately guarded sparse index. Missing or corrupt history
+returns an unavailable error before streaming; mid-stream corruption is logged
+with its attempt and last delivered cursor. Legacy unretained history still
+returns cursor expiry.
+
+Persistence still syncs dirty journals and then state under the shared runner
+lock. Only journals changed since the previous sync incur a sync, but disk latency
+can delay other requests on runners with many concurrent attempts. Replay/index
+changes do not remove that synchronous durability cost.
+
 Events already discarded by an older runner cannot be reconstructed; those
 cursors still report unavailable history rather than silently losing output.
 

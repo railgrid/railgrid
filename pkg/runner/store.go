@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -80,10 +81,13 @@ type reservationRecord struct {
 }
 
 type stateStore struct {
-	dir        string
-	path       string
-	journals   map[string]*journalWriter
-	eventIndex map[string][]journalPosition
+	dir               string
+	path              string
+	journals          map[string]*journalWriter
+	eventIndex        map[string][]journalPosition
+	indexMu           sync.Mutex
+	journalSizes      map[string]int64
+	totalJournalBytes int64
 }
 
 func newStateStore(dir string) (*stateStore, error) {
@@ -93,7 +97,28 @@ func newStateStore(dir string) (*stateStore, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("protect runner state directory: %w", err)
 	}
-	return &stateStore{dir: dir, path: filepath.Join(dir, "state.json"), journals: map[string]*journalWriter{}, eventIndex: map[string][]journalPosition{}}, nil
+	s := &stateStore{dir: dir, path: filepath.Join(dir, "state.json"), journals: map[string]*journalWriter{}, eventIndex: map[string][]journalPosition{}, journalSizes: map[string]int64{}}
+	return s, nil
+}
+
+// Call after acquiring the state-directory lock, before accepting new writes.
+func (s *stateStore) loadJournalUsage() error {
+	s.journalSizes = map[string]int64{}
+	s.totalJournalBytes = 0
+	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			s.accountJournal(path, info.Size())
+		}
+	}
+	return nil
 }
 
 func (s *stateStore) load() (persistedState, error) {

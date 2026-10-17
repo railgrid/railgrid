@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -155,27 +156,9 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		return
 	}
 	events := append([]Event(nil), r.state.Events[attemptID]...)
-	var replay *eventReplay
+	receipt := receiptForResponse(attempt.Receipt)
+	journalBytes := attempt.EventJournalBytes
 	gap := cursorGap(events, after)
-	if gap != nil && gap.Code == ErrorCursorExpired && attempt.EventJournalBytes > 0 {
-		var replayErr error
-		replay, replayErr = r.store.replayEvents(request.Context(), attemptID, attempt.EventJournalBytes, after, attempt.Receipt.Cursor)
-		if replayErr == nil {
-			gap = nil
-			defer func() { _ = replay.file.Close() }()
-		}
-	}
-	if err := gap; err != nil {
-		receipt := receiptForResponse(attempt.Receipt)
-		r.mu.Unlock()
-		err.Receipt = &receipt
-		status := statusForCode(err.Code)
-		if err.Code == ErrorCursorExpired {
-			err.SnapshotRequired = true
-		}
-		writeHTTPError(w, status, err)
-		return
-	}
 	updates := make(chan Event, 64)
 	if r.subscribers[attemptID] == nil {
 		r.subscribers[attemptID] = map[chan Event]struct{}{}
@@ -188,6 +171,32 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		delete(r.subscribers[attemptID], updates)
 		r.mu.Unlock()
 	}()
+
+	// Subscribe before unlocking so events produced during a cold scan are
+	// either buffered or recovered by the existing contiguous-cursor reconnect.
+	var replay *eventReplay
+	if gap != nil && gap.Code == ErrorCursorExpired && journalBytes > 0 {
+		var replayErr error
+		replay, replayErr = r.store.replayEvents(request.Context(), attemptID, journalBytes, after, receipt.Cursor)
+		if replayErr != nil {
+			if request.Context().Err() != nil {
+				return
+			}
+			log.Printf("event journal replay for %s after %d failed: %v", attemptID, after, replayErr)
+			writeHTTPError(w, http.StatusServiceUnavailable, protocolError(ErrorUnavailable, false, "event journal replay failed: "+replayErr.Error(), &receipt))
+			return
+		}
+		gap = nil
+		defer func() { _ = replay.file.Close() }()
+	}
+	if gap != nil {
+		gap.Receipt = &receipt
+		if gap.Code == ErrorCursorExpired {
+			gap.SnapshotRequired = true
+		}
+		writeHTTPError(w, statusForCode(gap.Code), gap)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -205,6 +214,7 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 				break
 			}
 			if err != nil {
+				log.Printf("event journal replay for %s aborted after cursor %d: %v", attemptID, last, err)
 				return
 			}
 			if err := writeSSE(w, event, &remaining); err != nil {

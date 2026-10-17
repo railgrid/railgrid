@@ -145,6 +145,10 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := store.loadJournalUsage(); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
 	state, err := store.load()
 	if err != nil {
 		_ = lock.Close()
