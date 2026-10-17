@@ -188,7 +188,7 @@ func Rejoin(ctx context.Context, r Runner, pos Position, obs Observer) (Outcome,
 	if pos.AttemptID == "" {
 		return Outcome{Position: pos}, errors.New("re-joining an attempt needs its id")
 	}
-	receipt, err := r.Inspect(ctx, pos.AttemptID)
+	receipt, err := inspectWithRetry(ctx, r, pos.AttemptID, obs)
 	if err != nil {
 		return Outcome{Position: pos}, Describe("inspecting the attempt", err)
 	}
@@ -211,7 +211,7 @@ func RejoinSnapshot(ctx context.Context, r Runner, snap Snapshot, obs Observer) 
 	if err != nil {
 		return Outcome{Position: snap.Position, Snapshot: snap}, err
 	}
-	receipt, err := r.Inspect(ctx, snap.Position.AttemptID)
+	receipt, err := inspectWithRetry(ctx, r, snap.Position.AttemptID, obs)
 	if err != nil {
 		return Outcome{Position: snap.Position, Summary: s.summary(), Snapshot: s.snapshot(snap.Position)}, Describe("inspecting the attempt", err)
 	}
@@ -239,7 +239,7 @@ func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) 
 	if pos.Cursor == 0 {
 		return s.snapshot(pos), nil
 	}
-	stream, err := r.Events(ctx, pos.AttemptID, 0)
+	stream, err := eventsWithRetry(ctx, r, pos.AttemptID, 0, obs)
 	if err != nil {
 		return Snapshot{Position: pos}, Describe("rebuilding saved event state", err)
 	}
@@ -268,7 +268,9 @@ func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) 
 // park, reporting them through obs, and then reads the receipt — which is the
 // authority on how it ended.
 //
-// The loop reconnects, and that is not a retry loop: the runner ends a stream
+// The loop reconnects after quiet streams and temporary Edge transport failures,
+// preserving the consumed cursor. Read retries use capped backoff and honor the
+// caller’s deadline and durable cancellation. The runner ends a stream
 // itself after a silent interval so a caller resumes from its cursor rather
 // than holding one connection open for the length of a coding turn. Each
 // reconnect is also where the two things that must not be skipped happen: the
@@ -325,11 +327,12 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 	// the flag a runner whose cursor stays ahead — because the events it
 	// counted have already been dropped — would be re-read forever.
 	caughtUp := false
+	var streamRetryDelay time.Duration
 	for {
 		if err := obs.Aborted(ctx); err != nil {
 			return s.outcome(receipt, pos), err
 		}
-		stream, err := r.Events(ctx, attemptID, s.cursor)
+		stream, err := eventsWithRetry(ctx, r, attemptID, s.cursor, obs)
 		if err != nil {
 			return s.outcome(receipt, pos),
 				Describe("following the attempt", err)
@@ -338,6 +341,7 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 		terminal, quiet, err := drain(ctx, stream, s, strictHistory)
 		_ = stream.Close()
 		if s.cursor > before {
+			streamRetryDelay = 0
 			caughtUp = false
 		}
 		switch {
@@ -347,7 +351,7 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 			// carrying on is the whole point of SnapshotRequired; failing over a
 			// dropped event would throw away a turn that is still working.
 			if IsSnapshotRequired(err) {
-				reconciled, ierr := r.Inspect(ctx, attemptID)
+				reconciled, ierr := inspectWithRetry(ctx, r, attemptID, obs)
 				if ierr != nil {
 					return s.outcome(receipt, pos),
 						Describe("reconciling after a cursor gap", ierr)
@@ -364,9 +368,16 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 				}
 				continue
 			}
+			if retryableRead(err) {
+				obs.Checkpoint(s.snapshot(pos))
+				if retryErr := waitReadRetry(ctx, obs, &streamRetryDelay); retryErr != nil {
+					return s.outcome(receipt, pos), retryErr
+				}
+				continue
+			}
 			return s.outcome(receipt, pos), err
 		case terminal:
-			final, ierr := r.Inspect(ctx, attemptID)
+			final, ierr := inspectWithRetry(ctx, r, attemptID, obs)
 			if ierr != nil {
 				return s.outcome(receipt, pos),
 					Describe("reading the finished attempt", ierr)
@@ -402,7 +413,7 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 			// is a point where nothing is half-consumed — and ask the receipt
 			// whether the attempt ended while we were not listening.
 			obs.Checkpoint(s.snapshot(pos))
-			current, ierr := r.Inspect(ctx, attemptID)
+			current, ierr := inspectWithRetry(ctx, r, attemptID, obs)
 			if ierr != nil {
 				return s.outcome(receipt, pos),
 					Describe("checking on the attempt", ierr)
