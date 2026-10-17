@@ -1128,11 +1128,10 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating providers multicluster manager: %w", err)
 		}
-		// The hub no longer provisions providers or writes the
-		// railgrid-provider-kubeconfig Secret — admin onboarding mints it and the
-		// provider's Helm init applies the in-workspace objects. The catalog
-		// controller only maintains the registry + resolves the workspace
-		// cluster ID for the Enable flow.
+		// The catalog controller maintains the registry and resolves workspace
+		// cluster IDs for the Enable flow. The separate leader-only Provider
+		// reconciler below provisions workspaces and credential Secrets;
+		// each provider's init applies its schemas and APIExport.
 		catalogReconciler, err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
 			HubExternalURL: s.opts.HubExternalURL,
 			HubInternalURL: s.opts.HubInternalURL,
