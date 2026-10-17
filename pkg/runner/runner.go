@@ -145,6 +145,10 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := store.loadJournalUsage(); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
 	state, err := store.load()
 	if err != nil {
 		_ = lock.Close()
@@ -198,11 +202,17 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		shutdown:     map[string]struct{}{},
 		capabilities: capabilities,
 	}
+	if err := store.pruneJournals(state); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
 	if err := r.recoverLocked(); err != nil {
+		_ = store.closeJournals()
 		_ = lock.Close()
 		return nil, err
 	}
 	if err := r.persistLocked(); err != nil {
+		_ = store.closeJournals()
 		_ = lock.Close()
 		return nil, err
 	}
@@ -310,7 +320,10 @@ func (r *Runner) Close() error {
 		_ = listener.Close()
 	}
 	r.wg.Wait()
-	closeErr := r.lock.Close()
+	r.mu.Lock()
+	journalErr := r.store.closeJournals()
+	r.mu.Unlock()
+	closeErr := errors.Join(journalErr, r.lock.Close())
 	r.mu.Lock()
 	r.closeErr = closeErr
 	close(r.closeDone)
@@ -416,6 +429,7 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if _, err := r.appendEventLocked(request.AttemptID, EventAccepted, "attempt accepted", nil); err != nil {
 		delete(r.state.Operations, opKey)
 		delete(r.state.Attempts, request.AttemptID)
+		err = errors.Join(err, r.store.removeEvents(request.AttemptID))
 		delete(r.credentials, request.AttemptID)
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
 		return Receipt{}, err
@@ -1303,7 +1317,13 @@ func (r *Runner) finishLocked(attempt *attemptRecord, phase Phase, blocker strin
 		alreadyRecorded = last.Type == eventType && phase == PhaseNeedsInput
 	}
 	if !alreadyRecorded {
-		_, _ = r.appendEventLocked(attempt.Receipt.AttemptID, eventType, blocker, nil)
+		if _, err := r.appendEventLocked(attempt.Receipt.AttemptID, eventType, blocker, nil); err != nil {
+			attempt.Receipt.Blocker = boundedMessage(blocker + " (event journal unavailable: " + err.Error() + ")")
+			attempt.Receipt.LastError = &Error{Code: ErrorUnavailable, Retryable: false, Message: "record final event: " + err.Error()}
+			if phase == PhaseCompleted {
+				attempt.Receipt.Phase = PhaseFailed
+			}
+		}
 	}
 	r.releaseResourcesLocked(attempt.Receipt.AttemptID, resourceRequests(attempt.Resources))
 	if phase.IsTerminal() || phase == PhaseNeedsInput {
@@ -1332,6 +1352,13 @@ func (r *Runner) appendEventLocked(attemptID, eventType, message string, data js
 		cursor = events[len(events)-1].Cursor
 	}
 	event := Event{Cursor: cursor + 1, Timestamp: eventNow(), AttemptEpoch: attempt.Receipt.AttemptEpoch, Type: eventType, Message: boundedMessage(message), Data: cloneRaw(data)}
+	// Append before exposing the cursor; persistLocked syncs the journal before
+	// committing its offset. MaxEvents bounds only the hot cache.
+	end, err := r.store.appendEvent(attemptID, attempt.EventJournalBytes, events, event)
+	if err != nil {
+		return Event{}, err
+	}
+	attempt.EventJournalBytes = end
 	events = append(events, event)
 	if len(events) > r.cfg.MaxEvents {
 		events = events[len(events)-r.cfg.MaxEvents:]
@@ -1353,6 +1380,9 @@ func (r *Runner) recoverLocked() error {
 	for attemptID, attempt := range r.state.Attempts {
 		if attempt == nil {
 			delete(r.state.Attempts, attemptID)
+			if err := r.store.removeEvents(attemptID); err != nil {
+				return err
+			}
 			changed = true
 			continue
 		}
@@ -1391,7 +1421,20 @@ func (r *Runner) recoverLocked() error {
 	return nil
 }
 
-func (r *Runner) persistLocked() error { return r.store.save(r.state) }
+func (r *Runner) persistLocked() error {
+	if err := r.store.save(r.state); err != nil {
+		return err
+	}
+	for id := range r.store.journals {
+		attempt := r.state.Attempts[id]
+		if attempt == nil || attempt.Receipt.Phase.IsTerminal() || attempt.Receipt.Phase == PhaseNeedsInput {
+			if err := r.store.closeJournal(id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 func (r *Runner) receiptForAttemptLocked(attemptID string) (Receipt, error) {
 	attempt, ok := r.state.Attempts[attemptID]
