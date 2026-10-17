@@ -93,6 +93,8 @@ func (s *stateStore) replayEvents(ctx context.Context, id string, bytes int64, a
 			_ = f.Close()
 			return nil, err
 		}
+		// Omitted JSON fields must not inherit values from an earlier event.
+		replay.nextEvent = Event{}
 		if err := replay.decoder.Decode(&replay.nextEvent); err != nil {
 			_ = f.Close()
 			return nil, err
@@ -116,6 +118,9 @@ func (r *eventReplay) next() (Event, error) {
 		return Event{}, io.EOF
 	}
 	if event.Cursor < r.through {
+		// RawMessage reuses its backing bytes when decoding into an existing
+		// value. Keep lookahead from overwriting the event being returned.
+		r.nextEvent = Event{}
 		if err := r.decoder.Decode(&r.nextEvent); err != nil {
 			return Event{}, err
 		}

@@ -23,7 +23,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +40,7 @@ import (
 type replayAdapter struct {
 	runs  atomic.Int32
 	final string
+	large bool
 }
 
 func (a *replayAdapter) Probe(context.Context) (harness.Info, error) {
@@ -45,6 +48,14 @@ func (a *replayAdapter) Probe(context.Context) (harness.Info, error) {
 }
 func (a *replayAdapter) Run(_ context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {
 	a.runs.Add(1)
+	if a.large {
+		padding, _ := json.Marshal(map[string]string{"padding": strings.Repeat("x", 60<<10)})
+		for i := 0; i < 1100; i++ {
+			if err := emit(harness.Event{Type: runner.EventProgress, Data: padding}); err != nil {
+				return harness.Result{}, err
+			}
+		}
+	}
 	data, _ := json.Marshal(map[string]any{"item": map[string]any{"type": "agentMessage", "phase": "final_answer", "text": a.final}})
 	if err := emit(harness.Event{Type: runner.EventProgress, Data: data}); err != nil {
 		return harness.Result{}, err
@@ -59,6 +70,26 @@ func (a *replayAdapter) Run(_ context.Context, launch harness.Launch, emit harne
 }
 
 func TestHTTPReplayPreservesFinalScreenshotDescription(t *testing.T) {
+	testHTTPReplayPreservesFinalScreenshotDescription(t, false)
+}
+
+func TestHTTPReplayOverClientLimitPreservesFinalScreenshotDescription(t *testing.T) {
+	testHTTPReplayPreservesFinalScreenshotDescription(t, true)
+}
+
+type replayResponseWriter struct {
+	http.ResponseWriter
+	bytes int
+}
+
+func (w *replayResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	w.bytes += n
+	return n, err
+}
+func (w *replayResponseWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }
+
+func testHTTPReplayPreservesFinalScreenshotDescription(t *testing.T, large bool) {
 	source := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -73,19 +104,39 @@ func TestHTTPReplayPreservesFinalScreenshotDescription(t *testing.T) {
 	git("init", "--initial-branch=main")
 	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial")
 	commit := git("rev-parse", "HEAD")
-	adapter := &replayAdapter{final: "Verified against the live backend.\n\n![Changed UI](artifacts/screenshots/planner.png)"}
+	adapter := &replayAdapter{large: large, final: "Verified against the live backend.\n\n![Changed UI](artifacts/screenshots/planner.png)"}
 	local, err := runner.New(runner.Config{RunnerID: "replay", StateDir: t.TempDir(), Token: "test-token", Listen: "127.0.0.1:0", MaxEvents: 2, Repositories: map[string]runner.RepositoryConfig{"repo": {Source: source, BaseCommit: commit}}}, adapter)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = local.Close() }()
 	const base = "/clusters/tenant/apis/edges.railgrid.ai/v1alpha1/services/runner/proxy"
+	var responsesMu sync.Mutex
+	var responsesDone sync.WaitGroup
+	var cursors []uint64
+	var sizes []int
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == strings.TrimSuffix(base, "/proxy") {
 			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"name": "runner"}, "spec": map[string]any{"edgeRef": map[string]any{"name": "edge", "kind": "LinuxServer"}}, "status": map[string]any{"url": base}})
 			return
 		}
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, base)
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+			responsesDone.Add(1)
+			defer responsesDone.Done()
+			responsesMu.Lock()
+			index := len(cursors)
+			cursors = append(cursors, after)
+			sizes = append(sizes, 0)
+			responsesMu.Unlock()
+			counted := &replayResponseWriter{ResponseWriter: w}
+			local.Handler().ServeHTTP(counted, r)
+			responsesMu.Lock()
+			sizes[index] = counted.bytes
+			responsesMu.Unlock()
+			return
+		}
 		local.Handler().ServeHTTP(w, r)
 	}))
 	defer server.Close()
@@ -93,7 +144,7 @@ func TestHTTPReplayPreservesFinalScreenshotDescription(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	receipt, err := remote.Start(ctx, runner.StartRequest{RequestID: "start", TaskID: "task", AttemptID: "attempt", AttemptEpoch: 1, RepositoryID: "repo", BaseCommit: commit, Instructions: "change copy", ApprovedInput: json.RawMessage(`{"provenance":{"source":"test"}}`), HarnessCredential: &runner.HarnessCredential{Kind: string(harness.CredentialClaudeOAuth), Value: "test-credential"}})
 	if err != nil {
@@ -112,12 +163,35 @@ func TestHTTPReplayPreservesFinalScreenshotDescription(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	out, err := FollowSnapshot(ctx, Wrap(remote), receipt, Snapshot{}, Noop{})
+	followCtx, followCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer followCancel()
+	out, err := FollowSnapshot(followCtx, Wrap(remote), receipt, Snapshot{}, Noop{})
 	if err != nil || !out.Completed() {
-		t.Fatalf("follow: %+v %v", out, err)
+		t.Fatalf("follow: phase=%s cursor=%d error=%v", out.Receipt.Phase, out.Position.Cursor, err)
 	}
 	if out.Summary.Final != adapter.final {
 		t.Fatalf("lost final PR description: %q", out.Summary.Final)
+	}
+	if large {
+		responsesDone.Wait()
+		responsesMu.Lock()
+		defer responsesMu.Unlock()
+		if len(cursors) < 3 {
+			t.Fatalf("expected multiple bounded replay responses, got %v", cursors)
+		}
+		total := 0
+		for i, size := range sizes {
+			if size >= 64<<20 {
+				t.Fatalf("response %d exceeded client limit: %d", i, size)
+			}
+			if i > 0 && cursors[i] <= cursors[i-1] {
+				t.Fatalf("reconnect did not advance: %v", cursors)
+			}
+			total += size
+		}
+		if total <= 64<<20 {
+			t.Fatalf("test did not exceed client limit: %d bytes", total)
+		}
 	}
 	if adapter.runs.Load() != 1 {
 		t.Fatal("replay dispatched duplicate work")

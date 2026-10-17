@@ -268,3 +268,42 @@ func TestSlowSubscriberReconnectsWithoutSkippingEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestEventReplayDoesNotReuseOmittedFields(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []Event{
+		{Cursor: 1, Type: EventProgress, Message: "old message", Data: json.RawMessage(`{"result":"old answer"}`)},
+		{Cursor: 2, Type: EventProgress, Data: json.RawMessage(`{"short":true}`)},
+		{Cursor: 3, Type: EventProgress},
+		{Cursor: 4, Type: EventCompleted},
+	}
+	var end int64
+	for _, event := range events {
+		end, err = store.appendEvent("fields", end, nil, event)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, after := range []uint64{0, 1, 2} {
+		replay, err := store.replayEvents(context.Background(), "fields", end, after, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for cursor := after + 1; cursor <= 4; cursor++ {
+			event, err := replay.next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := events[cursor-1]
+			if event.Message != want.Message || string(event.Data) != string(want.Data) {
+				t.Fatalf("cursor %d changed fields: got %+v, want %+v", cursor, event, want)
+			}
+		}
+		if err := replay.file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

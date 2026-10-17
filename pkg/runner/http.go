@@ -17,7 +17,6 @@ limitations under the License.
 package runner
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -195,6 +194,7 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 	w.Header().Set("Connection", "keep-alive")
 	flusher, _ := w.(http.Flusher)
 	last := after
+	remaining := eventPageBytes
 	if replay != nil {
 		for {
 			if request.Context().Err() != nil {
@@ -207,7 +207,7 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 			if err != nil {
 				return
 			}
-			if err := writeSSE(w, event); err != nil {
+			if err := writeSSE(w, event, &remaining); err != nil {
 				return
 			}
 			last = event.Cursor
@@ -220,7 +220,7 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		if event.Cursor <= last {
 			continue
 		}
-		if err := writeSSE(w, event); err != nil {
+		if err := writeSSE(w, event, &remaining); err != nil {
 			return
 		}
 		last = event.Cursor
@@ -248,7 +248,7 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 			if event.Cursor != last+1 {
 				return
 			}
-			if err := writeSSE(w, event); err != nil {
+			if err := writeSSE(w, event, &remaining); err != nil {
 				return
 			}
 			last = event.Cursor
@@ -318,16 +318,27 @@ func artifactBelongs(attempt *attemptRecord, artifact Artifact) bool {
 	return false
 }
 
-func writeSSE(w http.ResponseWriter, event Event) error {
+// Leave ample room below the client's 64 MiB per-stream limit. A response
+// ends only between complete events, so the next request can resume exactly.
+const eventPageBytes = 8 << 20
+
+func writeSSE(w http.ResponseWriter, event Event, remaining *int) error {
 	b, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	writer := bufio.NewWriter(w)
-	if _, err := fmt.Fprintf(writer, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Type, b); err != nil {
+	frame := fmt.Appendf(nil, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Type, b)
+	// Permit one oversized event on an otherwise empty page, preserving support
+	// for configured event limits above the page target without a zero-progress
+	// reconnect loop. Individual events must still fit the client's stream limit.
+	if len(frame) > *remaining && *remaining != eventPageBytes {
+		return io.EOF
+	}
+	if _, err := w.Write(frame); err != nil {
 		return err
 	}
-	return writer.Flush()
+	*remaining -= len(frame)
+	return nil
 }
 
 func parseCursor(value string) (uint64, error) {

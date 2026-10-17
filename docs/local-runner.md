@@ -696,7 +696,10 @@ simultaneous execution by default.
 
 Protocol events are also retained in a private, append-only journal alongside
 the attempt state. Reconnecting consumers replay from their last cursor even
-after the memory cache rolls over or the runner restarts. Journals have the same
+after the memory cache rolls over or the runner restarts. Responses are split
+at complete event boundaries around 8 MiB (a single larger event is sent alone),
+so large histories reconnect before reaching the client’s 64 MiB stream limit.
+Journals have the same
 lifetime as attempt state and remain subject to the attempt output limit.
 Events already discarded by an older runner cannot be reconstructed; those
 cursors still report unavailable history rather than silently losing output.
