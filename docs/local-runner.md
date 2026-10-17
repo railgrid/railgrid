@@ -539,7 +539,10 @@ Codex receives `effort` on every `turn/start`, including resumed turns. No
 Overrides are covered by the existing permission to invoke the Agent's `run`
 verb; they do not grant access to other credentials, machines, or tools. Existing
 run admission and budgets still apply. Values are trimmed; reasoning effort
-must be empty or a lowercase identifier of at most 32 characters.
+must be empty or a lowercase identifier of at most 32 characters. A non-empty
+effort also requires the Agent credential to name Codex; the run verb rejects
+other harnesses with HTTP 400 before creating a Run. Model-specific effort
+support is checked later against the runner's installed Codex catalog.
 
 Only harness-backed Agents acquire this snapshot at submission. Model-backed
 runs have no harness snapshot. If their Agent changes to a harness backend while

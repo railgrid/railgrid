@@ -29,7 +29,8 @@ func resolveHarnessSettings(agent *agentsv1alpha1.Agent, snapshot *store.Harness
 	return nil
 }
 
-// invokeHarnessSettings validates overrides before admission or persistence.
+// invokeHarnessSettings validates transport shape before admission or persistence.
+// invokeAgentRun separately checks the credential's actual harness provider.
 func invokeHarnessSettings(agent *agentsv1alpha1.Agent, model, effort *string) (*store.HarnessSettings, error) {
 	settings := resolveHarnessSettings(agent, nil)
 	if settings == nil {

@@ -895,6 +895,9 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	if job.RunID != "" {
 		stored, gerr := b.server.store.GetRun(ctx, scope, job.RunID)
 		if gerr != nil {
+			// Missing rows intentionally use the same bounded redelivery as
+			// transient failures: the Run controller settles the CR after
+			// MaxClaims. Dropping this job cannot settle a row that is absent.
 			return fmt.Errorf("read queued run %s before dispatch: %w", job.RunID, gerr)
 		}
 		if stored.CancelRequested || stored.Phase != store.RunPhasePending {

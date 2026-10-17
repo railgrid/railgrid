@@ -22,7 +22,10 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // Programmatic invocation. Until now an agent could only be run by a human
@@ -169,6 +172,20 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
+	}
+	if settings != nil && settings.ReasoningEffort != "" {
+		// Read only credential metadata as the provider, just as execution
+		// does. Reject unsupported harnesses before creating a durable Run;
+		// the runner still checks model-specific support at dispatch time.
+		cred, err := c.GetModelCredential(r.Context(), strings.TrimSpace(agent.Spec.Harness().CredentialRef))
+		if err != nil {
+			writeResourceError(w, err)
+			return
+		}
+		if err := runnerharness.ValidateReasoningEffort(llm.HarnessAdvertisedName(cred.Spec.Provider), settings.ReasoningEffort); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
 	}
 	tr := taskRun{
 		HarnessSettings: settings,
