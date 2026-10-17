@@ -220,6 +220,7 @@ type StartRequest struct {
 	HarnessCredential      *HarnessCredential `json:"harnessCredential,omitempty"`
 	Instructions           string             `json:"instructions"`
 	Model                  string             `json:"model,omitempty"`
+	ReasoningEffort        string             `json:"reasoningEffort,omitempty"`
 	ApprovedInput          json.RawMessage    `json:"approvedInput,omitempty"`
 	RequiredCapabilities   []string           `json:"requiredCapabilities,omitempty"`
 	RequiredToolchains     []string           `json:"requiredToolchains,omitempty"`

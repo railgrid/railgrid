@@ -36,6 +36,7 @@ import (
 )
 
 type fakeAdapter struct {
+	name   string
 	run    func(context.Context, harness.Launch, harness.Emit) (harness.Result, error)
 	mu     sync.Mutex
 	probes atomic.Int32
@@ -54,7 +55,11 @@ func (probeBlockedAdapter) Run(context.Context, harness.Launch, harness.Emit) (h
 
 func (f *fakeAdapter) Probe(context.Context) (harness.Info, error) {
 	f.probes.Add(1)
-	return harness.Info{Name: "fake", Version: "1", Ready: true}, nil
+	name := f.name
+	if name == "" {
+		name = "fake"
+	}
+	return harness.Info{Name: name, Version: "1", Ready: true}, nil
 }
 
 func (f *fakeAdapter) Run(ctx context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {
@@ -154,7 +159,7 @@ func TestClosePersistsResumableNeedsInputAndResumeKeepsSessionAndWorktree(t *tes
 	source, commit := testGitSource(t)
 	stateDir := t.TempDir()
 	started := make(chan struct{})
-	firstAdapter := &fakeAdapter{run: func(ctx context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {
+	firstAdapter := &fakeAdapter{name: "codex", run: func(ctx context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {
 		if err := emit(harness.Event{Type: EventStarted, SessionID: "session-shutdown", Message: "started"}); err != nil {
 			return harness.Result{}, err
 		}
@@ -164,6 +169,8 @@ func TestClosePersistsResumableNeedsInputAndResumeKeepsSessionAndWorktree(t *tes
 	}}
 	first := newTestRunnerAt(t, firstAdapter, stateDir, source, commit)
 	request := testStartRequest(commit)
+	request.Model = "gpt-6-luna"
+	request.ReasoningEffort = "max"
 	request.TaskID = "task-shutdown"
 	request.AttemptID = "attempt-shutdown"
 	request.RequestID = "start-shutdown"
@@ -190,7 +197,10 @@ func TestClosePersistsResumableNeedsInputAndResumeKeepsSessionAndWorktree(t *tes
 		t.Fatalf("shutdown blocker = %q, want shutdown reconciliation", checkpoint.Blocker)
 	}
 
-	secondAdapter := &fakeAdapter{run: func(_ context.Context, launch harness.Launch, _ harness.Emit) (harness.Result, error) {
+	secondAdapter := &fakeAdapter{name: "codex", run: func(_ context.Context, launch harness.Launch, _ harness.Emit) (harness.Result, error) {
+		if launch.Model != "gpt-6-luna" || launch.ReasoningEffort != "max" {
+			return harness.Result{}, fmt.Errorf("resume changed model/effort: %s/%s", launch.Model, launch.ReasoningEffort)
+		}
 		if launch.SessionID != checkpoint.SessionID || launch.Workdir != checkpoint.Workdir {
 			return harness.Result{}, fmt.Errorf("resume launch = session %q/workdir %q, want %q/%q", launch.SessionID, launch.Workdir, checkpoint.SessionID, checkpoint.Workdir)
 		}
@@ -843,4 +853,30 @@ func runGit(t *testing.T, dir string, args ...string) []byte {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 	return output
+}
+
+func TestHTTPStartRejectsReasoningEffort(t *testing.T) {
+	source, commit := testGitSource(t)
+	r := newTestRunner(t, &fakeAdapter{name: "codex"}, source, commit)
+	for _, tc := range []struct{ name, effort, required, version, code string }{
+		{"malformed", "MAX!", "codex", ProtocolVersion, string(ErrorInvalidRequest)},
+		{"other-harness", "max", "claude", ProtocolVersion, string(ErrorInvalidRequest)},
+		{"version-first", "MAX!", "codex", "unsupported", string(ErrorUnsupportedVersion)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := testStartRequest(commit)
+			body.ReasoningEffort, body.RequiredHarness, body.ProtocolVersion = tc.effort, tc.required, tc.version
+			data, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://localhost/runner/v1/attempts", strings.NewReader(string(data)))
+			req.Header.Set("Authorization", "Bearer "+r.cfg.Token)
+			response := httptest.NewRecorder()
+			r.Handler().ServeHTTP(response, req)
+			if response.Code < 400 || !strings.Contains(response.Body.String(), tc.code) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
 }

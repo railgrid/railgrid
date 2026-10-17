@@ -70,8 +70,8 @@ spec:
     - infrastructure.railgrid.ai
   - claimer: factory.providers.railgrid.ai
     groups:
+    - agents.railgrid.ai
     - code.railgrid.ai
-    - edges.railgrid.ai
     - planner.providers.railgrid.ai
   - claimer: kuery.providers.railgrid.ai
     groups:

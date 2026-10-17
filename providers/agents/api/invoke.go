@@ -22,7 +22,10 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // Programmatic invocation. Until now an agent could only be run by a human
@@ -51,6 +54,10 @@ const (
 )
 
 type invokeRunRequest struct {
+	// Model overrides the Agent model for this run; omitted inherits, empty selects the harness default.
+	Model *string `json:"model,omitempty"`
+	// ReasoningEffort follows the same inheritance rules and requires the existing run permission.
+	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
 	// Task is the prompt the agent runs. Required.
 	Task string `json:"task"`
 	// SessionID continues an existing conversation; empty starts a fresh one, so
@@ -161,8 +168,28 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	settings, err := invokeHarnessSettings(agent, req.Model, req.ReasoningEffort)
+	if err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+	if settings != nil && settings.ReasoningEffort != "" {
+		// Read only credential metadata as the provider, just as execution
+		// does. Reject unsupported harnesses before creating a durable Run;
+		// the runner still checks model-specific support at dispatch time.
+		cred, err := c.GetModelCredential(r.Context(), strings.TrimSpace(agent.Spec.Harness().CredentialRef))
+		if err != nil {
+			writeResourceError(w, err)
+			return
+		}
+		if err := runnerharness.ValidateReasoningEffort(llm.HarnessAdvertisedName(cred.Spec.Provider), settings.ReasoningEffort); err != nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
+			return
+		}
+	}
 	tr := taskRun{
-		SessionID: strings.TrimSpace(req.SessionID), Task: req.Task,
+		HarnessSettings: settings,
+		SessionID:       strings.TrimSpace(req.SessionID), Task: req.Task,
 		Trigger:        agentsv1alpha1.RunTriggerAPI,
 		IdempotencyKey: req.IdempotencyKey,
 		Callback:       req.Callback,

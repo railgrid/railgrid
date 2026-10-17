@@ -104,6 +104,9 @@ type Run struct {
 // RunSpec is what the run was asked to do. It is written once, when the run is
 // created, and never edited: a run's request cannot change after the fact.
 type RunSpec struct {
+	// HarnessSettings freezes the selected model and effort for this run.
+	// +optional
+	HarnessSettings *RunHarnessSettings `json:"harnessSettings,omitempty"`
 	// AgentRef is the Agent this run executes. It is also the object an
 	// ownerReference points at, so deleting an agent garbage-collects its runs.
 	// +kubebuilder:validation:MinLength=1
@@ -161,6 +164,16 @@ type RunSpec struct {
 	// and is gone with the turn.
 	// +optional
 	Repository *RunRepository `json:"repository,omitempty"`
+}
+
+// RunHarnessSettings records choices resolved before execution.
+type RunHarnessSettings struct {
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Model string `json:"model,omitempty"`
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 // RunRepository is what a repository run was asked to run against.

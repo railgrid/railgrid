@@ -324,6 +324,15 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if err := validateProtocolVersion(request.ProtocolVersion); err != nil {
 		return Receipt{}, protocolError(ErrorUnsupportedVersion, false, err.Error(), nil)
 	}
+	if request.ReasoningEffort != "" {
+		name := request.RequiredHarness
+		if advertised := r.Capabilities().Harnesses; name == "" && len(advertised) == 1 {
+			name = advertised[0].Name
+		}
+		if err := harness.ValidateReasoningEffort(name, request.ReasoningEffort); err != nil {
+			return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
+		}
+	}
 	if err := validateStartRequest(request); err != nil {
 		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
 	}
@@ -831,12 +840,13 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 		sessionID = attempt.Start.SessionID
 	}
 	launch := harness.Launch{
-		AttemptID:    attemptID,
-		Workdir:      attempt.Receipt.Workdir,
-		SessionID:    sessionID,
-		Instructions: instructions,
-		Model:        model,
-		Credential:   credential,
+		AttemptID:       attemptID,
+		Workdir:         attempt.Receipt.Workdir,
+		SessionID:       sessionID,
+		Instructions:    instructions,
+		Model:           model,
+		ReasoningEffort: attempt.Start.ReasoningEffort,
+		Credential:      credential,
 	}
 	if attempt.Start.AskPermission {
 		// The adapter reaches a human through the runner, which is the only

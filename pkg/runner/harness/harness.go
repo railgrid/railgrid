@@ -87,11 +87,12 @@ func (c Credential) Empty() bool { return c.Kind == "" || c.Value == "" }
 // session an earlier ATTEMPT created — that is how a conversation spans turns —
 // so an adapter must resume it rather than assume it owns it.
 type Launch struct {
-	AttemptID    string `json:"attemptID"`
-	Workdir      string `json:"workdir"`
-	SessionID    string `json:"sessionID,omitempty"`
-	Instructions string `json:"instructions"`
-	Model        string `json:"model,omitempty"`
+	AttemptID       string `json:"attemptID"`
+	Workdir         string `json:"workdir"`
+	SessionID       string `json:"sessionID,omitempty"`
+	Instructions    string `json:"instructions"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// Credential is the identity this turn runs as. It is never serialized.
 	Credential Credential `json:"-"`
 	// Permissions, when set, is how this launch reaches a human for a tool call

@@ -91,7 +91,8 @@ type runDetail struct {
 	// coordinates somebody debugging it needs: the runner attempt this run IS,
 	// and the harness session its turn ran in. Without them a failed run can be
 	// seen but not correlated with anything on the machine that ran it.
-	Harness *runHarnessInfo `json:"harness,omitempty"`
+	Harness         *runHarnessInfo        `json:"harness,omitempty"`
+	HarnessSettings *store.HarnessSettings `json:"harnessSettings,omitempty"`
 	// Repository and Result are present only for a repository run: what it ran
 	// against, and — once it succeeded — the verified Git result whose
 	// artifacts the `artifact` verb serves. Same shapes as the Run object's
@@ -184,6 +185,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 		detail.Harness = &runHarnessInfo{AttemptID: run.AttemptID, SessionID: run.HarnessSessionID}
 	}
 	detail.Repository, detail.Result = run.Repository, run.Result
+	detail.HarnessSettings = run.HarnessSettings
 	if run.Phase == store.RunPhasePendingApproval && len(run.Checkpoint) > 0 {
 		var ck runCheckpoint
 		if json.Unmarshal(run.Checkpoint, &ck) == nil {

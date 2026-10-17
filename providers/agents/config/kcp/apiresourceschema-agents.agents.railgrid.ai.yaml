@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261010-87e13a7d.agents.agents.railgrid.ai
+  name: v261017-9d583212.agents.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -119,6 +119,12 @@ spec:
                         Model is passed through to the harness as the model it should run on
                         (e.g. "sonnet"). Empty leaves the harness's own default alone.
                       maxLength: 253
+                      type: string
+                    reasoningEffort:
+                      description: ReasoningEffort selects Codex reasoning effort.
+                        Empty uses the harness default.
+                      maxLength: 32
+                      pattern: ^$|^[a-z][a-z0-9_-]*$
                       type: string
                     workspace:
                       default: persistent

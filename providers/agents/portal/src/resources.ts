@@ -390,6 +390,7 @@ function normalizeHarness(harness: AgentHarnessBackend | undefined): AgentHarnes
     edgeRef: { kind, name: edge },
     credentialRef,
     model: (harness?.model ?? '').trim() || undefined,
+    reasoningEffort: (harness?.reasoningEffort ?? '').trim() || undefined,
     workspace: harness?.workspace,
     githubConnectionRef: (harness?.githubConnectionRef ?? '').trim() || undefined,
   })
@@ -434,7 +435,7 @@ function createBackend(body: AgentCreate): Record<string, unknown> | null {
  */
 function patchBackend(body: AgentPatch): Record<string, unknown> | null {
   if (body.backendType === AGENT_BACKEND_HARNESS) {
-    return { type: AGENT_BACKEND_HARNESS, harness: normalizeHarness(body.harness), model: null }
+    return { type: AGENT_BACKEND_HARNESS, harness: { ...normalizeHarness(body.harness), model: body.harness?.model?.trim() || null, reasoningEffort: body.harness?.reasoningEffort?.trim() || null }, model: null }
   }
   const model: Record<string, unknown> = {}
   if (body.modelCredential !== undefined) {

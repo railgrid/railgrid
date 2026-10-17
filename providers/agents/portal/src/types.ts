@@ -142,6 +142,7 @@ export interface AgentHarnessEdgeRef {
  * credentialRef's provider (claude-code → Claude Code, codex → Codex).
  */
 export interface AgentHarnessBackend {
+  reasoningEffort?: string
   edgeRef: AgentHarnessEdgeRef
   credentialRef: string
   model?: string
@@ -732,6 +733,7 @@ export interface RunHarnessInfo {
 }
 
 export interface RunDetail extends RunSummary {
+  harnessSettings?: { model?: string; reasoningEffort?: string }
   input?: string
   // The run's answer, kept on the run record so a reader doesn't have to go to
   // the session transcript for it.

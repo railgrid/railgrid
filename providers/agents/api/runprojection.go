@@ -287,6 +287,9 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 			InputPreview:   safeTruncate(strings.TrimSpace(run.Input), runInputPreviewMax),
 		},
 	}
+	if settings := run.HarnessSettings; settings != nil {
+		object.Spec.HarnessSettings = &agentsv1alpha1.RunHarnessSettings{Model: settings.Model, ReasoningEffort: settings.ReasoningEffort}
+	}
 	if repo := run.Repository; repo != nil {
 		// What a repository run ran against is part of the REQUEST and goes on
 		// spec. Never the clone credential: the record does not hold it.

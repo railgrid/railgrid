@@ -110,7 +110,8 @@ type Config struct {
 	// the selector a person writes. Use llm.HarnessAdvertisedName.
 	RequiredHarness string
 	// Model is passed through to the harness; empty leaves its default alone.
-	Model string
+	Model           string
+	ReasoningEffort string
 	// Credential is the identity the turn runs as. Required.
 	Credential llm.HarnessIdentity
 	// Environment is what else the identity brings to every dispatch of this
@@ -277,6 +278,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 		HarnessCredential: &credential,
 		Instructions:      instructions(in.Messages),
 		Model:             b.cfg.Model,
+		ReasoningEffort:   b.cfg.ReasoningEffort,
 		ApprovedInput:     approved,
 		RequiredHarness:   b.cfg.RequiredHarness,
 		// A conversational turn opts into the permission round-trip. This

@@ -10,13 +10,21 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
 )
@@ -258,4 +266,55 @@ func TestPublishRunEventCarriesTheParent(t *testing.T) {
 			t.Fatal("no event published")
 		}
 	})
+}
+
+// Exercise the real verb boundary: unsupported effort must not create a Run.
+func TestInvokeEffortChecksCredentialBeforeAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, effort string
+		status, runs           int
+	}{
+		{"claude-effort", agentsv1alpha1.ModelProviderClaudeCode, "high", http.StatusBadRequest, 0},
+		{"claude-default", agentsv1alpha1.ModelProviderClaudeCode, "", http.StatusAccepted, 1},
+		{"codex-effort", agentsv1alpha1.ModelProviderCodex, "high", http.StatusAccepted, 1},
+		{"missing-credential", "", "high", http.StatusNotFound, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := agentObject(conformanceAgent)
+			agent.Object["spec"] = map[string]any{"backend": map[string]any{
+				"type": "harness", "harness": map[string]any{"credentialRef": "login"},
+			}}
+			objects := []*unstructured.Unstructured{agent}
+			if tc.provider != "" {
+				objects = append(objects, &unstructured.Unstructured{Object: map[string]any{
+					"apiVersion": agentsclient.AgentGVR.GroupVersion().String(), "kind": "ModelCredential",
+					"metadata": map[string]any{"name": "login"}, "spec": map[string]any{"provider": tc.provider},
+				}})
+			}
+			callers := &conformance.FakeCallers{Cluster: conformanceCluster, User: conformanceUser, Objects: objects, Allow: func(a conformance.Attributes) bool { return a.Verb == "get" }}
+			s := newGatedTestServer(t, callers)
+			body, err := json.Marshal(map[string]any{"task": "hello", "reasoningEffort": tc.effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			gatedHandler(t, s).ServeHTTP(rec, stamped(http.MethodPost, verbBase(conformanceCluster, "agents", conformanceAgent)+"/run", strings.NewReader(string(body)), conformanceUser))
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.status, rec.Body.String())
+			}
+			scope := store.Scope{OrgUUID: unmappedOrg, WorkspaceUUID: conformanceCluster, ClusterID: conformanceCluster, AgentName: conformanceAgent}
+			runs, err := s.store.ListRuns(t.Context(), scope, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) != tc.runs {
+				t.Fatalf("created %d runs, want %d", len(runs), tc.runs)
+			}
+			if len(runs) > 0 {
+				if _, settled := s.waitForRun(t.Context(), scope, runs[0].ID, 5*time.Second); !settled {
+					t.Fatal("test run did not settle")
+				}
+			}
+		})
+	}
 }

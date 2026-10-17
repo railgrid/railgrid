@@ -122,6 +122,17 @@ spec:
                     maxLength: 253
                     type: string
                 type: object
+              harnessSettings:
+                description: HarnessSettings freezes the selected model and effort
+                  for this run.
+                properties:
+                  model:
+                    maxLength: 253
+                    type: string
+                  reasoningEffort:
+                    maxLength: 32
+                    type: string
+                type: object
               idempotencyKey:
                 description: |-
                   IdempotencyKey is the caller-supplied de-duplication token this run was

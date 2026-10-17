@@ -368,7 +368,8 @@ type taskRun struct {
 	// commit, no history, no harness session, a Git result on completion. The
 	// clone source it carries is dispatch data — held here for the turn and
 	// never persisted; a run rebuilt from its record carries none.
-	Repository *repositoryAttempt
+	Repository      *repositoryAttempt
+	HarnessSettings *store.HarnessSettings
 
 	// Worker, when non-nil, marks this run as a spawned sub-agent worker and
 	// carries the constraints its parent imposed (depth, narrowed families,
@@ -515,6 +516,7 @@ const backendCancelTimeout = 30 * time.Second
 // way of starting work: a bug fixed here is fixed for all of them.
 func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (runResult, error) {
 	scope, agent := run.Scope, run.Agent
+	run.HarnessSettings = resolveHarnessSettings(agent, run.HarnessSettings)
 	// A status condition alone cannot enforce unsupported tool restrictions:
 	// direct API callers and background triggers may run before reconciliation.
 	if agent.Spec.HarnessBacked() {
@@ -723,7 +725,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// may have been re-pointed since.
 			Backend: agent.Spec.BackendType(), AttemptID: harnessAttemptID(harnessT, runID),
 			// What a repository run ran against, minus the credential.
-			Repository: run.Repository.persisted(),
+			Repository:      run.Repository.persisted(),
+			HarnessSettings: run.HarnessSettings,
 			// How many times this run was already handed back to the queue; the
 			// bound on retrying it again is counted from here.
 			Retries: run.Retries,
@@ -1073,6 +1076,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	tr.Scope = scope
 	tr.Agent = agent
 	access.applyTo(&tr)
+	tr.HarnessSettings = resolveHarnessSettings(agent, tr.HarnessSettings)
 
 	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
@@ -1080,8 +1084,9 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		// What a repository run is asked to run against is part of the REQUEST,
 		// so it is on the first record: the Run object is projected from this
 		// write, and its spec is never rewritten afterwards.
-		Repository: tr.Repository.persisted(),
-		Phase:      store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
+		Repository:      tr.Repository.persisted(),
+		HarnessSettings: tr.HarnessSettings,
+		Phase:           store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		// The unique store key is the admission boundary. Concurrent requests
 		// may both miss the earlier lookup; only the one that records a run may

@@ -208,6 +208,12 @@ type AgentHarnessBackend struct {
 	// +kubebuilder:validation:MaxLength=253
 	Model string `json:"model,omitempty"`
 
+	// ReasoningEffort selects Codex reasoning effort. Empty uses the harness default.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^$|^[a-z][a-z0-9_-]*$`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
 	// Workspace decides whether consecutive turns share the runner's working
 	// directory. "persistent" (the default) keeps one directory per agent
 	// across turns, which is what makes a conversation about a checkout

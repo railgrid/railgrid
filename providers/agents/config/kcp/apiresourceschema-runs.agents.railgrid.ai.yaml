@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261011-44e47b7e.runs.agents.railgrid.ai
+  name: v261017-8eaf3919.runs.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -116,6 +116,17 @@ spec:
                     Trigger, a channel Connection, or a caller identity. A label, never a
                     trust root — the gates already decided the caller could start this.
                   maxLength: 253
+                  type: string
+              type: object
+            harnessSettings:
+              description: HarnessSettings freezes the selected model and effort for
+                this run.
+              properties:
+                model:
+                  maxLength: 253
+                  type: string
+                reasoningEffort:
+                  maxLength: 32
                   type: string
               type: object
             idempotencyKey:
