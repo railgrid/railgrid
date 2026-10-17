@@ -66,6 +66,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 )
 
 const (
@@ -162,7 +163,8 @@ func SetupWithManager(mgr manager.Manager, provisioner Provisioner) error {
 // the bootstrap workqueue down.
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {
 	return manager.New(cfg, manager.Options{
-		Scheme: scheme,
+		Controller: leaderelection.ControllerOptions(),
+		Scheme:     scheme,
 		Metrics: server.Options{
 			BindAddress: "0",
 		},

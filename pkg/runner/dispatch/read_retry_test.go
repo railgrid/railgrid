@@ -18,6 +18,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -462,6 +463,69 @@ func TestCancelDescribesProtocolFailure(t *testing.T) {
 		if got == nil || got.Phase != runner.PhaseCancelling || !errors.Is(err, refusal) ||
 			!strings.Contains(err.Error(), "inspection refused") || !strings.Contains(err.Error(), string(refusal.Code)) {
 			t.Fatalf("receipt=%+v err=%v", got, err)
+		}
+	})
+}
+
+const kcpResolutionTimeoutBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Internal error occurred: error resolving resource: the server was unable to return a response in the time allotted, but may still be processing the request","reason":"InternalError","details":{"causes":[{"message":"error resolving resource: the server was unable to return a response in the time allotted, but may still be processing the request"}]},"code":500}`
+
+func TestKCPResolutionTimeoutRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		base := &fakeRunner{receipt: receipt(runner.PhaseCompleted)}
+		f := &flakyReader{fakeRunner: base}
+		calls := 0
+		f.inspect = func(ctx context.Context, id string) (runner.Receipt, error) {
+			calls++
+			if calls == 1 {
+				return runner.Receipt{}, &client.HTTPError{StatusCode: 500, Body: []byte(kcpResolutionTimeoutBody)}
+			}
+			return base.Inspect(ctx, id)
+		}
+		out, err := Follow(context.Background(), f, receipt(runner.PhaseRunning), Position{}, nil)
+		if err != nil || !out.Completed() || calls != 2 || len(base.starts)+len(base.resumes)+len(base.cancels) != 0 {
+			t.Fatalf("out=%+v err=%v calls=%d", out, err, calls)
+		}
+	})
+}
+
+func TestKCPTimeoutClassificationIsNarrow(t *testing.T) {
+	for _, code := range []int{401, 403, 404, 500} {
+		for _, field := range []string{"kind", "apiVersion", "status", "reason", "code", "message", "details"} {
+			var body map[string]any
+			if err := json.Unmarshal([]byte(kcpResolutionTimeoutBody), &body); err != nil {
+				t.Fatal(err)
+			}
+			delete(body, field)
+			data, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retryableRead(&client.HTTPError{StatusCode: code, Body: data}) {
+				t.Errorf("retried HTTP %d with missing %s", code, field)
+			}
+		}
+	}
+	for _, code := range []int{401, 403, 404} {
+		if retryableRead(&client.HTTPError{StatusCode: code, Body: []byte(kcpResolutionTimeoutBody)}) {
+			t.Errorf("retried HTTP %d", code)
+		}
+	}
+	for _, body := range []string{"", "timeout", "<html>timeout</html>", "{",
+		strings.ReplaceAll(kcpResolutionTimeoutBody, "error resolving resource", "database corruption"),
+		strings.ReplaceAll(kcpResolutionTimeoutBody, "the server was unable to return a response in the time allotted, but may still be processing the request", "resource schema invalid")} {
+		if retryableRead(&client.HTTPError{StatusCode: 500, Body: []byte(body)}) {
+			t.Errorf("retried unrelated 500: %s", body)
+		}
+	}
+}
+
+func TestPersistentKCPTimeoutIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		failure := &client.HTTPError{StatusCode: 500, Body: []byte(kcpResolutionTimeoutBody)}
+		_, err := retryRead(context.Background(), nil, func() (runner.Receipt, error) { return runner.Receipt{}, failure })
+		if !errors.Is(err, failure) || time.Since(start) != maxReadOutage {
+			t.Fatalf("err=%v elapsed=%s", err, time.Since(start))
 		}
 	})
 }

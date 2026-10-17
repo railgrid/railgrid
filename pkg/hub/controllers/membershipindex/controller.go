@@ -61,6 +61,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 )
 
 const controllerName = "membership-index-invariants"
@@ -102,7 +103,8 @@ func SetupWithManager(mgr manager.Manager, ensurer MembershipEnsurer) error {
 // invariant-repair crash can't take their workqueues down.
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {
 	return manager.New(cfg, manager.Options{
-		Scheme: scheme,
+		Controller: leaderelection.ControllerOptions(),
+		Scheme:     scheme,
 		Metrics: server.Options{
 			// Hub serves its own /metrics; disable controller-runtime's.
 			BindAddress: "0",

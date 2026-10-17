@@ -18,6 +18,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,8 @@ func retryableRead(err error) bool {
 	var httpErr *client.HTTPError
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
+		case http.StatusInternalServerError:
+			return resourceResolutionTimeout(httpErr.Body)
 		case http.StatusRequestTimeout,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			return true
@@ -156,4 +159,33 @@ func retryReadDuring[T any](ctx context.Context, obs Observer, outage *readOutag
 
 func inspectWithRetry(ctx context.Context, r Runner, attemptID string, obs Observer) (runner.Receipt, error) {
 	return retryRead(ctx, obs, func() (runner.Receipt, error) { return r.Inspect(ctx, attemptID) })
+}
+
+// kcp currently wraps resource-resolution timeouts in InternalError, losing
+// their HTTP timeout status. Match this specific Kubernetes Status envelope,
+// not arbitrary 500s or bodies that merely mention a timeout. Remove this
+// compatibility case when kcp preserves the original timeout classification.
+func resourceResolutionTimeout(body []byte) bool {
+	var status struct {
+		Kind       string `json:"kind"`
+		APIVersion string `json:"apiVersion"`
+		Status     string `json:"status"`
+		Reason     string `json:"reason"`
+		Code       int    `json:"code"`
+		Message    string `json:"message"`
+		Details    struct {
+			Causes []struct {
+				Message string `json:"message"`
+			} `json:"causes"`
+		} `json:"details"`
+	}
+	const cause = "error resolving resource: the server was unable to return a response in the time allotted, but may still be processing the request"
+	if json.Unmarshal(body, &status) != nil {
+		return false
+	}
+	return status.Kind == "Status" && status.APIVersion == "v1" &&
+		status.Status == "Failure" && status.Reason == "InternalError" &&
+		status.Code == http.StatusInternalServerError &&
+		status.Message == "Internal error occurred: "+cause &&
+		len(status.Details.Causes) == 1 && status.Details.Causes[0].Message == cause
 }

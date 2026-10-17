@@ -40,6 +40,8 @@ limitations under the License.
 //     caller cancellation, and the caller deadline. Expected quiet-stream
 //     reconnections are not transport failures.
 //     Reconnection preserves the consumed cursor and never starts another attempt.
+//     This includes kcp resource-resolution timeouts wrapped in HTTP 500;
+//     unrelated internal errors remain permanent.
 //   - The receipt's session id is authoritative, because a harness may fork its
 //     session on a resume. Whatever is chained next is chained onto what the
 //     receipt said, never onto what was sent.

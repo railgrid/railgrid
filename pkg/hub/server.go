@@ -1184,8 +1184,9 @@ func (s *Server) Run(ctx context.Context) error {
 				return
 			}
 			coreMgr, err := mcmanager.New(providersConfig, coreExportProvider, manager.Options{
-				Scheme:  scheme,
-				Metrics: metricsserver.Options{BindAddress: "0"},
+				Controller: leaderelection.ControllerOptions(),
+				Scheme:     scheme,
+				Metrics:    metricsserver.Options{BindAddress: "0"},
 			})
 			if err != nil {
 				logger.Error(err, "Creating core multicluster manager failed")
@@ -1220,8 +1221,9 @@ func (s *Server) Run(ctx context.Context) error {
 				return
 			}
 			adminMgr, err := mcmanager.New(providersConfig, adminExportProvider, manager.Options{
-				Scheme:  scheme,
-				Metrics: metricsserver.Options{BindAddress: "0"},
+				Controller: leaderelection.ControllerOptions(),
+				Scheme:     scheme,
+				Metrics:    metricsserver.Options{BindAddress: "0"},
 			})
 			if err != nil {
 				logger.Error(err, "Creating admin multicluster manager failed")
