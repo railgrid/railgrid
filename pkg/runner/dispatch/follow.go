@@ -225,7 +225,8 @@ func RejoinSnapshot(ctx context.Context, r Runner, snap Snapshot, obs Observer) 
 // RestoreSnapshot reconstructs the normalized event state through pos.Cursor
 // from the runner's retained journal. It is the migration path for older saved
 // states that stored only coordinates and cumulative usage. Replays are silent;
-// obs is consulted only for durable cancellation.
+// obs is consulted only for durable cancellation. Interrupted replays resume
+// from the consumed cursor with the same bounded outage policy as Follow.
 func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) (Snapshot, error) {
 	if pos.AttemptID == "" {
 		return Snapshot{Position: pos}, errors.New("restoring an attempt needs its id")
@@ -239,18 +240,40 @@ func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) 
 	if pos.Cursor == 0 {
 		return s.snapshot(pos), nil
 	}
-	stream, err := eventsWithRetry(ctx, r, pos.AttemptID, 0, obs)
+	outage := &readOutage{}
+	open := func() (Stream, error) {
+		return retryReadDuring(ctx, obs, outage, func() (Stream, error) {
+			return r.Events(ctx, pos.AttemptID, s.cursor)
+		})
+	}
+	stream, err := open()
 	if err != nil {
 		return Snapshot{Position: pos}, Describe("rebuilding saved event state", err)
 	}
-	defer func() { _ = stream.Close() }()
+	defer func() {
+		if stream != nil {
+			_ = stream.Close()
+		}
+	}()
 	for expected := uint64(1); expected <= pos.Cursor; {
 		if err := obs.Aborted(ctx); err != nil {
 			return s.snapshot(pos), err
 		}
 		event, err := stream.Next(ctx)
 		if err != nil {
-			return s.snapshot(pos), fmt.Errorf("rebuilding saved event state through cursor %d at event %d: %w", pos.Cursor, expected, err)
+			if !retryableRead(err) {
+				return s.snapshot(pos), fmt.Errorf("rebuilding saved event state through cursor %d at event %d: %w", pos.Cursor, expected, err)
+			}
+			_ = stream.Close()
+			stream = nil
+			if err := outage.wait(ctx, obs, err); err != nil {
+				return s.snapshot(pos), Describe("rebuilding saved event state", err)
+			}
+			stream, err = open()
+			if err != nil {
+				return s.snapshot(pos), Describe("rebuilding saved event state", err)
+			}
+			continue
 		}
 		if event.Cursor <= s.cursor {
 			continue
@@ -259,6 +282,7 @@ func RestoreSnapshot(ctx context.Context, r Runner, pos Position, obs Observer) 
 			return s.snapshot(pos), fmt.Errorf("rebuilding saved event state through cursor %d: expected event %d, got cursor %d", pos.Cursor, expected, event.Cursor)
 		}
 		s.observe(event)
+		*outage = readOutage{}
 		expected++
 	}
 	return s.snapshot(pos), nil
@@ -506,10 +530,11 @@ func Cancel(ctx context.Context, r Runner, req runner.CancelRequest) (*runner.Re
 			return &receipt, fmt.Errorf("attempt %s is %s, not cancelled: %w", req.AttemptID, receipt.Phase, ctx.Err())
 		case <-time.After(cancelPoll):
 		}
-		receipt, err = inspectWithRetry(ctx, r, req.AttemptID, nil)
+		observed, err := inspectWithRetry(ctx, r, req.AttemptID, nil)
 		if err != nil {
-			return nil, Describe("observing the cancelled attempt", err)
+			return &receipt, fmt.Errorf("attempt %s is %s, not cancelled: %w", req.AttemptID, receipt.Phase, err)
 		}
+		receipt = observed
 	}
 	return &receipt, nil
 }

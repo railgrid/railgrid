@@ -308,3 +308,89 @@ func TestBackoffCancellationPolling(t *testing.T) {
 		}
 	})
 }
+
+func TestRestoreSnapshotReconnectsSilently(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		base := &fakeRunner{events: []runner.Event{
+			event(1, runner.EventProgress, "first", ""),
+			event(2, runner.EventProgress, "second", ""),
+		}}
+		broken := &interruptedStream{sliceStream: sliceStream{events: base.events[:1]}}
+		f := &flakyReader{fakeRunner: base}
+		calls := 0
+		f.events = func(ctx context.Context, id string, after uint64) (Stream, error) {
+			calls++
+			if calls == 1 {
+				return broken, nil
+			}
+			if after != 1 {
+				t.Fatalf("replay cursor=%d", after)
+			}
+			if calls == 2 {
+				return nil, &client.HTTPError{StatusCode: 502}
+			}
+			return base.Events(ctx, id, after)
+		}
+		obs := &recorder{}
+		snap, err := RestoreSnapshot(context.Background(), f, Position{AttemptID: "attempt-1", Cursor: 2}, obs)
+		if err != nil || snap.Position.Cursor != 2 || !broken.closed || calls != 3 {
+			t.Fatalf("snapshot=%+v err=%v closed=%v calls=%d", snap, err, broken.closed, calls)
+		}
+		restored, err := restoreStream(nil, snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := restored.summary().Text
+		if strings.Count(text, "first") != 1 || strings.Count(text, "second") != 1 {
+			t.Fatalf("lost or duplicated replay: %q", text)
+		}
+		if len(obs.text) != 0 || len(obs.checkpoints) != 0 {
+			t.Fatal("replay emitted output")
+		}
+	})
+}
+
+func TestRestoreSnapshotPersistentDisconnectIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		f := &flakyReader{fakeRunner: &fakeRunner{}}
+		failure := &client.HTTPError{StatusCode: 502}
+		f.events = func(context.Context, string, uint64) (Stream, error) {
+			return &sliceStream{err: failure}, nil
+		}
+		_, err := RestoreSnapshot(context.Background(), f, Position{AttemptID: "attempt-1", Cursor: 1}, nil)
+		if !errors.Is(err, failure) || time.Since(start) != maxReadOutage {
+			t.Fatalf("err=%v elapsed=%s", err, time.Since(start))
+		}
+	})
+}
+
+func TestCancelPreservesReceiptOnReadFailure(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "outage", true: "deadline"}[deadline], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				base := &fakeRunner{receipt: receipt(runner.PhaseCancelling)}
+				f := &flakyReader{fakeRunner: base}
+				failure := &client.HTTPError{StatusCode: 502}
+				f.inspect = func(context.Context, string) (runner.Receipt, error) { return runner.Receipt{}, failure }
+				ctx := context.Background()
+				if deadline {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, time.Second)
+					defer cancel()
+				}
+				got, err := Cancel(ctx, f, runner.CancelRequest{AttemptID: "attempt-1"})
+				if got == nil || got.Phase != runner.PhaseCancelling || err == nil ||
+					!strings.Contains(err.Error(), "not cancelled") || !strings.Contains(err.Error(), "502") || len(base.cancels) != 1 {
+					t.Fatalf("receipt=%+v err=%v mutations=%d", got, err, len(base.cancels))
+				}
+				if deadline && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("lost deadline: %v", err)
+				}
+				if !deadline && !errors.Is(err, failure) {
+					t.Fatalf("lost outage failure: %v", err)
+				}
+			})
+		})
+	}
+}

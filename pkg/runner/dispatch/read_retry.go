@@ -76,7 +76,7 @@ func (o *readOutage) wait(ctx context.Context, obs Observer, last error) error {
 	defer cancel()
 	err := waitReadRetry(retryCtx, obs, &o.delay)
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return fmt.Errorf("%w (last runner read failure: %v)", ctx.Err(), last)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("runner read outage exceeded %s: %w", maxReadOutage, last)
@@ -142,8 +142,4 @@ func retryReadDuring[T any](ctx context.Context, obs Observer, outage *readOutag
 
 func inspectWithRetry(ctx context.Context, r Runner, attemptID string, obs Observer) (runner.Receipt, error) {
 	return retryRead(ctx, obs, func() (runner.Receipt, error) { return r.Inspect(ctx, attemptID) })
-}
-
-func eventsWithRetry(ctx context.Context, r Runner, attemptID string, cursor uint64, obs Observer) (Stream, error) {
-	return retryRead(ctx, obs, func() (Stream, error) { return r.Events(ctx, attemptID, cursor) })
 }
