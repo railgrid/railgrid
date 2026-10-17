@@ -245,7 +245,7 @@ test('wizard handoff keeps the existing readiness and project/thread start path 
 
   const startPath = appSource.slice(appSource.indexOf('async function createProjectAndStartConversation('))
   assert.match(startPath, /api\.createProjectStream\(props\.ctx, \{/)
-  assert.match(startPath, /api\.createAssistantThread\(props\.ctx, projectName, undefined, requestedThreadID\)/)
+  assert.match(startPath, /api\.createAssistantThread\(\s*props\.ctx,\s*projectName,\s*undefined,\s*requestedThreadID,\s*supportedThreadReasoningEffortSnapshot\(startPlan\.reasoningEffortByModel\),/)
   assert.match(startPath, /startPreProjectAssistantTurn\(projectName, submission, thread\.id(?:, current)?\)/)
 })
 
@@ -262,7 +262,7 @@ test('landing intake uses a compact Railgrid composer with concrete prompts and 
   assert.doesNotMatch(appSource, /landingPlaceholder|landingComposerPlaceholder|typeLandingPlaceholder|startLandingPlaceholder|clearLandingPlaceholder/)
   assert.doesNotMatch(appSource, /text-\[44px\]|text-\[56px\]/)
 
-  assert.match(appSource, /<template #actions>[\s\S]*<ModelPicker[\s\S]*:models="configuredLLMModels"[\s\S]*:selected-i-d="selectedLLMModel\?\.id \|\| ''"[\s\S]*@select="selectedLLMModelID = \$event"[\s\S]*<button\s+type="submit"/)
+  assert.match(appSource, /<template #actions>[\s\S]*<AIModelReasoningPicker[\s\S]*:models="configuredLLMModels"[\s\S]*:selected-i-d="selectedLLMModel\?\.id \|\| ''"[\s\S]*:effort="landingReasoningEffort"[\s\S]*@select="selectedLLMModelID = \$event"[\s\S]*@update:effort="selectLandingReasoningEffort"[\s\S]*<button\s+type="submit"/)
   assert.match(preProjectComposerSource, /class="ml-auto flex min-w-0 items-center justify-end gap-1"/)
   assert.match(preProjectComposerSource, /role="menu"/)
   assert.match(appSource, /<ArrowUp class="h-4 w-4" :stroke-width="1\.75" \/>/)

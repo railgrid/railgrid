@@ -36,6 +36,7 @@ const bootstrapPermitSchemaVersion = "project-bootstrap-permit-v1"
 const assistantConversationSchemaVersion = "assistant-conversation-items-v1"
 const assistantConversationSequenceSchemaVersion = "assistant-conversation-sequence-v1"
 const assistantThreadSchemaVersion = "assistant-thread-turn-item-v1"
+const assistantThreadReasoningPreferenceSchemaVersion = "assistant-thread-reasoning-preferences-v1"
 const assistantRunThreadSchemaVersion = "assistant-run-thread-scope-v1"
 const assistantRunThreadWriteFenceSchemaVersion = "assistant-run-thread-write-fence-v1"
 const assistantLookupIndexSchemaVersion = "assistant-point-lookups-online-v3"
@@ -206,6 +207,9 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	if err := ensureSchemaVersion(ctx, tx, assistantThreadSchemaVersion, assistantThreadSchemaStatements()...); err != nil {
+		return err
+	}
+	if err := ensureSchemaVersion(ctx, tx, assistantThreadReasoningPreferenceSchemaVersion, assistantThreadReasoningPreferenceSchemaStatements()...); err != nil {
 		return err
 	}
 	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadSchemaStatements()...); err != nil {
@@ -395,7 +399,8 @@ func assistantThreadSchemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS app_studio_assistant_threads (
 			org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
 			thread_id text NOT NULL, title text NOT NULL DEFAULT '', status text NOT NULL CHECK (status IN ('idle','active','archived')),
-			actor_id text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+			actor_id text NOT NULL, reasoning_effort_by_model jsonb NOT NULL DEFAULT '{}'::jsonb,
+			created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
 			PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid, thread_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS app_studio_assistant_threads_scope_updated_idx
@@ -426,6 +431,11 @@ func assistantThreadSchemaStatements() []string {
 				REFERENCES app_studio_assistant_threads (org_uuid, workspace_uuid, project_name, project_uid, thread_id) ON DELETE CASCADE
 		)`,
 	}
+}
+
+func assistantThreadReasoningPreferenceSchemaStatements() []string {
+	return []string{`ALTER TABLE app_studio_assistant_threads
+		ADD COLUMN IF NOT EXISTS reasoning_effort_by_model jsonb NOT NULL DEFAULT '{}'::jsonb`}
 }
 
 func assistantLookupIndexSchemaStatements() []string {

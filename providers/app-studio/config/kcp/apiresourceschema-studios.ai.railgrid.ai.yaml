@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260919-91e6c6ad.studios.ai.railgrid.ai
+  name: v261017-981162e2.studios.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -142,6 +142,14 @@ spec:
                         description: Provider selects the wire protocol (openai, anthropic,
                           google, ...).
                         maxLength: 63
+                        type: string
+                      reasoningEffort:
+                        description: |-
+                          ReasoningEffort is the default effort for this model revision. Empty
+                          preserves automatic behavior. Supported values depend on the model and
+                          endpoint; the provider validates them against its reasoning profiles.
+                        maxLength: 32
+                        pattern: ^$|^[a-z][a-z0-9_-]*$
                         type: string
                       revisionID:
                         description: |-

@@ -60,6 +60,44 @@ Unexpected connection-discovery errors are returned; an explicit `none` request
 can proceed independently. `PUT /api/projects/{project}/repository` accepts
 `connectionRef`, reuses the binding on retries, and refuses repository replacement.
 
+## Reasoning effort
+
+For supported models on the official OpenAI endpoint, **Models** exposes a
+**Reasoning effort** default. **Automatic** preserves App Studio's existing
+behavior. The composer offers **Model default** and the selected model's
+supported levels. Explicit `none`, where supported, is different from inheriting
+a default. Other providers, gateways, and unknown model IDs keep their existing
+behavior.
+
+Conversation overrides are saved per thread and per saved model, so switching
+models restores that model's choice. If a later model edit makes a choice
+unsupported, reset it or choose a supported effort before sending. A model
+default edit creates a new registry revision, just like a model or endpoint
+edit.
+
+Preference updates use `reasoningEffort: {modelID, effort}` on the existing
+thread edit verb. Both members are required; `effort: ""` removes that model's
+override. Missing or null effort values are rejected without changing the
+preference or its event stream.
+
+The turn request's optional `reasoningEffort` distinguishes omission (inherit
+the thread preference, then the model default), `""` (use the model default),
+and an explicit level. App Studio freezes the requested choice, configured and
+effective effort, transport, and model revision before admitting the run.
+Network retries, worker recovery, approval/input resumes, and interrupted-turn
+continuations retain that snapshot; steering cannot change it. Independent
+title, preflight, and model-connection calls use the saved-model default.
+
+The capability table lives in `provider-sdk/modelcatalog`; regenerate the
+portal assets with `make generate-app-studio-model-catalog` from the repository
+root. `make test-app-studio-reasoning` exercises the catalog, API, persistence,
+Studio reconciliation, and portal. Schema changes use
+`make codegen-app-studio-provider`. Deploy the generated Studio schema before
+the updated provider; its startup adds the thread-preference JSONB column with
+the separate `assistant-thread-reasoning-preferences-v1` migration, including on
+installations that already applied the original thread schema migration.
+Existing model revisions, conversations, and legacy run audits need no backfill.
+
 ## What's here
 
 | Surface | Where |

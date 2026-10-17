@@ -46,6 +46,30 @@ func TestLLMCredentialSecretNameIsDerived(t *testing.T) {
 	}
 }
 
+func TestValidateLLMRegistryReasoningDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name, endpoint, model, effort string
+		archived                      bool
+		invalid                       bool
+	}{
+		{name: "automatic on unknown model", model: "custom-model"},
+		{name: "supported OpenAI default", model: "gpt-6-luna", effort: "max"},
+		{name: "unsupported effort", model: "gpt-6-astra", effort: "none", invalid: true},
+		{name: "gateway remains automatic", endpoint: "https://gateway.example/v1", model: "gpt-6-luna"},
+		{name: "gateway effort rejected", endpoint: "https://gateway.example/v1", model: "gpt-6-luna", effort: "high", invalid: true},
+		{name: "archived unsupported default does not invalidate active registry", model: "retired-model", effort: "high", archived: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model("configured", "revision", "Configured")
+			m.Model, m.BaseURL, m.ReasoningEffort, m.Archived = tc.model, tc.endpoint, tc.effort, tc.archived
+			reason, _ := validateLLMRegistry(&aiv1alpha1.StudioLLM{Models: []aiv1alpha1.StudioLLMModel{m}})
+			if tc.invalid && reason != "ReasoningEffortInvalid" || !tc.invalid && reason != "" {
+				t.Fatalf("reason = %q, want invalid=%t", reason, tc.invalid)
+			}
+		})
+	}
+}
+
 // Each case is a rule about the SET of models — the thing a CRD schema, which
 // validates one entry at a time, cannot state.
 func TestValidateLLMRegistry(t *testing.T) {

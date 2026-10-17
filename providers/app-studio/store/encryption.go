@@ -226,6 +226,9 @@ func (s *encryptedStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, sco
 	}
 	event.ThreadID = prepared.ID
 	if len(event.Payload) == 0 || string(event.Payload) == "{}" {
+		// This title-only event is a partial metadata update. Omitting the
+		// preference map avoids emitting a stale whole map if another update wins
+		// between the event preparation and the underlying title compare-and-set.
 		event.Payload, err = json.Marshal(map[string]any{"thread": map[string]any{"id": prepared.ID, "title": title}})
 		if err != nil {
 			return AssistantThread{}, false, err

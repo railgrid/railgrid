@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Command modelcatalog-json renders provider-sdk/modelcatalog to JSON for the
-// portal.
+// portal's pricing and reasoning catalogs.
 //
 // The model catalog is provider knowledge, not tenant state: token pricing and
 // context windows, the same for every workspace. The portal needs it to show
@@ -24,10 +24,10 @@ limitations under the License.
 // past.
 //
 // Exporting beats the two alternatives. A hand-written TypeScript twin drifts
-// silently the first time someone adds a model to the Go table. A backend
-// endpoint would put a network round-trip, a route and an auth path in front
-// of a constant. This makes the Go table the single source and the JSON a
-// build artifact of it, with a test that fails when they diverge.
+// silently as model data changes. A backend endpoint would put a network
+// round-trip, a route and an auth path in front of constants. This makes the Go
+// tables the source and each JSON file a build artifact with a test that fails
+// when either output diverges.
 package main
 
 import (
@@ -40,7 +40,8 @@ import (
 )
 
 func main() {
-	out := flag.String("out", filepath.Join("portal", "src", "generated", "model-catalog.json"), "file to write")
+	out := flag.String("out", filepath.Join("portal", "src", "generated", "model-catalog.json"), "model pricing catalog file to write")
+	reasoningOut := flag.String("reasoning-out", filepath.Join("portal", "src", "generated", "reasoning-catalog.json"), "reasoning catalog file to write")
 	flag.Parse()
 
 	data, err := modelcatalogjson.Render()
@@ -48,9 +49,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, "modelcatalog-json:", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(*out, data, 0o644); err != nil {
+	if err := writeCatalog(*out, data); err != nil {
 		fmt.Fprintln(os.Stderr, "modelcatalog-json:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("wrote %s (%d bytes)\n", *out, len(data))
+
+	reasoningData, err := modelcatalogjson.RenderReasoningProfiles()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "modelcatalog-json:", err)
+		os.Exit(1)
+	}
+	if err := writeCatalog(*reasoningOut, reasoningData); err != nil {
+		fmt.Fprintln(os.Stderr, "modelcatalog-json:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s (%d bytes)\n", *reasoningOut, len(reasoningData))
+}
+
+func writeCatalog(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }

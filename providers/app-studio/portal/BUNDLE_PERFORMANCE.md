@@ -39,14 +39,28 @@ dependency graph instead of continuing to grow that entry.
 
 After merging the shared composer changes from main, the optimized build measures
 58,421 B gzip for the dashboard, 320,592 B for the page, and 352,232 B total.
-Budgets are ratcheted down to preserve the savings while leaving a deliberate
-3–5 KB gzip margin (rather than the former tens of bytes):
+At that point, budgets were ratcheted down to preserve the savings while leaving
+a deliberate 3–5 KB gzip margin (rather than the former tens of bytes). The
+combined reasoning picker uses that headroom as recorded below.
+
+The model-aware reasoning controls previously measured 1,197,690 B raw /
+328,296 B gzip on the page path and 1,295,478 B raw / 360,062 B gzip across all
+emitted assets. The combined model-and-reasoning popover measures 1,214,190 B
+raw / 330,623 B gzip on the page path and 1,321,969 B raw / 364,905 B gzip
+across all assets. This is a measured increase of 16,500 B raw / 2,327 B gzip
+on the page path and 26,491 B raw / 4,843 B gzip across all assets. The initial
+`AIModelReasoningPicker.vue` report showed 32,680 rendered bytes before
+minification; the final measurements above include the three review passes. The picker
+replaces the adjacent composer model and reasoning controls;
+the report showed no duplicated large dependency closure. The adjusted page
+raw ceiling leaves 5,810 B of headroom, its gzip ceiling leaves 1,377 B, and
+the adjusted total ceilings leave 8,031 B raw / 3,095 B gzip.
 
 | Path | Raw limit | Gzip limit | Gzip headroom |
 | --- | ---: | ---: | ---: |
-| Dashboard | 200,000 B | 62,000 B | 3,579 B |
-| Page | 1,180,000 B | 325,000 B | 4,408 B |
-| Total assets | 1,275,000 B | 357,000 B | 4,768 B |
+| Dashboard | 200,000 B | 62,000 B | 3,442 B |
+| Page | 1,220,000 B | 332,000 B | 1,377 B |
+| Total assets | 1,330,000 B | 368,000 B | 3,095 B |
 
 Bootstrap and authentication settings limits remain unchanged. Larger growth
 requires investigating its module costs, not automatically moving the ceilings.

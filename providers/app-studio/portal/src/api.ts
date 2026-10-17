@@ -23,6 +23,7 @@ import type {
   ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
   ProjectAssistantTurn,
+  ProjectAssistantTurnDetail,
   ProjectLLMSettings,
   ProjectLLMModelDiscovery,
   ProjectIntegration,
@@ -1278,14 +1279,14 @@ export const api = {
 
   async createLLMModel(
     ctx: RailgridContext | null,
-    body: { name: string; provider?: string; baseURL?: string; model: string; apiKey: string },
+    body: { name: string; provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey: string },
   ): Promise<ProjectLLMSettings> {
     return llmRegistry.createLLMModel(ctx, body)
   },
 
   async testLLMConnection(
     ctx: RailgridContext | null,
-    body: { provider?: string; baseURL?: string; model: string; apiKey: string; existingModelID?: string },
+    body: { provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey: string; existingModelID?: string },
   ): Promise<{ ok: boolean }> {
     await ensureStudio(ctx)
     return request<{ ok: boolean }>(ctx, 'POST', `${studioURL(ctx, 'test-model')}`, body, {
@@ -1297,7 +1298,7 @@ export const api = {
   async patchLLMModel(
     ctx: RailgridContext | null,
     modelID: string,
-    body: { name?: string; provider?: string; baseURL?: string; model?: string; apiKey?: string },
+    body: { name?: string; provider?: string; baseURL?: string; model?: string; reasoningEffort?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
     return llmRegistry.patchLLMModel(ctx, modelID, body)
   },
@@ -1523,12 +1524,17 @@ export const api = {
     name: string,
     title?: string,
     threadID?: string,
+    reasoningEffortByModel?: Record<string, string>,
   ): Promise<ProjectAssistantThread> {
     return request<ProjectAssistantThread>(
       ctx,
       'POST',
       `${projectURL(ctx, name, 'create-session')}`,
-      { title, ...(threadID?.trim() ? { id: threadID.trim() } : {}) },
+      {
+        title,
+        ...(threadID?.trim() ? { id: threadID.trim() } : {}),
+        ...(reasoningEffortByModel && Object.keys(reasoningEffortByModel).length ? { reasoningEffortByModel } : {}),
+      },
     )
   },
 
@@ -1536,7 +1542,7 @@ export const api = {
     ctx: RailgridContext | null,
     name: string,
     threadID: string,
-    body: { title?: string; archived?: boolean },
+    body: { title?: string; archived?: boolean; reasoningEffort?: { modelID: string; effort: string } },
   ): Promise<ProjectAssistantThread> {
     return sessionRequest<ProjectAssistantThread>(ctx, name, threadID, 'edit', 'POST', body)
   },
@@ -1606,11 +1612,11 @@ export const api = {
     await request<null>(ctx, 'DELETE', `${projectURL(ctx, name, 'attachments', attachmentID)}`)
   },
 
-  async startAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; reasoningEffort?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return sessionRequest<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, name, threadID, 'turn', 'POST', body)
   },
 
-  async startAssistantReview(ctx: RailgridContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantReview(ctx: RailgridContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; reasoningEffort?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return sessionRequest<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, name, threadID, 'review', 'POST', body)
   },
 
@@ -1621,6 +1627,10 @@ export const api = {
     if (res.status === 204) return undefined
     if (!res.ok) throw new Error(`active assistant turn failed: ${res.status} ${res.statusText}`)
     return res.json() as Promise<ProjectAssistantTurn>
+  },
+
+  async getAssistantTurnDetail(ctx: RailgridContext | null, name: string, threadID: string, turnID: string): Promise<ProjectAssistantTurnDetail> {
+    return sessionRequest<ProjectAssistantTurnDetail>(ctx, name, threadID, 'turn-status', 'GET', undefined, [turnID])
   },
 
   async steerAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {

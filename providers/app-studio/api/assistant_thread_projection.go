@@ -26,6 +26,28 @@ import (
 	"github.com/railgrid/provider-app-studio/store"
 )
 
+// assistantThreadProjectionPayload emits a complete thread metadata snapshot.
+// The empty preference object is significant: a preference-reset event must
+// clear clients' cached map, while title-only events intentionally omit it.
+func assistantThreadProjectionPayload(thread store.AssistantThread) ([]byte, error) {
+	preferences := thread.ReasoningEffortByModel
+	if preferences == nil {
+		preferences = map[string]string{}
+	}
+	return json.Marshal(map[string]any{"thread": struct {
+		ID                     string                      `json:"id"`
+		Title                  string                      `json:"title,omitempty"`
+		Status                 store.AssistantThreadStatus `json:"status"`
+		ActorID                string                      `json:"actorID,omitempty"`
+		ReasoningEffortByModel map[string]string           `json:"reasoningEffortByModel"`
+		CreatedAt              time.Time                   `json:"createdAt"`
+		UpdatedAt              time.Time                   `json:"updatedAt"`
+	}{
+		ID: thread.ID, Title: thread.Title, Status: thread.Status, ActorID: thread.ActorID,
+		ReasoningEffortByModel: preferences, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
+	}})
+}
+
 // assistantThreadProjectionLock serializes the live mirror and restart
 // reconciliation for one turn. Sequence CAS protects stream ordering; this
 // lock additionally prevents two local projectors from independently deciding
@@ -108,7 +130,21 @@ func (s *Server) releaseAssistantThreadProjectionLockRef(key string, entry *assi
 // concurrent requests such as {title} and {archived} should merge rather than
 // have the later writer erase the unrelated field.
 func (s *Server) patchAssistantThreadWithEvent(ctx context.Context, scope store.Scope, threadID, actorID string, patch assistantThreadPatchRequest) (store.AssistantThread, store.AssistantThreadEvent, error) {
+	if patch.Reasoning != nil && patch.Reasoning.Effort == nil {
+		return store.AssistantThread{}, store.AssistantThreadEvent{}, newValidationError("reasoningEffort.effort is required; use an empty string to inherit the model default")
+	}
 	for attempts := 0; attempts < assistantThreadMirrorPersistMaxAttempts; attempts++ {
+		events, err := s.loadAllAssistantThreadEvents(ctx, scope, strings.TrimSpace(threadID))
+		if err != nil {
+			return store.AssistantThread{}, store.AssistantThreadEvent{}, err
+		}
+		expected := int64(0)
+		if len(events) > 0 {
+			expected = events[len(events)-1].Sequence
+		}
+		// Read the sequence before the projection. If an update lands between
+		// these reads, latest contains it but expectedSequence is stale, forcing
+		// this patch to retry and merge against the next canonical snapshot.
 		latest, err := s.store.GetAssistantThread(ctx, scope, strings.TrimSpace(threadID))
 		if err != nil {
 			return store.AssistantThread{}, store.AssistantThreadEvent{}, err
@@ -126,18 +162,26 @@ func (s *Server) patchAssistantThreadWithEvent(ctx context.Context, scope store.
 				latest.Status = store.AssistantThreadStatusIdle
 			}
 		}
+		if patch.Reasoning != nil {
+			preferences := make(map[string]string, len(latest.ReasoningEffortByModel)+1)
+			for modelID, effort := range latest.ReasoningEffortByModel {
+				preferences[modelID] = effort
+			}
+			if *patch.Reasoning.Effort == "" {
+				delete(preferences, patch.Reasoning.ModelID)
+			} else {
+				preferences[patch.Reasoning.ModelID] = *patch.Reasoning.Effort
+			}
+			if len(preferences) == 0 {
+				latest.ReasoningEffortByModel = nil
+			} else {
+				latest.ReasoningEffortByModel = preferences
+			}
+		}
 		latest.UpdatedAt = time.Now().UTC()
-		payload, err := json.Marshal(map[string]any{"thread": latest})
+		payload, err := assistantThreadProjectionPayload(latest)
 		if err != nil {
 			return store.AssistantThread{}, store.AssistantThreadEvent{}, fmt.Errorf("encode assistant thread update: %w", err)
-		}
-		events, err := s.loadAllAssistantThreadEvents(ctx, scope, latest.ID)
-		if err != nil {
-			return store.AssistantThread{}, store.AssistantThreadEvent{}, err
-		}
-		expected := int64(0)
-		if len(events) > 0 {
-			expected = events[len(events)-1].Sequence
 		}
 		updated, created, err := s.store.UpdateAssistantThreadWithEvent(ctx, scope, latest, store.AssistantThreadEvent{
 			ThreadID: latest.ID,

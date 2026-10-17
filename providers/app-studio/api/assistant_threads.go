@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/railgrid/provider-sdk/modelcatalog"
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -63,19 +64,110 @@ const (
 )
 
 type assistantThreadCreateRequest struct {
-	ID    string `json:"id,omitempty"`
-	Title string `json:"title,omitempty"`
+	ID                     string            `json:"id,omitempty"`
+	Title                  string            `json:"title,omitempty"`
+	ReasoningEffortByModel map[string]string `json:"reasoningEffortByModel,omitempty"`
 }
 
 type assistantThreadPatchRequest struct {
-	Title    *string `json:"title,omitempty"`
-	Archived *bool   `json:"archived,omitempty"`
+	Title     *string                        `json:"title,omitempty"`
+	Archived  *bool                          `json:"archived,omitempty"`
+	Reasoning *assistantThreadReasoningPatch `json:"reasoningEffort,omitempty"`
+}
+
+type assistantThreadReasoningPatch struct {
+	ModelID string  `json:"modelID"`
+	Effort  *string `json:"effort"`
+}
+
+func normalizeProjectAssistantThreadReasoningEffortByModel(ctx context.Context, c *asclient.Client, values map[string]string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]string, len(values))
+	for rawModelID, rawEffort := range values {
+		modelID := strings.TrimSpace(rawModelID)
+		effort := rawEffort
+		if modelID == "" {
+			return nil, newValidationError("reasoningEffortByModel keys must be model IDs")
+		}
+		if effort == "" {
+			return nil, newValidationError("reasoningEffortByModel values must be non-empty; omit a model key to inherit its saved default")
+		}
+		if strings.TrimSpace(effort) != effort {
+			return nil, newValidationError("reasoningEffortByModel values must use a canonical reasoning effort")
+		}
+		if _, duplicate := result[modelID]; duplicate {
+			return nil, newValidationError(fmt.Sprintf("reasoningEffortByModel contains duplicate normalized model ID %q", modelID))
+		}
+		model, err := readProjectLLMModelForTurn(ctx, c, modelID, "")
+		if err != nil {
+			return nil, err
+		}
+		if err := modelcatalog.ValidateReasoningEffort(model.Settings.Provider, model.Settings.BaseURL, model.Settings.Model, effort); err != nil {
+			return nil, newValidationError(fmt.Sprintf("invalid reasoning effort for model %q: %v", modelID, err))
+		}
+		result[modelID] = effort
+	}
+	return result, nil
+}
+
+func validateProjectAssistantReasoningEffortForModel(ctx context.Context, c *asclient.Client, modelID, effort string) error {
+	model, err := readProjectLLMModelForTurn(ctx, c, modelID, "")
+	if err != nil {
+		return err
+	}
+	if err := modelcatalog.ValidateReasoningEffort(model.Settings.Provider, model.Settings.BaseURL, model.Settings.Model, effort); err != nil {
+		return newValidationError(fmt.Sprintf("invalid reasoning effort for model %q: %v", modelID, err))
+	}
+	return nil
+}
+
+func resolveProjectAssistantReasoningForTurn(settings *projectLLMSettings, requested *string, preferences map[string]string, modelID string) (*projectAssistantAuditReasoning, error) {
+	if settings == nil {
+		return nil, errors.New("resolve assistant reasoning: model settings are required")
+	}
+	requestedSnapshot := cloneStringPointer(requested)
+	effort := settings.ReasoningEffort
+	if requested != nil {
+		// An explicit empty choice means to use this model revision's saved
+		// default and therefore bypasses any thread-level preference.
+		if *requested != "" {
+			if err := modelcatalog.ValidateReasoningEffort(settings.Provider, settings.BaseURL, settings.Model, *requested); err != nil {
+				return nil, newValidationError(fmt.Sprintf("invalid reasoning effort for model %q: %v", modelID, err))
+			}
+			effort = *requested
+		}
+	} else if preference, found := preferences[modelID]; found {
+		if err := modelcatalog.ValidateReasoningEffort(settings.Provider, settings.BaseURL, settings.Model, preference); err != nil {
+			return nil, newValidationError(fmt.Sprintf("saved thread reasoning effort is no longer supported for model %q: %v", modelID, err))
+		}
+		effort = preference
+	}
+	settings.ReasoningEffort = effort
+	settings.ReasoningTransport = ""
+	settings.ReasoningEffectiveEffort = nil
+	return &projectAssistantAuditReasoning{
+		RequestedEffort:  requestedSnapshot,
+		ConfiguredEffort: settings.ReasoningEffort,
+		EffectiveEffort:  projectLLMEffectiveReasoningEffort(*settings),
+		Transport:        projectLLMTransport(*settings),
+	}, nil
+}
+
+func cloneStringPointer(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 type assistantThreadTurnCreateRequest struct {
 	Content             string                                 `json:"content"`
 	ClientUserMessageID string                                 `json:"clientUserMessageID"`
 	ModelID             string                                 `json:"modelID,omitempty"`
+	ReasoningEffort     *string                                `json:"reasoningEffort,omitempty"`
 	CollaborationMode   store.AssistantRunMode                 `json:"collaborationMode,omitempty"`
 	Skills              []string                               `json:"skills,omitempty"`
 	ContextResources    []projectAssistantContextResourceInput `json:"contextResources,omitempty"`
@@ -86,6 +178,9 @@ type assistantThreadTurnCreateRequest struct {
 	// modelRevisionID is server-owned immutable registry identity. Clients
 	// select the logical modelID; resumptions bind to this exact revision.
 	modelRevisionID string
+	// reasoningSnapshot is server-owned continuity state for a new run that
+	// resumes the model configuration of an interrupted predecessor.
+	reasoningSnapshot *projectAssistantAuditReasoning
 	// continuationOfTurnID is server-owned. It is populated only by the
 	// interrupted-turn continuation endpoint so ordinary turns cannot forge a
 	// predecessor relationship.
@@ -210,13 +305,22 @@ func (s *Server) createProjectAssistantThread(w http.ResponseWriter, r *http.Req
 	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
+	reasoningEffortByModel, err := normalizeProjectAssistantThreadReasoningEffortByModel(r.Context(), c, request.ReasoningEffortByModel)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
 	threadID := strings.TrimSpace(request.ID)
 	if threadID == "" {
 		threadID = "thread-" + uuid.NewString()
 	}
 	now := time.Now().UTC()
-	thread := store.AssistantThread{ID: threadID, Title: request.Title, Status: store.AssistantThreadStatusIdle, ActorID: id.user, CreatedAt: now, UpdatedAt: now}
-	payload, _ := json.Marshal(map[string]any{"thread": thread})
+	thread := store.AssistantThread{ID: threadID, Title: request.Title, Status: store.AssistantThreadStatusIdle, ActorID: id.user, ReasoningEffortByModel: reasoningEffortByModel, CreatedAt: now, UpdatedAt: now}
+	payload, err := assistantThreadProjectionPayload(thread)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
 	created, err := s.store.CreateAssistantThread(r.Context(), projectMessageScope(id.orgUUID, id.workspaceUUID, project), thread, []store.AssistantThreadEvent{{Type: assistantThreadEventThreadCreated, Payload: payload, CreatedAt: now}})
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
@@ -244,13 +348,34 @@ func (s *Server) listProjectAssistantThreads(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) patchProjectAssistantThread(w http.ResponseWriter, r *http.Request) {
-	_, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
+	c, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
 	if !ok {
 		return
 	}
 	var request assistantThreadPatchRequest
 	if !decodeStrictJSON(w, r, &request) {
 		return
+	}
+	if request.Reasoning != nil {
+		request.Reasoning.ModelID = strings.TrimSpace(request.Reasoning.ModelID)
+		if request.Reasoning.ModelID == "" {
+			s.writeAssistantThreadError(w, newValidationError("reasoningEffort.modelID is required"))
+			return
+		}
+		if request.Reasoning.Effort == nil {
+			s.writeAssistantThreadError(w, newValidationError("reasoningEffort.effort is required; use an empty string to inherit the model default"))
+			return
+		}
+		if strings.TrimSpace(*request.Reasoning.Effort) != *request.Reasoning.Effort {
+			s.writeAssistantThreadError(w, newValidationError("reasoningEffort.effort must use a canonical reasoning effort"))
+			return
+		}
+		if *request.Reasoning.Effort != "" {
+			if err := validateProjectAssistantReasoningEffortForModel(r.Context(), c, request.Reasoning.ModelID, *request.Reasoning.Effort); err != nil {
+				s.writeAssistantThreadError(w, err)
+				return
+			}
+		}
 	}
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
 	updated, _, err := s.patchAssistantThreadWithEvent(r.Context(), scope, thread.ID, id.user, request)
@@ -750,6 +875,7 @@ func (s *Server) continueProjectAssistantThreadTurn(w http.ResponseWriter, r *ht
 		ClientUserMessageID:     continueRequest.ClientUserMessageID,
 		ModelID:                 projectAssistantModelIDFromRunAudit(predecessorRun),
 		modelRevisionID:         projectAssistantModelRevisionIDFromRunAudit(predecessorRun),
+		reasoningSnapshot:       projectAssistantReasoningFromRunAudit(predecessorRun),
 		CollaborationMode:       predecessor.Mode,
 		Skills:                  skillIDs,
 		ContextResources:        contextResources,
@@ -819,6 +945,11 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 			s.writeAssistantThreadError(w, replayErr)
 			return
 		}
+		if replayErr = validateProjectAssistantExplicitReasoningReplay(prior, request.ReasoningEffort); replayErr != nil {
+			s.writeAssistantThreadError(w, replayErr)
+			return
+		}
+		request.reasoningSnapshot = projectAssistantReasoningFromRunAudit(prior)
 		replay = true
 	} else if !errors.Is(replayErr, store.ErrAssistantRunNotFound) {
 		s.writeAssistantThreadError(w, replayErr)
@@ -826,7 +957,13 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	}
 	if !replay {
 		modelStarted := time.Now()
-		selected, modelErr := readProjectLLMModelForTurn(r.Context(), c, request.ModelID, request.modelRevisionID)
+		var restore func(*projectLLMSettings)
+		if request.continuationOfTurnID != "" {
+			restore = func(settings *projectLLMSettings) {
+				restoreProjectAssistantReasoning(settings, request.reasoningSnapshot)
+			}
+		}
+		selected, modelErr := readProjectLLMModelWithSettings(r.Context(), c, request.ModelID, request.modelRevisionID, restore)
 		klog.FromContext(r.Context()).Info("App Studio turn preparation", "stage", "model", "project", project.Name, "cluster", id.clusterID, "duration", time.Since(modelStarted))
 		if modelErr != nil {
 			writeProjectError(w, modelErr)
@@ -838,6 +975,17 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		}
 		request.ModelID = selected.ID
 		request.modelRevisionID = selected.RevisionID
+		if request.continuationOfTurnID != "" {
+			// The interrupted continuation carries the predecessor's immutable
+			// choice, including an absent legacy snapshot.
+		} else {
+			reasoning, reasoningErr := resolveProjectAssistantReasoningForTurn(&selected.Settings, request.ReasoningEffort, thread.ReasoningEffortByModel, selected.ID)
+			if reasoningErr != nil {
+				writeProjectError(w, reasoningErr)
+				return
+			}
+			request.reasoningSnapshot = reasoning
+		}
 	}
 	if err := s.verifyProjectAssistantContentPartAttachments(r.Context(), id, project, request.ContentParts); err != nil {
 		s.writeAssistantThreadError(w, err)
@@ -909,6 +1057,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	started, err := s.startProjectAssistantRunDurablyForThread(r.Context(), scope, thread.ID, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{
 		ModelID:         request.ModelID,
 		ModelRevisionID: request.modelRevisionID,
+		Reasoning:       cloneProjectAssistantAuditReasoning(request.reasoningSnapshot),
 		IDs:             skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills,
 		ContextResources: contextResources, ContextResourceReceipts: selectedContextResources,
 		ContentParts: request.ContentParts,

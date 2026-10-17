@@ -166,7 +166,7 @@ import AIConversationRail from './agentkit/AIConversationRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
-import ModelPicker from './agentkit/AIModelPicker.vue'
+import AIModelReasoningPicker from './agentkit/AIModelReasoningPicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
 import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
 import AssistantMessageQueue from './AssistantMessageQueue.vue'
@@ -343,6 +343,9 @@ import {
 import { useProductionSettings } from './useProductionSettings'
 import { newestDeployableRelease, releaseHasPromotionEvidence } from './releaseSelection'
 import { reconcileHistorySelection, repositoryCommitSelectable, selectedHistoryCommit } from './sourceHistory'
+import reasoningCatalog from './generated/reasoning-catalog.json'
+import { reasoningEffortError, reasoningEffortLabel, reasoningEffortsForConnection, reasoningSelectionError, type ReasoningCatalogEntry } from './reasoning'
+import { initialReasoningEffortSnapshot, overlayThreadReasoningPreferenceDrafts, reasoningEffortsForDraftScope, supportedReasoningEffortSnapshot, threadReasoningEffort } from './threadReasoning'
 import type {
   DevelopmentTemplate,
   ImportRepository,
@@ -360,6 +363,7 @@ import type {
   ProjectAssistantThread,
   ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
+  ProjectAssistantEffectiveSettings,
   ProjectAssistantTurn,
   ProjectAssistantRunStart,
   ProjectAssistantUIComponent,
@@ -530,6 +534,7 @@ interface LLMEditorSnapshot {
   credentialMode: LLMCredentialMode
   baseURL: string
   model: string
+  reasoningEffort: string
   apiKey: string
 }
 type ProjectMessageViewStatus = 'interrupted'
@@ -637,6 +642,19 @@ const pinnedAssistantThreadIDs = ref<string[]>([])
 const threadMutationBusy = ref(false)
 const threadActioningID = ref('')
 const threadError = ref<string | null>(null)
+const threadReasoningPreferenceDrafts = ref<Record<string, string>>({})
+const threadReasoningPreferenceErrors = ref<Record<string, string>>({})
+const threadReasoningPreferencePending = ref<Record<string, boolean>>({})
+const assistantReasoningPreferencesHydrating = ref(false)
+const assistantReasoningPreferencePreparing = ref(false)
+const threadReasoningPreferenceSaves = new Map<string, Promise<boolean>>()
+const threadReasoningPreferencePendingCounts = new Map<string, number>()
+const assistantThreadEventSequences = new Map<string, number>()
+const assistantThreadReasoningEventSequences = new Map<string, number>()
+let assistantReasoningPreferenceScopeGeneration = 0
+let assistantReasoningPreferencePreparationSerial = 0
+const unthreadedReasoningEfforts = ref<Record<string, string>>({})
+const landingReasoningEfforts = ref<Record<string, string>>({})
 const assistantSkills = ref<ProjectAssistantSkill[]>([])
 const assistantSkillsLoading = ref(false)
 const assistantSkillsError = ref<string | null>(null)
@@ -960,6 +978,7 @@ const llmProvider = ref(OPENAI_COMPATIBLE_PROVIDER)
 const llmProviderPreset = ref<LLMProviderPreset>('openai')
 const llmBaseURL = ref('https://api.openai.com/v1')
 const llmModel = ref(OPENAI_DEFAULT_MODEL)
+const llmReasoningEffort = ref('')
 const llmApiKey = ref('')
 const llmCredentialMode = ref<LLMCredentialMode>('api-key')
 const llmSaving = ref(false)
@@ -1519,6 +1538,7 @@ function llmModelMutationIsCurrent(guard: LLMModelMutationGuard): boolean {
 }
 
 function invalidateProjectContextState() {
+  invalidateAssistantReasoningPreferenceState(true)
   projectCreationSubmit.invalidate()
   const hasToken = Boolean(props.ctx?.token)
   projectLoadSerial += 1
@@ -1737,6 +1757,11 @@ async function loadAssistantSkills(projectName: string) {
 }
 
 const assistantRunRevisions: Record<string, AssistantRun> = {}
+const assistantTurnDetails = ref<Record<string, {
+  loading: boolean
+  effectiveSettings?: ProjectAssistantEffectiveSettings
+  error?: string
+}>>({})
 const conversationConnectionState = ref<ConversationConnectionState>('idle')
 const reviewPanelHold = ref<{
   kind: 'approval' | 'follow_up'
@@ -2263,7 +2288,7 @@ const assistantComposerStopControl = computed(() => assistantComposerStopControl
 const assistantComposerShowsStop = computed(() => assistantComposerStopControl.value.visible)
 const assistantComposerStopDisabled = computed(() => assistantComposerStopControl.value.disabled)
 const assistantComposerControlsDisabled = computed(() =>
-  busy.value || assistantResumeBusy.value || conversationInteractionBusy.value || threadMutationBusy.value || llmSettingsLoading.value,
+  busy.value || assistantResumeBusy.value || conversationInteractionBusy.value || threadMutationBusy.value || llmSettingsLoading.value || assistantReasoningPreferencesHydrating.value || assistantReasoningPreferencePreparing.value,
 )
 const assistantComposerSurfaceDisabled = computed(() =>
   assistantComposerWrapperDisabled(assistantComposerControlsDisabled.value, assistantComposerShowsStop.value),
@@ -2271,8 +2296,75 @@ const assistantComposerSurfaceDisabled = computed(() =>
 const configuredLLMModels = computed(() => (llmSettings.value?.models ?? []).filter((model) => model.configured))
 const selectedLLMModel = computed(() => configuredLLMModels.value.find((model) => model.id === selectedLLMModelID.value) ?? configuredLLMModels.value[0])
 const llmConfigured = computed(() => configuredLLMModels.value.length > 0)
+const reasoningCatalogEntries = reasoningCatalog as ReasoningCatalogEntry[]
+const editorReasoningEffortOptions = computed(() => reasoningEffortsForConnection({
+  provider: llmProvider.value,
+  baseURL: llmBaseURL.value,
+  model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
+}, reasoningCatalogEntries))
+const editorReasoningEffortError = computed(() => reasoningEffortError(llmReasoningEffort.value, editorReasoningEffortOptions.value))
+const selectedReasoningEffortOptions = computed(() => selectedLLMModel.value
+  ? reasoningEffortsForConnection(selectedLLMModel.value, reasoningCatalogEntries)
+  : [])
+const selectedReasoningEffortChoices = computed(() => selectedReasoningEffortOptions.value.map((effort) => ({
+  value: effort,
+  label: reasoningEffortLabel(effort),
+})))
+const selectedModelDefaultEffort = computed(() => selectedLLMModel.value?.reasoningEffort ?? '')
+const selectedModelDefaultEffortLabel = computed(() => selectedModelDefaultEffort.value
+  ? reasoningEffortLabel(selectedModelDefaultEffort.value)
+  : '')
+const selectedModelDefaultEffortUnsupported = computed(() => Boolean(
+  selectedModelDefaultEffort.value && reasoningEffortError(selectedModelDefaultEffort.value, selectedReasoningEffortOptions.value),
+))
+const assistantReasoningPreferenceKey = computed(() => {
+  const modelID = selectedLLMModel.value?.id ?? ''
+  return activeAssistantThreadID.value && modelID ? threadReasoningPreferenceKey(activeAssistantThreadID.value, modelID) : ''
+})
+const assistantReasoningEffort = computed(() => {
+  const modelID = selectedLLMModel.value?.id ?? ''
+  if (!modelID) return ''
+  const threadID = activeAssistantThreadID.value
+  const key = threadID ? threadReasoningPreferenceKey(threadID, modelID) : ''
+  if (key && Object.prototype.hasOwnProperty.call(threadReasoningPreferenceDrafts.value, key)) {
+    return threadReasoningPreferenceDrafts.value[key]
+  }
+  if (threadID) return threadReasoningEffort(activeAssistantThread.value?.reasoningEffortByModel, modelID)
+  const projectName = selected.value?.name ?? ''
+  return unthreadedReasoningEfforts.value[unthreadedReasoningPreferenceKey(projectName, modelID)] ?? ''
+})
+const assistantReasoningSelectionError = computed(() => reasoningSelectionError(
+  assistantReasoningEffort.value,
+  selectedLLMModel.value?.reasoningEffort ?? '',
+  selectedReasoningEffortOptions.value,
+))
+const assistantReasoningEffortResetRequired = computed(() => Boolean(
+  reasoningEffortError(assistantReasoningEffort.value, selectedReasoningEffortOptions.value),
+))
+const assistantReasoningPreferenceSaveError = computed(() => assistantReasoningPreferenceKey.value
+    ? threadReasoningPreferenceErrors.value[assistantReasoningPreferenceKey.value] ?? ''
+    : '')
+const assistantReasoningPreferenceError = computed(() => assistantReasoningSelectionError.value || assistantReasoningPreferenceSaveError.value)
+const assistantReasoningPreferenceSaving = computed(() => Boolean(
+  assistantReasoningPreferenceKey.value && threadReasoningPreferencePending.value[assistantReasoningPreferenceKey.value],
+))
+const assistantReasoningBlocksSend = computed(() => Boolean(assistantReasoningPreferenceError.value) && !(
+  messageStreaming.value && activeAssistantRun?.status === 'running' && !assistantQueueingEnabled.value
+))
+const landingReasoningEffort = computed(() => {
+  const modelID = selectedLLMModel.value?.id ?? ''
+  return modelID ? landingReasoningEfforts.value[JSON.stringify([appContextFingerprint(props.ctx), modelID])] ?? '' : ''
+})
+const landingReasoningEffortError = computed(() => reasoningSelectionError(
+  landingReasoningEffort.value,
+  selectedLLMModel.value?.reasoningEffort ?? '',
+  selectedReasoningEffortOptions.value,
+))
+const landingReasoningEffortResetRequired = computed(() => Boolean(
+  reasoningEffortError(landingReasoningEffort.value, selectedReasoningEffortOptions.value),
+))
 const createPromptContent = computed(() => projectCreationPrompt(prompt.value, preProjectAttachments.value.length))
-const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(createPromptContent.value, createReadiness.value) && llmConfigured.value)
+const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(createPromptContent.value, createReadiness.value) && llmConfigured.value && !landingReasoningEffortError.value)
 const assistantComposerHasChipContent = computed(() => assistantComposerParts.value.some((part) => part.type !== 'text'))
 const canSendPrompt = computed(() =>
   llmConfigured.value &&
@@ -2283,6 +2375,9 @@ const canSendPrompt = computed(() =>
   !assistantResumeBusy.value &&
   !conversationInteractionBusy.value &&
   !threadMutationBusy.value &&
+  !assistantReasoningPreferencesHydrating.value &&
+  !assistantReasoningPreferencePreparing.value &&
+  !assistantReasoningBlocksSend.value &&
   !llmSettingsLoading.value &&
   !approvalModeLoading.value &&
   !approvalModeSaving.value,
@@ -3195,6 +3290,7 @@ watch(
 watch(
   () => selected.value?.name,
   () => {
+    invalidateAssistantReasoningPreferenceState(false)
     // A project transition invalidates any in-flight settings write even if
     // navigation later returns to the same route before the old response
     // arrives.
@@ -4651,6 +4747,7 @@ function currentLLMEditorSnapshot(): LLMEditorSnapshot {
     credentialMode: llmCredentialMode.value,
     baseURL: llmBaseURL.value,
     model: llmModel.value,
+    reasoningEffort: llmReasoningEffort.value,
     apiKey: llmApiKey.value,
   }
 }
@@ -4717,6 +4814,7 @@ function openLLMEditor(modelID?: string) {
   llmCredentialMode.value = isGoogleCloudBaseURL(saved?.baseURL ?? '') ? 'service-account-json' : 'api-key'
   llmBaseURL.value = normalizeLLMBaseURLInput(provider, saved?.baseURL ?? '', llmCredentialMode.value)
   llmModel.value = saved ? normalizeLLMModelInput(provider, saved.model ?? '', llmCredentialMode.value) : ''
+  llmReasoningEffort.value = saved?.reasoningEffort ?? ''
   llmApiKey.value = ''
   llmValidationAttempted.value = false
   clearLLMDiscovery()
@@ -4775,6 +4873,14 @@ function openModelEditor(modelID?: string) {
     return
   }
   openNewLLMModelEditor()
+}
+
+async function editSelectedModelReasoningSettings() {
+  const modelID = selectedLLMModel.value?.id
+  if (!modelID) return
+  openModelsSection()
+  await nextTick()
+  openLLMEditor(modelID)
 }
 
 async function cancelLLMEditor() {
@@ -4919,7 +5025,7 @@ function normalizeLLMModelForEditor(provider: string, model: string, credentialM
 }
 
 const llmConnectionFingerprint = computed(() => JSON.stringify([
-  llmEditingModelID.value, llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmApiKey.value.trim(),
+  llmEditingModelID.value, llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmReasoningEffort.value, llmApiKey.value.trim(),
 ]))
 const llmConnectionTested = computed(() => Boolean(llmTestedFingerprint.value) && llmTestedFingerprint.value === llmConnectionFingerprint.value)
 const llmConnectionTestRequired = computed(() => llmEditorOpen.value || isCreateModelRoute.value)
@@ -4944,6 +5050,7 @@ async function saveLLMSettings() {
   llmActionError.value = null
   llmValidationAttempted.value = true
   if (hasLLMModelFormErrors(llmFormValidation.value)) return
+  if (editorReasoningEffortError.value) return
   if (llmConnectionTestRequired.value && !llmConnectionTested.value) {
     llmTestError.value = 'Test this connection before saving it for the workspace.'
     return
@@ -4957,12 +5064,14 @@ async function saveLLMSettings() {
   const mutationContext = props.ctx
   llmSaving.value = true
   try {
-    const body: { name: string; provider?: string; baseURL?: string; model: string; apiKey?: string } = {
+    const body: { name: string; provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey?: string } = {
       name: llmName.value.trim(),
       provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
       baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
     }
+    if (editingID) body.reasoningEffort = llmReasoningEffort.value
+    else if (llmReasoningEffort.value) body.reasoningEffort = llmReasoningEffort.value
     if (llmApiKey.value.trim()) body.apiKey = llmApiKey.value.trim()
     const settings = editingID
       ? await api.patchLLMModel(mutationContext, editingID, body)
@@ -5007,6 +5116,7 @@ async function testLLMConnection() {
       provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
       baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
+      reasoningEffort: llmReasoningEffort.value,
       apiKey: llmApiKey.value.trim(),
       existingModelID: llmEditingModelID.value || undefined,
     })
@@ -5030,7 +5140,7 @@ async function testSavedLLMModel(modelID: string) {
   const token = { state: 'Testing…', tone: 'muted' as const, requestID }
   llmModelTests.value = { ...llmModelTests.value, [modelID]: token }
   try {
-    const result = await api.testLLMConnection(props.ctx, { provider: saved.provider, baseURL: saved.baseURL, model: saved.model, apiKey: '', existingModelID: modelID })
+    const result = await api.testLLMConnection(props.ctx, { provider: saved.provider, baseURL: saved.baseURL, model: saved.model, reasoningEffort: saved.reasoningEffort ?? '', apiKey: '', existingModelID: modelID })
     if (!llmModelMutationIsCurrent(guard) || llmModelTests.value[modelID]?.requestID !== requestID) return
     if (!result.ok) throw new Error('The provider did not confirm this connection.')
     llmModelTests.value = { ...llmModelTests.value, [modelID]: { state: 'Test passed', tone: 'success', requestID } }
@@ -5307,6 +5417,7 @@ async function startPreProjectAssistantTurn(
       content: startPlan.content,
       clientUserMessageID: startPlan.clientRequestID,
       modelID: startPlan.modelID,
+      reasoningEffort: startPlan.reasoningEffort,
       collaborationMode: 'default',
       ...(contentParts.length ? { contentParts } : {}),
     })
@@ -5328,15 +5439,33 @@ async function createProjectAndStartConversation(
   createOverrides?: { templateName?: string; displayName?: string },
   options: { forceNewProject?: boolean } = {},
 ) {
+  if (landingReasoningEffortError.value) {
+    error.value = landingReasoningEffortError.value
+    return
+  }
   const pendingForContent = !options.forceNewProject && pendingFirstProjectSubmission?.content === content
     ? pendingFirstProjectSubmission
     : null
   const pendingProjectName = pendingForContent?.projectName ?? ''
-  const retry = Boolean(pendingForContent && pendingForContent.modelID === selectedLLMModelID.value)
+  const requestedModelID = selectedLLMModel.value?.id ?? selectedLLMModelID.value
+  const requestedReasoningEffort = landingReasoningEffort.value
+  const retry = Boolean(pendingForContent && pendingForContent.modelID === requestedModelID && pendingForContent.reasoningEffort === requestedReasoningEffort)
+  const provisionalReasoningEfforts = reasoningEffortsForDraftScope(
+    landingReasoningEfforts.value,
+    [appContextFingerprint(props.ctx)],
+  )
   let submission = retry
     ? pendingForContent!
     : firstProjectSubmissionWithProject(
-        newFirstProjectSubmission(content, crypto.randomUUID(), selectedLLMModelID.value),
+        newFirstProjectSubmission(
+          content,
+          crypto.randomUUID(),
+          requestedModelID,
+          requestedReasoningEffort,
+          supportedThreadReasoningEffortSnapshot(
+            initialReasoningEffortSnapshot(provisionalReasoningEfforts, requestedModelID, requestedReasoningEffort),
+          ),
+        ),
         pendingProjectName,
       )
   pendingFirstProjectSubmission = submission
@@ -5442,7 +5571,13 @@ async function createProjectAndStartConversation(
       const requestedThreadID = submission.threadID || `thread-${crypto.randomUUID()}`
       submission = firstProjectSubmissionWithThread(submission, requestedThreadID)
       pendingFirstProjectSubmission = submission
-      const createdThread = await api.createAssistantThread(props.ctx, projectName, undefined, requestedThreadID)
+      const createdThread = await api.createAssistantThread(
+        props.ctx,
+        projectName,
+        undefined,
+        requestedThreadID,
+        supportedThreadReasoningEffortSnapshot(startPlan.reasoningEffortByModel),
+      )
       if (!current()) return
       thread = createdThread
     }
@@ -5826,6 +5961,282 @@ async function refreshSelectedProjectConversation(projectName: string) {
   } finally {
     releaseConversationRefreshLatch(conversationRefreshLatchOwner)
   }
+}
+
+function selectLandingReasoningEffort(effort: string) {
+  const modelID = selectedLLMModel.value?.id ?? ''
+  if (!modelID) return
+  const key = JSON.stringify([appContextFingerprint(props.ctx), modelID])
+  const next = { ...landingReasoningEfforts.value }
+  if (effort === '') delete next[key]
+  else next[key] = effort
+  landingReasoningEfforts.value = next
+}
+
+function threadReasoningPreferenceKey(threadID: string, modelID: string): string {
+  return JSON.stringify([appContextFingerprint(props.ctx), selected.value?.name ?? '', threadID, modelID])
+}
+
+function threadReasoningPreferenceScopeKey(threadID: string, projectName = selected.value?.name ?? ''): string {
+  return JSON.stringify([appContextFingerprint(props.ctx), projectName, threadID])
+}
+
+function unthreadedReasoningPreferenceKey(projectName: string, modelID: string): string {
+  return JSON.stringify([appContextFingerprint(props.ctx), projectName, modelID])
+}
+
+function supportedThreadReasoningEffortSnapshot(
+  preferences: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  const supportedEffortsByModel: Record<string, readonly string[]> = Object.fromEntries(configuredLLMModels.value.map((model) => [
+    model.id,
+    reasoningEffortsForConnection(model, reasoningCatalogEntries),
+  ]))
+  return supportedReasoningEffortSnapshot(preferences, supportedEffortsByModel)
+}
+
+function invalidateAssistantReasoningPreferenceState(clearWorkspace: boolean) {
+  assistantReasoningPreferenceScopeGeneration += 1
+  assistantReasoningPreferencePreparationSerial += 1
+  threadReasoningPreferenceDrafts.value = {}
+  threadReasoningPreferenceErrors.value = {}
+  threadReasoningPreferencePending.value = {}
+  threadReasoningPreferenceSaves.clear()
+  threadReasoningPreferencePendingCounts.clear()
+  assistantThreadEventSequences.clear()
+  assistantThreadReasoningEventSequences.clear()
+  assistantReasoningPreferencesHydrating.value = false
+  assistantReasoningPreferencePreparing.value = false
+  assistantTurnDetails.value = {}
+  if (clearWorkspace) {
+    unthreadedReasoningEfforts.value = {}
+    landingReasoningEfforts.value = {}
+  }
+}
+
+function persistThreadReasoningEffort(threadID: string, modelID: string, effort: string): Promise<boolean> {
+  const projectName = selected.value?.name ?? ''
+  if (!projectName || !threadID || !modelID) return Promise.resolve(false)
+  const key = threadReasoningPreferenceKey(threadID, modelID)
+  const saveScope = threadReasoningPreferenceScopeKey(threadID, projectName)
+  const context = props.ctx
+  const contextFingerprint = appContextFingerprint(context)
+  const scopeGeneration = assistantReasoningPreferenceScopeGeneration
+  const projectUID = selected.value?.uid ?? ''
+  const previous = threadReasoningPreferenceSaves.get(saveScope) ?? Promise.resolve(true)
+  threadReasoningPreferencePendingCounts.set(key, (threadReasoningPreferencePendingCounts.get(key) ?? 0) + 1)
+  threadReasoningPreferencePending.value = { ...threadReasoningPreferencePending.value, [key]: true }
+  let save: Promise<boolean>
+  save = previous.then(async () => {
+    const requestThreadEventSequence = assistantThreadEventSequences.get(saveScope) ?? 0
+    const requestReasoningEventSequence = assistantThreadReasoningEventSequences.get(saveScope) ?? 0
+    const updated = await api.patchAssistantThread(context, projectName, threadID, {
+      reasoningEffort: { modelID, effort },
+    })
+    const sameScope = scopeGeneration === assistantReasoningPreferenceScopeGeneration &&
+      contextFingerprint === appContextFingerprint(props.ctx) &&
+      selected.value?.name === projectName &&
+      (selected.value?.uid ?? '') === projectUID
+    if (sameScope) {
+      if (threadReasoningPreferenceDrafts.value[key] === effort) {
+        const drafts = { ...threadReasoningPreferenceDrafts.value }
+        delete drafts[key]
+        threadReasoningPreferenceDrafts.value = drafts
+      }
+      const existing = assistantThreads.value.find((thread) => thread.id === threadID)
+      const responseUpdatedAt = Date.parse(updated.updatedAt ?? '')
+      const existingUpdatedAt = Date.parse(existing?.updatedAt ?? '')
+      const comparableUpdatedAt = Number.isFinite(responseUpdatedAt) && Number.isFinite(existingUpdatedAt)
+      const responseIsOlder = comparableUpdatedAt && responseUpdatedAt < existingUpdatedAt
+      const eventAdvanced = (assistantThreadEventSequences.get(saveScope) ?? requestThreadEventSequence) > requestThreadEventSequence
+      const reasoningEventAdvanced = (assistantThreadReasoningEventSequences.get(saveScope) ?? requestReasoningEventSequence) > requestReasoningEventSequence
+      // A newer event sequence only tells us that an event arrived after this
+      // request began; it does not order the event against the server-side
+      // PATCH. Prefer comparable updatedAt values and use event sequence only
+      // when one side has no timestamp to compare.
+      const keepExistingProjection = Boolean(existing && (responseIsOlder || (!comparableUpdatedAt && eventAdvanced)))
+      const canonicalPreferences = existing && (responseIsOlder || (!comparableUpdatedAt && reasoningEventAdvanced))
+        ? existing?.reasoningEffortByModel
+        : updated.reasoningEffortByModel
+      const reasoningEffortByModel = overlayThreadReasoningPreferenceDrafts(
+        canonicalPreferences,
+        threadReasoningPreferenceDrafts.value,
+        contextFingerprint,
+        projectName,
+        threadID,
+      )
+      replaceAssistantThread({
+        ...(existing ?? updated),
+        ...(!keepExistingProjection ? updated : {}),
+        reasoningEffortByModel,
+      })
+      const errors = { ...threadReasoningPreferenceErrors.value }
+      delete errors[key]
+      threadReasoningPreferenceErrors.value = errors
+    }
+    return true
+  }).catch((error: unknown) => {
+    if (scopeGeneration === assistantReasoningPreferenceScopeGeneration &&
+      contextFingerprint === appContextFingerprint(props.ctx) &&
+      selected.value?.name === projectName &&
+      (selected.value?.uid ?? '') === projectUID &&
+      threadReasoningPreferenceDrafts.value[key] === effort) {
+      threadReasoningPreferenceErrors.value = {
+        ...threadReasoningPreferenceErrors.value,
+        [key]: error instanceof Error ? error.message : String(error),
+      }
+    }
+    return false
+  }).finally(() => {
+    if (scopeGeneration === assistantReasoningPreferenceScopeGeneration) {
+      const pendingCount = Math.max(0, (threadReasoningPreferencePendingCounts.get(key) ?? 1) - 1)
+      if (pendingCount === 0) {
+        threadReasoningPreferencePendingCounts.delete(key)
+        const pending = { ...threadReasoningPreferencePending.value }
+        delete pending[key]
+        threadReasoningPreferencePending.value = pending
+      } else {
+        threadReasoningPreferencePendingCounts.set(key, pendingCount)
+      }
+    }
+    if (threadReasoningPreferenceSaves.get(saveScope) === save) threadReasoningPreferenceSaves.delete(saveScope)
+  })
+  threadReasoningPreferenceSaves.set(saveScope, save)
+  return save
+}
+
+function selectAssistantReasoningEffort(effort: string) {
+  const modelID = selectedLLMModel.value?.id ?? ''
+  if (!modelID) return
+  const threadID = activeAssistantThreadID.value
+  if (!threadID) {
+    const key = unthreadedReasoningPreferenceKey(selected.value?.name ?? '', modelID)
+    const next = { ...unthreadedReasoningEfforts.value }
+    if (effort === '') delete next[key]
+    else next[key] = effort
+    unthreadedReasoningEfforts.value = next
+    return
+  }
+
+  const key = threadReasoningPreferenceKey(threadID, modelID)
+  const current = threadReasoningEffort(activeAssistantThread.value?.reasoningEffortByModel, modelID)
+  if (current === effort && !threadReasoningPreferenceSaves.has(threadReasoningPreferenceScopeKey(threadID))) {
+    const drafts = { ...threadReasoningPreferenceDrafts.value }
+    delete drafts[key]
+    threadReasoningPreferenceDrafts.value = drafts
+    const errors = { ...threadReasoningPreferenceErrors.value }
+    delete errors[key]
+    threadReasoningPreferenceErrors.value = errors
+    return
+  }
+  threadReasoningPreferenceDrafts.value = { ...threadReasoningPreferenceDrafts.value, [key]: effort }
+  const errors = { ...threadReasoningPreferenceErrors.value }
+  delete errors[key]
+  threadReasoningPreferenceErrors.value = errors
+  void persistThreadReasoningEffort(threadID, modelID, effort)
+}
+
+async function ensureAssistantThreadPreferencesHydrated(projectName: string, threadID: string): Promise<boolean> {
+  if (!threadID) return false
+  // A locally loaded thread projection already carries the sparse preference
+  // map (including the empty-map case). Fetch only when a restored thread ID
+  // has no projection in the current project cache.
+  if (selected.value?.name === projectName && assistantThreads.value.some((thread) => thread.id === threadID)) return true
+  const context = props.ctx
+  const contextFingerprint = appContextFingerprint(context)
+  const scopeGeneration = assistantReasoningPreferenceScopeGeneration
+  const projectUID = selected.value?.uid ?? ''
+  const preferenceScope = threadReasoningPreferenceScopeKey(threadID, projectName)
+  const requestThreadEventSequence = assistantThreadEventSequences.get(preferenceScope) ?? 0
+  const requestReasoningEventSequence = assistantThreadReasoningEventSequences.get(preferenceScope) ?? 0
+  try {
+    const threads = await api.listAssistantThreads(context, projectName)
+    if (
+      scopeGeneration !== assistantReasoningPreferenceScopeGeneration ||
+      contextFingerprint !== appContextFingerprint(props.ctx) ||
+      selected.value?.name !== projectName ||
+      (selected.value?.uid ?? '') !== projectUID
+    ) return false
+    const fetched = threads.find((thread) => thread.id === threadID)
+    if (!fetched) return false
+    const existing = assistantThreads.value.find((thread) => thread.id === threadID)
+    const fetchedUpdatedAt = Date.parse(fetched.updatedAt ?? '')
+    const existingUpdatedAt = Date.parse(existing?.updatedAt ?? '')
+    const comparableUpdatedAt = Number.isFinite(fetchedUpdatedAt) && Number.isFinite(existingUpdatedAt)
+    const responseIsOlder = comparableUpdatedAt && fetchedUpdatedAt < existingUpdatedAt
+    const eventAdvanced = (assistantThreadEventSequences.get(preferenceScope) ?? requestThreadEventSequence) > requestThreadEventSequence
+    const reasoningEventAdvanced = (assistantThreadReasoningEventSequences.get(preferenceScope) ?? requestReasoningEventSequence) > requestReasoningEventSequence
+    const keepExistingProjection = Boolean(existing && (responseIsOlder || (!comparableUpdatedAt && eventAdvanced)))
+    const canonicalPreferences = existing && (responseIsOlder || (!comparableUpdatedAt && reasoningEventAdvanced))
+      ? existing?.reasoningEffortByModel
+      : fetched.reasoningEffortByModel
+    const reasoningEffortByModel = overlayThreadReasoningPreferenceDrafts(
+      canonicalPreferences,
+      threadReasoningPreferenceDrafts.value,
+      contextFingerprint,
+      projectName,
+      threadID,
+    )
+    const hydrated = {
+      ...(existing ?? fetched),
+      ...(!keepExistingProjection ? fetched : {}),
+      reasoningEffortByModel,
+    }
+    if (existing) replaceAssistantThread(hydrated)
+    else assistantThreads.value = [hydrated, ...assistantThreads.value]
+    return true
+  } catch (error) {
+    if (
+      scopeGeneration === assistantReasoningPreferenceScopeGeneration &&
+      contextFingerprint === appContextFingerprint(props.ctx) &&
+      selected.value?.name === projectName &&
+      (selected.value?.uid ?? '') === projectUID
+    ) {
+      const key = threadReasoningPreferenceKey(threadID, selectedLLMModel.value?.id ?? '')
+      threadReasoningPreferenceErrors.value = {
+        ...threadReasoningPreferenceErrors.value,
+        [key]: error instanceof Error ? error.message : String(error),
+      }
+    }
+    return false
+  }
+}
+
+async function saveAssistantReasoningEffortBeforeSend(
+  projectName: string,
+  threadID: string,
+  modelID: string,
+  effort: string,
+): Promise<boolean> {
+  if (!threadID) return true
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  const scopeGeneration = assistantReasoningPreferenceScopeGeneration
+  const projectUID = selected.value?.uid ?? ''
+  const isCurrentScope = () => scopeGeneration === assistantReasoningPreferenceScopeGeneration &&
+    contextFingerprint === appContextFingerprint(props.ctx) &&
+    selected.value?.name === projectName &&
+    (selected.value?.uid ?? '') === projectUID
+  if (!isCurrentScope() || !await ensureAssistantThreadPreferencesHydrated(projectName, threadID) || !isCurrentScope()) return false
+  const key = threadReasoningPreferenceKey(threadID, modelID)
+  const inFlight = threadReasoningPreferenceSaves.get(threadReasoningPreferenceScopeKey(threadID, projectName))
+  if (inFlight) await inFlight
+  if (!isCurrentScope()) return false
+  const thread = assistantThreads.value.find((candidate) => candidate.id === threadID)
+  if (!thread) return false
+  if (
+    threadReasoningEffort(thread.reasoningEffortByModel, modelID) === effort &&
+    !Object.prototype.hasOwnProperty.call(threadReasoningPreferenceDrafts.value, key)
+  ) return true
+  threadReasoningPreferenceDrafts.value = { ...threadReasoningPreferenceDrafts.value, [key]: effort }
+  return persistThreadReasoningEffort(threadID, modelID, effort)
+}
+
+function retryAssistantReasoningPreferenceSave() {
+  const modelID = selectedLLMModel.value?.id ?? ''
+  const threadID = activeAssistantThreadID.value
+  if (!threadID || !modelID || assistantReasoningPreferenceError.value && reasoningEffortError(assistantReasoningEffort.value, selectedReasoningEffortOptions.value)) return
+  threadReasoningPreferenceDrafts.value = { ...threadReasoningPreferenceDrafts.value, [threadReasoningPreferenceKey(threadID, modelID)]: assistantReasoningEffort.value }
+  void persistThreadReasoningEffort(threadID, modelID, assistantReasoningEffort.value)
 }
 
 function selectAssistantResponseMode(mode: AssistantResponseMode) {
@@ -6479,6 +6890,92 @@ function assistantRunForMessage(messageID: string): AssistantRun | undefined {
   return Object.values(assistantRunRevisions).find((run) =>
     run.activeMessageID === messageID || (!!assistantMessageID && run.activeMessageID === assistantMessageID),
   )
+}
+
+function assistantTurnDetailKey(projectName: string, threadID: string, turnID: string): string {
+  return JSON.stringify([appContextFingerprint(props.ctx), projectName, threadID, turnID])
+}
+
+function assistantTurnDetailState(message: ProjectMessageView) {
+  const projectName = message.projectID
+  const threadID = activeAssistantThreadID.value
+  const turnID = typeof message.metadata?.assistantTurnID === 'string' ? message.metadata.assistantTurnID : ''
+  if (!projectName || !threadID || !turnID) return undefined
+  return assistantTurnDetails.value[assistantTurnDetailKey(projectName, threadID, turnID)]
+}
+
+function assistantTurnDetailVisible(message: ProjectMessageView): boolean {
+  const run = assistantRunForMessage(message.id)
+  return Boolean(assistantTurnDetailState(message) || (run && assistantRunTerminal(run.status)))
+}
+
+function assistantTurnEffectiveSettings(message: ProjectMessageView): ProjectAssistantEffectiveSettings | undefined {
+  return assistantTurnDetailState(message)?.effectiveSettings
+}
+
+function assistantTurnReasoning(message: ProjectMessageView): NonNullable<ProjectAssistantEffectiveSettings['reasoning']> | undefined {
+  return assistantTurnEffectiveSettings(message)?.reasoning
+}
+
+function assistantTurnRequestedReasoningLabel(message: ProjectMessageView): string {
+  const reasoning = assistantTurnReasoning(message)
+  return reasoning ? requestedReasoningLabel(reasoning) : ''
+}
+
+function requestedReasoningLabel(reasoning: NonNullable<ProjectAssistantEffectiveSettings['reasoning']>): string {
+  if (!Object.prototype.hasOwnProperty.call(reasoning, 'requestedEffort')) return 'Conversation preference or model default'
+  return reasoning.requestedEffort ? reasoningEffortLabel(reasoning.requestedEffort) : 'Model default'
+}
+
+function assistantTurnResolvedReasoningLabel(message: ProjectMessageView): string {
+  const reasoning = assistantTurnReasoning(message)
+  if (!reasoning || reasoning.configuredEffort === reasoning.effectiveEffort) return ''
+  return reasoning.configuredEffort ? reasoningEffortLabel(reasoning.configuredEffort) : 'Automatic'
+}
+
+function actualReasoningLabel(effort: string | undefined): string {
+  return effort ? reasoningEffortLabel(effort) : 'Automatic'
+}
+
+function transportLabel(transport: string): string {
+  if (transport === 'responses') return 'Responses API'
+  if (transport === 'chat-completions') return 'Chat Completions'
+  if (transport === 'gemini') return 'Gemini'
+  return transport || 'Unknown'
+}
+
+async function loadAssistantTurnDetail(message: ProjectMessageView, retry = false): Promise<void> {
+  const run = assistantRunForMessage(message.id)
+  const projectName = message.projectID
+  const threadID = activeAssistantThreadID.value
+  const turnID = typeof message.metadata?.assistantTurnID === 'string' ? message.metadata.assistantTurnID : run?.id ?? ''
+  if (!run || !assistantRunTerminal(run.status) || !projectName || !threadID || !turnID) return
+  const key = assistantTurnDetailKey(projectName, threadID, turnID)
+  const existing = assistantTurnDetails.value[key]
+  if (existing?.loading || (!retry && (existing?.effectiveSettings || existing?.error))) return
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  const projectUID = selected.value?.uid ?? ''
+  assistantTurnDetails.value = { ...assistantTurnDetails.value, [key]: { loading: true } }
+  try {
+    const detail = await api.getAssistantTurnDetail(props.ctx, projectName, threadID, turnID)
+    if (
+      contextFingerprint !== appContextFingerprint(props.ctx) ||
+      selected.value?.name !== projectName ||
+      (selected.value?.uid ?? '') !== projectUID ||
+      activeAssistantThreadID.value !== threadID ||
+      !messages.value.some((candidate) => candidate.id === message.id)
+    ) return
+    assistantTurnDetails.value = {
+      ...assistantTurnDetails.value,
+      [key]: { loading: false, effectiveSettings: detail.effectiveSettings },
+    }
+  } catch {
+    if (contextFingerprint !== appContextFingerprint(props.ctx) || selected.value?.name !== projectName || activeAssistantThreadID.value !== threadID) return
+    assistantTurnDetails.value = {
+      ...assistantTurnDetails.value,
+      [key]: { loading: false, error: 'Run settings could not be loaded.' },
+    }
+  }
 }
 
 function assistantRunErrorForMessage(messageID: string): string {
@@ -7750,12 +8247,63 @@ async function requestDeleteProject(project: Project) {
 async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promise<boolean> {
   if (threadMutationBusy.value) return false
   const content = prompt.value.trim()
+  const initialProjectName = selected.value?.name ?? ''
+  const initialProjectUID = selected.value?.uid ?? ''
+  const initialThreadID = activeAssistantThreadID.value
+  const initialModelID = selectedLLMModel.value?.id ?? selectedLLMModelID.value
+  const preferenceScopeGeneration = assistantReasoningPreferenceScopeGeneration
   const activeLiveRun = Boolean(messageStreaming.value && activeAssistantRun?.id && !assistantRunTerminal(activeAssistantRun.status))
+  const steeringActiveRun = activeLiveRun && activeAssistantRun?.status === 'running' && activeRunIntent === 'steer'
+  if (assistantReasoningPreferencePreparing.value && !steeringActiveRun) return false
+  if (!steeringActiveRun && initialProjectName && initialThreadID &&
+    !assistantThreads.value.some((thread) => thread.id === initialThreadID)) {
+    if (assistantReasoningPreferencesHydrating.value) return false
+    const preparationOwner = ++assistantReasoningPreferencePreparationSerial
+    assistantReasoningPreferencePreparing.value = true
+    assistantReasoningPreferencesHydrating.value = true
+    let hydrated = false
+    try {
+      hydrated = await ensureAssistantThreadPreferencesHydrated(initialProjectName, initialThreadID)
+    } finally {
+      if (assistantReasoningPreferencePreparationSerial === preparationOwner) {
+        assistantReasoningPreferencesHydrating.value = false
+        assistantReasoningPreferencePreparing.value = false
+      }
+    }
+    if (!hydrated) {
+      if (preferenceScopeGeneration !== assistantReasoningPreferenceScopeGeneration) return false
+      error.value = 'Could not load this thread’s reasoning preferences. Try again before sending.'
+      return false
+    }
+    if (
+      selected.value?.name !== initialProjectName ||
+      (selected.value?.uid ?? '') !== initialProjectUID ||
+      activeAssistantThreadID.value !== initialThreadID ||
+      (selectedLLMModel.value?.id ?? selectedLLMModelID.value) !== initialModelID ||
+      preferenceScopeGeneration !== assistantReasoningPreferenceScopeGeneration
+    ) return false
+  }
+  const requestedModelID = selectedLLMModel.value?.id ?? selectedLLMModelID.value
+  const requestedReasoningEffort = assistantReasoningEffort.value
+  const initialThreadReasoningEffortByModel = supportedThreadReasoningEffortSnapshot(
+    initialReasoningEffortSnapshot(
+      reasoningEffortsForDraftScope(unthreadedReasoningEfforts.value, [
+        appContextFingerprint(props.ctx),
+        initialProjectName,
+      ]),
+      requestedModelID,
+      requestedReasoningEffort,
+    ),
+  )
   if (assistantComposerAttachmentsPending.value) {
     error.value = 'Resolve attachment uploads before sending (retry or remove the failed attachment).'
     return false
   }
   if (activeLiveRun && activeRunIntent === 'queue') {
+    if (assistantReasoningPreferenceError.value) {
+      error.value = assistantReasoningPreferenceError.value
+      return false
+    }
     if (!content || conversationInteractionBusy.value || llmSettingsLoading.value || assistantResumeBusy.value) return false
     if (assistantComposerParts.value.some((part) => part.type !== 'text') || selectedTurnSkills.value.length || selectedTurnResources.value.length) {
       error.value = 'Attached context can be sent after the current response finishes. Follow-up queue messages are text only.'
@@ -7770,7 +8318,10 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     assistantComposerParts.value = []
     return true
   }
-  const steeringActiveRun = activeLiveRun && activeAssistantRun?.status === 'running' && activeRunIntent === 'steer'
+  if (!steeringActiveRun && assistantReasoningPreferenceError.value) {
+    error.value = assistantReasoningPreferenceError.value
+    return false
+  }
   if (steeringActiveRun && (
     assistantComposerParts.value.some((part) => part.type !== 'text') ||
     selectedTurnSkills.value.length > 0 ||
@@ -7786,6 +8337,13 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
   const sendContext = props.ctx
   const sendContextFingerprint = projectContextFingerprint(sendContext)
   const submissionThreadID = activeAssistantThreadID.value
+  const firstProjectPending = firstProjectSubmissionMatches(
+    pendingFirstProjectSubmission,
+    projectName,
+    content,
+    requestedModelID,
+    requestedReasoningEffort,
+  ) ? pendingFirstProjectSubmission : null
   const turnSkills = steeringActiveRun ? [] : [...selectedTurnSkills.value]
   const turnResources = steeringActiveRun ? [] : [...selectedTurnResources.value]
   const turnContentParts = steeringActiveRun ? [] : [...assistantComposerParts.value]
@@ -7797,18 +8355,56 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     ...(turnResources.length ? { contextResources: turnResources } : {}),
     ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
   }
+  const reasoningPreferenceKey = submissionThreadID ? threadReasoningPreferenceKey(submissionThreadID, requestedModelID) : ''
+  const cachedThread = submissionThreadID ? assistantThreads.value.find((thread) => thread.id === submissionThreadID) : undefined
+  const reasoningPreferenceNeedsSave = Boolean(submissionThreadID && (
+    !cachedThread ||
+    threadReasoningPreferenceSaves.has(threadReasoningPreferenceScopeKey(submissionThreadID, projectName)) ||
+    Object.prototype.hasOwnProperty.call(threadReasoningPreferenceDrafts.value, reasoningPreferenceKey) ||
+    threadReasoningEffort(cachedThread?.reasoningEffortByModel, requestedModelID) !== requestedReasoningEffort
+  ))
+  if (!steeringActiveRun && reasoningPreferenceNeedsSave) {
+    if (assistantReasoningPreferencePreparing.value) return false
+    const preparationOwner = ++assistantReasoningPreferencePreparationSerial
+    assistantReasoningPreferencePreparing.value = true
+    try {
+      const saved = await saveAssistantReasoningEffortBeforeSend(
+        projectName,
+        submissionThreadID,
+        requestedModelID,
+        requestedReasoningEffort,
+      )
+      if (!saved) {
+        if (preferenceScopeGeneration !== assistantReasoningPreferenceScopeGeneration) return false
+        error.value = submissionThreadID
+          ? threadReasoningPreferenceErrors.value[threadReasoningPreferenceKey(submissionThreadID, requestedModelID)] || 'Could not save this thread’s reasoning preference. Retry before sending.'
+          : 'Could not prepare the thread’s reasoning preference. Retry before sending.'
+        return false
+      }
+      if (
+        selected.value?.name !== projectName ||
+        (selected.value?.uid ?? '') !== projectUID ||
+        activeAssistantThreadID.value !== submissionThreadID ||
+        (selectedLLMModel.value?.id ?? selectedLLMModelID.value) !== requestedModelID ||
+        assistantReasoningEffort.value !== requestedReasoningEffort ||
+        preferenceScopeGeneration !== assistantReasoningPreferenceScopeGeneration ||
+        projectContextFingerprint(props.ctx) !== sendContextFingerprint
+      ) return false
+    } finally {
+      if (assistantReasoningPreferencePreparationSerial === preparationOwner) {
+        assistantReasoningPreferencePreparing.value = false
+      }
+    }
+  }
   prompt.value = ''
   const submissionBusyOwner = beginBusyOperation()
   assistantComposerSubmitting.value = true
   messageStreaming.value = true
   error.value = null
-  const firstProjectPending = firstProjectSubmissionMatches(pendingFirstProjectSubmission, projectName, content, selectedLLMModelID.value)
-    ? pendingFirstProjectSubmission
-    : null
   const startOperation = {
     content,
     collaborationMode: firstProjectPending ? 'default' as const : assistantIntent.value,
-    ...(!steeringActiveRun ? { modelID: selectedLLMModelID.value } : {}),
+    ...(!steeringActiveRun ? { modelID: requestedModelID, reasoningEffort: requestedReasoningEffort } : {}),
     ...turnContext,
     ...(steeringActiveRun ? { expectedRunID: activeAssistantRun!.id } : {}),
   }
@@ -7942,7 +8538,13 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     } else {
       let thread = assistantThreads.value.find((candidate) => candidate.id === activeAssistantThreadID.value)
       if (!thread) {
-        thread = await api.createAssistantThread(props.ctx, projectName)
+        thread = await api.createAssistantThread(
+          props.ctx,
+          projectName,
+          undefined,
+          undefined,
+          initialThreadReasoningEffortByModel,
+        )
         if (!submissionIsCurrent()) return false
         if (!submissionThreadID) {
           const provisionalDraftScope = assistantComposerDraftScope(projectName, '', sendContext, projectUID)
@@ -7971,6 +8573,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
         ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
             clientUserMessageID: clientRequestID,
             modelID: payload.modelID,
+            reasoningEffort: payload.reasoningEffort ?? '',
             target: { type: 'current_workspace', instructions: content },
             ...turnContext,
           })
@@ -7978,6 +8581,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
             content,
             clientUserMessageID: clientRequestID,
             modelID: payload.modelID,
+            reasoningEffort: payload.reasoningEffort ?? '',
             collaborationMode: startOperation.collaborationMode,
             ...turnContext,
       })
@@ -8601,19 +9205,29 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
   const eventThreadID = typeof rawThread?.id === 'string' && rawThread.id
     ? rawThread.id
     : event.threadID
+  const threadScopeKey = threadReasoningPreferenceScopeKey(eventThreadID, projectName)
+  if (event.sequence > (assistantThreadEventSequences.get(threadScopeKey) ?? 0)) {
+    assistantThreadEventSequences.set(threadScopeKey, event.sequence)
+  }
+  if (rawThread && Object.prototype.hasOwnProperty.call(rawThread, 'reasoningEffortByModel') &&
+    event.sequence > (assistantThreadReasoningEventSequences.get(threadScopeKey) ?? 0)) {
+    assistantThreadReasoningEventSequences.set(threadScopeKey, event.sequence)
+  }
   if (event.type === 'thread.updated' || event.type === 'thread.title.updated' || rawThread?.title !== undefined || typeof payload.title === 'string') {
     const title = typeof rawThread?.title === 'string'
       ? rawThread.title
       : typeof payload.title === 'string'
         ? payload.title
         : undefined
-    if (title !== undefined) {
-      updateAssistantThreadFromEvent(eventThreadID, {
-        ...(title ? { title } : { title: undefined }),
-        ...(typeof rawThread?.status === 'string' ? { status: rawThread.status as ProjectAssistantThread['status'] } : {}),
-        ...(typeof rawThread?.updatedAt === 'string' ? { updatedAt: rawThread.updatedAt } : {}),
-      })
+    const threadPatch: Partial<ProjectAssistantThread> = {
+      ...(title !== undefined ? (title ? { title } : { title: undefined }) : {}),
+      ...(typeof rawThread?.status === 'string' ? { status: rawThread.status as ProjectAssistantThread['status'] } : {}),
+      ...(typeof rawThread?.updatedAt === 'string' ? { updatedAt: rawThread.updatedAt } : {}),
     }
+    if (rawThread && Object.prototype.hasOwnProperty.call(rawThread, 'reasoningEffortByModel')) {
+      threadPatch.reasoningEffortByModel = rawThread.reasoningEffortByModel ?? {}
+    }
+    if (Object.keys(threadPatch).length) updateAssistantThreadFromEvent(eventThreadID, threadPatch)
   }
   if (event.type === 'item.delta' && event.itemID) {
     const delta = typeof payload.delta === 'string' ? payload.delta : ''
@@ -8877,12 +9491,14 @@ function assistantProgressExpanded(message: ProjectMessageView): boolean {
 }
 
 function toggleAssistantProgress(message: ProjectMessageView): void {
+  const expanding = !assistantProgressExpanded(message)
   const choices = new Map(assistantProgressDisclosureChoices.value)
   choices.set(message.id, {
     closed: assistantProgressClosed(message),
-    expanded: !assistantProgressExpanded(message),
+    expanded: expanding,
   })
   assistantProgressDisclosureChoices.value = choices
+  if (expanding) void loadAssistantTurnDetail(message)
 }
 
 function assistantProgressRegionID(messageID: string): string {
@@ -9950,11 +10566,20 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </div>
                 </template>
                 <template #actions>
-                  <ModelPicker
+                  <AIModelReasoningPicker
                     :models="configuredLLMModels"
                     :selected-i-d="selectedLLMModel?.id || ''"
+                    :effort="landingReasoningEffort"
+                    :effort-options="selectedReasoningEffortChoices"
+                    :default-effort-label="selectedModelDefaultEffortLabel"
                     :disabled="busy || llmSettingsLoading"
+                    :reasoning-disabled="busy || llmSettingsLoading"
+                    :validation-error="landingReasoningEffortError"
+                    :reset-required="landingReasoningEffortResetRequired"
+                    :edit-model-required="selectedModelDefaultEffortUnsupported"
                     @select="selectedLLMModelID = $event"
+                    @update:effort="selectLandingReasoningEffort"
+                    @edit-model-settings="editSelectedModelReasoningSettings"
                   />
                   <button
                     type="submit"
@@ -10391,7 +11016,27 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   :expanded="assistantProgressExpanded(message)"
                   @toggle="toggleAssistantProgress(message)"
                 >
-                  <template v-if="assistantTraceBlocks(message).length" #details>
+                  <template v-if="assistantTraceBlocks(message).length || assistantTurnDetailVisible(message)" #details>
+                    <section v-if="assistantTurnDetailVisible(message)" class="mb-3 rounded-md border border-border-subtle bg-surface/50 px-3 py-2 text-[11px] leading-5" data-testid="assistant-run-effective-settings" aria-label="Run settings">
+                      <div class="mb-1 font-semibold text-text-secondary">Run settings</div>
+                      <p v-if="assistantTurnDetailState(message)?.loading" class="text-text-muted" role="status" aria-live="polite">Loading run settings…</p>
+                      <div v-else-if="assistantTurnDetailState(message)?.error" class="flex flex-wrap items-center gap-2 text-danger" role="alert">
+                        <span>{{ assistantTurnDetailState(message)?.error }}</span>
+                        <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadAssistantTurnDetail(message, true)">Retry</button>
+                      </div>
+                      <template v-else-if="assistantTurnEffectiveSettings(message)">
+                        <p v-if="assistantTurnEffectiveSettings(message)?.provider || assistantTurnEffectiveSettings(message)?.model" class="text-text-muted">
+                          Model: <span class="font-medium text-text-secondary">{{ [assistantTurnEffectiveSettings(message)?.provider, assistantTurnEffectiveSettings(message)?.model].filter(Boolean).join(' · ') }}</span>
+                        </p>
+                        <template v-if="assistantTurnReasoning(message)">
+                          <p class="text-text-muted">Requested: <span class="font-medium text-text-secondary">{{ assistantTurnRequestedReasoningLabel(message) }}</span></p>
+                          <p v-if="assistantTurnResolvedReasoningLabel(message)" class="text-text-muted">Resolved effort: <span class="font-medium text-text-secondary">{{ assistantTurnResolvedReasoningLabel(message) }}</span></p>
+                          <p class="text-text-muted">Effective: <span class="font-medium text-text-secondary">{{ actualReasoningLabel(assistantTurnReasoning(message)?.effectiveEffort) }} · {{ transportLabel(assistantTurnReasoning(message)?.transport ?? '') }}</span></p>
+                        </template>
+                        <p v-else class="text-text-muted">No reasoning effort was recorded for this run.</p>
+                      </template>
+                      <p v-else class="text-text-muted">No reasoning audit is available for this run.</p>
+                    </section>
                     <template
                       v-for="(traceBlock, traceIndex) in assistantTraceBlocks(message)"
                       :key="traceBlock.key"
@@ -10727,11 +11372,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 />
               </template>
               <template #actions>
-                <ModelPicker
+                <AIModelReasoningPicker
                   :models="configuredLLMModels"
                   :selected-i-d="selectedLLMModel?.id || ''"
-                  :disabled="messageStreaming || loading || conversationInteractionBusy || llmSettingsLoading"
+                  :effort="assistantReasoningEffort"
+                  :effort-options="selectedReasoningEffortChoices"
+                  :default-effort-label="selectedModelDefaultEffortLabel"
+                  :disabled="messageStreaming || loading || conversationInteractionBusy || llmSettingsLoading || assistantReasoningPreferencesHydrating || assistantReasoningPreferencePreparing"
+                  :reasoning-disabled="messageStreaming || loading || conversationInteractionBusy || llmSettingsLoading || assistantReasoningPreferencesHydrating || assistantReasoningPreferencePreparing"
+                  :saving="assistantReasoningPreferenceSaving"
+                  :validation-error="assistantReasoningSelectionError"
+                  :save-error="assistantReasoningPreferenceSaveError"
+                  :reset-required="assistantReasoningEffortResetRequired"
+                  :edit-model-required="selectedModelDefaultEffortUnsupported"
                   @select="selectedLLMModelID = $event"
+                  @update:effort="selectAssistantReasoningEffort"
+                  @retry="retryAssistantReasoningPreferenceSave"
+                  @edit-model-settings="editSelectedModelReasoningSettings"
                 />
               </template>
               </AssistantRichComposer>
@@ -11862,6 +12519,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :credential-mode="llmCredentialMode"
             :base-u-r-l="llmBaseURL"
             :model="llmModel"
+            :reasoning-effort="llmReasoningEffort"
+            :reasoning-effort-options="editorReasoningEffortOptions"
+            :reasoning-effort-error="editorReasoningEffortError"
             :api-key="llmApiKey"
             :name-error="llmNameError"
             :base-u-r-l-error="llmBaseURLError"
@@ -11899,6 +12559,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @update:credential-mode="updateLLMCredentialMode"
             @update:base-u-r-l="updateLLMBaseURL"
             @update:model="llmModel = $event"
+            @update:reasoning-effort="llmReasoningEffort = $event"
             @update:api-key="updateLLMAPIKey"
           />
 

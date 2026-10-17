@@ -69,6 +69,14 @@ interrupt frames, primary actions, rails, workspace splits, and workbench tabs
 are shared. Model connection cards/forms/selectors and usage-section framing
 also belong here; model APIs and credential handling remain provider-owned.
 
+`AIModelReasoningPicker.vue` combines configured model choice with the caller's
+exact ordered reasoning options in one compact control. The caller supplies
+`''` as the model-default/reset value and the discrete `effortOptions`; the
+component previews while the range moves and emits `update:effort` only on
+commit. It keeps persistence, per-model preferences, capability checks, and
+recovery policy with the provider, and uses `useAnchoredPopover` for its
+viewport-aware panel.
+
 Composed turns, progress disclosure, grouped/flat activity feeds, safe execution
 details, and validated plan presentation build on
 these primitives. Providers supply status and formatted duration: AgentKit does

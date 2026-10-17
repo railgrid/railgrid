@@ -42,7 +42,7 @@ func (s *MemoryStore) CreateAssistantThread(_ context.Context, scope Scope, thre
 		if existing.ActorID != prepared.ActorID {
 			return AssistantThread{}, ErrAssistantThreadConflict
 		}
-		return existing, nil
+		return cloneAssistantThread(existing), nil
 	}
 	preparedEvents := make([]AssistantThreadEvent, len(events))
 	for index, event := range events {
@@ -59,7 +59,7 @@ func (s *MemoryStore) CreateAssistantThread(_ context.Context, scope Scope, thre
 	}
 	s.threadEvents[scope][prepared.ID] = cloneAssistantThreadEvents(preparedEvents)
 	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ID, preparedEvents...)
-	return prepared, nil
+	return cloneAssistantThread(prepared), nil
 }
 
 func (s *MemoryStore) GetAssistantThread(_ context.Context, scope Scope, threadID string) (AssistantThread, error) {
@@ -72,7 +72,7 @@ func (s *MemoryStore) GetAssistantThread(_ context.Context, scope Scope, threadI
 	if !ok {
 		return AssistantThread{}, ErrAssistantThreadNotFound
 	}
-	return thread, nil
+	return cloneAssistantThread(thread), nil
 }
 
 func (s *MemoryStore) ListAssistantThreads(_ context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error) {
@@ -94,7 +94,7 @@ func (s *MemoryStore) ListAssistantThreads(_ context.Context, scope Scope, actor
 		if !includeArchived && thread.Status == AssistantThreadStatusArchived {
 			continue
 		}
-		items = append(items, thread)
+		items = append(items, cloneAssistantThread(thread))
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
@@ -143,7 +143,7 @@ func (s *MemoryStore) UpdateAssistantThread(_ context.Context, scope Scope, thre
 	}
 	prepared.CreatedAt = existing.CreatedAt
 	s.assistantThreads[scope][prepared.ID] = prepared
-	return prepared, nil
+	return cloneAssistantThread(prepared), nil
 }
 
 func (s *MemoryStore) SetAssistantThreadTitleIfEmpty(_ context.Context, scope Scope, threadID, actorID, title string, event AssistantThreadEvent) (AssistantThread, bool, error) {
@@ -172,10 +172,10 @@ func (s *MemoryStore) SetAssistantThreadTitleIfEmpty(_ context.Context, scope Sc
 		return AssistantThread{}, false, ErrAssistantThreadConflict
 	}
 	if thread.Status == AssistantThreadStatusArchived || strings.TrimSpace(thread.Title) != "" {
-		return thread, false, nil
+		return cloneAssistantThread(thread), false, nil
 	}
 	if len(preparedEvent.Payload) == 0 || string(preparedEvent.Payload) == "{}" {
-		preparedEvent.Payload, err = json.Marshal(map[string]any{"thread": AssistantThread{ID: thread.ID, Title: title, Status: thread.Status, ActorID: thread.ActorID, CreatedAt: thread.CreatedAt, UpdatedAt: time.Now().UTC()}})
+		preparedEvent.Payload, err = json.Marshal(map[string]any{"thread": map[string]any{"id": thread.ID, "title": title}})
 		if err != nil {
 			return AssistantThread{}, false, err
 		}
@@ -186,7 +186,7 @@ func (s *MemoryStore) SetAssistantThreadTitleIfEmpty(_ context.Context, scope Sc
 	preparedEvent.Sequence = int64(len(s.threadEvents[scope][threadID])) + 1
 	s.threadEvents[scope][threadID] = append(s.threadEvents[scope][threadID], cloneAssistantThreadEvent(preparedEvent))
 	s.appendAssistantThreadTurnEventsLocked(scope, threadID, preparedEvent)
-	return thread, true, nil
+	return cloneAssistantThread(thread), true, nil
 }
 
 func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, threadID, actorID string) error {
@@ -337,7 +337,7 @@ func (s *MemoryStore) UpdateAssistantThreadWithEvent(_ context.Context, scope Sc
 	preparedEvent.Sequence = expectedSequence + 1
 	s.threadEvents[scope][prepared.ID] = append(events, cloneAssistantThreadEvent(preparedEvent))
 	s.appendAssistantThreadTurnEventsLocked(scope, prepared.ID, preparedEvent)
-	return prepared, cloneAssistantThreadEvent(preparedEvent), nil
+	return cloneAssistantThread(prepared), cloneAssistantThreadEvent(preparedEvent), nil
 }
 
 func (s *MemoryStore) CreateAssistantTurn(_ context.Context, scope Scope, turn AssistantTurn, events []AssistantThreadEvent) (AssistantTurn, error) {

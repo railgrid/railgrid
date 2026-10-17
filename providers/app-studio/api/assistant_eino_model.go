@@ -31,10 +31,17 @@ import (
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/railgrid/provider-sdk/modelcatalog"
 	"google.golang.org/genai"
 )
 
 const defaultProjectLLMGoogleCloudLocation = "global"
+
+const (
+	projectLLMTransportResponses       = "responses"
+	projectLLMTransportChatCompletions = "chat-completions"
+	projectLLMTransportGemini          = "gemini"
+)
 
 func newProjectEinoAssistantModelFactory(server *Server) projectEinoAssistantModelFactory {
 	return func(ctx context.Context, req projectAssistantRunRequest, _ *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
@@ -115,15 +122,61 @@ func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return nil, errProjectLLMNotConfigured
 	}
-	switch strings.TrimSpace(settings.Provider) {
-	case projectLLMProviderGoogle:
+	switch projectLLMTransport(settings) {
+	case projectLLMTransportGemini:
 		return newProjectEinoGeminiChatModel(ctx, settings)
+	case projectLLMTransportResponses:
+		return newProjectEinoResponsesModel(ctx, settings)
 	default:
-		if projectModelUsesResponsesAPI(settings.Model) {
-			return newProjectEinoResponsesModel(ctx, settings)
-		}
 		return newProjectEinoOpenAIChatModel(ctx, settings)
 	}
+}
+
+// projectLLMTransport selects the adapter used for a complete model call.
+// A persisted transport wins so resumed work keeps the same wire protocol even
+// if current routing rules later change.
+func projectLLMTransport(settings projectLLMSettings) string {
+	if transport := strings.TrimSpace(settings.ReasoningTransport); transport != "" {
+		return transport
+	}
+	provider := strings.ToLower(strings.TrimSpace(settings.Provider))
+	if provider == "" {
+		provider = defaultProjectLLMProvider
+	}
+	if provider == projectLLMProviderGoogle {
+		return projectLLMTransportGemini
+	}
+	if provider != defaultProjectLLMProvider {
+		return projectLLMTransportChatCompletions
+	}
+	if projectModelUsesResponsesAPI(settings.Model) {
+		return projectLLMTransportResponses
+	}
+	if profile, ok := modelcatalog.ReasoningProfileForConnection(provider, settings.BaseURL, settings.Model); ok &&
+		profile.ResponsesForReasoning && settings.ReasoningEffort != "" && settings.ReasoningEffort != "none" {
+		return projectLLMTransportResponses
+	}
+	return projectLLMTransportChatCompletions
+}
+
+func projectLLMUsesResponsesAPI(settings projectLLMSettings) bool {
+	return projectLLMTransport(settings) == projectLLMTransportResponses
+}
+
+// projectLLMEffectiveReasoningEffort reports an explicit effort or the
+// compatibility effort that App Studio sends automatically. GPT-5.6 Luna's
+// existing Chat Completions path forces "none" when the setting is omitted.
+func projectLLMEffectiveReasoningEffort(settings projectLLMSettings) string {
+	if settings.ReasoningEffectiveEffort != nil {
+		return *settings.ReasoningEffectiveEffort
+	}
+	if settings.ReasoningEffort != "" {
+		return settings.ReasoningEffort
+	}
+	if projectLLMTransport(settings) == projectLLMTransportChatCompletions {
+		return string(projectLegacyChatReasoningEffort(settings.Model))
+	}
+	return ""
 }
 
 // GPT-6 Astra and GPT-6.1 Sol require Responses for function calling. Use the
@@ -148,7 +201,7 @@ func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSetti
 		BaseURL:         strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
 		Model:           strings.TrimSpace(settings.Model),
 		HTTPClient:      &http.Client{},
-		ReasoningEffort: projectReasoningEffort(settings.Model),
+		ReasoningEffort: projectReasoningEffort(settings),
 	}
 	// GPT-5/GPT-6 and the o-series reasoning models reject any temperature other
 	// than the fixed default of 1, so only request a custom temperature when the
@@ -164,7 +217,11 @@ func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSetti
 	return &projectEinoAssistantOpenAIPayloadModel{BaseChatModel: model}, nil
 }
 
-func projectReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
+func projectReasoningEffort(settings projectLLMSettings) openaimodel.ReasoningEffortLevel {
+	return openaimodel.ReasoningEffortLevel(projectLLMEffectiveReasoningEffort(settings))
+}
+
+func projectLegacyChatReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if idx := strings.LastIndex(m, "/"); idx >= 0 {
 		m = m[idx+1:]
@@ -289,10 +346,20 @@ func projectTemperatureOptions(model string, temperature float32) []einomodel.Op
 // only max_completion_tokens. The Responses adapter maps Eino's common token
 // budget to max_output_tokens; other providers keep the common max_tokens.
 func projectMaxTokensOptions(model string, maxTokens int) []einomodel.Option {
-	if projectModelUsesResponsesAPI(model) {
+	return projectMaxTokensOptionsForSettings(projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  defaultProjectLLMBaseURL,
+		Model:    model,
+	}, maxTokens)
+}
+
+// projectMaxTokensOptionsForSettings follows the same transport decision as
+// the model factory, including a frozen transport on resumed runs.
+func projectMaxTokensOptionsForSettings(settings projectLLMSettings, maxTokens int) []einomodel.Option {
+	if projectLLMUsesResponsesAPI(settings) {
 		return []einomodel.Option{einomodel.WithMaxTokens(maxTokens)}
 	}
-	if !projectModelSupportsTemperature(model) {
+	if !projectModelSupportsTemperature(settings.Model) {
 		return []einomodel.Option{openaimodel.WithMaxCompletionTokens(maxTokens)}
 	}
 	return []einomodel.Option{einomodel.WithMaxTokens(maxTokens)}

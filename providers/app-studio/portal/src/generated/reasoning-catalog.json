@@ -1,0 +1,136 @@
+[
+  {
+    "id": "gpt-5",
+    "aliases": [
+      "gpt-5-2025-08-07"
+    ],
+    "efforts": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5-mini",
+    "aliases": [
+      "gpt-5-mini-2025-08-07"
+    ],
+    "efforts": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5.1",
+    "aliases": [
+      "gpt-5.1-2025-11-13"
+    ],
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5.6-luna",
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "responsesForReasoning": true
+  },
+  {
+    "id": "gpt-6-astra",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "gpt-6-luna",
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "gpt-6-sol",
+    "efforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "gpt-6.1-sol",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "o1",
+    "aliases": [
+      "o1-2024-12-17"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "o3",
+    "aliases": [
+      "o3-2025-04-16"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "o3-mini",
+    "aliases": [
+      "o3-mini-2025-01-31"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "o4-mini",
+    "aliases": [
+      "o4-mini-2025-04-16"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ]
+  }
+]

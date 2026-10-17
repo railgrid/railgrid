@@ -218,6 +218,7 @@ export interface ProjectAssistantThread {
   status: ProjectAssistantThreadStatus
   createdAt: string
   updatedAt: string
+  reasoningEffortByModel?: Record<string, string>
 }
 
 export interface ProjectAssistantTurn {
@@ -230,6 +231,22 @@ export interface ProjectAssistantTurn {
   createdAt: string
   updatedAt: string
   error?: { message?: string; errorInfo?: string }
+}
+
+export interface ProjectAssistantEffectiveSettings {
+  provider?: string
+  model?: string
+  reasoning?: {
+    requestedEffort?: string
+    configuredEffort?: string
+    effectiveEffort: string
+    transport: 'responses' | 'chat-completions' | 'gemini' | string
+  }
+}
+
+export interface ProjectAssistantTurnDetail {
+  turn: ProjectAssistantTurn
+  effectiveSettings?: ProjectAssistantEffectiveSettings
 }
 
 export interface ProjectAssistantThreadEvent {
@@ -540,6 +557,7 @@ export interface ProjectLLMModelSettings {
   provider: string
   baseURL: string
   model: string
+  reasoningEffort?: string
   configured: boolean
   default?: boolean
 }

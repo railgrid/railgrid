@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/railgrid/provider-sdk/modelcatalog"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -192,6 +193,9 @@ func validateLLMRegistry(registry *aiv1alpha1.StudioLLM) (string, string) {
 		revisions[revision] = struct{}{}
 		if model.Archived {
 			continue
+		}
+		if err := modelcatalog.ValidateReasoningEffort(model.Provider, model.BaseURL, model.Model, model.ReasoningEffort); err != nil {
+			return "ReasoningEffortInvalid", fmt.Sprintf("Model %q: %s", model.ID, err)
 		}
 		active++
 		if _, seen := activeIDs[model.ID]; seen {

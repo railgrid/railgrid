@@ -65,7 +65,7 @@ func projectAssistantCapabilitiesForModel(settings projectLLMSettings) projectAs
 	if model == "" && provider == defaultProjectLLMProvider {
 		model = defaultProjectLLMModel
 	}
-	if provider == defaultProjectLLMProvider && projectModelUsesResponsesAPI(model) {
+	if provider == defaultProjectLLMProvider && projectLLMUsesResponsesAPI(settings) {
 		// Gateways may namespace OpenAI model IDs. Transport selection and the
 		// vision capability must agree for the same known model.
 		if idx := strings.LastIndex(model, "/"); idx >= 0 {

@@ -70,6 +70,9 @@ func projectLLMRegistryStudio(registry projectLLMRegistry) *unstructured.Unstruc
 		if item.Settings.BaseURL != "" {
 			model["baseURL"] = item.Settings.BaseURL
 		}
+		if item.Settings.ReasoningEffort != "" {
+			model["reasoningEffort"] = item.Settings.ReasoningEffort
+		}
 		models = append(models, model)
 	}
 	runtime := map[string]any{}
