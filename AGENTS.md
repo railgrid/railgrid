@@ -924,7 +924,9 @@ installations; source ownership does not imply self-hosting-only support.
 
 For visible UI changes follow [docs/dev-browser.md](docs/dev-browser.md): start
 `make tilt`, run `make dev-browser-ready`, inspect against the live backend,
-save captioned evidence under `artifacts/screenshots/`, then run
+save captioned evidence to the absolute `screenshotsDirectory` from
+`.kcp/dev-browser.json` (the managed checkout’s top-level
+`artifacts/screenshots/`, even when working from a provider subdirectory), then run
 `make dev-browser-down`. Retain the stack while awaiting a user answer. Never
 publish the dev token. Fixture pages and mocked backends do not count; report
 blockers and mark incomplete verification explicitly.

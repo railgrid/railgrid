@@ -29,9 +29,14 @@ discovers the live Tilt lifecycle resources, so it uses the source checkout and
 environment selected at launch. A configured provider that fails readiness is a
 setup failure, not a provider silently excluded from verification.
 
-Save PNG/JPEG evidence under `artifacts/screenshots/` in the runner's task
-checkout. Include captioned Markdown links to those local files in the final
-response/PR description. Keep at most eight files, 2 MiB each and 8 MiB total.
+Save PNG/JPEG evidence to the absolute `screenshotsDirectory` from
+`.kcp/dev-browser.json`. This is the top-level `artifacts/screenshots/` of the
+checkout this command manages, including when `RAILGRID_CLEANUP_ROOT` selects
+that checkout. Use this absolute path even when running browser tools from a
+provider subdirectory. Include captioned, checkout-root-relative Markdown links
+such as `![Changed screen](artifacts/screenshots/name.png)` in the final
+response/PR description. `providers/<name>/artifacts/screenshots/` is not
+exported by the runner. Keep at most eight files, 2 MiB each and 8 MiB total.
 The screenshot publication pipeline must be deployed in Runner, Agents,
 Factory and Code; this bootstrap command does not install that pipeline.
 
@@ -83,9 +88,3 @@ Port reservations use the OS accountâ€™s home directory rather than the processâ
 while sharing reservations with ordinary checkouts on the same host. A saved
 configuration that conflicts with another checkout fails explicitly; clean up
 that old stack before removing its ignored checkout state and allocating anew.
-
-The `screenshotsDirectory` value in `.kcp/dev-browser.json` is an absolute
-path at the Git checkout root. Use it even when running tools from a provider
-subdirectory. PR image links must be root-relative
-`artifacts/screenshots/name.png`; `providers/<name>/artifacts/screenshots/`
-is not exported by the runner.

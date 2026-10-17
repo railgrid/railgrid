@@ -120,7 +120,7 @@ class BrowserTest(unittest.TestCase):
             setup.wait_resource('planner-init')
 
     def test_fresh_and_repeat_setup_and_failure(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp).resolve()):
             config = {'root': tmp, 'key': 'test', 'legacy': False, 'ports': m.checkout.PORTS}
             setup = m.Setup(config)
             completed = set()
@@ -144,12 +144,22 @@ class BrowserTest(unittest.TestCase):
             setup.api = Mock(side_effect=api)
             setup.wait_resource = Mock()
             setup.command = Mock(return_value=json.dumps({'items': [{'metadata': {'name': 'planner'}, 'spec': {}}]}))
-            setup.ready()
-            setup.ready()
+            provider = Path(tmp) / 'providers/planner'
+            provider.mkdir(parents=True)
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(provider)
+                setup.ready()
+                setup.ready()
+            finally:
+                os.chdir(previous_cwd)
             self.assertEqual(triggered, ['planner-register', 'planner-init'])
             info = json.loads((Path(tmp) / '.kcp/dev-browser.json').read_text())
             self.assertEqual(info['providers'], ['planner'])
-            self.assertEqual(info['screenshotsDirectory'], str(Path(tmp) / 'artifacts/screenshots'))
+            shots = Path(info['screenshotsDirectory'])
+            self.assertTrue(shots.is_absolute())
+            self.assertEqual(shots, Path(tmp).resolve() / 'artifacts/screenshots')
+            self.assertNotEqual(shots, provider / 'artifacts/screenshots')
             self.assertIn('/ui/org/ws/', info['portalURL'])
             self.assertNotIn('dev-token', json.dumps(info))
             setup.wait_resource.side_effect = ValueError('provider failed readiness')
