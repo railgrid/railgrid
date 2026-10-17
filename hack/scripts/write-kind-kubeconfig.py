@@ -19,10 +19,14 @@ def refresh(cluster, destination):
     try:
         with os.fdopen(fd, 'wb') as out:
             out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        sys.exit('usage: write-kind-kubeconfig.py CLUSTER DESTINATION')
     refresh(*sys.argv[1:])

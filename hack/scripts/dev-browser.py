@@ -149,7 +149,17 @@ class Setup:
             print('Waiting for ' + label, flush=True)
             time.sleep(min(2, self.remaining()))
 
+    def admin_kubectl(self, workspace, *args):
+        server = 'https://localhost:' + str(self.config['ports']['KCP_PORT']) + '/clusters/' + workspace
+        return self.command(['kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig'),
+                             '--server=' + server, '--insecure-skip-tls-verify', *args])
+
     def wait_provider(self, name):
+        """Retry API queries and pending provisioning until the global setup deadline.
+
+        Persistent query errors also retry; timeout diagnostics retain the safe
+        error and private log path rather than exposing kubectl output.
+        """
         # Applying a Provider is not provisioning it. Ready is written only
         # after its workspace, ServiceAccount and credential Secret exist.
         print('Waiting for provider provisioning: ' + name, flush=True)
@@ -157,12 +167,11 @@ class Setup:
         while True:
             try:
                 self.remaining()
-                provider = json.loads(self.command([
-                    'kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig'),
-                    '--server=https://localhost:' + str(self.config['ports']['KCP_PORT'])
-                    + '/clusters/root:railgrid:system:providers',
-                    '--insecure-skip-tls-verify', '--request-timeout=5s',
-                    'get', 'providers.admin.railgrid.ai', name, '-o', 'json']))
+                provider = json.loads(self.admin_kubectl('root:railgrid:system:providers',
+                    '--request-timeout=5s', 'get', 'providers.admin.railgrid.ai', name, '-o', 'json'))
+                # Reset only after a successful query. Resetting before remaining()
+                # would discard the last failure when the deadline expires.
+                reason = 'controller has not reported readiness'
                 generation = provider.get('metadata', {}).get('generation')
                 for condition in provider.get('status', {}).get('conditions', []):
                     if condition.get('type') == 'Ready':
@@ -185,11 +194,8 @@ class Setup:
             time.sleep(min(2, max(0, self.deadline - time.monotonic())))
 
     def catalog(self, names):
-        admin = ['kubectl', '--kubeconfig', str(ROOT / '.kcp/admin.kubeconfig')]
-        server = 'https://localhost:' + str(self.config['ports']['KCP_PORT']) + '/clusters/'
         def read(workspace, *resource):
-            return json.loads(self.command(admin + ['--server=' + server + workspace,
-                '--insecure-skip-tls-verify', 'get', *resource, '-o', 'json']))
+            return json.loads(self.admin_kubectl(workspace, 'get', *resource, '-o', 'json'))
         catalog = {entry['metadata']['name']: entry['spec'] for entry in items(read('root:railgrid:system:providers', 'catalogentries'))}
         for name in sorted(set(names).difference(catalog)):
             # Standalone external providers self-register in their own workspace,

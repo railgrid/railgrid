@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,23 @@ class KubeconfigTest(unittest.TestCase):
                 m.refresh('owned', path)
             self.assertEqual(path.read_bytes(), b'second')
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_usage_error_has_no_traceback(self):
+        result = subprocess.run([sys.executable, str(Path(m.__file__))], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('usage:', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+    def test_failed_sync_keeps_existing_kubeconfig(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config'
+            path.write_bytes(b'working')
+            with patch.object(m.subprocess, 'check_output', return_value=b'new'), \
+                    patch.object(m.os, 'fsync', side_effect=OSError('disk error')):
+                with self.assertRaises(OSError):
+                    m.refresh('owned', path)
+            self.assertEqual(path.read_bytes(), b'working')
+            self.assertEqual(list(Path(tmp).iterdir()), [path])
 
     def test_failed_export_keeps_existing_kubeconfig(self):
         with tempfile.TemporaryDirectory() as tmp:

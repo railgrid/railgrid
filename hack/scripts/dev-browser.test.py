@@ -55,6 +55,18 @@ class BrowserTest(unittest.TestCase):
                         setup.wait_provider('agents')
                 self.assertIn(expected, str(caught.exception))
 
+    def test_successful_pending_poll_clears_previous_query_error(self):
+        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        setup = m.Setup(config)
+        setup.command = Mock(side_effect=[ValueError('API restarting'),
+                                         json.dumps({'metadata': {'generation': 1}})])
+        setup.remaining = Mock(side_effect=[10, 8, TimeoutError('expired')])
+        with patch.object(m.time, 'sleep'):
+            with self.assertRaises(TimeoutError) as caught:
+                setup.wait_provider('agents')
+        self.assertIn('controller has not reported readiness', str(caught.exception))
+        self.assertNotIn('API restarting', str(caught.exception))
+
     def test_external_provider_catalog_is_read_from_its_own_workspace(self):
         config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
