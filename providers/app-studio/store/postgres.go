@@ -209,7 +209,7 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, assistantThreadSchemaVersion, assistantThreadSchemaStatements()...); err != nil {
 		return err
 	}
-	if err := ensureSchemaVersion(ctx, tx, assistantThreadReasoningPreferenceSchemaVersion, assistantThreadReasoningPreferenceSchemaStatements()...); err != nil {
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantThreadReasoningPreferenceSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantThreadReasoningPreferenceSchemaStatements()...); err != nil {
 		return err
 	}
 	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadSchemaStatements()...); err != nil {

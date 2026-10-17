@@ -340,21 +340,10 @@ func projectTemperatureOptions(model string, temperature float32) []einomodel.Op
 	return []einomodel.Option{einomodel.WithTemperature(temperature)}
 }
 
-// projectMaxTokensOptions returns the per-call completion budget option for the
-// given model. The OpenAI reasoning families that fix sampling parameters
-// (GPT-5/GPT-6, o1/o3/o4) also reject the legacy max_tokens field and accept
-// only max_completion_tokens. The Responses adapter maps Eino's common token
-// budget to max_output_tokens; other providers keep the common max_tokens.
-func projectMaxTokensOptions(model string, maxTokens int) []einomodel.Option {
-	return projectMaxTokensOptionsForSettings(projectLLMSettings{
-		Provider: defaultProjectLLMProvider,
-		BaseURL:  defaultProjectLLMBaseURL,
-		Model:    model,
-	}, maxTokens)
-}
-
 // projectMaxTokensOptionsForSettings follows the same transport decision as
 // the model factory, including a frozen transport on resumed runs.
+// OpenAI reasoning families reject max_tokens in Chat Completions; Responses
+// maps Eino's common token budget to max_output_tokens.
 func projectMaxTokensOptionsForSettings(settings projectLLMSettings, maxTokens int) []einomodel.Option {
 	if projectLLMUsesResponsesAPI(settings) {
 		return []einomodel.Option{einomodel.WithMaxTokens(maxTokens)}

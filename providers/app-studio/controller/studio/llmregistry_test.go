@@ -46,7 +46,7 @@ func TestLLMCredentialSecretNameIsDerived(t *testing.T) {
 	}
 }
 
-func TestValidateLLMRegistryReasoningDefault(t *testing.T) {
+func TestCheckLLMRegistryReasoningDefault(t *testing.T) {
 	for _, tc := range []struct {
 		name, endpoint, model, effort string
 		archived                      bool
@@ -62,9 +62,10 @@ func TestValidateLLMRegistryReasoningDefault(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := model("configured", "revision", "Configured")
 			m.Model, m.BaseURL, m.ReasoningEffort, m.Archived = tc.model, tc.endpoint, tc.effort, tc.archived
-			reason, _ := validateLLMRegistry(&aiv1alpha1.StudioLLM{Models: []aiv1alpha1.StudioLLMModel{m}})
-			if tc.invalid && reason != "ReasoningEffortInvalid" || !tc.invalid && reason != "" {
-				t.Fatalf("reason = %q, want invalid=%t", reason, tc.invalid)
+			m.SecretRef = nil
+			got := checkWith(t, studioWith(&aiv1alpha1.StudioLLM{Models: []aiv1alpha1.StudioLLMModel{m}}))
+			if tc.invalid && got.condition.Reason != "ReasoningEffortInvalid" || !tc.invalid && got.condition.Reason != "Valid" {
+				t.Fatalf("condition = %+v, want invalid=%t", got.condition, tc.invalid)
 			}
 		})
 	}
@@ -176,6 +177,34 @@ func checkWith(t *testing.T, st *aiv1alpha1.Studio, objects ...runtime.Object) l
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(appscheme.NewScheme()).WithRuntimeObjects(objects...).Build()
 	return (&Reconciler{}).checkLLMRegistry(context.Background(), c, st)
+}
+
+func TestCheckLLMRegistryPreservesModelStatusWhenReasoningDefaultInvalid(t *testing.T) {
+	valid := model("valid", "revision-valid", "Valid")
+	valid.Model = "gpt-6-luna"
+	invalid := model("invalid", "revision-invalid", "Invalid")
+	invalid.Model, invalid.BaseURL, invalid.ReasoningEffort = "gpt-6-luna", "https://gateway.example/v1", "high"
+	st := studioWith(&aiv1alpha1.StudioLLM{
+		DefaultModel: "valid",
+		Models:       []aiv1alpha1.StudioLLMModel{valid, invalid},
+	})
+
+	got := checkWith(t, st, credentialSecret("valid", "sk-valid"))
+	if got.condition.Status != metav1.ConditionFalse || got.condition.Reason != "ReasoningEffortInvalid" {
+		t.Fatalf("condition = %+v, want False/ReasoningEffortInvalid", got.condition)
+	}
+	if !strings.Contains(got.condition.Message, "invalid") {
+		t.Fatalf("condition message = %q, want invalid model ID", got.condition.Message)
+	}
+	if len(got.models) != 2 {
+		t.Fatalf("status models = %+v, want both active models", got.models)
+	}
+	if got.models[0].ID != "invalid" || got.models[0].Configured {
+		t.Fatalf("invalid model status = %+v, want its missing credential reported", got.models[0])
+	}
+	if got.models[1].ID != "valid" || !got.models[1].Configured {
+		t.Fatalf("valid model status = %+v, want its populated credential reported", got.models[1])
+	}
 }
 
 // status.models is the whole point of the split: a client learns a model is

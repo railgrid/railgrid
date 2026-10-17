@@ -1469,6 +1469,210 @@ func TestPostgresAttachmentLifecycleExternalDSN(t *testing.T) {
 	}
 }
 
+func TestPostgresLatestAssistantThreadEventSequenceExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	schemaName := fmt.Sprintf("app_studio_thread_sequence_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer func() { _ = cleanupDB.Close() }()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+	s, err := OpenPostgres(ctx, postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	scopeA := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	scopeB := Scope{OrgUUID: "org-b", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	for _, setup := range []struct {
+		scope  Scope
+		id     string
+		events int
+	}{
+		{scope: scopeA, id: "same-thread", events: 3},
+		{scope: scopeB, id: "same-thread", events: 4},
+		{scope: scopeA, id: "empty-thread", events: 0},
+	} {
+		events := make([]AssistantThreadEvent, setup.events)
+		for index := range events {
+			events[index] = AssistantThreadEvent{Type: "thread.updated", CreatedAt: now}
+		}
+		if _, err := s.CreateAssistantThread(ctx, setup.scope, AssistantThread{
+			ID: setup.id, ActorID: "alice", CreatedAt: now, UpdatedAt: now,
+		}, events); err != nil {
+			t.Fatalf("create %s in %s: %v", setup.id, setup.scope.OrgUUID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND sequence=2`,
+		scopeA.OrgUUID, scopeA.WorkspaceUUID, scopeA.ProjectName, scopeA.ProjectUID, "same-thread"); err != nil {
+		t.Fatalf("remove middle event to simulate a retained sparse stream: %v", err)
+	}
+	for _, check := range []struct {
+		scope Scope
+		id    string
+		want  int64
+	}{
+		{scope: scopeA, id: "same-thread", want: 3},
+		{scope: scopeB, id: "same-thread", want: 4},
+		{scope: scopeA, id: "empty-thread", want: 0},
+	} {
+		got, err := s.LatestAssistantThreadEventSequence(ctx, check.scope, check.id)
+		if err != nil || got != check.want {
+			t.Fatalf("latest sequence for %s in %s = %d, %v; want %d", check.id, check.scope.OrgUUID, got, err, check.want)
+		}
+	}
+	if _, err := s.LatestAssistantThreadEventSequence(ctx, scopeA, "missing-thread"); !errors.Is(err, ErrAssistantThreadNotFound) {
+		t.Fatalf("missing-thread latest sequence error = %v, want ErrAssistantThreadNotFound", err)
+	}
+}
+
+func TestAssistantThreadReasoningPreferenceMigrationLockTimeoutExternalDSN(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("APP_STUDIO_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("APP_STUDIO_TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	schemaName := fmt.Sprintf("app_studio_thread_reasoning_lock_%d", time.Now().UTC().UnixNano())
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schemaName)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			return
+		}
+		defer func() { _ = cleanupDB.Close() }()
+		_, _ = cleanupDB.ExecContext(context.Background(), "DROP SCHEMA "+pq.QuoteIdentifier(schemaName)+" CASCADE")
+	})
+	applicationName := "app-studio-thread-reasoning-" + strings.TrimPrefix(schemaName, "app_studio_thread_reasoning_lock_")
+	schemaURL, err := url.Parse(postgresDSNWithSearchPath(t, dsn, schemaName))
+	if err != nil {
+		t.Fatalf("parse schema DSN: %v", err)
+	}
+	query := schemaURL.Query()
+	query.Set("application_name", applicationName)
+	schemaURL.RawQuery = query.Encode()
+	s, err := OpenPostgres(ctx, schemaURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE app_studio_assistant_threads DROP COLUMN reasoning_effort_by_model`); err != nil {
+		t.Fatalf("prepare legacy thread schema: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM app_studio_message_schema_migrations WHERE version=$1`, assistantThreadReasoningPreferenceSchemaVersion); err != nil {
+		t.Fatalf("prepare legacy migration marker: %v", err)
+	}
+
+	lockConn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("reserve schema lock connection: %v", err)
+	}
+	defer func() { _ = lockConn.Close() }()
+	lockTx, err := lockConn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin schema lock transaction: %v", err)
+	}
+	defer func() { _ = lockTx.Rollback() }()
+	if _, err := lockTx.ExecContext(ctx, `LOCK TABLE app_studio_assistant_threads IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("hold assistant thread table lock: %v", err)
+	}
+
+	migrationCtx, cancelMigration := context.WithTimeout(ctx, 12*time.Second)
+	defer cancelMigration()
+	migrationDone := make(chan error, 1)
+	startedAt := time.Now()
+	go func() { migrationDone <- s.EnsureSchema(migrationCtx) }()
+
+	waitDeadline := time.NewTimer(3 * time.Second)
+	defer waitDeadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE application_name=$1 AND state='active' AND wait_event_type='Lock'
+			  AND query ILIKE 'ALTER TABLE app_studio_assistant_threads%'
+		)`, applicationName).Scan(&waiting); err != nil {
+			t.Fatalf("inspect blocked reasoning migration: %v", err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-migrationDone:
+			t.Fatalf("EnsureSchema returned before its reasoning migration reached the held table lock: %v", err)
+		case <-waitDeadline.C:
+			t.Fatal("reasoning migration did not wait on the held assistant thread table lock")
+		case <-ticker.C:
+		}
+	}
+
+	var migrationErr error
+	select {
+	case migrationErr = <-migrationDone:
+	case <-time.After(8 * time.Second):
+		t.Fatal("reasoning preference migration did not respect its bounded lock timeout")
+	}
+	if time.Since(startedAt) >= 8*time.Second {
+		t.Fatalf("reasoning migration exceeded bounded wait: %s", time.Since(startedAt))
+	}
+	var postgresErr *pq.Error
+	if !errors.As(migrationErr, &postgresErr) || postgresErr.Code != "55P03" {
+		t.Fatalf("blocked EnsureSchema error = %v, want PostgreSQL lock timeout 55P03", migrationErr)
+	}
+	if err := lockTx.Rollback(); err != nil {
+		t.Fatalf("release assistant thread table lock: %v", err)
+	}
+	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema after releasing table lock: %v", err)
+	}
+	var migrationRecorded bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM app_studio_message_schema_migrations WHERE version=$1
+	)`, assistantThreadReasoningPreferenceSchemaVersion).Scan(&migrationRecorded); err != nil {
+		t.Fatalf("check reasoning-preference migration marker: %v", err)
+	}
+	if !migrationRecorded {
+		t.Fatal("successful reasoning migration did not record its schema version")
+	}
+	var columnExists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+		  AND table_name='app_studio_assistant_threads' AND column_name='reasoning_effort_by_model'
+	)`).Scan(&columnExists); err != nil {
+		t.Fatalf("check migrated reasoning preference column: %v", err)
+	}
+	if !columnExists {
+		t.Fatal("successful reasoning migration did not restore reasoning_effort_by_model")
+	}
+}
+
 func postgresDSNWithSearchPath(t *testing.T, dsn, schemaName string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)

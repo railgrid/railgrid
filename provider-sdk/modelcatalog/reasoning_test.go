@@ -14,7 +14,11 @@
 
 package modelcatalog
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
 
 func TestReasoningProfileForConnection(t *testing.T) {
 	tests := []struct {
@@ -26,17 +30,9 @@ func TestReasoningProfileForConnection(t *testing.T) {
 		wantOK   bool
 	}{
 		{name: "blank provider and base URL are official defaults", model: "gpt-6-luna", wantID: "gpt-6-luna", wantOK: true},
-		{name: "normalized official URL", provider: "OPENAI-COMPATIBLE", baseURL: "HTTPS://API.OPENAI.COM:443/v1/", model: "gpt-5-mini-2025-08-07", wantID: "gpt-5-mini", wantOK: true},
-		{name: "official URL without explicit port", provider: "openai-compatible", baseURL: "https://api.openai.com/v1", model: "o3-2025-04-16", wantID: "o3", wantOK: true},
+		{name: "GPT-5 mini dated alias maps to its profile", provider: "openai-compatible", baseURL: "https://api.openai.com/v1", model: "gpt-5-mini-2025-08-07", wantID: "gpt-5-mini", wantOK: true},
+		{name: "o3 dated alias maps to its profile", provider: "openai-compatible", baseURL: "https://api.openai.com/v1", model: "o3-2025-04-16", wantID: "o3", wantOK: true},
 		{name: "namespaced ID is not an official model ID", provider: "openai-compatible", baseURL: "https://api.openai.com/v1", model: "openai/gpt-6-luna"},
-		{name: "custom compatible endpoint", provider: "openai-compatible", baseURL: "https://llm.example.test/v1", model: "gpt-6-luna"},
-		{name: "proxy endpoint", provider: "openai-compatible", baseURL: "https://api.openai.com/proxy/v1", model: "gpt-6-luna"},
-		{name: "empty query marker", baseURL: "https://api.openai.com/v1?", model: "gpt-6-luna"},
-		{name: "empty fragment marker", baseURL: "https://api.openai.com/v1#", model: "gpt-6-luna"},
-		{name: "dot path is not normalized", baseURL: "https://api.openai.com/proxy/../v1", model: "gpt-6-luna"},
-		{name: "escaped path is not normalized", baseURL: "https://api.openai.com/%76%31", model: "gpt-6-luna"},
-		{name: "azure endpoint", provider: "openai-compatible", baseURL: "https://example.openai.azure.com/openai/v1", model: "gpt-6-luna"},
-		{name: "wrong provider", provider: "azure-openai", baseURL: "https://api.openai.com/v1", model: "gpt-6-luna"},
 		{name: "unknown exact model", provider: "openai-compatible", baseURL: "https://api.openai.com/v1", model: "gpt-6-luna-preview"},
 		{name: "date suffix is not inferred", provider: "openai-compatible", baseURL: "https://api.openai.com/v1", model: "gpt-6-luna-2026-10-01"},
 	}
@@ -48,6 +44,35 @@ func TestReasoningProfileForConnection(t *testing.T) {
 			}
 			if ok && profile.ID != tt.wantID {
 				t.Fatalf("ReasoningProfileForConnection() profile ID = %q, want %q", profile.ID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestUsesOfficialOpenAIEndpointSharedFixtures(t *testing.T) {
+	var fixture struct {
+		Cases []struct {
+			Name     string `json:"name"`
+			Provider string `json:"provider"`
+			BaseURL  string `json:"baseURL"`
+			Official bool   `json:"official"`
+		} `json:"cases"`
+	}
+	data, err := os.ReadFile("testdata/endpoints.json")
+	if err != nil {
+		t.Fatalf("read shared endpoint fixtures: %v", err)
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("decode shared endpoint fixtures: %v", err)
+	}
+	if len(fixture.Cases) == 0 {
+		t.Fatal("shared endpoint fixture has no cases")
+	}
+
+	for _, tc := range fixture.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			if got := usesOfficialOpenAIEndpoint(tc.Provider, tc.BaseURL); got != tc.Official {
+				t.Errorf("usesOfficialOpenAIEndpoint(%q, %q) = %v, want %v", tc.Provider, tc.BaseURL, got, tc.Official)
 			}
 		})
 	}

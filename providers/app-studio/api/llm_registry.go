@@ -405,11 +405,10 @@ func readProjectLLMModelForCredentialReuse(ctx context.Context, c *asclient.Clie
 	return model, nil
 }
 
-// readProjectLLMModelConfigForConnectionTest reads the selected saved model
-// without fetching or requiring its credential. It is used when a caller
-// supplies a replacement key but omits reasoningEffort, so the saved default
-// remains the request's inherited value.
-func readProjectLLMModelConfigForConnectionTest(ctx context.Context, c *asclient.Client, modelID string) (projectLLMModelSettings, error) {
+// readProjectLLMModelConfig reads the active model's saved configuration
+// without fetching or requiring its credential. Use it for decisions that
+// depend on provider/model settings but do not need to connect to the model.
+func readProjectLLMModelConfig(ctx context.Context, c *asclient.Client, modelID string) (projectLLMModelSettings, error) {
 	return readProjectLLMModelWithOptions(ctx, c, modelID, "", nil, false, false)
 }
 
@@ -584,7 +583,7 @@ func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request
 			request.ReasoningEffort = &effort
 		}
 	} else if strings.TrimSpace(request.APIKey) != "" && request.ExistingModelID != "" && request.ReasoningEffort == nil {
-		stored, err := readProjectLLMModelConfigForConnectionTest(r.Context(), c, request.ExistingModelID)
+		stored, err := readProjectLLMModelConfig(r.Context(), c, request.ExistingModelID)
 		if err != nil {
 			if errors.Is(err, errProjectLLMModelNotFound) {
 				writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")

@@ -134,13 +134,9 @@ func (s *Server) patchAssistantThreadWithEvent(ctx context.Context, scope store.
 		return store.AssistantThread{}, store.AssistantThreadEvent{}, newValidationError("reasoningEffort.effort is required; use an empty string to inherit the model default")
 	}
 	for attempts := 0; attempts < assistantThreadMirrorPersistMaxAttempts; attempts++ {
-		events, err := s.loadAllAssistantThreadEvents(ctx, scope, strings.TrimSpace(threadID))
+		expected, err := s.store.LatestAssistantThreadEventSequence(ctx, scope, strings.TrimSpace(threadID))
 		if err != nil {
 			return store.AssistantThread{}, store.AssistantThreadEvent{}, err
-		}
-		expected := int64(0)
-		if len(events) > 0 {
-			expected = events[len(events)-1].Sequence
 		}
 		// Read the sequence before the projection. If an update lands between
 		// these reads, latest contains it but expectedSequence is stale, forcing

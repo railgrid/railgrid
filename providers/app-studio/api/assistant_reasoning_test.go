@@ -21,9 +21,64 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
+
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
+
+func TestAssistantThreadReasoningPreferenceValidationDoesNotReadCredential(t *testing.T) {
+	studio := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": aiv1alpha1.SchemeGroupVersion.String(),
+		"kind":       "Studio",
+		"metadata":   map[string]any{"name": aiv1alpha1.StudioName},
+		"spec": map[string]any{"llm": map[string]any{
+			"defaultModel": "keyless",
+			"models": []any{
+				map[string]any{"id": "keyless", "revisionID": "revision-keyless", "name": "Keyless", "provider": defaultProjectLLMProvider, "model": "gpt-6-luna"},
+				map[string]any{"id": "missing-key", "revisionID": "revision-missing", "name": "Missing key", "provider": defaultProjectLLMProvider, "model": "gpt-6-luna", "secretRef": map[string]any{"name": "missing-credential"}},
+			},
+		}},
+	}}
+	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		studioResource.GVR: "StudioList",
+		secretGVR:          "SecretList",
+	}, studio)
+	client := asclient.NewFromDynamic(dynamicClient)
+	ctx := context.Background()
+
+	preferences, err := normalizeProjectAssistantThreadReasoningEffortByModel(ctx, client, map[string]string{"keyless": "high", "missing-key": "medium"})
+	if err != nil {
+		t.Fatalf("validate keyless and SecretRef-backed model preferences on thread create: %v", err)
+	}
+	if preferences["keyless"] != "high" || preferences["missing-key"] != "medium" {
+		t.Fatalf("normalized preferences = %#v, want both model preferences", preferences)
+	}
+	for _, modelID := range []string{"keyless", "missing-key"} {
+		if err := validateProjectAssistantReasoningEffortForModel(ctx, client, modelID, "low"); err != nil {
+			t.Fatalf("validate %s model preference on thread patch: %v", modelID, err)
+		}
+	}
+	if _, err := normalizeProjectAssistantThreadReasoningEffortByModel(ctx, client, map[string]string{"missing-key": "unsupported"}); err == nil {
+		t.Fatal("thread create accepted an invalid reasoning effort")
+	}
+	if _, err := normalizeProjectAssistantThreadReasoningEffortByModel(ctx, client, map[string]string{"missing-model": "high"}); err == nil {
+		t.Fatal("thread create accepted a preference for a missing model")
+	}
+	if err := validateProjectAssistantReasoningEffortForModel(ctx, client, "missing-model", "high"); err == nil {
+		t.Fatal("thread patch accepted a preference for a missing model")
+	}
+	for _, action := range dynamicClient.Actions() {
+		if action.GetVerb() == "get" && action.GetResource().Resource == secretGVR.Resource {
+			t.Fatalf("preference validation issued a credential Secret GET: %#v", action)
+		}
+	}
+}
 
 func TestProjectAssistantReasoningResolutionPrecedence(t *testing.T) {
 	tests := []struct {

@@ -100,7 +100,7 @@ func normalizeProjectAssistantThreadReasoningEffortByModel(ctx context.Context, 
 		if _, duplicate := result[modelID]; duplicate {
 			return nil, newValidationError(fmt.Sprintf("reasoningEffortByModel contains duplicate normalized model ID %q", modelID))
 		}
-		model, err := readProjectLLMModelForTurn(ctx, c, modelID, "")
+		model, err := readProjectLLMModelConfig(ctx, c, modelID)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +113,7 @@ func normalizeProjectAssistantThreadReasoningEffortByModel(ctx context.Context, 
 }
 
 func validateProjectAssistantReasoningEffortForModel(ctx context.Context, c *asclient.Client, modelID, effort string) error {
-	model, err := readProjectLLMModelForTurn(ctx, c, modelID, "")
+	model, err := readProjectLLMModelConfig(ctx, c, modelID)
 	if err != nil {
 		return err
 	}

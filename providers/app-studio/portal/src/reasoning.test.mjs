@@ -19,6 +19,10 @@ const catalog = [
   { id: 'gpt-6-luna', aliases: ['gpt-6-luna-2026-10-01'], efforts: ['low', 'medium', 'high', 'xhigh'] },
   { id: 'o4-mini', efforts: ['low', 'medium', 'high'] },
 ]
+const endpointFixtures = JSON.parse(await readFile(
+  new URL('../../../../provider-sdk/modelcatalog/testdata/endpoints.json', import.meta.url),
+  'utf8',
+))
 
 test('reasoning lookup accepts exact canonical IDs and declared aliases only', () => {
   assert.equal(reasoning.lookupReasoningModel(' GPT-6-LUNA ', catalog)?.id, 'gpt-6-luna')
@@ -28,30 +32,23 @@ test('reasoning lookup accepts exact canonical IDs and declared aliases only', (
   assert.equal(reasoning.lookupReasoningModel('anthropic/gpt-6-luna', catalog), undefined)
 })
 
-test('reasoning levels require the official OpenAI-compatible endpoint', () => {
-  const model = { model: 'gpt-6-luna' }
-  assert.deepEqual(reasoning.reasoningEffortsForConnection(model, catalog), ['low', 'medium', 'high', 'xhigh'])
-  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...model, provider: 'OPENAI-COMPATIBLE', baseURL: 'HTTPS://API.OPENAI.COM:443/v1/' }, catalog), ['low', 'medium', 'high', 'xhigh'])
-
-  for (const baseURL of [
-    'https://api.openai.com/v1?proxy=1',
-    'https://api.openai.com/v1?',
-    'https://api.openai.com/v1#',
-    'https://user@api.openai.com/v1',
-    'https://@api.openai.com/v1',
-    'https://api.openai.com:/v1',
-    'https://api.openai.com:0443/v1',
-    'https://api.openai.com/v1/responses',
-    'https://api.openai.com/x/../v1',
-    'https://api.openai.com/v1/%2e%2e/v1',
-    'https://api.openai.com/%76%31',
-    'http://api.openai.com/v1',
-    'https://gateway.example/v1',
-  ]) {
-    assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...model, baseURL }, catalog), [], baseURL)
+test('reasoning endpoint gate matches the shared Go fixture', () => {
+  for (const fixture of endpointFixtures.cases) {
+    const connection = {
+      provider: fixture.provider,
+      baseURL: fixture.baseURL,
+      model: 'gpt-6-luna',
+    }
+    assert.deepEqual(
+      reasoning.reasoningEffortsForConnection(connection, catalog),
+      fixture.official ? catalog[0].efforts : [],
+      fixture.name,
+    )
   }
-  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...model, provider: 'google-ai-studio' }, catalog), [])
-  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...model, model: 'vendor/unknown' }, catalog), [])
+})
+
+test('reasoning levels still require a known model profile', () => {
+  assert.deepEqual(reasoning.reasoningEffortsForConnection({ model: 'vendor/unknown' }, catalog), [])
 })
 
 test('empty effort inherits the saved model default and stale values require an explicit reset', () => {

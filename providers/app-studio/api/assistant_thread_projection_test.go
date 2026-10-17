@@ -27,17 +27,31 @@ import (
 
 type assistantThreadPatchEventBarrierStore struct {
 	store.Store
-	started atomic.Bool
-	blocked chan struct{}
-	release chan struct{}
+	started      atomic.Bool
+	blocked      chan struct{}
+	release      chan struct{}
+	historyCalls atomic.Int64
 }
 
 func (s *assistantThreadPatchEventBarrierStore) ListAssistantThreadEvents(ctx context.Context, scope store.Scope, threadID string, afterSequence int64, limit int) ([]store.AssistantThreadEvent, error) {
+	s.historyCalls.Add(1)
+	return s.Store.ListAssistantThreadEvents(ctx, scope, threadID, afterSequence, limit)
+}
+
+func (s *assistantThreadPatchEventBarrierStore) LatestAssistantThreadEventSequence(ctx context.Context, scope store.Scope, threadID string) (int64, error) {
+	sequence, err := s.Store.LatestAssistantThreadEventSequence(ctx, scope, threadID)
+	if err != nil {
+		return 0, err
+	}
 	if s.started.CompareAndSwap(false, true) {
 		close(s.blocked)
-		<-s.release
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
 	}
-	return s.Store.ListAssistantThreadEvents(ctx, scope, threadID, afterSequence, limit)
+	return sequence, nil
 }
 
 func TestConcurrentAssistantThreadReasoningPatchesRetainDistinctModels(t *testing.T) {
@@ -84,6 +98,9 @@ func TestConcurrentAssistantThreadReasoningPatchesRetainDistinctModels(t *testin
 	}
 	if len(events) != 2 {
 		t.Fatalf("thread events = %d, want two preference updates", len(events))
+	}
+	if got := wrapper.historyCalls.Load(); got != 0 {
+		t.Fatalf("patch loaded full thread history %d times, want zero", got)
 	}
 	var projected struct {
 		Thread store.AssistantThread `json:"thread"`

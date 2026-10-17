@@ -117,6 +117,30 @@ func (s *PostgresStore) GetAssistantThread(ctx context.Context, scope Scope, thr
 	return thread, nil
 }
 
+func (s *PostgresStore) LatestAssistantThreadEventSequence(ctx context.Context, scope Scope, threadID string) (int64, error) {
+	if err := scope.validate(); err != nil {
+		return 0, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	var sequence int64
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE((
+		SELECT sequence FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
+		ORDER BY sequence DESC LIMIT 1
+	), 0), EXISTS (
+		SELECT 1 FROM app_studio_assistant_threads
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
+	)`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).Scan(&sequence, &exists)
+	if err != nil {
+		return 0, fmt.Errorf("get latest assistant thread event sequence: %w", err)
+	}
+	if !exists {
+		return 0, ErrAssistantThreadNotFound
+	}
+	return sequence, nil
+}
+
 func (s *PostgresStore) ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error) {
 	if err := scope.validate(); err != nil {
 		return AssistantThreadPage{}, err

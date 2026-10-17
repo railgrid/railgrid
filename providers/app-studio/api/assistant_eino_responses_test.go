@@ -90,7 +90,9 @@ func TestProjectResponsesGeneratePreservesImagesCallbacksAndBudget(t *testing.T)
 		{Type: schema.ChatMessagePartTypeText, Text: "Inspect this screenshot."},
 		{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &encoded, MIMEType: "image/png"}}},
 	}
-	opts := append(projectMaxTokensOptions("gpt-6.1-sol", 4096), einomodel.WithTools([]*schema.ToolInfo{{Name: "get_status", Desc: "Get project status"}}))
+	opts := append(projectMaxTokensOptionsForSettings(projectLLMSettings{
+		Provider: defaultProjectLLMProvider, Model: "gpt-6.1-sol",
+	}, 4096), einomodel.WithTools([]*schema.ToolInfo{{Name: "get_status", Desc: "Get project status"}}))
 	response, err := model.Generate(ctx, []*schema.Message{schema.SystemMessage("Be concise."), message}, opts...)
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +390,9 @@ func TestProjectResponsesCompactionOmitsInheritedTools(t *testing.T) {
 		_, _ = io.WriteString(w, projectResponsesFixtureText)
 	})
 	model := &projectEinoAssistantCompactionIsolatedModel{BaseChatModel: base}
-	opts := append(projectMaxTokensOptions("gpt-6.1-sol", 4096), einomodel.WithTools([]*schema.ToolInfo{{Name: "read_file", Desc: "Read a file"}}))
+	opts := append(projectMaxTokensOptionsForSettings(projectLLMSettings{
+		Provider: defaultProjectLLMProvider, Model: "gpt-6.1-sol",
+	}, 4096), einomodel.WithTools([]*schema.ToolInfo{{Name: "read_file", Desc: "Read a file"}}))
 	if _, err := model.Generate(context.Background(), []*schema.Message{schema.UserMessage(projectEinoAssistantCompactionPrompt)}, opts...); err != nil {
 		t.Fatal(err)
 	}

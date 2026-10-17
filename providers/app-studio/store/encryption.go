@@ -183,6 +183,10 @@ func (s *encryptedStore) GetAssistantThread(ctx context.Context, scope Scope, th
 	return thread, nil
 }
 
+func (s *encryptedStore) LatestAssistantThreadEventSequence(ctx context.Context, scope Scope, threadID string) (int64, error) {
+	return s.inner.LatestAssistantThreadEventSequence(ctx, scope, threadID)
+}
+
 func (s *encryptedStore) ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error) {
 	page, err := s.inner.ListAssistantThreads(ctx, scope, actorID, includeArchived, limit, cursor)
 	if err != nil {
