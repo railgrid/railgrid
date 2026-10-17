@@ -190,7 +190,7 @@ func projectEinoAssistantCompactionMiddleware(
 			BaseChatModel:    chatModel,
 			forbidToolChoice: projectEinoAssistantCompactionSupportsForbiddenToolChoice(req.LLM),
 		},
-		ModelOptions: projectMaxTokensOptions(req.LLM.Model, 4096),
+		ModelOptions: projectMaxTokensOptionsForSettings(req.LLM, 4096),
 		Retry:        projectEinoAssistantCompactionRetryConfig(req),
 		TokenCounter: projectEinoAssistantCompactionTokenCounter,
 		Trigger: &summarization.TriggerCondition{

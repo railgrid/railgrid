@@ -146,7 +146,7 @@ spec:
       crd: {}
   - group: ai.railgrid.ai
     name: studios
-    schema: v260919-91e6c6ad.studios.ai.railgrid.ai
+    schema: v261017-981162e2.studios.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai

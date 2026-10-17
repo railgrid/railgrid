@@ -113,7 +113,8 @@ test('does not apply or present create-thread responses after unmount', () => {
   const firstThreadStart = sendSource.indexOf('let thread = assistantThreads.value.find')
   const firstThreadEnd = sendSource.indexOf('\n      const canonical', firstThreadStart)
   assert.ok(firstThreadStart >= 0 && firstThreadEnd > firstThreadStart)
-  assert.match(sendSource.slice(firstThreadStart, firstThreadEnd), /thread = await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*assistantThreads\.value = \[thread, \.\.\.assistantThreads\.value\]/)
+  assert.match(sendSource, /initialThreadReasoningEffortByModel = supportedThreadReasoningEffortSnapshot\([\s\S]*initialReasoningEffortSnapshot\([\s\S]*reasoningEffortsForDraftScope\(unthreadedReasoningEfforts\.value/)
+  assert.match(sendSource.slice(firstThreadStart, firstThreadEnd), /thread = await api\.createAssistantThread\(\s*props\.ctx,\s*projectName,[\s\S]*initialThreadReasoningEffortByModel[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*assistantThreads\.value = \[thread, \.\.\.assistantThreads\.value\]/)
 })
 
 test('derives unread dots from persisted project-scoped update markers', () => {

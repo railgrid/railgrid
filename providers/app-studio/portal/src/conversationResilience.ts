@@ -29,6 +29,7 @@ export interface AssistantRunStartRequest {
   clientRequestID: string
   collaborationMode: ProjectAssistantRunMode
   modelID?: string
+  reasoningEffort?: string
   expectedRunID?: string
   skills?: string[]
   contextResources?: ProjectAssistantContextResource[]
@@ -149,6 +150,9 @@ export interface PendingFirstProjectSubmission {
   clientRequestID: string
   projectName: string
   modelID: string
+  reasoningEffort: string
+  /** Sparse, workspace-scoped model choices captured for the first thread. */
+  reasoningEffortByModel?: Record<string, string>
   /** The server-owned thread to replay when the first start response is lost. */
   threadID?: string
 }
@@ -165,20 +169,48 @@ export function projectCreationPrompt(content: string, attachmentCount: number):
   return trimmed || (attachmentCount > 0 ? ATTACHMENT_ONLY_PROJECT_PROMPT : '')
 }
 
-export function newFirstProjectSubmission(content: string, clientRequestID: string, modelID = ''): PendingFirstProjectSubmission {
-  return { content, clientRequestID, projectName: '', modelID }
+export function newFirstProjectSubmission(
+  content: string,
+  clientRequestID: string,
+  modelID = '',
+  reasoningEffort = '',
+  reasoningEffortByModel?: Record<string, string>,
+): PendingFirstProjectSubmission {
+  return {
+    content,
+    clientRequestID,
+    projectName: '',
+    modelID,
+    reasoningEffort,
+    ...(reasoningEffortByModel && Object.keys(reasoningEffortByModel).length
+      ? { reasoningEffortByModel: { ...reasoningEffortByModel } }
+      : {}),
+  }
+}
+
+function copyFirstProjectSubmission(
+  submission: PendingFirstProjectSubmission,
+  patch: Partial<Pick<PendingFirstProjectSubmission, 'projectName' | 'threadID' | 'clientRequestID'>>,
+): PendingFirstProjectSubmission {
+  return {
+    ...submission,
+    ...(submission.reasoningEffortByModel
+      ? { reasoningEffortByModel: { ...submission.reasoningEffortByModel } }
+      : {}),
+    ...patch,
+  }
 }
 
 export function firstProjectSubmissionWithProject(submission: PendingFirstProjectSubmission, projectName: string): PendingFirstProjectSubmission {
-  return { ...submission, projectName }
+  return copyFirstProjectSubmission(submission, { projectName })
 }
 
 export function firstProjectSubmissionWithThread(submission: PendingFirstProjectSubmission, threadID: string): PendingFirstProjectSubmission {
-  return { ...submission, threadID }
+  return copyFirstProjectSubmission(submission, { threadID })
 }
 
 export function firstProjectSubmissionWithClientRequestID(submission: PendingFirstProjectSubmission, clientRequestID: string): PendingFirstProjectSubmission {
-  return { ...submission, clientRequestID }
+  return copyFirstProjectSubmission(submission, { clientRequestID })
 }
 
 /**
@@ -200,6 +232,10 @@ export function firstProjectStartPlan(submission: PendingFirstProjectSubmission)
     content: submission.content,
     clientRequestID: submission.clientRequestID,
     modelID: submission.modelID,
+    reasoningEffort: submission.reasoningEffort,
+    ...(submission.reasoningEffortByModel
+      ? { reasoningEffortByModel: { ...submission.reasoningEffortByModel } }
+      : {}),
   }
 }
 
@@ -213,6 +249,7 @@ export function assistantRunStartFingerprint(projectName: string, request: Omit<
     request.content,
     request.collaborationMode,
     request.modelID ?? '',
+    request.reasoningEffort ?? '',
     request.expectedRunID ?? '',
     request.skills ?? [],
     request.contextResources ?? [],
@@ -229,8 +266,8 @@ export function firstProjectSubmissionAccepted(submission: PendingFirstProjectSu
 	return Boolean(user?.id && user.content === submission.content)
 }
 
-export function firstProjectSubmissionMatches(submission: PendingFirstProjectSubmission | null | undefined, projectName: string, content: string, modelID?: string): submission is PendingFirstProjectSubmission {
-	return Boolean(submission && submission.projectName === projectName && submission.content === content && (modelID === undefined || submission.modelID === modelID))
+export function firstProjectSubmissionMatches(submission: PendingFirstProjectSubmission | null | undefined, projectName: string, content: string, modelID?: string, reasoningEffort?: string): submission is PendingFirstProjectSubmission {
+	return Boolean(submission && submission.projectName === projectName && submission.content === content && (modelID === undefined || submission.modelID === modelID) && (reasoningEffort === undefined || submission.reasoningEffort === reasoningEffort))
 }
 
 export function firstProjectSubmissionIsCurrent(submission: PendingFirstProjectSubmission, generation: number, currentGeneration: number, selectedProject: string, routeProject: string, draftProject: string): boolean {

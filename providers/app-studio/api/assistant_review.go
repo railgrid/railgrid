@@ -37,6 +37,7 @@ type assistantThreadReviewStartRequest struct {
 	Target              assistantReviewTarget                  `json:"target"`
 	ClientUserMessageID string                                 `json:"clientUserMessageID"`
 	ModelID             string                                 `json:"modelID,omitempty"`
+	ReasoningEffort     *string                                `json:"reasoningEffort,omitempty"`
 	Skills              []string                               `json:"skills,omitempty"`
 	ContextResources    []projectAssistantContextResourceInput `json:"contextResources,omitempty"`
 	ContentParts        []projectAssistantContentPart          `json:"contentParts,omitempty"`
@@ -68,6 +69,7 @@ func (r assistantThreadReviewStartRequest) turnRequest() (assistantThreadTurnCre
 		Content:             content,
 		ClientUserMessageID: r.ClientUserMessageID,
 		ModelID:             strings.TrimSpace(r.ModelID),
+		ReasoningEffort:     cloneStringPointer(r.ReasoningEffort),
 		CollaborationMode:   store.AssistantRunModeReview,
 		Skills:              r.Skills,
 		ContextResources:    r.ContextResources,

@@ -183,6 +183,10 @@ func (s *encryptedStore) GetAssistantThread(ctx context.Context, scope Scope, th
 	return thread, nil
 }
 
+func (s *encryptedStore) LatestAssistantThreadEventSequence(ctx context.Context, scope Scope, threadID string) (int64, error) {
+	return s.inner.LatestAssistantThreadEventSequence(ctx, scope, threadID)
+}
+
 func (s *encryptedStore) ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error) {
 	page, err := s.inner.ListAssistantThreads(ctx, scope, actorID, includeArchived, limit, cursor)
 	if err != nil {
@@ -226,6 +230,9 @@ func (s *encryptedStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, sco
 	}
 	event.ThreadID = prepared.ID
 	if len(event.Payload) == 0 || string(event.Payload) == "{}" {
+		// This title-only event is a partial metadata update. Omitting the
+		// preference map avoids emitting a stale whole map if another update wins
+		// between the event preparation and the underlying title compare-and-set.
 		event.Payload, err = json.Marshal(map[string]any{"thread": map[string]any{"id": prepared.ID, "title": title}})
 		if err != nil {
 			return AssistantThread{}, false, err

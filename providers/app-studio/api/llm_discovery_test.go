@@ -103,10 +103,21 @@ func TestDiscoverProjectLLMModelsHandlerReusesStoredCredential(t *testing.T) {
 		ID:   "gpt-high",
 		Name: "GPT High",
 		Settings: projectLLMSettings{
-			Provider: defaultProjectLLMProvider,
-			BaseURL:  upstream.URL,
-			Model:    "gpt-5.4",
-			APIKey:   "stored-workspace-key",
+			Provider:        defaultProjectLLMProvider,
+			BaseURL:         upstream.URL,
+			Model:           "gpt-5.4",
+			ReasoningEffort: "high",
+			APIKey:          "stored-workspace-key",
+		},
+	}, {
+		ID:   "unrelated",
+		Name: "Unrelated",
+		Settings: projectLLMSettings{
+			Provider:        defaultProjectLLMProvider,
+			BaseURL:         "https://gateway.example/v1",
+			Model:           "custom-model",
+			ReasoningEffort: "high",
+			APIKey:          "other-workspace-key",
 		},
 	}}}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})

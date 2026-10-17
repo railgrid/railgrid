@@ -8,6 +8,7 @@ import ModelCollection from './agentkit/ModelCollection.vue'
 import ModelConnectionCard from './agentkit/ModelConnectionCard.vue'
 import ModelConnectionForm from './agentkit/ModelConnectionForm.vue'
 import ModelUsageSection from './agentkit/ModelUsageSection.vue'
+import ReasoningEffortControl from './ReasoningEffortControl.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import type { LLMProviderPreset } from './llmDiscovery'
@@ -21,7 +22,7 @@ const providerOptions = [
   { value: 'custom', label: 'Custom OpenAI-compatible' },
 ] as const
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   routePage?: boolean
   modelTests?: Record<string, { state: string; tone: 'success' | 'danger' | 'muted'; error?: string }>
   settings: ProjectLLMSettings | null
@@ -39,6 +40,9 @@ const props = defineProps<{
   baseURL: string
   model: string
   apiKey: string
+  reasoningEffort?: string
+  reasoningEffortOptions?: string[]
+  reasoningEffortError?: string
   nameError: string
   baseURLError: string
   modelError: string
@@ -60,7 +64,11 @@ const props = defineProps<{
   testError: string | null
   requireConnectionTest: boolean
   connectionTested: boolean
-}>()
+}>(), {
+  reasoningEffort: '',
+  reasoningEffortOptions: () => [],
+  reasoningEffortError: '',
+})
 
 const modelRows = computed(() => (props.settings?.models || []).map(saved => ({
   id: saved.id, name: saved.name, model: saved.model, endpoint: saved.baseURL || 'Provider default',
@@ -86,6 +94,7 @@ const emit = defineEmits<{
   'update:credentialMode': [mode: LLMCredentialMode]
   'update:baseURL': [value: string]
   'update:model': [value: string]
+  'update:reasoningEffort': [value: string]
   'update:apiKey': [value: string]
 }>()
 </script>
@@ -220,8 +229,8 @@ const emit = defineEmits<{
         :testing="testing"
         :test-error="testError"
         :connection-tested="connectionTested"
-        :test-disabled="!model.trim() || (credentialRequired && !apiKey.trim()) || Boolean(baseURLError)"
-        :save-disabled="testing || (requireConnectionTest && !connectionTested)"
+        :test-disabled="!model.trim() || (credentialRequired && !apiKey.trim()) || Boolean(baseURLError) || Boolean(reasoningEffortError)"
+        :save-disabled="testing || (requireConnectionTest && !connectionTested) || Boolean(reasoningEffortError)"
         :busy="saving"
         :editing="Boolean(editingModelID)"
         :wide="routePage || creationRoute"
@@ -231,6 +240,7 @@ const emit = defineEmits<{
         @update:base-u-r-l="emit('update:baseURL', $event)"
         @update:credential="emit('update:apiKey', $event)"
         @update:model="emit('update:model', $event)"
+        @update:reasoning-effort="emit('update:reasoningEffort', $event)"
         @select-model="emit('selectDiscoveredModel', $event)"
         @discover="emit('discover')"
         @test="emit('test')"
@@ -258,6 +268,13 @@ const emit = defineEmits<{
         </template>
 
         <template #model-extra>
+          <ReasoningEffortControl
+            variant="settings"
+            :effort="reasoningEffort"
+            :options="reasoningEffortOptions"
+            :disabled="saving || testing"
+            @update:effort="emit('update:reasoningEffort', $event)"
+          />
           <div v-if="recommendedDiscoveredModels.length" class="grid gap-2" aria-label="Recommended models">
             <span class="text-[9px] font-semibold uppercase tracking-wide text-text-muted">Recommended for App Studio</span>
             <div class="flex flex-wrap gap-2">

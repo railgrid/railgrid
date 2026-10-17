@@ -493,7 +493,7 @@ func TestProjectAssistantAuditToolContractBytesMatchOpenAIWire(t *testing.T) {
 				APIKey:   "test-key",
 			}
 			requestTools := tools
-			if projectModelUsesResponsesAPI(test.model) {
+			if projectLLMUsesResponsesAPI(settings) {
 				requestTools = append(append([]*schema.ToolInfo(nil), tools...), &schema.ToolInfo{Name: "get_status"})
 			}
 			inputSize := projectAssistantAuditMeasureInputForModel(messages, settings, requestTools)
@@ -520,7 +520,7 @@ func TestProjectAssistantAuditToolContractBytesMatchOpenAIWire(t *testing.T) {
 			if got := int64(len(request.Tools)); got != inputSize.ToolContractBytes {
 				t.Fatalf("audited tool contract bytes = %d, captured wire tools bytes = %d", inputSize.ToolContractBytes, got)
 			}
-			if projectModelUsesResponsesAPI(test.model) {
+			if projectLLMUsesResponsesAPI(settings) {
 				var responseTools []struct {
 					Name       string `json:"name"`
 					Parameters struct {

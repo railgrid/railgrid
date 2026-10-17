@@ -29,6 +29,7 @@ var update = flag.Bool("update", false, "rewrite the committed model catalog JSO
 
 // catalogJSONPath is the committed artifact, relative to this package.
 const catalogJSONPath = "../../portal/src/generated/model-catalog.json"
+const reasoningCatalogJSONPath = "../../portal/src/generated/reasoning-catalog.json"
 
 // The Go table is the source; the JSON is its build output. Nothing enforces
 // that at build time — the portal just imports a file — so this is what
@@ -108,6 +109,74 @@ func TestRenderIsDeterministic(t *testing.T) {
 		}
 		if !bytes.Equal(first, next) {
 			t.Fatal("Render is not deterministic; the committed JSON would churn")
+		}
+	}
+}
+
+func TestCommittedReasoningCatalogJSONMatchesTheGoCatalog(t *testing.T) {
+	want, err := RenderReasoningProfiles()
+	if err != nil {
+		t.Fatalf("RenderReasoningProfiles: %v", err)
+	}
+	if *update {
+		if err := os.WriteFile(reasoningCatalogJSONPath, want, 0o644); err != nil {
+			t.Fatalf("writing %s: %v", reasoningCatalogJSONPath, err)
+		}
+		t.Logf("updated %s", filepath.Clean(reasoningCatalogJSONPath))
+		return
+	}
+	got, err := os.ReadFile(reasoningCatalogJSONPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v — run `go run ./hack/modelcatalog-json` from providers/app-studio", reasoningCatalogJSONPath, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s is stale: regenerate with `go run ./hack/modelcatalog-json` (or `go test ./api/modelcatalogjson -update`)", filepath.Clean(reasoningCatalogJSONPath))
+	}
+}
+
+func TestRenderedReasoningCatalogIsUsableByThePortal(t *testing.T) {
+	data, err := RenderReasoningProfiles()
+	if err != nil {
+		t.Fatalf("RenderReasoningProfiles: %v", err)
+	}
+	var profiles []struct {
+		ID                    string   `json:"id"`
+		Aliases               []string `json:"aliases"`
+		Efforts               []string `json:"efforts"`
+		ResponsesForReasoning bool     `json:"responsesForReasoning"`
+	}
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		t.Fatalf("rendered reasoning catalog is not valid JSON: %v", err)
+	}
+	if len(profiles) == 0 {
+		t.Fatal("rendered reasoning catalog is empty")
+	}
+	seen := map[string]struct{}{}
+	for _, profile := range profiles {
+		if profile.ID == "" || len(profile.Efforts) == 0 {
+			t.Fatalf("reasoning profile is incomplete: %#v", profile)
+		}
+		for _, id := range append([]string{profile.ID}, profile.Aliases...) {
+			if _, dup := seen[id]; dup {
+				t.Fatalf("reasoning catalog contains duplicate model id %q", id)
+			}
+			seen[id] = struct{}{}
+		}
+	}
+}
+
+func TestReasoningRenderIsDeterministic(t *testing.T) {
+	first, err := RenderReasoningProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		next, err := RenderReasoningProfiles()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(first, next) {
+			t.Fatal("RenderReasoningProfiles is not deterministic")
 		}
 	}
 }

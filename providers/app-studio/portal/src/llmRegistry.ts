@@ -38,6 +38,7 @@ export interface StudioLLMModel {
   provider?: string
   baseURL?: string
   model: string
+  reasoningEffort?: string
   secretRef?: { name: string }
 }
 
@@ -145,6 +146,7 @@ function toSettings(studio: StudioObject | null): ProjectLLMSettings {
       provider: model.provider ?? '',
       baseURL: model.baseURL ?? '',
       model: model.model,
+      reasoningEffort: model.reasoningEffort || undefined,
       // From the reconciler's observation, never from a key we hold.
       configured: configured.get(model.id) ?? false,
       default: model.id === spec.defaultModel,
@@ -220,7 +222,7 @@ export async function getLLMSettings(ctx: RailgridContext | null): Promise<Proje
 
 export async function createLLMModel(
   ctx: RailgridContext | null,
-  body: { name: string; provider?: string; baseURL?: string; model: string; apiKey: string },
+  body: { name: string; provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey: string },
 ): Promise<ProjectLLMSettings> {
   const client = kube(ctx)
   const studio = await readStudio(client)
@@ -241,6 +243,7 @@ export async function createLLMModel(
     provider: body.provider?.trim() || undefined,
     baseURL: body.baseURL?.trim() || undefined,
     model: body.model.trim(),
+    ...(body.reasoningEffort ? { reasoningEffort: body.reasoningEffort } : {}),
     secretRef: { name: credentialSecretName(id) },
   })
   spec.models = models
@@ -259,7 +262,7 @@ export async function createLLMModel(
 export async function patchLLMModel(
   ctx: RailgridContext | null,
   id: string,
-  body: { name?: string; provider?: string; baseURL?: string; model?: string; apiKey?: string },
+  body: { name?: string; provider?: string; baseURL?: string; model?: string; reasoningEffort?: string; apiKey?: string },
 ): Promise<ProjectLLMSettings> {
   const client = kube(ctx)
   const studio = await readStudio(client)
@@ -278,6 +281,7 @@ export async function patchLLMModel(
     provider: body.provider?.trim() ?? current.provider,
     baseURL: body.baseURL?.trim() ?? current.baseURL,
     model: body.model?.trim() || current.model,
+    reasoningEffort: body.reasoningEffort === undefined ? current.reasoningEffort : body.reasoningEffort || undefined,
     secretRef: { name: credentialSecretName(id) },
   }
   models[index] = next

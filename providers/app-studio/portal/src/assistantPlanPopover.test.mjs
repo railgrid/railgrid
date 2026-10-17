@@ -50,7 +50,7 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.doesNotMatch(appSource, /expandedMessageTimestampID|messageTimestampLabel|toggleMessageTimestamp/)
   assert.match(appSource, /<AITurnProgress[\s\S]*:status="assistantTurnProgressStatus\(message\)"/)
   assert.match(appSource, /:duration="assistantWorkedLabel\(message\)"/)
-  assert.match(appSource, /<template v-if="assistantTraceBlocks\(message\)\.length" #details>[\s\S]*assistantTraceBlocks\(message\)/)
+  assert.match(appSource, /<template v-if="assistantTraceBlocks\(message\)\.length \|\| assistantTurnDetailVisible\(message\)" #details>[\s\S]*assistantTraceBlocks\(message\)/)
   assert.match(appSource, /<template v-if="message\.role === 'user' && \(assistantAttachmentsForMessage\(message\)\.length \|\| assistantAnnotationsForMessage\(message\)\.length\)" #before>/)
   assert.match(appSource, /<AssistantActionLog[\s\S]*v-if="hasAssistantResponseContent\(message\)"/)
   assert.match(appSource, /function assistantTurnProgressStatus\(message:[\s\S]*return 'stopping'/)

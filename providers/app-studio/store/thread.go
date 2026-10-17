@@ -42,12 +42,13 @@ const (
 // status and timestamps are materialized projections of the canonical event
 // stream, not a second source of transcript truth.
 type AssistantThread struct {
-	ID        string                `json:"id"`
-	Title     string                `json:"title,omitempty"`
-	Status    AssistantThreadStatus `json:"status"`
-	ActorID   string                `json:"actorID,omitempty"`
-	CreatedAt time.Time             `json:"createdAt"`
-	UpdatedAt time.Time             `json:"updatedAt"`
+	ID                     string                `json:"id"`
+	Title                  string                `json:"title,omitempty"`
+	Status                 AssistantThreadStatus `json:"status"`
+	ActorID                string                `json:"actorID,omitempty"`
+	ReasoningEffortByModel map[string]string     `json:"reasoningEffortByModel,omitempty"`
+	CreatedAt              time.Time             `json:"createdAt"`
+	UpdatedAt              time.Time             `json:"updatedAt"`
 }
 
 type AssistantTurnStatus string
@@ -95,6 +96,10 @@ func prepareAssistantThread(thread AssistantThread) (AssistantThread, error) {
 	thread.ID = strings.TrimSpace(thread.ID)
 	thread.Title = strings.TrimSpace(thread.Title)
 	thread.ActorID = strings.TrimSpace(thread.ActorID)
+	thread.ReasoningEffortByModel = cloneAssistantThreadReasoningEffortByModel(thread.ReasoningEffortByModel)
+	if len(thread.ReasoningEffortByModel) == 0 {
+		thread.ReasoningEffortByModel = nil
+	}
 	if thread.ID == "" || thread.ActorID == "" {
 		return AssistantThread{}, errors.New("assistant thread id and actor are required")
 	}
@@ -117,6 +122,43 @@ func prepareAssistantThread(thread AssistantThread) (AssistantThread, error) {
 		thread.UpdatedAt = thread.UpdatedAt.UTC()
 	}
 	return thread, nil
+}
+
+func cloneAssistantThreadReasoningEffortByModel(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for modelID, effort := range values {
+		clone[modelID] = effort
+	}
+	return clone
+}
+
+func cloneAssistantThread(thread AssistantThread) AssistantThread {
+	thread.ReasoningEffortByModel = cloneAssistantThreadReasoningEffortByModel(thread.ReasoningEffortByModel)
+	return thread
+}
+
+func encodeAssistantThreadReasoningEffortByModel(values map[string]string) ([]byte, error) {
+	if values == nil {
+		values = map[string]string{}
+	}
+	return json.Marshal(values)
+}
+
+func decodeAssistantThreadReasoningEffortByModel(raw []byte) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	values := map[string]string{}
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("decode assistant thread reasoning effort preferences: %w", err)
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+	return values, nil
 }
 
 func prepareAssistantTurn(turn AssistantTurn) (AssistantTurn, error) {

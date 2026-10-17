@@ -109,14 +109,13 @@ func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if settings.APIKey == "" && strings.TrimSpace(request.ExistingModelID) != "" {
-		registry, err := readProjectLLMRegistry(r.Context(), c)
+		stored, err := readProjectLLMModelForCredentialReuse(r.Context(), c, request.ExistingModelID)
 		if err != nil {
+			if errors.Is(err, errProjectLLMModelNotFound) {
+				writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
+				return
+			}
 			writeProjectError(w, err)
-			return
-		}
-		stored, found := registry.model(request.ExistingModelID)
-		if !found {
-			writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
 			return
 		}
 		storedBaseURL, err := normalizeLLMBaseURL(stored.Settings.BaseURL)
