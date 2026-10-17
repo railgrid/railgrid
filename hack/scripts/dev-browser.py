@@ -170,9 +170,14 @@ class Setup:
                                 and condition.get('observedGeneration') == generation):
                             return
                         reason = 'Ready is false or belongs to an older generation'
-            except (ValueError, subprocess.TimeoutExpired):
+            except ValueError as error:
+                # command() exposes only a safe diagnostic and the private log
+                # path. Retain it so auth/config failures are not hidden behind
+                # a generic timeout; never print kubectl's raw stderr here.
+                reason = 'provider API query failed: ' + str(error)
+            except subprocess.TimeoutExpired:
                 # Discovery and connections can disappear during a hub restart.
-                reason = 'provider API is not available'
+                reason = 'provider API query timed out'
             except TimeoutError:
                 raise TimeoutError(f'Provider {name} provisioning timed out ({reason}); '
                     f'inspect this checkout’s hub logs with tilt logs hub --port {self.port}, '
@@ -207,11 +212,11 @@ class Setup:
         for name in names:
             self.wait_resource('hub')
             for action in ('register', 'init'):
-                if action == 'init':
-                    self.wait_provider(name)
                 resource = name + '-' + action
                 state = json.loads(self.tilt('get', 'uiresource', resource, '-o', 'json'))
                 if not any(c.get('type') == 'Ready' and c.get('status') == 'True' for c in state.get('status', {}).get('conditions', [])):
+                    if action == 'init':
+                        self.wait_provider(name)
                     self.tilt('trigger', resource)
                     self.wait_resource(resource)
         for name in names:

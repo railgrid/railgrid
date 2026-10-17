@@ -39,6 +39,22 @@ class BrowserTest(unittest.TestCase):
                 setup.wait_provider('agents')
         self.assertEqual(setup.command.call_count, 1)
 
+    def test_provisioning_timeout_preserves_safe_command_diagnostic(self):
+        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        for error, expected in [
+            (ValueError('kubectl get failed; inspect .kcp/dev-browser-error.log'),
+             'kubectl get failed; inspect .kcp/dev-browser-error.log'),
+            (m.subprocess.TimeoutExpired(['kubectl'], 5), 'provider API query timed out'),
+        ]:
+            with self.subTest(error=type(error).__name__):
+                setup = m.Setup(config)
+                setup.command = Mock(side_effect=error)
+                setup.remaining = Mock(side_effect=[10, TimeoutError('expired')])
+                with patch.object(m.time, 'sleep'):
+                    with self.assertRaises(TimeoutError) as caught:
+                        setup.wait_provider('agents')
+                self.assertIn(expected, str(caught.exception))
+
     def test_external_provider_catalog_is_read_from_its_own_workspace(self):
         config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
@@ -191,6 +207,9 @@ class BrowserTest(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
             self.assertEqual(triggered, ['planner-register', 'planner-init'])
+            provisioning_queries = [call for call in setup.command.call_args_list
+                                    if 'providers.admin.railgrid.ai' in call.args[0]]
+            self.assertEqual(len(provisioning_queries), 1)  # Retry skips already-ready init.
             info = json.loads((Path(tmp) / '.kcp/dev-browser.json').read_text())
             self.assertEqual(info['providers'], ['planner'])
             shots = Path(info['screenshotsDirectory'])
