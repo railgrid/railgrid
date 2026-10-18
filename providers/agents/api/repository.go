@@ -41,8 +41,9 @@ import (
 
 // invokeRepository is the `repository` member of invokeRunRequest.
 type invokeRepository struct {
-	RepositoryID string `json:"repositoryID"`
-	BaseCommit   string `json:"baseCommit"`
+	RepositoryID  string `json:"repositoryID"`
+	EnvironmentID string `json:"environmentID,omitempty"`
+	BaseCommit    string `json:"baseCommit"`
 	// CloneSource is where the runner fetches the repository from, with the
 	// credential to do it. Required: a repository attempt runs in a fresh
 	// clone, and the runner keeps no checkout of its own.
@@ -106,6 +107,10 @@ func (r *invokeRepository) validate() (*repositoryAttempt, error) {
 		return nil, nil
 	}
 	out := &repositoryAttempt{}
+	out.EnvironmentID = strings.TrimSpace(r.EnvironmentID)
+	if out.EnvironmentID != "" && !runnerIdentifier.MatchString(out.EnvironmentID) {
+		return nil, errors.New("repository.environmentID must be a runner identifier")
+	}
 	out.RepositoryID = strings.TrimSpace(r.RepositoryID)
 	if !runnerIdentifier.MatchString(out.RepositoryID) {
 		return nil, errors.New("repository.repositoryID must be a runner identifier (letters, digits, '.', '_' or '-'; at most 128 characters)")
@@ -315,7 +320,7 @@ func (r *repositoryAttempt) persisted() *store.RunRepository {
 	if r == nil {
 		return nil
 	}
-	return &store.RunRepository{RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage}
+	return &store.RunRepository{EnvironmentID: r.EnvironmentID, RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, CommitMessage: r.CommitMessage}
 }
 
 // repositoryAttemptFromStored rebuilds the attempt for a run picked up after
@@ -327,6 +332,6 @@ func repositoryAttemptFromStored(stored *store.RunRepository) *repositoryAttempt
 		return nil
 	}
 	return &repositoryAttempt{Repository: backendharness.Repository{
-		RepositoryID: stored.RepositoryID, BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
+		EnvironmentID: stored.EnvironmentID, RepositoryID: stored.RepositoryID, BaseCommit: stored.BaseCommit, CommitMessage: stored.CommitMessage,
 	}}
 }

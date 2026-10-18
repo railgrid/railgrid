@@ -178,6 +178,11 @@ type RunHarnessSettings struct {
 
 // RunRepository is what a repository run was asked to run against.
 type RunRepository struct {
+	// EnvironmentID identifies an opt-in reusable development checkout.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	EnvironmentID string `json:"environmentID,omitempty"`
+
 	// RepositoryID is the repository's id on the runner that executed the
 	// attempt.
 	// +kubebuilder:validation:MinLength=1

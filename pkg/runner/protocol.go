@@ -206,7 +206,10 @@ type StartRequest struct {
 	AttemptEpoch    uint64 `json:"attemptEpoch"`
 	// RepositoryID and BaseCommit are required unless WorkspaceID is set.
 	RepositoryID string `json:"repositoryID,omitempty"`
-	BaseCommit   string `json:"baseCommit,omitempty"`
+	// EnvironmentID is a coordinator-scoped ticket identity. Reuse also requires
+	// an opt-in policy in the approved repository revision.
+	EnvironmentID string `json:"environmentID,omitempty"`
+	BaseCommit    string `json:"baseCommit,omitempty"`
 	// WorkspaceID names a directory the runner owns and keeps across
 	// attempts, under its managed worktree root. Mutually exclusive with
 	// RepositoryID: a workspace has no approved commit to verify.

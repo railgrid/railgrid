@@ -34,40 +34,58 @@ import (
 // available to an untrusted ticket or a generated file.
 var errNoRepositoryCleanup = errors.New("repository has no cleanup hook")
 
+type hookKind string
+
+const (
+	hookCleanup hookKind = "cleanup"
+	hookPrepare hookKind = "prepare"
+)
+
 type repositoryCleanup struct {
-	Cleanup []string `json:"cleanup"`
+	Cleanup            []string `json:"cleanup"`
+	Prepare            []string `json:"prepare,omitempty"`
+	IdleTimeoutSeconds int      `json:"idleTimeoutSeconds,omitempty"`
 }
 
 func runRepositoryCleanup(workdir, base string) error {
+	return runRepositoryHook(context.Background(), workdir, base, hookCleanup)
+}
+
+func runRepositoryHook(parent context.Context, workdir, base string, kind hookKind) error {
 	if workdir == "" || !commitPattern.MatchString(base) {
 		return errNoRepositoryCleanup
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 	// ls-tree distinguishes an absent opt-in from a broken repository.
 	entry, err := gitOutput(ctx, workdir, "ls-tree", base, "--", ".railgrid/runner.json")
 	if err != nil {
-		return fmt.Errorf("read repository cleanup configuration: %w", err)
+		return fmt.Errorf("read repository hook configuration: %w", err)
 	}
 	if entry == "" {
 		return errNoRepositoryCleanup
 	}
 	raw, err := gitOutput(ctx, workdir, "show", base+":.railgrid/runner.json")
 	if err != nil {
-		return fmt.Errorf("read repository cleanup configuration: %w", err)
+		return fmt.Errorf("read repository hook configuration: %w", err)
 	}
 	if len(raw) > 16384 {
-		return errors.New("repository cleanup configuration exceeds 16 KiB")
+		return errors.New("repository hook configuration exceeds 16 KiB")
 	}
 	var config repositoryCleanup
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return errors.New("invalid repository cleanup configuration")
+		return errors.New("invalid repository hook configuration")
 	}
-	if len(config.Cleanup) == 0 {
+	hookName := string(kind)
+	argv := config.Cleanup
+	if kind == hookPrepare {
+		argv = config.Prepare
+	}
+	if len(argv) == 0 {
 		return errNoRepositoryCleanup
 	}
-	if len(config.Cleanup) > 32 || config.Cleanup[0] == "" {
-		return errors.New("invalid repository cleanup command")
+	if len(argv) > 32 || argv[0] == "" {
+		return errors.New("invalid repository hook command")
 	}
 	trusted, err := os.MkdirTemp("", "railgrid-cleanup-*")
 	if err != nil {
@@ -76,7 +94,7 @@ func runRepositoryCleanup(workdir, base string) error {
 	defer func() { _ = os.RemoveAll(trusted) }()
 	archive := filepath.Join(trusted, "source.tar")
 	if _, err := gitOutput(ctx, workdir, "archive", "--format=tar", "--output="+archive, base); err != nil {
-		return fmt.Errorf("export approved cleanup source: %w", err)
+		return fmt.Errorf("export approved hook source: %w", err)
 	}
 	source := filepath.Join(trusted, "source")
 	if err := os.Mkdir(source, 0700); err != nil {
@@ -85,9 +103,9 @@ func runRepositoryCleanup(workdir, base string) error {
 	unpack := exec.CommandContext(ctx, "tar", "-xf", archive, "-C", source)
 	unpack.Env = cleanupEnvironment(workdir)
 	if err := unpack.Run(); err != nil {
-		return fmt.Errorf("extract approved cleanup source: %w", err)
+		return fmt.Errorf("extract approved hook source: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, config.Cleanup[0], config.Cleanup[1:]...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = source
 	cmd.Env = cleanupEnvironment(workdir)
 	if err := configureCleanupProcess(cmd); err != nil {
@@ -95,7 +113,7 @@ func runRepositoryCleanup(workdir, base string) error {
 	}
 	cmd.WaitDelay = time.Second
 	// Child output can contain secrets. Do not attach it to receipts or PRs.
-	logPath := filepath.Join(workdir, ".railgrid-cleanup.log")
+	logPath := filepath.Join(workdir, ".railgrid-"+hookName+".log")
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if errors.Is(err, os.ErrExist) {
 		// Recovery is allowed to retry an interrupted cleanup. Replace the
@@ -111,7 +129,7 @@ func runRepositoryCleanup(workdir, base string) error {
 	defer func() { _ = log.Close() }()
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Run(); err != nil {
-		return errors.New("repository cleanup failed; inspect .railgrid-cleanup.log in the retained worktree")
+		return fmt.Errorf("repository %s failed; inspect .railgrid-%s.log in the retained worktree", hookName, hookName)
 	}
 	return nil
 }
@@ -119,7 +137,7 @@ func runRepositoryCleanup(workdir, base string) error {
 // cleanupEnvironment intentionally excludes credentials and language/tool injection
 // variables. Repository code receives a target path, never executable task files.
 func cleanupEnvironment(workdir string) []string {
-	env := []string{"LANG=C.UTF-8", "RAILGRID_CLEANUP_ROOT=" + workdir}
+	env := []string{"LANG=C.UTF-8", "RAILGRID_CLEANUP_ROOT=" + workdir, "RAILGRID_PREPARE_ROOT=" + workdir}
 	for _, key := range []string{"PATH", "HOME", "TMPDIR", "DOCKER_HOST", "DOCKER_CONTEXT", "XDG_RUNTIME_DIR"} {
 		if value, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+value)
@@ -131,6 +149,12 @@ func cleanupEnvironment(workdir string) []string {
 // Called under r.mu after terminal state is durable. No post-terminal SSE
 // events: lifecycle maintenance is recorded in durable state and service logs.
 func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
+	if attempt.CleanupDelegated {
+		return
+	}
+	if r.retainEnvironmentLocked(attempt) {
+		return
+	}
 	if !attempt.CleanupEligible || !attempt.Receipt.Phase.IsTerminal() || attempt.CleanupDone || attempt.cleanupRunning || attempt.Receipt.Workdir == "" || attempt.CleanupAttempts >= 3 {
 		return
 	}
@@ -158,6 +182,13 @@ func (r *Runner) scheduleCleanupLocked(attempt *attemptRecord) {
 		}
 		current.cleanupRunning = false
 		current.CleanupDone = err == nil || errors.Is(err, errNoRepositoryCleanup)
+		if current.CleanupDone {
+			for key, env := range r.state.Environments {
+				if env.AttemptID == id && env.Evicting {
+					delete(r.state.Environments, key)
+				}
+			}
+		}
 		current.CleanupError = ""
 		if !current.CleanupDone {
 			current.CleanupError = err.Error()

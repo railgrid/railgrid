@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261017-8eaf3919.runs.agents.railgrid.ai
+  name: v261018-de5a5683.runs.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -169,6 +169,11 @@ spec:
                     CommitMessage is the subject the exported snapshot commit carries; empty
                     is the runner's canonical message.
                   maxLength: 200
+                  type: string
+                environmentID:
+                  description: EnvironmentID identifies an opt-in reusable development
+                    checkout.
+                  maxLength: 128
                   type: string
                 repositoryID:
                   description: |-

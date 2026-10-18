@@ -220,6 +220,11 @@ type Run struct {
 // shape is projected onto the Run object's spec.repository, so a reader of
 // either knows what ran without being able to clone it.
 type RunRepository struct {
+	// EnvironmentID identifies an opt-in reusable development checkout.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	EnvironmentID string `json:"environmentID,omitempty"`
+
 	RepositoryID  string `json:"repositoryID"`
 	BaseCommit    string `json:"baseCommit"`
 	CommitMessage string `json:"commitMessage,omitempty"`

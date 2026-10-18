@@ -49,6 +49,7 @@ import (
 // Repository makes a turn a repository attempt. Set on Config; nil means a
 // conversational workspace turn.
 type Repository struct {
+	EnvironmentID string
 	// RepositoryID names the repository on the runner (its enrolled id); a
 	// runner/v1 identifier.
 	RepositoryID string

@@ -693,7 +693,7 @@ func (s *Server) repositoryHarnessTurn(run taskRun, runID, sessionID string, con
 			"cluster":   run.ClusterID,
 		},
 		MaxDurationSeconds: maxDuration,
-		Repository:         &run.Repository.Repository,
+		Repository:         scopedRepositoryEnvironment(run.Repository.Repository, run.ClusterID, string(agent.UID)),
 		Artifacts:          artifacts,
 	})
 	// A synthetic session row: what the checkpoint and the run record read
@@ -1083,4 +1083,13 @@ func (s *Server) notifyInboxQuestion(ctx context.Context, run taskRun, question 
 		Text: "❓ " + run.Agent.Name + " needs an answer to continue: " + safeTruncate(question, 3000) +
 			"\nReply /inbox to review — the run resumes automatically once you answer.",
 	})
+}
+
+// A coordinator's ticket ID is only meaningful inside this tenant and Agent.
+func scopedRepositoryEnvironment(repo backendharness.Repository, cluster, agentUID string) *backendharness.Repository {
+	if repo.EnvironmentID != "" {
+		sum := sha256.Sum256([]byte(cluster + "\x00" + agentUID + "\x00" + repo.RepositoryID + "\x00" + repo.EnvironmentID))
+		repo.EnvironmentID = hex.EncodeToString(sum[:])
+	}
+	return &repo
 }

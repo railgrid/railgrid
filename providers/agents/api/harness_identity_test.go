@@ -36,6 +36,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	backendharness "github.com/railgrid/provider-agents/backend/harness"
 	"github.com/railgrid/provider-agents/internal/edgeref"
 )
 
@@ -310,5 +311,22 @@ func TestRunnerIdentityFailureClosesRequestBody(t *testing.T) {
 		if !body.closed {
 			t.Fatal("request body was not closed")
 		}
+	}
+}
+
+func TestRepositoryEnvironmentIdentityIsTenantAndAgentScoped(t *testing.T) {
+	repo := backendharness.Repository{RepositoryID: "repo", EnvironmentID: "ticket"}
+	first := scopedRepositoryEnvironment(repo, "cluster-a", "agent-a").EnvironmentID
+	if first == "ticket" || first == "" {
+		t.Fatal("environment identity not scoped")
+	}
+	if scopedRepositoryEnvironment(repo, "cluster-b", "agent-a").EnvironmentID == first {
+		t.Fatal("cross-tenant reuse")
+	}
+	if scopedRepositoryEnvironment(repo, "cluster-a", "agent-b").EnvironmentID == first {
+		t.Fatal("cross-agent reuse")
+	}
+	if repo.EnvironmentID != "ticket" {
+		t.Fatal("mutated persisted coordinator identity")
 	}
 }

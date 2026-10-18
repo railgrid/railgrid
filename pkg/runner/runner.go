@@ -55,12 +55,13 @@ const (
 // Runner is the generic local execution service. It owns protocol state and
 // workspace/resource boundaries; harness.Adapter owns the child process.
 type Runner struct {
-	cleanupSlots chan struct{}
-	cfg          Config
-	adapter      harness.Adapter
-	store        *stateStore
-	state        persistedState
-	lock         *processLock
+	cleanupSlots    chan struct{}
+	environmentStop chan struct{}
+	cfg             Config
+	adapter         harness.Adapter
+	store           *stateStore
+	state           persistedState
+	lock            *processLock
 
 	mu          sync.Mutex
 	running     map[string]context.CancelFunc
@@ -171,6 +172,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, permissionPromptCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
+	verificationCapabilities = appendUnique(verificationCapabilities, "warm-environments-v1")
 	// The runner fetches for itself now: it either refreshes the enrolled
 	// checkout or maintains its own clone of a remote it is given, so the
 	// capability no longer depends on an enrollment naming a remote.
@@ -188,19 +190,20 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		capabilities.Reasons = append(capabilities.Reasons, "harness is not ready")
 	}
 	r := &Runner{
-		cleanupSlots: make(chan struct{}, 2),
-		cfg:          cfg,
-		adapter:      adapter,
-		store:        store,
-		state:        state,
-		lock:         lock,
-		running:      map[string]context.CancelFunc{},
-		subscribers:  map[string]map[chan Event]struct{}{},
-		credentials:  map[string]harness.Credential{},
-		permissions:  map[string]*permissionGate{},
-		closeDone:    make(chan struct{}),
-		shutdown:     map[string]struct{}{},
-		capabilities: capabilities,
+		cleanupSlots:    make(chan struct{}, 2),
+		environmentStop: make(chan struct{}),
+		cfg:             cfg,
+		adapter:         adapter,
+		store:           store,
+		state:           state,
+		lock:            lock,
+		running:         map[string]context.CancelFunc{},
+		subscribers:     map[string]map[chan Event]struct{}{},
+		credentials:     map[string]harness.Credential{},
+		permissions:     map[string]*permissionGate{},
+		closeDone:       make(chan struct{}),
+		shutdown:        map[string]struct{}{},
+		capabilities:    capabilities,
 	}
 	if err := store.pruneJournals(state); err != nil {
 		_ = lock.Close()
@@ -221,6 +224,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		r.scheduleCleanupLocked(attempt)
 	}
 	r.mu.Unlock()
+	r.startEnvironmentExpiry()
 	return r, nil
 }
 
@@ -310,6 +314,7 @@ func (r *Runner) Close() error {
 		return err
 	}
 	r.closed = true
+	close(r.environmentStop)
 	for attemptID, cancel := range r.running {
 		r.shutdown[attemptID] = struct{}{}
 		cancel()
@@ -399,9 +404,18 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if err := r.reserveResourcesLocked(request.AttemptID, request.Resources); err != nil {
 		return Receipt{}, err
 	}
-	workdir, err := prepareWorkspace(ctx, r.cfg, request, dispatched)
+	var previousEnvironment *warmEnvironment
+	if env := r.state.Environments[request.EnvironmentID]; env != nil {
+		prev := *env
+		previousEnvironment = &prev
+	}
+	workdir, err := r.prepareEnvironmentLocked(ctx, request, dispatched)
 	if err != nil {
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
+		var protocolErr *Error
+		if errors.As(err, &protocolErr) {
+			return Receipt{}, protocolErr
+		}
 		return Receipt{}, protocolError(ErrorUnavailable, true, err.Error(), nil)
 	}
 	now := eventNow()
@@ -429,6 +443,21 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	if _, err := r.appendEventLocked(request.AttemptID, EventAccepted, "attempt accepted", nil); err != nil {
 		delete(r.state.Operations, opKey)
 		delete(r.state.Attempts, request.AttemptID)
+		// Acceptance did not become durable. Restore the idle owner rather than
+		// leaving a lease attached to an attempt that does not exist.
+		if env := r.state.Environments[request.EnvironmentID]; env != nil && env.AttemptID == request.AttemptID {
+			if previousEnvironment == nil {
+				delete(r.state.Environments, request.EnvironmentID)
+			} else {
+				// Acceptance failed after a possible HEAD/index change. Do not bless
+				// a new fingerprint: preserve the files and retire the lease safely.
+				previousEnvironment.Evicting = true
+				r.state.Environments[request.EnvironmentID] = previousEnvironment
+				if prior := r.state.Attempts[previousEnvironment.AttemptID]; prior != nil {
+					prior.CleanupDelegated = false
+				}
+			}
+		}
 		err = errors.Join(err, r.store.removeEvents(request.AttemptID))
 		delete(r.credentials, request.AttemptID)
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
@@ -856,6 +885,9 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 	if attempt.Start.ExportGitResult {
 		instructions += "\n\nScreenshot output directory (absolute): " + filepath.Join(attempt.Receipt.Workdir, "artifacts", "screenshots") + ". This is rooted at the Git checkout, regardless of your current working directory; never put screenshots inside a provider/module directory.\nScreenshot attachments: save PNG/JPEG images directly in artifacts/screenshots/ using simple filenames (letters, digits, dots, underscores, hyphens). Maximum 8 images, 2 MiB each, 8 MiB total. Reference them in your final response as ![description](artifacts/screenshots/name.png). This folder is exported separately and excluded from new Git changes. Do not commit these images."
 	}
+	if env := r.state.Environments[attempt.Start.EnvironmentID]; env != nil && env.AttemptID == attemptID {
+		instructions += "\n\nWarm development environment lease: this checkout is exclusively assigned to this attempt. Do not run terminal environment cleanup; the runner retains the stack for reuse and runs the repository cleanup hook on expiry. Keep screenshots in artifacts/screenshots. If setup is unhealthy, report it; do not remove unrelated resources.\n"
+	}
 	launch := harness.Launch{
 		AttemptID:       attemptID,
 		Workdir:         attempt.Receipt.Workdir,
@@ -880,13 +912,18 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID string) {
 	defer r.wg.Done()
 	gate := newExecutionGate()
-	result, runErr := r.adapter.Run(ctx, launch, func(event harness.Event) error {
-		if !gate.begin() {
-			return errors.New("harness event arrived after adapter execution ended")
+	result, runErr := func() (harness.Result, error) {
+		if err := r.prepareLeasedEnvironment(ctx, attemptID); err != nil {
+			return harness.Result{}, err
 		}
-		defer gate.end()
-		return r.handleHarnessEvent(attemptID, event)
-	})
+		return r.adapter.Run(ctx, launch, func(event harness.Event) error {
+			if !gate.begin() {
+				return errors.New("harness event arrived after adapter execution ended")
+			}
+			defer gate.end()
+			return r.handleHarnessEvent(attemptID, event)
+		})
+	}()
 	gate.close()
 	r.mu.Lock()
 	// The permission gate and its working clock belong to this execution. Take
@@ -1467,6 +1504,9 @@ func (r *Runner) activeCountLocked() int {
 }
 
 func validateStartRequest(request StartRequest) error {
+	if request.EnvironmentID != "" && (!identifierPattern.MatchString(request.EnvironmentID) || request.WorkspaceID != "") {
+		return errors.New("environmentID requires a repository attempt and must be a runner identifier")
+	}
 	if err := validateProtocolVersion(request.ProtocolVersion); err != nil {
 		return err
 	}
