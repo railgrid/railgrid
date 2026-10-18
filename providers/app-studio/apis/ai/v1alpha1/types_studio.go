@@ -142,6 +142,14 @@ type StudioLLMModel struct {
 	// +kubebuilder:validation:MaxLength=253
 	Model string `json:"model"`
 
+	// ReasoningEffort is the default effort for this model revision. Empty
+	// preserves automatic behavior. Supported values depend on the model and
+	// endpoint; the provider validates them against its reasoning profiles.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^$|^[a-z][a-z0-9_-]*$`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
 	// SecretRef names the Secret holding this model's credential, in the
 	// Studio's own namespace, under the key "apiKey". Revisions of one model
 	// normally share it. A model without one is configured but unusable, and

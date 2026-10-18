@@ -68,6 +68,29 @@ func TestVerifyProjectLLMConnectionCallsConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestVerifyProjectLLMConnectionRejectsUnsupportedReasoningBeforeProviderCall(t *testing.T) {
+	var sawRequest bool
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sawRequest = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	err := verifyProjectLLMConnection(context.Background(), projectLLMSettings{
+		Provider:        defaultProjectLLMProvider,
+		BaseURL:         provider.URL + "/v1",
+		Model:           "gpt-6-luna",
+		ReasoningEffort: "high",
+		APIKey:          "test-key",
+	})
+	if err == nil || !strings.Contains(err.Error(), "reasoning effort") {
+		t.Fatalf("verifyProjectLLMConnection error = %v, want unsupported reasoning validation", err)
+	}
+	if sawRequest {
+		t.Fatal("provider was called with reasoning controls on an unverified custom endpoint")
+	}
+}
+
 func TestVerifyProjectLLMConnectionClassifiesProviderRejection(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

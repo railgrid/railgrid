@@ -122,6 +122,240 @@ func TestAssistantThreadTurnItemContract(t *testing.T) {
 	}
 }
 
+func TestAssistantThreadLatestEventSequenceIsScopeBound(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		new  func(*testing.T) Store
+	}{
+		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "encrypted", new: func(t *testing.T) Store {
+			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return wrapped
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := fixture.new(t)
+			scopeA := Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+			scopeB := Scope{OrgUUID: "org-b", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+			now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+			for _, setup := range []struct {
+				scope  Scope
+				id     string
+				events int
+			}{
+				{scope: scopeA, id: "same-thread", events: 3},
+				{scope: scopeB, id: "same-thread", events: 4},
+				{scope: scopeA, id: "empty-thread", events: 0},
+			} {
+				events := make([]AssistantThreadEvent, setup.events)
+				for index := range events {
+					events[index] = AssistantThreadEvent{Type: "thread.updated", CreatedAt: now}
+				}
+				if _, err := st.CreateAssistantThread(ctx, setup.scope, AssistantThread{
+					ID: setup.id, ActorID: "alice", CreatedAt: now, UpdatedAt: now,
+				}, events); err != nil {
+					t.Fatalf("create %s in %s: %v", setup.id, setup.scope.OrgUUID, err)
+				}
+			}
+			// Retained event windows can contain sequence gaps. The cursor must
+			// report the newest stored sequence, not the event count.
+			var memory *MemoryStore
+			switch wrapped := st.(type) {
+			case *MemoryStore:
+				memory = wrapped
+			case *encryptedStore:
+				memory = wrapped.inner.(*MemoryStore)
+			}
+			if memory == nil {
+				t.Fatal("test fixture does not wrap a memory store")
+			}
+			memory.mu.Lock()
+			events := memory.threadEvents[scopeA]["same-thread"]
+			memory.threadEvents[scopeA]["same-thread"] = append(events[:1], events[2:]...)
+			memory.mu.Unlock()
+
+			for _, check := range []struct {
+				scope Scope
+				id    string
+				want  int64
+			}{
+				{scope: scopeA, id: "same-thread", want: 3},
+				{scope: scopeB, id: "same-thread", want: 4},
+				{scope: scopeA, id: "empty-thread", want: 0},
+			} {
+				got, err := st.LatestAssistantThreadEventSequence(ctx, check.scope, check.id)
+				if err != nil || got != check.want {
+					t.Fatalf("latest sequence for %s in %s = %d, %v; want %d", check.id, check.scope.OrgUUID, got, err, check.want)
+				}
+			}
+			if _, err := st.LatestAssistantThreadEventSequence(ctx, scopeA, "missing-thread"); !errors.Is(err, ErrAssistantThreadNotFound) {
+				t.Fatalf("missing-thread latest sequence error = %v, want ErrAssistantThreadNotFound", err)
+			}
+		})
+	}
+}
+
+func TestMemoryAssistantThreadWritesContinueAfterSparseSequence(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	thread, err := memory.CreateAssistantThread(ctx, scope, AssistantThread{
+		ID: "thread-sparse", ActorID: "alice", CreatedAt: now, UpdatedAt: now,
+	}, []AssistantThreadEvent{
+		{Type: "thread.created", CreatedAt: now},
+		{Type: "thread.updated", CreatedAt: now},
+		{Type: "thread.updated", CreatedAt: now},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Retention may remove an event without renumbering later events.
+	memory.mu.Lock()
+	events := memory.threadEvents[scope][thread.ID]
+	memory.threadEvents[scope][thread.ID] = append(events[:1], events[2:]...)
+	memory.mu.Unlock()
+
+	sequence, err := memory.LatestAssistantThreadEventSequence(ctx, scope, thread.ID)
+	if err != nil || sequence != 3 {
+		t.Fatalf("sparse stream high-water mark = %d, %v; want 3", sequence, err)
+	}
+	thread, err = memory.GetAssistantThread(ctx, scope, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread.UpdatedAt = now.Add(time.Millisecond)
+	thread, event, err := memory.UpdateAssistantThreadWithEvent(ctx, scope, thread, AssistantThreadEvent{Type: "thread.updated"}, sequence)
+	if err != nil || event.Sequence != 4 {
+		t.Fatalf("projection update after retention = sequence %d, %v; want 4", event.Sequence, err)
+	}
+	if _, _, err := memory.UpdateAssistantThreadWithEvent(ctx, scope, thread, AssistantThreadEvent{Type: "thread.updated"}, sequence); !errors.Is(err, ErrAssistantThreadEventConflict) {
+		t.Fatalf("stale sparse-stream projection error = %v, want event conflict", err)
+	}
+	created, err := memory.AppendAssistantThreadEvent(ctx, scope, AssistantThreadEvent{ThreadID: thread.ID, Type: "thread.updated"}, 4)
+	if err != nil || created.Sequence != 5 {
+		t.Fatalf("append after sparse projection = sequence %d, %v; want 5", created.Sequence, err)
+	}
+
+	turn, err := memory.CreateAssistantTurn(ctx, scope, AssistantTurn{
+		ID: "turn-sparse", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-sparse",
+		Mode: AssistantRunModeDefault, Status: AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now,
+	}, []AssistantThreadEvent{{Type: "turn.started", CreatedAt: now}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn.Status = AssistantTurnStatusCompleted
+	turn.UpdatedAt = now.Add(time.Second)
+	if err := memory.SaveAssistantTurnWithEvent(ctx, scope, turn, AssistantThreadEvent{Type: "turn.completed"}, 6); err != nil {
+		t.Fatalf("save turn after sparse stream: %v", err)
+	}
+	if _, changed, err := memory.SetAssistantThreadTitleIfEmpty(ctx, scope, thread.ID, "alice", "Sparse Sequence", AssistantThreadEvent{Type: "thread.updated"}); err != nil || !changed {
+		t.Fatalf("set title after sparse stream = changed:%t err:%v; want success", changed, err)
+	}
+
+	got, err := memory.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSequences := []int64{1, 3, 4, 5, 6, 7, 8}
+	if len(got) != len(wantSequences) {
+		t.Fatalf("sparse thread events = %#v, want sequences %v", got, wantSequences)
+	}
+	for index, want := range wantSequences {
+		if got[index].Sequence != want {
+			t.Fatalf("event %d sequence = %d, want %d", index, got[index].Sequence, want)
+		}
+	}
+}
+
+func TestAssistantThreadReasoningPreferencesRoundTripAndCopy(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		new  func(*testing.T) Store
+	}{
+		{name: "memory", new: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "encrypted", new: func(t *testing.T) Store {
+			wrapped, err := NewEncryptedStore(NewMemoryStore(), testEncryptionKeys(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return wrapped
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := fixture.new(t)
+			scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+			now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+			initial := map[string]string{"model-a": "high"}
+			thread, err := s.CreateAssistantThread(ctx, scope, AssistantThread{
+				ID: "thread-reasoning", ActorID: "alice", ReasoningEffortByModel: initial, CreatedAt: now, UpdatedAt: now,
+			}, []AssistantThreadEvent{{Type: "thread.created", Payload: json.RawMessage(`{"thread":{"reasoningEffortByModel":{"model-a":"high"}}}`), CreatedAt: now}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			initial["model-a"] = "none"
+			thread.ReasoningEffortByModel["model-a"] = "low"
+
+			stored, err := s.GetAssistantThread(ctx, scope, thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.ReasoningEffortByModel["model-a"] != "high" {
+				t.Fatalf("stored map after caller mutation = %#v, want high", stored.ReasoningEffortByModel)
+			}
+			stored.ReasoningEffortByModel["model-a"] = "none"
+			listed, err := s.ListAssistantThreads(ctx, scope, "alice", true, 10, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(listed.Items) != 1 || listed.Items[0].ReasoningEffortByModel["model-a"] != "high" {
+				t.Fatalf("listed thread = %#v, want an independent high preference", listed.Items)
+			}
+
+			updateInput, err := s.GetAssistantThread(ctx, scope, thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updateInput.ReasoningEffortByModel["model-b"] = "none"
+			payload, err := json.Marshal(map[string]any{"thread": updateInput})
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, event, err := s.UpdateAssistantThreadWithEvent(ctx, scope, updateInput, AssistantThreadEvent{Type: "thread.updated", Payload: payload}, 1)
+			if err != nil {
+				t.Fatalf("UpdateAssistantThreadWithEvent: %v", err)
+			}
+			if updated.ReasoningEffortByModel["model-a"] != "high" || updated.ReasoningEffortByModel["model-b"] != "none" {
+				t.Fatalf("updated map = %#v", updated.ReasoningEffortByModel)
+			}
+			updated.ReasoningEffortByModel["model-a"] = "low"
+			updated.ReasoningEffortByModel["model-b"] = "low"
+			storedAfterUpdate, err := s.GetAssistantThread(ctx, scope, thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if storedAfterUpdate.ReasoningEffortByModel["model-a"] != "high" || storedAfterUpdate.ReasoningEffortByModel["model-b"] != "none" {
+				t.Fatalf("stored map after updated response mutation = %#v, want high/none", storedAfterUpdate.ReasoningEffortByModel)
+			}
+			var projection struct {
+				Thread AssistantThread `json:"thread"`
+			}
+			if err := json.Unmarshal(event.Payload, &projection); err != nil {
+				t.Fatalf("decode update event: %v", err)
+			}
+			if projection.Thread.ReasoningEffortByModel["model-a"] != "high" || projection.Thread.ReasoningEffortByModel["model-b"] != "none" {
+				t.Fatalf("update event map = %#v", projection.Thread.ReasoningEffortByModel)
+			}
+		})
+	}
+}
+
 func TestAssistantThreadTurnEventWindowExcludesThreadMetadata(t *testing.T) {
 	for _, fixture := range []struct {
 		name string
@@ -703,7 +937,7 @@ func TestEncryptedStoreSetAssistantThreadTitleIfEmptyProtectsTitleAndEvent(t *te
 		t.Fatal(err)
 	}
 	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
-	thread, err := wrapper.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-encrypted-title", ActorID: "alice"}, []AssistantThreadEvent{{Type: "thread.created"}})
+	thread, err := wrapper.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-encrypted-title", ActorID: "alice", ReasoningEffortByModel: map[string]string{"model-a": "high"}}, []AssistantThreadEvent{{Type: "thread.created"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,6 +954,19 @@ func TestEncryptedStoreSetAssistantThreadTitleIfEmptyProtectsTitleAndEvent(t *te
 	events, err := wrapper.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 10)
 	if err != nil || len(events) != 2 || !bytes.Contains(events[1].Payload, []byte("Private generated title")) {
 		t.Fatalf("decrypted title event = %#v err=%v", events, err)
+	}
+	var projection struct {
+		Thread map[string]json.RawMessage `json:"thread"`
+	}
+	if err := json.Unmarshal(events[1].Payload, &projection); err != nil {
+		t.Fatalf("decode title event projection: %v", err)
+	}
+	if _, included := projection.Thread["reasoningEffortByModel"]; included {
+		t.Fatalf("title-only event emitted a whole reasoning map: %#v", projection.Thread)
+	}
+	updated, err := wrapper.GetAssistantThread(ctx, scope, thread.ID)
+	if err != nil || updated.ReasoningEffortByModel["model-a"] != "high" {
+		t.Fatalf("title update changed stored preference: %#v err=%v", updated.ReasoningEffortByModel, err)
 	}
 }
 

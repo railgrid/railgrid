@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/railgrid/provider-sdk/modelcatalog"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,7 +100,7 @@ func (r *Reconciler) checkLLMRegistry(ctx context.Context, c client.Client, st *
 	// Structure is sound; now ask whether each active model can actually run.
 	models := make([]aiv1alpha1.StudioLLMModelStatus, 0, len(registry.Models))
 	seen := map[string]struct{}{}
-	var missing, incomplete []string
+	var missing, incomplete, invalidReasoning []string
 	for _, model := range registry.Models {
 		if model.Archived {
 			continue
@@ -108,6 +109,10 @@ func (r *Reconciler) checkLLMRegistry(ctx context.Context, c client.Client, st *
 			continue
 		}
 		seen[model.ID] = struct{}{}
+
+		if err := modelcatalog.ValidateReasoningEffort(model.Provider, model.BaseURL, model.Model, model.ReasoningEffort); err != nil {
+			invalidReasoning = append(invalidReasoning, model.ID)
+		}
 
 		configured, state := r.credentialState(ctx, c, st.Namespace, model)
 		switch state {
@@ -119,8 +124,12 @@ func (r *Reconciler) checkLLMRegistry(ctx context.Context, c client.Client, st *
 		models = append(models, aiv1alpha1.StudioLLMModelStatus{ID: model.ID, Configured: configured})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	sort.Strings(invalidReasoning)
 
 	switch {
+	case len(invalidReasoning) > 0:
+		return llmRegistryResult{models: models, condition: condition(metav1.ConditionFalse, "ReasoningEffortInvalid",
+			fmt.Sprintf("These models have an invalid reasoning-effort default: %s.", strings.Join(invalidReasoning, ", ")))}
 	case len(missing) > 0:
 		return llmRegistryResult{models: models, condition: condition(metav1.ConditionFalse, "SecretMissing",
 			fmt.Sprintf("These models name a credential Secret that does not exist: %s.", strings.Join(missing, ", ")))}

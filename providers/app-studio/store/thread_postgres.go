@@ -39,6 +39,10 @@ func (s *PostgresStore) CreateAssistantThread(ctx context.Context, scope Scope, 
 		return AssistantThread{}, err
 	}
 	preparedActor := prepared.ActorID
+	reasoningEffortByModel, err := encodeAssistantThreadReasoningEffortByModel(prepared.ReasoningEffortByModel)
+	if err != nil {
+		return AssistantThread{}, fmt.Errorf("encode assistant thread reasoning preferences: %w", err)
+	}
 	preparedEvents := make([]AssistantThreadEvent, len(events))
 	for index, event := range events {
 		event.ThreadID = prepared.ID
@@ -54,17 +58,22 @@ func (s *PostgresStore) CreateAssistantThread(ctx context.Context, scope Scope, 
 	}
 	defer func() { _ = tx.Rollback() }()
 	row := tx.QueryRowContext(ctx, `INSERT INTO app_studio_assistant_threads (
-		org_uuid, workspace_uuid, project_name, project_uid, thread_id, title, status, actor_id, created_at, updated_at
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		org_uuid, workspace_uuid, project_name, project_uid, thread_id, title, status, actor_id, created_at, updated_at, reasoning_effort_by_model
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
 	ON CONFLICT (org_uuid, workspace_uuid, project_name, project_uid, thread_id) DO UPDATE SET thread_id=EXCLUDED.thread_id
-	RETURNING title,status,actor_id,created_at,updated_at`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
-		prepared.ID, prepared.Title, prepared.Status, prepared.ActorID, prepared.CreatedAt, prepared.UpdatedAt)
+	RETURNING title,status,actor_id,created_at,updated_at,reasoning_effort_by_model`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		prepared.ID, prepared.Title, prepared.Status, prepared.ActorID, prepared.CreatedAt, prepared.UpdatedAt, string(reasoningEffortByModel))
 	var status string
-	if err := row.Scan(&prepared.Title, &status, &prepared.ActorID, &prepared.CreatedAt, &prepared.UpdatedAt); err != nil {
+	var reasoningEffortByModelJSON []byte
+	if err := row.Scan(&prepared.Title, &status, &prepared.ActorID, &prepared.CreatedAt, &prepared.UpdatedAt, &reasoningEffortByModelJSON); err != nil {
 		return AssistantThread{}, fmt.Errorf("create assistant thread: %w", err)
 	}
 	prepared.Status = AssistantThreadStatus(status)
 	prepared.CreatedAt, prepared.UpdatedAt = prepared.CreatedAt.UTC(), prepared.UpdatedAt.UTC()
+	prepared.ReasoningEffortByModel, err = decodeAssistantThreadReasoningEffortByModel(reasoningEffortByModelJSON)
+	if err != nil {
+		return AssistantThread{}, err
+	}
 	if prepared.ActorID != preparedActor {
 		return AssistantThread{}, ErrAssistantThreadConflict
 	}
@@ -88,10 +97,11 @@ func (s *PostgresStore) GetAssistantThread(ctx context.Context, scope Scope, thr
 	}
 	thread := AssistantThread{ID: strings.TrimSpace(threadID)}
 	var status string
-	err := s.db.QueryRowContext(ctx, `SELECT title,status,actor_id,created_at,updated_at FROM app_studio_assistant_threads
+	var reasoningEffortByModelJSON []byte
+	err := s.db.QueryRowContext(ctx, `SELECT title,status,actor_id,created_at,updated_at,reasoning_effort_by_model FROM app_studio_assistant_threads
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, thread.ID,
-	).Scan(&thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt)
+	).Scan(&thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt, &reasoningEffortByModelJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AssistantThread{}, ErrAssistantThreadNotFound
 	}
@@ -100,7 +110,35 @@ func (s *PostgresStore) GetAssistantThread(ctx context.Context, scope Scope, thr
 	}
 	thread.Status = AssistantThreadStatus(status)
 	thread.CreatedAt, thread.UpdatedAt = thread.CreatedAt.UTC(), thread.UpdatedAt.UTC()
+	thread.ReasoningEffortByModel, err = decodeAssistantThreadReasoningEffortByModel(reasoningEffortByModelJSON)
+	if err != nil {
+		return AssistantThread{}, err
+	}
 	return thread, nil
+}
+
+func (s *PostgresStore) LatestAssistantThreadEventSequence(ctx context.Context, scope Scope, threadID string) (int64, error) {
+	if err := scope.validate(); err != nil {
+		return 0, err
+	}
+	threadID = strings.TrimSpace(threadID)
+	var sequence int64
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE((
+		SELECT sequence FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
+		ORDER BY sequence DESC LIMIT 1
+	), 0), EXISTS (
+		SELECT 1 FROM app_studio_assistant_threads
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
+	)`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).Scan(&sequence, &exists)
+	if err != nil {
+		return 0, fmt.Errorf("get latest assistant thread event sequence: %w", err)
+	}
+	if !exists {
+		return 0, ErrAssistantThreadNotFound
+	}
+	return sequence, nil
 }
 
 func (s *PostgresStore) ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error) {
@@ -112,7 +150,7 @@ func (s *PostgresStore) ListAssistantThreads(ctx context.Context, scope Scope, a
 	if err != nil {
 		return AssistantThreadPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT thread_id,title,status,actor_id,created_at,updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT thread_id,title,status,actor_id,created_at,updated_at,reasoning_effort_by_model
 		FROM app_studio_assistant_threads WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND actor_id=$5
 		AND ($6 OR status <> 'archived') AND ($7::timestamptz IS NULL OR updated_at < $7 OR (updated_at=$7 AND thread_id < $8))
 		ORDER BY updated_at DESC, thread_id DESC LIMIT $9`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
@@ -127,11 +165,16 @@ func (s *PostgresStore) ListAssistantThreads(ctx context.Context, scope Scope, a
 	for rows.Next() {
 		var thread AssistantThread
 		var status string
-		if err := rows.Scan(&thread.ID, &thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt); err != nil {
+		var reasoningEffortByModelJSON []byte
+		if err := rows.Scan(&thread.ID, &thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt, &reasoningEffortByModelJSON); err != nil {
 			return AssistantThreadPage{}, fmt.Errorf("scan assistant thread: %w", err)
 		}
 		thread.Status = AssistantThreadStatus(status)
 		thread.CreatedAt, thread.UpdatedAt = thread.CreatedAt.UTC(), thread.UpdatedAt.UTC()
+		thread.ReasoningEffortByModel, err = decodeAssistantThreadReasoningEffortByModel(reasoningEffortByModelJSON)
+		if err != nil {
+			return AssistantThreadPage{}, err
+		}
 		page.Items = append(page.Items, thread)
 	}
 	if err := rows.Err(); err != nil {
@@ -160,10 +203,14 @@ func (s *PostgresStore) UpdateAssistantThread(ctx context.Context, scope Scope, 
 	if err != nil {
 		return AssistantThread{}, err
 	}
-	row := s.db.QueryRowContext(ctx, `UPDATE app_studio_assistant_threads SET title=$6,status=$7,updated_at=$8
+	reasoningEffortByModel, err := encodeAssistantThreadReasoningEffortByModel(prepared.ReasoningEffortByModel)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	row := s.db.QueryRowContext(ctx, `UPDATE app_studio_assistant_threads SET title=$6,status=$7,updated_at=$8,reasoning_effort_by_model=$10::jsonb
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND actor_id=$9
 		RETURNING created_at`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, prepared.ID,
-		prepared.Title, prepared.Status, prepared.UpdatedAt, prepared.ActorID)
+		prepared.Title, prepared.Status, prepared.UpdatedAt, prepared.ActorID, string(reasoningEffortByModel))
 	if err := row.Scan(&prepared.CreatedAt); errors.Is(err, sql.ErrNoRows) {
 		return AssistantThread{}, ErrAssistantThreadNotFound
 	} else if err != nil {
@@ -202,17 +249,22 @@ func (s *PostgresStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, scop
 	}
 	thread := AssistantThread{ID: threadID}
 	var status string
-	if err := tx.QueryRowContext(ctx, `SELECT title,status,actor_id,created_at,updated_at
+	var reasoningEffortByModelJSON []byte
+	if err := tx.QueryRowContext(ctx, `SELECT title,status,actor_id,created_at,updated_at,reasoning_effort_by_model
 		FROM app_studio_assistant_threads
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
 		FOR UPDATE`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).
-		Scan(&thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt); errors.Is(err, sql.ErrNoRows) {
+		Scan(&thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt, &reasoningEffortByModelJSON); errors.Is(err, sql.ErrNoRows) {
 		return AssistantThread{}, false, ErrAssistantThreadNotFound
 	} else if err != nil {
 		return AssistantThread{}, false, fmt.Errorf("load assistant thread title: %w", err)
 	}
 	thread.Status = AssistantThreadStatus(status)
 	thread.CreatedAt, thread.UpdatedAt = thread.CreatedAt.UTC(), thread.UpdatedAt.UTC()
+	thread.ReasoningEffortByModel, err = decodeAssistantThreadReasoningEffortByModel(reasoningEffortByModelJSON)
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
 	if thread.ActorID != actorID {
 		return AssistantThread{}, false, ErrAssistantThreadConflict
 	}
@@ -220,12 +272,12 @@ func (s *PostgresStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, scop
 		if err := tx.Commit(); err != nil {
 			return AssistantThread{}, false, fmt.Errorf("commit unchanged assistant thread title: %w", err)
 		}
-		return thread, false, nil
+		return cloneAssistantThread(thread), false, nil
 	}
 	thread.Title = title
 	thread.UpdatedAt = time.Now().UTC()
 	if len(preparedEvent.Payload) == 0 || string(preparedEvent.Payload) == "{}" {
-		preparedEvent.Payload, err = json.Marshal(map[string]any{"thread": AssistantThread{ID: thread.ID, Title: title, Status: thread.Status, ActorID: thread.ActorID, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt}})
+		preparedEvent.Payload, err = json.Marshal(map[string]any{"thread": map[string]any{"id": thread.ID, "title": title}})
 		if err != nil {
 			return AssistantThread{}, false, fmt.Errorf("encode assistant thread title event: %w", err)
 		}
@@ -255,7 +307,7 @@ func (s *PostgresStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, scop
 	if err := tx.Commit(); err != nil {
 		return AssistantThread{}, false, fmt.Errorf("commit assistant thread title: %w", err)
 	}
-	return thread, true, nil
+	return cloneAssistantThread(thread), true, nil
 }
 
 func (s *PostgresStore) DeleteAssistantThread(ctx context.Context, scope Scope, threadID, actorID string) error {
@@ -378,10 +430,14 @@ func (s *PostgresStore) UpdateAssistantThreadWithEvent(ctx context.Context, scop
 	if current != expectedSequence {
 		return AssistantThread{}, AssistantThreadEvent{}, ErrAssistantThreadEventConflict
 	}
-	row := tx.QueryRowContext(ctx, `UPDATE app_studio_assistant_threads SET title=$6,status=$7,updated_at=$8
+	reasoningEffortByModel, err := encodeAssistantThreadReasoningEffortByModel(prepared.ReasoningEffortByModel)
+	if err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, fmt.Errorf("encode assistant thread reasoning preferences: %w", err)
+	}
+	row := tx.QueryRowContext(ctx, `UPDATE app_studio_assistant_threads SET title=$6,status=$7,updated_at=$8,reasoning_effort_by_model=$10::jsonb
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND actor_id=$9
 		RETURNING created_at`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, prepared.ID,
-		prepared.Title, prepared.Status, prepared.UpdatedAt, prepared.ActorID)
+		prepared.Title, prepared.Status, prepared.UpdatedAt, prepared.ActorID, string(reasoningEffortByModel))
 	if err := row.Scan(&prepared.CreatedAt); errors.Is(err, sql.ErrNoRows) {
 		return AssistantThread{}, AssistantThreadEvent{}, ErrAssistantThreadNotFound
 	} else if err != nil {
@@ -422,6 +478,12 @@ func (s *PostgresStore) CreateAssistantTurn(ctx context.Context, scope Scope, tu
 		return AssistantTurn{}, fmt.Errorf("begin create assistant turn: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Thread projection updates and event appends use this advisory lock. Take
+	// it before locking the thread row so their sequence read and event insert
+	// cannot race this transaction's turn-start events.
+	if err := lockPostgresAssistantThread(ctx, tx, scope, prepared.ThreadID); err != nil {
+		return AssistantTurn{}, fmt.Errorf("lock assistant thread turn creation: %w", err)
+	}
 	var owner string
 	if err := tx.QueryRowContext(ctx, `SELECT actor_id FROM app_studio_assistant_threads
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 FOR UPDATE`,

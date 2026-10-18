@@ -1,0 +1,174 @@
+{
+  "cases": [
+    {
+      "name": "missing provider and base URL use official defaults",
+      "official": true
+    },
+    {
+      "name": "blank provider and base URL use official defaults",
+      "provider": "",
+      "baseURL": "",
+      "official": true
+    },
+    {
+      "name": "provider and URL are trimmed and case insensitive",
+      "provider": " OPENAI-COMPATIBLE ",
+      "baseURL": " HTTPS://API.OPENAI.COM:443/v1/ ",
+      "official": true
+    },
+    {
+      "name": "official URL with explicit default port",
+      "provider": "openai-compatible",
+      "baseURL": "https://api.openai.com:443/v1",
+      "official": true
+    },
+    {
+      "name": "official URL without explicit port",
+      "provider": "openai-compatible",
+      "baseURL": "https://api.openai.com/v1",
+      "official": true
+    },
+    {
+      "name": "official URL with trailing slash",
+      "baseURL": "https://api.openai.com/v1/",
+      "official": true
+    },
+    {
+      "name": "wrong provider",
+      "provider": "azure-openai",
+      "baseURL": "https://api.openai.com/v1",
+      "official": false
+    },
+    {
+      "name": "custom compatible endpoint",
+      "provider": "openai-compatible",
+      "baseURL": "https://llm.example.test/v1",
+      "official": false
+    },
+    {
+      "name": "OpenAI host suffix",
+      "baseURL": "https://api.openai.com.evil.test/v1",
+      "official": false
+    },
+    {
+      "name": "OpenAI subdomain",
+      "baseURL": "https://gateway.api.openai.com/v1",
+      "official": false
+    },
+    {
+      "name": "OpenAI host trailing dot",
+      "baseURL": "https://api.openai.com./v1",
+      "official": false
+    },
+    {
+      "name": "username credentials",
+      "baseURL": "https://user@api.openai.com/v1",
+      "official": false
+    },
+    {
+      "name": "username and password credentials",
+      "baseURL": "https://user:pass@api.openai.com/v1",
+      "official": false
+    },
+    {
+      "name": "empty username credentials",
+      "baseURL": "https://@api.openai.com/v1",
+      "official": false
+    },
+    {
+      "name": "official host as credentials for another authority",
+      "baseURL": "https://api.openai.com@evil.test/v1",
+      "official": false
+    },
+    {
+      "name": "empty port",
+      "baseURL": "https://api.openai.com:/v1",
+      "official": false
+    },
+    {
+      "name": "non-default port",
+      "baseURL": "https://api.openai.com:8443/v1",
+      "official": false
+    },
+    {
+      "name": "default port with leading zero",
+      "baseURL": "https://api.openai.com:0443/v1",
+      "official": false
+    },
+    {
+      "name": "malformed port",
+      "baseURL": "https://api.openai.com:abc/v1",
+      "official": false
+    },
+    {
+      "name": "missing authority",
+      "baseURL": "https:///v1",
+      "official": false
+    },
+    {
+      "name": "missing version path",
+      "baseURL": "https://api.openai.com",
+      "official": false
+    },
+    {
+      "name": "root path",
+      "baseURL": "https://api.openai.com/",
+      "official": false
+    },
+    {
+      "name": "wrong version path",
+      "baseURL": "https://api.openai.com/v2",
+      "official": false
+    },
+    {
+      "name": "proxy path",
+      "baseURL": "https://api.openai.com/proxy/v1",
+      "official": false
+    },
+    {
+      "name": "responses path",
+      "baseURL": "https://api.openai.com/v1/responses",
+      "official": false
+    },
+    {
+      "name": "dot segment path",
+      "baseURL": "https://api.openai.com/proxy/../v1",
+      "official": false
+    },
+    {
+      "name": "encoded dot segment path",
+      "baseURL": "https://api.openai.com/v1/%2e%2e/v1",
+      "official": false
+    },
+    {
+      "name": "escaped version path",
+      "baseURL": "https://api.openai.com/%76%31",
+      "official": false
+    },
+    {
+      "name": "query string",
+      "baseURL": "https://api.openai.com/v1?proxy=1",
+      "official": false
+    },
+    {
+      "name": "empty query marker",
+      "baseURL": "https://api.openai.com/v1?",
+      "official": false
+    },
+    {
+      "name": "fragment",
+      "baseURL": "https://api.openai.com/v1#section",
+      "official": false
+    },
+    {
+      "name": "empty fragment marker",
+      "baseURL": "https://api.openai.com/v1#",
+      "official": false
+    },
+    {
+      "name": "HTTP scheme",
+      "baseURL": "http://api.openai.com/v1",
+      "official": false
+    }
+  ]
+}

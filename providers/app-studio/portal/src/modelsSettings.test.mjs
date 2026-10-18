@@ -443,24 +443,22 @@ test('model creation replaces its route entry and nested navigation accepts repl
   assert.match(pageElement, /detail: \{ path, \.\.\.\(options\.replace === true \? \{ replace: true \} : \{\}\) \}/)
 })
 
-test('composer exposes the configured model picker and sends its stable ID', async () => {
+test('composer exposes the configured model and reasoning picker and sends stable selections', async () => {
   const [app, picker] = await Promise.all([
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./agentkit/AIModelPicker.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIModelReasoningPicker.vue', import.meta.url), 'utf8'),
   ])
-  assert.match(app, /<template #actions>[\s\S]*<ModelPicker[\s\S]*:models="configuredLLMModels"[\s\S]*@select="selectedLLMModelID = \$event"/)
-  assert.match(app, /const startOperation = \{[\s\S]*modelID: selectedLLMModelID\.value/)
+  assert.match(app, /<template #actions>[\s\S]*<AIModelReasoningPicker[\s\S]*:models="configuredLLMModels"[\s\S]*:selected-i-d="selectedLLMModel\?\.id \|\| ''"[\s\S]*:effort="assistantReasoningEffort"[\s\S]*@select="selectedLLMModelID = \$event"[\s\S]*@update:effort="selectAssistantReasoningEffort"/)
+  assert.match(app, /const startOperation = \{[\s\S]*modelID: requestedModelID[\s\S]*reasoningEffort: requestedReasoningEffort/)
   assert.match(app, /startAssistantTurn[\s\S]*modelID: payload\.modelID/)
   assert.match(app, /startAssistantReview[\s\S]*modelID: payload\.modelID/)
-  assert.match(picker, /aria-label="Choose model"/)
-  assert.match(picker, /aria-haspopup="listbox"/)
-  assert.match(picker, /role="combobox"/)
-  assert.match(picker, /:aria-activedescendant="open \? activeOptionID : undefined"/)
+  assert.match(picker, /data-testid="model-reasoning-trigger"/)
+  assert.match(picker, /data-testid="reasoning-model-list"/)
   assert.match(picker, /@keydown="handleTriggerKeydown"/)
   assert.match(picker, /event\.key === 'ArrowDown' \|\| event\.key === 'ArrowUp'/)
   assert.match(picker, /event\.key === 'Home' \|\| event\.key === 'End'/)
   assert.match(picker, /event\.key === 'Escape'/)
-  assert.match(picker, /event\.key === 'Tab' && open\.value[\s\S]*closePicker\(false\)/)
+  assert.match(picker, /event\.key === 'Tab'[\s\S]*closePicker\(false\)/)
   assert.match(picker, /role="option"[\s\S]*tabindex="-1"/)
   assert.match(picker, /triggerRef\.value\?\.focus\(\{ preventScroll: true \}\)/)
   assert.doesNotMatch(picker, /document\.addEventListener\('keydown'/)

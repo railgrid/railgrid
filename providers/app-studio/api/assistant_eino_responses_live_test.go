@@ -46,12 +46,13 @@ func TestProjectEinoResponsesLiveToolRoundTrip(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	model, err := newProjectEinoChatModel(ctx, projectLLMSettings{
+	settings := projectLLMSettings{
 		Provider: defaultProjectLLMProvider,
 		BaseURL:  "https://api.openai.com/v1",
 		Model:    modelName,
 		APIKey:   apiKey,
-	})
+	}
+	model, err := newProjectEinoChatModel(ctx, settings)
 	if err != nil {
 		t.Fatalf("create live model: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestProjectEinoResponsesLiveToolRoundTrip(t *testing.T) {
 		schema.SystemMessage("Call read_smoke_value with key smoke exactly once. After receiving its result, reply with only the returned value, without quotes or commentary."),
 		schema.UserMessage(prompt),
 	}
-	opts := append(projectMaxTokensOptions(modelName, 4096),
+	opts := append(projectMaxTokensOptionsForSettings(settings, 4096),
 		einomodel.WithTools(tools),
 		einomodel.WithToolChoice(schema.ToolChoiceForced, toolName),
 	)
@@ -189,7 +190,7 @@ func TestProjectEinoResponsesLiveToolRoundTrip(t *testing.T) {
 		t.Fatalf("serialize smoke tool result: %v", err)
 	}
 	restored = append(restored, schema.ToolMessage(string(result), call.ID, schema.WithToolName(toolName)))
-	opts = append(projectMaxTokensOptions(modelName, 4096),
+	opts = append(projectMaxTokensOptionsForSettings(settings, 4096),
 		einomodel.WithTools([]*schema.ToolInfo{tool}),
 		einomodel.WithToolChoice(schema.ToolChoiceForbidden),
 	)

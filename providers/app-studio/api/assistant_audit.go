@@ -281,6 +281,9 @@ func projectAssistantAuditApplyEffectiveSettings(audit *projectAssistantRunAudit
 	if strings.TrimSpace(settings.Model) == "" {
 		settings.Model = projectAssistantAuditString(audit.Model, projectAssistantAuditMaxSummaryLen)
 	}
+	if audit.Reasoning != nil {
+		settings.Reasoning = cloneProjectAssistantAuditReasoning(audit.Reasoning)
+	}
 	if strings.TrimSpace(settings.OptimizationMode) == "" {
 		if req.Continuation != nil {
 			settings.OptimizationMode = projectEinoAssistantNormalizeOptimizationMode(req.Continuation.AgentOptimizationMode)
@@ -322,6 +325,9 @@ func projectAssistantAuditRefreshEffectiveSettings(audit *projectAssistantRunAud
 	}
 	if settings.Model == "" {
 		settings.Model = projectAssistantAuditString(audit.Model, projectAssistantAuditMaxSummaryLen)
+	}
+	if audit.Reasoning != nil {
+		settings.Reasoning = cloneProjectAssistantAuditReasoning(audit.Reasoning)
 	}
 	settings.OptimizationMode = projectEinoAssistantNormalizeOptimizationMode(settings.OptimizationMode)
 	settings.ToolContractDigest = projectAssistantAuditString(settings.ToolContractDigest, projectAssistantAuditMaxSummaryLen)
@@ -755,7 +761,7 @@ func projectAssistantAuditToolProtocolForModel(settings projectLLMSettings) proj
 	if provider != "" && provider != defaultProjectLLMProvider {
 		return projectAssistantAuditToolProtocolUnsupported
 	}
-	if projectModelUsesResponsesAPI(settings.Model) {
+	if projectLLMUsesResponsesAPI(settings) {
 		return projectAssistantAuditToolProtocolResponses
 	}
 	return projectAssistantAuditToolProtocolChat

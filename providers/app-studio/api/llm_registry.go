@@ -32,6 +32,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-app-studio/store"
 )
 
 const (
@@ -40,41 +41,47 @@ const (
 	projectLLMMaxStoredRevisions   = 200
 )
 
+var errProjectLLMModelNotFound = newValidationError("selected model configuration was not found")
+
 var projectLLMModelIDInvalid = regexp.MustCompile(`[^a-z0-9]+`)
 
 type ProjectLLMModelView struct {
-	Catalog    *modelcatalog.ModelInfo `json:"catalog,omitempty"`
-	ID         string                  `json:"id"`
-	Name       string                  `json:"name"`
-	Provider   string                  `json:"provider"`
-	BaseURL    string                  `json:"baseURL"`
-	Model      string                  `json:"model"`
-	Configured bool                    `json:"configured"`
-	Default    bool                    `json:"default,omitempty"`
+	Catalog         *modelcatalog.ModelInfo `json:"catalog,omitempty"`
+	ID              string                  `json:"id"`
+	Name            string                  `json:"name"`
+	Provider        string                  `json:"provider"`
+	BaseURL         string                  `json:"baseURL"`
+	Model           string                  `json:"model"`
+	ReasoningEffort string                  `json:"reasoningEffort,omitempty"`
+	Configured      bool                    `json:"configured"`
+	Default         bool                    `json:"default,omitempty"`
 }
 
 type CreateProjectLLMModelRequest struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider,omitempty"`
-	BaseURL  string `json:"baseURL,omitempty"`
-	Model    string `json:"model"`
-	APIKey   string `json:"apiKey"`
-}
-
-type TestProjectLLMConnectionRequest struct {
-	ExistingModelID string `json:"existingModelID,omitempty"`
+	Name            string `json:"name"`
 	Provider        string `json:"provider,omitempty"`
 	BaseURL         string `json:"baseURL,omitempty"`
 	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	APIKey          string `json:"apiKey"`
 }
 
+type TestProjectLLMConnectionRequest struct {
+	ExistingModelID string  `json:"existingModelID,omitempty"`
+	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
+	Provider        string  `json:"provider,omitempty"`
+	BaseURL         string  `json:"baseURL,omitempty"`
+	Model           string  `json:"model"`
+	APIKey          string  `json:"apiKey"`
+}
+
 type PatchProjectLLMModelRequest struct {
-	Name     *string `json:"name,omitempty"`
-	Provider *string `json:"provider,omitempty"`
-	BaseURL  *string `json:"baseURL,omitempty"`
-	Model    *string `json:"model,omitempty"`
-	APIKey   *string `json:"apiKey,omitempty"`
+	Name            *string `json:"name,omitempty"`
+	Provider        *string `json:"provider,omitempty"`
+	BaseURL         *string `json:"baseURL,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
+	APIKey          *string `json:"apiKey,omitempty"`
 }
 
 type SetDefaultProjectLLMModelRequest struct {
@@ -175,14 +182,15 @@ func (r projectLLMRegistry) view() ProjectLLMSettingsView {
 			catalog = &entry
 		}
 		views = append(views, ProjectLLMModelView{
-			Catalog:    catalog,
-			ID:         model.ID,
-			Name:       model.Name,
-			Provider:   model.Settings.Provider,
-			BaseURL:    model.Settings.BaseURL,
-			Model:      model.Settings.Model,
-			Configured: strings.TrimSpace(model.Settings.APIKey) != "",
-			Default:    model.ID == r.DefaultModelID,
+			Catalog:         catalog,
+			ID:              model.ID,
+			Name:            model.Name,
+			Provider:        model.Settings.Provider,
+			BaseURL:         model.Settings.BaseURL,
+			Model:           model.Settings.Model,
+			ReasoningEffort: model.Settings.ReasoningEffort,
+			Configured:      strings.TrimSpace(model.Settings.APIKey) != "",
+			Default:         model.ID == r.DefaultModelID,
 		})
 	}
 	sort.SliceStable(views, func(i, j int) bool {
@@ -243,7 +251,18 @@ func normalizeProjectLLMModel(model *projectLLMModelSettings, runtime projectLLM
 	model.Settings.MaxRetriesConfigured = runtime.MaxRetriesConfigured
 	model.Settings.RetryBackoff = runtime.RetryBackoff
 	model.Settings.StreamIdleTimeout = runtime.StreamIdleTimeout
-	return normalizeProjectLLMSettings(&model.Settings)
+	// Archived revisions remain available to in-flight runs and audit history,
+	// even if a later catalog no longer recognizes their reasoning default.
+	// Active revisions are validated at admission and by the Studio controller.
+	archivedReasoningEffort := model.Settings.ReasoningEffort
+	if model.Archived {
+		model.Settings.ReasoningEffort = ""
+	}
+	err = normalizeProjectLLMSettings(&model.Settings)
+	if model.Archived {
+		model.Settings.ReasoningEffort = archivedReasoningEffort
+	}
+	return err
 }
 
 func validateProjectLLMModelCredential(model projectLLMModelSettings) error {
@@ -332,7 +351,7 @@ func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLM
 	for _, item := range spec.Models {
 		model := projectLLMModelSettings{
 			ID: item.ID, RevisionID: item.RevisionID, Archived: item.Archived, Name: item.Name,
-			Settings: projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model},
+			Settings: projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model, ReasoningEffort: item.ReasoningEffort},
 		}
 		if item.SecretRef != nil {
 			model.Settings.APIKey = keys[strings.TrimSpace(item.SecretRef.Name)]
@@ -365,9 +384,52 @@ func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLM
 // readProjectLLMRegistry; a turn should not fetch unrelated model Secrets just
 // to build its runtime configuration.
 func readProjectLLMModelForTurn(ctx context.Context, c *asclient.Client, modelID, revisionID string) (projectLLMModelSettings, error) {
+	return readProjectLLMModelWithSettings(ctx, c, modelID, revisionID, nil)
+}
+
+// readProjectLLMModelForCredentialReuse reads only the active model whose
+// credential is being reused by a connection test or model discovery request.
+// The saved reasoning default is returned unchanged, but is temporarily
+// suppressed while normalizing the connection so an invalid or stale default
+// can be replaced without making unrelated registry entries block the read.
+func readProjectLLMModelForCredentialReuse(ctx context.Context, c *asclient.Client, modelID string) (projectLLMModelSettings, error) {
+	var savedReasoningEffort string
+	model, err := readProjectLLMModelWithSettings(ctx, c, modelID, "", func(settings *projectLLMSettings) {
+		savedReasoningEffort = settings.ReasoningEffort
+		settings.ReasoningEffort = ""
+	})
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	model.Settings.ReasoningEffort = savedReasoningEffort
+	return model, nil
+}
+
+// readProjectLLMModelConfig reads the active model's saved configuration
+// without fetching or requiring its credential. Use it for decisions that
+// depend on provider/model settings but do not need to connect to the model.
+func readProjectLLMModelConfig(ctx context.Context, c *asclient.Client, modelID string) (projectLLMModelSettings, error) {
+	return readProjectLLMModelWithOptions(ctx, c, modelID, "", nil, false, false)
+}
+
+// readProjectLLMModelForRun restores the admitted reasoning settings before
+// validating the selected revision. A resumed run must not validate a later
+// model default, or an unrelated model, before restoring its own snapshot.
+func readProjectLLMModelForRun(ctx context.Context, c *asclient.Client, run store.AssistantRun) (projectLLMModelSettings, error) {
+	modelID, revisionID := projectAssistantModelReferenceFromRunAudit(run)
+	return readProjectLLMModelWithSettings(ctx, c, modelID, revisionID, func(settings *projectLLMSettings) {
+		applyProjectAssistantReasoningSnapshot(settings, run)
+	})
+}
+
+func readProjectLLMModelWithSettings(ctx context.Context, c *asclient.Client, modelID, revisionID string, restore func(*projectLLMSettings)) (projectLLMModelSettings, error) {
+	return readProjectLLMModelWithOptions(ctx, c, modelID, revisionID, restore, true, true)
+}
+
+func readProjectLLMModelWithOptions(ctx context.Context, c *asclient.Client, modelID, revisionID string, restore func(*projectLLMSettings), loadCredential, normalizeModel bool) (projectLLMModelSettings, error) {
 	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+		return projectLLMModelSettings{}, errProjectLLMModelNotFound
 	}
 	if err != nil {
 		return projectLLMModelSettings{}, err
@@ -377,7 +439,7 @@ func readProjectLLMModelForTurn(ctx context.Context, c *asclient.Client, modelID
 		return projectLLMModelSettings{}, fmt.Errorf("decode studio: %w", err)
 	}
 	if studio.Spec.LLM == nil {
-		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+		return projectLLMModelSettings{}, errProjectLLMModelNotFound
 	}
 
 	runtimeSettings := defaultProjectLLMSettings()
@@ -419,7 +481,7 @@ func readProjectLLMModelForTurn(ctx context.Context, c *asclient.Client, modelID
 		selected, found = candidates.model(modelID)
 	}
 	if !found {
-		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+		return projectLLMModelSettings{}, errProjectLLMModelNotFound
 	}
 	selectedIndex := -1
 	for index, candidate := range candidates.Models {
@@ -429,21 +491,26 @@ func readProjectLLMModelForTurn(ctx context.Context, c *asclient.Client, modelID
 		}
 	}
 	if selectedIndex < 0 || selectedIndex >= len(studio.Spec.LLM.Models) {
-		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
+		return projectLLMModelSettings{}, errProjectLLMModelNotFound
 	}
 	item := studio.Spec.LLM.Models[selectedIndex]
 	selected.Name = item.Name
-	selected.Settings = projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model}
-	if name := secretRefs[selectedIndex]; name != "" {
+	selected.Settings = projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model, ReasoningEffort: item.ReasoningEffort}
+	if name := secretRefs[selectedIndex]; name != "" && loadCredential {
 		selected.Settings.APIKey, err = readProjectLLMCredential(ctx, c, name)
 		if err != nil {
 			return projectLLMModelSettings{}, err
 		}
 	}
-	if err := normalizeProjectLLMModel(&selected, runtimeSettings); err != nil {
-		return projectLLMModelSettings{}, err
+	if restore != nil {
+		restore(&selected.Settings)
 	}
-	if strings.TrimSpace(selected.Settings.APIKey) == "" {
+	if normalizeModel {
+		if err := normalizeProjectLLMModel(&selected, runtimeSettings); err != nil {
+			return projectLLMModelSettings{}, err
+		}
+	}
+	if loadCredential && strings.TrimSpace(selected.Settings.APIKey) == "" {
 		return projectLLMModelSettings{}, newValidationError("selected model configuration does not have a credential")
 	}
 	return selected, nil
@@ -487,14 +554,13 @@ func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if strings.TrimSpace(request.APIKey) == "" && request.ExistingModelID != "" {
-		registry, err := readProjectLLMRegistry(r.Context(), c)
+		stored, err := readProjectLLMModelForCredentialReuse(r.Context(), c, request.ExistingModelID)
 		if err != nil {
+			if errors.Is(err, errProjectLLMModelNotFound) {
+				writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
+				return
+			}
 			writeProjectError(w, err)
-			return
-		}
-		stored, found := registry.model(request.ExistingModelID)
-		if !found {
-			writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
 			return
 		}
 		base, err := normalizeLLMBaseURL(request.BaseURL)
@@ -512,14 +578,35 @@ func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request
 			return
 		}
 		request.APIKey = stored.Settings.APIKey
+		if request.ReasoningEffort == nil {
+			effort := stored.Settings.ReasoningEffort
+			request.ReasoningEffort = &effort
+		}
+	} else if strings.TrimSpace(request.APIKey) != "" && request.ExistingModelID != "" && request.ReasoningEffort == nil {
+		stored, err := readProjectLLMModelConfig(r.Context(), c, request.ExistingModelID)
+		if err != nil {
+			if errors.Is(err, errProjectLLMModelNotFound) {
+				writeStatus(w, http.StatusNotFound, "NotFound", "model configuration not found")
+				return
+			}
+			writeProjectError(w, err)
+			return
+		}
+		effort := stored.Settings.ReasoningEffort
+		request.ReasoningEffort = &effort
+	}
+	reasoningEffort := ""
+	if request.ReasoningEffort != nil {
+		reasoningEffort = *request.ReasoningEffort
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := verifyProjectLLMConnection(ctx, projectLLMSettings{
-		Provider: request.Provider,
-		BaseURL:  request.BaseURL,
-		Model:    request.Model,
-		APIKey:   request.APIKey,
+		Provider:        request.Provider,
+		BaseURL:         request.BaseURL,
+		Model:           request.Model,
+		ReasoningEffort: reasoningEffort,
+		APIKey:          request.APIKey,
 	}); err != nil {
 		writeProjectLLMConnectionTestError(w, err)
 		return

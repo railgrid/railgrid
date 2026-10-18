@@ -16,6 +16,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -100,6 +101,94 @@ func TestReadProjectLLMModelForTurnKeepsPinnedArchivedRevision(t *testing.T) {
 	}
 	if !reflect.DeepEqual(secretGets, []string{testLLMCredentialSecretName("shared")}) {
 		t.Fatalf("credential Secret reads = %#v, want only the pinned model Secret", secretGets)
+	}
+}
+
+func TestReadProjectLLMModelForRunRestoresReasoningBeforeValidation(t *testing.T) {
+	registry := projectLLMRegistry{
+		DefaultModelID: "shared", Runtime: defaultProjectLLMSettings(),
+		Models: []projectLLMModelSettings{
+			{ID: "shared", RevisionID: "old", Archived: true, Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, Model: "gpt-6-luna", ReasoningEffort: "unsupported", APIKey: "shared-key"}},
+			{ID: "shared", RevisionID: "new", Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, Model: "gpt-6-luna", ReasoningEffort: "max", APIKey: "shared-key"}},
+			{ID: "other", RevisionID: "other", Name: "Other", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, Model: "gpt-5", ReasoningEffort: "unsupported", APIKey: "other-key"}},
+		},
+	}
+	c := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
+	for _, legacy := range []bool{false, true} {
+		audit := projectAssistantRunAudit{ModelID: "shared", ModelRevisionID: "old"}
+		want := ""
+		if !legacy {
+			want = "high"
+			audit.Reasoning = &projectAssistantAuditReasoning{ConfiguredEffort: want, EffectiveEffort: want, Transport: projectLLMTransportResponses}
+		}
+		raw, err := json.Marshal(audit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected, err := readProjectLLMModelForRun(context.Background(), c, store.AssistantRun{Audit: raw})
+		if err != nil {
+			t.Fatalf("read run model (legacy=%t): %v", legacy, err)
+		}
+		if selected.RevisionID != "old" || selected.Settings.ReasoningEffort != want {
+			t.Fatalf("restored model (legacy=%t) = %#v", legacy, selected)
+		}
+	}
+}
+
+func TestProjectLLMRegistryPreservesReasoningDefaultsByRevision(t *testing.T) {
+	registry := projectLLMRegistry{
+		DefaultModelID: "shared",
+		Runtime:        defaultProjectLLMSettings(),
+		Models: []projectLLMModelSettings{
+			{ID: "shared", RevisionID: "old", Archived: true, Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "gpt-6-luna", ReasoningEffort: "low", APIKey: "shared-key"}},
+			{ID: "shared", RevisionID: "current", Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "gpt-6-luna", ReasoningEffort: "max", APIKey: "shared-key"}},
+		},
+	}
+	c := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
+	loaded, err := readProjectLLMRegistry(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := loaded.view()
+	if len(view.Models) != 1 || view.Models[0].ReasoningEffort != "max" {
+		t.Fatalf("active model reasoning default = %#v", view.Models)
+	}
+	for _, tc := range []struct{ revision, want string }{{"old", "low"}, {"current", "max"}, {"", "max"}} {
+		selected, err := readProjectLLMModelForTurn(context.Background(), c, "shared", tc.revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if selected.Settings.ReasoningEffort != tc.want {
+			t.Fatalf("revision %q reasoning = %q, want %q", tc.revision, selected.Settings.ReasoningEffort, tc.want)
+		}
+	}
+}
+
+func TestProjectLLMRegistryIgnoresUnsupportedArchivedReasoningDefault(t *testing.T) {
+	registry := projectLLMRegistry{
+		DefaultModelID: "shared",
+		Runtime:        defaultProjectLLMSettings(),
+		Models: []projectLLMModelSettings{
+			{ID: "shared", RevisionID: "old", Archived: true, Name: "Old Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "retired-model", ReasoningEffort: "high", APIKey: "shared-key"}},
+			{ID: "shared", RevisionID: "current", Name: "Shared", Settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.openai.com/v1", Model: "gpt-6-luna", ReasoningEffort: "max", APIKey: "shared-key"}},
+		},
+	}
+	client := asclient.NewFromDynamic(projectSettingsDynamicClient{registry: &registry})
+
+	loaded, err := readProjectLLMRegistry(context.Background(), client)
+	if err != nil {
+		t.Fatalf("read registry with unsupported archived revision: %v", err)
+	}
+	if len(loaded.view().Models) != 1 || loaded.view().Models[0].ReasoningEffort != "max" {
+		t.Fatalf("active registry view = %#v, want only current model with max effort", loaded.view().Models)
+	}
+
+	archived, err := readProjectLLMModelForTurn(context.Background(), client, "shared", "old")
+	if err != nil {
+		t.Fatalf("read pinned archived revision: %v", err)
+	}
+	if archived.Settings.ReasoningEffort != "high" {
+		t.Fatalf("archived reasoning default = %q, want preserved historical value", archived.Settings.ReasoningEffort)
 	}
 }
 

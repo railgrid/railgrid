@@ -180,6 +180,10 @@ type Store interface {
 	EnsureSchema(ctx context.Context) error
 	CreateAssistantThread(ctx context.Context, scope Scope, thread AssistantThread, events []AssistantThreadEvent) (AssistantThread, error)
 	GetAssistantThread(ctx context.Context, scope Scope, threadID string) (AssistantThread, error)
+	// LatestAssistantThreadEventSequence returns the current event high-water
+	// mark without materializing the thread history. Existing threads with no
+	// events return zero; missing threads return ErrAssistantThreadNotFound.
+	LatestAssistantThreadEventSequence(ctx context.Context, scope Scope, threadID string) (int64, error)
 	ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error)
 	UpdateAssistantThread(ctx context.Context, scope Scope, thread AssistantThread) (AssistantThread, error)
 	// SetAssistantThreadTitleIfEmpty atomically claims an untitled, unarchived

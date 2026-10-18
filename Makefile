@@ -3077,6 +3077,23 @@ fix-lint-model-connections: $(GOLANGCI_LINT) ## Format model connection changes 
 test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
 
+.PHONY: generate-app-studio-model-catalog test-app-studio-reasoning lint-app-studio-reasoning fix-lint-app-studio-reasoning
+generate-app-studio-model-catalog: ## Generate App Studio's model pricing and reasoning capability assets
+	cd providers/app-studio && go run ./hack/modelcatalog-json
+
+test-app-studio-reasoning: ## Verify reasoning capabilities, defaults, durable turns, and conversation preferences
+	cd provider-sdk && go test -count=1 ./modelcatalog
+	cd providers/app-studio && go test -count=1 ./api/... ./store/... ./controller/studio/...
+	cd providers/app-studio/portal && npm run typecheck && npm test
+
+lint-app-studio-reasoning: $(GOLANGCI_LINT) ## Lint the reasoning capability and App Studio implementation
+	cd provider-sdk && $(abspath $(GOLANGCI_LINT)) run ./modelcatalog/...
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run ./api/... ./store/... ./controller/studio/... ./apis/ai/v1alpha1/... ./hack/modelcatalog-json/...
+
+fix-lint-app-studio-reasoning: $(GOLANGCI_LINT) ## Format and auto-fix reasoning capability and App Studio packages
+	cd provider-sdk && $(abspath $(GOLANGCI_LINT)) run --fix ./modelcatalog/...
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run --fix ./api/... ./store/... ./controller/studio/... ./apis/ai/v1alpha1/... ./hack/modelcatalog-json/...
+
 .PHONY: package-runner-darwin
 package-runner-darwin: build-runner-darwin ## Package MacOS runner binaries and the local upgrade manager
 	python3 hack/runner-install/package.py $(BINDIR) darwin

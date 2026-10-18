@@ -59,7 +59,7 @@ AGENTKIT_PORTALS=(
 )
 AGENTKIT_FILES=(activity.css activity.ts agent-ui.css conversation.css styles.ts)
 AGENTKIT_VUE_FILES=(
-  AIActionRow.vue AIActivityDisclosure.vue AIComposer.vue AIModelPicker.vue
+  AIActionRow.vue AIActivityDisclosure.vue AIComposer.vue AIModelPicker.vue AIModelReasoningPicker.vue
   AIConversationHeader.vue AIConversationIdentity.vue AIConversationLayout.vue
   AIConversationRail.vue AIInterrupt.vue AIMessage.vue AIPrimaryAction.vue
   AITranscript.vue AIWorkbenchPane.vue AIWorkbenchTab.vue AIWorkbenchTabs.vue AIWorkbenchLauncher.vue AIWorkspace.vue AIPaneDivider.vue
@@ -119,7 +119,7 @@ sync_agentkit_vue_file() {
   local dst="$2"
   local name="$3"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue)
+    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue)
       # Canonical AgentKit resolves core components from the sibling Vue kit.
       # The self-contained portal copy resolves those dependencies from its
       # vendored portalkit directory.
@@ -228,7 +228,7 @@ verify_agentkit_vue_file() {
   local expected
   expected="$(mktemp)"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue)
+    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue)
       sed 's#\.\./portalkit-vue/#../portalkit/#g' "$src/$name" > "$expected"
       ;;
     *)

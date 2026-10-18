@@ -147,6 +147,14 @@ spec:
                             anthropic, google, ...).
                           maxLength: 63
                           type: string
+                        reasoningEffort:
+                          description: |-
+                            ReasoningEffort is the default effort for this model revision. Empty
+                            preserves automatic behavior. Supported values depend on the model and
+                            endpoint; the provider validates them against its reasoning profiles.
+                          maxLength: 32
+                          pattern: ^$|^[a-z][a-z0-9_-]*$
+                          type: string
                         revisionID:
                           description: |-
                             RevisionID identifies this revision uniquely across the registry. It is

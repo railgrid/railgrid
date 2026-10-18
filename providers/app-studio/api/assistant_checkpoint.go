@@ -160,6 +160,7 @@ type projectAssistantRunAudit struct {
 	ActorDigest              string                                   `json:"actorDigest,omitempty"`
 	ModelID                  string                                   `json:"modelID,omitempty"`
 	ModelRevisionID          string                                   `json:"modelRevisionID,omitempty"`
+	Reasoning                *projectAssistantAuditReasoning          `json:"reasoning,omitempty"`
 	CatalogDigest            string                                   `json:"catalogDigest,omitempty"`
 	SelectedSkills           []projectAssistantSkillReceipt           `json:"selectedSkills,omitempty"`
 	SelectedContextResources []projectAssistantContextResourceReceipt `json:"selectedContextResources,omitempty"`
@@ -188,12 +189,24 @@ type projectAssistantRunAudit struct {
 // limited to stable identifiers and digests; request payloads, credentials,
 // URLs, and prompt contents never belong in an audit.
 type projectAssistantAuditEffectiveSettings struct {
-	Provider                 string `json:"provider,omitempty"`
-	Model                    string `json:"model,omitempty"`
-	OptimizationMode         string `json:"optimizationMode,omitempty"`
-	ToolContractDigest       string `json:"toolContractDigest,omitempty"`
-	DynamicToolCatalogDigest string `json:"dynamicToolCatalogDigest,omitempty"`
-	InstructionDigest        string `json:"instructionDigest,omitempty"`
+	Provider                 string                          `json:"provider,omitempty"`
+	Model                    string                          `json:"model,omitempty"`
+	Reasoning                *projectAssistantAuditReasoning `json:"reasoning,omitempty"`
+	OptimizationMode         string                          `json:"optimizationMode,omitempty"`
+	ToolContractDigest       string                          `json:"toolContractDigest,omitempty"`
+	DynamicToolCatalogDigest string                          `json:"dynamicToolCatalogDigest,omitempty"`
+	InstructionDigest        string                          `json:"instructionDigest,omitempty"`
+}
+
+// projectAssistantAuditReasoning freezes the original request's presence and
+// value, the effort ultimately sent to the provider, and the transport that
+// carried it. A nil parent pointer marks a legacy run with no reasoning
+// snapshot; RequestedEffort nil means the new request inherited a preference.
+type projectAssistantAuditReasoning struct {
+	RequestedEffort  *string `json:"requestedEffort,omitempty"`
+	ConfiguredEffort string  `json:"configuredEffort,omitempty"`
+	EffectiveEffort  string  `json:"effectiveEffort"`
+	Transport        string  `json:"transport"`
 }
 
 // projectAssistantAuditModelCallStats is the uncapped model-call rollup. The
@@ -811,18 +824,11 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if c == nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, fmt.Errorf("project client is required for assistant resume"))
 	}
-	registry, err := readProjectLLMRegistry(ctx, c)
+	selectedModel, err := readProjectLLMModelForRun(ctx, c, run)
 	if err != nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, err)
 	}
-	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(run)
-	settings, err := registry.selectedSettings(modelID, modelRevisionID)
-	if err != nil {
-		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, err)
-	}
-	if err := normalizeProjectLLMSettings(&settings); err != nil {
-		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, err)
-	}
+	settings := selectedModel.Settings
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, errProjectLLMNotConfigured)
 	}

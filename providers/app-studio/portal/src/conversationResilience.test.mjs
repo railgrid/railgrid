@@ -150,6 +150,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     'beginAssistantThreadRequest',
     'beginThreadMutationLatch',
     'releaseThreadMutationLatch',
+    'supportedThreadReasoningEffortSnapshot',
     'createAssistantThread',
     'beginAssistantThreadTitleRename',
     'renameAssistantThread',
@@ -186,6 +187,8 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
   const recoveryCalls = []
   const pageCalls = []
   const activeTurnCalls = []
+  const reasoningSaveCalls = []
+  const reasoningSaveWaiters = []
   const api = {
     startAssistantTurn: (...args) => new Promise((resolve, reject) => startCalls.push({ args, resolve, reject })),
     startAssistantReview: async () => { throw new Error('unexpected review request') },
@@ -212,7 +215,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
   const activeTurnOutcomes = [...(initialState.activeTurnOutcomes ?? [])]
   const startControllerCalls = []
   const stopCalls = []
-  return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'transferDraftCalls', 'rebindDraftCalls', 'writeDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', 'composerDraft', `
+  return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'transferDraftCalls', 'rebindDraftCalls', 'writeDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'reasoningSaveCalls', 'reasoningSaveWaiters', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', 'composerDraft', `
     const props = { ctx: { tenant: 'tenant-a', workspaceUUID: 'workspace-a', subPath: '/project-a' } };
     const selected = ref({ name: 'project-a', uid: 'uid-a' });
     const activeAssistantThreadID = ref(initialState.noThread ? '' : 'thread-a');
@@ -247,7 +250,8 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const assistantThreadHistoryOperation = ref(null);
     const prompt = ref('first message');
     const messages = ref([]);
-    const assistantThreads = ref(initialState.noThread ? [] : [{ id: 'thread-a' }, { id: 'thread-b' }, { id: 'thread-a-recreated' }]);
+    const assistantThreads = ref(initialState.noThread ? [] : [{ id: 'thread-a', reasoningEffortByModel: initialState.threadPreferences ?? {} }, { id: 'thread-b' }, { id: 'thread-a-recreated' }]);
+    const unthreadedReasoningEfforts = ref({});
     const assistantComposerParts = ref(initialParts);
     const selectedTurnSkills = ref(initialState.selectedTurnSkills ?? []);
     const selectedTurnResources = ref(initialState.selectedTurnResources ?? []);
@@ -270,6 +274,37 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const approvalModeSaving = ref(false);
     const assistantThreadViewingOlderHistory = ref(false);
     const selectedLLMModelID = ref('model-a');
+    const selectedLLMModel = computed(() => ({ id: selectedLLMModelID.value, reasoningEffort: initialState.modelDefaults?.[selectedLLMModelID.value] ?? '' }));
+    const configuredLLMModels = computed(() => [selectedLLMModel.value]);
+    const reasoningCatalogEntries = [];
+    const reasoningEffortsForConnection = () => ['low', 'medium', 'high', 'max', 'xhigh'];
+    const supportedReasoningEffortSnapshot = (preferences) => preferences;
+    const reasoningEffortsForDraftScope = () => ({});
+    const initialReasoningEffortSnapshot = (preferences, modelID, effort) => {
+      const result = { ...(preferences ?? {}) };
+      if (modelID) {
+        if (effort) result[modelID] = effort;
+        else delete result[modelID];
+      }
+      return Object.keys(result).length ? result : undefined;
+    };
+    const assistantReasoningEffort = computed(() => initialState.modelEfforts?.[selectedLLMModelID.value] ?? initialState.reasoningEffort ?? '');
+    const assistantReasoningPreferencesHydrating = ref(false);
+    const assistantReasoningPreferencePreparing = ref(false);
+    let assistantReasoningPreferencePreparationSerial = 0;
+    let assistantReasoningPreferenceScopeGeneration = 0;
+    const assistantReasoningPreferenceError = ref('');
+    const threadReasoningPreferenceSaves = new Map();
+    const threadReasoningPreferenceDrafts = ref({});
+    const threadReasoningPreferenceErrors = ref({});
+    const ensureAssistantThreadPreferencesHydrated = async () => true;
+    const saveAssistantReasoningEffortBeforeSend = (...args) => {
+      reasoningSaveCalls.push(args);
+      if (!initialState.deferReasoningSave) return Promise.resolve(true);
+      return new Promise(resolve => reasoningSaveWaiters.push(resolve));
+    };
+    const initialReasoningEffortByModel = (modelID, effort) => modelID && effort ? { [modelID]: effort } : undefined;
+    const threadReasoningEffort = (preferences, modelID) => preferences?.[modelID] ?? '';
     const assistantIntent = ref(initialState.assistantIntent ?? 'default');
     const assistantComposerDraftMatches = composerDraft.assistantComposerDraftMatches;
     const shouldHydrateAssistantComposerDraftForThread = composerDraft.shouldHydrateAssistantComposerDraftForThread;
@@ -283,6 +318,9 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     };
     const llmConfigured = ref(true);
     const contextFingerprint = (ctx) => JSON.stringify([ctx.tenant, ctx.workspaceUUID, ctx.subPath]);
+    const appContextFingerprint = contextFingerprint;
+    const threadReasoningPreferenceKey = (threadID, modelID) => JSON.stringify([appContextFingerprint(props.ctx), selected.value?.name ?? '', threadID, modelID]);
+    const threadReasoningPreferenceScopeKey = (threadID, projectName = selected.value?.name ?? '') => JSON.stringify([appContextFingerprint(props.ctx), projectName, threadID]);
     const projectContextFingerprint = (ctx) => contextFingerprint(ctx);
     const assistantRunStartFingerprint = fingerprint;
     const assistantRunTerminal = isTerminal;
@@ -388,6 +426,8 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     ${outputText}
     return {
       prompt, selected, activeAssistantThreadID, assistantThreadRequestSerial: () => assistantThreadRequestSerial,
+      selectedLLMModelID, assistantReasoningPreferencePreparing, reasoningSaveCalls,
+      resolveReasoningSave(index = 0, saved = true) { reasoningSaveWaiters[index](saved); },
       messages, assistantThreads, assistantComposerParts, assistantComposerSubmitting, assistantPendingStartStopRequested,
       assistantStopRequestedRunID, assistantStopError, conversationStatus, transferDraftCalls, rebindDraftCalls,
       selectedTurnSkills, selectedTurnResources, assistantIntent, messageStreaming, busy, error, props, startCalls, createCalls, steerCalls, clearDraftCalls, writeDraftCalls, committedParts, threadMutationBusy, threadError, mutationCalls,
@@ -426,7 +466,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
       stopCalls,
       resetConversation() { busy.value = false; messageStreaming.value = false; error.value = null; messages.value = []; },
     };
-  `)(ref, computed, watch, api, outputText, state.assistantRunStartFingerprint, initialParts, initialState, startCalls, createCalls, clearDraftCalls, transferDraftCalls, rebindDraftCalls, writeDraftCalls, committedParts, mutationCalls, steerCalls, recoveryCalls, pageCalls, pageOutcomes, activeTurnCalls, activeTurnOutcomes, state, (run) => Boolean(run && !state.assistantRunTerminal(run.status)), state.assistantRunTerminal, startControllerCalls, stopCalls, composerDraft))
+  `)(ref, computed, watch, api, outputText, state.assistantRunStartFingerprint, initialParts, initialState, startCalls, createCalls, clearDraftCalls, transferDraftCalls, rebindDraftCalls, writeDraftCalls, committedParts, mutationCalls, steerCalls, recoveryCalls, pageCalls, pageOutcomes, activeTurnCalls, activeTurnOutcomes, reasoningSaveCalls, reasoningSaveWaiters, state, (run) => Boolean(run && !state.assistantRunTerminal(run.status)), state.assistantRunTerminal, startControllerCalls, stopCalls, composerDraft))
 }
 
 function assistantThreadSequenceHarness() {
@@ -564,6 +604,28 @@ test('delayed thread creation disables the composer and preserves a fast-submit 
   assert.equal(h.startCalls[0].args[2], 'thread-new', 'the retained draft can now be sent to its new thread')
   h.startCalls[0].reject(new Error('controlled test rejection'))
   assert.equal(await newThreadSend, false)
+})
+
+test('delayed reasoning save blocks duplicate submit and cancels admission after a model switch', async t => {
+  const h = await assistantSubmissionHarness(t, [], {
+    deferReasoningSave: true,
+    threadPreferences: { 'model-a': 'low' },
+    modelEfforts: { 'model-a': 'high', 'model-b': 'medium' },
+  })
+  h.prompt.value = 'Use the selected reasoning level'
+
+  const preparing = h.sendMessage()
+  assert.equal(h.assistantReasoningPreferencePreparing.value, true)
+  assert.deepEqual(h.reasoningSaveCalls, [['project-a', 'thread-a', 'model-a', 'high']])
+  assert.equal(h.startCalls.length, 0, 'the turn waits for the preference write')
+  assert.equal(await h.sendMessage(), false, 'a second submit cannot create another request while the keyed save is pending')
+
+  h.selectedLLMModelID.value = 'model-b'
+  h.resolveReasoningSave()
+  assert.equal(await preparing, false, 'the captured model/effort pair is discarded after the selection changes')
+  assert.equal(h.startCalls.length, 0, 'the request cannot be sent with a stale model selection')
+  assert.equal(h.prompt.value, 'Use the selected reasoning level', 'the prompt stays available for the current selection')
+  assert.equal(h.assistantReasoningPreferencePreparing.value, false)
 })
 
 test('a failed first-thread send restores its full composer draft for an identical retry', async t => {
@@ -1238,7 +1300,8 @@ test('first-send thread creation cannot mutate state after an App unmount or req
   assert.match(sendMessage, /const submissionIsCurrent = \(\) => appComponentMounted &&[\s\S]*submissionOwner\.generation === assistantSubmissionGeneration[\s\S]*sendContextFingerprint === projectContextFingerprint\(props\.ctx\)[\s\S]*selected\.value\?\.name === submissionOwner\.projectName[\s\S]*selected\.value\?\.uid \?\? ''\) === submissionOwner\.projectUID[\s\S]*activeAssistantThreadID\.value === submissionOwner\.threadID/)
   assert.match(appSource, /watch\(\s*activeAssistantThreadID,[\s\S]*current !== owner\.threadID[\s\S]*invalidateAssistantMessageSubmission\(\)/)
   assert.match(appSource, /\(\) => `\$\{selected\.value\?\.name \?\? ''\}\\u0000\$\{selected\.value\?\.uid \?\? ''\}`[\s\S]*invalidateAssistantMessageSubmission\(\)/)
-  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(props\.ctx, projectName\)[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantComposerDraft/)
+  assert.match(sendMessage, /initialThreadReasoningEffortByModel = supportedThreadReasoningEffortSnapshot\([\s\S]*initialReasoningEffortSnapshot\([\s\S]*reasoningEffortsForDraftScope\(unthreadedReasoningEfforts\.value/)
+  assert.match(sendMessage.slice(firstThreadStart, firstThreadEnd), /await api\.createAssistantThread\(\s*props\.ctx,\s*projectName,[\s\S]*initialThreadReasoningEffortByModel,[\s\S]*if \(!submissionIsCurrent\(\)\) return false[\s\S]*persistAssistantThreadFocus[\s\S]*writeAssistantComposerDraft/)
 })
 
 test('resume and stop controls keep their captured project, thread, and run scope', async () => {
@@ -1431,7 +1494,7 @@ test('first-project retries reissue an unconfirmed retained thread ID and fence 
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const startPath = appSource.slice(appSource.indexOf('async function createProjectAndStartConversation('))
   assert.match(startPath, /const requestedThreadID = submission\.threadID \|\| `thread-\$\{crypto\.randomUUID\(\)\}`/)
-  assert.match(startPath, /const createdThread = await api\.createAssistantThread\(props\.ctx, projectName, undefined, requestedThreadID\)[\s\S]*if \(!current\(\)\) return[\s\S]*thread = createdThread/)
+  assert.match(startPath, /const createdThread = await api\.createAssistantThread\(\s*props\.ctx,\s*projectName,\s*undefined,\s*requestedThreadID,\s*supportedThreadReasoningEffortSnapshot\(startPlan\.reasoningEffortByModel\),\s*\)[\s\S]*if \(!current\(\)\) return[\s\S]*thread = createdThread/)
   assert.doesNotMatch(startPath, /status: 'idle' as const/)
 })
 
@@ -1736,7 +1799,7 @@ test('reload ordering keeps a tied user message before its assistant response', 
 
 test('first-project retry reuses the created project and durable request identity', () => {
   const pending = state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high')
-  assert.deepEqual(state.firstProjectStartPlan(pending), { createProject: true, projectName: '', content: 'ship it', clientRequestID: 'request-1', modelID: 'gpt-high' })
+  assert.deepEqual(state.firstProjectStartPlan(pending), { createProject: true, projectName: '', content: 'ship it', clientRequestID: 'request-1', modelID: 'gpt-high', reasoningEffort: '' })
   const created = state.firstProjectSubmissionWithProject(pending, 'demo')
   const firstRun = state.firstProjectStartPlan(created)
   assert.deepEqual(
@@ -1753,6 +1816,28 @@ test('first-project retry reuses the created project and durable request identit
   )
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-1', content: 'ship it' }), true)
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-2', content: 'different' }), false)
+})
+
+test('first-project retries retain an isolated per-model preference snapshot', () => {
+  const draft = { 'model-a': 'high', 'model-b': 'max' }
+  const pending = state.newFirstProjectSubmission('ship it', 'request-1', 'model-b', 'max', draft)
+  draft['model-a'] = 'low'
+  assert.deepEqual(pending.reasoningEffortByModel, { 'model-a': 'high', 'model-b': 'max' }, 'pending state owns a copy of the model choices')
+
+  const plan = state.firstProjectStartPlan(pending)
+  assert.deepEqual(plan.reasoningEffortByModel, { 'model-a': 'high', 'model-b': 'max' })
+  plan.reasoningEffortByModel['model-a'] = 'medium'
+  const withProject = state.firstProjectSubmissionWithProject(pending, 'demo')
+  const retried = state.firstProjectSubmissionWithThread(withProject, 'thread-1')
+  assert.equal(retried.clientRequestID, 'request-1')
+  assert.equal(retried.threadID, 'thread-1')
+  assert.deepEqual(state.firstProjectStartPlan(retried).reasoningEffortByModel, {
+    'model-a': 'high',
+    'model-b': 'max',
+  }, 'retry uses the captured preference snapshot even if a start plan copy is edited')
+  retried.reasoningEffortByModel['model-a'] = 'low'
+  assert.deepEqual(pending.reasoningEffortByModel, { 'model-a': 'high', 'model-b': 'max' }, 'project and thread bindings do not alias the pending preference map')
+  assert.deepEqual(withProject.reasoningEffortByModel, { 'model-a': 'high', 'model-b': 'max' }, 'thread binding owns a second copy of the map')
 })
 
 test('first-project retry also retains the server thread identity', () => {

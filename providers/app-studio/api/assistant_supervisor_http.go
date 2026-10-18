@@ -207,6 +207,11 @@ func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, s
 		if err := validateProjectAssistantStartModelSelection(prior, selection.ModelID); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
+		if selection.Reasoning != nil {
+			if err := validateProjectAssistantExplicitReasoningReplay(prior, selection.Reasoning.RequestedEffort); err != nil {
+				return projectAssistantDurableStartResult{}, err
+			}
+		}
 		return projectAssistantDurableStartResult{Run: prior}, nil
 	} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
 		return projectAssistantDurableStartResult{}, err
@@ -236,6 +241,9 @@ func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, s
 	if err := bindProjectAssistantStartModelAudit(&run, selection.ModelID, selection.ModelRevisionID); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
+	if err := bindProjectAssistantStartReasoningAudit(&run, selection.Reasoning); err != nil {
+		return projectAssistantDurableStartResult{}, err
+	}
 	if err := bindProjectAssistantStartSkillAudit(&run, selection); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
@@ -252,6 +260,11 @@ func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, s
 			if modelErr := validateProjectAssistantStartModelSelection(prior, selection.ModelID); modelErr != nil {
 				return projectAssistantDurableStartResult{}, modelErr
 			}
+			if selection.Reasoning != nil {
+				if reasoningErr := validateProjectAssistantExplicitReasoningReplay(prior, selection.Reasoning.RequestedEffort); reasoningErr != nil {
+					return projectAssistantDurableStartResult{}, reasoningErr
+				}
+			}
 			return projectAssistantDurableStartResult{Run: prior}, nil
 		}
 		return projectAssistantDurableStartResult{}, err
@@ -262,6 +275,11 @@ func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, s
 		}
 		if err := validateProjectAssistantStartModelSelection(created, selection.ModelID); err != nil {
 			return projectAssistantDurableStartResult{}, err
+		}
+		if selection.Reasoning != nil {
+			if err := validateProjectAssistantExplicitReasoningReplay(created, selection.Reasoning.RequestedEffort); err != nil {
+				return projectAssistantDurableStartResult{}, err
+			}
 		}
 		return projectAssistantDurableStartResult{Run: created}, nil
 	}

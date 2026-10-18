@@ -52,6 +52,10 @@ var _ einomodel.BaseChatModel = (*projectEinoResponsesChatModel)(nil)
 
 func newProjectEinoResponsesModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	store, retries := false, 0
+	var reasoning *responses.ReasoningParam
+	if effort := projectLLMEffectiveReasoningEffort(settings); effort != "" {
+		reasoning = &responses.ReasoningParam{Effort: responses.ReasoningEffort(effort)}
+	}
 	model, err := agenticopenai.NewResponsesModel(ctx, &agenticopenai.ResponsesConfig{
 		APIKey:     strings.TrimSpace(settings.APIKey),
 		BaseURL:    strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
@@ -60,6 +64,7 @@ func newProjectEinoResponsesModel(ctx context.Context, settings projectLLMSettin
 		MaxRetries: &retries,
 		Store:      &store,
 		Include:    []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
+		Reasoning:  reasoning,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create native Eino OpenAI Responses model: %w", err)

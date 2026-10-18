@@ -67,6 +67,7 @@ func TestGetProjectAssistantThreadTurnReturnsTerminalSettingsWithoutAudit(t *tes
 		EffectiveSettings: &projectAssistantAuditEffectiveSettings{
 			Provider:                 "openai-compatible",
 			Model:                    "safe-model",
+			Reasoning:                &projectAssistantAuditReasoning{RequestedEffort: reasoningEffortPointer(""), ConfiguredEffort: "medium", EffectiveEffort: "none", Transport: projectLLMTransportChatCompletions},
 			OptimizationMode:         "codex_poc",
 			ToolContractDigest:       "sha256:tools",
 			DynamicToolCatalogDigest: "sha256:catalog",
@@ -127,6 +128,9 @@ func TestGetProjectAssistantThreadTurnReturnsTerminalSettingsWithoutAudit(t *tes
 	}
 	if detail.EffectiveSettings.ToolContractDigest != "sha256:tools" || detail.EffectiveSettings.DynamicToolCatalogDigest != "sha256:catalog" || detail.EffectiveSettings.InstructionDigest != "sha256:instructions" {
 		t.Fatalf("effective settings digests = %#v", detail.EffectiveSettings)
+	}
+	if detail.EffectiveSettings.Reasoning == nil || detail.EffectiveSettings.Reasoning.RequestedEffort == nil || *detail.EffectiveSettings.Reasoning.RequestedEffort != "" || detail.EffectiveSettings.Reasoning.ConfiguredEffort != "medium" || detail.EffectiveSettings.Reasoning.EffectiveEffort != "none" || detail.EffectiveSettings.Reasoning.Transport != projectLLMTransportChatCompletions {
+		t.Fatalf("effective reasoning settings = %#v", detail.EffectiveSettings.Reasoning)
 	}
 }
 

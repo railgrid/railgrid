@@ -43,6 +43,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/railgrid/provider-sdk/modelcatalog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -268,14 +269,17 @@ type PatchProjectLLMSettingsRequest struct {
 }
 
 type projectLLMSettings struct {
-	Provider             string
-	BaseURL              string
-	Model                string
-	APIKey               string
-	MaxRetries           int
-	MaxRetriesConfigured bool
-	RetryBackoff         time.Duration
-	StreamIdleTimeout    time.Duration
+	Provider                 string
+	BaseURL                  string
+	Model                    string
+	ReasoningEffort          string  `json:"reasoningEffort,omitempty"`
+	ReasoningTransport       string  `json:"-"`
+	ReasoningEffectiveEffort *string `json:"-"`
+	APIKey                   string
+	MaxRetries               int
+	MaxRetriesConfigured     bool
+	RetryBackoff             time.Duration
+	StreamIdleTimeout        time.Duration
 }
 
 type googleServiceAccountCredential struct {
@@ -442,17 +446,13 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
 	}
 	modelStarted := time.Now()
-	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(durable)
 	modelCtx, _ := projectAssistantObserveRateLimiterWaits(ctx)
-	selectedModel, err := readProjectLLMModelForTurn(modelCtx, c, modelID, modelRevisionID)
+	selectedModel, err := readProjectLLMModelForRun(modelCtx, c, durable)
 	projectAssistantLogWorkerPreparationWithRateLimiterWaits(modelCtx, durable.ID, "model", modelStarted)
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
 	settings := selectedModel.Settings
-	if err := normalizeProjectLLMSettings(&settings); err != nil {
-		return projectAssistantRunResult{}, err
-	}
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return projectAssistantRunResult{}, errProjectLLMNotConfigured
 	}
@@ -2167,6 +2167,9 @@ func normalizeProjectLLMSettings(settings *projectLLMSettings) error {
 	if strings.TrimSpace(settings.Model) == "" {
 		return newValidationError("model cannot be empty")
 	}
+	if err := validateProjectLLMReasoningEffort(*settings); err != nil {
+		return err
+	}
 	if settings.StreamIdleTimeout <= 0 {
 		settings.StreamIdleTimeout = projectEinoAssistantDefaultModelStreamIdleTimeout
 	}
@@ -2174,6 +2177,9 @@ func normalizeProjectLLMSettings(settings *projectLLMSettings) error {
 }
 
 func verifyProjectLLMConnection(ctx context.Context, settings projectLLMSettings) error {
+	if err := validateProjectLLMReasoningEffort(settings); err != nil {
+		return err
+	}
 	model, err := newProjectEinoChatModel(ctx, settings)
 	if err != nil {
 		if errors.Is(err, errProjectLLMNotConfigured) {
@@ -2189,6 +2195,16 @@ func verifyProjectLLMConnection(ctx context.Context, settings projectLLMSettings
 	}
 	if response == nil {
 		return errors.New("AI model connection failed: provider returned no response")
+	}
+	return nil
+}
+
+func validateProjectLLMReasoningEffort(settings projectLLMSettings) error {
+	if strings.TrimSpace(settings.ReasoningEffort) != settings.ReasoningEffort {
+		return newValidationError("reasoningEffort must use a canonical reasoning effort")
+	}
+	if err := modelcatalog.ValidateReasoningEffort(settings.Provider, settings.BaseURL, settings.Model, settings.ReasoningEffort); err != nil {
+		return newValidationError(fmt.Sprintf("invalid reasoning effort for model %q: %v", settings.Model, err))
 	}
 	return nil
 }

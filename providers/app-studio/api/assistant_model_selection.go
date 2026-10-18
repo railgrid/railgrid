@@ -16,7 +16,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/railgrid/provider-app-studio/store"
@@ -80,4 +82,85 @@ func validateProjectAssistantStartModelSelection(run store.AssistantRun, modelID
 		return fmt.Errorf("%w: client request ID was already used with a different model", store.ErrAssistantRunConflict)
 	}
 	return nil
+}
+
+func cloneProjectAssistantAuditReasoning(reasoning *projectAssistantAuditReasoning) *projectAssistantAuditReasoning {
+	if reasoning == nil {
+		return nil
+	}
+	clone := *reasoning
+	if reasoning.RequestedEffort != nil {
+		requested := *reasoning.RequestedEffort
+		clone.RequestedEffort = &requested
+	}
+	return &clone
+}
+
+func projectAssistantReasoningFromRunAudit(run store.AssistantRun) *projectAssistantAuditReasoning {
+	var audit projectAssistantRunAudit
+	if len(run.Audit) == 0 || json.Unmarshal(run.Audit, &audit) != nil {
+		return nil
+	}
+	return cloneProjectAssistantAuditReasoning(audit.Reasoning)
+}
+
+func bindProjectAssistantStartReasoningAudit(run *store.AssistantRun, reasoning *projectAssistantAuditReasoning) error {
+	if run == nil {
+		return errors.New("bind assistant reasoning snapshot: run is required")
+	}
+	var audit projectAssistantRunAudit
+	if len(run.Audit) > 0 {
+		if err := json.Unmarshal(run.Audit, &audit); err != nil {
+			return fmt.Errorf("decode assistant reasoning run audit: %w", err)
+		}
+	}
+	if reasoning == nil {
+		audit.Reasoning = nil
+	} else {
+		if audit.Reasoning != nil && !reflect.DeepEqual(audit.Reasoning, reasoning) {
+			return fmt.Errorf("%w: client request ID was already used with a different reasoning choice", store.ErrAssistantRunConflict)
+		}
+		audit.Reasoning = cloneProjectAssistantAuditReasoning(reasoning)
+	}
+	raw, err := json.Marshal(audit)
+	if err != nil {
+		return fmt.Errorf("encode assistant reasoning run audit: %w", err)
+	}
+	run.Audit = raw
+	return nil
+}
+
+func validateProjectAssistantExplicitReasoningReplay(run store.AssistantRun, requested *string) error {
+	if requested == nil {
+		return nil
+	}
+	stored := projectAssistantReasoningFromRunAudit(run)
+	if stored == nil || stored.RequestedEffort == nil || *stored.RequestedEffort != *requested {
+		return fmt.Errorf("%w: client request ID was already used with a different reasoning choice", store.ErrAssistantRunConflict)
+	}
+	return nil
+}
+
+// applyProjectAssistantReasoningSnapshot restores the immutable reasoning
+// configuration for a worker or resume. An absent snapshot is an older run and
+// deliberately clears settings that may have been added to the saved model
+// since that run was created.
+func applyProjectAssistantReasoningSnapshot(settings *projectLLMSettings, run store.AssistantRun) {
+	restoreProjectAssistantReasoning(settings, projectAssistantReasoningFromRunAudit(run))
+}
+
+func restoreProjectAssistantReasoning(settings *projectLLMSettings, reasoning *projectAssistantAuditReasoning) {
+	if settings == nil {
+		return
+	}
+	if reasoning == nil {
+		settings.ReasoningEffort = ""
+		settings.ReasoningTransport = ""
+		settings.ReasoningEffectiveEffort = nil
+		return
+	}
+	settings.ReasoningEffort = reasoning.ConfiguredEffort
+	settings.ReasoningTransport = reasoning.Transport
+	effectiveEffort := reasoning.EffectiveEffort
+	settings.ReasoningEffectiveEffort = &effectiveEffort
 }

@@ -45,3 +45,20 @@ func Render() ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+// RenderReasoningProfiles returns the supported reasoning catalog as
+// deterministic, newline-terminated JSON. Profiles are sorted by canonical
+// model ID so the committed artifact changes only when the source table does.
+func RenderReasoningProfiles() ([]byte, error) {
+	profiles := modelcatalog.ReasoningProfiles()
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].ID < profiles[j].ID })
+
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetIndent("", "  ")
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(profiles); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
