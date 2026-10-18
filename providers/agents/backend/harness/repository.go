@@ -49,6 +49,7 @@ import (
 // Repository makes a turn a repository attempt. Set on Config; nil means a
 // conversational workspace turn.
 type Repository struct {
+	EnvironmentID string
 	// RepositoryID names the repository on the runner (its enrolled id); a
 	// runner/v1 identifier.
 	RepositoryID string
@@ -182,6 +183,18 @@ func (b *Backend) gitResult(ctx context.Context, receipt runner.Receipt) (*backe
 			Name: GitResultBundleName, Digest: result.BundleDigest, Size: result.BundleSize, Data: bundleBytes,
 			MediaType: firstNonEmpty(bundleRef.MediaType, "application/x-git-bundle"),
 		})
+	}
+	for _, ref := range receipt.Artifacts {
+		if ref.Name != runner.ScreenshotsName {
+			continue
+		}
+		data, err := b.fetchArtifact(ctx, attemptID, ref, runner.MaxScreenshotsBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		sum := sha256.Sum256(data)
+		artifacts = append(artifacts, backend.Artifact{Name: runner.ScreenshotsName, Digest: hex.EncodeToString(sum[:]), Size: int64(len(data)), Data: data, MediaType: "application/json"})
+		break
 	}
 	return &result, artifacts, nil
 }

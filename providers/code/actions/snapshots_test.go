@@ -85,3 +85,26 @@ func TestSnapshotHandlesAreScopedExpireAndDetectTampering(t *testing.T) {
 		t.Fatal("tampered snapshot accepted")
 	}
 }
+
+func TestSnapshotCanStageScreenshotOnlyFollowup(t *testing.T) {
+	store, err := snapshotstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(nil, nil)
+	server.Snapshots = store
+	image := backend.Attachment{Path: "artifacts/screenshots/mobile.png", MediaType: "image/png", Data: append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 32)...)}
+	input := Input{RepositoryUID: "repo", ConnectionUID: "conn", Snapshot: &backend.Snapshot{Attachments: []backend.Attachment{image}}}
+	result, err := server.stage(t.Context(), dataplane.ProxiedIdentity{User: "coordinator"}, "tenant", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := FindStaged(t.Context(), store, "tenant", result.(map[string]any)["bundleRef"].(string))
+	if err != nil || len(snapshot.Attachments) != 1 || len(snapshot.Bundle) != 0 {
+		t.Fatalf("screenshot-only stage: %+v %v", snapshot, err)
+	}
+	input.Snapshot.Attachments[0].Path = "../secret.png"
+	if _, err := server.stage(t.Context(), dataplane.ProxiedIdentity{User: "coordinator"}, "tenant", input); err == nil {
+		t.Fatal("unsafe screenshot path accepted")
+	}
+}

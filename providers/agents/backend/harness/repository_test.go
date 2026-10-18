@@ -404,3 +404,19 @@ func TestBoundedWriterRefusesOverflow(t *testing.T) {
 		t.Fatalf("err = %v, want errArtifactTooLarge", err)
 	}
 }
+
+func TestRepositoryScreenshotsAreFetchedAndDigestChecked(t *testing.T) {
+	doc := gitResult(t, gitResultDocument{Version: gitResultVersion, TaskID: "run-1", AttemptID: "run-1", AttemptEpoch: 1, BaseCommit: testBase, NoChanges: true})
+	images := []byte(`[{"path":"artifacts/screenshots/mobile.png","mediaType":"image/png","data":"aW1hZ2U="}]`)
+	refs := []runner.Artifact{artifactRef("doc", GitResultJSONName, doc), artifactRef("images", runner.ScreenshotsName, images)}
+	reader := &fakeArtifacts{bodies: map[string][]byte{"doc": doc, "images": images}}
+	b := New(repositoryConfig(&fakeRunner{}, reader, testRepository()))
+	result, artifacts, err := b.gitResult(t.Context(), completedReceipt(refs...))
+	if err != nil || result == nil || len(artifacts) != 2 || artifacts[1].Name != runner.ScreenshotsName || artifacts[1].Digest != sha(images) {
+		t.Fatalf("screenshots: %+v %v", artifacts, err)
+	}
+	reader.bodies["images"] = []byte("tampered")
+	if _, _, err := b.gitResult(t.Context(), completedReceipt(refs...)); err == nil {
+		t.Fatal("tampered screenshot artifact accepted")
+	}
+}

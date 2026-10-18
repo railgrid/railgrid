@@ -306,6 +306,16 @@ def stop_owned(config):
         record_path.unlink()
 
 
+def tilt_settings_directory():
+    # Tilt's supported override keeps the warm prepare hook independent of the
+    # harness's private HOME. Match Tilt's legacy fallback without moving data.
+    for key in ('TILT_DEV_DIR', 'WMDAEMON_HOME', 'WINDMILL_DIR'):
+        if os.environ.get(key):
+            return str(Path(os.environ[key]).resolve())
+    legacy = Path.home() / '.windmill'
+    return str(legacy if legacy.exists() else Path.home() / '.tilt-dev')
+
+
 def main():
     if sys.argv[1:] == ['env']:
         config = json.loads((ROOT / '.kcp/tilt-checkout.json').read_text())
@@ -345,7 +355,9 @@ def main():
                     raise ValueError('Recorded Tilt process is still running; run make dev-browser-down first')
             # Record intended names before launch, including partially created
             # resources when startup fails. Every name is checkout-specific.
-            record = {'root': str(ROOT), 'resources': owned_resources(config)}
+            process_env['TILT_DEV_DIR'] = tilt_settings_directory()
+            record = {'root': str(ROOT), 'resources': owned_resources(config),
+                      'tiltDevDir': process_env['TILT_DEV_DIR']}
             write_owner(record_path, record)
             pending = []
             child = None

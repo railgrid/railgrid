@@ -66,6 +66,13 @@ class Setup:
     def __init__(self, config):
         self.config = config
         self.env = dict(os.environ, **checkout.environment(config))
+        owner_path = ROOT / '.kcp/tilt-owner.json'
+        if owner_path.exists():
+            owner = json.loads(owner_path.read_text())
+            if owner.get('root') != str(ROOT):
+                raise ValueError('Tilt ownership record does not match this checkout')
+            if owner.get('tiltDevDir'):
+                self.env['TILT_DEV_DIR'] = owner['tiltDevDir']
         self.port = str(config['ports']['TILT_PORT'])
         self.url = checkout.environment(config)['DEV_HUB_URL']
         # Tilt's development identity, also available through its token login UI.

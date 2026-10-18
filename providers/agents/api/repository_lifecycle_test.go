@@ -43,6 +43,7 @@ type repositoryLifecycleDispatcher struct {
 	artifacts []runner.Artifact
 	bodies    map[string][]byte
 	fetched   []string
+	events    []runner.Event
 }
 
 func (d *repositoryLifecycleDispatcher) Start(_ context.Context, req runner.StartRequest) (runner.Receipt, error) {
@@ -77,6 +78,9 @@ func (d *repositoryLifecycleDispatcher) Events(_ context.Context, _ string, afte
 	events := []runner.Event{
 		{Cursor: 1, Type: runner.EventProgress, Message: "working", AttemptEpoch: 1},
 		{Cursor: 2, Type: runner.EventCompleted, AttemptEpoch: 1},
+	}
+	if d.events != nil {
+		events = d.events
 	}
 	var out []runner.Event
 	for _, e := range events {
@@ -382,5 +386,31 @@ func TestRunRepositoryAndResultWireShapes(t *testing.T) {
 	raw, _ = json.Marshal(runArtifactResponse{Name: "git-result.bundle", Digest: "d", Size: 3, MediaType: "application/x-git-bundle", Data: "YWJj"})
 	if string(raw) != `{"name":"git-result.bundle","digest":"d","size":3,"mediaType":"application/x-git-bundle","data":"YWJj"}` {
 		t.Fatalf("artifact result = %s", raw)
+	}
+}
+
+func TestRepositoryFinalResponseArtifactExcludesCommentary(t *testing.T) {
+	artifacts, bodies := gitResultArtifacts(t, "run-lifecycle", false)
+	report := "## Problem\nWrong order.\n\n## Changes\nMore actions is last."
+	payload, err := json.Marshal(map[string]any{"type": "result", "result": report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &repositoryLifecycleDispatcher{artifacts: artifacts, bodies: bodies, events: []runner.Event{
+		{Cursor: 1, Type: runner.EventProgress, Data: json.RawMessage(`{"item":{"id":"comment","type":"agentMessage","text":"I am investigating.","phase":"commentary"}}`), AttemptEpoch: 1},
+		{Cursor: 2, Type: runner.EventProgress, Data: payload, AttemptEpoch: 1},
+		{Cursor: 3, Type: runner.EventCompleted, AttemptEpoch: 1},
+	}}
+	s, run := repositoryLifecycleRun(t, d)
+	res, err := s.runTurn(t.Context(), run, nil)
+	if err != nil || res.Phase != store.RunPhaseSucceeded {
+		t.Fatalf("run: %+v, %v", res, err)
+	}
+	a, found, err := s.store.GetRunArtifact(t.Context(), run.Scope, run.RunID, "final-response.md")
+	if err != nil || !found {
+		t.Fatalf("artifact: found=%v err=%v", found, err)
+	}
+	if string(a.Data) != report || a.Digest != hexSHA([]byte(report)) || a.MediaType != "text/markdown" {
+		t.Fatalf("final response artifact = %+v", a)
 	}
 }

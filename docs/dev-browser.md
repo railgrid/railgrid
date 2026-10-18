@@ -88,3 +88,82 @@ Port reservations use the OS accountâ€™s home directory rather than the processâ
 while sharing reservations with ordinary checkouts on the same host. A saved
 configuration that conflicts with another checkout fails explicitly; clean up
 that old stack before removing its ignored checkout state and allocating anew.
+
+## Warm environments for ticket follow-ups
+
+A coordinator may supply `repository.environmentID` on an Agents repository run.
+Factory uses a stable Task UID plus repository identity; Agents scopes that ID
+by tenant and Agent UID. The runner advertises `warm-environments-v1`. This is
+separate from attempt/session identity and never resumes a different agent's
+process. Both the coordinator ID and an approved repository opt-in are required:
+
+```json
+{
+  "cleanup": ["make", "dev-browser-down"],
+  "prepare": ["sh", ".railgrid/prepare.sh"],
+  "idleTimeoutSeconds": 3600
+}
+```
+
+Omitting the ID or setting/omitting the timeout as zero keeps immediate terminal
+cleanup. The timeout is capped at one day. These repositories opt in to one hour;
+their preparation hook refreshes an existing browser environment, but does not
+start a UI stack for a backend-only task. A cold UI task still starts its stack
+and runs browser setup normally. Preparation runs from approved source with
+`RAILGRID_PREPARE_ROOT` and `RAILGRID_CLEANUP_ROOT` pointing at the retained
+checkout; it shares the new attempt's cancellation and has a five-minute limit.
+
+A warm checkout lives below the runner's `worktrees/.environments/` directory.
+Only one attempt owns it. Waiting for a user reply retains that ownership;
+success, failure, and cancellation release it only after agent execution stops.
+The runner's launch instructions explicitly take responsibility for cleanup, so
+the agent leaves the stack running. At most one idle environment is retained.
+Starting another ticket first evicts the idle stack; active/parked stacks are
+never evicted. Expiry and cleanup retry state survive runner restarts.
+
+Reuse requires the same repository/remote and approved policy. The new base
+must be either the preceding approved base or the exact snapshot exported by
+the preceding attempt. The runner records HEAD and the contents of tracked and
+nonignored files on release and rejects reuse if they change while idle. It
+never discards those edits. For the exact exported snapshot, only HEAD/index are
+updated; working files remain. Other branch/base changes require a fresh
+checkout after scoped cleanup. Ignored dev data, build outputs, assigned ports,
+and tenant state survive compatible reuse.
+
+Published artifacts remain immutable. Before reuse, original screenshot files
+move to `environment-history/<previous-attempt>/screenshots` under runner state,
+so the next run cannot accidentally export stale evidence. New UI changes still
+require new live inspection and screenshots. Logs and checkout contents survive
+expiry. For immediate manual teardown, run the checkout's `make dev-browser-down`;
+do not delete ownership records or infer targets from the active kube context.
+A later prepare failure is reported and the stale lease is cleaned up.
+
+The runner state `environments` map records owner, checkout, release/expiry,
+compatibility data and eviction state; it stores no credentials. Cleanup errors
+remain on the owning attempt. A cleanup that exhausts its retries blocks reuse
+until an administrator addresses it, rather than silently abandoning resources.
+
+
+### Runner trust and cleanup recovery
+
+The runner has one authenticated coordinator bearer, not per-tenant callers.
+Anyone holding it already controls all attempts and can read their artifacts.
+Do not share this credential with mutually untrusted coordinators or tenants.
+Tenant/Agent identity is verified by Agents and included in its lease key before
+it calls the runner. An extra tenant field supplied by that same caller would
+not create an independent authentication boundary; multi-principal runner
+access would require a separate authentication/authorization design.
+
+Cleanup that exhausts three attempts returns a non-retryable error naming the
+owning attempt. For operator recovery, stop this runner service (not other
+runners), back up its state.json, inspect that attempt's cleanupError and private
+.railgrid-cleanup.log, and repair the reported prerequisite. In the stopped
+runner's state.json, set only that attempt's cleanupAttempts to 0 and cleanupDone
+to false; leave its environment's evicting flag true. Restart the runner to retry
+the approved cleanup command. Do not delete the lease or ownership records to
+bypass failed cleanup. Checkout contents and screenshot history are preserved.
+
+Worktree fingerprints run outside the runner state lock under an exclusive
+lease fence. They are limited to 30 seconds and 256 MiB of nonignored content.
+Exceeding those bounds retires the warm lease with a diagnostic; it never falls
+back to trusting size/mtime alone. Keep build outputs in .gitignore.

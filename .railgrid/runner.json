@@ -1,1 +1,11 @@
-{"cleanup": ["make", "dev-browser-down"]}
+{
+  "cleanup": [
+    "make",
+    "dev-browser-down"
+  ],
+  "prepare": [
+    "sh",
+    ".railgrid/prepare.sh"
+  ],
+  "idleTimeoutSeconds": 3600
+}

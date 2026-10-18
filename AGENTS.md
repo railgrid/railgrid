@@ -930,3 +930,8 @@ save captioned evidence to the absolute `screenshotsDirectory` from
 `make dev-browser-down`. Retain the stack while awaiting a user answer. Never
 publish the dev token. Fixture pages and mocked backends do not count; report
 blockers and mark incomplete verification explicitly.
+
+When the runner explicitly grants a warm development-environment lease, leave
+the stack running at completion: the runner owns its idle expiry and cleanup.
+Otherwise run the normal scoped cleanup. A warm lease never permits skipping
+readiness checks or reusing old screenshots as evidence for new changes.
