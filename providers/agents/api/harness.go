@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -62,19 +63,13 @@ import (
 // runnerDialer builds a dispatcher for one enrolled runner. It is a field on the
 // Server so a test can substitute a fake runner without standing up kcp, an
 // edges Service proxy and a machine.
-type runnerDialer func(ctx context.Context, ref runnerclient.ServiceRef, token string) (dispatch.Runner, error)
+type runnerDialer func(ctx context.Context, ref runnerclient.ServiceRef, token runnerTokenSource) (dispatch.Runner, error)
 
-// dialRunner is the real dialer: the shared typed client for runner/v1, over the
-// edges provider's published Service proxy, with this provider's own credential.
-//
-// The coordinate is the tenant's kcp front door plus /clusters/{id}, and that is
-// the shared client's requirement rather than a choice made here: client.New
-// refuses a config whose host is spelled any other way, and then uses only its
-// scheme and host, rendering every path itself from the one renderer of the
-// data-plane grammar. So what this has to supply is a config addressing that
-// front door with a credential of its own — the provider's, the identity the
-// edges.railgrid.ai claims in manifest.yaml are declared under.
-func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, token string) (dispatch.Runner, error) {
+// runnerTokenSource obtains a currently valid scoped credential on each request.
+type runnerTokenSource func(context.Context) (string, error)
+
+// dialRunner builds a runner client using the agent's renewable scoped identity.
+func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, token runnerTokenSource) (dispatch.Runner, error) {
 	cfg, err := s.runnerRESTConfig(ref.Cluster, token)
 	if err != nil {
 		return nil, err
@@ -111,9 +106,8 @@ func (r runnerWithArtifacts) Artifact(ctx context.Context, attemptID, artifactID
 	return r.client.Artifact(ctx, attemptID, artifactID, w)
 }
 
-// runnerRESTConfig is the provider's own credential aimed at one tenant
-// workspace's front door.
-func (s *Server) runnerRESTConfig(clusterID, token string) (*rest.Config, error) {
+// runnerRESTConfig aims the agent's renewable identity at its tenant front door.
+func (s *Server) runnerRESTConfig(clusterID string, token runnerTokenSource) (*rest.Config, error) {
 	if s.providerBase == nil {
 		return nil, errors.New("harness-backed agents need the provider's own kubeconfig (RAILGRID_PROVIDER_KUBECONFIG); without it this provider cannot reach an edge runner")
 	}
@@ -123,20 +117,41 @@ func (s *Server) runnerRESTConfig(clusterID, token string) (*rest.Config, error)
 	// produced a 403 naming this provider's ServiceAccount. What carries rights
 	// is the identity minted per agent from the requirements manifest.yaml
 	// declares, name-scoped to the one runner Service (see api/agentidentity.go).
-	if strings.TrimSpace(token) == "" {
+	if token == nil {
 		return nil, errors.New("no identity was supplied for this runner call")
 	}
 	origin, err := frontDoor(s.providerBase.Host)
 	if err != nil {
 		return nil, err
 	}
-	// Only the coordinate and the credential are taken from the provider's own
-	// config; the identity replaces its bearer outright rather than layering on
-	// it, so nothing of the bootstrap credential reaches the tenant.
+	// Keep the provider transport settings, but replace all authentication.
+	// No bootstrap credential may reach the tenant.
 	cfg := rest.AnonymousClientConfig(s.providerBase)
 	cfg.Host = origin + "/clusters/" + clusterID
-	cfg.BearerToken = token
+	cfg.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
+		return runnerIdentityTransport{base: base, token: token}
+	}
 	return cfg, nil
+}
+
+// Clone the request so authentication never mutates a request shared with a
+// caller or retry. A failed renewal must not fall back to bootstrap credentials.
+type runnerIdentityTransport struct {
+	base  http.RoundTripper
+	token runnerTokenSource
+}
+
+func (t runnerIdentityTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, err := t.token(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("no identity was supplied for this runner call")
+	}
+	authenticated := req.Clone(req.Context())
+	authenticated.Header.Set("Authorization", "Bearer "+token)
+	return t.base.RoundTrip(authenticated)
 }
 
 // frontDoor strips a /clusters/{id} suffix off a kube host, leaving the front
@@ -158,17 +173,24 @@ func frontDoor(host string) (string, error) {
 // There the empty token is a degradation with a per-tool message; here it is the
 // whole turn, and a run that silently could not authenticate would surface three
 // hops away as somebody else's 403.
-func (s *Server) harnessIdentity(ctx context.Context, clusterID string, agent *agentsv1alpha1.Agent) (string, error) {
+func (s *Server) harnessIdentity(ctx context.Context, clusterID string, agent *agentsv1alpha1.Agent) (runnerTokenSource, error) {
 	if s.bg == nil || s.bg.identities == nil {
-		return "", errors.New("this provider cannot mint a workspace identity, so it cannot reach an edge runner; it needs its own kubeconfig (RAILGRID_PROVIDER_KUBECONFIG) and a discovered APIExport virtual workspace")
+		return nil, errors.New("this provider cannot mint a workspace identity, so it cannot reach an edge runner; it needs its own kubeconfig (RAILGRID_PROVIDER_KUBECONFIG) and a discovered APIExport virtual workspace")
 	}
 	dyn, err := s.bg.scoped(ctx, clusterID)
 	if err != nil {
-		return "", fmt.Errorf("reaching workspace %s to mint this agent's identity: %w", clusterID, err)
+		return nil, fmt.Errorf("reaching workspace %s to mint this agent's identity: %w", clusterID, err)
 	}
-	token := s.bg.identities.token(ctx, dyn, clusterID, agent)
-	if strings.TrimSpace(token) == "" {
-		return "", errors.New("the hub did not mint an identity for this agent, so it cannot reach its runner; check that the agents provider is enabled in this workspace with its edges.railgrid.ai requirement accepted")
+	token := func(ctx context.Context) (string, error) {
+		value := s.bg.identities.token(ctx, dyn, clusterID, agent)
+		if strings.TrimSpace(value) == "" {
+			return "", errors.New("the hub did not mint an identity for this agent, so it cannot reach its runner; check that the agents provider is enabled in this workspace with its edges.railgrid.ai requirement accepted")
+		}
+		return value, nil
+	}
+	// Validate before dispatch, then retain the source instead of this token.
+	if _, err := token(ctx); err != nil {
+		return nil, err
 	}
 	return token, nil
 }

@@ -207,7 +207,7 @@ func newHarnessRunLifecycleFixture(t *testing.T, dispatcher dispatch.Runner, tim
 		bg:       &background{identities: newAgentIdentities(identityClient), scopedFn: func(context.Context, string) (dynamic.Interface, error) { return dyn, nil }},
 		liveRuns: newRunRegistry(),
 		events:   newEventBus(),
-		runners: func(_ context.Context, _ runnerclient.ServiceRef, _ string) (dispatch.Runner, error) {
+		runners: func(_ context.Context, _ runnerclient.ServiceRef, _ runnerTokenSource) (dispatch.Runner, error) {
 			return dispatcher, nil
 		},
 	}

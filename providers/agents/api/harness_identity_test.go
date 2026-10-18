@@ -17,10 +17,19 @@ limitations under the License.
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/railgrid/provider-sdk/identityclient"
+	"k8s.io/client-go/rest"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 
@@ -124,5 +133,130 @@ func TestAHarnessTurnNeverBorrowsTheCallersToken(t *testing.T) {
 	}
 	if !strings.Contains(string(source), "harnessIdentity(") {
 		t.Error("harness.go no longer mints the agent's identity for the dispatch")
+	}
+}
+
+// One client must keep working after its initially issued credential rotates.
+func TestRunnerClientRefreshesCredentialPerRequest(t *testing.T) {
+	current := "first"
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.Header.Get("Authorization"); got != "Bearer "+current {
+			t.Errorf("authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	var refreshErr error
+	source := func(ctx context.Context) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return current, refreshErr
+	}
+	s := &Server{providerBase: &rest.Config{Host: server.URL, BearerToken: "bootstrap-must-not-leak"}}
+	cfg, err := s.runnerRESTConfig("tenant", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer caller-must-not-leak")
+	for _, token := range []string{"first", "renewed"} {
+		current = token
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if req.Header.Get("Authorization") != "Bearer caller-must-not-leak" {
+			t.Fatal("mutated caller request")
+		}
+	}
+	refreshErr = errors.New("identity renewal refused")
+	if _, err := client.Do(req); !errors.Is(err, refreshErr) {
+		t.Fatalf("renewal error = %v", err)
+	}
+	refreshErr = nil
+	current = ""
+	if _, err := client.Do(req); err == nil {
+		t.Fatal("empty identity sent")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Do(req.WithContext(ctx)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("sent %d requests; failed renewals must not reach server", calls)
+	}
+}
+
+func TestHarnessIdentityRenewsThroughExistingRunnerClient(t *testing.T) {
+	mints := 0
+	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints++
+		token := "initial"
+		if mints > 1 {
+			token = "renewed"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(identityclient.Token{Token: token, ExpiresAt: time.Now().Add(time.Hour)})
+	}))
+	defer issuer.Close()
+	issuerClient, err := identityclient.New(identityclient.Options{HubURL: issuer.URL, Provider: providerName, Token: "bootstrap", HTTPClient: issuer.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := harnessIdentityAgent("renewal-test")
+	f := newParkedCancelFixture(t, agent, nil)
+	f.server.bg.identities = newAgentIdentities(issuerClient)
+	source, err := f.server.harnessIdentity(context.Background(), f.identity.clusterID, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "initial"
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+expected {
+			t.Errorf("received stale credential")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer endpoint.Close()
+	f.server.providerBase = &rest.Config{Host: endpoint.URL, BearerToken: "bootstrap"}
+	cfg, err := f.server.runnerRESTConfig(f.identity.clusterID, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func() {
+		t.Helper()
+		resp, err := client.Get(endpoint.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check()
+	// Force the same cache transition as expiry without a wall-clock sleep.
+	f.server.bg.identities.sources[identityKey(f.identity.clusterID, agent.Name)].source.Invalidate()
+	expected = "renewed"
+	check()
+	if mints != 2 {
+		t.Fatalf("mints = %d, want 2", mints)
 	}
 }

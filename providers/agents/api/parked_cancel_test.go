@@ -164,7 +164,11 @@ func newParkedCancelFixture(t *testing.T, initialAgent *agentsv1alpha1.Agent, cr
 			identities: newAgentIdentities(identityClient),
 			scopedFn:   func(context.Context, string) (dynamic.Interface, error) { return dyn, nil },
 		},
-		runners: func(_ context.Context, ref runnerclient.ServiceRef, token string) (dispatch.Runner, error) {
+		runners: func(ctx context.Context, ref runnerclient.ServiceRef, source runnerTokenSource) (dispatch.Runner, error) {
+			token, err := source(ctx)
+			if err != nil {
+				return nil, err
+			}
 			dialed <- parkedCancelDial{ref: ref, token: token}
 			return dispatcher, nil
 		},
