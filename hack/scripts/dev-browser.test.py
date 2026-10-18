@@ -12,6 +12,18 @@ spec.loader.exec_module(m)
 
 
 class BrowserTest(unittest.TestCase):
+    def test_warm_prepare_uses_launchers_tilt_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            (root / '.kcp/tilt-owner.json').write_text(json.dumps({
+                'root': str(root), 'tiltDevDir': '/private-harness/tilt-settings'}))
+            config = {'root': str(root), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+            setup = m.Setup(config)
+            self.assertEqual(setup.env['TILT_DEV_DIR'], '/private-harness/tilt-settings')
+            self.assertEqual(setup.env.get('HOME'), os.environ.get('HOME'))
+
+
     def test_provisioning_wait_handles_restart_pending_and_stale_readiness(self):
         config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
         setup = m.Setup(config)

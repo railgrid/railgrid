@@ -311,6 +311,7 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 			return backend.Outcome{Status: backend.StatusFailed}, ErrCloneCredentialUnavailable
 		}
 		req.RepositoryID = strings.TrimSpace(repo.RepositoryID)
+		req.EnvironmentID = repo.EnvironmentID
 		req.BaseCommit = repo.BaseCommit
 		req.Repository = repo.Source
 		req.ExportGitResult = true

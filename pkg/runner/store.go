@@ -34,6 +34,7 @@ const (
 )
 
 type persistedState struct {
+	Environments map[string]*warmEnvironment  `json:"environments,omitempty"`
 	Version      int                          `json:"version"`
 	Attempts     map[string]*attemptRecord    `json:"attempts"`
 	Operations   map[string]operationRecord   `json:"operations"`
@@ -50,6 +51,7 @@ type persistedState struct {
 type attemptRecord struct {
 	// EventJournalBytes commits the durable replay prefix alongside the receipt.
 	EventJournalBytes int64  `json:"eventJournalBytes,omitempty"`
+	CleanupDelegated  bool   `json:"cleanupDelegated,omitempty"`
 	CleanupEligible   bool   `json:"cleanupEligible,omitempty"`
 	CleanupAttempts   int    `json:"cleanupAttempts,omitempty"`
 	CleanupError      string `json:"cleanupError,omitempty"`

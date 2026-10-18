@@ -294,7 +294,8 @@ func (s *Server) createRunObject(ctx context.Context, dyn dynamic.Interface, run
 		// What a repository run ran against is part of the REQUEST and goes on
 		// spec. Never the clone credential: the record does not hold it.
 		object.Spec.Repository = &agentsv1alpha1.RunRepository{
-			RepositoryID: repo.RepositoryID, BaseCommit: repo.BaseCommit, CommitMessage: repo.CommitMessage,
+			EnvironmentID: run.Repository.EnvironmentID,
+			RepositoryID:  repo.RepositoryID, BaseCommit: repo.BaseCommit, CommitMessage: repo.CommitMessage,
 		}
 	}
 	if d := run.Delivery; d != nil {
