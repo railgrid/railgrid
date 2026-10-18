@@ -159,6 +159,7 @@ spec:
             - title
             type: object
           status:
+            description: PullRequestStatus is what the forge shows.
             properties:
               attachmentRepositoryUID:
                 description: AttachmentRepositoryUID binds upload receipts to their
@@ -341,9 +342,8 @@ spec:
                 description: UploadedAttachments lets retries reuse successful uploads
                   for this revision.
                 items:
-                  description: |-
-                    PullRequestStatus is what the forge shows.
-                    PublishedAttachment records an upload that reconciliation can reuse.
+                  description: PublishedAttachment records an upload that reconciliation
+                    can reuse.
                   properties:
                     digest:
                       pattern: ^[a-f0-9]{64}$

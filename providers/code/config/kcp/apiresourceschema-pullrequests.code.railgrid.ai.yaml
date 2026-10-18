@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261015-e6e723c6.pullrequests.code.railgrid.ai
+  name: v261018-947b2daa.pullrequests.code.railgrid.ai
 spec:
   group: code.railgrid.ai
   names:
@@ -154,6 +154,7 @@ spec:
           - title
           type: object
         status:
+          description: PullRequestStatus is what the forge shows.
           properties:
             attachmentRepositoryUID:
               description: AttachmentRepositoryUID binds upload receipts to their
@@ -336,9 +337,8 @@ spec:
               description: UploadedAttachments lets retries reuse successful uploads
                 for this revision.
               items:
-                description: |-
-                  PullRequestStatus is what the forge shows.
-                  PublishedAttachment records an upload that reconciliation can reuse.
+                description: PublishedAttachment records an upload that reconciliation
+                  can reuse.
                 properties:
                   digest:
                     pattern: ^[a-f0-9]{64}$

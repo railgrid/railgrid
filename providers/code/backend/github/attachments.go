@@ -23,16 +23,19 @@ import (
 	"github.com/railgrid/provider-code/backend"
 )
 
+// Undocumented GitHub web upload API; see ../../docs/code-attachments.md.
+const attachmentUploadHost = "https://uploads.github.com"
+
 func (b *Backend) UploadAttachment(ctx context.Context, conn *api.Connection, cred backend.Credential, repo *api.Repository, a backend.Attachment) (string, error) {
 	if err := backend.ValidateAttachments([]backend.Attachment{a}); err != nil {
 		return "", err
 	}
 	if conn.Spec.BaseURL != "" {
-		return "", errors.New("screenshot uploads currently support github.com only")
+		return "", fmt.Errorf("%w: github.com only", backend.ErrAttachmentsUnsupported)
 	}
 	supportedToken := strings.HasPrefix(cred.Token, "ghp_") || strings.HasPrefix(cred.Token, "github_pat_") || strings.HasPrefix(cred.Token, "gho_") || strings.HasPrefix(cred.Token, "ghu_")
 	if !supportedToken {
-		return "", errors.New("screenshot uploads require a PAT or supported user OAuth token; installation tokens are unsupported")
+		return "", fmt.Errorf("%w: a supported user token is required; installation tokens are unsupported", backend.ErrAttachmentsUnsupported)
 	}
 	c, err := b.collaborationClient(ctx, conn, cred, repo)
 	if err != nil {
@@ -45,7 +48,7 @@ func (b *Backend) UploadAttachment(ctx context.Context, conn *api.Connection, cr
 	if remote.GetID() == 0 || strconv.FormatInt(remote.GetID(), 10) != repo.Status.RepoID {
 		return "", backend.ErrRepositoryIdentityConflict
 	}
-	return uploadAttachment(ctx, cred.Token, remote.GetID(), a, "https://uploads.github.com")
+	return uploadAttachment(ctx, cred.Token, remote.GetID(), a, attachmentUploadHost)
 }
 
 // The upload host is fixed by the backend, never by a staged artifact or caller.
@@ -67,6 +70,9 @@ func uploadAttachment(ctx context.Context, token string, repositoryID int64, a b
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
+		if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
+			return "", fmt.Errorf("%w: GitHub returned HTTP %d", backend.ErrAttachmentsUnsupported, response.StatusCode)
+		}
 		return "", fmt.Errorf("GitHub screenshot upload returned HTTP %d", response.StatusCode)
 	}
 	var result struct {

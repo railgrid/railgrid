@@ -237,7 +237,8 @@ type runArtifactResponse struct {
 }
 
 // runArtifact serves the `artifact` verb on a Run: POST …/runs/{id}/artifact
-// with {"name": "git-result.json" | "git-result.bundle" | "final-response.md"}.
+// with {"name": "git-result.json" | "git-result.bundle" | "final-response.md" | "screenshots.json"}.
+// The public report name is backend.FinalResponseArtifactName.
 //
 // It serves only what this provider stored for THAT run, after it verified the
 // runner's export (backend/harness/repository.go): a coordinator reads the

@@ -12,7 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+
+	"github.com/railgrid/provider-code/snapshotstore"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/railgrid/provider-code/actions"
 	api "github.com/railgrid/provider-code/apis/v1alpha1"
@@ -34,23 +38,26 @@ func (r *Reconciler) attachmentBody(ctx context.Context, c client.Client, host f
 	matches := backend.AttachmentImages.FindAllStringSubmatch(body, -1)
 	if len(matches) == 0 {
 		if strings.Contains(body, "](artifacts/screenshots/") {
-			return "", errors.New("unsupported screenshot Markdown; use simple inline PNG/JPEG paths")
+			return "", fmt.Errorf("%w: unsupported screenshot Markdown; use simple inline PNG/JPEG paths", backend.ErrAttachmentsUnsupported)
 		}
 		return body, nil
 	}
 	if pr.Spec.AttachmentRef == "" {
-		return "", errors.New("PR description references screenshots but no attachment artifact was provided")
+		return "", fmt.Errorf("%w: screenshot artifact not provided", backend.ErrAttachmentsUnsupported)
 	}
 	uploader, ok := host.(backend.AttachmentPublisher)
 	if !ok {
-		return "", errors.New("git provider cannot upload screenshots")
+		return "", fmt.Errorf("%w: git provider cannot upload screenshots", backend.ErrAttachmentsUnsupported)
 	}
 	snapshot, err := actions.FindStaged(ctx, r.Snapshots, cluster, pr.Spec.AttachmentRef)
 	if err != nil {
+		if errors.Is(err, snapshotstore.ErrNotFound) {
+			return "", fmt.Errorf("%w: screenshot artifact expired or missing", backend.ErrAttachmentsUnsupported)
+		}
 		return "", err
 	}
 	if err := backend.ValidateAttachments(snapshot.Attachments); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", backend.ErrAttachmentsUnsupported, err)
 	}
 	images := map[string]backend.Attachment{}
 	for _, a := range snapshot.Attachments {
@@ -69,7 +76,7 @@ func (r *Reconciler) attachmentBody(ctx context.Context, c client.Client, host f
 		name := match[1]
 		a, ok := images[name]
 		if !ok {
-			return "", fmt.Errorf("referenced screenshot %s was not exported", name)
+			return "", fmt.Errorf("%w: referenced screenshot %s was not exported", backend.ErrAttachmentsUnsupported, name)
 		}
 		published := ""
 		for _, old := range pr.Status.UploadedAttachments {
@@ -83,15 +90,58 @@ func (r *Reconciler) attachmentBody(ctx context.Context, c client.Client, host f
 			if err != nil {
 				return "", err
 			}
-			pr.Status.UploadedAttachments = append(pr.Status.UploadedAttachments, api.PublishedAttachment{Path: name, Digest: a.Digest(), URL: published})
-			if err := c.Status().Update(ctx, pr); err != nil {
+			receipt := api.PublishedAttachment{Path: name, Digest: a.Digest(), URL: published}
+			if err := recordAttachment(ctx, c, pr, string(repo.UID), receipt, images); err != nil {
 				return "", err
 			}
 		}
 		body = strings.ReplaceAll(body, match[0], strings.Replace(match[0], "("+name+")", "("+published+")", 1))
 	}
 	if strings.Contains(body, "](artifacts/screenshots/") {
-		return "", errors.New("unsupported screenshot Markdown; use simple inline PNG/JPEG paths")
+		return "", fmt.Errorf("%w: unsupported screenshot Markdown; use simple inline PNG/JPEG paths", backend.ErrAttachmentsUnsupported)
 	}
 	return body, nil
+}
+
+// Retry the receipt write, not the completed external upload. Patch only this
+// controller's attachment fields, retaining unrelated concurrent status edits.
+func recordAttachment(ctx context.Context, c client.Client, pr *api.PullRequest, repoUID string, receipt api.PublishedAttachment, images map[string]backend.Attachment) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		current := &api.PullRequest{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(pr), current); err != nil {
+			return err
+		}
+		if current.UID != pr.UID {
+			return fmt.Errorf("pull request identity changed while recording upload")
+		}
+		base := current.DeepCopy()
+		kept := []api.PublishedAttachment{}
+		if current.Status.AttachmentRepositoryUID == repoUID {
+			for _, old := range current.Status.UploadedAttachments {
+				if image, ok := images[old.Path]; ok && image.Digest() == old.Digest && old.Path != receipt.Path {
+					kept = append(kept, old)
+				}
+			}
+		}
+		current.Status.AttachmentRepositoryUID = repoUID
+		current.Status.UploadedAttachments = append(kept, receipt)
+		if err := c.Status().Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return err
+		}
+		// Do not replace the spec being reconciled if a user edited it concurrently.
+		pr.ResourceVersion = current.ResourceVersion
+		pr.Status.UploadedAttachments = current.Status.UploadedAttachments
+		pr.Status.AttachmentRepositoryUID = current.Status.AttachmentRepositoryUID
+		return nil
+	})
+}
+
+var localScreenshotMarkdown = regexp.MustCompile(`!?\[[^\]\r\n]*\]\(artifacts/screenshots/[^)\r\n]*\)`)
+
+func withoutLocalScreenshots(body string) string {
+	clean := localScreenshotMarkdown.ReplaceAllString(body, "")
+	if clean != body {
+		clean = strings.TrimSpace(clean) + "\n\nScreenshots are unavailable; live visual evidence has not been published."
+	}
+	return clean
 }

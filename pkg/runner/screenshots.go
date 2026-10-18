@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,9 @@ import (
 
 const ScreenshotsName = "screenshots.json"
 const MaxScreenshotsBytes = 12 << 20
+const MaxScreenshots = 8
+const MaxScreenshotBytes = 2 << 20
+const MaxScreenshotTotal = 8 << 20
 const screenshotDirectory = "artifacts/screenshots"
 
 var screenshotName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.(png|jpg|jpeg)$`)
@@ -65,19 +69,23 @@ func exportScreenshots(cfg Config, request StartRequest, workdir string) (*gitRe
 		return nil, err
 	}
 	defer func() { _ = dir.Close() }()
-	entries, err := dir.ReadDir(9)
+	entries, err := dir.ReadDir(4097)
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
-	if len(entries) > 8 {
-		return nil, errors.New("at most 8 screenshots are supported")
+	if len(entries) > 4096 {
+		return nil, errors.New("screenshot directory exceeds 4096 entries")
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	var images []Screenshot
 	total := 0
 	for _, entry := range entries {
+		if len(images) == MaxScreenshots {
+			break
+		}
 		if !screenshotName.MatchString(entry.Name()) || !entry.Type().IsRegular() {
-			return nil, fmt.Errorf("invalid screenshot file %q", entry.Name())
+			log.Printf("skipping invalid screenshot entry %q", entry.Name())
+			continue
 		}
 		path := screenshotDirectory + "/" + entry.Name()
 		before, err := screenshots.Lstat(entry.Name())
@@ -93,19 +101,21 @@ func exportScreenshots(cfg Config, request StartRequest, workdir string) (*gitRe
 			_ = f.Close()
 			return nil, errors.New("screenshot must be a regular file")
 		}
-		data, err := io.ReadAll(io.LimitReader(f, (2<<20)+1))
+		data, err := io.ReadAll(io.LimitReader(f, MaxScreenshotBytes+1))
 		_ = f.Close()
 		if err != nil {
 			return nil, err
 		}
-		total += len(data)
-		if len(data) == 0 || len(data) > 2<<20 || total > 8<<20 {
-			return nil, errors.New("screenshots exceed limits: 2 MiB each, 8 MiB total")
+		if len(data) == 0 || len(data) > MaxScreenshotBytes || total+len(data) > MaxScreenshotTotal {
+			log.Printf("skipping screenshot %q exceeding size limits", entry.Name())
+			continue
 		}
 		media := http.DetectContentType(data)
 		if media != "image/png" && media != "image/jpeg" {
-			return nil, fmt.Errorf("screenshot %s is not PNG or JPEG", path)
+			log.Printf("skipping screenshot %q: not PNG/JPEG", entry.Name())
+			continue
 		}
+		total += len(data)
 		images = append(images, Screenshot{Path: path, MediaType: media, Data: data})
 	}
 	if len(images) == 0 {
@@ -139,4 +149,8 @@ func exportScreenshots(cfg Config, request StartRequest, workdir string) (*gitRe
 		return nil, err
 	}
 	return &item, nil
+}
+
+func screenshotInstructions(workdir string) string {
+	return fmt.Sprintf("\n\nScreenshot output directory (absolute): %s. This is rooted at the Git checkout, regardless of your current working directory; never put screenshots inside a provider/module directory.\nScreenshot attachments: save PNG/JPEG images directly in %s/ using simple filenames (letters, digits, dots, underscores, hyphens). Maximum %d images, %d MiB each, %d MiB total. Reference them in your final response as ![description](%s/name.png). New evidence files are exported separately from Git. Do not commit new screenshots. Never capture credentials or include them in your report.", filepath.Join(workdir, screenshotDirectory), screenshotDirectory, MaxScreenshots, MaxScreenshotBytes>>20, MaxScreenshotTotal>>20, screenshotDirectory)
 }

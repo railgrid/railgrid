@@ -882,10 +882,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// Publish only the final assistant response, never the accumulated
 		// commentary, through the existing artifact contract.
 		if strings.TrimSpace(finalContent) != "" {
-			data := []byte(finalContent)
+			data := []byte(backend.PublicReport(finalContent))
 			sum := sha256.Sum256(data)
 			out.Artifacts = append(out.Artifacts, backend.Artifact{
-				Name: "final-response.md", MediaType: "text/markdown", Data: data,
+				Name: backend.FinalResponseArtifactName, MediaType: "text/markdown", Data: data,
 				Size: int64(len(data)), Digest: hex.EncodeToString(sum[:]),
 			})
 		}

@@ -145,7 +145,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
 	}
 
-	body := pr.Spec.Body
+	body := withoutLocalScreenshots(pr.Spec.Body)
 	digest := textDigest(&pr)
 	textChanged := pr.Status.PublishedTextDigest != digest
 	// On upgrade, adopt the baseline for already-observed PRs. Only a new
@@ -154,17 +154,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if adoptTextBaseline {
 		textChanged = false
 	}
-	if textChanged && (pr.Spec.DesiredHead != nil || pr.Status.Number != 0) {
-		body, err = r.attachmentBody(ctx, c, host, conn, cred, repo, string(req.ClusterName), &pr)
-		if err != nil {
-			next := pr.DeepCopy()
-			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "publishing screenshots: "+err.Error(), pr.Generation)
-			if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
-				return ctrl.Result{}, updateErr
-			}
-			return ctrl.Result{}, err
-		}
-	}
+
 	next := pr.DeepCopy()
 	next.Status.ObservedGeneration = pr.Generation
 	if adoptTextBaseline {
@@ -232,7 +222,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 		return ctrl.Result{RequeueAfter: pushSettleInterval}, nil
 	}
+	if textChanged && (observed.Merged || !strings.EqualFold(observed.State, "open")) {
+		next.Status.PublishedTextDigest = digest
+	}
 	if textChanged && !observed.Merged && strings.EqualFold(observed.State, "open") {
+		resolved, attachmentErr := r.attachmentBody(ctx, c, host, conn, cred, repo, string(req.ClusterName), &pr)
+		next.ResourceVersion = pr.ResourceVersion
+		next.Status.UploadedAttachments = pr.Status.UploadedAttachments
+		next.Status.AttachmentRepositoryUID = pr.Status.AttachmentRepositoryUID
+		terminalAttachmentError := errors.Is(attachmentErr, backend.ErrAttachmentsUnsupported)
+		if attachmentErr == nil {
+			body = resolved
+			shared.SetCondition(&next.Status.Conditions, "AttachmentsPublished", metav1.ConditionTrue, "Published", "Screenshot references resolved.", pr.Generation)
+		} else {
+			body = withoutLocalScreenshots(pr.Spec.Body)
+			reason := "Retrying"
+			if terminalAttachmentError {
+				reason = "Unavailable"
+			}
+			shared.SetCondition(&next.Status.Conditions, "AttachmentsPublished", metav1.ConditionFalse, reason, attachmentErr.Error(), pr.Generation)
+		}
 		input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: observed.Commit, Title: pr.Spec.Title, Body: body}
 		if _, err := host.UpdatePullRequest(ctx, conn, cred, repo, next.Status.Number, input); err != nil {
 			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "publishing PR description: "+err.Error(), pr.Generation)
@@ -241,7 +250,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			}
 			return ctrl.Result{}, err
 		}
-		next.Status.PublishedTextDigest = digest
+		if attachmentErr == nil || terminalAttachmentError {
+			next.Status.PublishedTextDigest = digest
+		}
 	}
 	next.Status.URL = observed.URL
 	next.Status.Head = observed.Commit

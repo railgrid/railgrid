@@ -11,6 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
 	codescheme "github.com/railgrid/provider-code/scheme"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,12 +36,16 @@ import (
 
 type imageForge struct {
 	fakeForge
-	calls []string
-	fail  string
+	calls     []string
+	fail      string
+	uploadErr error
 }
 
 func (f *imageForge) UploadAttachment(_ context.Context, _ *api.Connection, _ backend.Credential, _ *api.Repository, a backend.Attachment) (string, error) {
 	f.calls = append(f.calls, a.Path)
+	if f.uploadErr != nil {
+		return "", f.uploadErr
+	}
 	if a.Path == f.fail {
 		return "", errors.New("upload failed")
 	}
@@ -54,7 +63,23 @@ func TestAttachmentRetryPersistsUploadsAndRewrites(t *testing.T) {
 	if err := api.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(pr).WithObjects(pr).Build()
+	conflicts := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(pr).WithObjects(pr).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, c client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			if conflicts == 0 {
+				conflicts++
+				current := &api.PullRequest{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), current); err != nil {
+					return err
+				}
+				current.Status.Merger = "concurrent-writer"
+				if err := c.Status().Update(ctx, current); err != nil {
+					return err
+				}
+				return apierrors.NewConflict(schema.GroupResource{Resource: "pullrequests"}, obj.GetName(), errors.New("concurrent update"))
+			}
+			return c.SubResource(sub).Patch(ctx, obj, patch, opts...)
+		}}).Build()
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +92,9 @@ func TestAttachmentRetryPersistsUploadsAndRewrites(t *testing.T) {
 	// Reload as a fresh reconcile would, proving the receipt is durable.
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
 		t.Fatal(err)
+	}
+	if pr.Status.Merger != "concurrent-writer" {
+		t.Fatal("receipt patch lost unrelated status")
 	}
 	if len(pr.Status.UploadedAttachments) != 1 {
 		t.Fatal("successful upload not persisted")
@@ -214,3 +242,97 @@ type imageCluster struct {
 }
 
 func (c imageCluster) GetClient() client.Client { return c.c }
+
+func publicationFixture(t *testing.T) (*Reconciler, client.Client, *reconcileImageForge, mcreconcile.Request, *api.PullRequest) {
+	t.Helper()
+	store, err := snapshotstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := backend.Attachment{Path: "artifacts/screenshots/a.png", MediaType: "image/png", Data: append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 32)...)}
+	ref := stage(t, store, "tenant", backend.Snapshot{Attachments: []backend.Attachment{image}})
+	pr := resource(&api.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree, BundleRef: ref})
+	pr.Name = "pr"
+	pr.Generation = 1
+	pr.Status.Head = headA
+	pr.Spec.Body = "![A](artifacts/screenshots/a.png)"
+	pr.Spec.AttachmentRef = ref
+	repo := &api.Repository{ObjectMeta: metav1.ObjectMeta{Name: "product", UID: "repo"}, Spec: api.RepositorySpec{ConnectionRef: "conn"}}
+	conn := &api.Connection{ObjectMeta: metav1.ObjectMeta{Name: "conn"}, Spec: api.ConnectionSpec{Type: api.CredentialTypePAT, Provider: api.ProviderGitHub, SecretRef: api.LocalSecretReference{Name: "credential", Namespace: "default", Key: "token"}}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+	c := fake.NewClientBuilder().WithScheme(codescheme.NewScheme()).WithStatusSubresource(pr).WithObjects(pr, repo, conn, secret).Build()
+	host := &reconcileImageForge{}
+	registry := backend.NewRegistry()
+	if err := registry.Register(host); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Manager: imageManager{c: c}, Backends: registry, Snapshots: store}
+	req := mcreconcile.Request{ClusterName: "tenant", Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: "pr"}}}
+	return r, c, host, req, pr
+}
+
+func TestAttachmentFailuresDoNotWithholdPR(t *testing.T) {
+	for _, mode := range []string{"missing", "unsupported", "transient", "closed", "merged"} {
+		t.Run(mode, func(t *testing.T) {
+			r, c, host, req, pr := publicationFixture(t)
+			switch mode {
+			case "missing":
+				pr.Spec.AttachmentRef = ""
+			case "unsupported":
+				host.uploadErr = backend.ErrAttachmentsUnsupported
+			case "transient":
+				host.uploadErr = errors.New("temporary upload outage")
+			case "closed", "merged":
+				pr.Status.Number = 17
+				host.pr = &backend.PullRequest{Number: 17, Repository: "acme/product", HeadRepository: "acme/product", Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: headA, State: "closed", Merged: mode == "merged"}
+				pr.Spec.AttachmentRef = strings.Repeat("f", 64) // absent staged artifact must not matter
+			}
+			if err := c.Update(t.Context(), pr); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "closed" || mode == "merged" {
+				pr.Status.Number = 17
+				pr.Status.Head = headA
+				if err := c.Status().Update(t.Context(), pr); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := r.Reconcile(t.Context(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = c.Get(t.Context(), client.ObjectKeyFromObject(pr), pr); err != nil {
+				t.Fatal(err)
+			}
+			if !apimeta.IsStatusConditionTrue(pr.Status.Conditions, api.ConditionReady) {
+				t.Fatalf("evidence withheld valid PR: %+v", pr.Status.Conditions)
+			}
+			if mode == "closed" || mode == "merged" {
+				if len(host.calls) != 0 || host.updates != 0 || result.RequeueAfter != 0 || pr.Status.PublishedTextDigest != textDigest(pr) {
+					t.Fatal("terminal PR attempted attachment work")
+				}
+				return
+			}
+			if host.created != 1 || strings.Contains(host.body, "artifacts/screenshots/") || !strings.Contains(host.body, "Screenshots are unavailable") {
+				t.Fatalf("PR fallback missing: %s", host.body)
+			}
+			if !apimeta.IsStatusConditionFalse(pr.Status.Conditions, "AttachmentsPublished") {
+				t.Fatal("missing attachment condition")
+			}
+			if mode == "transient" {
+				if pr.Status.PublishedTextDigest == textDigest(pr) || result.RequeueAfter == 0 {
+					t.Fatal("transient failure will not retry")
+				}
+				host.uploadErr = nil
+				if _, err = r.Reconcile(t.Context(), req); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(host.body, "https://github.com/user-attachments/") {
+					t.Fatal("retry did not publish evidence")
+				}
+			} else if pr.Status.PublishedTextDigest != textDigest(pr) {
+				t.Fatal("terminal failure retries unchanged spec")
+			}
+		})
+	}
+}

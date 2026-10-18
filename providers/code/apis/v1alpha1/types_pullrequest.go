@@ -193,7 +193,6 @@ type PullRequestComment struct {
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
 }
 
-// PullRequestStatus is what the forge shows.
 // PublishedAttachment records an upload that reconciliation can reuse.
 type PublishedAttachment struct {
 	// +kubebuilder:validation:MaxLength=512
@@ -204,6 +203,7 @@ type PublishedAttachment struct {
 	URL string `json:"url"`
 }
 
+// PullRequestStatus is what the forge shows.
 type PullRequestStatus struct {
 	// AttachmentRepositoryUID binds upload receipts to their destination repository.
 	// +optional

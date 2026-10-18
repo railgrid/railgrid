@@ -243,6 +243,41 @@ func archiveEnvironmentScreenshots(cfg Config, env *warmEnvironment) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// Existing repository assets are source files, not disposable evidence.
+	if commitPattern.MatchString(env.Base) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		tracked, err := gitResultCommand(ctx, env.Workdir, nil, nil, "ls-tree", "-r", "--name-only", "-z", env.Base, "--", screenshotDirectory)
+		if err != nil {
+			return err
+		}
+		keep := map[string]bool{}
+		for _, path := range nulPaths(tracked) {
+			keep[path] = true
+		}
+		if len(keep) > 0 {
+			return filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if entry.IsDir() {
+					return nil
+				}
+				rel, err := filepath.Rel(source, path)
+				if err != nil {
+					return err
+				}
+				if keep[screenshotDirectory+"/"+filepath.ToSlash(rel)] {
+					return nil
+				}
+				destination := filepath.Join(target, rel)
+				if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+					return err
+				}
+				return os.Rename(path, destination)
+			})
+		}
+	}
 	return os.Rename(source, target)
 }
 
@@ -254,6 +289,14 @@ func environmentFingerprint(ctx context.Context, workdir string) (string, string
 	paths, err := worktreeSnapshotPaths(ctx, workdir)
 	if err != nil {
 		return "", "", err
+	}
+	trackedScreenshots, err := gitResultCommand(ctx, workdir, nil, nil, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", screenshotDirectory)
+	if err != nil {
+		return "", "", err
+	}
+	tracked := map[string]bool{}
+	for _, path := range nulPaths(trackedScreenshots) {
+		tracked[path] = true
 	}
 	h := sha256.New()
 	var hashed int64
@@ -267,7 +310,7 @@ func environmentFingerprint(ctx context.Context, workdir string) (string, string
 		if err := ctx.Err(); err != nil {
 			return "", "", err
 		}
-		if strings.HasPrefix(path, screenshotDirectory+"/") {
+		if strings.HasPrefix(path, screenshotDirectory+"/") && !tracked[path] {
 			continue
 		}
 		full, info, err := inspectGitResultPath(workdir, path)

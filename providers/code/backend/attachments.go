@@ -57,3 +57,6 @@ func ValidateAttachments(images []Attachment) error {
 type AttachmentPublisher interface {
 	UploadAttachment(context.Context, *api.Connection, Credential, *api.Repository, Attachment) (string, error)
 }
+
+// ErrAttachmentsUnsupported means retrying unchanged configuration cannot help.
+var ErrAttachmentsUnsupported = errors.New("screenshot publication unsupported")
