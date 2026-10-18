@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 25;
+  --railgrid-agent-ui-version: 28;
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
   --k-ai-pane-leave-duration: 190ms;
@@ -1505,3 +1505,55 @@ button.k-workbench-tab {
 
 .k-ai-workbench-pane--overflow-visible > .k-ai-workbench-pane__body { overflow: visible; }
 .k-ai-composer__actions--fill { flex: 1; }
+
+/* Adapt to the conversation pane, including a narrow pane on a wide screen. */
+.k-ai-composer--adaptive { container: ai-composer / inline-size; }
+@container ai-composer (max-width: 560px) {
+  .k-ai-composer__controls--flow,
+  .k-ai-composer__controls--flow .k-ai-composer__control-group { flex-wrap: nowrap; }
+  .k-ai-composer__controls--flow { gap: 4px; }
+  .k-ai-composer__controls--flow .k-ai-composer__control-group { flex-shrink: 0; }
+  .k-ai-composer__controls--flow .k-ai-composer__actions { flex-shrink: 1; }
+  .k-ai-composer__mode { width: 32px; padding-inline: 0; justify-content: center; }
+  .k-ai-composer__mode-label,
+  .k-ai-composer__mode-chevron { display: none; }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  @container ai-composer (max-width: 560px) {
+    .k-ai-composer__controls--flow { margin-inline-end: 60px; }
+    .k-ai-composer__mode { width: 44px; min-height: 44px; }
+  }
+}
+
+.k-ai-composer__mode-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 12px 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.k-ai-composer__mode-status-label { display: inline-flex; align-items: center; gap: 6px; }
+.k-ai-composer__mode-status svg { width: 14px; height: 14px; }
+.k-ai-composer__mode-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.k-ai-composer__mode-remove:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.k-ai-composer__mode-remove:disabled { cursor: not-allowed; opacity: .55; }
+@media (hover: hover) {
+  .k-ai-composer__mode-remove:hover:not(:disabled) { background: var(--color-surface-hover); color: var(--color-text-primary); }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-ai-composer__mode-remove { width: 44px; height: 44px; }
+}

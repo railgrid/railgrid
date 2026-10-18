@@ -62,7 +62,7 @@ test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.ok(modelPicker.includes('class="k-ai-model-picker__trigger"') && modelPicker.includes('k-ai-model-picker__option'))
   assert.ok((modelsSettings.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
   assert.ok((responseModePicker.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
-  assert.ok((approvalModePicker.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
+  assert.ok((approvalModePicker.match(/class="[^"\n]*\bapp-studio-touch-target\b/g) ?? []).length >= 4)
   assert.ok((skillsWorkbench.match(/class="app-studio-touch-target/g) ?? []).length >= 5)
   assert.match(preProjectComposer, /ref="attachmentMenuTriggerRef"[\s\S]*class="app-studio-touch-target/)
   assert.match(app, /aria-label="Search projects"/)

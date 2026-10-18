@@ -446,7 +446,10 @@ test('mounted picker commits only declared choices, restores model drafts, and h
     state.saving = true
     await nextTick()
     assert.equal(slider.props['aria-disabled'], 'true')
-    assert.match(textContent(browser.body), /Saving preference/)
+    assert.doesNotMatch(textContent(browser.root), /Saving preference/)
+    await new Promise(resolve => setTimeout(resolve, 550))
+    await nextTick()
+    assert.match(textContent(browser.root), /Saving preference/)
     const effortEventCount = events.efforts.length
     const keyboardLock = await dispatch(slider, 'keydown', { key: 'ArrowRight' })
     assert.equal(keyboardLock.defaultPrevented, true, 'saving locks slider keyboard changes')
@@ -482,6 +485,40 @@ test('mounted picker commits only declared choices, restores model drafts, and h
   } finally {
     app.unmount()
     await nextTick()
+    browser.restore()
+  }
+})
+
+
+test('save feedback delays, cancels, survives reopening, and cleans up on unmount', async () => {
+  const browser = installBrowserMocks()
+  const { app, state, roots } = mountPicker(browser)
+  const wait = async ms => { await new Promise(resolve => setTimeout(resolve, ms)); await nextTick() }
+  try {
+    state.saving = true
+    await wait(100)
+    assert.doesNotMatch(textContent(browser.root), /Saving preference/)
+    state.saving = false
+    await wait(550)
+    assert.doesNotMatch(textContent(browser.root), /Saving preference/)
+    state.saving = true
+    await wait(550)
+    assert.match(textContent(browser.root), /Saving preference/)
+    await dispatch(findByTestID(roots, 'model-reasoning-trigger'), 'click')
+    assert.match(textContent(browser.root), /Saving preference/)
+    await dispatch(findByTestID(roots, 'reasoning-picker-panel'), 'keydown', { key: 'Escape' })
+    assert.match(textContent(browser.root), /Saving preference/)
+    state.saving = false
+    await nextTick()
+    assert.doesNotMatch(textContent(browser.root), /Saving preference/)
+    state.saving = true
+    await nextTick()
+    assert.doesNotMatch(textContent(browser.root), /Saving preference/)
+    app.unmount()
+    await wait(550)
+    assert.doesNotMatch(textContent(browser.root), /Saving preference/)
+  } finally {
+    app.unmount()
     browser.restore()
   }
 })

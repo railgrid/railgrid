@@ -530,3 +530,18 @@ test('clears detached selections before external rerenders and preserves the div
   assert.match(syncBody, /const signature = stateSignature\(props\.modelValue, parts, nextSkills, nextResources\)/)
   assert.match(syncBody, /if \(signature !== lastRenderedSignature\.value\) \{[\s\S]*renderParts\(parts, props\.modelValue, nextSkills, nextResources\)/)
 })
+
+test('non-default draft modes expose a named exit control and default stays quiet', async () => {
+  const { default: Composer } = await vite.ssrLoadModule('/src/AssistantRichComposer.vue')
+  for (const responseMode of ['default', 'plan', 'review']) {
+    const html = await renderToString(createSSRApp(Composer, {
+      modelValue: 'Keep this draft', responseMode, projectName: 'example',
+      skills: [], providers: [], ctx: null,
+    }))
+    if (responseMode === 'default') assert.doesNotMatch(html, /k-ai-composer__mode-status-label/)
+    else {
+      assert.match(html, new RegExp(`aria-label="Exit ${responseMode} mode"`))
+      assert.match(html, /role="status"/)
+    }
+  }
+})

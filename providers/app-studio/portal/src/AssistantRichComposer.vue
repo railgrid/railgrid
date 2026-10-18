@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { File as FileIcon, FileText, Image, Loader2, Paperclip, Plus, RotateCcw, Upload, X } from 'lucide-vue-next'
+import { File as FileIcon, FileText, Image, Lightbulb, SearchCheck, Loader2, Paperclip, Plus, RotateCcw, Upload, X } from 'lucide-vue-next'
 import { api, isProjectAPINotFoundError } from './api'
 import AssistantCommandPalette from './AssistantCommandPalette.vue'
 import AssistantAttachmentPreview from './AssistantAttachmentPreview.vue'
@@ -46,6 +46,7 @@ const MAX_CHIPS = 8
 
 const props = withDefaults(defineProps<{
   modelValue: string
+  responseMode?: ProjectAssistantRunMode
   contentParts?: ProjectAssistantContentPart[]
   draftScopeKey?: string
   projectName: string
@@ -63,6 +64,7 @@ const props = withDefaults(defineProps<{
   annotationPagePath?: string
   unresolvedAnnotationIds?: string[]
 }>(), {
+  responseMode: 'default',
   contentParts: () => [],
   draftScopeKey: '',
   selectedSkills: () => [],
@@ -1306,6 +1308,23 @@ defineExpose({
         disclosure-id="assistant-composer-annotations"
         @remove-all="removeAllAnnotations"
       />
+    </div>
+    <div v-if="responseMode !== 'default'" class="k-ai-composer__mode-status">
+      <span class="k-ai-composer__mode-status-label" role="status">
+        <Lightbulb v-if="responseMode === 'plan'" aria-hidden="true" :stroke-width="1.75" />
+        <SearchCheck v-else aria-hidden="true" :stroke-width="1.75" />
+        {{ responseMode === 'plan' ? 'Plan' : 'Review' }}
+      </span>
+      <button
+        type="button"
+        class="k-ai-composer__mode-remove"
+        :disabled="disabled || submitting"
+        :aria-label="`Exit ${responseMode} mode`"
+        :title="`Exit ${responseMode} mode`"
+        @click="emit('selectMode', 'default'); focusEditor(false)"
+      >
+        <X aria-hidden="true" :stroke-width="1.75" />
+      </button>
     </div>
     <div v-if="submitting" role="status" class="min-h-10 px-3 py-2.5 text-[13px] leading-5 text-text-muted">
       Sending…

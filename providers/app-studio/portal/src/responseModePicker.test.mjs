@@ -48,12 +48,13 @@ test('provides explicit default, plan, and review choices in one responsive popo
   assert.match(source, /max-h-\[calc\(100dvh-1rem\)\]/)
 })
 
-test('composer mounts both current settings', async () => {
+test('composer exposes permissions and keeps response modes in commands', async () => {
   const [app, composer] = await Promise.all([
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
   ])
-  assert.match(app, /<ResponseModePicker/)
+  assert.doesNotMatch(app, /<ResponseModePicker/)
+  assert.match(app, /@select-mode="selectAssistantResponseMode"/)
   assert.match(app, /<ApprovalModePicker/)
   assert.match(app, /<template #controls>/)
   assert.match(composer, /class="k-ai-composer__controls k-ai-composer__controls--flow"/)
