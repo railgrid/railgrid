@@ -545,3 +545,35 @@ test('non-default draft modes expose a named exit control and default stays quie
     }
   }
 })
+
+test('composer exposes permissions and keeps response modes in commands', async () => {
+  const [app, composer] = await Promise.all([
+    readFile(new URL('./App.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+  ])
+  assert.doesNotMatch(app, /<ResponseModePicker/)
+  assert.match(app, /@select-mode="selectAssistantResponseMode"/)
+  assert.match(app, /<ApprovalModePicker/)
+  assert.match(app, /<template #controls>/)
+  assert.match(composer, /class="k-ai-composer__controls k-ai-composer__controls--flow"/)
+  assert.match(composer, /class="k-ai-composer__actions"/)
+  assert.match(composer, /<slot name="controls" \/>/)
+  assert.match(app, /rounded-md bg-accent text-on-accent/)
+  assert.match(app, /<AIPrimaryAction[\s\S]*:state="assistantComposerShowsStop \? assistantComposerStopDisabled \? 'stopping' : 'stop' : 'send'/)
+})
+
+
+test('draft mode exit is locked while a run is active, submitting, or disabled', async () => {
+  const { default: Composer } = await vite.ssrLoadModule('/src/AssistantRichComposer.vue')
+  for (const responseMode of ['plan', 'review']) {
+    for (const state of [{}, { activeRun: true }, { submitting: true }, { disabled: true }]) {
+      const html = await renderToString(createSSRApp(Composer, {
+        modelValue: 'Keep this draft', responseMode, projectName: 'example',
+        skills: [], providers: [], ctx: null, ...state,
+      }))
+      const button = html.match(/<button[^>]*class="k-ai-composer__mode-remove"[^>]*>/)?.[0]
+      assert.ok(button)
+      assert.equal(/ disabled(?:[ =>])/.test(button), Object.keys(state).length > 0)
+    }
+  }
+})

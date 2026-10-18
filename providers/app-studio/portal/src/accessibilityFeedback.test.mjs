@@ -14,7 +14,6 @@ const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.
 const modelPicker = await readFile(new URL('./agentkit/AIModelPicker.vue', import.meta.url), 'utf8')
 const modelsSettings = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
 const preProjectComposer = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
-const responseModePicker = await readFile(new URL('./ResponseModePicker.vue', import.meta.url), 'utf8')
 const skillsWorkbench = await readFile(new URL('./SkillsWorkbench.vue', import.meta.url), 'utf8')
 const canonicalRailgridUI = await readFile(new URL('../../../../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 const railgridUIDestinations = await Promise.all([
@@ -61,7 +60,6 @@ test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.ok((commandPalette.match(/class="app-studio-touch-target/g) ?? []).length >= 5)
   assert.ok(modelPicker.includes('class="k-ai-model-picker__trigger"') && modelPicker.includes('k-ai-model-picker__option'))
   assert.ok((modelsSettings.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
-  assert.ok((responseModePicker.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
   assert.ok((approvalModePicker.match(/class="[^"\n]*\bapp-studio-touch-target\b/g) ?? []).length >= 4)
   assert.ok((skillsWorkbench.match(/class="app-studio-touch-target/g) ?? []).length >= 5)
   assert.match(preProjectComposer, /ref="attachmentMenuTriggerRef"[\s\S]*class="app-studio-touch-target/)

@@ -1318,7 +1318,7 @@ defineExpose({
       <button
         type="button"
         class="k-ai-composer__mode-remove"
-        :disabled="disabled || submitting"
+        :disabled="disabled || submitting || activeRun"
         :aria-label="`Exit ${responseMode} mode`"
         :title="`Exit ${responseMode} mode`"
         @click="emit('selectMode', 'default'); focusEditor(false)"

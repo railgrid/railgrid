@@ -24,7 +24,7 @@
     "test:assistant-progress": "node --test src/assistantProgress.test.mjs src/assistantThreadProjection.test.mjs",
     "test:assistant-trace": "node --test src/assistantTrace.test.mjs",
     "test:approval-mode": "node --test src/approvalModePicker.test.mjs",
-    "test:response-mode": "node --test src/responseModePicker.test.mjs",
+    "test:response-mode": "node --test src/assistantRichComposer.test.mjs",
     "test:assistant-commands": "node --test src/assistantCommandPalette.test.mjs",
     "test:assistant-rich-composer": "node --test src/assistantRichComposer.test.mjs",
     "test:assistant-composer-draft": "node --test src/assistantComposerDraft.test.mjs",

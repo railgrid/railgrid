@@ -16,8 +16,8 @@ remain visible at reduced opacity and do not retain a hover surface.
 ## Use when
 
 Use this contract for dropdown and context menus. `ActionMenu` owns a complete
-Vue overflow-menu behavior, while App Studio's PreviewActionsMenu,
-ResponseModePicker, and ApprovalModePicker follow the same geometry with local
+Vue overflow-menu behavior, while App Studio's PreviewActionsMenu
+and ApprovalModePicker follow the same geometry with local
 Tailwind classes.
 
 ## Avoid when
@@ -37,8 +37,8 @@ opacity and do not retain a hover surface.
 Destructive items use danger text, danger-subtle hover, and a hairline divider.
 Keyboard behavior is arrows plus Home/End, Escape closes, and focus returns to
 the trigger. `ActionMenu` adds roving focus, busy item exclusion, outside
-pointer/focus dismissal, and native Tab exit; App Studio's PreviewActionsMenu,
-ResponseModePicker, and ApprovalModePicker follow the same geometry with local
+pointer/focus dismissal, and native Tab exit; App Studio's PreviewActionsMenu
+and ApprovalModePicker follow the same geometry with local
 Tailwind classes.
 
 ## Content

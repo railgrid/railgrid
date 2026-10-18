@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, ChevronDown, Hand, ShieldCheck, ShieldX } from 'lucide-vue-next'
+import { Check, ChevronDown, LoaderCircle, Hand, ShieldCheck, ShieldX } from 'lucide-vue-next'
 import type { ProjectAssistantApprovalMode } from './types'
 import { useModePickerMenu } from './useModePickerMenu'
 
@@ -59,17 +59,20 @@ const choose = selectMode
       aria-haspopup="menu"
       :aria-expanded="open"
       :aria-controls="menuID"
-      :title="`Approval mode: ${labels[mode]}`"
-      :aria-label="`Approval mode: ${labels[mode]}`"
+      :title="busy ? 'Saving approval mode…' : `Approval mode: ${labels[mode]}`"
+      :aria-label="busy ? 'Saving approval mode…' : `Approval mode: ${labels[mode]}`"
       @click="open ? closeMenu() : openMenu()"
       @keydown="handleTriggerKeydown"
     >
-      <ShieldCheck v-if="mode === 'on_request'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+      <LoaderCircle v-if="busy" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <ShieldCheck v-else-if="mode === 'on_request'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
       <Hand v-else-if="mode === 'always_ask'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
       <ShieldX v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
       <span class="k-ai-composer__mode-label truncate">{{ busy ? 'Saving…' : labels[mode] }}</span>
       <ChevronDown class="k-ai-composer__mode-chevron h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="2" aria-hidden="true" />
     </button>
+
+    <span class="sr-only" role="status" aria-live="polite">{{ busy ? 'Saving approval mode…' : '' }}</span>
 
     <Teleport to="#app-studio-overlay-root">
       <div
@@ -79,7 +82,7 @@ const choose = selectMode
         class="k-menu max-h-[calc(100dvh-1rem)] w-80 min-w-0 max-w-[calc(100vw-1rem)] overflow-y-auto"
         :style="panelStyle"
         role="menu"
-        :aria-label="`Approval mode: ${labels[mode]}`"
+        :aria-label="busy ? 'Saving approval mode…' : `Approval mode: ${labels[mode]}`"
         :aria-labelledby="triggerID"
         @keydown="handleMenuKeydown"
       >
