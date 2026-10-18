@@ -140,6 +140,20 @@ func (a *agentIdentities) token(ctx context.Context, dyn dynamic.Interface, clus
 	return token.Token
 }
 
+// tokenSource resolves permissions once at dispatch. Requests on the resulting
+// runner client use the source's token cache; a subsequent dispatch resolves
+// permissions again and sourceFor detects any changed rules.
+func (a *agentIdentities) tokenSource(ctx context.Context, dyn dynamic.Interface, cluster string, agent *agentsv1alpha1.Agent) (*identityclient.TokenSource, error) {
+	if a == nil || a.client == nil || agent == nil {
+		return nil, fmt.Errorf("agent identity is not configured")
+	}
+	rules, err := a.rulesFor(ctx, dyn, agent)
+	if err != nil {
+		return nil, fmt.Errorf("resolving runner identity permissions: %w", err)
+	}
+	return a.sourceFor(cluster, agent, rules), nil
+}
+
 // sourceFor returns the agent's token source, rebuilding it when the rules it
 // was created with no longer match.
 //

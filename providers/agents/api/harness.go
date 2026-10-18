@@ -69,6 +69,8 @@ type runnerDialer func(ctx context.Context, ref runnerclient.ServiceRef, token r
 type runnerTokenSource func(context.Context) (string, error)
 
 // dialRunner builds a runner client using the agent's renewable scoped identity.
+// client.New requires the tenant's kcp front door plus /clusters/{id}; it then
+// renders the Service proxy paths itself using the shared data-plane grammar.
 func (s *Server) dialRunner(_ context.Context, ref runnerclient.ServiceRef, token runnerTokenSource) (dispatch.Runner, error) {
 	cfg, err := s.runnerRESTConfig(ref.Cluster, token)
 	if err != nil {
@@ -134,8 +136,9 @@ func (s *Server) runnerRESTConfig(clusterID string, token runnerTokenSource) (*r
 	return cfg, nil
 }
 
-// Clone the request so authentication never mutates a request shared with a
-// caller or retry. A failed renewal must not fall back to bootstrap credentials.
+// runnerIdentityTransport authenticates each request with a current agent token,
+// replacing any existing Authorization header. Renewal occurs at request start;
+// an already-open response stream is not reauthenticated mid-stream.
 type runnerIdentityTransport struct {
 	base  http.RoundTripper
 	token runnerTokenSource
@@ -143,12 +146,16 @@ type runnerIdentityTransport struct {
 
 func (t runnerIdentityTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	token, err := t.token(req.Context())
+	if err == nil && strings.TrimSpace(token) == "" {
+		err = errors.New("no identity was supplied for this runner call")
+	}
 	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
-	if strings.TrimSpace(token) == "" {
-		return nil, errors.New("no identity was supplied for this runner call")
-	}
+	// Preserve the caller's request and headers for retries.
 	authenticated := req.Clone(req.Context())
 	authenticated.Header.Set("Authorization", "Bearer "+token)
 	return t.base.RoundTrip(authenticated)
@@ -181,13 +188,21 @@ func (s *Server) harnessIdentity(ctx context.Context, clusterID string, agent *a
 	if err != nil {
 		return nil, fmt.Errorf("reaching workspace %s to mint this agent's identity: %w", clusterID, err)
 	}
-	token := func(ctx context.Context) (string, error) {
-		value := s.bg.identities.token(ctx, dyn, clusterID, agent)
-		if strings.TrimSpace(value) == "" {
-			return "", errors.New("the hub did not mint an identity for this agent, so it cannot reach its runner; check that the agents provider is enabled in this workspace with its edges.railgrid.ai requirement accepted")
-		}
-		return value, nil
+	source, err := s.bg.identities.tokenSource(ctx, dyn, clusterID, agent)
+	if err != nil {
+		return nil, err
 	}
+	token := func(ctx context.Context) (string, error) {
+		value, err := source.Token(ctx)
+		if err != nil {
+			return "", fmt.Errorf("renewing the agent's runner identity: %w", err)
+		}
+		if strings.TrimSpace(value.Token) == "" {
+			return "", errors.New("the hub returned an empty runner identity")
+		}
+		return value.Token, nil
+	}
+
 	// Validate before dispatch, then retain the source instead of this token.
 	if _, err := token(ctx); err != nil {
 		return nil, err

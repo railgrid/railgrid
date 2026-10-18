@@ -20,11 +20,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,9 +141,9 @@ func TestAHarnessTurnNeverBorrowsTheCallersToken(t *testing.T) {
 // One client must keep working after its initially issued credential rotates.
 func TestRunnerClientRefreshesCredentialPerRequest(t *testing.T) {
 	current := "first"
-	calls := 0
+	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		if got := r.Header.Get("Authorization"); got != "Bearer "+current {
 			t.Errorf("authorization = %q", got)
 		}
@@ -196,17 +198,22 @@ func TestRunnerClientRefreshesCredentialPerRequest(t *testing.T) {
 	if _, err := client.Do(req.WithContext(ctx)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation = %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("sent %d requests; failed renewals must not reach server", calls)
+	if calls.Load() != 2 {
+		t.Fatalf("sent %d requests; failed renewals must not reach server", calls.Load())
 	}
 }
 
 func TestHarnessIdentityRenewsThroughExistingRunnerClient(t *testing.T) {
-	mints := 0
+	var mints atomic.Int32
+	var refuse atomic.Bool
 	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mints++
+		if refuse.Load() {
+			http.Error(w, "issuer unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		mint := mints.Add(1)
 		token := "initial"
-		if mints > 1 {
+		if mint > 1 {
 			token = "renewed"
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -218,11 +225,17 @@ func TestHarnessIdentityRenewsThroughExistingRunnerClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := harnessIdentityAgent("renewal-test")
+	agent.Spec.Tools.Interactive.Toolsets = []string{"test-toolset"}
+	agent.Spec.Tools.Interactive.Connections = []string{"test-connection"}
 	f := newParkedCancelFixture(t, agent, nil)
 	f.server.bg.identities = newAgentIdentities(issuerClient)
 	source, err := f.server.harnessIdentity(context.Background(), f.identity.clusterID, agent)
 	if err != nil {
 		t.Fatal(err)
+	}
+	reads := len(f.dynamic.Actions())
+	if reads == 0 {
+		t.Fatal("expected permission discovery reads")
 	}
 	expected := "initial"
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +269,46 @@ func TestHarnessIdentityRenewsThroughExistingRunnerClient(t *testing.T) {
 	f.server.bg.identities.sources[identityKey(f.identity.clusterID, agent.Name)].source.Invalidate()
 	expected = "renewed"
 	check()
-	if mints != 2 {
-		t.Fatalf("mints = %d, want 2", mints)
+	if mints.Load() != 2 {
+		t.Fatalf("mints = %d, want 2", mints.Load())
+	}
+	if got := len(f.dynamic.Actions()); got != reads {
+		t.Fatalf("workspace reads grew from %d to %d during runner requests", reads, got)
+	}
+	refuse.Store(true)
+	f.server.bg.identities.sources[identityKey(f.identity.clusterID, agent.Name)].source.Invalidate()
+	if _, err := source(context.Background()); err == nil || !strings.Contains(err.Error(), "503") || !strings.Contains(err.Error(), "renewing the agent's runner identity") {
+		t.Fatalf("lost issuer failure: %v", err)
+	}
+
+}
+
+type runnerCloseBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *runnerCloseBody) Close() error { b.closed = true; return nil }
+
+func TestRunnerIdentityFailureClosesRequestBody(t *testing.T) {
+	for _, failure := range []bool{true, false} {
+		body := &runnerCloseBody{Reader: strings.NewReader("request")}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://runner", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		transport := runnerIdentityTransport{token: func(context.Context) (string, error) {
+			if failure {
+				return "", errors.New("renewal refused")
+			}
+			return "", nil
+		}}
+		// A nil base also proves that authentication failure never dispatches.
+		if _, err := transport.RoundTrip(req); err == nil {
+			t.Fatal("expected authentication failure")
+		}
+		if !body.closed {
+			t.Fatal("request body was not closed")
+		}
 	}
 }
