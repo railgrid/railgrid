@@ -3,6 +3,7 @@ import { useAnchoredPopover } from './portalkit/useAnchoredPopover'
 
 export interface ModePickerMenuOptions<T extends string> {
   idPrefix: string
+  width?: number
   options: readonly T[]
   selectedIndex: () => number
   canInteract?: () => boolean
@@ -12,6 +13,7 @@ export interface ModePickerMenuOptions<T extends string> {
 /** Shared keyboard, focus, dismissal, and anchoring behavior for mode menus. */
 export function useModePickerMenu<T extends string>({
   idPrefix,
+  width = 360,
   options,
   selectedIndex,
   canInteract = () => true,
@@ -27,7 +29,7 @@ export function useModePickerMenu<T extends string>({
     panelRef,
     panelStyle,
     close: closePopover,
-  } = useAnchoredPopover({ width: 360, gap: 6, align: 'start' })
+  } = useAnchoredPopover({ width, gap: 6, align: 'start' })
   const activeIndex = ref(-1)
 
   function menuButtons(): HTMLButtonElement[] {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, ChevronDown, Hand, ShieldCheck, ShieldX } from 'lucide-vue-next'
+import { Check, ChevronDown, LoaderCircle, Hand, ShieldCheck, ShieldX } from 'lucide-vue-next'
 import type { ProjectAssistantApprovalMode } from './types'
 import { useModePickerMenu } from './useModePickerMenu'
 
@@ -36,6 +36,7 @@ const {
   handleMenuKeydown,
 } = useModePickerMenu<ProjectAssistantApprovalMode>({
   idPrefix: 'approval-mode',
+  width: 320,
   options: modeOptions,
   selectedIndex: () => Math.max(0, modeOptions.indexOf(props.mode)),
   canInteract: () => !props.disabled && !props.busy,
@@ -53,31 +54,35 @@ const choose = selectMode
       :id="triggerID"
       ref="triggerRef"
       type="button"
-      class="app-studio-touch-target inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:bg-surface-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60"
+      class="k-ai-composer__mode app-studio-touch-target inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-text-muted transition hover:bg-surface-hover hover:text-text-secondary disabled:cursor-not-allowed disabled:opacity-60"
       :disabled="disabled || busy"
       aria-haspopup="menu"
       :aria-expanded="open"
       :aria-controls="menuID"
-      :aria-label="`Approval mode: ${labels[mode]}`"
+      :title="busy ? 'Saving approval mode…' : `Approval mode: ${labels[mode]}`"
+      :aria-label="busy ? 'Saving approval mode…' : `Approval mode: ${labels[mode]}`"
       @click="open ? closeMenu() : openMenu()"
       @keydown="handleTriggerKeydown"
     >
-      <ShieldCheck v-if="mode === 'on_request'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+      <LoaderCircle v-if="busy" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <ShieldCheck v-else-if="mode === 'on_request'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
       <Hand v-else-if="mode === 'always_ask'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
       <ShieldX v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
-      <span class="truncate">{{ busy ? 'Saving…' : labels[mode] }}</span>
-      <ChevronDown class="h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="2" aria-hidden="true" />
+      <span class="k-ai-composer__mode-label truncate">{{ busy ? 'Saving…' : labels[mode] }}</span>
+      <ChevronDown class="k-ai-composer__mode-chevron h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="2" aria-hidden="true" />
     </button>
+
+    <span class="sr-only" role="status" aria-live="polite">{{ busy ? 'Saving approval mode…' : '' }}</span>
 
     <Teleport to="#app-studio-overlay-root">
       <div
         v-if="open"
         :id="menuID"
         ref="panelRef"
-        class="k-menu max-h-[calc(100dvh-1rem)] min-w-[min(360px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto"
+        class="k-menu max-h-[calc(100dvh-1rem)] w-80 min-w-0 max-w-[calc(100vw-1rem)] overflow-y-auto"
         :style="panelStyle"
         role="menu"
-        :aria-label="`Approval mode: ${labels[mode]}`"
+        :aria-label="busy ? 'Saving approval mode…' : `Approval mode: ${labels[mode]}`"
         :aria-labelledby="triggerID"
         @keydown="handleMenuKeydown"
       >

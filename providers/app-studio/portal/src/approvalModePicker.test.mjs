@@ -50,3 +50,19 @@ test('defaults the App Studio composer to ask when needed', async () => {
   assert.match(source, /ref<ProjectAssistantApprovalMode>\('on_request'\)/)
   assert.match(source, /preference\?\.mode \?\? 'on_request'/)
 })
+
+
+test('approval saves remain accessible when compact labels are hidden', async () => {
+  const { default: Picker } = await vite.ssrLoadModule('/src/ApprovalModePicker.vue')
+  for (const busy of [false, true]) {
+    const html = await renderToString(createSSRApp(Picker, { mode: 'on_request', busy }))
+    const label = busy ? 'Saving approval mode…' : 'Approval mode: Ask when needed'
+    assert.ok(html.includes(`aria-label="${label}"`))
+    assert.ok(html.includes(`title="${label}"`))
+    assert.match(html, /role="status" aria-live="polite"/)
+    if (busy) {
+      assert.match(html, /lucide-loader-circle/)
+      assert.match(html, /role="status" aria-live="polite"[^>]*>Saving approval mode…</)
+    } else assert.doesNotMatch(html, /Saving approval mode/)
+  }
+})

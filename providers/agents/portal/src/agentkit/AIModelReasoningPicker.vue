@@ -7,7 +7,7 @@
   exact reasoning choices. Providers own persistence and model capability.
 -->
 <script setup lang="ts">
-import { Check, ChevronDown, ChevronLeft, ChevronRight, RotateCcw, Zap } from 'lucide-vue-next'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, RotateCcw } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import { useAnchoredPopover } from '../portalkit/useAnchoredPopover'
@@ -63,9 +63,9 @@ const dialogHeadingID = `${pickerID}-heading`
 const sliderID = `${pickerID}-slider`
 const modelListID = `${pickerID}-models`
 const { open, triggerRef, panelRef, panelStyle, close: closePopover, toggle } = useAnchoredPopover({
-  width: 280,
+  width: 320,
   gap: 6,
-  align: 'start',
+  align: 'end',
 })
 
 const modelButtonRef = ref<HTMLElement | null>(null)
@@ -78,6 +78,21 @@ const activeModelIndex = ref(0)
 const previewIndex = ref<number | null>(null)
 const gestureBase = ref<{ modelID: string; effort: string } | null>(null)
 const gestureCancelled = ref(false)
+
+const showSaving = ref(false)
+let savingTimer: ReturnType<typeof setTimeout> | undefined
+function clearSavingTimer(): void {
+  if (savingTimer !== undefined) clearTimeout(savingTimer)
+  savingTimer = undefined
+}
+watch(() => props.saving, saving => {
+  clearSavingTimer()
+  showSaving.value = false
+  if (saving) savingTimer = setTimeout(() => {
+    savingTimer = undefined
+    showSaving.value = true
+  }, 500)
+}, { immediate: true })
 
 const selectedModel = computed(() => props.models.find(model => model.id === props.selectedID))
 const selectedModelIndex = computed(() => props.models.findIndex(model => model.id === props.selectedID))
@@ -407,6 +422,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearSavingTimer()
   document.removeEventListener('pointerdown', closeFromOutside)
   document.removeEventListener('focusin', closeFromOutsideFocus)
 })
@@ -457,15 +473,15 @@ watch(open, isOpen => {
       @click="togglePicker"
       @keydown="handleTriggerKeydown"
     >
-      <Zap v-if="showReasoning" class="k-ai-model-reasoning-picker__trigger-icon" :stroke-width="1.8" aria-hidden="true" />
       <span class="k-ai-model-reasoning-picker__trigger-copy">
         <strong>{{ selectedModel?.name || 'Select model' }}</strong>
         <small v-if="showReasoning">{{ currentEffortLabel }}</small>
       </span>
-      <ChevronDown class="k-ai-model-reasoning-picker__trigger-chevron" :class="{ 'is-open': open }" :stroke-width="1.8" aria-hidden="true" />
+      <LoaderCircle v-if="showSaving && !open" class="k-ai-model-reasoning-picker__trigger-chevron k-ai-model-reasoning-picker__saving-indicator" aria-hidden="true" />
+      <ChevronDown v-else class="k-ai-model-reasoning-picker__trigger-chevron" :class="{ 'is-open': open }" :stroke-width="1.8" aria-hidden="true" />
     </button>
 
-    <div v-if="!open && (validationMessage || saveError || saving)" class="k-ai-model-reasoning-picker__feedback">
+    <div v-if="!open && (validationMessage || saveError)" class="k-ai-model-reasoning-picker__feedback">
       <div v-if="validationMessage" class="k-ai-model-reasoning-picker__feedback-line" role="alert">
         <span :id="`${pickerID}-error`">{{ validationMessage }}</span>
         <button
@@ -494,8 +510,9 @@ watch(open, isOpen => {
           @click="emit('retry')"
         >Retry</button>
       </div>
-      <span v-if="saving" class="k-ai-model-reasoning-picker__saving" role="status" aria-live="polite">Saving preference…</span>
     </div>
+
+    <span class="k-ai-model-reasoning-picker__sr-only" role="status" aria-live="polite">{{ showSaving ? 'Saving preference…' : '' }}</span>
 
     <Teleport to="body">
       <section
@@ -512,12 +529,14 @@ watch(open, isOpen => {
       >
         <div v-if="view === 'effort'" class="k-ai-model-reasoning-picker__effort-view">
           <header v-if="showReasoning" class="k-ai-model-reasoning-picker__heading-row">
-            <Zap class="k-ai-model-reasoning-picker__heading-icon" :stroke-width="1.8" aria-hidden="true" />
             <div class="k-ai-model-reasoning-picker__heading-copy">
               <h2 :id="dialogHeadingID" class="k-ai-model-reasoning-picker__sr-only">Reasoning effort</h2>
               <strong class="k-ai-model-reasoning-picker__effort-heading">{{ currentEffortLabel }}</strong>
-              <small v-if="effortContext">{{ effortContext }}</small>
+              <small :title="effortContext">{{ effortContext }}</small>
             </div>
+            <span class="k-ai-model-reasoning-picker__saving-slot" aria-hidden="true">
+              <LoaderCircle v-if="showSaving" class="k-ai-model-reasoning-picker__saving-indicator" />
+            </span>
             <button
               v-if="canReset"
               ref="resetButtonRef"
@@ -549,6 +568,7 @@ watch(open, isOpen => {
             @keydown.down.prevent="openModelList"
             @keydown.up.prevent="openModelList"
           >
+            <span class="k-ai-model-reasoning-picker__model-label">Model</span>
             <span class="k-ai-model-reasoning-picker__model-copy">
               <strong>{{ selectedModel?.name || selectedID || 'No model selected' }}</strong>
             </span>
@@ -596,7 +616,7 @@ watch(open, isOpen => {
               <ChevronLeft :stroke-width="1.8" aria-hidden="true" />
             </button>
             <h2 :id="dialogHeadingID">Choose model</h2>
-            <span class="k-ai-model-reasoning-picker__back-spacer" aria-hidden="true" />
+            <span class="k-ai-model-reasoning-picker__back-spacer" aria-hidden="true"><LoaderCircle v-if="showSaving" class="k-ai-model-reasoning-picker__saving-indicator" /></span>
           </header>
           <div
             :id="modelListID"
@@ -633,10 +653,9 @@ watch(open, isOpen => {
           <p v-if="!models.length" class="k-ai-model-reasoning-picker__empty" role="status">No configured models.</p>
           </div>
         </div>
-        <div v-if="validationMessage || saveError || saving" class="k-ai-model-reasoning-picker__panel-errors">
+        <div v-if="validationMessage || saveError" class="k-ai-model-reasoning-picker__panel-errors">
           <p v-if="validationMessage" :id="`${pickerID}-error`" role="alert">{{ validationMessage }}</p>
           <p v-if="saveError" role="alert">{{ saveError }}</p>
-          <span v-if="saving" class="k-ai-model-reasoning-picker__saving" role="status" aria-live="polite">Saving preference…</span>
           <div v-if="editModelRequired || (view === 'models' && canReset) || saveError" class="k-ai-model-reasoning-picker__recovery-actions">
             <button v-if="view === 'models' && canReset" type="button" :disabled="lockedEffort" @click="resetEffort">Reset to model default</button>
             <button v-if="editModelRequired" type="button" :disabled="disabled" @click="emit('edit-model-settings')">Edit model settings</button>
@@ -708,12 +727,6 @@ watch(open, isOpen => {
   opacity: .55;
 }
 
-.k-ai-model-reasoning-picker__trigger-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  color: var(--color-accent);
-}
 
 .k-ai-model-reasoning-picker__trigger-copy,
 .k-ai-model-reasoning-picker__model-copy,
@@ -781,21 +794,24 @@ watch(open, isOpen => {
   cursor: pointer;
 }
 
-.k-ai-model-reasoning-picker__saving {
-  color: var(--color-text-muted);
+.k-ai-model-reasoning-picker__saving-slot { display: grid; width: 14px; height: 14px; place-items: center; }
+.k-ai-model-reasoning-picker__saving-indicator { width: 12px; height: 12px; flex-shrink: 0; color: var(--color-text-muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .k-ai-model-reasoning-picker__saving-indicator { animation: reasoning-save-spin 1s linear infinite; }
 }
+@keyframes reasoning-save-spin { to { transform: rotate(360deg); } }
 
 .k-ai-model-reasoning-picker__panel {
   z-index: var(--k-layer-menu, 1000);
   box-sizing: border-box;
-  width: 280px;
-  max-width: min(280px, calc(100vw - 16px));
+  width: 320px;
+  max-width: min(320px, calc(100vw - 16px));
   max-height: min(440px, calc(100dvh - 16px));
   overflow-x: hidden;
   overflow-y: auto;
   border: 1px solid var(--color-border-default);
   border-radius: 6px;
-  padding: 12px;
+  padding: 16px;
   background: var(--color-surface-raised);
   color: var(--color-text-primary);
   box-shadow: 0 10px 26px color-mix(in srgb, var(--color-surface) 38%, transparent);
@@ -807,7 +823,6 @@ watch(open, isOpen => {
   outline-offset: 2px;
 }
 
-.k-ai-model-reasoning-picker__heading-row,
 .k-ai-model-reasoning-picker__models-heading {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 28px;
@@ -816,17 +831,21 @@ watch(open, isOpen => {
   gap: 6px;
 }
 
-.k-ai-model-reasoning-picker__heading-icon {
-  width: 15px;
-  height: 15px;
-  color: var(--color-accent);
+
+.k-ai-model-reasoning-picker__heading-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px 28px;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
 }
 
 .k-ai-model-reasoning-picker__heading-copy {
   display: grid;
   min-width: 0;
-  justify-items: center;
-  text-align: center;
+  justify-items: start;
+  gap: 3px;
+  text-align: left;
 }
 
 .k-ai-model-reasoning-picker__heading-copy h2:not(.k-ai-model-reasoning-picker__sr-only),
@@ -854,11 +873,15 @@ watch(open, isOpen => {
 }
 
 .k-ai-model-reasoning-picker__heading-copy small {
+  height: 16px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   max-width: 100%;
   color: var(--color-text-muted);
-  font-size: 9px;
-  line-height: 12px;
-  text-align: center;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: left;
 }
 
 .k-ai-model-reasoning-picker__reset,
@@ -907,12 +930,12 @@ watch(open, isOpen => {
   min-width: 0;
   min-height: 32px;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  margin-top: 6px;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
   border: 1px solid transparent;
   border-radius: 4px;
-  padding: 3px 6px;
+  padding: 6px 8px;
   background: transparent;
   color: var(--color-text-secondary);
   text-align: center;
@@ -920,9 +943,18 @@ watch(open, isOpen => {
 }
 
 .k-ai-model-reasoning-picker__model-button:hover:not(:disabled) {
-  color: var(--color-accent-hover);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.k-ai-model-reasoning-picker__model-label {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.k-ai-model-reasoning-picker__model-copy {
+  margin-inline-start: auto;
+  text-align: right;
 }
 
 .k-ai-model-reasoning-picker__model-copy strong {
@@ -944,8 +976,8 @@ watch(open, isOpen => {
 
 .k-ai-model-reasoning-picker__slider-wrap {
   display: grid;
-  gap: 2px;
-  margin-top: 16px;
+  gap: 4px;
+  margin-top: 12px;
 }
 
 .k-ai-model-reasoning-picker__slider {
@@ -1015,10 +1047,10 @@ watch(open, isOpen => {
 }
 
 .k-ai-model-reasoning-picker__stop-label {
-  overflow-wrap: anywhere;
-  color: var(--color-text-muted);
-  font-size: 9px;
-  line-height: 12px;
+  overflow-wrap: normal;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 14px;
   text-align: center;
 }
 
@@ -1176,7 +1208,10 @@ watch(open, isOpen => {
 }
 
 @media (hover: none), (any-pointer: coarse) {
-  .k-ai-model-reasoning-picker__heading-row,
+  .k-ai-model-reasoning-picker__heading-row {
+    grid-template-columns: minmax(0, 1fr) 14px 44px;
+  }
+
   .k-ai-model-reasoning-picker__models-heading {
     grid-template-columns: 44px minmax(0, 1fr) 44px;
   }
@@ -1217,6 +1252,27 @@ watch(open, isOpen => {
   .k-ai-model-reasoning-picker__trigger,
   .k-ai-model-reasoning-picker__trigger-chevron {
     transition: none;
+  }
+}
+/* The compact composer keeps model and effort on the same toolbar baseline. */
+@container ai-composer (max-width: 560px) {
+  .k-ai-model-reasoning-picker__trigger {
+    border-color: transparent;
+    background: transparent;
+    padding-inline: 4px;
+    gap: 4px;
+  }
+  .k-ai-model-reasoning-picker__trigger-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    overflow: hidden;
+  }
+  .k-ai-model-reasoning-picker__trigger-copy strong { min-width: 0; }
+  .k-ai-model-reasoning-picker__trigger-copy small {
+    min-width: 0;
+    font-size: 11px;
+    line-height: 14px;
   }
 }
 </style>

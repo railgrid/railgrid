@@ -1,5 +1,5 @@
 import { projectAssistantComposerParts } from './assistantCommandPalette'
-import type { AssistantResponseMode } from './ResponseModePicker.vue'
+import type { AssistantResponseMode } from './assistantResponseMode'
 import type { ProjectAssistantContentPart, ProjectAssistantContextResource } from './types'
 
 export interface AssistantComposerDraftScope {

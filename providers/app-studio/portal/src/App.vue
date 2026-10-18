@@ -165,7 +165,7 @@ import SkillsWorkbench from './SkillsWorkbench.vue'
 import AIConversationRail from './agentkit/AIConversationRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
-import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
+import type { AssistantResponseMode } from './assistantResponseMode'
 import AIModelReasoningPicker from './agentkit/AIModelReasoningPicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
 import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
@@ -11328,12 +11328,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           />
           <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
           <AIComposer
+            class="k-ai-composer--adaptive"
             :has-queued-messages="queuedAssistantMessages.length > 0"
             :disabled="assistantComposerSurfaceDisabled"
           >
             <template #editor>
               <AssistantRichComposer
               ref="assistantComposerRef"
+              :response-mode="assistantIntent"
               :submitting="assistantComposerSubmitting"
               v-model="prompt"
               :content-parts="assistantComposerParts"
@@ -11359,11 +11361,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               @submit="submitAssistantComposer"
             >
               <template #controls>
-                <ResponseModePicker
-                  :mode="assistantIntent"
-                  :disabled="messageStreaming || loading || conversationInteractionBusy || llmSettingsLoading"
-                  @select-mode="selectAssistantResponseMode"
-                />
                 <ApprovalModePicker
                   :mode="approvalMode"
                   :busy="approvalModeLoading || approvalModeSaving"
