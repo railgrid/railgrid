@@ -6,6 +6,7 @@
 package github
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,5 +64,21 @@ func TestInstallationTokenCannotUpload(t *testing.T) {
 	_, err := New().UploadAttachment(t.Context(), &api.Connection{}, backend.Credential{Token: "ghs_installation"}, &api.Repository{}, a)
 	if err == nil || !strings.Contains(err.Error(), "installation tokens") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAttachmentRateLimitRemainsRetryable(t *testing.T) {
+	for _, limited := range []bool{false, true} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if limited {
+				w.Header().Set("Retry-After", "60")
+			}
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		_, err := uploadAttachment(t.Context(), "test", 1, backend.Attachment{}, server.URL)
+		server.Close()
+		if err == nil || errors.Is(err, backend.ErrAttachmentsUnsupported) == limited {
+			t.Fatalf("wrong retry classification: limited=%v err=%v", limited, err)
+		}
 	}
 }

@@ -70,7 +70,8 @@ func uploadAttachment(ctx context.Context, token string, repositoryID int64, a b
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusTooManyRequests {
+		rateLimited := response.StatusCode == http.StatusTooManyRequests || (response.StatusCode == http.StatusForbidden && (response.Header.Get("Retry-After") != "" || response.Header.Get("X-RateLimit-Remaining") == "0"))
+		if response.StatusCode >= 400 && response.StatusCode < 500 && !rateLimited {
 			return "", fmt.Errorf("%w: GitHub returned HTTP %d", backend.ErrAttachmentsUnsupported, response.StatusCode)
 		}
 		return "", fmt.Errorf("GitHub screenshot upload returned HTTP %d", response.StatusCode)
