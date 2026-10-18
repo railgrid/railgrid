@@ -142,3 +142,28 @@ The runner state `environments` map records owner, checkout, release/expiry,
 compatibility data and eviction state; it stores no credentials. Cleanup errors
 remain on the owning attempt. A cleanup that exhausts its retries blocks reuse
 until an administrator addresses it, rather than silently abandoning resources.
+
+
+### Runner trust and cleanup recovery
+
+The runner has one authenticated coordinator bearer, not per-tenant callers.
+Anyone holding it already controls all attempts and can read their artifacts.
+Do not share this credential with mutually untrusted coordinators or tenants.
+Tenant/Agent identity is verified by Agents and included in its lease key before
+it calls the runner. An extra tenant field supplied by that same caller would
+not create an independent authentication boundary; multi-principal runner
+access would require a separate authentication/authorization design.
+
+Cleanup that exhausts three attempts returns a non-retryable error naming the
+owning attempt. For operator recovery, stop this runner service (not other
+runners), back up its state.json, inspect that attempt's cleanupError and private
+.railgrid-cleanup.log, and repair the reported prerequisite. In the stopped
+runner's state.json, set only that attempt's cleanupAttempts to 0 and cleanupDone
+to false; leave its environment's evicting flag true. Restart the runner to retry
+the approved cleanup command. Do not delete the lease or ownership records to
+bypass failed cleanup. Checkout contents and screenshot history are preserved.
+
+Worktree fingerprints run outside the runner state lock under an exclusive
+lease fence. They are limited to 30 seconds and 256 MiB of nonignored content.
+Exceeding those bounds retires the warm lease with a diagnostic; it never falls
+back to trusting size/mtime alone. Keep build outputs in .gitignore.

@@ -406,12 +406,16 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	}
 	var previousEnvironment *warmEnvironment
 	if env := r.state.Environments[request.EnvironmentID]; env != nil {
-		copy := *env
-		previousEnvironment = &copy
+		prev := *env
+		previousEnvironment = &prev
 	}
 	workdir, err := r.prepareEnvironmentLocked(ctx, request, dispatched)
 	if err != nil {
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
+		var protocolErr *Error
+		if errors.As(err, &protocolErr) {
+			return Receipt{}, protocolErr
+		}
 		return Receipt{}, protocolError(ErrorUnavailable, true, err.Error(), nil)
 	}
 	now := eventNow()
@@ -445,7 +449,9 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 			if previousEnvironment == nil {
 				delete(r.state.Environments, request.EnvironmentID)
 			} else {
-				previousEnvironment.Fingerprint, previousEnvironment.Head, _ = environmentFingerprint(ctx, workdir)
+				// Acceptance failed after a possible HEAD/index change. Do not bless
+				// a new fingerprint: preserve the files and retire the lease safely.
+				previousEnvironment.Evicting = true
 				r.state.Environments[request.EnvironmentID] = previousEnvironment
 				if prior := r.state.Attempts[previousEnvironment.AttemptID]; prior != nil {
 					prior.CleanupDelegated = false

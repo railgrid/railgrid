@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,7 @@ import (
 // A parked attempt retains ownership. Terminal attempts release only after the
 // harness has exited and immutable result artifacts have been exported.
 type warmEnvironment struct {
+	checking     bool      // transient ownership fence while hashing outside r.mu
 	AttemptID    string    `json:"attemptID"`
 	Workdir      string    `json:"workdir"`
 	RepositoryID string    `json:"repositoryID"`
@@ -77,6 +79,9 @@ func warmPolicy(ctx context.Context, workdir, base string) (repositoryCleanup, s
 }
 
 func (r *Runner) evictEnvironmentLocked(env *warmEnvironment) {
+	if env.checking {
+		return
+	}
 	env.Evicting = true
 	if a := r.state.Attempts[env.AttemptID]; a != nil {
 		r.scheduleCleanupLocked(a)
@@ -85,6 +90,11 @@ func (r *Runner) evictEnvironmentLocked(env *warmEnvironment) {
 
 // Called with the same lock that admits attempts, before a child can start.
 func (r *Runner) prepareEnvironmentLocked(ctx context.Context, req StartRequest, source *RepositorySource) (string, error) {
+	for _, env := range r.state.Environments {
+		if env.checking {
+			return "", errors.New("environment verification is in progress")
+		}
+	}
 	if req.EnvironmentID == "" {
 		return prepareWorkspace(ctx, r.cfg, req, source)
 	}
@@ -100,8 +110,11 @@ func (r *Runner) prepareEnvironmentLocked(ctx context.Context, req StartRequest,
 	}
 	env := r.state.Environments[req.EnvironmentID]
 	if env != nil {
+		if env.checking {
+			return "", errors.New("environment verification is in progress")
+		}
 		if env.Evicting {
-			return "", errors.New("previous environment cleanup is pending")
+			return "", r.environmentCleanupErrorLocked(env)
 		}
 		if env.ReleasedAt.IsZero() {
 			return "", errors.New("environment is exclusively held by another attempt")
@@ -115,17 +128,29 @@ func (r *Runner) prepareEnvironmentLocked(ctx context.Context, req StartRequest,
 			r.evictEnvironmentLocked(env)
 			return "", errors.New("environment is incompatible with this dispatch; retained checkout will not be reset")
 		}
-		current, head, err := environmentFingerprint(ctx, env.Workdir)
+		current, head, err := r.fingerprintEnvironmentLocked(ctx, req.EnvironmentID, env)
+		if r.closed {
+			return "", errors.New("runner is closed")
+		}
+		if err := r.checkEpochLocked(req.TaskID, req.AttemptID, req.AttemptEpoch); err != nil {
+			return "", err
+		}
+		if r.state.Attempts[req.AttemptID] != nil {
+			return "", errors.New("attempt changed during environment verification")
+		}
+		if err := r.checkStartRequirementsLocked(req); err != nil {
+			return "", err
+		}
 		if err != nil || current != env.Fingerprint || head != env.Head {
 			r.evictEnvironmentLocked(env)
 			return "", errors.New("released checkout changed; retained edits will not be reset")
 		}
 		// The approved base is either unchanged or exactly the snapshot we exported.
 		// Mixed reset updates only HEAD/index; all working files stay untouched.
-		if _, err = gitOutput(ctx, env.Workdir, "reset", "--mixed", req.BaseCommit); err != nil {
+		if err = archiveEnvironmentScreenshots(r.cfg, env); err != nil {
 			return "", err
 		}
-		if err = archiveEnvironmentScreenshots(r.cfg, env); err != nil {
+		if _, err = gitOutput(ctx, env.Workdir, "reset", "--mixed", req.BaseCommit); err != nil {
 			return "", err
 		}
 		if prior := r.state.Attempts[env.AttemptID]; prior != nil {
@@ -144,18 +169,30 @@ func (r *Runner) prepareEnvironmentLocked(ctx context.Context, req StartRequest,
 	for _, other := range r.state.Environments {
 		if !other.ReleasedAt.IsZero() {
 			r.evictEnvironmentLocked(other)
-			return "", errors.New("idle environment cleanup is pending before starting another ticket")
+			return "", r.environmentCleanupErrorLocked(other)
 		}
 	}
+	candidate := filepath.Join(r.cfg.StateDir, "worktrees", req.TaskID, req.AttemptID)
+	_, beforeErr := os.Lstat(candidate)
 	workdir, err := prepareWorkspace(ctx, r.cfg, req, source)
 	if err != nil {
 		return "", err
 	}
+	keepClone := false
+	defer func() {
+		// Only remove a clone created by this call, never a retained retry checkout.
+		if !keepClone && errors.Is(beforeErr, os.ErrNotExist) {
+			if err := os.RemoveAll(workdir); err != nil {
+				log.Printf("remove unused warm clone: %v", err)
+			}
+		}
+	}()
 	cfg, policy, err := warmPolicy(ctx, workdir, req.BaseCommit)
 	if err != nil {
 		return "", err
 	}
 	if cfg.IdleTimeoutSeconds == 0 {
+		keepClone = true
 		return workdir, nil
 	}
 	sum := sha256.Sum256([]byte(req.EnvironmentID))
@@ -196,6 +233,16 @@ func archiveEnvironmentScreenshots(cfg Config, env *warmEnvironment) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
 		return err
 	}
+	if _, err := os.Lstat(target); err == nil {
+		// A retry may find an earlier archive. Preserve both generations.
+		generation, err := os.MkdirTemp(filepath.Dir(target), "screenshots-")
+		if err != nil {
+			return err
+		}
+		target = filepath.Join(generation, "screenshots")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return os.Rename(source, target)
 }
 
@@ -209,12 +256,17 @@ func environmentFingerprint(ctx context.Context, workdir string) (string, string
 		return "", "", err
 	}
 	h := sha256.New()
+	var hashed int64
+	const maxFingerprintBytes = 256 << 20
 	branch, err := gitOutput(ctx, workdir, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return "", "", err
 	}
 	_, _ = fmt.Fprintf(h, "branch:%s\x00", branch)
 	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
 		if strings.HasPrefix(path, screenshotDirectory+"/") {
 			continue
 		}
@@ -230,11 +282,21 @@ func environmentFingerprint(ctx context.Context, workdir string) (string, string
 		if info.IsDir() {
 			continue
 		}
+		if !info.Mode().IsRegular() {
+			return "", "", errors.New("cannot fingerprint non-regular worktree file")
+		}
+		if info.Size() > maxFingerprintBytes-hashed {
+			return "", "", errors.New("warm fingerprint exceeds 256 MiB; ignore build outputs before reuse")
+		}
 		f, err := os.Open(full)
 		if err != nil {
 			return "", "", err
 		}
-		_, copyErr := io.Copy(h, f)
+		n, copyErr := io.Copy(h, io.LimitReader(fingerprintReader{ctx, f}, maxFingerprintBytes-hashed+1))
+		hashed += n
+		if hashed > maxFingerprintBytes {
+			copyErr = errors.New("warm fingerprint exceeds 256 MiB")
+		}
 		closeErr := f.Close()
 		if err = errors.Join(copyErr, closeErr); err != nil {
 			return "", "", err
@@ -252,6 +314,9 @@ func (r *Runner) retainEnvironmentLocked(a *attemptRecord) bool {
 	if env == nil || env.AttemptID != a.Receipt.AttemptID {
 		return false
 	}
+	if env.checking {
+		return true
+	}
 	if env.Evicting {
 		return false
 	}
@@ -260,8 +325,9 @@ func (r *Runner) retainEnvironmentLocked(a *attemptRecord) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	digest, head, err := environmentFingerprint(ctx, env.Workdir)
+	digest, head, err := r.fingerprintEnvironmentLocked(ctx, a.Start.EnvironmentID, env)
 	if err != nil {
+		log.Printf("warm environment %s: fingerprint failed: %v", a.Receipt.AttemptID, err)
 		env.Evicting = true
 		return false
 	}
@@ -273,14 +339,18 @@ func (r *Runner) retainEnvironmentLocked(a *attemptRecord) bool {
 		}
 		artifact, ok := r.state.Artifacts[ref.ID]
 		if !ok {
+			log.Printf("warm environment %s: snapshot artifact %s missing from state", a.Receipt.AttemptID, ref.ID)
 			continue
 		}
 		data, err := os.ReadFile(artifact.Path)
 		if err != nil {
+			log.Printf("warm environment %s: cannot read snapshot artifact %s", a.Receipt.AttemptID, ref.ID)
 			continue
 		}
 		var doc gitResultDocument
-		if json.Unmarshal(data, &doc) == nil {
+		if err := json.Unmarshal(data, &doc); err != nil {
+			log.Printf("warm environment %s: invalid snapshot artifact %s", a.Receipt.AttemptID, ref.ID)
+		} else {
 			env.Snapshot = doc.Commit
 		}
 	}
@@ -313,7 +383,7 @@ func (r *Runner) startEnvironmentExpiry() {
 				r.mu.Lock()
 				if !r.closed {
 					for _, env := range r.state.Environments {
-						if !env.ReleasedAt.IsZero() && !time.Now().Before(env.ExpiresAt) {
+						if env.Evicting || (!env.ReleasedAt.IsZero() && !time.Now().Before(env.ExpiresAt)) {
 							r.evictEnvironmentLocked(env)
 						}
 					}
@@ -328,6 +398,10 @@ func (r *Runner) startEnvironmentExpiry() {
 func (r *Runner) prepareLeasedEnvironment(ctx context.Context, attemptID string) error {
 	r.mu.Lock()
 	a := r.state.Attempts[attemptID]
+	if a == nil {
+		r.mu.Unlock()
+		return errors.New("attempt not found during preparation")
+	}
 	env := r.state.Environments[a.Start.EnvironmentID]
 	if env == nil || env.AttemptID != attemptID || !env.NeedsPrepare {
 		r.mu.Unlock()
@@ -335,12 +409,55 @@ func (r *Runner) prepareLeasedEnvironment(ctx context.Context, attemptID string)
 	}
 	workdir, base := env.Workdir, env.Base
 	r.mu.Unlock()
-	err := runRepositoryHook(ctx, workdir, base, true)
+	err := runRepositoryHook(ctx, workdir, base, hookPrepare)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	env.NeedsPrepare = false
-	if err != nil {
+	if current := r.state.Environments[a.Start.EnvironmentID]; current != env || env.AttemptID != attemptID {
+		return err
+	}
+	if err == nil {
+		env.NeedsPrepare = false
+	} else if ctx.Err() == nil {
 		env.Evicting = true
 	}
 	return errors.Join(err, r.persistLocked())
+}
+
+// The lease fence prevents transfer and cleanup while the global mutex is free.
+func (r *Runner) fingerprintEnvironmentLocked(ctx context.Context, key string, env *warmEnvironment) (string, string, error) {
+	env.checking = true
+	owner, workdir := env.AttemptID, env.Workdir
+	r.wg.Add(1)
+	r.mu.Unlock()
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	digest, head, err := environmentFingerprint(bounded, workdir)
+	cancel()
+	r.mu.Lock()
+	r.wg.Done()
+	env.checking = false
+	if r.state.Environments[key] != env || env.AttemptID != owner {
+		return "", "", errors.New("environment ownership changed during verification")
+	}
+	return digest, head, err
+}
+
+func (r *Runner) environmentCleanupErrorLocked(env *warmEnvironment) error {
+	a := r.state.Attempts[env.AttemptID]
+	if a == nil || (a.CleanupAttempts >= 3 && !a.cleanupRunning && !a.CleanupDone) {
+		return protocolError(ErrorUnavailable, false, fmt.Sprintf("environment cleanup exhausted retries for attempt %s; inspect its cleanup error and retained workdir, then use the documented operator recovery procedure", env.AttemptID), nil)
+	}
+	return protocolError(ErrorUnavailable, true, "environment cleanup is pending for attempt "+env.AttemptID, nil)
+}
+
+// Check cancellation between disk reads as well as between Git subprocesses.
+type fingerprintReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r fingerprintReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
