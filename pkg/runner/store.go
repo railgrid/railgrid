@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,11 +48,13 @@ type persistedState struct {
 }
 
 type attemptRecord struct {
-	CleanupEligible bool   `json:"cleanupEligible,omitempty"`
-	CleanupAttempts int    `json:"cleanupAttempts,omitempty"`
-	CleanupError    string `json:"cleanupError,omitempty"`
-	CleanupDone     bool   `json:"cleanupDone,omitempty"`
-	cleanupRunning  bool
+	// EventJournalBytes commits the durable replay prefix alongside the receipt.
+	EventJournalBytes int64  `json:"eventJournalBytes,omitempty"`
+	CleanupEligible   bool   `json:"cleanupEligible,omitempty"`
+	CleanupAttempts   int    `json:"cleanupAttempts,omitempty"`
+	CleanupError      string `json:"cleanupError,omitempty"`
+	CleanupDone       bool   `json:"cleanupDone,omitempty"`
+	cleanupRunning    bool
 
 	Receipt       Receipt        `json:"receipt"`
 	Start         StartRequest   `json:"start"`
@@ -78,8 +81,13 @@ type reservationRecord struct {
 }
 
 type stateStore struct {
-	dir  string
-	path string
+	dir               string
+	path              string
+	journals          map[string]*journalWriter
+	eventIndex        map[string][]journalPosition
+	indexMu           sync.Mutex
+	journalSizes      map[string]int64
+	totalJournalBytes int64
 }
 
 func newStateStore(dir string) (*stateStore, error) {
@@ -89,7 +97,28 @@ func newStateStore(dir string) (*stateStore, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("protect runner state directory: %w", err)
 	}
-	return &stateStore{dir: dir, path: filepath.Join(dir, "state.json")}, nil
+	s := &stateStore{dir: dir, path: filepath.Join(dir, "state.json"), journals: map[string]*journalWriter{}, eventIndex: map[string][]journalPosition{}, journalSizes: map[string]int64{}}
+	return s, nil
+}
+
+// Call after acquiring the state-directory lock, before accepting new writes.
+func (s *stateStore) loadJournalUsage() error {
+	s.journalSizes = map[string]int64{}
+	s.totalJournalBytes = 0
+	paths, err := filepath.Glob(filepath.Join(s.dir, "events-*.jsonl"))
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			s.accountJournal(path, info.Size())
+		}
+	}
+	return nil
 }
 
 func (s *stateStore) load() (persistedState, error) {
@@ -191,6 +220,9 @@ func validSessionID(sessionID string) bool {
 }
 
 func (s *stateStore) save(state persistedState) error {
+	if err := s.syncJournals(); err != nil {
+		return err
+	}
 	state.Version = stateVersion
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

@@ -359,13 +359,18 @@ func followStream(ctx context.Context, r Runner, receipt runner.Receipt, from Po
 		stream, err := retryReadDuring(ctx, obs, outage, func() (Stream, error) {
 			return r.Events(ctx, attemptID, s.cursor)
 		})
-		if err != nil {
+		if err != nil && !IsSnapshotRequired(err) {
 			return s.outcome(receipt, pos),
 				Describe("following the attempt", err)
 		}
 		before := s.cursor
-		terminal, quiet, err := drain(ctx, stream, s, strictHistory)
-		_ = stream.Close()
+		var terminal, quiet bool
+		if err == nil {
+			terminal, quiet, err = drain(ctx, stream, s, strictHistory)
+			_ = stream.Close()
+		}
+		// Cursor expiry can arrive in the HTTP response when opening a stream,
+		// as well as while reading one. Both require the same reconciliation.
 		if s.cursor > before || err == nil {
 			*outage = readOutage{}
 		}

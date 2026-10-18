@@ -17,7 +17,6 @@ limitations under the License.
 package runner
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -156,17 +156,9 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		return
 	}
 	events := append([]Event(nil), r.state.Events[attemptID]...)
-	if err := cursorGap(events, after); err != nil {
-		receipt := receiptForResponse(attempt.Receipt)
-		r.mu.Unlock()
-		err.Receipt = &receipt
-		status := statusForCode(err.Code)
-		if err.Code == ErrorCursorExpired {
-			err.SnapshotRequired = true
-		}
-		writeHTTPError(w, status, err)
-		return
-	}
+	receipt := receiptForResponse(attempt.Receipt)
+	journalBytes := attempt.EventJournalBytes
+	gap := cursorGap(events, after)
 	updates := make(chan Event, 64)
 	if r.subscribers[attemptID] == nil {
 		r.subscribers[attemptID] = map[chan Event]struct{}{}
@@ -180,16 +172,65 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 		r.mu.Unlock()
 	}()
 
+	// Subscribe before unlocking so events produced during a cold scan are
+	// either buffered or recovered by the existing contiguous-cursor reconnect.
+	var replay *eventReplay
+	if gap != nil && gap.Code == ErrorCursorExpired && journalBytes > 0 {
+		var replayErr error
+		replay, replayErr = r.store.replayEvents(request.Context(), attemptID, journalBytes, after, receipt.Cursor)
+		if replayErr != nil {
+			if request.Context().Err() != nil {
+				return
+			}
+			log.Printf("event journal replay for %s after %d failed: %v", attemptID, after, replayErr)
+			writeHTTPError(w, http.StatusServiceUnavailable, protocolError(ErrorUnavailable, false, "event journal replay failed: "+replayErr.Error(), &receipt))
+			return
+		}
+		gap = nil
+		defer func() { _ = replay.file.Close() }()
+	}
+	if gap != nil {
+		gap.Receipt = &receipt
+		if gap.Code == ErrorCursorExpired {
+			gap.SnapshotRequired = true
+		}
+		writeHTTPError(w, statusForCode(gap.Code), gap)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher, _ := w.(http.Flusher)
 	last := after
+	remaining := eventPageBytes
+	if replay != nil {
+		for {
+			if request.Context().Err() != nil {
+				return
+			}
+			event, err := replay.next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Printf("event journal replay for %s aborted after cursor %d: %v", attemptID, last, err)
+				return
+			}
+			if err := writeSSE(w, event, &remaining); err != nil {
+				return
+			}
+			last = event.Cursor
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
 	for _, event := range events {
-		if event.Cursor <= after {
+		if event.Cursor <= last {
 			continue
 		}
-		if err := writeSSE(w, event); err != nil {
+		if err := writeSSE(w, event, &remaining); err != nil {
 			return
 		}
 		last = event.Cursor
@@ -212,7 +253,12 @@ func (r *Runner) serveEvents(w http.ResponseWriter, request *http.Request, attem
 			if event.Cursor <= last {
 				continue
 			}
-			if err := writeSSE(w, event); err != nil {
+			// A slow subscriber can overflow its live buffer. End at the last
+			// contiguous cursor; reconnect replays the missing events from disk.
+			if event.Cursor != last+1 {
+				return
+			}
+			if err := writeSSE(w, event, &remaining); err != nil {
 				return
 			}
 			last = event.Cursor
@@ -282,16 +328,27 @@ func artifactBelongs(attempt *attemptRecord, artifact Artifact) bool {
 	return false
 }
 
-func writeSSE(w http.ResponseWriter, event Event) error {
+// Leave ample room below the client's 64 MiB per-stream limit. A response
+// ends only between complete events, so the next request can resume exactly.
+const eventPageBytes = 8 << 20
+
+func writeSSE(w http.ResponseWriter, event Event, remaining *int) error {
 	b, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	writer := bufio.NewWriter(w)
-	if _, err := fmt.Fprintf(writer, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Type, b); err != nil {
+	frame := fmt.Appendf(nil, "id: %d\nevent: %s\ndata: %s\n\n", event.Cursor, event.Type, b)
+	// Permit one oversized event on an otherwise empty page, preserving support
+	// for configured event limits above the page target without a zero-progress
+	// reconnect loop. Individual events must still fit the client's stream limit.
+	if len(frame) > *remaining && *remaining != eventPageBytes {
+		return io.EOF
+	}
+	if _, err := w.Write(frame); err != nil {
 		return err
 	}
-	return writer.Flush()
+	*remaining -= len(frame)
+	return nil
 }
 
 func parseCursor(value string) (uint64, error) {

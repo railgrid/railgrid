@@ -50,8 +50,9 @@ type fakeRunner struct {
 	events []runner.Event
 	// gapAt, when set, makes the first Events call from a cursor below it fail
 	// with cursor_expired, so the reconcile path is exercised.
-	gapAt    uint64
-	gapFired bool
+	gapAt     uint64
+	gapFired  bool
+	gapOnOpen bool
 
 	startErr  error
 	cancelErr error
@@ -113,7 +114,11 @@ func (f *fakeRunner) Events(_ context.Context, _ string, after uint64) (Stream, 
 	f.streams = append(f.streams, after)
 	if f.gapAt > 0 && !f.gapFired && after < f.gapAt {
 		f.gapFired = true
-		return &sliceStream{err: &runner.Error{Code: runner.ErrorCursorExpired, SnapshotRequired: true, Message: "cursor expired"}}, nil
+		gap := &runner.Error{Code: runner.ErrorCursorExpired, SnapshotRequired: true, Message: "cursor expired"}
+		if f.gapOnOpen {
+			return nil, gap
+		}
+		return &sliceStream{err: gap}, nil
 	}
 	var out []runner.Event
 	for _, e := range f.events {
@@ -569,5 +574,50 @@ func TestErrorTaxonomy(t *testing.T) {
 	var back *runner.Error
 	if !errors.As(wrapped, &back) || back.Code != runner.ErrorUnavailable {
 		t.Error("Describe must keep the protocol error reachable")
+	}
+}
+
+func TestCursorGapReconcilesThroughInspectOnOpen(t *testing.T) {
+	f := &fakeRunner{
+		receipt:   receipt(runner.PhaseRunning),
+		phases:    []runner.Phase{runner.PhaseRunning, runner.PhaseCompleted},
+		gapAt:     3,
+		gapOnOpen: true,
+		events: []runner.Event{
+			event(3, runner.EventProgress, "after the gap", ""),
+			event(4, runner.EventCompleted, "", ""),
+		},
+	}
+	f.receipt.Cursor = 2
+	rec := &recorder{}
+	out, err := Follow(ctxWithTimeout(t), f, receipt(runner.PhaseRunning), Position{}, rec)
+	if err != nil {
+		t.Fatalf("Follow: %v", err)
+	}
+	if !out.Completed() {
+		t.Fatalf("phase = %s", out.Receipt.Phase)
+	}
+	if strings.Join(rec.text, "") != "after the gap" {
+		t.Errorf("text after reconcile = %q", rec.text)
+	}
+}
+
+func TestRejoinSnapshotRejectsUnavailableHistoryOnOpen(t *testing.T) {
+	f := &fakeRunner{
+		receipt:   receipt(runner.PhaseCompleted),
+		gapAt:     3,
+		gapOnOpen: true,
+		events: []runner.Event{
+			event(1, runner.EventProgress, "saved", ""),
+			event(2, runner.EventProgress, "missing", ""),
+			event(3, runner.EventCompleted, "", ""),
+		},
+	}
+	s := newStream(Noop{}, 0)
+	s.observe(event(1, runner.EventProgress, "saved", ""))
+	snap := s.snapshot(Position{TaskID: "task-1", AttemptID: "attempt-1", Epoch: 1})
+	out, err := RejoinSnapshot(ctxWithTimeout(t), f, snap, &recorder{})
+	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
+		t.Fatalf("RejoinSnapshot error = %v, outcome %+v; want an explicit incomplete-history error", err, out)
 	}
 }

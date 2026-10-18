@@ -626,6 +626,15 @@ func TestHTTPAuthCapabilitiesAndCursorGap(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+runner.cfg.Token)
 	response = httptest.NewRecorder()
 	runner.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "id: 1\n") {
+		t.Fatalf("journal replay status = %d body=%s", response.Code, response.Body.String())
+	}
+	// A legacy attempt without a journal must still report lost history.
+	runner.mu.Lock()
+	runner.state.Attempts[receipt.AttemptID].EventJournalBytes = 0
+	runner.mu.Unlock()
+	response = httptest.NewRecorder()
+	runner.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusGone {
 		t.Fatalf("cursor gap status = %d body=%s", response.Code, response.Body.String())
 	}

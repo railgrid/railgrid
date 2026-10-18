@@ -687,12 +687,44 @@ policy.
 
 ## Limits and verification boundary
 
-The default bounds are 256 retained events per attempt, 64 KiB per event
+The default bounds are 256 cached events per attempt, 64 KiB per event
 payload, 2 MiB per JSON request body, and 32 MiB per artifact. Configuration
 can lower or raise these limits within the implementation's accepted values;
 callers should use the advertised protocol response and error code as the
 authority. The runner supports at most one harness turn per execution and one
 simultaneous execution by default.
+
+Protocol events are also retained in a private, append-only journal alongside
+the attempt state. Reconnecting consumers replay from their last cursor even
+after the memory cache rolls over or the runner restarts. Responses are split
+at complete event boundaries around 8 MiB (a single larger event is sent alone),
+so large histories reconnect before reaching the client’s 64 MiB stream limit.
+Journals have the same
+lifetime as attempt state. Journals have a 256 MiB byte cap, with an additional
+1 MiB reserved for terminal/needs-input events; reaching the cap fails the
+attempt explicitly. The separate configured harness output limit still applies.
+Unowned journals are removed on acceptance rollback and startup recovery.
+Active attempts reuse journal handles; pending journal writes are synced before
+state commits their offsets. Sparse in-memory cursor indexes avoid repeatedly
+scanning the full history and are rebuilt lazily after restart.
+
+Journal storage across retained attempts is capped at 2 GiB, with a further
+16 MiB reserved for terminal/needs-input events. Accounting includes retained
+journals after restart. At capacity, additional progress fails explicitly;
+cleanup does not delete replay history before Factory can consume it.
+Replay scans run outside the runner state lock, using a committed byte/cursor
+snapshot and a separately guarded sparse index. Missing or corrupt history
+returns an unavailable error before streaming; mid-stream corruption is logged
+with its attempt and last delivered cursor. Legacy unretained history still
+returns cursor expiry.
+
+Persistence still syncs dirty journals and then state under the shared runner
+lock. Only journals changed since the previous sync incur a sync, but disk latency
+can delay other requests on runners with many concurrent attempts. Replay/index
+changes do not remove that synchronous durability cost.
+
+Events already discarded by an older runner cannot be reconstructed; those
+cursors still report unavailable history rather than silently losing output.
 
 Independent focused Git-fetch and race invocation tests passed. The full runner
 executor checks (runner tests, race, lint, vet, and build) also passed, along
