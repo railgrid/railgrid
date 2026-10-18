@@ -853,6 +853,9 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 	if sessionID == "" {
 		sessionID = attempt.Start.SessionID
 	}
+	if attempt.Start.ExportGitResult {
+		instructions += "\n\nScreenshot output directory (absolute): " + filepath.Join(attempt.Receipt.Workdir, "artifacts", "screenshots") + ". This is rooted at the Git checkout, regardless of your current working directory; never put screenshots inside a provider/module directory.\nScreenshot attachments: save PNG/JPEG images directly in artifacts/screenshots/ using simple filenames (letters, digits, dots, underscores, hyphens). Maximum 8 images, 2 MiB each, 8 MiB total. Reference them in your final response as ![description](artifacts/screenshots/name.png). This folder is exported separately and excluded from new Git changes. Do not commit these images."
+	}
 	launch := harness.Launch{
 		AttemptID:       attemptID,
 		Workdir:         attempt.Receipt.Workdir,

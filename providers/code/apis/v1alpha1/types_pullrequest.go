@@ -85,6 +85,11 @@ type PullRequestSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=16384
 	Body string `json:"body,omitempty"`
+	// AttachmentRef is the staged snapshot containing screenshot bytes. It may
+	// equal desiredHead.bundleRef. Empty means the description has no attachments.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	AttachmentRef string `json:"attachmentRef,omitempty"`
 	// DesiredHead is the commit the head branch should be at: a verified
 	// snapshot the coordinator staged with the stage-snapshot verb. Code
 	// advances the branch to it from the head it last observed, so a branch
@@ -189,7 +194,27 @@ type PullRequestComment struct {
 }
 
 // PullRequestStatus is what the forge shows.
+// PublishedAttachment records an upload that reconciliation can reuse.
+type PublishedAttachment struct {
+	// +kubebuilder:validation:MaxLength=512
+	Path string `json:"path"`
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	Digest string `json:"digest"`
+	// +kubebuilder:validation:MaxLength=2048
+	URL string `json:"url"`
+}
+
 type PullRequestStatus struct {
+	// AttachmentRepositoryUID binds upload receipts to their destination repository.
+	// +optional
+	AttachmentRepositoryUID string `json:"attachmentRepositoryUID,omitempty"`
+	// PublishedTextDigest records the last successfully applied title/body input.
+	// +optional
+	PublishedTextDigest string `json:"publishedTextDigest,omitempty"`
+	// UploadedAttachments lets retries reuse successful uploads for this revision.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	UploadedAttachments []PublishedAttachment `json:"uploadedAttachments,omitempty"`
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// +optional

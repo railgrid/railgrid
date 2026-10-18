@@ -39,11 +39,14 @@ func (s *Server) snapshotScope(caller dataplane.ProxiedIdentity, in Input) strin
 // and answers with its content reference, which the caller then puts on the
 // PullRequest's desired head for the controller to find.
 func (s *Server) stage(ctx context.Context, caller dataplane.ProxiedIdentity, cluster string, in Input) (any, error) {
-	if in.Snapshot == nil || len(in.Snapshot.Bundle) == 0 || len(in.Snapshot.Bundle) > 25<<20 {
+	if in.Snapshot == nil || (len(in.Snapshot.Bundle) == 0 && len(in.Snapshot.Attachments) == 0) || len(in.Snapshot.Bundle) > 25<<20 {
 		return nil, errors.New("invalid snapshot upload")
 	}
 	if s.Snapshots == nil {
 		return nil, errors.New("snapshot store is unavailable")
+	}
+	if err := backend.ValidateAttachments(in.Snapshot.Attachments); err != nil {
+		return nil, err
 	}
 	data, err := json.Marshal(in.Snapshot)
 	if err != nil || len(data) > MaxInputBytes {

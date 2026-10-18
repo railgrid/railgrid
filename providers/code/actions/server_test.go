@@ -62,7 +62,7 @@ func actionRequest(method, path string, body io.Reader, user string) *http.Reque
 		ctx = dataplane.WithProxiedIdentity(ctx, dataplane.ProxiedIdentity{User: user, Groups: []string{"system:authenticated"}})
 	}
 	if route, err := dataplane.ParseSubresourceRequest(r); err == nil {
-		route.Request.Version = ContractVersion
+		route.Version = ContractVersion
 		ctx = dataplane.WithRoute(ctx, route)
 	}
 	return r.WithContext(ctx)

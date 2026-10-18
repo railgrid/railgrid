@@ -77,7 +77,7 @@ type gitResultDocument struct {
 // Harness-produced artifacts cannot use these names because the runner adds
 // their immutable records only after it has validated a completed turn.
 func isGitResultArtifactName(name string) bool {
-	return name == gitResultBundleName || name == gitResultJSONName
+	return name == gitResultBundleName || name == gitResultJSONName || name == ScreenshotsName
 }
 
 func cleanupGitResultArtifacts(result gitResultExport) {
@@ -212,6 +212,9 @@ func exportGitResult(ctx context.Context, cfg Config, request StartRequest, work
 		return gitResultExport{}, fmt.Errorf("list approved base Git paths: %w", err)
 	}
 	for _, path := range nulPaths(basePaths) {
+		if strings.HasPrefix(path, screenshotDirectory+"/") {
+			continue
+		}
 		_, info, err := inspectGitResultPath(workdir, path)
 		if errors.Is(err, os.ErrNotExist) || (err == nil && info.IsDir()) {
 			if _, err := gitResultCommand(ctx, workdir, indexEnv, nil, "update-index", "--remove", "--", path); err != nil {
@@ -226,6 +229,9 @@ func exportGitResult(ctx context.Context, cfg Config, request StartRequest, work
 		return gitResultExport{}, err
 	}
 	for _, path := range paths {
+		if strings.HasPrefix(path, screenshotDirectory+"/") {
+			continue
+		}
 		_, info, err := inspectGitResultPath(workdir, path)
 		if errors.Is(err, os.ErrNotExist) {
 			// ls-files includes tracked paths removed from the worktree. The
@@ -321,6 +327,14 @@ func exportGitResult(ctx context.Context, cfg Config, request StartRequest, work
 			return gitResultExport{}, err
 		}
 		result.artifacts = append(result.artifacts, bundleArtifact)
+	}
+	images, err := exportScreenshots(cfg, request, workdir)
+	if err != nil {
+		cleanupGitResultArtifacts(result)
+		return gitResultExport{}, err
+	}
+	if images != nil {
+		result.artifacts = append(result.artifacts, *images)
 	}
 	return result, nil
 }

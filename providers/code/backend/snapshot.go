@@ -13,10 +13,11 @@ import (
 
 // Snapshot is an immutable Git result, with one parent and no workflow policy.
 type Snapshot struct {
-	BaseCommit string `json:"baseCommit"`
-	Commit     string `json:"commit"`
-	Tree       string `json:"tree"`
-	Bundle     []byte `json:"bundle"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	BaseCommit  string       `json:"baseCommit"`
+	Commit      string       `json:"commit"`
+	Tree        string       `json:"tree"`
+	Bundle      []byte       `json:"bundle"`
 	// Message is the one-line subject the snapshot commit must carry, chosen
 	// by the coordinator that dispatched the attempt. Empty means the
 	// canonical message. It is verified byte for byte, so a commit that says

@@ -156,11 +156,11 @@ func TestOpenAdoptsAnExistingPullRequest(t *testing.T) {
 	r := &Reconciler{}
 	head := &codev1alpha1.PullRequestHead{Commit: headA, BaseCommit: headB, Tree: tree}
 	forge := &fakeForge{}
-	first, err := r.open(ctx, forge, nil, backend.Credential{}, nil, resource(head))
+	first, err := r.open(ctx, forge, nil, backend.Credential{}, nil, resource(head), "")
 	if err != nil || first.Number != 17 || forge.created != 1 {
 		t.Fatalf("open: %+v %v created=%d", first, err, forge.created)
 	}
-	again, err := r.open(ctx, forge, nil, backend.Credential{}, nil, resource(head))
+	again, err := r.open(ctx, forge, nil, backend.Credential{}, nil, resource(head), "")
 	if err != nil || again.Number != 17 || forge.created != 1 {
 		t.Fatalf("reopen: %+v %v created=%d", again, err, forge.created)
 	}

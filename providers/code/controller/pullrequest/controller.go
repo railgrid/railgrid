@@ -26,6 +26,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -144,8 +145,31 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, r.fail(ctx, c, &pr, err.Error())
 	}
 
+	body := pr.Spec.Body
+	digest := textDigest(&pr)
+	textChanged := pr.Status.PublishedTextDigest != digest
+	// On upgrade, adopt the baseline for already-observed PRs. Only a new
+	// desired spec should overwrite a description edited on GitHub.
+	adoptTextBaseline := pr.Status.PublishedTextDigest == "" && pr.Status.Number != 0 && pr.Status.ObservedGeneration == pr.Generation && pr.Spec.AttachmentRef == "" && apimeta.IsStatusConditionTrue(pr.Status.Conditions, codev1alpha1.ConditionReady)
+	if adoptTextBaseline {
+		textChanged = false
+	}
+	if textChanged && (pr.Spec.DesiredHead != nil || pr.Status.Number != 0) {
+		body, err = r.attachmentBody(ctx, c, host, conn, cred, repo, string(req.ClusterName), &pr)
+		if err != nil {
+			next := pr.DeepCopy()
+			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "publishing screenshots: "+err.Error(), pr.Generation)
+			if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+	}
 	next := pr.DeepCopy()
 	next.Status.ObservedGeneration = pr.Generation
+	if adoptTextBaseline {
+		next.Status.PublishedTextDigest = digest
+	}
 
 	// 1. The branch: advance it to the desired head when it is not there.
 	pushed := false
@@ -167,7 +191,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// 2. The pull request: open it once there is something to review.
 	if pr.Status.Number == 0 && pr.Spec.DesiredHead != nil {
-		opened, err := r.open(ctx, host, conn, cred, repo, &pr)
+		opened, err := r.open(ctx, host, conn, cred, repo, &pr, body)
 		if err != nil {
 			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, err.Error(), pr.Generation)
 			if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
@@ -207,6 +231,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: pushSettleInterval}, nil
+	}
+	if textChanged && !observed.Merged && strings.EqualFold(observed.State, "open") {
+		input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: observed.Commit, Title: pr.Spec.Title, Body: body}
+		if _, err := host.UpdatePullRequest(ctx, conn, cred, repo, next.Status.Number, input); err != nil {
+			shared.SetCondition(&next.Status.Conditions, codev1alpha1.ConditionReady, metav1.ConditionFalse, codev1alpha1.ReasonReconciling, "publishing PR description: "+err.Error(), pr.Generation)
+			if updateErr := updateStatusIfChanged(ctx, c, &pr, next); updateErr != nil {
+				return ctrl.Result{}, updateErr
+			}
+			return ctrl.Result{}, err
+		}
+		next.Status.PublishedTextDigest = digest
 	}
 	next.Status.URL = observed.URL
 	next.Status.Head = observed.Commit
@@ -298,8 +333,8 @@ func (r *Reconciler) advance(ctx context.Context, host forge, conn *codev1alpha1
 
 // open creates the pull request, or adopts the one the forge already has for
 // this head branch (a create whose answer was lost).
-func (r *Reconciler) open(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest) (*backend.PullRequest, error) {
-	input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: pr.Spec.DesiredHead.Commit, Title: pr.Spec.Title, Body: pr.Spec.Body}
+func (r *Reconciler) open(ctx context.Context, host forge, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository, pr *codev1alpha1.PullRequest, body string) (*backend.PullRequest, error) {
+	input := backend.PullRequestInput{Head: pr.Spec.Branch, Base: pr.Spec.Base, Commit: pr.Spec.DesiredHead.Commit, Title: pr.Spec.Title, Body: body}
 	existing, err := host.FindPullRequest(ctx, conn, cred, repo, input)
 	if err != nil {
 		return nil, fmt.Errorf("finding the pull request: %w", err)

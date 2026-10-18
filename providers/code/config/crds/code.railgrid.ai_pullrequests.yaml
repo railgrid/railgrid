@@ -69,6 +69,12 @@ spec:
           spec:
             description: PullRequestSpec is what the forge should show.
             properties:
+              attachmentRef:
+                description: |-
+                  AttachmentRef is the staged snapshot containing screenshot bytes. It may
+                  equal desiredHead.bundleRef. Empty means the description has no attachments.
+                pattern: ^[a-f0-9]{64}$
+                type: string
               base:
                 description: Base is the branch the pull request merges into.
                 maxLength: 255
@@ -153,8 +159,11 @@ spec:
             - title
             type: object
           status:
-            description: PullRequestStatus is what the forge shows.
             properties:
+              attachmentRepositoryUID:
+                description: AttachmentRepositoryUID binds upload receipts to their
+                  destination repository.
+                type: string
               comments:
                 description: |-
                   Comments are the conversation comments, oldest first; bounded to the
@@ -281,6 +290,10 @@ spec:
                 - Closed
                 - Failed
                 type: string
+              publishedTextDigest:
+                description: PublishedTextDigest records the last successfully applied
+                  title/body input.
+                type: string
               reviews:
                 description: |-
                   Reviews are the reviews submitted against the current head, newest
@@ -324,6 +337,30 @@ spec:
               state:
                 description: State is the forge's own state word (open, closed).
                 type: string
+              uploadedAttachments:
+                description: UploadedAttachments lets retries reuse successful uploads
+                  for this revision.
+                items:
+                  description: |-
+                    PullRequestStatus is what the forge shows.
+                    PublishedAttachment records an upload that reconciliation can reuse.
+                  properties:
+                    digest:
+                      pattern: ^[a-f0-9]{64}$
+                      type: string
+                    path:
+                      maxLength: 512
+                      type: string
+                    url:
+                      maxLength: 2048
+                      type: string
+                  required:
+                  - digest
+                  - path
+                  - url
+                  type: object
+                maxItems: 8
+                type: array
               url:
                 type: string
             type: object

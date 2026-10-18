@@ -10,6 +10,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -876,6 +878,16 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	if run.Repository != nil {
 		if out.Result == nil {
 			return finishFailedTurn(errors.New("git result unusable: the turn completed without a verified result"))
+		}
+		// Publish only the final assistant response, never the accumulated
+		// commentary, through the existing artifact contract.
+		if strings.TrimSpace(finalContent) != "" {
+			data := []byte(finalContent)
+			sum := sha256.Sum256(data)
+			out.Artifacts = append(out.Artifacts, backend.Artifact{
+				Name: "final-response.md", MediaType: "text/markdown", Data: data,
+				Size: int64(len(data)), Digest: hex.EncodeToString(sum[:]),
+			})
 		}
 		if serr := s.storeRunArtifacts(ctx, scope, runID, out.Artifacts, end); serr != nil {
 			return finishFailedTurn(fmt.Errorf("git result unusable: storing its artifacts: %w", serr))
