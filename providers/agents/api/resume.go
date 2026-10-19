@@ -98,15 +98,17 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	var claimed store.Run
 	if intent.FromPhase == store.RunPhaseRunning {
 		if intent.RecoveryClaimedAt.IsZero() || !run.UpdatedAt.Equal(intent.RecoveryClaimedAt) || run.CancelRequested {
+			log.Printf("resume: run %s recovery claim rejected (missing=%t, current=%t, cancel=%t)", run.ID, intent.RecoveryClaimedAt.IsZero(), run.UpdatedAt.Equal(intent.RecoveryClaimedAt), run.CancelRequested)
 			return
 		}
 		claimed = run
 	} else {
-		claimed, err = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC())
-	}
-	if err != nil {
-		log.Printf("resume: run %s: %v", run.ID, err)
-		return
+		var claimErr error
+		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC())
+		if claimErr != nil {
+			log.Printf("resume: run %s: %v", run.ID, claimErr)
+			return
+		}
 	}
 	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run

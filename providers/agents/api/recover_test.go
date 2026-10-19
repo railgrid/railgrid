@@ -18,6 +18,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
@@ -509,5 +510,72 @@ func TestRecoveryResumeRejectsSupersededClaim(t *testing.T) {
 	got := f.phaseOf(t, run.ID)
 	if got.Attempt != newer.Attempt || got.Phase != store.RunPhaseRunning {
 		t.Fatalf("stale recovery changed run: %+v", got)
+	}
+}
+
+func TestRecoveryResumeGuards(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelled=%t", cancelled), func(t *testing.T) {
+			ctx := context.Background()
+			f := newRecoverFixture(t)
+			run := f.seedRun(t, "guard", store.RunPhaseRunning, time.Minute, true, 0)
+			intent := resumeIntent{FromPhase: store.RunPhaseRunning}
+			if cancelled {
+				claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep the revision equal so this specifically exercises the cancel guard.
+				if err := f.s.store.RequestCancel(ctx, f.scope, run.ID, claimed.UpdatedAt); err != nil {
+					t.Fatal(err)
+				}
+				intent.RecoveryClaimedAt = claimed.UpdatedAt
+			}
+			before := f.phaseOf(t, run.ID)
+			f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() { t.Fatal("guarded recovery continued") }}}, intent)
+			got := f.phaseOf(t, run.ID)
+			if got.Attempt != before.Attempt || got.Phase != before.Phase || !got.UpdatedAt.Equal(before.UpdatedAt) || got.CancelRequested != before.CancelRequested {
+				t.Fatalf("guard changed run: %+v", got)
+			}
+		})
+	}
+}
+
+type recoveryClaimErrorStore struct {
+	store.Store
+	err   error
+	calls int
+}
+
+func (s *recoveryClaimErrorStore) ClaimRecovery(context.Context, store.Scope, string, time.Time, time.Time) (store.Run, error) {
+	s.calls++
+	return store.Run{}, s.err
+}
+func TestRecoveryClaimErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		want    store.RunPhase
+		resumed bool
+	}{
+		{"stale", fmt.Errorf("wrapped: %w", store.ErrRecoveryClaimStale), store.RunPhaseRunning, true},
+		{"database", errors.New("database unavailable"), store.RunPhaseFailed, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newRecoverFixture(t)
+			run := f.seedRun(t, "claim-error", store.RunPhaseRunning, time.Minute, true, 0)
+			st := &recoveryClaimErrorStore{Store: f.s.store, err: tc.err}
+			f.s.store = st
+			bg := &background{server: f.s, scopedFn: func(context.Context, string) (dynamic.Interface, error) { return nil, nil }}
+			resumed := f.s.recoverRun(ctx, store.ScopedRun{Scope: f.scope, Run: run}, bg.resumeRecoveredRun, nil)
+			got := f.phaseOf(t, run.ID)
+			if st.calls != 1 || resumed != tc.resumed || got.Phase != tc.want {
+				t.Fatalf("calls=%d resumed=%t phase=%s; want 1 %t %s", st.calls, resumed, got.Phase, tc.resumed, tc.want)
+			}
+			if tc.want == store.RunPhaseFailed && !strings.Contains(got.Message, tc.err.Error()) {
+				t.Fatalf("missing failure cause: %s", got.Message)
+			}
+		})
 	}
 }

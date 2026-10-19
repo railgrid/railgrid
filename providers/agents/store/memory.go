@@ -875,8 +875,12 @@ func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, o
 	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
-	if !ok || run.CancelRequested || run.Phase != RunPhaseRunning || !run.UpdatedAt.Equal(observed) || !now.After(observed) {
+	if !ok || run.CancelRequested || run.Phase != RunPhaseRunning || !run.UpdatedAt.Equal(observed) {
 		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
+	}
+	// Advance the revision even if the recovering replica's clock is behind.
+	if minimum := observed.Add(time.Microsecond); now.Before(minimum) {
+		now = minimum
 	}
 	run.Attempt++
 	run.UpdatedAt = now.UTC()

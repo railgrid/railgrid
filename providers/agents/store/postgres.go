@@ -992,9 +992,9 @@ func (p *PostgresStore) ClaimRecovery(ctx context.Context, scope Scope, id strin
 	// UPDATE RETURNING keeps the claim and returned checkpoint in one atomic
 	// statement, even when this scope does not require a migration transaction.
 	row := mutation.executor.QueryRowContext(ctx, `UPDATE agents_runs
- SET attempt=attempt+1, updated_at=$5
+ SET attempt=attempt+1, updated_at=GREATEST($5::timestamptz, updated_at + interval '1 microsecond')
  WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase=$4
- AND updated_at=$6 AND $5::timestamptz > updated_at AND cancel_requested=FALSE
+ AND updated_at=$6 AND cancel_requested=FALSE
  RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id,
 		string(RunPhaseRunning), now.UTC(), observed.UTC())
 	run, err := scanRun(row)

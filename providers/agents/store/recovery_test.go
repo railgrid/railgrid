@@ -79,3 +79,39 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 		t.Fatal("recovered cancelled run")
 	}
 }
+
+func TestMemoryClaimRecoveryClockSkew(t *testing.T) {
+	testClaimRecoveryClockSkew(t, NewMemoryStore(), Scope{OrgUUID: "skew-org", WorkspaceUUID: "skew-ws", AgentName: "agent"})
+}
+func TestPostgresClaimRecoveryClockSkew(t *testing.T) {
+	st := openTestPostgres(t)
+	testClaimRecoveryClockSkew(t, st, pgScope(t, st))
+}
+func testClaimRecoveryClockSkew(t *testing.T, st Store, scope Scope) {
+	t.Helper()
+	ctx := context.Background()
+	observed := time.Now().UTC().Truncate(time.Microsecond)
+	for _, offset := range []time.Duration{-time.Hour, 0, time.Hour} {
+		t.Run(offset.String(), func(t *testing.T) {
+			seed := Run{ID: offset.String(), AgentName: scope.AgentName, Phase: RunPhaseRunning, CreatedAt: observed, UpdatedAt: observed}
+			if err := st.SaveRun(ctx, scope, seed); err != nil {
+				t.Fatal(err)
+			}
+			now := observed.Add(offset)
+			got, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := now
+			if offset <= 0 {
+				want = observed.Add(time.Microsecond)
+			}
+			if !got.UpdatedAt.Equal(want) || got.Attempt != 1 {
+				t.Fatalf("claim revision=%v attempt=%d; want %v and 1", got.UpdatedAt, got.Attempt, want)
+			}
+			if _, err := st.ClaimRecovery(ctx, scope, seed.ID, observed, now); !errors.Is(err, ErrRecoveryClaimStale) {
+				t.Fatalf("duplicate claim: %v", err)
+			}
+		})
+	}
+}
