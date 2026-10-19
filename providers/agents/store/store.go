@@ -29,6 +29,9 @@ import (
 // a transcript row absent from the compacted model history.
 var ErrSessionCheckpointStale = fmt.Errorf("session compaction checkpoint is stale")
 
+// ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
+var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
+
 // Scope isolates all data to one tenant + agent boundary. Every query includes
 // org and workspace; AgentName narrows to a single agent where relevant.
 type Scope struct {
@@ -790,6 +793,9 @@ type Store interface {
 	// terminal run cannot be claimed, so an approval racing with cancel cannot
 	// revive work after the cancel flag or terminal phase is recorded.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
+	// ClaimRecovery claims exactly the observed Running revision and increments its
+	// recovery attempt atomically. Stale, cancelled and terminal runs are rejected.
+	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, now time.Time) (Run, error)
 	// RequestCancel durably asks a run to stop: it sets CancelRequested (and
 	// the time of the first request) on the row without touching anything
 	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
