@@ -388,8 +388,12 @@ def main():
             for signum in pending:
                 terminate(signum, None)
         if detached:
-            print('Started owned Tilt stack; logs: .kcp/tilt.log; stop: make dev-browser-down')
-            return
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                print('Launched owned Tilt stack; run make dev-browser-ready to verify readiness; logs: .kcp/tilt.log; stop: make dev-browser-down')
+                return
+            raise ValueError(f'Tilt exited during startup (status {child.returncode}); inspect .kcp/tilt.log')
         sys.exit(child.wait())
 
 

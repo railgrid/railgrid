@@ -108,16 +108,19 @@ process. Both the coordinator ID and an approved repository opt-in are required:
 Omitting the ID or setting/omitting the timeout as zero keeps immediate terminal
 cleanup. The timeout is capped at one day. These repositories opt in to one hour;
 their preparation hook refreshes an existing browser environment, but does not
-start a UI stack for a backend-only task. For a warm UI run, start the stack with `make tilt TILT_DETACHED=1`, then
-run `make dev-browser-ready`. The detached launch returns after recording
-process ownership, writes private logs to `.kcp/tilt.log`, and survives agent
-terminal shutdown. Ordinary foreground `make tilt` remains unchanged.
-Detached launch requires an isolated checkout and uses the same scoped
-`make dev-browser-down` cleanup. Commercial-provider wrappers forward this
-Make variable to their companion stack. A stopped owned process fails
-readiness immediately with restart instructions. Preparation runs from approved source with
+start a UI stack for a backend-only task. A cold UI task still starts its stack
+and runs browser setup normally. Preparation runs from approved source with
 `RAILGRID_PREPARE_ROOT` and `RAILGRID_CLEANUP_ROOT` pointing at the retained
 checkout; it shares the new attempt's cancellation and has a five-minute limit.
+
+For a warm UI stack, use `make tilt TILT_DETACHED=1`, then run
+`make dev-browser-ready`. The detached launch records ownership, checks for an
+early startup failure, and returns while the stack runs independently of the
+agent terminal. Readiness is still verified by the second command. Logs append
+to private `.kcp/tilt.log` so previous failure evidence survives a restart.
+Detached launch requires an isolated checkout; foreground `make tilt` is
+unchanged. Stop it with `make dev-browser-down`. Readiness checks report a
+stopped or replaced owned process with restart instructions.
 
 A warm checkout lives below the runner's `worktrees/.environments/` directory.
 Only one attempt owns it. Waiting for a user reply retains that ownership;

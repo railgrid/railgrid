@@ -88,7 +88,16 @@ class Setup:
         self.deadline = time.monotonic() + timeout
         self.opener = None
 
+    def require_owner_alive(self):
+        owner = self.owner
+        if not owner or not owner.get('pid'):
+            return
+        if not owner.get('birth') or checkout.process_identity(owner['pid']) != owner['birth']:
+            raise ValueError('This checkout’s Tilt process has stopped or changed; restart with make tilt '
+                             '(or make tilt TILT_DETACHED=1 to survive terminal exit), then retry make dev-browser-ready')
+
     def remaining(self):
+        self.require_owner_alive()
         remaining = int(self.deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError('Development setup timed out; inspect this checkout’s Tilt logs and retry make dev-browser-ready')
@@ -111,9 +120,6 @@ class Setup:
         print('Waiting for Tilt resource ' + name, flush=True)
         while True:
             self.remaining()
-            if self.owner and self.owner.get('pid') and (
-                    not self.owner.get('birth') or checkout.process_identity(self.owner['pid']) != self.owner['birth']):
-                raise ValueError('This checkout’s Tilt process has stopped; restart with make tilt TILT_DETACHED=1, then retry make dev-browser-ready')
             try:
                 resource = json.loads(self.tilt('get', 'uiresource', name, '-o', 'json'))
             except ValueError:

@@ -4,12 +4,15 @@ import io
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
+import os
+import signal
+import subprocess
 from pathlib import Path
 import tempfile
 import sys
 sys.dont_write_bytecode = True
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 spec = importlib.util.spec_from_file_location('checkout', Path(__file__).with_name('tilt-checkout.py'))
 m = importlib.util.module_from_spec(spec)
@@ -17,6 +20,79 @@ spec.loader.exec_module(m)
 
 
 class CheckoutTest(unittest.TestCase):
+    def test_detached_launch_returns_with_private_log_and_durable_owner(self):
+        c = m
+        with tempfile.TemporaryDirectory() as tmp, patch.object(c, 'ROOT', Path(tmp)):
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': c.PORTS}
+            child = Mock(pid=1234)
+            child.wait.side_effect = subprocess.TimeoutExpired("make", 3)
+            with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(c, 'settings', return_value=config), patch.object(c, 'manifests', return_value={}), patch.object(c, 'check_ports'), patch.object(c, 'process_identity', return_value='birth'), patch.object(c.signal, 'signal'), patch.object(c.subprocess, 'Popen', return_value=child) as launch, patch.object(c.sys, 'argv', ['tilt-checkout.py']):
+                c.main()
+            child.wait.assert_called_once_with(timeout=3)
+            args = launch.call_args.kwargs
+            self.assertTrue(args['start_new_session'])
+            self.assertEqual(args['stdin'], c.subprocess.DEVNULL)
+            self.assertEqual(args['stderr'], c.subprocess.STDOUT)
+            self.assertEqual((root / '.kcp/tilt.log').stat().st_mode & 0o777, 0o600)
+            owner = json.loads((root / '.kcp/tilt-owner.json').read_text())
+            self.assertEqual((owner['pid'], owner['birth']), (1234, 'birth'))
+
+    def test_detached_process_survives_launcher_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            (root / 'Makefile').write_text('tilt-start:\n\t@exec sleep 120\n')
+            script = str(Path(__file__).with_name('tilt-checkout.py').resolve())
+            code = f"""
+import importlib.util, os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('checkout', {script!r})
+c = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(c)
+c.ROOT = Path({tmp!r})
+c.settings = lambda: {{'root': {tmp!r}, 'key': 'test', 'legacy': False, 'ports': c.PORTS}}
+c.manifests = lambda config: {{}}
+c.check_ports = lambda config: None
+c.tilt_settings_directory = lambda: {tmp!r}
+os.environ['TILT_DETACHED'] = '1'
+c.main()
+"""
+            owner_path = root / '.kcp/tilt-owner.json'
+            try:
+                subprocess.run([sys.executable, '-B', '-c', code], check=True, capture_output=True,
+                               start_new_session=True, timeout=10)
+                owner = json.loads(owner_path.read_text())
+                os.kill(owner['pid'], 0)
+                self.assertEqual(os.getsid(owner['pid']), owner['pid'])
+                self.assertEqual(m.process_identity(owner['pid']), owner['birth'])
+            finally:
+                if owner_path.exists():
+                    owner = json.loads(owner_path.read_text())
+                    if owner.get('pid') and m.process_identity(owner['pid']) == owner.get('birth'):
+                        try:
+                            os.killpg(owner['pid'], signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+
+    def test_detached_launch_refuses_shared_stack(self):
+        c = m
+        with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(c, 'settings', return_value={'legacy': True}), patch.object(c, 'environment', return_value={}), patch.object(c, 'manifests', return_value={}), patch.object(c.sys, 'argv', ['tilt-checkout.py']), patch.object(c.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(ValueError, 'isolated checkout'):
+                c.main()
+            launch.assert_not_called()
+
+    def test_detached_launch_reports_early_exit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+            (Path(tmp) / '.kcp').mkdir()
+            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.PORTS}
+            child = Mock(pid=1234, returncode=2)
+            with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(m, 'settings', return_value=config), patch.object(m, 'manifests', return_value={}), patch.object(m, 'check_ports'), patch.object(m, 'process_identity', return_value='birth'), patch.object(m.signal, 'signal'), patch.object(m.subprocess, 'Popen', return_value=child), patch.object(m.sys, 'argv', ['tilt-checkout.py']):
+                with self.assertRaisesRegex(ValueError, 'status 2'):
+                    m.main()
+            self.assertTrue((Path(tmp) / '.kcp/tilt-owner.json').exists())
+
     def setUp(self):
         self.registry_directory = m.registry_directory
         state = tempfile.TemporaryDirectory()
