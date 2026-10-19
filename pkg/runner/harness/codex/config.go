@@ -17,6 +17,8 @@ limitations under the License.
 package codex
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -118,13 +120,27 @@ func validateTrustProjectPath(root, projectPath string) error {
 	// Warm checkouts add a reserved namespace and a SHA-256 environment key.
 	// Do not grant trust to the namespace or environment container itself.
 	if len(parts) > 0 && parts[0] == ".environments" {
-		if len(parts) != 3 || len(parts[1]) != 64 || strings.Trim(parts[1], "0123456789abcdef") != "" {
+		if len(parts) != 3 || !validWarmEnvironmentKey(parts[1]) {
 			return errCodexConfigRejected
 		}
 	} else if len(parts) != 2 {
 		return errCodexConfigRejected
 	}
 	return validateNoSymlinkComponents(root, projectPath)
+}
+
+// validWarmEnvironmentKey matches hex.EncodeToString(sha256(EnvironmentID))
+// in the runner's warm checkout path producer (pkg/runner/environment.go).
+func validWarmEnvironmentKey(key string) bool {
+	if len(key) != hex.EncodedLen(sha256.Size) {
+		return false
+	}
+	for _, c := range key {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateManagedWorktree(root, workdir string) error {
