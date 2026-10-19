@@ -230,6 +230,9 @@ func (s *stateStore) save(state persistedState) error {
 	// a durable journal exists: it preserves the append cursor after restart
 	// without rewriting the entire hot cache for every progress delta. Legacy
 	// attempts without a journal still need all retained events for migration.
+	// After restart, cursors older than this tail intentionally replay from the
+	// journal; an unavailable journal reports a replay error instead of serving
+	// an incomplete snapshot history.
 	events := make(map[string][]Event, len(state.Events))
 	for id, retained := range state.Events {
 		if attempt := state.Attempts[id]; attempt != nil && attempt.EventJournalBytes > 0 && len(retained) > 1 {
@@ -239,7 +242,7 @@ func (s *stateStore) save(state persistedState) error {
 		}
 	}
 	state.Events = events
-	b, err := json.MarshalIndent(state, "", "  ")
+	b, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode runner state: %w", err)
 	}

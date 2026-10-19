@@ -78,7 +78,15 @@ func TestEventReplaySurvivesCacheEvictionAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened := newTestRunnerAt(t, adapter, stateDir, source, commit)
-	for _, after := range []uint64{0, 150, through - 1} {
+	reopened.mu.Lock()
+	restoredEvents := len(reopened.state.Events[receipt.AttemptID])
+	reopened.mu.Unlock()
+	if restoredEvents != 1 {
+		t.Fatal("restart did not restore the compact journal tail")
+	}
+	// through-2 was inside the old persisted hot cache. It must now take the
+	// HTTP cold-replay path without exposing cursor-expired to the client.
+	for _, after := range []uint64{0, 150, through - 2, through - 1} {
 		request := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/runner/v1/attempts/%s/events?after=%d", receipt.AttemptID, after), nil)
 		request.Header.Set("Authorization", "Bearer "+reopened.cfg.Token)
 		response := httptest.NewRecorder()
@@ -685,7 +693,7 @@ func TestStateSnapshotKeepsJournalTailWithoutDiscardingReplayOrLegacyHistory(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() > 32<<10 {
+	if info.Size() > 8<<10 {
 		t.Fatalf("state snapshot still contains bulk output: %d bytes", info.Size())
 	}
 	loaded, err := store.load()
