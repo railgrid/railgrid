@@ -120,6 +120,19 @@ class BrowserTest(unittest.TestCase):
                     c.main()
                 signal_group.assert_called_once_with(1234, c.signal.SIGTERM)
 
+    def test_readiness_fails_promptly_for_stopped_or_replaced_owner(self):
+        for identity in (None, 'different-birth'):
+            with self.subTest(identity=identity), tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+                root = Path(tmp)
+                (root / '.kcp').mkdir()
+                (root / '.kcp/tilt-owner.json').write_text(json.dumps({'root': tmp, 'pid': 1234, 'birth': 'original'}))
+                setup = m.Setup({'root': tmp, 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS})
+                setup.tilt = Mock()
+                with patch.object(m.checkout, 'process_identity', return_value=identity):
+                    with self.assertRaisesRegex(ValueError, 'TILT_DETACHED=1'):
+                        setup.wait_resource('(Tiltfile)')
+                setup.tilt.assert_not_called()
+
     def test_timeout_and_url_ignore_host_overrides(self):
         config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
         with patch.dict(os.environ, {'DEV_HUB_URL': 'https://production.example', 'DEV_BROWSER_TIMEOUT': 'bad'}):

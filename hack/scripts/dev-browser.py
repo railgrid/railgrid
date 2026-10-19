@@ -67,12 +67,14 @@ class Setup:
         self.config = config
         self.env = dict(os.environ, **checkout.environment(config))
         owner_path = ROOT / '.kcp/tilt-owner.json'
+        self.owner = None
         if owner_path.exists():
             owner = json.loads(owner_path.read_text())
             if owner.get('root') != str(ROOT):
                 raise ValueError('Tilt ownership record does not match this checkout')
             if owner.get('tiltDevDir'):
                 self.env['TILT_DEV_DIR'] = owner['tiltDevDir']
+            self.owner = owner
         self.port = str(config['ports']['TILT_PORT'])
         self.url = checkout.environment(config)['DEV_HUB_URL']
         # Tilt's development identity, also available through its token login UI.
@@ -86,7 +88,16 @@ class Setup:
         self.deadline = time.monotonic() + timeout
         self.opener = None
 
+    def require_owner_alive(self):
+        owner = self.owner
+        if not owner or not owner.get('pid'):
+            return
+        if not owner.get('birth') or checkout.process_identity(owner['pid']) != owner['birth']:
+            raise ValueError('This checkout’s Tilt process has stopped or changed; restart with make tilt '
+                             '(or make tilt TILT_DETACHED=1 to survive terminal exit), then retry make dev-browser-ready')
+
     def remaining(self):
+        self.require_owner_alive()
         remaining = int(self.deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError('Development setup timed out; inspect this checkout’s Tilt logs and retry make dev-browser-ready')

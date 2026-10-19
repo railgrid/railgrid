@@ -113,6 +113,15 @@ and runs browser setup normally. Preparation runs from approved source with
 `RAILGRID_PREPARE_ROOT` and `RAILGRID_CLEANUP_ROOT` pointing at the retained
 checkout; it shares the new attempt's cancellation and has a five-minute limit.
 
+For a warm UI stack, use `make tilt TILT_DETACHED=1`, then run
+`make dev-browser-ready`. The detached launch records ownership, checks for an
+early startup failure, and returns while the stack runs independently of the
+agent terminal. Readiness is still verified by the second command. Logs append
+to private `.kcp/tilt.log` so previous failure evidence survives a restart.
+Detached launch requires an isolated checkout; foreground `make tilt` is
+unchanged. Stop it with `make dev-browser-down`. Readiness checks report a
+stopped or replaced owned process with restart instructions.
+
 A warm checkout lives below the runner's `worktrees/.environments/` directory.
 Only one attempt owns it. Waiting for a user reply retains that ownership;
 success, failure, and cancellation release it only after agent execution stops.
