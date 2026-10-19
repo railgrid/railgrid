@@ -865,6 +865,25 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	return run, nil
 }
 
+func (m *MemoryStore) ClaimRecovery(_ context.Context, scope Scope, id string, observed, now time.Time) (Run, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return Run{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	k := tenantKey(scope) + "|" + id
+	run, ok := m.runs[k]
+	if !ok || run.CancelRequested || run.Phase != RunPhaseRunning || !run.UpdatedAt.Equal(observed) || !now.After(observed) {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
+	}
+	run.Attempt++
+	run.UpdatedAt = now.UTC()
+	m.runs[k] = run
+	return run, nil
+}
+
 func (m *MemoryStore) ListRuns(_ context.Context, scope Scope, limit int) ([]Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {

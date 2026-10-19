@@ -471,3 +471,43 @@ func TestChannelErrorText(t *testing.T) {
 		}
 	})
 }
+
+func TestRecoveryResumeClaimsRunningCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	f := newRecoverFixture(t)
+	run := f.seedRun(t, "recovery-claim", store.RunPhaseRunning, time.Minute, true, 0)
+	checked := false
+	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() {
+		checked = true
+		got := f.phaseOf(t, run.ID)
+		if got.Attempt != 1 || got.Phase != store.RunPhaseRunning {
+			t.Fatalf("claim attempt=%d phase=%s", got.Attempt, got.Phase)
+		}
+	}}}, resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
+	if !checked {
+		t.Fatal("Running recovery never reached continuation boundary")
+	}
+}
+
+func TestRecoveryResumeRejectsSupersededClaim(t *testing.T) {
+	ctx := context.Background()
+	f := newRecoverFixture(t)
+	run := f.seedRun(t, "superseded-recovery", store.RunPhaseRunning, time.Minute, true, 0)
+	claimed, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, run.UpdatedAt, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := f.s.store.ClaimRecovery(ctx, f.scope, run.ID, claimed.UpdatedAt, claimed.UpdatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() { t.Fatal("superseded recovery continued") }}}, resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
+	got := f.phaseOf(t, run.ID)
+	if got.Attempt != newer.Attempt || got.Phase != store.RunPhaseRunning {
+		t.Fatalf("stale recovery changed run: %+v", got)
+	}
+}

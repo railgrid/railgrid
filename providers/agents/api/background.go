@@ -545,19 +545,19 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 	if err != nil {
 		return fmt.Errorf("workspace %s: %w", clusterID, err)
 	}
-	// Count the attempt before resuming, so a run that kills the provider on every
-	// resume still walks toward maxRecoveryAttempts instead of looping forever.
-	if stored, gerr := b.server.store.GetRun(ctx, sr.Scope, sr.Run.ID); gerr == nil {
-		stored.Attempt++
-		stored.UpdatedAt = time.Now().UTC()
-		if serr := b.server.saveRun(ctx, sr.Scope, stored); serr != nil {
-			return fmt.Errorf("recording the resume attempt: %w", serr)
-		}
+	// Claim synchronously so competing reconciles cannot resume the same
+	// revision, and a failed claim cannot silently abandon recovery.
+	claimed, err := b.server.store.ClaimRecovery(ctx, sr.Scope, sr.Run.ID, sr.Run.UpdatedAt, time.Now().UTC())
+	if errors.Is(err, store.ErrRecoveryClaimStale) {
+		return nil // Another writer advanced or settled the run.
+	}
+	if err != nil {
+		return fmt.Errorf("claiming recovered run: %w", err)
 	}
 	// Detached: the resume outlives this reconcile, and its own timeout bounds it.
 	go b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID,
 		b.agentAccess(ctx, dyn, clusterID, sr.Run.AgentName),
-		resumeIntent{FromPhase: store.RunPhaseRunning})
+		resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
 	return nil
 }
 

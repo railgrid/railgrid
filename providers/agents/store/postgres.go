@@ -979,6 +979,37 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 	return run, nil
 }
 
+func (p *PostgresStore) ClaimRecovery(ctx context.Context, scope Scope, id string, observed, now time.Time) (Run, error) {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return Run{}, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.validate(); err != nil {
+		return Run{}, err
+	}
+	// UPDATE RETURNING keeps the claim and returned checkpoint in one atomic
+	// statement, even when this scope does not require a migration transaction.
+	row := mutation.executor.QueryRowContext(ctx, `UPDATE agents_runs
+ SET attempt=attempt+1, updated_at=$5
+ WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase=$4
+ AND updated_at=$6 AND $5::timestamptz > updated_at AND cancel_requested=FALSE
+ RETURNING `+runColumns, scope.OrgUUID, scope.WorkspaceUUID, id,
+		string(RunPhaseRunning), now.UTC(), observed.UTC())
+	run, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRecoveryClaimStale)
+	}
+	if err != nil {
+		return Run{}, fmt.Errorf("claim recovery for run %q: %w", id, err)
+	}
+	if err := mutation.commit(); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
 func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error) {
 	scope = p.normalizeScope(ctx, scope)
 	if err := scope.validate(); err != nil {

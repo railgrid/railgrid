@@ -62,6 +62,8 @@ type resumeIntent struct {
 	Approve   bool
 	Note      string
 	FromPhase store.RunPhase
+	// RecoveryClaimedAt identifies the revision claimed by the recovery caller.
+	RecoveryClaimedAt time.Time
 }
 
 // resumeRun rehydrates a checkpointed run and continues it through the shared
@@ -93,7 +95,15 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		startedAt = time.Now().UTC()
 	}
 	// Claim so only one resolver resumes (double /approve, portal + channel).
-	claimed, err := s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC())
+	var claimed store.Run
+	if intent.FromPhase == store.RunPhaseRunning {
+		if intent.RecoveryClaimedAt.IsZero() || !run.UpdatedAt.Equal(intent.RecoveryClaimedAt) || run.CancelRequested {
+			return
+		}
+		claimed = run
+	} else {
+		claimed, err = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC())
+	}
 	if err != nil {
 		log.Printf("resume: run %s: %v", run.ID, err)
 		return
