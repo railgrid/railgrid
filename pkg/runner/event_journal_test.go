@@ -654,3 +654,67 @@ func TestJournalReplayFailureIsDiagnosable(t *testing.T) {
 		t.Fatalf("truncation looked like completion: %v", err)
 	}
 }
+
+func TestStateSnapshotKeepsJournalTailWithoutDiscardingReplayOrLegacyHistory(t *testing.T) {
+	store, err := newStateStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.closeJournals() })
+	state := emptyPersistedState()
+	const count = 128
+	var end int64
+	for i := 1; i <= count; i++ {
+		event := Event{Cursor: uint64(i), Type: EventProgress, Message: strings.Repeat("x", 4096)}
+		end, err = store.appendEvent("journaled", end, nil, event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Events["journaled"] = append(state.Events["journaled"], event)
+	}
+	state.Attempts["journaled"] = &attemptRecord{EventJournalBytes: end, Receipt: Receipt{AttemptID: "journaled", Cursor: count}}
+	state.Attempts["legacy"] = &attemptRecord{Receipt: Receipt{AttemptID: "legacy", Cursor: 2}}
+	state.Events["legacy"] = []Event{{Cursor: 1, Message: "legacy-first"}, {Cursor: 2, Message: "legacy-last"}}
+	if err := store.save(state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Events["journaled"]) != count {
+		t.Fatal("save mutated the in-memory hot cache")
+	}
+	info, err := os.Stat(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > 32<<10 {
+		t.Fatalf("state snapshot still contains bulk output: %d bytes", info.Size())
+	}
+	loaded, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Events["journaled"]; len(got) != 1 || got[0].Cursor != count {
+		t.Fatalf("restart tail: %+v", got)
+	}
+	if got := loaded.Events["legacy"]; len(got) != 2 || got[0].Message != "legacy-first" {
+		t.Fatal("lost unjournaled legacy history")
+	}
+	replay, err := store.replayEvents(context.Background(), "journaled", end, 0, count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = replay.file.Close() }()
+	for i := 1; i <= count; i++ {
+		event, err := replay.next()
+		if err != nil || event.Cursor != uint64(i) || len(event.Message) != 4096 {
+			t.Fatalf("replay event %d: cursor=%d err=%v", i, event.Cursor, err)
+		}
+	}
+	r := &Runner{cfg: Config{MaxEvents: count, MaxEventBytes: 64 << 10}, state: loaded, store: store}
+	event, err := r.appendEventLocked("journaled", EventProgress, "after restart", nil)
+	if err != nil || event.Cursor != count+1 {
+		t.Fatalf("restart append cursor=%d err=%v", event.Cursor, err)
+	}
+	if err := r.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+}
