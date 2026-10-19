@@ -179,3 +179,65 @@ func writeTrustConfig(t *testing.T, home, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestWarmManagedTrustConfiguration(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name, path string
+		invalid    bool
+	}{
+		{"warm checkout", ".environments/" + key + "/attempt", false},
+		{"namespace", ".environments", true},
+		{"environment container", ".environments/" + key, true},
+		{"invalid key", ".environments/not-a-hash/attempt", true},
+		{"nonhex key", ".environments/" + strings.Repeat("z", 64) + "/attempt", true},
+		{"nested checkout", ".environments/" + key + "/attempt/nested", true},
+		{"other namespace", "other/" + key + "/attempt", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, root, _ := trustFixture(t)
+			work := filepath.Join(root, tc.path)
+			if err := os.MkdirAll(work, 0700); err != nil {
+				t.Fatal(err)
+			}
+			writeTrustConfig(t, home, fmt.Sprintf("[projects.%q]\ntrust_level = %q\n", work, "trusted"))
+			a := &Adapter{cfg: Config{Home: home, WorktreeRoot: root}}
+			if err := a.validateLaunchConfiguration(work); (err != nil) != tc.invalid {
+				t.Fatalf("error=%v invalid=%v", err, tc.invalid)
+			}
+		})
+	}
+}
+
+func TestWarmManagedTrustRejectsSymlinksAndLocalConfig(t *testing.T) {
+	for _, level := range []string{"namespace", "environment", "checkout", "local-config"} {
+		t.Run(level, func(t *testing.T) {
+			home, root, _ := trustFixture(t)
+			namespace := filepath.Join(root, ".environments")
+			environment := filepath.Join(namespace, strings.Repeat("b", 64))
+			work := filepath.Join(environment, "attempt")
+			if err := os.MkdirAll(work, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if level == "local-config" {
+				if err := os.Mkdir(filepath.Join(work, ".codex"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				target := map[string]string{"namespace": namespace, "environment": environment, "checkout": work}[level]
+				moved := filepath.Join(t.TempDir(), "moved")
+				if err := os.Rename(target, moved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(moved, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeTrustConfig(t, home, fmt.Sprintf("[projects.%q]\ntrust_level = %q\n", work, "trusted"))
+			a := &Adapter{cfg: Config{Home: home, WorktreeRoot: root}}
+			if err := a.validateLaunchConfiguration(work); err == nil {
+				t.Fatal("unsafe warm checkout accepted")
+			}
+		})
+	}
+}

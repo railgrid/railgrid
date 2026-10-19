@@ -115,7 +115,13 @@ func validateTrustProjectPath(root, projectPath string) error {
 		return errCodexConfigRejected
 	}
 	parts := splitPath(rel)
-	if len(parts) != 2 {
+	// Warm checkouts add a reserved namespace and a SHA-256 environment key.
+	// Do not grant trust to the namespace or environment container itself.
+	if len(parts) > 0 && parts[0] == ".environments" {
+		if len(parts) != 3 || len(parts[1]) != 64 || strings.Trim(parts[1], "0123456789abcdef") != "" {
+			return errCodexConfigRejected
+		}
+	} else if len(parts) != 2 {
 		return errCodexConfigRejected
 	}
 	return validateNoSymlinkComponents(root, projectPath)
