@@ -335,6 +335,9 @@ def main():
     if sys.argv[1:] == ['prepare-env']:
         print(json.dumps(env))
         return
+    detached = os.environ.get('TILT_DETACHED') == '1'
+    if detached and config['legacy']:
+        raise ValueError('Detached Tilt requires an isolated checkout')
     with (ROOT / '.kcp/tilt-run.lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -368,11 +371,25 @@ def main():
                     os.killpg(child.pid, signum)
             signal.signal(signal.SIGTERM, terminate)
             signal.signal(signal.SIGINT, terminate)
-            child = subprocess.Popen(command, cwd=ROOT, env=process_env, start_new_session=True)
+            if detached:
+                # The stack outlives the agent's terminal. Its recorded process
+                # group remains owned by dev-browser-down, including on expiry.
+                log_path = ROOT / '.kcp/tilt.log'
+                fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'ab') as log:
+                    os.fchmod(log.fileno(), 0o600)
+                    child = subprocess.Popen(command, cwd=ROOT, env=process_env,
+                                             start_new_session=True, stdin=subprocess.DEVNULL,
+                                             stdout=log, stderr=subprocess.STDOUT)
+            else:
+                child = subprocess.Popen(command, cwd=ROOT, env=process_env, start_new_session=True)
             record.update(pid=child.pid, birth=process_identity(child.pid))
             write_owner(record_path, record)
             for signum in pending:
                 terminate(signum, None)
+        if detached:
+            print('Started owned Tilt stack; logs: .kcp/tilt.log; stop: make dev-browser-down')
+            return
         sys.exit(child.wait())
 
 

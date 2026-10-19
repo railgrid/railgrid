@@ -923,7 +923,8 @@ installations; source ownership does not imply self-hosting-only support.
 ## Agent screenshots against the real application
 
 For visible UI changes follow [docs/dev-browser.md](docs/dev-browser.md): start
-`make tilt`, run `make dev-browser-ready`, inspect against the live backend,
+`make tilt` (`make tilt TILT_DETACHED=1` when retaining a warm stack across runs),
+run `make dev-browser-ready`, inspect against the live backend,
 save captioned evidence to the absolute `screenshotsDirectory` from
 `.kcp/dev-browser.json` (the managed checkout’s top-level
 `artifacts/screenshots/`, even when working from a provider subdirectory), then run
