@@ -163,7 +163,7 @@ c.main()
 """
             owner_path = root / '.kcp/tilt-owner.json'
             try:
-                subprocess.run([sys.executable, '-c', code], check=True, capture_output=True,
+                subprocess.run([sys.executable, '-B', '-c', code], check=True, capture_output=True,
                                start_new_session=True, timeout=10)
                 owner = json.loads(owner_path.read_text())
                 os.kill(owner['pid'], 0)
