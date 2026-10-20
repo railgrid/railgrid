@@ -404,6 +404,9 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 		t.Fatalf("resumes = %d, want 1", len(answered.resumes))
 	}
 	resume := answered.resumes[0]
+	if len(resume.ApprovedInput) != 0 {
+		t.Fatal("resume must omit approval to retain the runner original")
+	}
 	if resume.ClarificationID != "clar-7" {
 		t.Fatalf("resume clarificationID = %q, want clar-7", resume.ClarificationID)
 	}
@@ -1674,6 +1677,9 @@ func TestDispatchCarriesTheBroughtEnvironmentOnStartAndResume(t *testing.T) {
 	}
 	if len(answered.resumes) != 1 || answered.resumes[0].HarnessCredential == nil {
 		t.Fatalf("resumes = %+v, want one with a credential", answered.resumes)
+	}
+	if len(answered.resumes[0].ApprovedInput) != 0 {
+		t.Fatal("resume must omit approval to retain the runner original")
 	}
 	resume := answered.resumes[0].HarnessCredential
 	if len(resume.Environment) != 2 || resume.Environment[0].Value != "ghp_tenant" {

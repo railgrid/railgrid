@@ -448,7 +448,10 @@ func TestRepositoryResumePreservesOriginalApprovalAfterRehydration(t *testing.T)
 		t.Fatalf("resumes=%d", len(resumed.resumes))
 	}
 	req := resumed.resumes[0]
-	if len(req.ApprovedInput) != 0 || req.SessionID != "sess-1" || req.AttemptID != "run-1" || req.Resolution != "continue verification" {
+	if len(req.ApprovedInput) != 0 {
+		t.Fatal("resume must omit approval to retain the runner original")
+	}
+	if req.SessionID != "sess-1" || req.AttemptID != "run-1" || req.Resolution != "continue verification" {
 		t.Fatalf("resume changed original approval/session: %+v", req)
 	}
 	if len(resumed.starts) != 0 {
