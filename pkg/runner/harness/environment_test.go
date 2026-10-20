@@ -17,6 +17,7 @@ limitations under the License.
 package harness
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,8 +26,11 @@ import (
 
 func TestOperatorEnvironmentIsExplicitAndPreservesIsolation(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	file := filepath.Join(dir, "environment.json")
-	if err := os.WriteFile(file, []byte(`{"environment":{"pathPrepend":["/opt/tools/bin"],"variables":{"PLAYWRIGHT_BROWSERS_PATH":"/opt/browsers","EXAMPLE":"$(do-not-execute)"}}}`), 0600); err != nil {
+	if err := os.WriteFile(file, []byte(fmt.Sprintf(`{"environment":{"pathPrepend":[%q],"variables":{"PLAYWRIGHT_BROWSERS_PATH":"/opt/browsers","EXAMPLE":"$(do-not-execute)"}}}`, dir)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	config, err := LoadEnvironmentConfig(file, false)
@@ -35,7 +39,7 @@ func TestOperatorEnvironmentIsExplicitAndPreservesIsolation(t *testing.T) {
 	}
 	base := []string{"PATH=/usr/bin:/bin", "HOME=/isolated/home", "PLAYWRIGHT_BROWSERS_PATH=/old"}
 	got := strings.Join(config.Apply(base), "\n")
-	for _, want := range []string{"PATH=/opt/tools/bin:/usr/bin:/bin", "HOME=/isolated/home", "PLAYWRIGHT_BROWSERS_PATH=/opt/browsers", "EXAMPLE=$(do-not-execute)"} {
+	for _, want := range []string{"PATH=" + dir + ":/usr/bin:/bin", "HOME=/isolated/home", "PLAYWRIGHT_BROWSERS_PATH=/opt/browsers", "EXAMPLE=$(do-not-execute)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
@@ -96,5 +100,48 @@ func TestEnvironmentConfigRejectsUnsafeFiles(t *testing.T) {
 	}
 	if _, err := LoadEnvironmentConfig(target, false); err == nil {
 		t.Fatal("accepted writable configuration")
+	}
+}
+
+func TestToolDirectoriesRejectTaskControl(t *testing.T) {
+	root := t.TempDir()
+	tool := filepath.Join(root, "tools")
+	if err := os.Mkdir(tool, 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := EnvironmentConfig{PathPrepend: []string{tool}}
+	if err := config.ValidateForWorktreeRoot(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.ValidateForWorktreeRoot(root); err == nil {
+		t.Fatal("accepted tools inside managed worktrees")
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := (EnvironmentConfig{PathPrepend: []string{filepath.Join(alias, "tools")}}).ValidateForWorktreeRoot(root); err == nil {
+		t.Fatal("accepted aliased task tools")
+	}
+	for _, mode := range []os.FileMode{0770, 0702} {
+		if err := os.Chmod(tool, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := config.Validate(); err == nil {
+			t.Fatal("accepted writable tool directory")
+		}
+	}
+	for _, path := range []string{alias, filepath.Join(root, "missing")} {
+		if err := (EnvironmentConfig{PathPrepend: []string{path}}).Validate(); err == nil {
+			t.Fatalf("accepted %s", path)
+		}
+	}
+}
+
+func TestAdditionalEnvironmentHooksAreReserved(t *testing.T) {
+	for _, key := range []string{"PYTHONHOME", "PERL5OPT", "RUBYOPT", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "SHELLOPTS", "BASH_FUNC_hook", "GOWORK", "GOEXPERIMENT", "GODEBUG", "CC", "CXX", "CGO_CFLAGS", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "http_proxy", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"} {
+		if err := (EnvironmentConfig{Variables: map[string]string{key: "private-value"}}).Validate(); err == nil || strings.Contains(err.Error(), "private-value") {
+			t.Fatalf("accepted %s or leaked value", key)
+		}
 	}
 }

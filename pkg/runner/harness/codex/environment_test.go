@@ -62,6 +62,9 @@ func TestLaunchScratchIsIsolatedAndPackageCachesAreReused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if env["GOFLAGS"] != "-modcacherw" {
+		t.Fatal("module cache must remain removable")
+	}
 	a.cfg.cacheDir = second
 	secondEnv := map[string]string{}
 	for _, item := range a.launchEnv() {
@@ -94,7 +97,11 @@ func TestNetworkOptInAndCacheReachAppServer(t *testing.T) {
 	binary := fakeCodexBinaryWithEnvFile(t, "success", envFile)
 	home, root, work := trustFixture(t)
 	writeTrustConfig(t, home, "[sandbox_workspace_write]\nnetwork_access = true\n")
-	a := New(Config{Binary: binary, Home: home, WorktreeRoot: root, RegistryURLs: []string{}, Environment: harness.EnvironmentConfig{PathPrepend: []string{"/opt/browser-tools"}, Variables: map[string]string{"PLAYWRIGHT_BROWSERS_PATH": "/opt/browser-cache"}}})
+	tools := t.TempDir()
+	if err := os.Chmod(tools, 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := New(Config{Binary: binary, Home: home, WorktreeRoot: root, RegistryURLs: []string{}, Environment: harness.EnvironmentConfig{PathPrepend: []string{tools}, Variables: map[string]string{"PLAYWRIGHT_BROWSERS_PATH": "/opt/browser-cache"}}})
 	_, err := a.Run(context.Background(), harness.Launch{AttemptID: "cache-test", Workdir: work, Instructions: "hello", Credential: testCredential()}, func(harness.Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +117,7 @@ func TestNetworkOptInAndCacheReachAppServer(t *testing.T) {
 		t.Fatalf("roots: %v", roots)
 	}
 	env := readJSONFile(t, envFile)
-	if !strings.HasPrefix(env["PATH"].(string), "/opt/browser-tools:") || env["PLAYWRIGHT_BROWSERS_PATH"] != "/opt/browser-cache" {
+	if !strings.HasPrefix(env["PATH"].(string), tools+":") || env["PLAYWRIGHT_BROWSERS_PATH"] != "/opt/browser-cache" {
 		t.Fatal("operator environment did not reach app-server")
 	}
 	for _, key := range []string{"GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "npm_config_cache", "TMPDIR"} {

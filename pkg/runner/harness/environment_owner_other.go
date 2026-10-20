@@ -22,4 +22,4 @@ import "os"
 
 // Unix ownership checks do not map to Windows ACLs. The operator must restrict
 // the state directory with platform ACLs; regular-file and identity checks still apply.
-func trustedEnvironmentOwner(os.FileInfo) bool { return true }
+func TrustedFileOwner(os.FileInfo) bool { return true }

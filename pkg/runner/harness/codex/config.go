@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 const (
@@ -61,7 +63,7 @@ func loadCodexConfig(home, worktreeRoot string) (*codexConfig, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !harness.TrustedFileOwner(info) {
 		return nil, errCodexConfigRejected
 	}
 	root, err := normalizeWorktreeRoot(worktreeRoot)
@@ -77,7 +79,7 @@ func loadCodexConfig(home, worktreeRoot string) (*codexConfig, error) {
 	}
 	defer func() { _ = f.Close() }()
 	openedInfo, err := f.Stat()
-	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Mode().Perm()&0022 != 0 || !harness.TrustedFileOwner(openedInfo) {
 		return nil, errCodexConfigRejected
 	}
 	contents, err := io.ReadAll(io.LimitReader(f, maxCodexConfigBytes+1))

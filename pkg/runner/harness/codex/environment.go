@@ -121,7 +121,7 @@ func (a *Adapter) launchEnv() []string {
 		"GOTMPDIR": "tmp", "TMPDIR": "tmp", "TMP": "tmp", "TEMP": "tmp", "XDG_CACHE_HOME": "xdg",
 	}
 	keys := make([]string, 0, len(paths))
-	reserved := make(map[string]bool, len(paths))
+	reserved := map[string]bool{"GOFLAGS": true}
 	for key := range paths {
 		keys = append(keys, key)
 		reserved[strings.ToUpper(key)] = true
@@ -144,7 +144,7 @@ func (a *Adapter) launchEnv() []string {
 		}
 		filtered = append(filtered, key+"="+filepath.Join(root, name))
 	}
-	return filtered
+	return append(filtered, "GOFLAGS=-modcacherw")
 }
 
 // Package-manager caches are retained per checkout and sandbox/network policy.

@@ -422,6 +422,19 @@ OOM can leave launch scratch behind. Remove it only while the runner is stopped;
 there is no age-only sweep, because old scratch may still belong to an active
 or parked run.
 
+**Operating budget (manual):** keep at most eight cache scopes and 20 GiB total
+per runner, whichever limit is reached first. Monitor the cache parent with
+`du -sh` and count its scope directories before admitting another ticket. At a
+limit, pause admission, drain active work, stop the runner, and reclaim only
+retired scopes; preserve scopes for parked or reusable warm environments. If no
+scope can be retired, provision more disk or finish those environments before
+resuming admission. These are operator limits, not enforced runtime quotas.
+Automatic lease-aware eviction is tracked in
+[#904](https://github.com/railgrid/railgrid/issues/904).
+New launches set `GOFLAGS=-modcacherw` so Go module directories are removable.
+Older cache trees may require restoring owner write permission before removal;
+first verify the target is the retired scope's real directory, not a symlink.
+
 Outbound network access remains disabled by default. To enable it for one
 hosted Codex runner, add this to **that runner's** `codex-home/config.toml`:
 
@@ -449,7 +462,9 @@ OS sandbox for one runner by adding this **top-level** setting to that runner's
 sandbox_mode = "danger-full-access"
 ```
 
-Only `workspace-write` and `danger-full-access` are accepted. The adapter applies
+The config file must be a real file owned by the runner account or root, with
+no group/world write permission. Only `workspace-write` and `danger-full-access`
+are accepted. The adapter applies
 this setting to new threads, resumed threads, and every turn. Repository settings
 and run requests cannot select it. Changes apply on the next launch.
 
@@ -505,15 +520,21 @@ operator-owned state directory.
 ```
 
 Restart the runner (or its supervising Edge agent) after editing. Paths must be
-clean absolute directories; entries are prepended in order to the existing
+existing, clean absolute real directories owned by the runner account or root,
+with no group/world write bits and outside the managed worktree root (including
+aliases resolved through symlinks). These checks run before probes and launches;
+entries are prepended in order to the existing
 sanitized PATH. Values are literal: neither shell startup files nor `$VARIABLE`
 or `~` expansion is involved. This config applies to tool processes in both
 harnesses, not to the agent's hub connection. It does not change which Codex or
 Claude executable was selected by the supervisor.
 
 HOME, harness identity/configuration, Git/SSH credentials, runner build caches,
-temporary directories, shell/language startup hooks, toolchain overrides, and
-all npm configuration variables are reserved. Credential-like variable
+temporary directories, known shell/language startup hooks and toolchain overrides,
+proxy/CA overrides, and all npm configuration variables are reserved. This is an
+explicit deny list in `reservedEnvironmentKey`, not a guarantee that every
+language-specific hook is recognized; only trusted operators may edit this file.
+Credential-like variable
 names are rejected. Configure credentials through the existing credential flow,
 not this file. Errors do not include variable values. Environment configuration
 adds no filesystem write grants or network permissions. Tool directories should

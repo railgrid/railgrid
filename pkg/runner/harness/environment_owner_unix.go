@@ -23,7 +23,8 @@ import (
 	"syscall"
 )
 
-func trustedEnvironmentOwner(info os.FileInfo) bool {
+// TrustedFileOwner accepts files owned by the runner account or root.
+func TrustedFileOwner(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && (stat.Uid == 0 || stat.Uid == uint32(os.Geteuid()))
 }

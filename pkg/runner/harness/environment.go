@@ -28,10 +28,10 @@ import (
 	"strings"
 )
 
-// EnvironmentConfig is local operator policy, never part of a task request.
-// Values are literal: no shell evaluation, tilde expansion, or env-file loading.
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// EnvironmentConfig is local operator policy, never part of a task request.
+// Values are literal: no shell evaluation, tilde expansion, or env-file loading.
 type EnvironmentConfig struct {
 	PathPrepend []string          `json:"pathPrepend,omitempty"`
 	Variables   map[string]string `json:"variables,omitempty"`
@@ -50,7 +50,7 @@ func LoadEnvironmentConfig(path string, optional bool) (EnvironmentConfig, error
 	if err != nil {
 		return document.Environment, fmt.Errorf("open runner environment config: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !trustedEnvironmentOwner(info) {
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !TrustedFileOwner(info) {
 		return document.Environment, errors.New("runner environment config must be a trusted-owner regular file not writable by group or others")
 	}
 	f, err := os.Open(path)
@@ -59,7 +59,7 @@ func LoadEnvironmentConfig(path string, optional bool) (EnvironmentConfig, error
 	}
 	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm()&0022 != 0 || !trustedEnvironmentOwner(opened) {
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm()&0022 != 0 || !TrustedFileOwner(opened) {
 		return document.Environment, errors.New("runner environment config changed while opening")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
@@ -81,9 +81,35 @@ func LoadEnvironmentConfig(path string, optional bool) (EnvironmentConfig, error
 }
 
 func (e EnvironmentConfig) Validate() error {
+	return e.ValidateForWorktreeRoot("")
+}
+
+// ValidateForWorktreeRoot also excludes tools controlled by managed tasks.
+func (e EnvironmentConfig) ValidateForWorktreeRoot(worktreeRoot string) error {
 	for _, path := range e.PathPrepend {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, string(os.PathListSeparator)+"\x00\r\n") {
 			return errors.New("runner environment pathPrepend requires clean absolute paths")
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 || !TrustedFileOwner(info) {
+			return fmt.Errorf("runner environment pathPrepend %q must be a trusted-owner real directory not writable by group or others", path)
+		}
+		if worktreeRoot != "" {
+			realPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return fmt.Errorf("resolve runner tool directory: %w", err)
+			}
+			root, err := filepath.Abs(worktreeRoot)
+			if err != nil {
+				return err
+			}
+			if resolved, err := filepath.EvalSymlinks(root); err == nil {
+				root = resolved
+			}
+			rel, err := filepath.Rel(root, realPath)
+			if err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+				return errors.New("runner environment pathPrepend must be outside the managed worktree root")
+			}
 		}
 	}
 	for name, value := range e.Variables {
@@ -99,10 +125,10 @@ func (e EnvironmentConfig) Validate() error {
 
 func reservedEnvironmentKey(key string) bool {
 	switch key {
-	case "PATH", "HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "TMPDIR", "TMP", "TEMP", "NPM_CONFIG_CACHE", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GOENV", "GOFLAGS", "GOROOT", "GOTOOLCHAIN", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND", "PYTHONPATH", "PYTHONSTARTUP":
+	case "PATH", "HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "TMPDIR", "TMP", "TEMP", "NPM_CONFIG_CACHE", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GOENV", "GOFLAGS", "GOROOT", "GOTOOLCHAIN", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5OPT", "RUBYOPT", "SHELLOPTS", "GOWORK", "GOEXPERIMENT", "GODEBUG", "CC", "CXX", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY":
 		return true
 	}
-	for _, prefix := range []string{"NPM_CONFIG_", "CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "XDG_", "GIT_", "GH_", "GITHUB_", "RAILGRID_", "LD_", "DYLD_", "DISABLE_"} {
+	for _, prefix := range []string{"NPM_CONFIG_", "CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "XDG_", "GIT_", "GH_", "GITHUB_", "RAILGRID_", "LD_", "DYLD_", "DISABLE_", "BASH_FUNC_", "CGO_", "JAVA_", "_JAVA_"} {
 		if strings.HasPrefix(key, prefix) {
 			return true
 		}

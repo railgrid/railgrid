@@ -33,7 +33,7 @@ func (f environmentOwnerInfo) Sys() any { return &syscall.Stat_t{Uid: f.uid} }
 
 func TestEnvironmentOwnerPolicy(t *testing.T) {
 	for _, uid := range []uint32{0, uint32(os.Geteuid())} {
-		if !trustedEnvironmentOwner(environmentOwnerInfo{uid: uid}) {
+		if !TrustedFileOwner(environmentOwnerInfo{uid: uid}) {
 			t.Fatal("trusted owner refused")
 		}
 	}
@@ -41,7 +41,7 @@ func TestEnvironmentOwnerPolicy(t *testing.T) {
 	if foreign == 0 {
 		foreign++
 	}
-	if trustedEnvironmentOwner(environmentOwnerInfo{uid: foreign}) {
+	if TrustedFileOwner(environmentOwnerInfo{uid: foreign}) {
 		t.Fatal("foreign owner accepted")
 	}
 }

@@ -396,7 +396,7 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 }
 
 func (a *Adapter) ensureHome() error {
-	if err := a.cfg.Environment.Validate(); err != nil {
+	if err := a.cfg.Environment.ValidateForWorktreeRoot(a.cfg.WorktreeRoot); err != nil {
 		return err
 	}
 	home := strings.TrimSpace(a.cfg.Home)

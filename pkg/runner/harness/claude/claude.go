@@ -496,7 +496,7 @@ func writePrompt(stdin io.WriteCloser, prompt string) error {
 // rules mirror the Codex adapter's worker home: absolute, not a symlink, 0700,
 // and free of anything that would load project-controlled code.
 func (a *Adapter) ensureHome() error {
-	if err := a.cfg.Environment.Validate(); err != nil {
+	if err := a.cfg.Environment.ValidateForWorktreeRoot(a.cfg.WorktreeRoot); err != nil {
 		return err
 	}
 	home := strings.TrimSpace(a.cfg.Home)

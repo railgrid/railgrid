@@ -308,3 +308,23 @@ func TestFullAccessPolicyReachesStartAndResume(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyConfigRejectsWritableFile(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	path := filepath.Join(home, codexConfigName)
+	if err := os.WriteFile(path, []byte(`sandbox_mode = "danger-full-access"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCodexConfig(home, root); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []os.FileMode{0620, 0602} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCodexConfig(home, root); err == nil {
+			t.Fatal("accepted writable privilege policy")
+		}
+	}
+}
