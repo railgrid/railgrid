@@ -577,6 +577,11 @@ func (p *serverProcess) stop() error {
 	}
 	p.stopped = true
 	closeErr := p.stdin.Close()
+	// exec.Cmd.Wait closes StdinPipe when the child exits. Shutdown can race
+	// with that close; an already-closed pipe is successful cleanup.
+	if errors.Is(closeErr, os.ErrClosed) {
+		closeErr = nil
+	}
 	select {
 	case waitErr := <-p.done:
 		return errors.Join(closeErr, waitErr)

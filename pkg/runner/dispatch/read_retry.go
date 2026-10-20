@@ -24,8 +24,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/http2"
 
 	"k8s.io/klog/v2"
 
@@ -52,8 +55,22 @@ func retryableRead(err error) bool {
 				return true
 			}
 			return false
+		case http.StatusNotFound:
+			return edgeRouteUnavailable(httpErr.Body)
 		case http.StatusRequestTimeout,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
+	}
+	// An Edge restart can reset an already-open HTTP/2 event stream. These
+	// transport resets do not describe the durable attempt's outcome. Retry
+	// only reads, from the consumed cursor, under the existing outage bound.
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		switch streamErr.Code {
+		case http2.ErrCodeInternal, http2.ErrCodeCancel, http2.ErrCodeRefusedStream:
 			return true
 		default:
 			return false
@@ -198,4 +215,25 @@ func resourceResolutionTimeout(body []byte) bool {
 		status.Code == http.StatusInternalServerError &&
 		status.Message == "Internal error occurred: "+cause &&
 		len(status.Details.Causes) == 1 && status.Details.Causes[0].Message == cause
+}
+
+// The Edge republishes its Service when reconnecting. kcp can return a
+// missing-Service Status during that window, or the proxy can return a plain
+// route miss. These are read-only retries with the same bounded outage as a
+// disconnected tunnel; unrelated Kubernetes resources remain permanent errors.
+func edgeRouteUnavailable(body []byte) bool {
+	if strings.TrimSpace(string(body)) == "Not Found" {
+		return true
+	}
+	var status struct {
+		Kind    string `json:"kind"`
+		Reason  string `json:"reason"`
+		Code    int    `json:"code"`
+		Details struct {
+			Group string `json:"group"`
+			Kind  string `json:"kind"`
+			Name  string `json:"name"`
+		} `json:"details"`
+	}
+	return json.Unmarshal(body, &status) == nil && status.Kind == "Status" && status.Reason == "NotFound" && status.Code == http.StatusNotFound && status.Details.Group == "edges.railgrid.ai" && status.Details.Kind == "services" && status.Details.Name != ""
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -28,6 +29,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"golang.org/x/net/http2"
 
 	"github.com/railgrid/railgrid/pkg/runner"
 	"github.com/railgrid/railgrid/pkg/runner/client"
@@ -86,11 +89,15 @@ func TestFollowRecoversReceiptReadAfterEdge502(t *testing.T) {
 
 type interruptedStream struct {
 	sliceStream
-	closed bool
+	closed  bool
+	failure error
 }
 
 func (s *interruptedStream) Next(ctx context.Context) (runner.Event, error) {
 	if s.i == len(s.events) {
+		if s.failure != nil {
+			return runner.Event{}, s.failure
+		}
 		return runner.Event{}, io.ErrUnexpectedEOF
 	}
 	return s.sliceStream.Next(ctx)
@@ -528,4 +535,93 @@ func TestPersistentKCPTimeoutIsBounded(t *testing.T) {
 			t.Fatalf("err=%v elapsed=%s", err, time.Since(start))
 		}
 	})
+}
+
+func TestFollowReconcilesHTTP2ResetToPausedAttempt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		base := &fakeRunner{receipt: receipt(runner.PhaseNeedsInput), events: []runner.Event{
+			event(1, runner.EventProgress, "preserved work", ""), event(2, runner.EventNeedsInput, "runner restarted", ""),
+		}}
+		broken := &interruptedStream{sliceStream: sliceStream{events: base.events[:1]}, failure: fmt.Errorf("reading event stream: %w", http2.StreamError{StreamID: 24917, Code: http2.ErrCodeInternal})}
+		calls := 0
+		f := &flakyReader{fakeRunner: base}
+		f.events = func(ctx context.Context, id string, after uint64) (Stream, error) {
+			calls++
+			if calls == 1 {
+				return broken, nil
+			}
+			if after != 1 {
+				t.Fatalf("reconnected at %d, want 1", after)
+			}
+			return base.Events(ctx, id, after)
+		}
+		out, err := Follow(ctxWithTimeout(t), f, receipt(runner.PhaseRunning), Position{}, nil)
+		if err != nil || out.Parked == nil || out.Parked.Question == nil || out.Receipt.Phase != runner.PhaseNeedsInput {
+			t.Fatalf("out=%+v err=%v", out, err)
+		}
+		if calls != 2 || !broken.closed || strings.Count(out.Summary.Text, "preserved work") != 1 {
+			t.Fatalf("calls=%d closed=%v summary=%q", calls, broken.closed, out.Summary.Text)
+		}
+		if len(base.starts)+len(base.resumes)+len(base.cancels) != 0 {
+			t.Fatal("reconnection mutated attempt")
+		}
+	})
+}
+
+func TestReadRetryHTTP2ResetClassification(t *testing.T) {
+	for _, code := range []http2.ErrCode{http2.ErrCodeInternal, http2.ErrCodeCancel, http2.ErrCodeRefusedStream, http2.ErrCodeProtocol, http2.ErrCodeEnhanceYourCalm} {
+		err := fmt.Errorf("wrapped: %w", http2.StreamError{StreamID: 1, Code: code})
+		want := code == http2.ErrCodeInternal || code == http2.ErrCodeCancel || code == http2.ErrCodeRefusedStream
+		if retryableRead(err) != want {
+			t.Errorf("code %v: want retry=%v", code, want)
+		}
+		if retryableRead(errors.Join(context.Canceled, err)) {
+			t.Errorf("code %v retried cancellation", code)
+		}
+	}
+	if retryableRead(errors.New("stream error: stream ID 24917; INTERNAL_ERROR; received from peer")) {
+		t.Fatal("classified by error text instead of transport type")
+	}
+}
+
+func TestReadRetryProxyRouteNotFound(t *testing.T) {
+	for _, body := range []string{"Not Found", "Not Found\n", "", `{"kind":"Status","reason":"NotFound"}`, `{"code":"unavailable","retryable":false}`, "404 page not found"} {
+		want := strings.TrimSpace(body) == "Not Found"
+		if got := retryableRead(&client.HTTPError{StatusCode: http.StatusNotFound, Body: []byte(body)}); got != want {
+			t.Errorf("body=%q retry=%v want=%v", body, got, want)
+		}
+	}
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		got, err := retryRead(ctxWithTimeout(t), nil, func() (runner.Receipt, error) {
+			calls++
+			if calls == 1 {
+				return runner.Receipt{}, &client.HTTPError{StatusCode: http.StatusNotFound, Body: []byte("Not Found")}
+			}
+			return receipt(runner.PhaseNeedsInput), nil
+		})
+		if err != nil || got.Phase != runner.PhaseNeedsInput || calls != 2 {
+			t.Fatalf("receipt=%+v err=%v calls=%d", got, err, calls)
+		}
+	})
+}
+
+func TestReadRetryEdgeServiceRecreation(t *testing.T) {
+	body := `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","details":{"name":"devbox-codex","group":"edges.railgrid.ai","kind":"services"},"code":404}`
+	for _, tc := range []struct {
+		name, body string
+		retry      bool
+	}{
+		{"Edge Service", body, true},
+		{"other provider", strings.ReplaceAll(body, "edges.railgrid.ai", "agents.railgrid.ai"), false},
+		{"other resource", strings.ReplaceAll(body, `"services"`, `"linuxservers"`), false},
+		{"unnamed", strings.ReplaceAll(body, "devbox-codex", ""), false},
+		{"different reason", strings.ReplaceAll(body, "NotFound", "Forbidden"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryableRead(&client.HTTPError{StatusCode: 404, Body: []byte(tc.body)}); got != tc.retry {
+				t.Fatalf("retry=%v want=%v", got, tc.retry)
+			}
+		})
+	}
 }
