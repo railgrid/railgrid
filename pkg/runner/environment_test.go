@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,7 +66,12 @@ func warmRequest(commit, id string) StartRequest {
 
 func TestWarmEnvironmentReuseRestartAndExpiry(t *testing.T) {
 	source, commit := warmSource(t)
-	adapter := &fakeAdapter{run: func(context.Context, harness.Launch, harness.Emit) (harness.Result, error) {
+	adapter := &fakeAdapter{run: func(_ context.Context, launch harness.Launch, _ harness.Emit) (harness.Result, error) {
+		for _, rule := range []string{"never while awaiting a user answer", "repository-documented command sequence", "first failing command", "at most one", "per runner attempt", "progress log", "context reset", "recreate task-required records"} {
+			if !strings.Contains(launch.Instructions, rule) {
+				return harness.Result{}, fmt.Errorf("missing recovery rule %q", rule)
+			}
+		}
 		return harness.Result{Phase: string(PhaseCompleted)}, nil
 	}}
 	r := newTestRunner(t, adapter, source, commit)
