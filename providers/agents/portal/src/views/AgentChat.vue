@@ -1705,7 +1705,7 @@ defineExpose({
         <div v-if="orphanRun && !streaming" class="agents-orphan-banner" role="status">
           <Clock aria-hidden="true" />
           <span class="agents-orphan-text">
-            This conversation has a run still working — it kept going after the stream closed. Its reply will appear here when it finishes.
+            This conversation has an active background run. Its reply will appear here when it finishes.
           </span>
           <button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: orphanRun.id })">
             View progress
@@ -1718,7 +1718,7 @@ defineExpose({
             @click="cancelOrphan"
           >
             <LoaderCircle v-if="orphanCancelBusyID === orphanRun.id" class="agents-spinner k-spin" aria-hidden="true" />
-            {{ orphanCancelBusyID === orphanRun.id ? 'Stopping…' : 'Stop it' }}
+            {{ orphanCancelBusyID === orphanRun.id ? 'Stopping…' : 'Stop run' }}
           </button>
         </div>
 

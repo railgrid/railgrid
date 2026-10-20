@@ -241,7 +241,7 @@ describe('chat streaming', () => {
     await chooseSession(el, 'Original thread')
     await settle(6)
     expect(text(el.querySelector('.agents-log'))).toContain('Original progress')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
     gate.resolve()
   })
 
@@ -259,8 +259,8 @@ describe('chat streaming', () => {
     await settle(6)
 
     expect(getRun).toHaveBeenCalledWith('r-disconnected')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('Stop it')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('Stop run')
     expect(text(el.querySelector('.agents-log'))).toContain('Partial reply')
   })
 
@@ -308,8 +308,8 @@ describe('chat streaming', () => {
     recovery.resolve({ id: 'r1', phase: 'Failed' })
     await settle(6)
 
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
-    const stop = [...el.querySelectorAll<HTMLButtonElement>('.agents-orphan-banner button')].find(button => text(button) === 'Stop it')!
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
+    const stop = [...el.querySelectorAll<HTMLButtonElement>('.agents-orphan-banner button')].find(button => text(button) === 'Stop run')!
     stop.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledWith('r1')
@@ -1019,10 +1019,10 @@ describe('chat streaming', () => {
 
     const banner = el.querySelector('.agents-orphan-banner')
     expect(banner).not.toBeNull()
-    expect(text(banner)).toContain('still working')
+    expect(text(banner)).toContain('active background run')
     expect(text(document.querySelector('.k-toast--error'))).toContain('provider unavailable')
     const retry = [...banner!.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => text(button).includes('Stop it'))!
+      .find(button => text(button).includes('Stop run'))!
     retry.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledTimes(2)
@@ -1559,7 +1559,7 @@ describe('a run still working with nobody attached', () => {
     const { el } = await mountWith('Running')
     const banner = el.querySelector('.agents-orphan-banner')
     expect(banner).toBeTruthy()
-    expect(text(banner!)).toContain('still working')
+    expect(text(banner!)).toContain('active background run')
     expect(text(banner!)).toContain('View progress')
   })
 
@@ -1576,7 +1576,7 @@ describe('a run still working with nobody attached', () => {
   it('can stop the run, which clears the banner', async () => {
     const cancelRun = vi.fn().mockResolvedValue({ id: 'r-live', cancelling: true })
     const { el } = await mountWith('Running', { cancelRun })
-    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop it')) as HTMLButtonElement
+    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop run')) as HTMLButtonElement
     stop.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledWith('r-live')
@@ -1588,7 +1588,7 @@ describe('a run still working with nobody attached', () => {
     const cancelRun = vi.fn(() => cancellation.promise)
     const { el } = await mountWith('Running', { cancelRun })
     const stop = [...el.querySelectorAll<HTMLButtonElement>('.agents-orphan-banner button')]
-      .find(button => text(button).includes('Stop it'))!
+      .find(button => text(button).includes('Stop run'))!
 
     stop.click()
     await settle(2)
@@ -1606,7 +1606,7 @@ describe('a run still working with nobody attached', () => {
   it('does not show a failed stop from a run after the user leaves its session', async () => {
     const cancellation = deferred<{ id: string; cancelling: boolean }>()
     const { el } = await mountWith('Running', { cancelRun: () => cancellation.promise })
-    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop it')) as HTMLButtonElement
+    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop run')) as HTMLButtonElement
     stop.click()
     await settle(2)
     el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
@@ -1748,7 +1748,7 @@ describe('approval handoff after the chat stream closes', () => {
     const getRun = vi.fn().mockResolvedValue(pending('recovered'))
     const { el, store } = await mountChat(chatStream, { getRun })
     await send(el, 'describe models')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('still working')
+    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
 
     event(store, 'PendingApproval')
     await settle(6)
