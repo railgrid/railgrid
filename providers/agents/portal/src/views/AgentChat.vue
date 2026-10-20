@@ -1713,6 +1713,7 @@ defineExpose({
           <button
             class="k-btn k-btn--ghost secondary"
             type="button"
+            aria-label="Stop run: active background run"
             :disabled="orphanCancelBusyID === orphanRun.id"
             :aria-busy="orphanCancelBusyID === orphanRun.id ? 'true' : undefined"
             @click="cancelOrphan"
