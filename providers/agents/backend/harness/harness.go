@@ -396,10 +396,10 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
 		return b.outcome(ctx, out, err, state.Spent)
 	}
-	approved, err := b.approvedInput(r)
-	if err != nil {
-		return backend.Outcome{Status: backend.StatusFailed}, err
-	}
+	// The runner already durably holds the original approved input. Rebuilt
+	// repository configuration deliberately omits dispatch-only input; do not
+	// replace it with conversational provenance on resume. Omitting the
+	// optional envelope preserves the original approval and all runner fences.
 	credential := b.credential()
 	// A permission park takes a VERDICT and the person's own note as the
 	// reason; a question takes the resolution rendered for it. A denial is
@@ -408,7 +408,7 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	resume := dispatch.ResumeRequest(b.newID(), receipt, pos, dispatch.Answer{
 		Resolution: resolution(answer, receipt.Permission != nil),
 		Allow:      answer.Approved,
-	}, approved, &credential)
+	}, nil, &credential)
 	out, err := dispatch.ResumeSnapshot(ctx, b.cfg.Runner, resume, snapshot, obs)
 	return b.outcome(ctx, out, err, state.Spent)
 }

@@ -420,3 +420,38 @@ func TestRepositoryScreenshotsAreFetchedAndDigestChecked(t *testing.T) {
 		t.Fatal("tampered screenshot artifact accepted")
 	}
 }
+
+func TestRepositoryResumePreservesOriginalApprovalAfterRehydration(t *testing.T) {
+	parked := runner.Receipt{TaskID: "run-1", AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1", Blocker: "runner restarted"}
+	initial := &fakeRunner{receipt: parked, events: []runner.Event{event(1, runner.EventNeedsInput, "runner restarted", "")}}
+	original := testRepository()
+	b := New(repositoryConfig(initial, nil, original))
+	out, err := b.Turn(t.Context(), testRun(), backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "verify UI"}}}, &recordingSink{})
+	if err != nil || out.Parked == nil {
+		t.Fatalf("park: %+v %v", out, err)
+	}
+	if string(initial.starts[0].ApprovedInput) != string(original.ApprovedInput) {
+		t.Fatal("initial approval lost")
+	}
+	doc := gitResult(t, gitResultDocument{Version: gitResultVersion, TaskID: "run-1", AttemptID: "run-1", AttemptEpoch: 1, BaseCommit: testBase, NoChanges: true})
+	parked.Artifacts = []runner.Artifact{artifactRef("doc", GitResultJSONName, doc)}
+	resumed := &fakeRunner{receipt: parked, phases: []runner.Phase{runner.PhaseNeedsInput, runner.PhaseCompleted}, events: []runner.Event{event(1, runner.EventNeedsInput, "runner restarted", ""), event(2, runner.EventCompleted, "", "")}}
+	// Rehydration preserves coordinates but neither clone credentials nor the
+	// coordinator's dispatch-only approval envelope.
+	restored := &Repository{RepositoryID: original.RepositoryID, BaseCommit: original.BaseCommit, CommitMessage: original.CommitMessage}
+	rb := New(repositoryConfig(resumed, &fakeArtifacts{bodies: map[string][]byte{"doc": doc}}, restored))
+	result, err := rb.Continue(t.Context(), testRun(), backend.Answer{State: out.Parked.State, Decided: true, Approved: true, Note: "continue verification"}, &recordingSink{})
+	if err != nil || result.Status != backend.StatusCompleted {
+		t.Fatalf("resume: %+v %v", result, err)
+	}
+	if len(resumed.resumes) != 1 {
+		t.Fatalf("resumes=%d", len(resumed.resumes))
+	}
+	req := resumed.resumes[0]
+	if len(req.ApprovedInput) != 0 || req.SessionID != "sess-1" || req.AttemptID != "run-1" || req.Resolution != "continue verification" {
+		t.Fatalf("resume changed original approval/session: %+v", req)
+	}
+	if len(resumed.starts) != 0 {
+		t.Fatal("resume started another attempt")
+	}
+}
