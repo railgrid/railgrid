@@ -34,7 +34,7 @@ railgrid runner run [flags]
       --claude-permission-mode string   What Claude Code may do without asking: acceptEdits (default; file edits in the worktree) or bypassPermissions (every tool, for sandboxed hosts)
       --codex-binary string             Codex executable (default "codex")
       --codex-home string               Runner-owned CODEX_HOME directory (default <state-dir>/codex-home)
-      --codex-registry-url strings      HTTPS package registry endpoint to check before Codex runs (repeatable; requires network access)
+      --codex-registry-url strings      Opt-in HTTPS registry preflight on the host (repeatable; disabled by default; requires network access)
       --config string                   Path to the JSON runner enrollment/configuration file
       --environment-config string       Operator environment JSON file (default <state-dir>/environment.json, optional)
       --harness string                  Coding harness to serve: codex or claude. One harness per runner process. (default "codex")

@@ -24,10 +24,11 @@ import (
 
 // Info describes an adapter's executable and readiness state.
 type Info struct {
-	Name    string   `json:"name"`
-	Version string   `json:"version"`
-	Ready   bool     `json:"ready"`
-	Reasons []string `json:"reasons,omitempty"`
+	Name        string   `json:"name"`
+	SandboxMode string   `json:"sandboxMode,omitempty"`
+	Version     string   `json:"version"`
+	Ready       bool     `json:"ready"`
+	Reasons     []string `json:"reasons,omitempty"`
 }
 
 // CredentialKind names which harness identity a launch carries, and therefore

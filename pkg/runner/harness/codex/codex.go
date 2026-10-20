@@ -29,6 +29,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -99,6 +102,7 @@ type Config struct {
 	// RegistryURLs are HTTPS endpoints checked before network-enabled launches.
 	RegistryURLs []string
 	cacheDir     string
+	cacheScope   string
 }
 
 // Adapter is the Codex implementation of harness.Adapter.
@@ -132,6 +136,14 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 	info := harness.Info{Name: HarnessName}
 	if err := a.ensureHome(); err != nil {
 		return info, err
+	}
+	policy, err := loadCodexConfig(a.cfg.Home, a.cfg.WorktreeRoot)
+	if err != nil {
+		return info, err
+	}
+	info.SandboxMode = "workspace-write"
+	if policy != nil && policy.SandboxMode != "" {
+		info.SandboxMode = policy.SandboxMode
 	}
 	version, err := a.probeVersion(ctx)
 	if err != nil {
@@ -220,10 +232,11 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	}
 	if local.sandboxMode() == "danger-full-access" {
 		local.cfg.networkAccess = true
+		klog.Warningf("Codex launching without OS sandbox (danger-full-access), attempt %q", launch.AttemptID)
 	}
-	if local.cfg.networkAccess && local.cfg.RegistryURLs == nil {
-		local.cfg.RegistryURLs = []string{"https://proxy.golang.org", "https://registry.npmjs.org"}
-	}
+	// Scope mutable caches to the runner-owned checkout and execution policy.
+	// Warm follow-ups reuse this path; another checkout or privilege mode cannot.
+	local.cfg.cacheScope = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%t", filepath.Clean(launch.Workdir), local.sandboxMode(), local.cfg.networkAccess))))
 	a = &local
 	// Retain concurrency-safe package caches; remove launch-local scratch on exit.
 	cacheDir, err := a.prepareEnvironment(ctx)

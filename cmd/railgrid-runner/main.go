@@ -57,7 +57,7 @@ func run() error {
 		"expected harness version; empty accepts any version")
 	flags.StringVar(&opts.CodexHome, "codex-home", "", "runner-owned CODEX_HOME directory")
 	flags.StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
-	flags.Func("codex-registry-url", "HTTPS package registry endpoint to check before Codex runs (repeatable; requires network access)", func(v string) error { opts.CodexRegistryURLs = append(opts.CodexRegistryURLs, v); return nil })
+	flags.Func("codex-registry-url", "Opt-in HTTPS registry preflight on the host (repeatable; disabled by default; requires network access)", func(v string) error { opts.CodexRegistryURLs = append(opts.CodexRegistryURLs, v); return nil })
 	flags.StringVar(&opts.ClaudeHome, "claude-home", "", "runner-owned CLAUDE_CONFIG_DIR directory")
 	flags.StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
 	flags.StringVar(&opts.ClaudeModel, "claude-model", "", "model for Claude Code turns (empty uses the account default)")

@@ -46,7 +46,7 @@ func TestOperatorEnvironmentIsExplicitAndPreservesIsolation(t *testing.T) {
 }
 
 func TestOperatorEnvironmentRejectsUnsafeOrMalformedConfig(t *testing.T) {
-	for _, key := range []string{"HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GOCACHE", "XDG_CONFIG_HOME", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+	for _, key := range []string{"HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "GOCACHE", "XDG_CONFIG_HOME", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "LD_PRELOAD", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GOENV", "GOFLAGS", "GOROOT", "GOTOOLCHAIN", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND", "PYTHONPATH", "PYTHONSTARTUP", "npm_config_userconfig", "NPM_CONFIG_PREFIX"} {
 		t.Run(key, func(t *testing.T) {
 			err := (EnvironmentConfig{Variables: map[string]string{key: "private-value"}}).Validate()
 			if err == nil || strings.Contains(err.Error(), "private-value") {
@@ -73,5 +73,28 @@ func TestOperatorEnvironmentRejectsUnsafeOrMalformedConfig(t *testing.T) {
 		if _, err := LoadEnvironmentConfig(file, false); err == nil || strings.Contains(err.Error(), "private-value") {
 			t.Fatal("bad config accepted or content leaked")
 		}
+	}
+}
+
+func TestEnvironmentConfigRejectsUnsafeFiles(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`{"environment":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{link, dir} {
+		if _, err := LoadEnvironmentConfig(path, false); err == nil {
+			t.Fatalf("accepted unsafe path %s", path)
+		}
+	}
+	if err := os.Chmod(target, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEnvironmentConfig(target, false); err == nil {
+		t.Fatal("accepted writable configuration")
 	}
 }

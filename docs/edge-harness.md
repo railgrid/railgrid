@@ -404,10 +404,12 @@ attempt can spend that credential's money; whoever owns the machine cannot.
 
 ### Codex build caches and dependency access
 
-Each runner home retains Go module/build and npm caches in
-`<codex-home>.build-cache/`. These package-manager caches support concurrent
-launches and are reused on follow-up runs. They share the runner's trust boundary;
-use separate runner homes for workloads that must not share writable caches.
+Go module/build and npm caches live under `<codex-home>.build-cache/<scope>/`.
+The scope hashes the validated runner-owned checkout path and its sandbox/network
+policy. Warm follow-ups on the same checkout reuse them; different checkouts
+or privilege policies receive different writable roots. These caches are not
+shared across unrelated tasks. Full-access runs still have host privileges;
+cache partitioning is not an OS isolation boundary in that mode.
 Temporary files, installed Go binaries and generic XDG state remain in a unique
 launch directory and are deleted when that launch ends, including on failure.
 The adapter sets `GOPATH`, `GOBIN`, `GOMODCACHE`, `GOCACHE`, `npm_config_cache`,
@@ -415,7 +417,10 @@ The adapter sets `GOPATH`, `GOBIN`, `GOMODCACHE`, `GOCACHE`, `npm_config_cache`,
 checkout, three persistent cache directories and launch directory receive sandbox
 write grants; the credential/configuration home does not. Stop the runner before
 manually removing its cache root to reclaim disk space. The root and persistent
-cache directories must be private real directories, not symlinks.
+cache directories must be private real directories, not symlinks. SIGKILL or
+OOM can leave launch scratch behind. Remove it only while the runner is stopped;
+there is no age-only sweep, because old scratch may still belong to an active
+or parked run.
 
 Outbound network access remains disabled by default. To enable it for one
 hosted Codex runner, add this to **that runner's** `codex-home/config.toml`:
@@ -452,21 +457,23 @@ Full access removes Codex's filesystem and network sandbox, including bubblewrap
 on Linux. Commands have the runner account's host access, including access to its
 configuration and credentials; use a dedicated account or VM for isolation.
 Tool approvals remain `on-request`, but are not a replacement for OS isolation.
-Runner-owned caches and environment sanitization remain enabled. Network registry
-preflight also runs in full-access mode. Chromium's own sandbox is independent and
+Runner-owned caches and environment sanitization remain enabled. Explicitly configured registry
+preflight also runs in full-access mode. Each unsandboxed launch emits a warning;
+probe results expose the configured `sandboxMode` (refreshed on the next probe). Chromium's own sandbox is independent and
 still needs the host's normal browser/user-namespace configuration.
 
 To restore the Codex sandbox, set `sandbox_mode = "workspace-write"` or remove
 the key. The `sandbox_workspace_write.network_access` setting then applies again.
 
-Before starting a model turn, the runner checks cache writability. When network
-access is enabled it also checks HTTPS connectivity to `https://proxy.golang.org`
-and `https://registry.npmjs.org`. Standalone runners can override these endpoints
-with repeated `--codex-registry-url` flags. URLs cannot include credentials,
+Before starting a model turn, the runner checks cache writability. Registry
+preflight is disabled by default, including for network-enabled and full-access
+runs. Standalone operators may opt in with repeated `--codex-registry-url` flags.
+Only explicitly selected endpoints are checked. URLs cannot include credentials,
 query strings or fragments. Checks use HEAD, accept 2xx/3xx without following
-redirects, and time out after ten seconds per endpoint. They check host
-connectivity, not package availability or private-registry authentication;
-installation and project checks still need to run inside the harness.
+redirects, and time out after ten seconds per endpoint. They use the host runner's
+network/proxy/TLS configuration, not `environment.json` or sandbox connectivity.
+Select endpoints reachable from that host; these checks do not establish package
+availability or replace dependency verification inside the harness.
 
 An unavailable cache or registry fails the attempt before implementation starts.
 This does not install browser tools or change Factory's verification policy.
@@ -480,7 +487,11 @@ For a supervised Codex runner the default location is
 `~/.railgrid/runner/codex/state/environment.json` under the runner account's home;
 Claude has its own `claude/state/environment.json`. Standalone runners can select
 another file with `--environment-config /absolute/path/environment.json`.
-An explicitly selected missing file is an error.
+An explicitly selected missing file is an error. The file must be regular,
+not a symlink, and not writable by group or others. On Unix its owner must be
+the runner account or root; on other platforms use restrictive directory ACLs.
+Keep it in the private
+operator-owned state directory.
 
 ```json
 {
@@ -501,7 +512,8 @@ harnesses, not to the agent's hub connection. It does not change which Codex or
 Claude executable was selected by the supervisor.
 
 HOME, harness identity/configuration, Git/SSH credentials, runner build caches,
-temporary directories and loader controls are reserved. Credential-like variable
+temporary directories, shell/language startup hooks, toolchain overrides, and
+all npm configuration variables are reserved. Credential-like variable
 names are rejected. Configure credentials through the existing credential flow,
 not this file. Errors do not include variable values. Environment configuration
 adds no filesystem write grants or network permissions. Tool directories should

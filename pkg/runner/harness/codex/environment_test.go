@@ -18,10 +18,12 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -32,7 +34,7 @@ func TestLaunchScratchIsIsolatedAndPackageCachesAreReused(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("GOCACHE", "/unwritable/inherited")
 	t.Setenv("NPM_CONFIG_CACHE", "/unwritable/npm")
-	a := &Adapter{cfg: Config{Home: home}}
+	a := &Adapter{cfg: Config{Home: home, cacheScope: "checkout-one"}}
 	first, err := a.prepareEnvironment(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +129,7 @@ func TestPreflightRejectsUnavailableCacheAndInvalidRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(parent, "home.build-cache"), []byte("blocked"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	a := &Adapter{cfg: Config{Home: filepath.Join(parent, "home")}}
+	a := &Adapter{cfg: Config{Home: filepath.Join(parent, "home"), cacheScope: "checkout-one"}}
 	if _, err := a.prepareEnvironment(context.Background()); err == nil {
 		t.Fatal("unwritable cache accepted")
 	}
@@ -160,10 +162,13 @@ func TestRegistryPreflightChecksHTTPSStatus(t *testing.T) {
 
 func TestCacheRootsArePrivateAndPerHome(t *testing.T) {
 	parent := t.TempDir()
-	a := &Adapter{cfg: Config{Home: filepath.Join(parent, "first")}}
-	b := &Adapter{cfg: Config{Home: filepath.Join(parent, "second")}}
+	a := &Adapter{cfg: Config{Home: filepath.Join(parent, "first"), cacheScope: "checkout-one"}}
+	b := &Adapter{cfg: Config{Home: filepath.Join(parent, "second"), cacheScope: "checkout-one"}}
 	if a.buildCacheRoot() == b.buildCacheRoot() {
 		t.Fatal("different homes share cache")
+	}
+	if err := os.Mkdir(filepath.Clean(a.cfg.Home)+".build-cache", 0700); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Symlink(parent, a.buildCacheRoot()); err != nil {
 		t.Fatal(err)
@@ -171,10 +176,70 @@ func TestCacheRootsArePrivateAndPerHome(t *testing.T) {
 	if _, err := a.prepareEnvironment(t.Context()); err == nil {
 		t.Fatal("symlink root accepted")
 	}
+	if err := os.Mkdir(filepath.Clean(b.cfg.Home)+".build-cache", 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(b.buildCacheRoot(), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.prepareEnvironment(t.Context()); err == nil {
 		t.Fatal("nonprivate root accepted")
+	}
+}
+
+type registryTransportFunc func(*http.Request) (*http.Response, error)
+
+func (f registryTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestCacheScopeFollowsCheckoutAndPolicy(t *testing.T) {
+	previous := http.DefaultTransport
+	calls := 0
+	http.DefaultTransport = registryTransportFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("no host registry network")
+	})
+	defer func() { http.DefaultTransport = previous }()
+	envFile := filepath.Join(t.TempDir(), "env.json")
+	binary := fakeCodexBinaryWithEnvFile(t, "success", envFile)
+	home, root, work := trustFixture(t)
+	other := filepath.Join(root, "other", "checkout")
+	if err := os.MkdirAll(other, 0700); err != nil {
+		t.Fatal(err)
+	}
+	a := New(Config{Binary: binary, Home: home, WorktreeRoot: root})
+	run := func(workdir string) string {
+		if _, err := a.Run(t.Context(), harness.Launch{AttemptID: "cache-scope", Workdir: workdir, Instructions: "check", Credential: testCredential()}, func(harness.Event) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return readJSONFile(t, envFile)["GOCACHE"].(string)
+	}
+	first := run(work)
+	if again := run(work); again != first {
+		t.Fatal("same checkout did not reuse cache")
+	}
+	if second := run(other); second == first {
+		t.Fatal("different checkouts share writable cache")
+	}
+	writeTrustConfig(t, home, "[sandbox_workspace_write]\nnetwork_access = true\n")
+	networked := run(work)
+	if networked == first {
+		t.Fatal("network policy change reused writable cache")
+	}
+	writeTrustConfig(t, home, "sandbox_mode = \"danger-full-access\"\n")
+	if privileged := run(work); privileged == networked || privileged == first {
+		t.Fatal("privilege policy change reused writable cache")
+	}
+	if calls != 0 {
+		t.Fatalf("unconfigured registry preflight made %d calls", calls)
+	}
+}
+
+func TestLaunchEnvironmentIsDeterministic(t *testing.T) {
+	a := &Adapter{cfg: Config{Home: filepath.Join(t.TempDir(), "home"), cacheScope: "checkout", cacheDir: "/scratch"}}
+	want := a.launchEnv()
+	for range 10 {
+		if !reflect.DeepEqual(want, a.launchEnv()) {
+			t.Fatal("environment ordering changes")
+		}
 	}
 }

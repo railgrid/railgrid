@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -32,6 +33,12 @@ import (
 func (a *Adapter) prepareEnvironment(ctx context.Context) (string, error) {
 	if len(a.cfg.RegistryURLs) > 0 && !a.cfg.networkAccess {
 		return "", fmt.Errorf("codex registry preflight requires sandbox_workspace_write.network_access = true in the runner Codex config")
+	}
+	if a.cfg.cacheScope == "" {
+		return "", fmt.Errorf("codex cache scope is required")
+	}
+	if err := privateCacheDirectory(filepath.Clean(a.cfg.Home) + ".build-cache"); err != nil {
+		return "", fmt.Errorf("codex cache preflight: %w", err)
 	}
 	root := a.buildCacheRoot()
 	if err := privateCacheDirectory(root); err != nil {
@@ -113,21 +120,24 @@ func (a *Adapter) launchEnv() []string {
 		"GOPATH": "go", "GOBIN": "go/bin", "GOMODCACHE": "gomod", "GOCACHE": "go-build", "npm_config_cache": "npm",
 		"GOTMPDIR": "tmp", "TMPDIR": "tmp", "TMP": "tmp", "TEMP": "tmp", "XDG_CACHE_HOME": "xdg",
 	}
+	keys := make([]string, 0, len(paths))
+	reserved := make(map[string]bool, len(paths))
+	for key := range paths {
+		keys = append(keys, key)
+		reserved[strings.ToUpper(key)] = true
+	}
+	sort.Strings(keys)
 	filtered := make([]string, 0, len(env)+len(paths))
 	for _, item := range env {
 		key, _, _ := strings.Cut(item, "=")
 		override := false
-		for name := range paths {
-			if strings.EqualFold(key, name) {
-				override = true
-				break
-			}
-		}
+		_, override = reserved[strings.ToUpper(key)]
 		if !override {
 			filtered = append(filtered, item)
 		}
 	}
-	for key, name := range paths {
+	for _, key := range keys {
+		name := paths[key]
 		root := a.cfg.cacheDir
 		if name == "gomod" || name == "go-build" || name == "npm" {
 			root = a.buildCacheRoot()
@@ -137,10 +147,10 @@ func (a *Adapter) launchEnv() []string {
 	return filtered
 }
 
-// Package-manager caches are concurrency-safe and retained per runner home.
+// Package-manager caches are retained per checkout and sandbox/network policy.
 // Temporary files, installed executables and generic XDG state stay launch-local.
 func (a *Adapter) buildCacheRoot() string {
-	return filepath.Clean(a.cfg.Home) + ".build-cache"
+	return filepath.Join(filepath.Clean(a.cfg.Home)+".build-cache", a.cfg.cacheScope)
 }
 
 func privateCacheDirectory(path string) error {

@@ -43,14 +43,25 @@ func LoadEnvironmentConfig(path string, optional bool) (EnvironmentConfig, error
 	var document struct {
 		Environment EnvironmentConfig `json:"environment"`
 	}
-	f, err := os.Open(path)
+	info, err := os.Lstat(path)
 	if optional && errors.Is(err, os.ErrNotExist) {
 		return document.Environment, nil
 	}
 	if err != nil {
 		return document.Environment, fmt.Errorf("open runner environment config: %w", err)
 	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !trustedEnvironmentOwner(info) {
+		return document.Environment, errors.New("runner environment config must be a trusted-owner regular file not writable by group or others")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return document.Environment, fmt.Errorf("open runner environment config: %w", err)
+	}
 	defer func() { _ = f.Close() }()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm()&0022 != 0 || !trustedEnvironmentOwner(opened) {
+		return document.Environment, errors.New("runner environment config changed while opening")
+	}
 	data, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
 	if err != nil || len(data) > 64<<10 {
 		return document.Environment, errors.New("runner environment config unreadable or larger than 64 KiB")
@@ -88,10 +99,10 @@ func (e EnvironmentConfig) Validate() error {
 
 func reservedEnvironmentKey(key string) bool {
 	switch key {
-	case "PATH", "HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "TMPDIR", "TMP", "TEMP", "NPM_CONFIG_CACHE", "SSH_AUTH_SOCK", "SSH_AGENT_PID":
+	case "PATH", "HOME", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "TMPDIR", "TMP", "TEMP", "NPM_CONFIG_CACHE", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GOENV", "GOFLAGS", "GOROOT", "GOTOOLCHAIN", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV", "PROMPT_COMMAND", "PYTHONPATH", "PYTHONSTARTUP":
 		return true
 	}
-	for _, prefix := range []string{"CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "XDG_", "GIT_", "GH_", "GITHUB_", "RAILGRID_", "LD_", "DYLD_", "DISABLE_"} {
+	for _, prefix := range []string{"NPM_CONFIG_", "CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "XDG_", "GIT_", "GH_", "GITHUB_", "RAILGRID_", "LD_", "DYLD_", "DISABLE_"} {
 		if strings.HasPrefix(key, prefix) {
 			return true
 		}

@@ -90,7 +90,7 @@ fixture or an unmanaged host, as described in docs/local-runner.md.`,
 		"Expected harness version; empty accepts any version")
 	cmd.Flags().StringVar(&opts.CodexHome, "codex-home", "", "Runner-owned CODEX_HOME directory (default <state-dir>/codex-home)")
 	cmd.Flags().StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
-	cmd.Flags().StringSliceVar(&opts.CodexRegistryURLs, "codex-registry-url", nil, "HTTPS package registry endpoint to check before Codex runs (repeatable; requires network access)")
+	cmd.Flags().StringSliceVar(&opts.CodexRegistryURLs, "codex-registry-url", nil, "Opt-in HTTPS registry preflight on the host (repeatable; disabled by default; requires network access)")
 	cmd.Flags().StringVar(&opts.ClaudeHome, "claude-home", "", "Runner-owned CLAUDE_CONFIG_DIR directory (default <state-dir>/claude-home)")
 	cmd.Flags().StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
 	cmd.Flags().StringVar(&opts.ClaudeModel, "claude-model", "", "Model for Claude Code turns (empty uses the account default)")

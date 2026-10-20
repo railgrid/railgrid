@@ -272,11 +272,15 @@ func TestFullAccessPolicyReachesStartAndResume(t *testing.T) {
 			home, root, work := trustFixture(t)
 			writeTrustConfig(t, home, "sandbox_mode = \"danger-full-access\"\n")
 			a := New(Config{Binary: binary, Home: home, WorktreeRoot: root, RegistryURLs: []string{}})
+			info, err := a.Probe(t.Context())
+			if err != nil || info.SandboxMode != "danger-full-access" {
+				t.Fatalf("probe policy: %+v %v", info, err)
+			}
 			launch := harness.Launch{AttemptID: "full-access-test", Workdir: work, Instructions: "hello", Credential: testCredential()}
 			if resume {
 				launch.SessionID = "thread-1"
 			}
-			_, err := a.Run(context.Background(), launch, func(harness.Event) error { return nil })
+			_, err = a.Run(context.Background(), launch, func(harness.Event) error { return nil })
 			if err != nil {
 				t.Fatal(err)
 			}
