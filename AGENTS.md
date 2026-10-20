@@ -939,8 +939,11 @@ blockers and mark incomplete verification explicitly.
 When the runner explicitly grants a warm development-environment lease, leave
 the stack running at completion: the runner owns its idle expiry and cleanup.
 Otherwise run the normal scoped cleanup. A warm lease never permits skipping
-readiness checks or reusing old screenshots as evidence for new changes. During active work,
-you may repair a failed owned stack with one scoped `make dev-browser-down`,
+readiness checks or reusing old screenshots as evidence for new changes.
+
+During active work (never while awaiting a user answer), you may repair a failed
+owned stack with one scoped `make dev-browser-down`,
 `make tilt TILT_DETACHED=1`, `make dev-browser-ready` cycle. Follow the ownership
 and evidence safeguards in [docs/dev-browser.md](docs/dev-browser.md); this is
-recovery, not completion cleanup. Stop and report any failure.
+recovery, not completion cleanup. Never bypass ownership checks. Stop and
+report any failure.

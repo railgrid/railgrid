@@ -181,8 +181,10 @@ back to trusting size/mtime alone. Keep build outputs in .gitignore.
 
 Keeping a warm stack at completion does not prohibit repairing it while working.
 If startup left a partial cluster or readiness reports a stopped/unhealthy stack,
-inspect the checkout's logs first. You may make **one** scoped recreation attempt
-using these commands from the same checkout:
+inspect the checkout's logs first. You may make **one** scoped recreation attempt per runner attempt. Record it
+in your progress log; do not repeat it after a context reset. A new run on a
+reused checkout gets its own single attempt. This is agent guidance, not a
+runner-enforced counter. Use these commands from the same checkout:
 
 ```sh
 make dev-browser-down
@@ -193,7 +195,9 @@ make dev-browser-ready
 Stop if any command fails. `dev-browser-down` must validate this checkout's
 recorded ownership; never bypass a refusal, delete ownership files, infer targets
 from the current Kubernetes context, or remove shared/unrelated resources.
-This may recreate disposable development data in the owned cluster. Keep source,
+Recreation can discard tenant state and data seeded earlier in the run.
+Re-create any data the task needs before verification and disclose in the final
+report that recovery reset the stack. Keep source,
 logs and screenshots, and do not reset the checkout. After recovery, verify the
 real UI and capture new screenshots; old readiness files and images are not
 proof. If recovery fails, report the concrete blocker and incomplete verification
