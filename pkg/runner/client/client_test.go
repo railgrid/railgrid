@@ -790,3 +790,23 @@ func TestAnEnrollmentWithoutARunnerIDAcceptsTheServicesRunner(t *testing.T) {
 		t.Fatalf("err = %v, want the protocol mismatch still refused", err)
 	}
 }
+
+func TestHTTPErrorCarriesOnlyEnrolledServiceScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "Not Found", 404) }))
+	defer server.Close()
+	c := &Client{ref: testRef(), origin: server.URL, http: server.Client()}
+	for _, path := range []string{serviceObjectPath(), proxyBase() + "/runner/v1/attempts/missing", "/unrelated", serviceObjectPath() + "-other/proxy/runner/v1/attempts/missing"} {
+		_, err := c.do(t.Context(), http.MethodGet, path, nil)
+		var got *HTTPError
+		if !errors.As(err, &got) {
+			t.Fatalf("not HTTPError: %v", err)
+		}
+		want := ""
+		if path == serviceObjectPath() || path == proxyBase()+"/runner/v1/attempts/missing" {
+			want = testService
+		}
+		if got.Service != want {
+			t.Fatalf("path %s service=%s want=%s", path, got.Service, want)
+		}
+	}
+}

@@ -585,25 +585,13 @@ func TestReadRetryHTTP2ResetClassification(t *testing.T) {
 }
 
 func TestReadRetryProxyRouteNotFound(t *testing.T) {
-	for _, body := range []string{"Not Found", "Not Found\n", "", `{"kind":"Status","reason":"NotFound"}`, `{"code":"unavailable","retryable":false}`, "404 page not found"} {
-		want := strings.TrimSpace(body) == "Not Found"
-		if got := retryableRead(&client.HTTPError{StatusCode: http.StatusNotFound, Body: []byte(body)}); got != want {
-			t.Errorf("body=%q retry=%v want=%v", body, got, want)
+	for _, service := range []string{"", "devbox-codex"} {
+		for _, body := range []string{"Not Found", "Not Found\n", "", `{"kind":"Status","reason":"NotFound"}`, "404 page not found"} {
+			if retryableRead(&client.HTTPError{StatusCode: http.StatusNotFound, Service: service, Body: []byte(body)}) {
+				t.Fatalf("ambiguous 404 retried: %q", body)
+			}
 		}
 	}
-	synctest.Test(t, func(t *testing.T) {
-		calls := 0
-		got, err := retryRead(ctxWithTimeout(t), nil, func() (runner.Receipt, error) {
-			calls++
-			if calls == 1 {
-				return runner.Receipt{}, &client.HTTPError{StatusCode: http.StatusNotFound, Body: []byte("Not Found")}
-			}
-			return receipt(runner.PhaseNeedsInput), nil
-		})
-		if err != nil || got.Phase != runner.PhaseNeedsInput || calls != 2 {
-			t.Fatalf("receipt=%+v err=%v calls=%d", got, err, calls)
-		}
-	})
 }
 
 func TestReadRetryEdgeServiceRecreation(t *testing.T) {
@@ -613,13 +601,14 @@ func TestReadRetryEdgeServiceRecreation(t *testing.T) {
 		retry      bool
 	}{
 		{"Edge Service", body, true},
+		{"different service", strings.ReplaceAll(body, "devbox-codex", "another-service"), false},
 		{"other provider", strings.ReplaceAll(body, "edges.railgrid.ai", "agents.railgrid.ai"), false},
 		{"other resource", strings.ReplaceAll(body, `"services"`, `"linuxservers"`), false},
 		{"unnamed", strings.ReplaceAll(body, "devbox-codex", ""), false},
 		{"different reason", strings.ReplaceAll(body, "NotFound", "Forbidden"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := retryableRead(&client.HTTPError{StatusCode: 404, Body: []byte(tc.body)}); got != tc.retry {
+			if got := retryableRead(&client.HTTPError{StatusCode: 404, Service: "devbox-codex", Body: []byte(tc.body)}); got != tc.retry {
 				t.Fatalf("retry=%v want=%v", got, tc.retry)
 			}
 		})

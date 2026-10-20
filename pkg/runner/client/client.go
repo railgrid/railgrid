@@ -43,6 +43,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -526,7 +527,15 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 			// Drop it so the next operation re-discovers and re-checks.
 			c.Invalidate()
 		}
-		return nil, responseError(resp.StatusCode, failure)
+		failureErr := responseError(resp.StatusCode, failure)
+		var httpErr *HTTPError
+		if errors.As(failureErr, &httpErr) {
+			objectPath, pathErr := servicePath(c.ref)
+			if pathErr == nil && (path == objectPath || strings.HasPrefix(path, objectPath+"/"+edgesProxyVerb+"/")) {
+				httpErr.Service = c.ref.Service
+			}
+		}
+		return nil, failureErr
 	}
 	return resp, nil
 }
