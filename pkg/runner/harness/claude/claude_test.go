@@ -401,3 +401,15 @@ func TestCredentialForRefusesABroughtVariableOutsideTheAllowList(t *testing.T) {
 		}
 	}
 }
+
+func TestOperatorToolEnvironmentKeepsClaudeIdentity(t *testing.T) {
+	a := &Adapter{cfg: Config{Home: "/isolated/claude", Environment: harness.EnvironmentConfig{
+		PathPrepend: []string{"/opt/tools/bin"}, Variables: map[string]string{"PLAYWRIGHT_BROWSERS_PATH": "/opt/browsers"},
+	}}}
+	env := strings.Join(a.childEnv(credential{}), "\n")
+	for _, want := range []string{"HOME=/isolated/claude", "CLAUDE_CONFIG_DIR=/isolated/claude", "PLAYWRIGHT_BROWSERS_PATH=/opt/browsers", "PATH=/opt/tools/bin"} {
+		if !strings.Contains(env, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+}

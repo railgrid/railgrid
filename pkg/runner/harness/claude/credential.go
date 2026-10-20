@@ -186,7 +186,7 @@ func (a *Adapter) childEnv(cred credential) []string {
 	for _, variable := range cred.extra {
 		env = append(env, variable.Name+"="+variable.Value)
 	}
-	return env
+	return a.cfg.Environment.Apply(env)
 }
 
 // blockedEnvKey is the Codex adapter's deny list plus the whole

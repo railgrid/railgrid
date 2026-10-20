@@ -66,10 +66,11 @@ var Harnesses = []string{HarnessCodex, HarnessClaude} //nolint:gochecknoglobals
 // that dispatches to a runner needs to know what it will get without
 // negotiating.
 type Options struct {
-	Config    string
-	StateDir  string
-	Listen    string
-	TokenFile string
+	Config            string
+	StateDir          string
+	Listen            string
+	TokenFile         string
+	EnvironmentConfig string
 
 	// Harness selects the adapter: "codex" (default) or "claude".
 	Harness string
@@ -77,8 +78,9 @@ type Options struct {
 	// Empty means no version pin.
 	VersionPin string
 
-	CodexHome   string
-	CodexBinary string
+	CodexHome         string
+	CodexBinary       string
+	CodexRegistryURLs []string
 
 	ClaudeHome   string
 	ClaudeBinary string
@@ -199,6 +201,15 @@ func Run(ctx context.Context, opts Options) (runErr error) {
 // create.
 func (o Options) adapter(stateRoot string) (harness.Adapter, error) {
 	worktreeRoot := filepath.Join(stateRoot, "worktrees")
+	path := o.EnvironmentConfig
+	optional := path == ""
+	if optional {
+		path = filepath.Join(stateRoot, "environment.json")
+	}
+	environment, err := harness.LoadEnvironmentConfig(path, optional)
+	if err != nil {
+		return nil, err
+	}
 	switch o.Harness {
 	case HarnessClaude:
 		home := o.ClaudeHome
@@ -207,6 +218,7 @@ func (o Options) adapter(stateRoot string) (harness.Adapter, error) {
 		}
 		return claude.New(claude.Config{
 			Binary:          o.ClaudeBinary,
+			Environment:     environment,
 			Home:            home,
 			WorktreeRoot:    worktreeRoot,
 			Model:           o.ClaudeModel,
@@ -221,6 +233,8 @@ func (o Options) adapter(stateRoot string) (harness.Adapter, error) {
 		}
 		return codex.New(codex.Config{
 			Binary:          o.CodexBinary,
+			Environment:     environment,
+			RegistryURLs:    o.CodexRegistryURLs,
 			Home:            home,
 			WorktreeRoot:    worktreeRoot,
 			ExpectedVersion: o.VersionPin,

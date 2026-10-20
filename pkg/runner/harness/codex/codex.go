@@ -29,6 +29,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -85,7 +88,8 @@ var versionPattern = regexp.MustCompile(`(?:codex-cli\s+)?v?([0-9]+\.[0-9]+\.[0-
 
 // Config selects the Codex executable and its isolated worker home.
 type Config struct {
-	Binary string
+	Environment harness.EnvironmentConfig
+	Binary      string
 	// Home is a runner-owned CODEX_HOME. It must be separate from an
 	// interactive user's Codex home and independently signed in by the worker.
 	Home string
@@ -93,6 +97,12 @@ type Config struct {
 	WorktreeRoot    string
 	Model           string
 	ExpectedVersion string
+	networkAccess   bool
+	sandboxMode     string
+	// RegistryURLs are HTTPS endpoints checked before network-enabled launches.
+	RegistryURLs []string
+	cacheDir     string
+	cacheScope   string
 }
 
 // Adapter is the Codex implementation of harness.Adapter.
@@ -126,6 +136,14 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 	info := harness.Info{Name: HarnessName}
 	if err := a.ensureHome(); err != nil {
 		return info, err
+	}
+	policy, err := loadCodexConfig(a.cfg.Home, a.cfg.WorktreeRoot)
+	if err != nil {
+		return info, err
+	}
+	info.SandboxMode = "workspace-write"
+	if policy != nil && policy.SandboxMode != "" {
+		info.SandboxMode = policy.SandboxMode
 	}
 	version, err := a.probeVersion(ctx)
 	if err != nil {
@@ -170,7 +188,7 @@ func infoWithReady(info harness.Info) harness.Info {
 
 func (a *Adapter) probeVersion(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, a.cfg.Binary, "--version")
-	cmd.Env = safeEnv(a.cfg.Home)
+	cmd.Env = a.launchEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("running Codex version probe: %w: %s", err, trimOutput(output))
@@ -200,6 +218,33 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	if blocker := credentialBlocker(launch.Credential); blocker != "" {
 		return credentialRefusal(launch.SessionID, blocker, emit), nil
 	}
+	// Load only the validated, runner-owned policy; never project settings.
+	policy, err := loadCodexConfig(a.cfg.Home, a.cfg.WorktreeRoot)
+	if err != nil {
+		return result, err
+	}
+	local := *a
+	if policy != nil && policy.SandboxWorkspaceWrite != nil {
+		local.cfg.networkAccess = policy.SandboxWorkspaceWrite.NetworkAccess
+	}
+	if policy != nil {
+		local.cfg.sandboxMode = policy.SandboxMode
+	}
+	if local.sandboxMode() == "danger-full-access" {
+		local.cfg.networkAccess = true
+		klog.Warningf("Codex launching without OS sandbox (danger-full-access), attempt %q", launch.AttemptID)
+	}
+	// Scope mutable caches to the runner-owned checkout and execution policy.
+	// Warm follow-ups reuse this path; another checkout or privilege mode cannot.
+	local.cfg.cacheScope = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%t", filepath.Clean(launch.Workdir), local.sandboxMode(), local.cfg.networkAccess))))
+	a = &local
+	// Retain concurrency-safe package caches; remove launch-local scratch on exit.
+	cacheDir, err := a.prepareEnvironment(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = os.RemoveAll(cacheDir) }()
+	a.cfg.cacheDir = cacheDir
 	authPath, authErr := a.writeAuthSession(launch.Credential.Value)
 	if authErr != nil {
 		return result, authErr
@@ -351,6 +396,9 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 }
 
 func (a *Adapter) ensureHome() error {
+	if err := a.cfg.Environment.ValidateForWorktreeRoot(a.cfg.WorktreeRoot); err != nil {
+		return err
+	}
 	home := strings.TrimSpace(a.cfg.Home)
 	if home == "" {
 		return errors.New("codex runner home is required and must be dedicated to the worker")
@@ -418,7 +466,7 @@ func (a *Adapter) threadStartParams(launch harness.Launch) map[string]any {
 	params := map[string]any{
 		"approvalPolicy": "on-request",
 		"cwd":            launch.Workdir,
-		"sandbox":        "workspace-write",
+		"sandbox":        a.sandboxMode(),
 	}
 	if model := a.model(launch); model != "" {
 		params["model"] = model
@@ -430,7 +478,7 @@ func (a *Adapter) threadResumeParams(launch harness.Launch) map[string]any {
 	params := map[string]any{
 		"approvalPolicy": "on-request",
 		"cwd":            launch.Workdir,
-		"sandbox":        "workspace-write",
+		"sandbox":        a.sandboxMode(),
 		"threadId":       launch.SessionID,
 	}
 	if model := a.model(launch); model != "" {
@@ -448,11 +496,14 @@ func (a *Adapter) turnStartParams(launch harness.Launch, sessionID string) map[s
 			"text": launch.Instructions,
 		}},
 		"sandboxPolicy": map[string]any{
-			"networkAccess": false,
+			"networkAccess": a.cfg.networkAccess,
 			"type":          "workspaceWrite",
-			"writableRoots": []string{launch.Workdir},
+			"writableRoots": append([]string{launch.Workdir}, a.cacheRoots()...),
 		},
 		"threadId": sessionID,
+	}
+	if a.sandboxMode() == "danger-full-access" {
+		params["sandboxPolicy"] = map[string]any{"type": "dangerFullAccess"}
 	}
 	if model := a.model(launch); model != "" {
 		params["model"] = model
@@ -461,6 +512,14 @@ func (a *Adapter) turnStartParams(launch harness.Launch, sessionID string) map[s
 		params["effort"] = launch.ReasoningEffort
 	}
 	return params
+}
+
+// sandboxMode is selected only by the validated runner-owned configuration.
+func (a *Adapter) sandboxMode() string {
+	if a.cfg.sandboxMode == "danger-full-access" {
+		return "danger-full-access"
+	}
+	return "workspace-write"
 }
 
 func (a *Adapter) model(launch harness.Launch) string {
@@ -541,7 +600,7 @@ func (a *Adapter) startServer(ctx context.Context, workdir string) (*serverProce
 	cmd := exec.Command(a.cfg.Binary, "app-server", "--listen", "stdio://",
 		"--enable", "default_mode_request_user_input",
 		"--disable", "apps", "--disable", "plugins", "--disable", "hooks")
-	cmd.Env = safeEnv(a.cfg.Home)
+	cmd.Env = a.launchEnv()
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
