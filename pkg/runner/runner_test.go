@@ -588,6 +588,20 @@ func TestResumeRejectsScopeAndSessionChanges(t *testing.T) {
 	assertProtocolCode(t, err, ErrorCheckpointUnavailable)
 	_, err = runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-5", SessionID: needsInput.SessionID, ApprovedInput: json.RawMessage(`{"provenance":{"source":"changed"}}`), Resolution: "approved", HarnessCredential: testHarnessCredential()})
 	assertProtocolCode(t, err, ErrorForbidden)
+	resumed, err := runner.Resume(context.Background(), ResumeRequest{ProtocolVersion: ProtocolVersion, TaskID: receipt.TaskID, AttemptID: receipt.AttemptID, AttemptEpoch: receipt.AttemptEpoch, RequestID: "resume-original-approval", SessionID: needsInput.SessionID, Resolution: "approved", HarnessCredential: testHarnessCredential()})
+	if err != nil {
+		t.Fatalf("resume with omitted approval: %v", err)
+	}
+	if resumed.AttemptID != receipt.AttemptID {
+		t.Fatal("resume changed attempt")
+	}
+	runner.mu.Lock()
+	retained := string(runner.state.Attempts[receipt.AttemptID].Start.ApprovedInput)
+	runner.mu.Unlock()
+	if retained != string(testStartRequest(commit).ApprovedInput) {
+		t.Fatalf("original approval changed: %s", retained)
+	}
+
 }
 
 func TestHTTPAuthCapabilitiesAndCursorGap(t *testing.T) {

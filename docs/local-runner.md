@@ -615,7 +615,10 @@ clarification; malformed structured questions remain operator-held.
 support is available. A resume for such a receipt must include the same
 `clarificationID`; the runner rejects a missing, stale, or foreign ID. The
 resolution is explicit text passed to the existing session, while approved
-input and instructions remain immutable. The durable operation record makes a
+input and instructions remain immutable. A resume may omit `approvedInput`; the
+runner retains the original start request’s approval. If supplied, it must be
+equivalent to the original or the resume is rejected as forbidden.
+The durable operation record makes a
 repeated identical resume return the newer receipt without launching another
 turn, including when the first response was lost.
 

@@ -103,3 +103,20 @@ allow:
       Reached only through archive/compression and content init functions that
       helm's registry client links in.
     reviewBy: 2026-12-05
+
+  - id: GO-2026-6791
+    module: github.com/containerd/containerd
+    reason: >-
+      The Go vulnerability record marks all v1 versions affected with no fixed
+      version. The upstream advisory GHSA-p7v4-vr35-mj6f instead lists only v2
+      (fixed in 2.2.7 and 2.3.4). Helm v3 links the distinct v1 module, so those
+      v2 releases are not a dependency upgrade we can apply here. Recheck the
+      Go record for a corrected v1 range or a v1 fix.
+    exposure: >-
+      The defect requires containerd's CRI checkpoint restore via CreateContainer.
+      Railgrid and the edges provider use Helm's OCI registry client, not the
+      CRI implementation or checkpoint restore. The scanner traces only client
+      library init functions (content in root, errdefs in edges). This exception
+      covers the linked v1 library only, not containerd daemons running on Edges
+      or development clusters. Re-evaluate this exception before adopting v2.
+    reviewBy: 2026-11-20
