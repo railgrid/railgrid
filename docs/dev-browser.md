@@ -176,3 +176,27 @@ Worktree fingerprints run outside the runner state lock under an exclusive
 lease fence. They are limited to 30 seconds and 256 MiB of nonignored content.
 Exceeding those bounds retires the warm lease with a diagnostic; it never falls
 back to trusting size/mtime alone. Keep build outputs in .gitignore.
+
+### Recover a failed warm stack during active work
+
+Keeping a warm stack at completion does not prohibit repairing it while working.
+If startup left a partial cluster or readiness reports a stopped/unhealthy stack,
+inspect the checkout's logs first. You may make **one** scoped recreation attempt
+using these commands from the same checkout:
+
+```sh
+make dev-browser-down
+make tilt TILT_DETACHED=1
+make dev-browser-ready
+```
+
+Stop if any command fails. `dev-browser-down` must validate this checkout's
+recorded ownership; never bypass a refusal, delete ownership files, infer targets
+from the current Kubernetes context, or remove shared/unrelated resources.
+This may recreate disposable development data in the owned cluster. Keep source,
+logs and screenshots, and do not reset the checkout. After recovery, verify the
+real UI and capture new screenshots; old readiness files and images are not
+proof. If recovery fails, report the concrete blocker and incomplete verification
+instead of looping. Leave the recovered stack warm when the run finishes; the
+runner still owns idle cleanup. Do not perform recovery while awaiting a user
+answer.

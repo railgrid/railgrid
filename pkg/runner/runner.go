@@ -886,7 +886,7 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 		instructions += screenshotInstructions(attempt.Receipt.Workdir)
 	}
 	if env := r.state.Environments[attempt.Start.EnvironmentID]; env != nil && env.AttemptID == attemptID {
-		instructions += "\n\nWarm development environment lease: this checkout is exclusively assigned to this attempt. Do not run terminal environment cleanup; the runner retains the stack for reuse and runs the repository cleanup hook on expiry. Keep screenshots in artifacts/screenshots. If setup is unhealthy, report it; do not remove unrelated resources.\n"
+		instructions += "\n\nWarm development environment lease: this checkout is exclusively assigned to this attempt. Leave a healthy stack running at completion; the runner owns idle cleanup. During active work, you may repair or recreate this checkout's failed disposable development resources using the repository's documented ownership-checked cleanup and startup commands. This is recovery, not end-of-run cleanup. Preserve checkout files, logs, and screenshots; never delete ownership records, infer cleanup targets from the active Kubernetes context, or touch shared/unrelated resources. Try at most one scoped teardown/recreate cycle, rerun readiness, and capture fresh browser evidence. If ownership cannot be verified or recovery still fails, report the concrete blocker and incomplete verification. Keep screenshots in artifacts/screenshots.\n"
 	}
 	launch := harness.Launch{
 		AttemptID:       attemptID,
