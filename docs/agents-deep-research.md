@@ -395,8 +395,8 @@ conversation it is sent):
   request context is cancelled (and preserves request-scoped values), and a run
   executed on a detached context whose caller has already gone away still reaches
   `Succeeded` with its answer on the run record *and* in the transcript.
-- Portal: the still-working banner appears for `Running` and `PendingApproval`,
-  not for a finished run; "Stop it" cancels and clears it; a finish event clears
+- Portal: the active-background-run banner appears for `Running` and `PendingApproval`,
+  not for a finished run; "Stop run" cancels and clears it; a finish event clears
   it and reloads the transcript; a failed run lookup never breaks the view.
 
 ## How results come back
@@ -430,7 +430,7 @@ The handler stays parked on the run rather than returning early, which keeps the
 `ResponseWriter` valid for every write (net/http forbids using it after the
 handler returns) at the cost of one idle goroutine per abandoned run, bounded by
 the run's own timeout. Reopening a session while a run is still in flight shows a
-banner — "this chat has a run still working" — with links to watch or stop it, so
+banner — "This conversation has an active background run" — with links to watch or stop it, so
 the reply does not look lost and the user does not re-ask and pay twice.
 
 Recovery keeps the same asymmetry on purpose: a resumed **channel** or
