@@ -34,7 +34,9 @@ const errorBodyLimit = 64 << 10
 // is preserved because it is usually the only diagnosis available.
 type HTTPError struct {
 	StatusCode int
-	Body       []byte
+	// Service is the enrolled edges Service for a request to its object/proxy path.
+	Service string
+	Body    []byte
 }
 
 func (e *HTTPError) Error() string {

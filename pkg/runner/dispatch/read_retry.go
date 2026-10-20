@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/runner"
@@ -52,8 +54,27 @@ func retryableRead(err error) bool {
 				return true
 			}
 			return false
+		case http.StatusNotFound:
+			return edgeRouteUnavailable(httpErr.Service, httpErr.Body)
 		case http.StatusRequestTimeout,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
+	}
+	// An Edge restart can reset an already-open HTTP/2 event stream. These
+	// transport resets do not describe the durable attempt's outcome. Retry
+	// only reads, from the consumed cursor, under the existing outage bound.
+	// A transport CANCEL may be peer-originated; local cancellation is checked
+	// above and again by the retry loop before any read or wait.
+	// Connection-level GOAWAY handling remains with the HTTP transport; this
+	// compatibility policy classifies surfaced stream resets, not deprecated
+	// x/net/http2.GoAwayError values.
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		switch streamErr.Code {
+		case http2.ErrCodeInternal, http2.ErrCodeCancel, http2.ErrCodeRefusedStream:
 			return true
 		default:
 			return false
@@ -198,4 +219,34 @@ func resourceResolutionTimeout(body []byte) bool {
 		status.Code == http.StatusInternalServerError &&
 		status.Message == "Internal error occurred: "+cause &&
 		len(status.Details.Causes) == 1 && status.Details.Causes[0].Message == cause
+}
+
+// The Edge republishes its Service when reconnecting. kcp can return a
+// missing-Service Status during that window. A bare route miss is ambiguous
+// and must fail immediately. These are read-only retries with the same bounded outage as a
+// disconnected tunnel; unrelated Kubernetes resources remain permanent errors.
+func edgeRouteUnavailable(service string, body []byte) bool {
+	if service == "" {
+		return false
+	}
+	var status struct {
+		Kind       string `json:"kind"`
+		APIVersion string `json:"apiVersion"`
+		Status     string `json:"status"`
+		Reason     string `json:"reason"`
+		Code       int    `json:"code"`
+		Details    struct {
+			Group string `json:"group"`
+			Kind  string `json:"kind"`
+			Name  string `json:"name"`
+		} `json:"details"`
+	}
+	if json.Unmarshal(body, &status) != nil {
+		return false
+	}
+	return status.Kind == "Status" && status.APIVersion == "v1" &&
+		status.Status == "Failure" && status.Reason == "NotFound" &&
+		status.Code == http.StatusNotFound &&
+		status.Details.Group == "edges.railgrid.ai" &&
+		status.Details.Kind == "services" && status.Details.Name == service
 }
