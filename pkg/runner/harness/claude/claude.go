@@ -156,7 +156,8 @@ var versionPattern = regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+)`) //nolint:goc
 // Config selects the Claude Code executable and its isolated home. The
 // credential is NOT configuration: it arrives with each launch.
 type Config struct {
-	Binary string
+	Environment harness.EnvironmentConfig
+	Binary      string
 	// Home is a runner-owned CLAUDE_CONFIG_DIR. It must be dedicated to the
 	// worker and is created 0700.
 	Home string
@@ -495,6 +496,9 @@ func writePrompt(stdin io.WriteCloser, prompt string) error {
 // rules mirror the Codex adapter's worker home: absolute, not a symlink, 0700,
 // and free of anything that would load project-controlled code.
 func (a *Adapter) ensureHome() error {
+	if err := a.cfg.Environment.Validate(); err != nil {
+		return err
+	}
 	home := strings.TrimSpace(a.cfg.Home)
 	if home == "" {
 		return errors.New("claude runner home is required and must be dedicated to the worker")

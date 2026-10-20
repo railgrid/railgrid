@@ -40,56 +40,68 @@ type codexProjectConfig struct {
 }
 
 type codexConfig struct {
-	Projects map[string]codexProjectConfig `toml:"projects"`
+	SandboxMode           string                        `toml:"sandbox_mode"`
+	Projects              map[string]codexProjectConfig `toml:"projects"`
+	SandboxWorkspaceWrite *struct {
+		NetworkAccess bool `toml:"network_access"`
+	} `toml:"sandbox_workspace_write"`
 }
 
-// validateCodexConfig validates the only project configuration that a worker
-// home may contain. Multiple managed checkout entries are permitted; the
+// validateCodexConfig accepts managed checkout trust and the runner-local
+// workspace network policy. Multiple checkout entries are permitted; the
 // launch path is checked separately before starting a model process.
 func validateCodexConfig(home, worktreeRoot string) (bool, error) {
+	config, err := loadCodexConfig(home, worktreeRoot)
+	return config != nil, err
+}
+
+func loadCodexConfig(home, worktreeRoot string) (*codexConfig, error) {
 	path := filepath.Join(home, codexConfigName)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return true, errCodexConfigRejected
+		return nil, errCodexConfigRejected
 	}
 	root, err := normalizeWorktreeRoot(worktreeRoot)
 	if err != nil {
-		return true, errCodexConfigRejected
+		return nil, errCodexConfigRejected
 	}
 	if info.Size() < 0 || info.Size() > maxCodexConfigBytes {
-		return true, errCodexConfigRejected
+		return nil, errCodexConfigRejected
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return true, errCodexConfigRejected
+		return nil, errCodexConfigRejected
 	}
 	defer func() { _ = f.Close() }()
 	openedInfo, err := f.Stat()
 	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return true, errCodexConfigRejected
+		return nil, errCodexConfigRejected
 	}
 	contents, err := io.ReadAll(io.LimitReader(f, maxCodexConfigBytes+1))
 	if err != nil || len(contents) > maxCodexConfigBytes {
-		return true, errCodexConfigRejected
+		return nil, errCodexConfigRejected
 	}
 
 	var parsed codexConfig
 	metadata, err := toml.Decode(string(contents), &parsed)
-	if err != nil || len(metadata.Undecoded()) != 0 || len(parsed.Projects) == 0 {
-		return true, errCodexConfigRejected
+	if err != nil || len(metadata.Undecoded()) != 0 || (len(parsed.Projects) == 0 && parsed.SandboxWorkspaceWrite == nil && !metadata.IsDefined("sandbox_mode")) {
+		return nil, errCodexConfigRejected
+	}
+	if metadata.IsDefined("sandbox_mode") && parsed.SandboxMode != "workspace-write" && parsed.SandboxMode != "danger-full-access" {
+		return nil, errCodexConfigRejected
 	}
 	for projectPath, project := range parsed.Projects {
 		if project.TrustLevel != "trusted" && project.TrustLevel != "untrusted" {
-			return true, errCodexConfigRejected
+			return nil, errCodexConfigRejected
 		}
 		if err := validateTrustProjectPath(root, projectPath); err != nil {
-			return true, errCodexConfigRejected
+			return nil, errCodexConfigRejected
 		}
 	}
-	return true, nil
+	return &parsed, nil
 }
 
 func normalizeWorktreeRoot(worktreeRoot string) (string, error) {

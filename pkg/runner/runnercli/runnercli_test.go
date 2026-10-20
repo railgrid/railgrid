@@ -17,6 +17,7 @@ limitations under the License.
 package runnercli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,5 +124,23 @@ func TestAdapterSelectionUsesManagedPaths(t *testing.T) {
 	}
 	if adapter == nil {
 		t.Fatal("no adapter was built")
+	}
+}
+
+func TestAdapterLoadsOperatorEnvironmentFromRunnerState(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "environment.json")
+	if err := os.WriteFile(file, []byte(`{"environment":{"variables":{"HOME":"must-not-replace-home"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{HarnessCodex, HarnessClaude} {
+		opts := Options{Harness: kind}
+		if _, err := opts.adapter(root); err == nil {
+			t.Fatal("default operator config was not validated")
+		}
+		opts.EnvironmentConfig = filepath.Join(root, "missing.json")
+		if _, err := opts.adapter(root); err == nil {
+			t.Fatal("explicit config path silently ignored")
+		}
 	}
 }

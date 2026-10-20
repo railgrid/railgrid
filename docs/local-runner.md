@@ -227,7 +227,8 @@ uses strict host-key checking, batch mode, and disables agent forwarding and
 other forwarding. It may use an operator-provided SSH key or agent for this
 fetch operation only. The coding harness does not receive the SSH agent,
 GitHub tokens, API keys, or other Git credentials, and its execution remains
-network-disabled.
+network-disabled by default; the runner-local `sandbox_workspace_write.network_access`
+setting can enable it (see [Codex build caches](edge-harness.md#codex-build-caches-and-dependency-access)).
 
 The runner always advertises `git-fetch-v1` in `verificationCapabilities`,
 because it fetches for itself in either mode. Remote validation still applies.
@@ -418,7 +419,7 @@ never becomes ready.
 - **No turn limit.** This release has no `--max-turns`, so a turn is bounded by
   the runner's own execution limits and by cancellation, not by the harness.
 - **No network sandbox.** Unlike the Codex adapter's `workspace-write` sandbox
-  with network disabled, Claude Code has no flag that disables network access
+  with network disabled by default, Claude Code has no flag that disables network access
   for a turn. `--restricted` would remove Bash along with it, which makes a
   coding runner useless, so it is not used.
 - **No filesystem sandbox beyond the working directory.** File tools are
@@ -513,9 +514,11 @@ activate a scheduler, create a publication, or grant the harness credentials
 to another system.
 
 The Codex adapter starts one app-server process, one thread, and one turn per
-execution. Its turn runs with workspace-write access restricted to the task
-worktree and with network access disabled. The runner's single execution slot
-and any configured resource reservations are released when the attempt reaches
+execution. By default, its turn runs with workspace-write access restricted to
+the task worktree and runner-owned cache/scratch directories, with network
+access disabled. The runner-owned Codex config may explicitly enable network
+access or select `danger-full-access`; see [operator policy](edge-harness.md#codex-build-caches-and-dependency-access).
+The runner's single execution slot and any configured resource reservations are released when the attempt reaches
 a terminal phase.
 
 ### Per-agent model and reasoning effort

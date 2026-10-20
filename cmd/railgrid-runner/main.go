@@ -48,6 +48,7 @@ func run() error {
 	flags.BoolVar(&showVersion, "version", false, "print build and protocol metadata as JSON, then exit")
 	flags.StringVar(&opts.Config, "config", "", "path to the JSON runner enrollment/configuration file")
 	flags.StringVar(&opts.StateDir, "state-dir", "", "durable runner state directory")
+	flags.StringVar(&opts.EnvironmentConfig, "environment-config", "", "Operator environment JSON file (default <state-dir>/environment.json, optional)")
 	flags.StringVar(&opts.Listen, "listen", "", "loopback listen address (default 127.0.0.1:8787)")
 	flags.StringVar(&opts.TokenFile, "token-file", "", "file containing the runner bearer token")
 	flags.StringVar(&opts.Harness, "harness", runnercli.HarnessCodex,
@@ -56,6 +57,7 @@ func run() error {
 		"expected harness version; empty accepts any version")
 	flags.StringVar(&opts.CodexHome, "codex-home", "", "runner-owned CODEX_HOME directory")
 	flags.StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
+	flags.Func("codex-registry-url", "HTTPS package registry endpoint to check before Codex runs (repeatable; requires network access)", func(v string) error { opts.CodexRegistryURLs = append(opts.CodexRegistryURLs, v); return nil })
 	flags.StringVar(&opts.ClaudeHome, "claude-home", "", "runner-owned CLAUDE_CONFIG_DIR directory")
 	flags.StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
 	flags.StringVar(&opts.ClaudeModel, "claude-model", "", "model for Claude Code turns (empty uses the account default)")

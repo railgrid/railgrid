@@ -81,6 +81,7 @@ fixture or an unmanaged host, as described in docs/local-runner.md.`,
 	cmd.Flags().BoolVar(&showVersion, "version", false, "Print build and protocol metadata as JSON, then exit")
 	cmd.Flags().StringVar(&opts.Config, "config", "", "Path to the JSON runner enrollment/configuration file")
 	cmd.Flags().StringVar(&opts.StateDir, "state-dir", "", "Durable runner state directory")
+	cmd.Flags().StringVar(&opts.EnvironmentConfig, "environment-config", "", "Operator environment JSON file (default <state-dir>/environment.json, optional)")
 	cmd.Flags().StringVar(&opts.Listen, "listen", "", "Loopback listen address (default 127.0.0.1:8787)")
 	cmd.Flags().StringVar(&opts.TokenFile, "token-file", "", "File containing the runner bearer token")
 	cmd.Flags().StringVar(&opts.Harness, "harness", runnercli.HarnessCodex,
@@ -89,6 +90,7 @@ fixture or an unmanaged host, as described in docs/local-runner.md.`,
 		"Expected harness version; empty accepts any version")
 	cmd.Flags().StringVar(&opts.CodexHome, "codex-home", "", "Runner-owned CODEX_HOME directory (default <state-dir>/codex-home)")
 	cmd.Flags().StringVar(&opts.CodexBinary, "codex-binary", runnercli.DefaultCodexBinary, "Codex executable")
+	cmd.Flags().StringSliceVar(&opts.CodexRegistryURLs, "codex-registry-url", nil, "HTTPS package registry endpoint to check before Codex runs (repeatable; requires network access)")
 	cmd.Flags().StringVar(&opts.ClaudeHome, "claude-home", "", "Runner-owned CLAUDE_CONFIG_DIR directory (default <state-dir>/claude-home)")
 	cmd.Flags().StringVar(&opts.ClaudeBinary, "claude-binary", runnercli.DefaultClaudeBinary, "Claude Code executable")
 	cmd.Flags().StringVar(&opts.ClaudeModel, "claude-model", "", "Model for Claude Code turns (empty uses the account default)")

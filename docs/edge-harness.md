@@ -328,7 +328,8 @@ exists rather than one that does not.
 
 **What the child can reach.** Everything its account can reach on the
 filesystem, its own loopback port, and — for Claude Code — the network. Codex
-runs with `workspace-write` and network disabled; Claude Code exposes no
+runs with `workspace-write` and network disabled by default (the runner-local
+Codex config can opt in, as described below); Claude Code exposes no
 equivalent flag, so `--restricted` is not used because it would remove Bash and
 make a coding runner useless. Project-controlled CODE is off either way
 (`--strict-mcp-config`, `--setting-sources ""`, `--disable-slash-commands`), so
@@ -399,3 +400,125 @@ attempt can spend that credential's money; whoever owns the machine cannot.
 - **Selector-based placement.** An Agent or a Worker names one edge. There is no
   capacity-based scheduling across a pool of harness hosts, and a runner's
   capacity is still pinned to one attempt.
+
+
+### Codex build caches and dependency access
+
+Each runner home retains Go module/build and npm caches in
+`<codex-home>.build-cache/`. These package-manager caches support concurrent
+launches and are reused on follow-up runs. They share the runner's trust boundary;
+use separate runner homes for workloads that must not share writable caches.
+Temporary files, installed Go binaries and generic XDG state remain in a unique
+launch directory and are deleted when that launch ends, including on failure.
+The adapter sets `GOPATH`, `GOBIN`, `GOMODCACHE`, `GOCACHE`, `npm_config_cache`,
+`XDG_CACHE_HOME`, `GOTMPDIR`, `TMPDIR`, `TMP` and `TEMP` accordingly. Only the
+checkout, three persistent cache directories and launch directory receive sandbox
+write grants; the credential/configuration home does not. Stop the runner before
+manually removing its cache root to reclaim disk space. The root and persistent
+cache directories must be private real directories, not symlinks.
+
+Outbound network access remains disabled by default. To enable it for one
+hosted Codex runner, add this to **that runner's** `codex-home/config.toml`:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+```
+
+The adapter reads this setting before each launch, including resumed sessions.
+It does not consult the interactive user's Codex config or repository settings.
+Existing managed `[projects]` trust entries can remain in the same file. Only
+`network_access` is accepted in this section; extra writable roots and other
+configuration remain rejected. This setting permits outbound access broadly for
+that Codex runner. It is not a domain allowlist, does not affect Claude, and does
+not bypass filesystem restrictions or tool approval. No service environment
+change or restart is needed to change the policy after deploying this binary.
+
+### Codex sandbox policy
+
+Codex defaults to `workspace-write`. An Edge administrator can disable Codex's
+OS sandbox for one runner by adding this **top-level** setting to that runner's
+`codex-home/config.toml`, before any TOML table headers:
+
+```toml
+sandbox_mode = "danger-full-access"
+```
+
+Only `workspace-write` and `danger-full-access` are accepted. The adapter applies
+this setting to new threads, resumed threads, and every turn. Repository settings
+and run requests cannot select it. Changes apply on the next launch.
+
+Full access removes Codex's filesystem and network sandbox, including bubblewrap
+on Linux. Commands have the runner account's host access, including access to its
+configuration and credentials; use a dedicated account or VM for isolation.
+Tool approvals remain `on-request`, but are not a replacement for OS isolation.
+Runner-owned caches and environment sanitization remain enabled. Network registry
+preflight also runs in full-access mode. Chromium's own sandbox is independent and
+still needs the host's normal browser/user-namespace configuration.
+
+To restore the Codex sandbox, set `sandbox_mode = "workspace-write"` or remove
+the key. The `sandbox_workspace_write.network_access` setting then applies again.
+
+Before starting a model turn, the runner checks cache writability. When network
+access is enabled it also checks HTTPS connectivity to `https://proxy.golang.org`
+and `https://registry.npmjs.org`. Standalone runners can override these endpoints
+with repeated `--codex-registry-url` flags. URLs cannot include credentials,
+query strings or fragments. Checks use HEAD, accept 2xx/3xx without following
+redirects, and time out after ten seconds per endpoint. They check host
+connectivity, not package availability or private-registry authentication;
+installation and project checks still need to run inside the harness.
+
+An unavailable cache or registry fails the attempt before implementation starts.
+This does not install browser tools or change Factory's verification policy.
+
+
+### Operator-configured tool paths and environment
+
+Each runner reads `<state-dir>/environment.json` at startup. This optional file
+belongs to the Edge admin; the supervisor does not generate or overwrite it.
+For a supervised Codex runner the default location is
+`~/.railgrid/runner/codex/state/environment.json` under the runner account's home;
+Claude has its own `claude/state/environment.json`. Standalone runners can select
+another file with `--environment-config /absolute/path/environment.json`.
+An explicitly selected missing file is an error.
+
+```json
+{
+  "environment": {
+    "pathPrepend": ["/opt/railgrid-tools/bin"],
+    "variables": {
+      "PLAYWRIGHT_BROWSERS_PATH": "/opt/railgrid-tools/playwright"
+    }
+  }
+}
+```
+
+Restart the runner (or its supervising Edge agent) after editing. Paths must be
+clean absolute directories; entries are prepended in order to the existing
+sanitized PATH. Values are literal: neither shell startup files nor `$VARIABLE`
+or `~` expansion is involved. This config applies to tool processes in both
+harnesses, not to the agent's hub connection. It does not change which Codex or
+Claude executable was selected by the supervisor.
+
+HOME, harness identity/configuration, Git/SSH credentials, runner build caches,
+temporary directories and loader controls are reserved. Credential-like variable
+names are rejected. Configure credentials through the existing credential flow,
+not this file. Errors do not include variable values. Environment configuration
+adds no filesystem write grants or network permissions. Tool directories should
+be maintained by the Edge admin and remain outside task worktrees.
+
+Validate changes with a hosted diagnostic run, not only an interactive shell:
+check `command -v chromium`, `chromium --version`, the configured variable, and
+one bounded headless render of a local fixture. The browser should use a private
+profile and browser-only XDG config/data directories under the runner's TMPDIR;
+do not repoint the harness's HOME or credential directory. A wrapper in the
+configured tools directory can supply these browser-specific settings.
+
+On hosts with AppArmor's `bwrap-userns-restrict` policy, Chromium launched inside
+Codex's bubblewrap sandbox may fail with `No usable sandbox!`. A kernel denial
+such as `profile="unpriv_bwrap" comm="chrome" capname="sys_admin"` identifies the
+nested sandbox conflict. PATH or cache changes cannot grant that capability.
+Do not treat successful binary discovery as browser readiness, or automatically
+add `--no-sandbox` or disable AppArmor. An administrator must provide a compatible
+browser execution environment; a separately isolated browser service is another
+option. This runner setting intentionally does not modify host security policy.

@@ -480,7 +480,7 @@ func TestFakeAppServerProcess(t *testing.T) {
 	requestsFile := os.Getenv("RAILGRID_FAKE_CODEX_REQUESTS")
 	if envFile := os.Getenv("RAILGRID_FAKE_CODEX_ENV_FILE"); envFile != "" {
 		env := map[string]string{}
-		for _, name := range []string{"GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK"} {
+		for _, name := range []string{"PATH", "PLAYWRIGHT_BROWSERS_PATH", "GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "npm_config_cache", "TMPDIR"} {
 			env[name] = os.Getenv(name)
 		}
 		writeJSONFile(envFile, env)

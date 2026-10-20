@@ -32,6 +32,9 @@ func TestManagedTrustConfiguration(t *testing.T) {
 		name, extra, level string
 		invalid            bool
 	}{
+		{name: "network-enabled", level: "trusted", extra: "[sandbox_workspace_write]\nnetwork_access = true"},
+		{name: "network-disabled", level: "trusted", extra: "[sandbox_workspace_write]\nnetwork_access = false"},
+		{name: "network-no-extra-writes", level: "trusted", extra: "[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [\"/\"]", invalid: true},
 		{name: "trusted", level: "trusted"}, {name: "untrusted", level: "untrusted"},
 		{name: "extra-project-key", level: "trusted", extra: "model = \"secret-marker\"", invalid: true},
 		{name: "extra-table", level: "trusted", extra: "[mcp_servers.secret]\ncommand = \"secret-marker\"", invalid: true},
@@ -240,6 +243,63 @@ func TestWarmManagedTrustRejectsSymlinksAndLocalConfig(t *testing.T) {
 			a := &Adapter{cfg: Config{Home: home, WorktreeRoot: root}}
 			if err := a.validateLaunchConfiguration(work); err == nil {
 				t.Fatal("unsafe warm checkout accepted")
+			}
+		})
+	}
+}
+
+func TestSandboxModeConfiguration(t *testing.T) {
+	for _, mode := range []string{"workspace-write", "danger-full-access", "read-only", "", "invalid"} {
+		t.Run(mode, func(t *testing.T) {
+			home, root, _ := trustFixture(t)
+			writeTrustConfig(t, home, fmt.Sprintf("sandbox_mode = %q\n", mode))
+			config, err := loadCodexConfig(home, root)
+			valid := mode == "workspace-write" || mode == "danger-full-access"
+			if (err == nil) != valid {
+				t.Fatalf("mode %q: %v", mode, err)
+			}
+			if valid && config.SandboxMode != mode {
+				t.Fatal("sandbox mode lost")
+			}
+		})
+	}
+}
+
+func TestFullAccessPolicyReachesStartAndResume(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run(fmt.Sprint(resume), func(t *testing.T) {
+			binary := fakeCodexBinaryWithEnvFile(t, "success", filepath.Join(t.TempDir(), "env.json"))
+			home, root, work := trustFixture(t)
+			writeTrustConfig(t, home, "sandbox_mode = \"danger-full-access\"\n")
+			a := New(Config{Binary: binary, Home: home, WorktreeRoot: root, RegistryURLs: []string{}})
+			launch := harness.Launch{AttemptID: "full-access-test", Workdir: work, Instructions: "hello", Credential: testCredential()}
+			if resume {
+				launch.SessionID = "thread-1"
+			}
+			_, err := a.Run(context.Background(), launch, func(harness.Event) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := readJSONLines(t, filepath.Join(filepath.Dir(binary), "requests"))
+			threadSeen, turnSeen := false, false
+			for _, request := range requests {
+				params, _ := request["params"].(map[string]any)
+				switch request["method"] {
+				case "thread/start", "thread/resume":
+					threadSeen = true
+					if params["sandbox"] != "danger-full-access" {
+						t.Fatalf("thread policy: %v", params)
+					}
+				case "turn/start":
+					turnSeen = true
+					policy := params["sandboxPolicy"].(map[string]any)
+					if len(policy) != 1 || policy["type"] != "dangerFullAccess" {
+						t.Fatalf("turn policy: %v", policy)
+					}
+				}
+			}
+			if !threadSeen || !turnSeen {
+				t.Fatal("missing thread or turn request")
 			}
 		})
 	}
