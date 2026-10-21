@@ -5,6 +5,7 @@ import TechnicalDetails from './TechnicalDetails.vue'
 import {
   runFailurePresentation,
   sanitizeTechnicalDiagnostic,
+  technicalDiagnosticExcerpt,
   type FailureRecoveryTarget,
   type RunFailurePhase,
 } from '../failure-presentation'
@@ -19,6 +20,8 @@ const emit = defineEmits<{
   recovery: [target: FailureRecoveryTarget]
 }>()
 
+const DIAGNOSTIC_EXCERPT_LIMIT = 360
+const excerpt = computed(() => technicalDiagnosticExcerpt(props.diagnostic, DIAGNOSTIC_EXCERPT_LIMIT))
 const safeDiagnostic = computed(() => sanitizeTechnicalDiagnostic(props.diagnostic))
 const presentation = computed(() => runFailurePresentation(props.phase, safeDiagnostic.value))
 </script>
@@ -33,7 +36,7 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
     <div class="agents-run-state__body">
       <h3>{{ presentation.title }}</h3>
       <p>{{ presentation.summary }}</p>
-      <pre v-if="inspection && safeDiagnostic" class="agents-run-state__diagnostic">{{ safeDiagnostic.slice(0, 360) }}{{ safeDiagnostic.length > 360 ? '…' : '' }}</pre>
+      <pre v-if="inspection && safeDiagnostic" class="agents-run-state__diagnostic">{{ excerpt.text }}</pre>
       <button
         v-if="presentation.recovery"
         class="k-btn k-btn--ghost secondary agents-run-state__recovery"
@@ -42,7 +45,7 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
       >
         {{ presentation.recovery.label }}
       </button>
-      <TechnicalDetails v-if="!inspection || safeDiagnostic.length > 360" class="agents-run-state__details" :diagnostic="safeDiagnostic" />
+      <TechnicalDetails v-if="!inspection || excerpt.truncated" class="agents-run-state__details" :diagnostic="safeDiagnostic" />
     </div>
   </section>
 </template>

@@ -689,6 +689,33 @@ describe('RunDetail.vue', () => {
     expect(view.element.querySelector('.k-ai-action-row__toggle')?.getAttribute('aria-expanded')).toBe('true')
   })
 
+  it('keeps a refreshed successful step expanded after opening failed steps', async () => {
+    const getRun = vi.fn()
+      .mockResolvedValueOnce(detail({
+        phase: 'Failed',
+        steps: [{ id: 'failed-step', tool: 'deploy', outcome: 'error', error: 'deployment rejected', at: new Date().toISOString() }],
+      }))
+      .mockResolvedValueOnce(detail({
+        phase: 'Succeeded',
+        steps: [{ id: 'failed-step', tool: 'deploy', outcome: 'ok', result: 'deployment healthy', at: new Date().toISOString() }],
+      }))
+    const api = stubApi({ getRun })
+    const store = makeStore(api)
+    const view = await mount(RunDetail, { store, api, runId: 'r5' })
+
+    buttonWithText(view.element, 'View failed steps').click()
+    await settleVue()
+    const stepToggle = () => view.element.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+    expect(stepToggle().getAttribute('aria-expanded')).toBe('true')
+
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r5' } } }))
+    await settleVue()
+
+    expect(getRun).toHaveBeenCalledTimes(2)
+    expect(text(view.element.querySelector('.k-ai-action-row'))).toContain('deployment healthy')
+    expect(stepToggle().getAttribute('aria-expanded')).toBe('true')
+  })
+
   it('keeps a manually collapsed failed step collapsed after refresh', async () => {
     const getRun = vi.fn().mockResolvedValue(detail({
       phase: 'Failed',
@@ -771,6 +798,23 @@ describe('RunDetail.vue', () => {
 
     expect(inputDetails.open).toBe(false)
     expect(text(view.element).split(originalInput)).toHaveLength(2)
+  })
+
+  it('shows a redacted, bounded request preview inside the summary', async () => {
+    const secret = 'request-preview-secret-value'
+    const input = `Authorization: Bearer ${secret} ${'😀'.repeat(200)}`
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ input })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const request = view.element.querySelector<HTMLDetailsElement>('.agents-run-request')!
+    const summary = request.querySelector('summary')!
+    const preview = summary.querySelector<HTMLElement>('.agents-run-request-preview')!
+
+    expect(request.open).toBe(false)
+    expect(text(summary)).toContain('Original request')
+    expect(text(preview)).toContain('Authorization: [redacted]')
+    expect(text(preview)).not.toContain(secret)
+    expect(Array.from(text(preview)).length).toBeLessThanOrEqual(161)
+    expect(text(summary)).not.toContain(secret)
   })
 
   it('preserves disclosure choices on refresh and resets them when navigating to another run', async () => {

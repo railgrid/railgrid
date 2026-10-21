@@ -43,7 +43,7 @@ import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
-import { approvalResolutionFailureMessage, sanitizeTechnicalDiagnostic } from '../failure-presentation'
+import { approvalResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -67,6 +67,8 @@ const stepsExpanded = ref(true)
 const stepsTouched = ref(false)
 const touchedRows = new Set<string>()
 const requestOpen = ref(false)
+const REQUEST_PREVIEW_LIMIT = 160
+const requestPreview = computed(() => technicalDiagnosticExcerpt(run.value?.input, REQUEST_PREVIEW_LIMIT).text)
 const inspectorOpen = ref(true)
 const resolvingInboxID = ref('')
 const resolvingDecision = ref<'approve' | 'deny' | 'answer' | ''>('')
@@ -406,7 +408,9 @@ function toggleSteps(): void {
 async function inspectFailedSteps(): Promise<void> {
   stepsTouched.value = true
   stepsExpanded.value = true
-  expanded.value = new Set([...expanded.value, ...(run.value?.steps.filter(step => step.outcome === 'error').map(step => step.id) || [])])
+  const failed = run.value?.steps.filter(step => step.outcome === 'error').map(step => step.id) || []
+  failed.forEach(id => touchedRows.add(id))
+  expanded.value = new Set([...expanded.value, ...failed])
   await nextTick()
   root.value?.querySelector<HTMLElement>('#agents-run-steps-heading')?.focus()
 }
@@ -686,12 +690,14 @@ onBeforeUnmount(() => {
             </section>
             <details v-if="run.input" class="agents-run-request k-resource-technical" :open="requestOpen" @toggle="requestOpen = ($event.target as HTMLDetailsElement).open">
               <summary class="k-resource-technical__summary">
-                <span class="k-resource-technical__summary-label">Original request</span>
+                <span class="k-resource-technical__summary-label agents-run-request-label">
+                  <span>Original request</span>
+                  <span v-if="!requestOpen" class="agents-run-request-preview">{{ requestPreview }}</span>
+                </span>
                 <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
               </summary>
               <div class="k-resource-technical__body"><pre class="k-resource-technical__pre">{{ run.input }}</pre></div>
             </details>
-            <p v-if="run.input && !requestOpen" class="agents-run-request-preview">{{ run.input.slice(0, 160) }}{{ run.input.length > 160 ? '…' : '' }}</p>
           </main>
 
           <aside class="agents-run-inspector" :class="{ 'is-collapsed': !inspectorOpen }" aria-label="Run evidence">

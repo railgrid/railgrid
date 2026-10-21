@@ -364,14 +364,6 @@ railgrid-provider-agents .agents-kv { display: flex; flex-direction: column; gap
 railgrid-provider-agents .agents-kv > span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, #5d5f78); }
 railgrid-provider-agents .agents-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 /* --- run evidence ------------------------------------------------------ */
-railgrid-provider-agents .agents-run-layout {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 18px;
-  align-items: start; min-width: 0;
-}
-/* Both standalone and embedded runs use the inspection grid; container
- * queries move evidence below the result when the available pane is narrow. */
-railgrid-provider-agents .agents-workbench-panel .agents-run-layout { display: grid; }
-railgrid-provider-agents .agents-run-main { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
 railgrid-provider-agents .agents-run-transcript { width: 100%; }
 railgrid-provider-agents .agents-run-message { width: 100%; }
 railgrid-provider-agents .agents-run-activity {
@@ -614,20 +606,6 @@ railgrid-provider-agents .agents-err {
 }
 
 /* --- responsive --- */
-@container resource-page (max-width: 1100px) {
-  railgrid-provider-agents .agents-run-layout { grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 14px; }
-}
-/* A workbench pane can be narrow while the browser remains wide. Use the
- * ResourcePage container rather than the viewport so embedded run evidence
- * keeps its transcript readable and moves the inspector below it. */
-@container resource-page (max-width: 720px) {
-  railgrid-provider-agents .agents-workbench-panel .agents-run-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 14px;
-  }
-  railgrid-provider-agents .agents-workbench-panel .agents-run-inspector { order: 2; }
-}
 @media (min-width: 768px) {
   railgrid-provider-agents .agents-desktop-rail-toggle {
     display: inline-flex; width: 32px; height: 32px; flex: none; align-items: center; justify-content: center;
@@ -688,8 +666,6 @@ railgrid-provider-agents .agents-err {
   railgrid-provider-agents .agents-model-grid { grid-template-columns: 1fr; }
   railgrid-provider-agents .agents-inbound-actions { margin-left: 0; }
   railgrid-provider-agents .agents-bar-row { grid-template-columns: 70px 1fr auto; }
-  railgrid-provider-agents .agents-run-layout { grid-template-columns: 1fr; gap: 14px; }
-  railgrid-provider-agents .agents-run-inspector { order: 2; }
 }
 
 /* --- dashboard tile (console dashboard card) ------------------------------
