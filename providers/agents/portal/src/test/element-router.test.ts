@@ -174,7 +174,7 @@ describe('public Agents shell routing', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     await settleVue(4, 5)
     expect(element.route).toEqual({ kind: 'menu', menu: 'models' })
-    expect(text(element.querySelector('.agents-panel-head'))).toContain('Models')
+    expect(text(element.querySelector('.k-resource-page__header'))).toContain('Models')
     expect(document.activeElement).toBe(element.querySelector('.k-resource-page__title'))
 
     history.replaceState(null, '', '#/activity/run%2F42')

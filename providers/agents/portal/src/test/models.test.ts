@@ -39,6 +39,20 @@ const usageWithNulls = {
 describe('models view on an empty workspace', () => {
   beforeEach(() => toast.mockReset())
 
+  it.each([true, false])('keeps the Models heading discoverable for route focus (routeOwned=%s)', async (routeOwned) => {
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
+    const { element } = await mountVue(Models, { store: makeStore(api), api, routeOwned })
+    await settleVue()
+
+    const header = element.querySelector('.k-resource-page__header')!
+    expect(header.parentElement?.classList.contains('k-resource-page')).toBe(true)
+    const heading = header.querySelector('.k-resource-page__heading > .k-resource-page__title')!
+    expect(heading.tagName).toBe(routeOwned ? 'H2' : 'H3')
+    expect(heading.textContent).toBe('Models')
+    expect(header.querySelector('.k-resource-page__heading > .k-resource-page__subtitle')?.textContent).toBe('Connect and manage models for your agents.')
+    expect(header.classList.contains('agents-panel-head')).toBe(false)
+  })
+
   it('renders the dashboard and the Connect model button when usage arrays are null', async () => {
     const api = stubApi({
       catalog: () => Promise.resolve([]),
