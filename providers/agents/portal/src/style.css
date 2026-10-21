@@ -368,9 +368,8 @@ railgrid-provider-agents .agents-run-layout {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 18px;
   align-items: start; min-width: 0;
 }
-/* activity.css supplies the standalone run view's flex layout. Embedded
- * workbench runs keep the two-column grid at every width; the container query
- * below still collapses that grid when its pane is narrow. */
+/* Both standalone and embedded runs use the inspection grid; container
+ * queries move evidence below the result when the available pane is narrow. */
 railgrid-provider-agents .agents-workbench-panel .agents-run-layout { display: grid; }
 railgrid-provider-agents .agents-run-main { display: flex; min-width: 0; flex-direction: column; gap: 16px; }
 railgrid-provider-agents .agents-run-transcript { width: 100%; }

@@ -12,6 +12,7 @@ import {
 const props = defineProps<{
   phase: RunFailurePhase
   diagnostic?: string
+  inspection?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -24,14 +25,15 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
 
 <template>
   <section
-    class="k-inline-notification agents-run-state"
-    :class="[`agents-run-state--${phase}`, phase === 'failed' ? 'k-inline-notification--error' : 'k-inline-notification--info']"
+    class="agents-run-state"
+    :class="[{ 'k-inline-notification': !inspection, 'agents-run-state--inspection': inspection }, `agents-run-state--${phase}`, !inspection && (phase === 'failed' ? 'k-inline-notification--error' : 'k-inline-notification--info')]"
     :role="phase === 'failed' ? 'alert' : 'status'"
   >
     <TriangleAlert class="agents-run-state__icon" :stroke-width="1.9" aria-hidden="true" />
     <div class="agents-run-state__body">
       <h3>{{ presentation.title }}</h3>
       <p>{{ presentation.summary }}</p>
+      <pre v-if="inspection && safeDiagnostic" class="agents-run-state__diagnostic">{{ safeDiagnostic.slice(0, 360) }}{{ safeDiagnostic.length > 360 ? '…' : '' }}</pre>
       <button
         v-if="presentation.recovery"
         class="k-btn k-btn--ghost secondary agents-run-state__recovery"
@@ -40,7 +42,7 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
       >
         {{ presentation.recovery.label }}
       </button>
-      <TechnicalDetails class="agents-run-state__details" :diagnostic="safeDiagnostic" />
+      <TechnicalDetails v-if="!inspection || safeDiagnostic.length > 360" class="agents-run-state__details" :diagnostic="safeDiagnostic" />
     </div>
   </section>
 </template>

@@ -12,7 +12,7 @@ railgrid-provider-agents .agents-detail-actions { display: flex; align-items: ce
 railgrid-provider-agents .agents-approval-meta { font-size: 11px; }
 railgrid-provider-agents .agents-approval-disclosure { min-width: 0; }
 railgrid-provider-agents .agents-approval-args { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-railgrid-provider-agents .agents-run-layout { display: flex; flex-direction: column; gap: 24px; container-type: inline-size; }
+railgrid-provider-agents .agents-run-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); gap: 28px; }
 railgrid-provider-agents .agents-runmeta { display: grid; grid-template-columns: 1fr 1fr .7fr 1.5fr; gap: 20px; padding: 16px 0; border-block: 1px solid var(--color-border-subtle); }
 railgrid-provider-agents .agents-runmeta-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 railgrid-provider-agents .agents-runmeta-k { font: 600 10px/1.4 var(--agents-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-secondary); }
@@ -63,3 +63,51 @@ railgrid-provider-agents .agents-run-main .agents-body ol { list-style: decimal;
 railgrid-provider-agents .agents-run-failure .agents-err { padding: 0; border: 0; background: transparent; }
 railgrid-provider-agents .agents-step-head { border: 0; background: transparent; }
 railgrid-provider-agents .agents-step-head:hover { background: var(--color-surface-hover); }
+
+/* Run inspection uses the same evidence hierarchy for every outcome. */
+railgrid-provider-agents .agents-run-main { gap: 20px; }
+railgrid-provider-agents .agents-run-section,
+railgrid-provider-agents .agents-run-activity { min-width: 0; padding-block-start: 20px; border-block-start: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-run-section h2,
+railgrid-provider-agents .agents-run-activity h2 { margin: 0 0 12px; color: var(--color-text-primary); font-size: 15px; font-weight: 600; }
+railgrid-provider-agents .agents-run-execution-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin-block-end: 12px; }
+railgrid-provider-agents .agents-run-execution-heading h2 { margin: 0; }
+railgrid-provider-agents .agents-run-section .agents-body { max-width: 75ch; line-height: 1.65; }
+railgrid-provider-agents .agents-run-inspector { border: 0; border-inline-start: 1px solid var(--color-border-subtle); border-radius: 0; padding-inline-start: 20px; background: transparent; }
+railgrid-provider-agents .agents-run-inspector-toggle { padding-inline: 0; }
+railgrid-provider-agents .agents-run-inspector-section { padding: 16px 0; }
+railgrid-provider-agents .agents-run-inspector .agents-runmeta { padding: 0; border: 0; gap: 16px; }
+railgrid-provider-agents .agents-run-id { display: flex; align-items: start; gap: 6px; }
+railgrid-provider-agents .agents-run-id > span { min-width: 0; flex: 1; }
+railgrid-provider-agents .agents-run-request { margin: 0; }
+railgrid-provider-agents .agents-run-request-preview { margin: -12px 0 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+@container resource-page (max-width: 800px) {
+  railgrid-provider-agents .agents-run-layout,
+  railgrid-provider-agents .agents-workbench-panel .agents-run-layout { grid-template-columns: minmax(0, 1fr); }
+  railgrid-provider-agents .agents-run-inspector { border-inline-start: 0; border-block-start: 1px solid var(--color-border-subtle); padding-inline-start: 0; }
+}
+
+/* Inspection styles must ship in the injected classic-script stylesheet. */
+railgrid-provider-agents .agents-run-state--inspection {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start;
+  gap: 10px; min-width: 0; padding-block: 4px 12px;
+}
+railgrid-provider-agents .agents-run-state--inspection .agents-run-state__icon { width: 18px; height: 18px; margin-block-start: 2px; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-run-state--inspection.agents-run-state--failed .agents-run-state__icon { color: var(--color-danger); }
+railgrid-provider-agents .agents-run-state--inspection .agents-run-state__body { min-width: 0; }
+railgrid-provider-agents .agents-run-state--inspection .agents-run-state__recovery { margin-block-start: 10px; }
+railgrid-provider-agents .agents-run-state--inspection .agents-run-state__details { min-width: 0; margin-block-start: 8px; }
+railgrid-provider-agents .agents-run-state--inspection h3 { margin: 0; color: var(--color-text-primary); font-size: 16px; font-weight: 600; line-height: 1.4; }
+railgrid-provider-agents .agents-run-state--inspection p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-run-state__diagnostic {
+  margin: 12px 0 0;
+  padding: 12px;
+  border-radius: 4px;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-primary);
+  font: 12px/1.6 var(--agents-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+railgrid-provider-agents .agents-run-failure-link { align-self: flex-start; }

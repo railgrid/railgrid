@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import {
   Check,
+  ChevronDown,
   Circle,
+  Copy,
   LoaderCircle,
   RefreshCw,
   Wrench,
@@ -16,8 +18,6 @@ import type { AppStore, ServerEvent } from '../store'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AIInterrupt from '../agentkit/AIInterrupt.vue'
-import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
-import AITranscript from '../agentkit/AITranscript.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
@@ -43,7 +43,7 @@ import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
-import { approvalResolutionFailureMessage } from '../failure-presentation'
+import { approvalResolutionFailureMessage, sanitizeTechnicalDiagnostic } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -64,6 +64,9 @@ const loading = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const expanded = ref(new Set<string>())
 const stepsExpanded = ref(true)
+const stepsTouched = ref(false)
+const touchedRows = new Set<string>()
+const requestOpen = ref(false)
 const inspectorOpen = ref(true)
 const resolvingInboxID = ref('')
 const resolvingDecision = ref<'approve' | 'deny' | 'answer' | ''>('')
@@ -201,6 +204,15 @@ async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
   try {
     const next = await authority.api.getRun(requestedRunID)
     if (generation !== requestGeneration || requestedRunID !== props.runId || !authorityIsCurrent(authority)) return
+    if (!stepsTouched.value) stepsExpanded.value = next.phase !== 'Succeeded'
+    const nextExpanded = new Set(expanded.value)
+    for (const step of next.steps) {
+      if (!touchedRows.has(step.id)) {
+        if ((next.phase === 'Failed' || next.phase === 'Aborted') && step.outcome === 'error') nextExpanded.add(step.id)
+        else nextExpanded.delete(step.id)
+      }
+    }
+    expanded.value = nextExpanded
     run.value = next
     error.value = null
   } catch (cause) {
@@ -214,6 +226,7 @@ async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
 }
 
 function toggle(id: string): void {
+  touchedRows.add(id)
   const next = new Set(expanded.value)
   if (next.has(id)) next.delete(id)
   else next.add(id)
@@ -386,7 +399,16 @@ const stepGroups = computed(() => [{
 }])
 
 function toggleSteps(): void {
+  stepsTouched.value = true
   stepsExpanded.value = !stepsExpanded.value
+}
+
+async function inspectFailedSteps(): Promise<void> {
+  stepsTouched.value = true
+  stepsExpanded.value = true
+  expanded.value = new Set([...expanded.value, ...(run.value?.steps.filter(step => step.outcome === 'error').map(step => step.id) || [])])
+  await nextTick()
+  root.value?.querySelector<HTMLElement>('#agents-run-steps-heading')?.focus()
 }
 
 function toggleInspector(): void {
@@ -429,6 +451,15 @@ function navigateForFailure(target: FailureRecoveryTarget): void {
   if (agentName) emit('navigate', { kind: 'agent', name: agentName, tab: 'config' })
 }
 
+async function copyRunID(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(props.runId)
+    toast('ok', 'Run ID copied.')
+  } catch {
+    toast('error', 'Could not copy the run ID. Select and copy it from Run details.')
+  }
+}
+
 function goBack(): void {
   emit('navigate', backRoute.value)
 }
@@ -450,6 +481,9 @@ watch(() => [props.store, props.api, props.runId, props.embeddedAgent] as const,
   refreshMode.value = 'foreground'
   expanded.value = new Set()
   stepsExpanded.value = true
+  stepsTouched.value = false
+  touchedRows.clear()
+  requestOpen.value = false
   inspectorOpen.value = true
   void load()
 }, { flush: 'post' })
@@ -494,7 +528,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
           <template v-else>
-            <h1 class="k-resource-page__title">Run</h1>
+            <h1 class="k-resource-page__title">{{ run?.agent || 'Run' }}</h1>
             <div class="k-resource-page__meta">
               <span class="k-resource-page__kind">Run</span>
               <template v-if="run">
@@ -504,7 +538,7 @@ onBeforeUnmount(() => {
                 </span>
               </template>
             </div>
-            <p class="k-resource-page__subtitle">{{ runId }}</p>
+            <p class="k-resource-page__subtitle">{{ run ? `${run.class} · ${fmtTime(run.startedAt || run.createdAt)}` : runId }}</p>
           </template>
         </div>
         <div v-if="run && (!isEmbedded || !runAgentMismatch)" class="k-resource-page__header-side">
@@ -524,137 +558,140 @@ onBeforeUnmount(() => {
         </div>
         <div v-else class="agents-run-layout">
           <main class="agents-run-main">
-            <AITranscript class="agents-run-transcript">
-              <AIConversationTurn
-                v-if="runFailurePhase || (run.phase === 'PendingApproval' && run.pending)"
-                class="agents-run-message agents-run-state-message"
-                role="assistant"
-                aria-label="Run status"
+            <section
+              v-if="runFailurePhase || (run.phase === 'PendingApproval' && run.pending)"
+              class="agents-run-state-message"
+              aria-label="Run status"
+            >
+              <RunFailureNotice
+                v-if="runFailurePhase"
+                :phase="runFailurePhase"
+                :diagnostic="run.message"
+                inspection
+                @recovery="navigateForFailure"
+              />
+              <!--
+                A question is not an approval: it names no tool, so rendering
+                it as one gave an approval card reading "tool unavailable"
+                over a button that could never be enabled. It gets the
+                question and a reply box instead, as in chat.
+              -->
+              <AIInterrupt
+                v-else-if="pendingQuestion && run.pending"
+                class="agents-approval"
+                kind="follow-up"
+                :status="resolvingInboxID ? 'busy' : 'pending'"
+                :busy="!!resolvingInboxID"
+                title="The agent has a question"
+                aria-label="The agent is waiting for an answer"
               >
-                <template #before>
-                  <RunFailureNotice
-                    v-if="runFailurePhase"
-                    :phase="runFailurePhase"
-                    :diagnostic="run.message"
-                    @recovery="navigateForFailure"
-                  />
-                  <!--
-                    A question is not an approval: it names no tool, so rendering
-                    it as one gave an approval card reading "tool unavailable"
-                    over a button that could never be enabled. It gets the
-                    question and a reply box instead, as in chat.
-                  -->
-                  <AIInterrupt
-                    v-else-if="pendingQuestion && run.pending"
-                    class="agents-approval"
-                    kind="follow-up"
-                    :status="resolvingInboxID ? 'busy' : 'pending'"
-                    :busy="!!resolvingInboxID"
-                    title="The agent has a question"
-                    aria-label="The agent is waiting for an answer"
-                  >
-                    <p class="agents-approval-question">{{ run.pending.question || 'The agent is waiting for an answer.' }}</p>
-                    <template #actions>
-                      <div class="agents-approval-actions">
-                        <input
-                          v-model="answerDraft"
-                          class="k-input agents-approval-answer"
-                          type="text"
-                          :disabled="!!resolvingInboxID"
-                          placeholder="Your answer…"
-                          :aria-label="run.pending.question || 'Your answer'"
-                          @keydown.enter.prevent="resolve(run.pending!.inboxID, 'answer', answerDraft)"
-                        />
-                        <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !answerDraft.trim()" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' || undefined" @click="resolve(run.pending!.inboxID, 'answer', answerDraft)">
-                          <LoaderCircle v-if="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer'" class="agents-spinner k-spin" aria-hidden="true" />
-                          <Check v-else :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' ? 'Sending…' : 'Send answer' }}
-                        </button>
-                      </div>
-                    </template>
-                  </AIInterrupt>
-                  <AIInterrupt
-                    v-else-if="run.phase === 'PendingApproval' && run.pending"
-                    class="agents-approval"
-                    :status="resolvingInboxID ? 'busy' : 'pending'"
-                    :busy="!!resolvingInboxID"
-                    :invalid="!approvalDisclosureAvailable(run.pending.tool, run.pending.args)"
-                    title="Approval required"
-                    aria-label="Tool approval required"
-                  >
-                    <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused details-only />
-                    <template #actions>
-                      <div class="agents-approval-actions">
-                        <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
-                        <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' || undefined" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' ? 'Denying…' : 'Deny' }}</button>
-                      </div>
-                    </template>
-                  </AIInterrupt>
+                <p class="agents-approval-question">{{ run.pending.question || 'The agent is waiting for an answer.' }}</p>
+                <template #actions>
+                  <div class="agents-approval-actions">
+                    <input
+                      v-model="answerDraft"
+                      class="k-input agents-approval-answer"
+                      type="text"
+                      :disabled="!!resolvingInboxID"
+                      placeholder="Your answer…"
+                      :aria-label="run.pending.question || 'Your answer'"
+                      @keydown.enter.prevent="resolve(run.pending!.inboxID, 'answer', answerDraft)"
+                    />
+                    <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !answerDraft.trim()" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' || undefined" @click="resolve(run.pending!.inboxID, 'answer', answerDraft)">
+                      <LoaderCircle v-if="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer'" class="agents-spinner k-spin" aria-hidden="true" />
+                      <Check v-else :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' ? 'Sending…' : 'Send answer' }}
+                    </button>
+                  </div>
                 </template>
-              </AIConversationTurn>
-              <AIConversationTurn
-                v-if="run.input"
-                class="agents-run-message agents-run-input-message"
-                role="user"
-                bubble
-                aria-label="Run input"
+              </AIInterrupt>
+              <AIInterrupt
+                v-else-if="run.phase === 'PendingApproval' && run.pending"
+                class="agents-approval"
+                :status="resolvingInboxID ? 'busy' : 'pending'"
+                :busy="!!resolvingInboxID"
+                :invalid="!approvalDisclosureAvailable(run.pending.tool, run.pending.args)"
+                title="Approval required"
+                aria-label="Tool approval required"
               >
-                <div class="agents-body">{{ run.input }}</div>
-              </AIConversationTurn>
-              <AIConversationTurn
-                v-if="run.output || run.message || run.steps.length || (run.phase === 'PendingApproval' && run.pending)"
-                class="agents-run-message agents-run-output-message"
-                role="assistant"
-                :aria-label="run.phase === 'Failed' || run.phase === 'Aborted' ? 'Partial run output' : 'Run output'"
-              >
-              <template #progress>
+                <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused details-only />
+                <template #actions>
+                  <div class="agents-approval-actions">
+                    <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
+                    <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' || undefined" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' ? 'Denying…' : 'Deny' }}</button>
+                  </div>
+                </template>
+              </AIInterrupt>
+            </section>
+            <button v-if="runFailurePhase && run.steps.some(step => step.outcome === 'error')" class="k-dashboard-action agents-run-failure-link" type="button" @click="inspectFailedSteps">View failed steps</button>
+            <section v-if="!runFailurePhase" class="agents-run-output-message agents-run-section" aria-labelledby="agents-run-output-heading">
+              <h2 id="agents-run-output-heading">{{ run.phase === 'Succeeded' ? 'Result' : 'Output' }}</h2>
+              <div v-if="run.output || run.message" class="agents-body k-ai-prose" v-html="markdownHTML(run.output || sanitizeTechnicalDiagnostic(run.message))"></div>
+              <p v-else class="agents-hint">{{ run.phase === 'Succeeded' ? 'This run completed without recorded output.' : 'No output recorded yet.' }}</p>
+              <div v-if="run.sources?.length" class="agents-runsources">
+                <span class="agents-runmeta-k">Sources</span>
+                <ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul>
+              </div>
+            </section>
+            <section class="agents-run-activity" aria-labelledby="agents-run-steps-heading">
+              <div class="agents-run-execution-heading">
+                <h2 id="agents-run-steps-heading" tabindex="-1">Execution</h2>
                 <AITurnProgress
                   :turn-id="run.id"
                   :status="turnProgressStatus(run)"
                   :duration="turnProgressDuration(run)"
                   :interrupted="run.phase === 'Aborted'"
                 />
-              </template>
-              <template #trace>
-                <section class="agents-run-activity" aria-labelledby="agents-run-steps-heading">
-                  <h2 id="agents-run-steps-heading" class="sr-only">Run steps</h2>
-                  <AIActivityFeed
-                    v-if="run.steps.length"
-                    panel-id="agents-run-steps-panel"
-                    :groups="stepGroups"
-                    :count="run.steps.length"
-                    :summary="stepsSummary()"
-                    :expanded="stepsExpanded"
-                    :expanded-row-keys="[...expanded]"
-                    :busy="activityIsBusy(run)"
-                    :attention="activityNeedsAttention(run)"
-                    :error="run.steps.some(step => step.outcome === 'error')"
-                    label="step"
-                    @toggle="toggleSteps"
-                    @toggle-row="toggle"
-                  >
-                    <template #details="{ row }">
-                      <template v-for="step in [stepsByID.get(row.id)]" :key="row.id">
-                        <template v-if="step">
-                          <div v-if="step.args" class="agents-kv"><span>args</span><pre>{{ prettyJSON(step.args) }}</pre></div>
-                          <div v-if="step.error" class="agents-kv"><span>error</span><pre class="err">{{ step.error }}</pre></div>
-                          <div v-else-if="step.result" class="agents-kv"><span>result</span><pre>{{ prettyJSON(step.result) }}</pre></div>
-                        </template>
-                      </template>
+              </div>
+              <AIActivityFeed
+                v-if="run.steps.length"
+                panel-id="agents-run-steps-panel"
+                :groups="stepGroups"
+                :count="run.steps.length"
+                :summary="stepsSummary()"
+                :expanded="stepsExpanded"
+                :expanded-row-keys="[...expanded]"
+                :busy="activityIsBusy(run)"
+                :attention="activityNeedsAttention(run)"
+                :error="run.steps.some(step => step.outcome === 'error')"
+                label="step"
+                @toggle="toggleSteps"
+                @toggle-row="toggle"
+              >
+                <template #details="{ row }">
+                  <template v-for="step in [stepsByID.get(row.id)]" :key="row.id">
+                    <template v-if="step">
+                      <div v-if="step.error" class="agents-kv"><span>Error</span><pre class="err">{{ sanitizeTechnicalDiagnostic(step.error) }}</pre></div>
+                      <details v-if="step.args || step.result" class="k-resource-technical">
+                        <summary class="k-resource-technical__summary"><span class="k-resource-technical__summary-label">Arguments and result</span><ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" /></summary>
+                        <div class="k-resource-technical__body">
+                          <div v-if="step.args" class="agents-kv"><span>Arguments</span><pre>{{ prettyJSON(step.args) }}</pre></div>
+                          <div v-if="step.result" class="agents-kv"><span>Result</span><pre>{{ prettyJSON(step.result) }}</pre></div>
+                        </div>
+                      </details>
                     </template>
-                  </AIActivityFeed>
-                  <p v-else class="agents-hint"><Wrench :stroke-width="1.75" aria-hidden="true" /> This run made no tool calls.</p>
-                </section>
-              </template>
+                  </template>
+                </template>
+              </AIActivityFeed>
+              <p v-else class="agents-hint"><Wrench :stroke-width="1.75" aria-hidden="true" /> This run made no tool calls.</p>
+            </section>
 
-              <h3 v-if="(run.phase === 'Failed' || run.phase === 'Aborted') && run.output">Partial output</h3>
-              <div v-if="run.output || !(run.phase === 'Failed' || run.phase === 'Aborted')" class="agents-body k-ai-prose" v-html="markdownHTML(run.output || run.message || '')"></div>
+            <section v-if="runFailurePhase" class="agents-run-output-message agents-run-section" aria-labelledby="agents-run-output-heading">
+              <h2 id="agents-run-output-heading">Partial output</h2>
+              <div v-if="run.output" class="agents-body k-ai-prose" v-html="markdownHTML(run.output)"></div>
+              <p v-else class="agents-hint">No partial output was recorded.</p>
               <div v-if="run.sources?.length" class="agents-runsources">
-                <span class="agents-runmeta-k">sources</span>
+                <span class="agents-runmeta-k">Sources</span>
                 <ul><li v-for="source in run.sources" :key="source"><a :href="source" target="_blank" rel="noopener noreferrer">{{ source }}</a></li></ul>
               </div>
-
-              </AIConversationTurn>
-            </AITranscript>
+            </section>
+            <details v-if="run.input" class="agents-run-request k-resource-technical" :open="requestOpen" @toggle="requestOpen = ($event.target as HTMLDetailsElement).open">
+              <summary class="k-resource-technical__summary">
+                <span class="k-resource-technical__summary-label">Original request</span>
+                <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
+              </summary>
+              <div class="k-resource-technical__body"><pre class="k-resource-technical__pre">{{ run.input }}</pre></div>
+            </details>
+            <p v-if="run.input && !requestOpen" class="agents-run-request-preview">{{ run.input.slice(0, 160) }}{{ run.input.length > 160 ? '…' : '' }}</p>
           </main>
 
           <aside class="agents-run-inspector" :class="{ 'is-collapsed': !inspectorOpen }" aria-label="Run evidence">
@@ -665,12 +702,13 @@ onBeforeUnmount(() => {
               aria-controls="agents-run-inspector-panel"
               @click="toggleInspector"
             >
-              <span>Run evidence</span><span class="muted">{{ inspectorOpen ? 'Hide' : 'Show' }}</span>
+              <span>Run details</span><span class="muted">{{ inspectorOpen ? 'Hide' : 'Show' }}</span>
             </button>
             <div v-show="inspectorOpen" id="agents-run-inspector-panel" class="agents-run-inspector-panel">
               <section class="agents-run-inspector-section" aria-labelledby="agents-run-details-heading">
-                <h2 id="agents-run-details-heading">Run details</h2>
+                <h2 id="agents-run-details-heading" class="sr-only">Run details</h2>
                 <div class="agents-runmeta">
+                  <div class="agents-runmeta-cell"><span class="agents-runmeta-k">run ID</span><span class="agents-runmeta-v agents-run-id"><span>{{ run.id }}</span><button class="k-icon-action" type="button" aria-label="Copy run ID" @click="copyRunID"><Copy :size="14" :stroke-width="1.75" aria-hidden="true" /></button></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">agent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'agent', name: run.agent, tab: 'chat' })">{{ run.agent }}</button></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">trigger</span><span class="agents-runmeta-v"><span class="mono">{{ run.trigger }}</span> <span class="muted">({{ run.class }})</span></span></div>
                   <div v-if="run.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">session</span><span class="agents-runmeta-v mono">{{ run.sessionID }}</span></div>
@@ -680,13 +718,14 @@ onBeforeUnmount(() => {
                   <div v-if="harnessCoordinates?.attemptID" class="agents-runmeta-cell"><span class="agents-runmeta-k">runner attempt</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.attemptID }}</span></div>
                   <div v-if="harnessCoordinates?.sessionID" class="agents-runmeta-cell"><span class="agents-runmeta-k">harness session</span><span class="agents-runmeta-v mono">{{ harnessCoordinates.sessionID }}</span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">started</span><span class="agents-runmeta-v">{{ fmtTime(run.startedAt || run.createdAt) }}</span></div>
+                  <div v-if="run.finishedAt" class="agents-runmeta-cell"><span class="agents-runmeta-k">finished</span><span class="agents-runmeta-v">{{ fmtTime(run.finishedAt) }}</span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">duration</span><span class="agents-runmeta-v"><template v-if="run.durationMS">{{ fmtDuration(run.durationMS) }}</template><span v-else-if="LIVE_PHASES.has(run.phase)" class="agents-elapsed"><LoaderCircle class="k-spin" :size="13" :stroke-width="1.75" aria-hidden="true" />{{ elapsed(run) }}</span><template v-else>—</template></span></div>
                   <div class="agents-runmeta-cell"><span class="agents-runmeta-k">usage</span><span class="agents-runmeta-v">{{ fmtTokens(run.inputTokens) }} in · {{ fmtTokens(run.outputTokens) }} out · {{ fmtUSD(run.usdMicros) }}</span></div>
                   <div v-if="run.attempt && run.attempt > 1" class="agents-runmeta-cell"><span class="agents-runmeta-k">attempt</span><span class="agents-runmeta-v">{{ run.attempt }}</span></div>
                   <div v-if="run.parentRunID" class="agents-runmeta-cell"><span class="agents-runmeta-k">parent</span><span class="agents-runmeta-v"><button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: run.parentRunID! })">{{ run.parentRunID.slice(0, 8) }}</button></span></div>
                 </div>
                 <p v-if="harnessCoordinates" class="agents-hint">{{ harnessCoordinateGuidance }}</p>
-                <div v-if="run.input" class="agents-runinput"><span class="agents-runmeta-k">input</span><pre>{{ run.input }}</pre></div>
+
               </section>
 
               <section v-if="!run.children?.length && fanOutGranted" class="agents-run-inspector-section" aria-labelledby="agents-run-children-heading">
