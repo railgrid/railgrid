@@ -62,6 +62,16 @@ function populateToolsets(element: AgentsElement, toolsets: Toolset[]): void {
 }
 
 describe('public Agents shell routing', () => {
+  it('focuses the shared Agents page title after menu navigation', async () => {
+    const element = await mountShell('#/models')
+    element.querySelector<HTMLButtonElement>('[data-k-tab-id="agents"]')!.click()
+    await settleVue(4, 5)
+    const heading = element.querySelector('.k-resource-page__header h2.k-resource-page__title')!
+    expect(text(heading)).toBe('Agents')
+    expect(document.activeElement).toBe(heading)
+    expect(heading.closest('.k-resource-page')).not.toBeNull()
+  })
+
   it('follows host sidebar navigation without a native hashchange and preserves deep links', async () => {
     const element = await mountShell('#/agents/scout/config', ctx({ subPath: '' }))
     expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
