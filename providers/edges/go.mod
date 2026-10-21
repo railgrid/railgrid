@@ -1,6 +1,6 @@
 module github.com/railgrid/provider-edges
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/containers/kubernetes-mcp-server v0.0.58

@@ -1,6 +1,6 @@
 module github.com/railgrid/provider-sdk
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813

@@ -1,6 +1,6 @@
 module github.com/railgrid/provider-code
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/google/go-github/v66 v66.0.0

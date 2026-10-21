@@ -1,6 +1,6 @@
 module github.com/railgrid/provider-app-studio
 
-go 1.26.9
+go 1.26.10
 
 require (
 	cloud.google.com/go/auth v0.18.2
