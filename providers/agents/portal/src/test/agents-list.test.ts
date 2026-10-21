@@ -43,7 +43,7 @@ describe('agents list refresh resilience', () => {
     const api = stubApi()
     const store = makeStore(api)
     const mounted = await mountVue(AgentsList, { store, api })
-    expect(text(mounted.element.querySelector('[role=status]'))).toContain('Loading agents')
+    expect(text(mounted.element.querySelector('.agents-state[role=status]'))).toContain('Loading agents')
 
     store.agents.data = [agentFixture('scout')]
     Object.assign(store.agents, { loading: false, loaded: true, hasSnapshot: true })
@@ -106,7 +106,7 @@ describe('agents list refresh resilience', () => {
     const store = makeStore(api)
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     const mounted = await mountVue(AgentsList, { store, api })
-    expect(text(mounted.element.querySelector('[role=status]'))).toContain('Loading model credentials')
+    expect(text(mounted.element.querySelector('.agents-state[role=status]'))).toContain('Loading model credentials')
     expect(mounted.element.querySelector('.k-first-run')).toBeNull()
     mounted.unmount()
 

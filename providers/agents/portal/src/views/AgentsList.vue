@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
+import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -169,19 +170,14 @@ function openAgentRow(row: Record<string, unknown>): void {
 </script>
 
 <template>
-  <div class="k-resource-page">
-    <header class="k-resource-page__header">
-      <div class="k-resource-page__heading">
-        <h2 class="k-resource-page__title">Agents</h2>
-      </div>
-      <div class="k-resource-page__actions">
+  <ResourcePage title="Agents">
+    <template #actions>
       <button v-if="!showFirstRun" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
         <Plus aria-hidden="true" /> New agent
       </button>
-      </div>
-    </header>
-
-
+    </template>
+    <!-- Agent and credential reads retain their existing independent states. -->
+    <div class="agents-menu">
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
       <AlertCircle aria-hidden="true" />
       <span>{{ agents.error }}</span>
@@ -325,5 +321,6 @@ function openAgentRow(row: Record<string, unknown>): void {
         </template>
       </ResourceTable>
     </template>
-  </div>
+    </div>
+  </ResourcePage>
 </template>

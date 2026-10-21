@@ -65,11 +65,12 @@ describe('public Agents shell routing', () => {
   it('focuses the shared Agents page title after menu navigation', async () => {
     const element = await mountShell('#/models')
     element.querySelector<HTMLButtonElement>('[data-k-tab-id="agents"]')!.click()
-    await settleVue(4, 5)
-    const heading = element.querySelector('.k-resource-page__header h2.k-resource-page__title')!
-    expect(text(heading)).toBe('Agents')
-    expect(document.activeElement).toBe(heading)
-    expect(heading.closest('.k-resource-page')).not.toBeNull()
+    await vi.waitFor(() => {
+      const heading = element.querySelector('.k-resource-page__header h1.k-resource-page__title')
+      expect(heading).not.toBeNull()
+      expect(text(heading)).toBe('Agents')
+      expect(document.activeElement).toBe(heading)
+    })
   })
 
   it('follows host sidebar navigation without a native hashchange and preserves deep links', async () => {
