@@ -224,7 +224,7 @@ function scheduleRouteFocus(next: Route): void {
   void nextTick(() => requestAnimationFrame(() => {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
     const assistantSettings = next.kind === 'menu' && next.menu === 'models' && (props.ctx?.agentOverlay?.settingsOpen || root.value?.querySelector('#workspace-assistant-settings') === document.activeElement)
-    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-panel-head > h3, .agents-detail-title > h2')
+    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-detail-title > h2')
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
     target.focus()

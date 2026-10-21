@@ -64,11 +64,47 @@ async function mountAssistedPage(
 beforeEach(() => localStorage.clear())
 
 describe('connections route layout', () => {
-  it('uses the shared padded route panel for connections and toolsets', async () => {
+  it('retains header creation actions and focus anchors with populated collections', async () => {
+    const { el, store, mounted } = await mountConnections({ providers: [] }, [])
+    store.connections.data = [connFixture('search')]
+    Object.assign(store.toolsets, {
+      data: [{ metadata: { name: 'research' }, spec: { connections: ['search'] } }],
+      loaded: true, hasSnapshot: true,
+    })
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+
+    const connections = el.querySelector('[data-connections-heading]')!
+    const toolsets = el.querySelector('[data-toolsets-heading]')!
+    expect(connections.tagName).toBe('H1')
+    expect(toolsets.tagName).toBe('H2')
+    expect(connections.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(false)
+    expect(toolsets.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(true)
+    const actions = [...el.querySelectorAll<HTMLButtonElement>('.k-resource-page__actions button')]
+    expect(actions.map(button => text(button))).toEqual(['New connection', 'New toolset'])
+    actions.forEach(button => button.click())
+    expect(mounted.navigations).toEqual([
+      { kind: 'create', resource: 'connection' },
+      { kind: 'create', resource: 'toolset' },
+    ])
+    for (const heading of [connections, toolsets]) {
+      expect(heading.getAttribute('tabindex')).toBe('-1')
+      expect(heading.closest('.k-card')).toBeNull()
+    }
+  })
+
+  it('renders Connections and Toolsets headings outside cards with shared subtitles', async () => {
     const { el } = await mountConnections({ providers: [] }, [])
 
-    expect(el.querySelector(':scope > .agents-menu > .agents-route-panel')).not.toBeNull()
-    expect(el.querySelectorAll('.agents-menu > .agents-route-panel')).toHaveLength(2)
+    expect(el.querySelectorAll('.agents-menu > .k-resource-page')).toHaveLength(2)
+    expect(el.querySelector('.agents-route-panel')).toBeNull()
+    for (const target of ['connections', 'toolsets']) {
+      const heading = el.querySelector(`[data-${target}-heading]`)!
+      expect(heading.closest('.k-card')).toBeNull()
+      expect(heading.classList.contains('k-resource-page__title')).toBe(true)
+      expect(heading.parentElement?.querySelector('.k-resource-page__subtitle')).not.toBeNull()
+      expect(heading.getAttribute('tabindex')).toBe('-1')
+    }
   })
 })
 
