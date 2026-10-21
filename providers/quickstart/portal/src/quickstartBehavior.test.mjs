@@ -144,6 +144,26 @@ test('creation is route owned and keeps a draft through cancellation, return, an
   assert.match(element.innerHTML, /role="alert">offline/)
 })
 
+test('greeting counts describe loaded inventories without a misleading empty or loading badge', async () => {
+  const read = deferred()
+  const element = harness(() => ({ list: () => read.promise }), true)
+  element.railgridContext = context('tenant')
+  assert.doesNotMatch(element.innerHTML, /k-resource-page__meta|k-badge/)
+  read.resolve({ items: [] })
+  await flush()
+  assert.doesNotMatch(element.innerHTML, /k-resource-page__meta|k-badge/)
+  assert.match(element.innerHTML, /Create your first greeting/)
+  assert.equal((element.innerHTML.match(/data-create/g) || []).length, 1)
+  assert.match(element.innerHTML, /data-refresh/)
+  element._items = [{ metadata: { name: 'hello' } }]
+  element._render()
+  assert.match(element.innerHTML, /1 greeting<\/p>/)
+  element._items.push({ metadata: { name: 'welcome' } })
+  element._render()
+  assert.match(element.innerHTML, /2 greetings<\/p>/)
+  assert.doesNotMatch(element.innerHTML, /Create your first greeting/)
+})
+
 test('successful creation returns to the collection and clears the submitted draft', async () => {
   const element = harness(() => ({ list: async () => ({ items: [{ metadata: { name: 'created' } }] }), create: async () => ({}) }))
   element.railgridContext = { ...context('tenant'), subPath: 'create/greeting' }
