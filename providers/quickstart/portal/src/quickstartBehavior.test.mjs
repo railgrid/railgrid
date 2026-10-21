@@ -155,13 +155,28 @@ test('greeting counts describe loaded inventories without a misleading empty or 
   assert.match(element.innerHTML, /Create your first greeting/)
   assert.equal((element.innerHTML.match(/data-create/g) || []).length, 1)
   assert.match(element.innerHTML, /data-refresh/)
-  element._items = [{ metadata: { name: 'hello' } }]
-  element._render()
-  assert.match(element.innerHTML, /1 greeting<\/p>/)
-  element._items.push({ metadata: { name: 'welcome' } })
-  element._render()
-  assert.match(element.innerHTML, /2 greetings<\/p>/)
+})
+
+test('populated reads label the count and retain it after a failed refresh', async () => {
+  let items = [{ metadata: { name: 'hello' } }]
+  let fail = false
+  const element = harness(() => ({ list: async () => {
+    if (fail) throw new Error('offline')
+    return { items }
+  } }), true)
+  element.railgridContext = context('tenant')
+  await flush()
+  assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>1 greeting</)
   assert.doesNotMatch(element.innerHTML, /Create your first greeting/)
+  items = [...items, { metadata: { name: 'welcome' } }]
+  await element._load()
+  assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>2 greetings</)
+  fail = true
+  await element._load()
+  assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>2 greetings</)
+  assert.match(element.innerHTML, /Showing the last successful greetings/)
+  assert.match(element.innerHTML, /offline/)
+  assert.match(element.innerHTML, /data-refresh>Retry/)
 })
 
 test('successful creation returns to the collection and clears the submitted draft', async () => {

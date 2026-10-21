@@ -24,12 +24,10 @@ railgrid-provider-quickstart .quickstart-panel {
   color: var(--color-text-primary, inherit);
 }
 
-
 railgrid-provider-quickstart .quickstart-row-result {
   flex-basis: 100%;
   overflow-wrap: anywhere;
 }
-
 
 railgrid-provider-quickstart .quickstart-field {
   display: grid;

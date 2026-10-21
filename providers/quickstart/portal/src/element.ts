@@ -282,15 +282,17 @@ export class QuickstartElement extends HTMLElement {
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
             <h2 class="k-resource-page__title">Greetings</h2>
+            ${this._loaded && this._items.length > 0 ? `<div class="k-resource-page__meta"><span>${this._items.length} ${this._items.length === 1 ? 'greeting' : 'greetings'}</span></div>` : ''}
             <p class="k-resource-page__subtitle">Send a greeting to see its response. Each greeting belongs to this workspace.</p>
-            ${this._loaded && this._items.length > 0 ? `<p class="k-resource-page__meta">${this._items.length} ${this._items.length === 1 ? 'greeting' : 'greetings'}</p>` : ''}
           </div>
-          <div class="k-resource-page__actions">
-            <button class="k-btn k-btn--ghost" type="button" data-refresh ${this._loading || !ctx?.tenant ? 'disabled' : ''}>${ic('refresh')} ${this._loading ? 'Refreshing…' : 'Refresh'}</button>
-            ${!firstRun ? `<button class="k-btn k-btn--primary" type="button" data-create ${ctx?.tenant ? '' : 'disabled'}>${ic('plus')} New greeting</button>` : ''}
+          <div class="k-resource-page__header-side">
+            <div class="k-resource-page__actions">
+              <button class="k-btn k-btn--ghost" type="button" data-refresh ${this._loading || !ctx?.tenant ? 'disabled' : ''}>${ic('refresh')} ${this._loading ? 'Refreshing…' : 'Refresh'}</button>
+              ${!firstRun ? `<button class="k-btn k-btn--primary" type="button" data-create ${ctx?.tenant ? '' : 'disabled'}>${ic('plus')} New greeting</button>` : ''}
+            </div>
           </div>
         </header>
-        <section class="${firstRun ? 'quickstart-first-use' : 'k-card quickstart-panel'}" aria-label="Workspace greetings">
+        <section class="k-resource-page__body ${firstRun ? 'quickstart-first-use' : 'k-card quickstart-panel'}" aria-label="Workspace greetings">
           ${this._readError ? `<p class="quickstart-error" role="alert">${this._loaded ? 'Showing the last successful greetings. ' : ''}${escapeHTML(this._readError)} <button class="k-btn k-btn--ghost" type="button" data-refresh>Retry</button></p>` : ''}
           ${this._loading && this._loaded ? '<span class="quickstart-read-status" role="status">Refreshing greetings…</span>' : ''}
           ${this._renderList()}
