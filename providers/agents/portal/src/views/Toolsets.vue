@@ -258,12 +258,19 @@ function cancelCreate(): void {
       </template>
     </ResourcePage>
   </div>
-  <div v-else class="agents-panel k-card agents-route-panel">
-    <div class="agents-panel-head">
-      <h3 tabindex="-1" data-toolsets-heading><Package :stroke-width="1.75" aria-hidden="true" /> Toolsets</h3>
-      <button v-if="!showFirstRun" class="k-btn k-btn--ghost secondary" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New toolset</button>
-    </div>
-    <p class="muted">Shared bundles of Tools. Define once, link from any agent's Config pane.</p>
+  <ResourcePage v-else title="Toolsets">
+    <template #header>
+      <div class="k-resource-page__heading">
+        <h2 class="k-resource-page__title" tabindex="-1" data-toolsets-heading>Toolsets</h2>
+        <p class="k-resource-page__subtitle">Shared bundles of Tools. Define once, link from any agent's Config pane.</p>
+      </div>
+      <div v-if="!showFirstRun" class="k-resource-page__header-side">
+        <div class="k-resource-page__actions">
+          <button class="k-btn k-btn--ghost secondary" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New toolset</button>
+        </div>
+      </div>
+    </template>
+    <div class="agents-panel">
     <template v-if="showFirstRun">
       <div v-if="slice.error" class="agents-stale" role="status">
         <AlertCircle aria-hidden="true" /> Showing the last loaded toolsets. {{ slice.error }}
@@ -305,5 +312,6 @@ function cancelCreate(): void {
       <template #usedBy="{ row }"><span class="muted" :title="usedBy(asToolset(row).metadata.name) === null ? 'Agent assignments are unavailable' : undefined">{{ row.usedBy }}</span></template>
       <template #actions="{ row }"><ResourceTableEditButton :label="`Edit toolset ${asToolset(row).metadata.name}`" :disabled="!!deletingName" @click="openEdit(asToolset(row))" /><ResourceTableDeleteButton :label="`Delete toolset ${asToolset(row).metadata.name}`" :busy-label="`Deleting toolset ${asToolset(row).metadata.name}…`" :busy="deletingName === asToolset(row).metadata.name" :disabled="!!deletingName" @click="remove(asToolset(row).metadata.name)" /></template>
     </ResourceTable>
-  </div>
+    </div>
+  </ResourcePage>
 </template>

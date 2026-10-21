@@ -350,10 +350,20 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
     </ResourcePage>
   </div>
   <div v-else class="agents-menu">
-    <div class="agents-panel k-card agents-route-panel">
-      <div class="agents-panel-head"><h3 tabindex="-1" data-connections-heading>Connections</h3><button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="emit('navigate', { kind: 'create', resource: 'connection' })"><Plus :stroke-width="1.75" aria-hidden="true" /> New connection</button></div>
+    <ResourcePage title="Connections">
+      <template #header>
+        <div class="k-resource-page__heading">
+          <h1 class="k-resource-page__title" tabindex="-1" data-connections-heading>Connections</h1>
+          <p class="k-resource-page__subtitle">Connections give agents reusable access to external systems.</p>
+        </div>
+        <div v-if="!showFirstRun" class="k-resource-page__header-side">
+          <div class="k-resource-page__actions">
+            <button class="k-btn k-btn--primary" @click="emit('navigate', { kind: 'create', resource: 'connection' })"><Plus :stroke-width="1.75" aria-hidden="true" /> New connection</button>
+          </div>
+        </div>
+      </template>
+      <div class="agents-panel">
       <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
-      <p class="muted agents-connections-copy">Connections give agents reusable access to external systems.</p>
       <template v-if="showFirstRun">
         <div v-if="connections.error" class="agents-stale" role="status">
           <AlertCircle aria-hidden="true" /> Showing the last loaded connections. {{ connections.error }}
@@ -369,7 +379,8 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
         <template #actions="{ row }"><ResourceTableEditButton :label="`Edit connection ${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="openEdit(asConnection(row))" /><ResourceTableActionButton v-if="connCategory(asConnection(row).spec.type) === 'channel'" :icon="Send" tone="accent" :label="`Send a test message via ${asConnection(row).metadata.name}`" :busy-label="`Sending a test message via ${asConnection(row).metadata.name}…`" :busy="actionBusy === `test:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="test(asConnection(row).metadata.name)" /><ResourceTableActionButton v-if="connCategory(asConnection(row).spec.type) === 'channel'" :icon="Shuffle" :label="`${asConnection(row).status?.webhookPath ? 'Re-enable' : 'Enable'} inbound chat for ${asConnection(row).metadata.name}`" :busy-label="`${asConnection(row).status?.webhookPath ? 'Re-enabling' : 'Enabling'} inbound chat for ${asConnection(row).metadata.name}…`" :busy="actionBusy === `inbound:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="enableInbound(asConnection(row).metadata.name)" /><ResourceTableActionButton v-if="asConnection(row).spec.auth === 'oauth'" :icon="Link" tone="accent" :label="`${asConnection(row).status?.oauthConnected ? 'Reconnect' : 'Connect'} OAuth for ${asConnection(row).metadata.name}`" :busy-label="`${asConnection(row).status?.oauthConnected ? 'Reconnecting' : 'Connecting'} OAuth for ${asConnection(row).metadata.name}…`" :busy="actionBusy === `oauth:${asConnection(row).metadata.name}`" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="oauth(asConnection(row).metadata.name)" /><ResourceTableDeleteButton :label="`Delete connection ${asConnection(row).metadata.name}`" :busy-label="`Deleting connection ${asConnection(row).metadata.name}…`" :busy="deletingName === asConnection(row).metadata.name" :disabled="!!actionBusy || !!deletePendingName || !!deletingName" @click="remove(asConnection(row).metadata.name)" /></template>
       </ResourceTable>
       <AssistedSearch :store="store" :api="api" @navigate="emit('navigate', $event)" />
-    </div>
+      </div>
+    </ResourcePage>
     <Toolsets :store="store" :api="api" :route-owned="routeOwned" @navigate="emit('navigate', $event)" @create-success="forwardCreate" @create-cancel="cancelCreate" />
   </div>
 </template>

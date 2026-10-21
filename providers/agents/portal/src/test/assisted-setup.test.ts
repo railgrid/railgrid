@@ -64,11 +64,18 @@ async function mountAssistedPage(
 beforeEach(() => localStorage.clear())
 
 describe('connections route layout', () => {
-  it('uses the shared padded route panel for connections and toolsets', async () => {
+  it('renders Connections and Toolsets headings outside cards with shared subtitles', async () => {
     const { el } = await mountConnections({ providers: [] }, [])
 
-    expect(el.querySelector(':scope > .agents-menu > .agents-route-panel')).not.toBeNull()
-    expect(el.querySelectorAll('.agents-menu > .agents-route-panel')).toHaveLength(2)
+    expect(el.querySelectorAll('.agents-menu > .k-resource-page')).toHaveLength(2)
+    expect(el.querySelector('.agents-route-panel')).toBeNull()
+    for (const target of ['connections', 'toolsets']) {
+      const heading = el.querySelector(`[data-${target}-heading]`)!
+      expect(heading.closest('.k-card')).toBeNull()
+      expect(heading.classList.contains('k-resource-page__title')).toBe(true)
+      expect(heading.parentElement?.querySelector('.k-resource-page__subtitle')).not.toBeNull()
+      expect(heading.getAttribute('tabindex')).toBe('-1')
+    }
   })
 })
 
