@@ -48,8 +48,6 @@ railgrid-provider-agents .agents-offline {
   color: var(--color-text-muted, #5d5f78);
 }
 /* --- shared chrome --- */
-railgrid-provider-agents .agents-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-railgrid-provider-agents .agents-panel-head h3 { margin: 0; }
 railgrid-provider-agents :focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 
 /* --- agent card grid --- */

@@ -19,6 +19,8 @@ import type { AppStore } from '../store'
 import type { Toolset } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
+const COLLECTION_TITLE = 'Toolsets'
+
 const props = withDefaults(defineProps<{
   store: AppStore
   api: ApiClient
@@ -258,10 +260,10 @@ function cancelCreate(): void {
       </template>
     </ResourcePage>
   </div>
-  <ResourcePage v-else title="Toolsets">
+  <ResourcePage v-else :title="COLLECTION_TITLE" :aria-label="COLLECTION_TITLE" variant="collection">
     <template #header>
       <div class="k-resource-page__heading">
-        <h2 class="k-resource-page__title" tabindex="-1" data-toolsets-heading>Toolsets</h2>
+        <h2 class="k-resource-page__title" tabindex="-1" data-toolsets-heading>{{ COLLECTION_TITLE }}</h2>
         <p class="k-resource-page__subtitle">Shared bundles of Tools. Define once, link from any agent's Config pane.</p>
       </div>
       <div v-if="!showFirstRun" class="k-resource-page__header-side">
@@ -271,47 +273,47 @@ function cancelCreate(): void {
       </div>
     </template>
     <div class="agents-panel">
-    <template v-if="showFirstRun">
-      <div v-if="slice.error" class="agents-stale" role="status">
-        <AlertCircle aria-hidden="true" /> Showing the last loaded toolsets. {{ slice.error }}
-        <button class="k-btn k-btn--ghost" type="button" :disabled="slice.loading" @click="store.load('toolsets')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
-      </div>
-      <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
-        <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
-        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be loaded. You can still create a toolset without external tools.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
-        <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-      </div>
-      <div v-else-if="!connectionSlice.hasSnapshot && connectionSlice.loading" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
-        <span class="agents-spinner k-spin" aria-hidden="true" />
-        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Loading optional tool connections…</span></div>
-      </div>
-      <div v-else-if="!connectionSlice.hasSnapshot" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
-        <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
-        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections have not loaded yet. Toolsets can still be created without them.</span></div>
-        <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Loading…' : 'Load connections' }}</button>
-      </div>
-      <div v-else-if="connectionSlice.error" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
-        <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
-        <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
-        <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
-      </div>
-      <FirstRunGuide
-        :title="hasToolConnections ? 'Bundle tools for reuse' : 'Create your first toolset'"
-        :description="hasToolConnections ? 'Group available tool connections so the same capability bundle can be attached to multiple agents.' : connectionSlice.hasSnapshot ? 'Start with core and edge capabilities now. External tool connections are optional and can be added whenever the bundle needs them.' : 'Start with core and edge capabilities now. Available external tool connections will appear after they finish loading.'"
-        primary-label="Create toolset"
-        :secondary-label="connectionSlice.hasSnapshot && !hasToolConnections ? 'Create connection' : ''"
-        :steps="hasToolConnections ? [{ label: 'Connection', description: 'Callable external tools are available' }, { label: 'Toolset', description: 'Bundle the tools for reuse' }, { label: 'Agent', description: 'Attach the bundle from Config' }] : [{ label: 'Toolset', description: 'Begin with core and edge capabilities' }, { label: 'Agent', description: 'Attach the bundle from Config' }, { label: 'Expand', description: 'Add external connections when needed' }]"
-        :current-step="hasToolConnections ? 1 : 0" journey-label="Toolset setup path"
-        @primary="emit('navigate', { kind: 'create', resource: 'toolset' })"
-        @secondary="emit('navigate', { kind: 'create', resource: 'connection' })"
-      ><template #icon><Package :stroke-width="1.75" aria-hidden="true" /></template></FirstRunGuide>
-    </template>
-    <ResourceTable v-else :columns="[{ key: 'name', label: 'Name', primary: true }, { key: 'tools', label: 'Tools' }, { key: 'usedBy', label: 'Used by' }, { key: 'actions', label: '', ariaLabel: 'Actions' }]" :rows="rows" row-key="id" aria-label="Toolsets" :loaded="slice.hasSnapshot" :loading="slice.loading" :error="slice.error" :stale="slice.hasSnapshot && !!slice.error" retryable searchable search-placeholder="Search toolsets…" :search-keys="['name', 'tools']" :filters="filters" :filter-values="tableFilters" paginated :interactive="false" @update:filter-values="tableFilters = $event" @retry="store.load('toolsets')">
-      <template #name="{ row }"><span class="agents-resource-name" :title="asToolset(row).metadata.name">{{ asToolset(row).spec.displayName || asToolset(row).metadata.name }}</span><code v-if="asToolset(row).spec.displayName" class="agents-resource-id">{{ asToolset(row).metadata.name }}</code></template>
-      <template #tools="{ row }"><span v-if="asToolset(row).spec.connections?.length || asToolset(row).spec.families?.includes('visualization')" class="agents-resource-tags"><span v-if="asToolset(row).spec.families?.includes('visualization')" class="k-badge agents-badge">Visualize data</span><span v-for="connection in asToolset(row).spec.connections" :key="connection" class="k-badge agents-badge">{{ connection }}</span></span><span v-else class="muted">—</span></template>
-      <template #usedBy="{ row }"><span class="muted" :title="usedBy(asToolset(row).metadata.name) === null ? 'Agent assignments are unavailable' : undefined">{{ row.usedBy }}</span></template>
-      <template #actions="{ row }"><ResourceTableEditButton :label="`Edit toolset ${asToolset(row).metadata.name}`" :disabled="!!deletingName" @click="openEdit(asToolset(row))" /><ResourceTableDeleteButton :label="`Delete toolset ${asToolset(row).metadata.name}`" :busy-label="`Deleting toolset ${asToolset(row).metadata.name}…`" :busy="deletingName === asToolset(row).metadata.name" :disabled="!!deletingName" @click="remove(asToolset(row).metadata.name)" /></template>
-    </ResourceTable>
+      <template v-if="showFirstRun">
+        <div v-if="slice.error" class="agents-stale" role="status">
+          <AlertCircle aria-hidden="true" /> Showing the last loaded toolsets. {{ slice.error }}
+          <button class="k-btn k-btn--ghost" type="button" :disabled="slice.loading" @click="store.load('toolsets')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
+        </div>
+        <div v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-inline-notification k-inline-notification--error" role="alert" aria-live="assertive" aria-atomic="true">
+          <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+          <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be loaded. You can still create a toolset without external tools.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+          <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+        </div>
+        <div v-else-if="!connectionSlice.hasSnapshot && connectionSlice.loading" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+          <span class="agents-spinner k-spin" aria-hidden="true" />
+          <div class="k-inline-notification__body"><span class="k-inline-notification__message">Loading optional tool connections…</span></div>
+        </div>
+        <div v-else-if="!connectionSlice.hasSnapshot" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite" aria-atomic="true">
+          <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+          <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections have not loaded yet. Toolsets can still be created without them.</span></div>
+          <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Loading…' : 'Load connections' }}</button>
+        </div>
+        <div v-else-if="connectionSlice.error" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
+          <AlertCircle class="k-inline-notification__icon" aria-hidden="true" />
+          <div class="k-inline-notification__body"><span class="k-inline-notification__message">Tool connections could not be refreshed. The last loaded list remains available.</span><TechnicalDetails :diagnostic="connectionSlice.error || undefined" /></div>
+          <button class="k-inline-notification__action" type="button" :disabled="connectionSlice.loading" :aria-busy="connectionSlice.loading ? 'true' : undefined" @click="store.load('connections')">{{ connectionSlice.loading ? 'Refreshing…' : 'Retry' }}</button>
+        </div>
+        <FirstRunGuide
+          :title="hasToolConnections ? 'Bundle tools for reuse' : 'Create your first toolset'"
+          :description="hasToolConnections ? 'Group available tool connections so the same capability bundle can be attached to multiple agents.' : connectionSlice.hasSnapshot ? 'Start with core and edge capabilities now. External tool connections are optional and can be added whenever the bundle needs them.' : 'Start with core and edge capabilities now. Available external tool connections will appear after they finish loading.'"
+          primary-label="Create toolset"
+          :secondary-label="connectionSlice.hasSnapshot && !hasToolConnections ? 'Create connection' : ''"
+          :steps="hasToolConnections ? [{ label: 'Connection', description: 'Callable external tools are available' }, { label: 'Toolset', description: 'Bundle the tools for reuse' }, { label: 'Agent', description: 'Attach the bundle from Config' }] : [{ label: 'Toolset', description: 'Begin with core and edge capabilities' }, { label: 'Agent', description: 'Attach the bundle from Config' }, { label: 'Expand', description: 'Add external connections when needed' }]"
+          :current-step="hasToolConnections ? 1 : 0" journey-label="Toolset setup path"
+          @primary="emit('navigate', { kind: 'create', resource: 'toolset' })"
+          @secondary="emit('navigate', { kind: 'create', resource: 'connection' })"
+        ><template #icon><Package :stroke-width="1.75" aria-hidden="true" /></template></FirstRunGuide>
+      </template>
+      <ResourceTable v-else :columns="[{ key: 'name', label: 'Name', primary: true }, { key: 'tools', label: 'Tools' }, { key: 'usedBy', label: 'Used by' }, { key: 'actions', label: '', ariaLabel: 'Actions' }]" :rows="rows" row-key="id" aria-label="Toolsets" :loaded="slice.hasSnapshot" :loading="slice.loading" :error="slice.error" :stale="slice.hasSnapshot && !!slice.error" retryable searchable search-placeholder="Search toolsets…" :search-keys="['name', 'tools']" :filters="filters" :filter-values="tableFilters" paginated :interactive="false" @update:filter-values="tableFilters = $event" @retry="store.load('toolsets')">
+        <template #name="{ row }"><span class="agents-resource-name" :title="asToolset(row).metadata.name">{{ asToolset(row).spec.displayName || asToolset(row).metadata.name }}</span><code v-if="asToolset(row).spec.displayName" class="agents-resource-id">{{ asToolset(row).metadata.name }}</code></template>
+        <template #tools="{ row }"><span v-if="asToolset(row).spec.connections?.length || asToolset(row).spec.families?.includes('visualization')" class="agents-resource-tags"><span v-if="asToolset(row).spec.families?.includes('visualization')" class="k-badge agents-badge">Visualize data</span><span v-for="connection in asToolset(row).spec.connections" :key="connection" class="k-badge agents-badge">{{ connection }}</span></span><span v-else class="muted">—</span></template>
+        <template #usedBy="{ row }"><span class="muted" :title="usedBy(asToolset(row).metadata.name) === null ? 'Agent assignments are unavailable' : undefined">{{ row.usedBy }}</span></template>
+        <template #actions="{ row }"><ResourceTableEditButton :label="`Edit toolset ${asToolset(row).metadata.name}`" :disabled="!!deletingName" @click="openEdit(asToolset(row))" /><ResourceTableDeleteButton :label="`Delete toolset ${asToolset(row).metadata.name}`" :busy-label="`Deleting toolset ${asToolset(row).metadata.name}…`" :busy="deletingName === asToolset(row).metadata.name" :disabled="!!deletingName" @click="remove(asToolset(row).metadata.name)" /></template>
+      </ResourceTable>
     </div>
   </ResourcePage>
 </template>
