@@ -299,16 +299,16 @@ defineExpose({ loadCatalog, loadUsage })
 </script>
 
 <template>
-  <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'agents-panel agents-route-panel agents-models-page'">
+  <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'k-resource-page agents-panel agents-route-panel agents-models-page'">
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>
       <ModelConnectionEditor ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="initialFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
-      <header class="agents-panel-head k-resource-page__header">
+      <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
-          <component :is="routeOwned ? 'h2' : 'h3'" :class="routeOwned ? 'k-resource-page__title' : undefined">Models</component>
+          <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
           <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
         </div>
         <button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect model</button>
