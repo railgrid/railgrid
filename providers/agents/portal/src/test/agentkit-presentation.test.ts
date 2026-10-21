@@ -5,7 +5,7 @@ import ChatMessage from '../views/ChatMessage.vue'
 import { formatAIWorkedDuration } from '../agentkit/conversation'
 import { formatFullTime, formatRelativeTime } from '../agentkit/timestamp'
 import type { ChatMessage as ChatMessageView } from '../types'
-import { runFailurePresentation, sanitizeTechnicalDiagnostic, type FailureRecoveryTarget } from '../failure-presentation'
+import { runFailurePresentation, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt, type FailureRecoveryTarget } from '../failure-presentation'
 import { mountVue, settleVue, text } from './vue-helper'
 
 type TimestampMessage = ChatMessageView & { createdAt?: string }
@@ -252,6 +252,15 @@ describe('AgentKit timestamp and chat presentation', () => {
   ])('redacts quoted credential fields completely: %s', diagnostic => {
     expect(sanitizeTechnicalDiagnostic(diagnostic)).not.toContain('opaque-private-value')
     expect(sanitizeTechnicalDiagnostic(diagnostic)).toContain('[redacted]')
+  })
+
+  it('limits diagnostic excerpts by Unicode code point', () => {
+    const diagnostic = `${'😀'.repeat(360)}tail`
+    const excerpt = technicalDiagnosticExcerpt(diagnostic, 360)
+
+    expect(Array.from(excerpt.text)).toHaveLength(361)
+    expect(excerpt.text).toBe(`${'😀'.repeat(360)}…`)
+    expect(excerpt.truncated).toBe(true)
   })
 
   it('keeps a failed chat turn actionable while preserving secret-safe diagnostics and the run link', async () => {

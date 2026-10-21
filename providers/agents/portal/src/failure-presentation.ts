@@ -31,10 +31,18 @@ export function sanitizeTechnicalDiagnostic(value: string | null | undefined): s
     .replace(/\b(?:gh[pousr]_|xox[baprs]-)[A-Za-z0-9-]{16,}\b/gi, '[redacted token]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted token]')
 
-  if (safe.length > MAX_DIAGNOSTIC_LENGTH) {
-    safe = `${safe.slice(0, MAX_DIAGNOSTIC_LENGTH).trimEnd()}… (truncated)`
+  if (Array.from(safe).length > MAX_DIAGNOSTIC_LENGTH) {
+    safe = `${Array.from(safe).slice(0, MAX_DIAGNOSTIC_LENGTH).join('').trimEnd()}… (truncated)`
   }
   return safe
+}
+
+/** Redact before shortening so a preview never exposes a partial credential. */
+export function technicalDiagnosticExcerpt(value: string | null | undefined, limit: number): { text: string; truncated: boolean } {
+  const safe = sanitizeTechnicalDiagnostic(value)
+  const chars = Array.from(safe)
+  const truncated = chars.length > limit
+  return { text: truncated ? `${chars.slice(0, limit).join('')}…` : safe, truncated }
 }
 
 export function runFailurePresentation(phase: RunFailurePhase, diagnostic: string): RunFailurePresentation {
