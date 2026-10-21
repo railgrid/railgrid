@@ -1,6 +1,6 @@
 module github.com/railgrid/provider-quickstart
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/kcp-dev/sdk v0.33.0
