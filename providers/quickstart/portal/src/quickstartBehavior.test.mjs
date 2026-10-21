@@ -144,6 +144,41 @@ test('creation is route owned and keeps a draft through cancellation, return, an
   assert.match(element.innerHTML, /role="alert">offline/)
 })
 
+test('greeting counts describe loaded inventories without a misleading empty or loading badge', async () => {
+  const read = deferred()
+  const element = harness(() => ({ list: () => read.promise }), true)
+  element.railgridContext = context('tenant')
+  assert.doesNotMatch(element.innerHTML, /k-resource-page__meta|k-badge/)
+  read.resolve({ items: [] })
+  await flush()
+  assert.doesNotMatch(element.innerHTML, /k-resource-page__meta|k-badge/)
+  assert.match(element.innerHTML, /Create your first greeting/)
+  assert.equal((element.innerHTML.match(/data-create/g) || []).length, 1)
+  assert.match(element.innerHTML, /data-refresh/)
+})
+
+test('populated reads label the count and retain it after a failed refresh', async () => {
+  let items = [{ metadata: { name: 'hello' } }]
+  let fail = false
+  const element = harness(() => ({ list: async () => {
+    if (fail) throw new Error('offline')
+    return { items }
+  } }), true)
+  element.railgridContext = context('tenant')
+  await flush()
+  assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>1 greeting</)
+  assert.doesNotMatch(element.innerHTML, /Create your first greeting/)
+  items = [...items, { metadata: { name: 'welcome' } }]
+  await element._load()
+  assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>2 greetings</)
+  fail = true
+  await element._load()
+  assert.match(element.innerHTML, /k-resource-page__meta[^>]*>\s*<span>2 greetings</)
+  assert.match(element.innerHTML, /Showing the last successful greetings/)
+  assert.match(element.innerHTML, /offline/)
+  assert.match(element.innerHTML, /data-refresh>Retry/)
+})
+
 test('successful creation returns to the collection and clears the submitted draft', async () => {
   const element = harness(() => ({ list: async () => ({ items: [{ metadata: { name: 'created' } }] }), create: async () => ({}) }))
   element.railgridContext = { ...context('tenant'), subPath: 'create/greeting' }

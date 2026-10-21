@@ -16,10 +16,7 @@ railgrid-provider-quickstart {
   min-width: 0;
 }
 
-railgrid-provider-quickstart .quickstart-page { display: grid; gap: 16px; min-width: 0; width: 100%; }
-railgrid-provider-quickstart .quickstart-page-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
-railgrid-provider-quickstart .quickstart-page-head > div { min-width: 0; }
-railgrid-provider-quickstart .quickstart-page-title { margin: 0 0 4px; color: var(--color-text-primary); font-family: var(--font-sans); font-stretch: normal; font-size: 18px; font-weight: 600; line-height: 1.25; }
+railgrid-provider-quickstart .quickstart-page { min-width: 0; width: 100%; }
 
 railgrid-provider-quickstart .quickstart-panel {
   min-width: 0;
@@ -27,27 +24,9 @@ railgrid-provider-quickstart .quickstart-panel {
   color: var(--color-text-primary, inherit);
 }
 
-railgrid-provider-quickstart .quickstart-panel-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
 railgrid-provider-quickstart .quickstart-row-result {
   flex-basis: 100%;
   overflow-wrap: anywhere;
-}
-
-railgrid-provider-quickstart .quickstart-panel-title {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--color-text-secondary, currentColor);
-  text-transform: uppercase;
 }
 
 railgrid-provider-quickstart .quickstart-field {
