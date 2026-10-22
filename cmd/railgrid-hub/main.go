@@ -87,6 +87,9 @@ func main() {
 	cmd.Flags().BoolVar(&opts.ProviderHubAccessPlatformDefault, "provider-hub-access-platform-default", opts.ProviderHubAccessPlatformDefault,
 		"Let platform providers use the hub capabilities they declare (spec.hub.access) in workspaces where no one has accepted or declined them yet. "+
 			"Org-owned providers always need an explicit acceptance. Set false to require acceptance for every provider.")
+	cmd.Flags().BoolVar(&opts.EnableMetering, "enable-metering", false,
+		"Bootstrap contrib-metering into root:railgrid:system:metering (CRDs, APIExports, the \"billing\" WorkspaceType) "+
+			"and make the railgrid-organization WorkspaceType a billing boundary. Off by default (opt-in integration test).")
 
 	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
 	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,

@@ -28,7 +28,7 @@ var RootWorkspaceFS embed.FS
 // the provider sub-workspace parent, the tenant-fleet parent, and the `system`
 // container. The User/Organization CR-object storage moved from
 // root:railgrid:users into root:railgrid:system:tenants, so workspace-users.yaml is
-// gone. The `organization` + `workspace` + `edge` + `provider` WorkspaceTypes
+// gone. The `railgrid-organization` + `workspace` + `edge` + `provider` WorkspaceTypes
 // ship in PostProvidersFS (they carry defaultAPIBindings to exports that must
 // exist first).
 //
@@ -67,7 +67,7 @@ var ProvidersFS embed.FS
 
 // PostProvidersFS contains workspace-scoped objects that must be applied in
 // root:railgrid AFTER ProvidersFS has populated root:railgrid:system:controllers with
-// the APIExports they reference. Ships the `organization` + `workspace` +
+// the APIExports they reference. Ships the `railgrid-organization` + `workspace` +
 // `edge` + `provider` WorkspaceTypes. They carry defaultAPIBindings to exports
 // under root:railgrid:system:controllers (e.g. tenants.railgrid.ai,
 // providers.railgrid.ai); kcp's WorkspaceType admission
@@ -78,5 +78,12 @@ var ProvidersFS embed.FS
 // has no defaultAPIBindings (it is a pure mount point) but ships here too so
 // the `workspace` type's limitAllowedChildren reference to it resolves.
 //
-//go:embed workspacetype-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml workspacetype-provider.yaml
+//go:embed workspacetype-railgrid-organization.yaml workspacetype-workspace.yaml workspacetype-edge.yaml workspacetype-provider.yaml
 var PostProvidersFS embed.FS
+
+// NOTE: the metering-gated census manifests live in the `metering` subpackage
+// (config/kcp/metering) with their own embed.FS, NOT here — confighelpers.Bootstrap
+// reads the FS root (embedFS.ReadDir(".")) and skips subdirectories, so a
+// `metering/*.yaml` embed from this package would apply nothing. Keeping them out
+// of this package's `apiexport-*.yaml` glob is also what stops them being applied
+// to root:kedge:system:controllers.

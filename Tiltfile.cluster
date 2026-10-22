@@ -61,6 +61,11 @@ cfg = config.parse()
 sso_enabled = cfg.get('sso', False)
 replica_count = cfg.get('replicas', os.getenv('REPLICA_COUNT', '1'))
 
+# One switch for the whole billing/metering subsystem: the hub bootstrap
+# (--enable-metering), the controller + webhook + audit sink (contrib-metering's
+# Tiltfile), and the shard audit backend wiring below.
+metering_enabled = os.getenv('METERING_ENABLED', 'false') == 'true'
+
 default_kcp_dir = os.path.join(os.getenv('HOME', ''), 'go', 'src', 'github.com', 'kcp-dev', 'kcp')
 kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', default_kcp_dir))
 cluster_name = 'kcp-tilt'
@@ -167,6 +172,49 @@ print('')
 # at this project's directory and the kubeconfigs land here instead of the kcp
 # tree. os.getcwd() resolves to this (root) Tiltfile's directory.
 os.putenv('KCP_KUBECONFIG_DIR', os.getcwd())
+
+# Metering audit ingest: point every shard's audit backend at the metering-audit
+# sink (deployed by the metering Helm chart under METERING_ENABLED=true). The sink
+# counts requests per workspace and emits UsageRecords. Dev wires it over plain
+# HTTP (audit isn't security-sensitive; no CA). The ConfigMap (policy) + Secret
+# (webhook kubeconfig, key 'kubeconfig') live in the shard namespace (default);
+# deploy_kcp reads the KCP_AUDIT_* env hooks and sets spec.audit on each shard.
+if metering_enabled:
+    k8s_yaml(blob('''
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metering-audit-policy
+  namespace: default
+data:
+  policy.yaml: |
+    apiVersion: audit.k8s.io/v1
+    kind: Policy
+    omitStages: ["RequestReceived", "ResponseStarted"]
+    rules:
+    - level: Metadata
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: metering-audit-webhook
+  namespace: default
+stringData:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - name: metering-audit
+      cluster:
+        server: http://metering-audit.contrib-metering.svc.cluster.local:9444/audit
+    contexts:
+    - name: metering-audit
+      context: { cluster: metering-audit, user: "" }
+    current-context: metering-audit
+'''))
+    os.putenv('KCP_AUDIT_POLICY_CM', 'metering-audit-policy')
+    os.putenv('KCP_AUDIT_POLICY_KEY', 'policy.yaml')
+    os.putenv('KCP_AUDIT_WEBHOOK_SECRET', 'metering-audit-webhook')
 
 # Pull in the entire upstream kcp Tilt setup.
 include(kcp_tilt)
@@ -920,7 +968,7 @@ k8s_yaml(helm(
         # Works with token login too: /login?next completes the app authorize
         # continuation after pasting dev-token.
         'hub.publishedAppsDomain=%s' % app_base_domain,
-    ] + hub_sso_values + hub_host_aliases,
+    ] + hub_sso_values + hub_host_aliases + (['hub.enableMetering=true'] if metering_enabled else []),
 ))
 
 k8s_resource(
@@ -2255,3 +2303,69 @@ for external_providers_dir in external_providers_dirs.split(','):
     print('  external providers: %s (from %s)' % (', '.join(external_providers), external_providers_dir))
 
 print('  railgrid-hub:      %s (in-cluster, static token: dev-token)' % hub_external_url)
+
+# ===========================================================================
+# contrib-metering — billing/metering subsystem (controller + webhook + audit)
+# ===========================================================================
+# One switch (METERING_ENABLED). The hub bootstraps root:railgrid:system:metering
+# (+ the store workspace) via hub.enableMetering (set on the hub chart above);
+# THIS section deploys contrib-metering's controller, enforcement webhook, and
+# audit sink by including its own Tiltfile. contrib owns compile/image/Deployment;
+# railgrid mints the kcp kubeconfig Secret (scoped to the metering workspace) and
+# passes parameters via env. Point at your own checkout with --metering-dir= /
+# METERING_DIR. The shard audit backend is wired near the top of this file (also
+# gated on metering_enabled).
+if metering_enabled:
+    default_metering_dir = os.path.join(os.getenv('HOME', ''), 'go', 'src', 'github.com', 'kcp-dev', 'contrib-metering')
+    metering_dir = cfg.get('metering-dir', os.getenv('METERING_DIR', default_metering_dir))
+    metering_image = 'ghcr.io/kcp-dev/contrib-metering'
+    metering_namespace = 'contrib-metering'
+    metering_ws_path = 'root:railgrid:system:metering'
+
+    metering_tilt = os.path.join(metering_dir, 'contrib', 'tilt', 'Tiltfile')
+    if not os.path.exists(metering_tilt):
+        print('  metering:       SKIPPED (METERING_ENABLED set but no Tiltfile at %s; set --metering-dir=)' % metering_tilt)
+    else:
+        # kcp kubeconfig for the controller/webhook/audit, scoped to the metering
+        # workspace: rewrite the front-proxy server to <base>/clusters/<ws> (the
+        # kcp per-workspace URL form) so the apiexport provider finds its
+        # APIExportEndpointSlices. Built in a mktemp dir OUTSIDE the repo so Tilt
+        # doesn't watch it and self-retrigger.
+        local_resource(
+            'metering-kcp-secret',
+            cmd='''
+set -eu
+kdir=$(mktemp -d)
+trap 'rm -rf "$kdir"' EXIT
+cp tilt-frontproxy.kubeconfig "$kdir/kubeconfig"
+ctx=$(kubectl --kubeconfig "$kdir/kubeconfig" config current-context)
+cluster=$(kubectl --kubeconfig "$kdir/kubeconfig" config view -o jsonpath="{.contexts[?(@.name=='$ctx')].context.cluster}")
+server=$(kubectl --kubeconfig "$kdir/kubeconfig" config view -o jsonpath="{.clusters[?(@.name=='$cluster')].cluster.server}")
+base=$(echo "$server" | sed 's#/clusters/.*##')
+kubectl --kubeconfig "$kdir/kubeconfig" config set-cluster "$cluster" --server="$base/clusters/%s"
+kubectl create namespace %s --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic metering-kubeconfig -n %s \
+  --from-file=kubeconfig="$kdir/kubeconfig" --dry-run=client -o yaml | kubectl apply -f -
+''' % (metering_ws_path, metering_namespace, metering_namespace),
+            # No file deps: kcp-admin extract rewrites tilt-frontproxy.kubeconfig on
+            # every run; the resource_dep guarantees the file exists without watching it.
+            resource_deps=['kcp-admin extract'],
+            labels=['metering'],
+        )
+
+        # Hand build+deploy to contrib-metering's own Tiltfile; params flow via env
+        # (os.putenv persists across Tilt re-parses).
+        os.putenv('METERING_NAMESPACE', metering_namespace)
+        os.putenv('METERING_IMAGE', metering_image)
+        os.putenv('METERING_KUBECONFIG_SECRET', 'metering-kubeconfig')
+        os.putenv('METERING_BOUNDARY_WS_PATH', metering_ws_path)
+        os.putenv('METERING_STORE_WS_PATH', metering_ws_path + ':store')
+        # Platform workspace holding MembershipReports (railgrid census -> controller).
+        os.putenv('METERING_MEMBERSHIP_WS_PATH', metering_ws_path + ':platform')
+        # One flag deploys the whole subsystem: controller + enforcement webhook +
+        # audit sink (contrib-metering's Tiltfile reads METERING_ENABLED).
+        os.putenv('METERING_ENABLED', 'true')
+        os.putenv('METERING_BACKEND', 'noop')
+        os.putenv('METERING_HOST_ALIAS_IP', gateway_ip)
+        os.putenv('METERING_EXTRA_DEPS', 'metering-kcp-secret')
+        include(metering_tilt)

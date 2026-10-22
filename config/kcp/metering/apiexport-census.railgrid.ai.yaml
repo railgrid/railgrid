@@ -1,0 +1,26 @@
+# census.railgrid.ai — a claims-only APIExport (owns NO resources). It exists
+# solely to carry a read-only permission claim on tenancy.kcp.io/workspaces so the
+# least-privileged census controller can enumerate each organization's child
+# Workspace objects across all orgs that bound it — via this export's virtual
+# workspace — WITHOUT the hub kcp admin credential.
+#
+# Metering-gated: applied by bootstrapMetering into root:railgrid:system:metering only
+# when --enable-metering is set. Kept out of config/kcp/apiexport-*.yaml (ProvidersFS,
+# always applied to root:railgrid:system:controllers) on purpose.
+#
+# __TENANCY_IDENTITY_HASH__ is substituted at apply time with the identity hash of
+# the tenancy.kcp.io APIExport (b.workspaceIdentityHash); it must match the hash the
+# per-org APIBinding accepts (see EnsureOrgCensusBinding).
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: census.railgrid.ai
+spec:
+  permissionClaims:
+  - group: tenancy.kcp.io
+    identityHash: __TENANCY_IDENTITY_HASH__
+    resource: workspaces
+    verbs:
+    - get
+    - list
+    - watch

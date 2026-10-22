@@ -236,13 +236,30 @@ func upsertResource(ctx context.Context, client dynamic.Interface, mapper meta.R
 		return err
 	}
 
+	// Honor create-only on either the desired (FS) object or the one already in
+	// the cluster, so a manifest can opt out of updates even if the pre-existing
+	// object predates the annotation.
 	if _, exists := existing.GetAnnotations()[annotationCreateOnly]; exists {
+		logger.V(4).Info("Skipping update of create-only resource", "kind", gvk.Kind, "name", u.GetName())
+		return nil
+	}
+	if _, exists := u.GetAnnotations()[annotationCreateOnly]; exists {
 		logger.V(4).Info("Skipping update of create-only resource", "kind", gvk.Kind, "name", u.GetName())
 		return nil
 	}
 
 	u.SetResourceVersion(existing.GetResourceVersion())
 	if _, err = client.Resource(m.Resource).Namespace(u.GetNamespace()).Update(ctx, u, metav1.UpdateOptions{}); err != nil {
+		// Immutable resources (e.g. APIExportEndpointSlice.spec.export is
+		// "must not be changed") reject in-place updates. The object already
+		// exists from a prior apply, so re-applying is a no-op for bootstrap —
+		// skip rather than let Bootstrap's outer poll retry the update forever
+		// (which otherwise hangs the whole bootstrap). Only update errors are
+		// treated this way; a genuinely malformed manifest still fails at Create.
+		if apierrors.IsInvalid(err) {
+			logger.V(2).Info("Skipping update of immutable resource", "kind", gvk.Kind, "name", u.GetName(), "err", err.Error())
+			return nil
+		}
 		return fmt.Errorf("could not update %s %s: %w", gvk.Kind, u.GetName(), err)
 	}
 	logger.V(2).Info("Updated resource", "kind", gvk.Kind, "name", u.GetName())

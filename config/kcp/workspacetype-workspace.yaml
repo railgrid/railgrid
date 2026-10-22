@@ -21,12 +21,12 @@ spec:
     types:
     - name: edge
       path: root:railgrid
-  # workspace workspaces must be children of an `organization` workspace —
+  # workspace workspaces must be children of an `railgrid-organization` workspace —
   # they only make sense as a team inside an Org. The kcp WorkspaceType
   # admission rejects an attempt to create one at any other path.
   limitAllowedParents:
     types:
-    - name: organization
+    - name: railgrid-organization
       path: root:railgrid
   # Deliberately no `extend: universal` and no defaultAPIBindings:
   #   * Universal would pull tenancy.kcp.io (Workspace/WorkspaceType) and

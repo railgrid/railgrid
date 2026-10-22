@@ -6,8 +6,8 @@ metadata:
     bootstrap.kcp.io/create-only: "true"
 spec:
   # Parent of every tenant (Organization) workspace. Each Organization gets a
-  # child workspace at root:railgrid:tenants:{uuid} of type `organization` (see
-  # workspacetype-organization.yaml). The tenants parent itself is plain
+  # child workspace at root:railgrid:tenants:{uuid} of type `railgrid-organization` (see
+  # workspacetype-railgrid-organization.yaml). The tenants parent itself is plain
   # universal because nothing tenant-facing lives directly inside it —
   # only child Organization workspaces.
   type:

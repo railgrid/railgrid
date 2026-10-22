@@ -78,6 +78,29 @@ const (
 	// that parents that Org's own (BYO) provider sub-workspaces. It is a
 	// reserved name: team workspaces are UUID-named, so it cannot collide.
 	OrgProvidersWorkspaceName = "providers"
+
+	// SystemMetering is the metering system workspace: contrib-metering's CRDs,
+	// provider/user APIExports, and the "billing" WorkspaceType mixin live here
+	// (the in-tree analogue of contrib-metering's default root:metering). Only
+	// bootstrapped when metering is enabled (hub --enable-metering).
+	SystemMetering = System + ":metering"
+
+	// SystemMeteringStore is the dedicated store workspace: it binds the
+	// metering-store APIExport (defined in SystemMetering) so the source-of-truth
+	// Account/Entitlement/Plan objects are servable and writable here. The metering
+	// controller's initializer/terminator write here (--store-path). Consuming the
+	// export in a separate workspace, rather than reading the CRDs in SystemMetering
+	// directly, is the idiomatic kcp define-in-provider/bind-in-consumer split.
+	SystemMeteringStore = SystemMetering + ":store"
+
+	// SystemMeteringPlatform is the dedicated, hub-controlled platform workspace: it
+	// binds the metering-platform APIExport (defined in SystemMetering) so the
+	// platform-asserted MembershipReport objects (which workspaces belong to which
+	// account) are servable and writable here. The census controller writes reports
+	// here; the metering controller reads them (--membership-path). Membership is
+	// platform ground truth — this workspace is never bound by a provider or tenant,
+	// so 3rd parties cannot forge membership.
+	SystemMeteringPlatform = SystemMetering + ":platform"
 )
 
 // ProviderPath returns the sub-workspace path for a provider by name:
