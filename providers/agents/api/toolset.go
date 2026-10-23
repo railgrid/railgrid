@@ -292,6 +292,15 @@ func (s *Server) revalidateHubAggregateTool(run taskRun, tool backend.Tool) back
 		if err := revalidateAgentArtifactSources(ctx, caller.Dynamic(), observation.Sources); err != nil {
 			return backend.Observation{}, fmt.Errorf("source-backed aggregate output is unavailable to this caller: %w", err)
 		}
+		if p := observation.Presentation; p != nil && p.MCPAppReference != nil &&
+			!mcpAppDigestApproved(s.cfg.MCPAppApprovedDigests, p.MCPAppReference.Provider, p.MCPAppReference.SHA256) {
+			p = p.Clone()
+			p.MCPAppReference, p.MCPApp = nil, nil
+			if p.Title == "" {
+				p = nil
+			}
+			observation.Presentation = p
+		}
 		return observation, nil
 	}
 	return tool

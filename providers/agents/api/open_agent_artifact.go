@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/railgrid/provider-agents/backend"
+	"github.com/railgrid/provider-agents/store"
 )
 
 type openAgentArtifactInput struct {
@@ -109,7 +110,23 @@ func (s *Server) openAgentArtifactTool(run taskRun) backend.Tool {
 			}
 			payload = append(payload[:0], expected.Payload...)
 		}
-		return backend.Observation{Text: string(artifact.Data), ResultReference: payload}, nil
+		var presentation *store.ProviderPresentation
+		if artifact.Presentation != nil {
+			presentation = artifact.Presentation.Clone()
+			if presentation.MCPAppReference != nil {
+				caller := identity{clusterID: run.ClusterID, token: run.HubToken}
+				app, ok := s.currentMCPAppResource(ctx, caller, *presentation.MCPAppReference)
+				if ok && app.ResourceURI == presentation.MCPAppReference.ResourceURI && app.SHA256 == presentation.MCPAppReference.SHA256 {
+					presentation.MCPApp = nil
+				} else {
+					presentation.MCPAppReference, presentation.MCPApp = nil, nil
+				}
+			}
+			if presentation.MCPAppReference == nil && presentation.Title == "" {
+				presentation = nil
+			}
+		}
+		return backend.Observation{Text: string(artifact.Data), ResultReference: payload, Presentation: presentation}, nil
 	}
 
 	return backend.Tool{

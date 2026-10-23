@@ -105,14 +105,19 @@ func runServe() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	approvedMCPAppDigests, err := api.ParseMCPAppApprovedDigests(os.Getenv("RAILGRID_MCP_APP_APPROVED_DIGESTS"))
+	if err != nil {
+		log.Fatalf("invalid RAILGRID_MCP_APP_APPROVED_DIGESTS: %v", err)
+	}
 	srv, err := api.New(ctx, api.Config{
-		HubURL:             os.Getenv("RAILGRID_HUB_URL"),
-		HubInsecure:        os.Getenv("RAILGRID_HUB_INSECURE") == "true",
-		DatabaseURL:        os.Getenv("AGENTS_DATABASE_URL"),
-		InMemoryStore:      os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
-		ProviderKubeconfig: os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
-		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
-		OAuthApps:          oauthAppsFromEnv(),
+		HubURL:                os.Getenv("RAILGRID_HUB_URL"),
+		HubInsecure:           os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+		DatabaseURL:           os.Getenv("AGENTS_DATABASE_URL"),
+		InMemoryStore:         os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
+		ProviderKubeconfig:    os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),
+		WebhookKey:            os.Getenv("AGENTS_WEBHOOK_KEY"),
+		OAuthApps:             oauthAppsFromEnv(),
+		MCPAppApprovedDigests: approvedMCPAppDigests,
 		// How many inbound deliveries the sink keeps per Webhook when the
 		// webhook does not say (spec.deliveryRetention). Default 200.
 		TriggerDeliveryRetention: intEnv("AGENTS_TRIGGER_DELIVERY_RETENTION"),

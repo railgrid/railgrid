@@ -59,6 +59,7 @@ helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-prov
 | `store.inMemoryStore` | `false` |  |
 | `triggers` |  | Event triggers and the webhooks they route from. |
 | `triggers.deliveryRetention` | `200` | The default for how many recent inbound deliveries the provider keeps per Webhook — every authenticated POST to its URL, with what each routed trigger made of it — for the portal's delivery sink and filter tester (`AGENTS_TRIGGER_DELIVERY_RETENTION`). A Webhook's own `spec.deliveryRetention` overrides it; `0` keeps nothing; `1000` is the ceiling. |
+| `mcpApps.approvedDigests` | `{}` | Operator-reviewed map from Hub provider name to exact lowercase SHA-256 HTML digests, rendered as `RAILGRID_MCP_APP_APPROVED_DIGESTS`. Empty denies all hosted MCP Apps. |
 | `hub` |  |  |
 | `hub.url` | `"http://railgrid-hub.railgrid.svc.cluster.local:8080"` |  |
 | `hub.insecure` | `false` |  |
@@ -73,4 +74,3 @@ helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-prov
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
-

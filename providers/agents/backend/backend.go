@@ -37,7 +37,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/resulttypes"
 )
 
 // Role constants for the conversation a turn runs over.
@@ -166,7 +166,7 @@ type Observation struct {
 	Images []Image
 	// Sources are adapter-authored provenance bound to exact published objects
 	// and access actions. They are descriptive only; readers must reauthorize.
-	Sources []store.SourceReference
+	Sources []resulttypes.SourceReference
 	// ResultReference and Receipt are opaque bounded JSON supplied only by an
 	// adapter registered with ToolResultReferenceOnly. They must not contain
 	// result bytes or secrets.
@@ -174,7 +174,7 @@ type Observation struct {
 	Receipt         json.RawMessage
 	// Presentation is validated, untrusted display metadata. Hosted resource
 	// bytes remain out of model context and checkpoints.
-	Presentation *store.ProviderPresentation
+	Presentation *resulttypes.ProviderPresentation
 }
 
 type toolCallIDKey struct{}
@@ -221,16 +221,16 @@ type ToolEvent struct {
 	Duration time.Duration
 	// Sources are server-observed source references attached to a successful
 	// tool result. They are not verified business truth or freshness.
-	Sources []store.SourceReference
+	Sources []resulttypes.SourceReference
 	// Presentation is available to in-process observers. Embedded UI resources
 	// stay out of serialized event payloads.
-	Presentation *store.ProviderPresentation `json:"-"`
+	Presentation *resulttypes.ProviderPresentation `json:"-"`
 }
 
 // HasMCPApp reports whether this successful event carries a validated
 // source-backed MCP App. It is a UI availability hint, not authorization.
 func (e ToolEvent) HasMCPApp() bool {
-	if e.Err || len(e.Sources) == 0 || e.Presentation == nil || e.Presentation.MCPApp == nil || e.Presentation.Validate() != nil {
+	if e.Err || len(e.Sources) == 0 || e.Presentation == nil || e.Presentation.MCPAppReference == nil || e.Presentation.Validate() != nil {
 		return false
 	}
 	for _, source := range e.Sources {

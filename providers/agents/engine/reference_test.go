@@ -296,11 +296,8 @@ func TestToolEventCarriesValidatedSourceBackedPresentation(t *testing.T) {
 	presentation := &store.ProviderPresentation{
 		Version: 1,
 		Title:   "Document view",
-		MCPApp: &store.MCPAppResource{
-			ResourceURI: "ui://provider.example/document-view",
-			MIMEType:    store.MCPAppMIMEType,
-			HTML:        html,
-			SHA256:      hex.EncodeToString(digest[:]),
+		MCPAppReference: &store.MCPAppReference{
+			Provider: "documents", ResourceURI: "ui://railgrid-provider/documents/dWk6Ly9kb2N1bWVudHMvcmVwb3J0", SHA256: hex.EncodeToString(digest[:]),
 		},
 	}
 	toolModel := &scriptedBackendModel{responses: referenceResponses()}
@@ -316,12 +313,12 @@ func TestToolEventCarriesValidatedSourceBackedPresentation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	if !event.HasMCPApp() || len(event.Sources) != 1 || event.Presentation == nil || event.Presentation.MCPApp.HTML != html {
+	if !event.HasMCPApp() || len(event.Sources) != 1 || event.Presentation == nil || event.Presentation.MCPApp != nil || event.Presentation.MCPAppReference == nil {
 		t.Fatalf("tool event lost validated provenance or app: %+v", event)
 	}
 	source.Access[0].Verb = "delete"
-	presentation.MCPApp.HTML = "mutated"
-	if event.Sources[0].Access[0].Verb != "get" || event.Presentation.MCPApp.HTML != html {
+	presentation.MCPAppReference.ResourceURI = "mutated"
+	if event.Sources[0].Access[0].Verb != "get" || event.Presentation.MCPAppReference.ResourceURI == "mutated" {
 		t.Fatalf("tool event metadata aliases adapter memory: %+v", event)
 	}
 	encoded, err := json.Marshal(event)

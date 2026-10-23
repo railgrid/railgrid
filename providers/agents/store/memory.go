@@ -1190,10 +1190,8 @@ func (m *MemoryStore) AppendToolCall(_ context.Context, scope Scope, tc ToolCall
 			return fmt.Errorf("tool call source %d: %w", i, err)
 		}
 	}
+	tc.Presentation = contentFreePresentation(tc.Presentation, tc.Sources)
 	if tc.Presentation != nil {
-		if tc.Presentation.MCPApp != nil && len(tc.Sources) == 0 {
-			return fmt.Errorf("MCP App resources require source references")
-		}
 		if err := tc.Presentation.Validate(); err != nil {
 			return err
 		}
@@ -1203,7 +1201,6 @@ func (m *MemoryStore) AppendToolCall(_ context.Context, scope Scope, tc ToolCall
 	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope)
 	tc.Sources = cloneAgentArtifact(AgentArtifact{Sources: tc.Sources}).Sources
-	tc.Presentation = tc.Presentation.Clone()
 	m.toolCalls[k] = append(m.toolCalls[k], tc)
 	return nil
 }
@@ -1528,6 +1525,7 @@ func (m *MemoryStore) SaveAgentArtifact(_ context.Context, scope Scope, artifact
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
+	artifact.Presentation = contentFreePresentation(artifact.Presentation, artifact.Sources)
 	if err := artifact.validate(); err != nil {
 		return err
 	}
@@ -1544,7 +1542,7 @@ func (m *MemoryStore) SaveAgentArtifact(_ context.Context, scope Scope, artifact
 	}
 	count, total := 0, int64(0)
 	for existingKey, existing := range m.agentArtifacts {
-		if !hasPrefix(existingKey, prefix) || existing.AgentUID != artifact.AgentUID {
+		if !hasPrefix(existingKey, prefix) || existing.AgentUID != artifact.AgentUID || existing.Owner != artifact.Owner {
 			continue
 		}
 		count++

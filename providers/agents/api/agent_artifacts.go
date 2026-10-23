@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"reflect"
 	"strings"
@@ -32,11 +31,11 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tools"
 	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 const (
-	agentArtifactRequestLimit              = 16 * 1024
 	agentArtifactSourceRevalidationTimeout = 10 * time.Second
 )
 
@@ -67,6 +66,7 @@ type agentArtifactView struct {
 	InputDigest    string                      `json:"inputDigest,omitempty"`
 	InputSize      int64                       `json:"inputSize,omitempty"`
 	Data           string                      `json:"data,omitempty"`
+	AppIdentity    *store.MCPAppReference      `json:"appIdentity,omitempty"`
 	Presentation   *store.ProviderPresentation `json:"presentation,omitempty"`
 }
 
@@ -90,6 +90,10 @@ func agentArtifactViewOf(artifact store.AgentArtifact, includeData, sourceAccess
 		view.InputDigest = artifact.InputDigest
 		view.InputSize = artifact.InputSize
 		view.Presentation = artifact.Presentation.Clone()
+		if view.Presentation != nil && view.Presentation.MCPAppReference != nil {
+			appIdentity := *view.Presentation.MCPAppReference
+			view.AppIdentity = &appIdentity
+		}
 	}
 	return view
 }
@@ -174,57 +178,7 @@ func (s *Server) agentArtifacts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createAgentArtifactFromDataPlane(w http.ResponseWriter, r *http.Request, id identity, scope store.Scope, agentUID string) {
-	req, err := decodeCreateAgentArtifactRequest(w, r)
-	if err != nil {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
-		return
-	}
-	artifact, err := s.captureAgentArtifact(r.Context(), scope, agentUID, id.user, req, nil)
-	if err != nil {
-		writeArtifactHTTPError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, agentArtifactViewOf(artifact, true, false))
-}
-
-func decodeCreateAgentArtifactRequest(w http.ResponseWriter, r *http.Request) (createAgentArtifactRequest, error) {
-	var req createAgentArtifactRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, agentArtifactRequestLimit))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		return req, fmt.Errorf("invalid artifact request: %w", err)
-	}
-	var trailing any
-	if !errors.Is(decoder.Decode(&trailing), io.EOF) {
-		return req, fmt.Errorf("artifact request must contain one JSON object")
-	}
-	req.RunID = strings.TrimSpace(req.RunID)
-	req.SessionID = strings.TrimSpace(req.SessionID)
-	req.ToolCallID = strings.TrimSpace(req.ToolCallID)
-	req.Title = strings.TrimSpace(req.Title)
-	if req.RunID == "" || req.SessionID == "" || req.ToolCallID == "" {
-		return req, fmt.Errorf("runID, sessionID and toolCallID are required")
-	}
-	if len(req.Title) > 160 {
-		return req, fmt.Errorf("title exceeds 160 bytes")
-	}
-	return req, nil
-}
-
-func writeArtifactHTTPError(w http.ResponseWriter, err error) {
-	var failure *artifactMCPFailure
-	if errors.As(err, &failure) {
-		writeStatus(w, failure.status, failure.reason, failure.message)
-		return
-	}
-	switch {
-	case errors.Is(err, store.ErrAgentArtifactResultTooLarge):
-		writeStatus(w, http.StatusRequestEntityTooLarge, "ArtifactTooLarge", "tool result exceeds the saved artifact size limit")
-	case errors.Is(err, store.ErrAgentArtifactLimit):
-		writeStatus(w, http.StatusConflict, "ArtifactLimitReached", err.Error())
-	default:
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "could not capture Agent artifact")
-	}
+	writeStatus(w, http.StatusForbidden, "AttendedTransportRequired", "capturing a tool result requires the caller's current permission to read its exact run; use the caller-attended MCP transport")
 }
 
 type artifactCallReceipt struct {
@@ -273,7 +227,8 @@ func (s *Server) captureAgentArtifact(
 	scope store.Scope,
 	agentUID, owner string,
 	req createAgentArtifactRequest,
-	revalidate func(context.Context, []store.SourceReference) error,
+	authorizeRunRead func(context.Context, string) error,
+	revalidateSources func(context.Context, []store.SourceReference) error,
 ) (store.AgentArtifact, error) {
 	req.RunID, req.SessionID, req.ToolCallID, req.Title = strings.TrimSpace(req.RunID), strings.TrimSpace(req.SessionID), strings.TrimSpace(req.ToolCallID), strings.TrimSpace(req.Title)
 	if req.RunID == "" || req.SessionID == "" || req.ToolCallID == "" {
@@ -286,6 +241,9 @@ func (s *Server) captureAgentArtifact(
 	if err != nil || run.AgentName != scope.AgentName || run.SessionID != req.SessionID {
 		return store.AgentArtifact{}, artifactMCPNotFound("successful tool receipt is unavailable")
 	}
+	if authorizeRunRead == nil || authorizeRunRead(ctx, req.RunID) != nil {
+		return store.AgentArtifact{}, artifactMCPDenied("RunReadUnavailable", "the caller cannot capture this result because current read access to its exact run could not be verified")
+	}
 	calls, err := s.store.ListToolCalls(ctx, scope, req.RunID)
 	if err != nil {
 		return store.AgentArtifact{}, err
@@ -295,7 +253,7 @@ func (s *Server) captureAgentArtifact(
 		return store.AgentArtifact{}, err
 	}
 	if len(receipt.Sources) > 0 {
-		if revalidate == nil || revalidate(ctx, receipt.Sources) != nil {
+		if revalidateSources == nil || revalidateSources(ctx, receipt.Sources) != nil {
 			return store.AgentArtifact{}, artifactMCPDenied("SourceUnavailable", "source-backed output cannot be saved because the caller's current access or exact source identity could not be verified")
 		}
 	}
@@ -303,7 +261,7 @@ func (s *Server) captureAgentArtifact(
 	if err != nil {
 		return store.AgentArtifact{}, err
 	}
-	if !found || len(message.Content) == 0 {
+	if !found || message.ContentEncrypted || len(message.Content) == 0 {
 		return store.AgentArtifact{}, artifactMCPNotFound("successful tool output is unavailable")
 	}
 	data, input := []byte(message.Content), []byte(receipt.Args)
@@ -327,12 +285,18 @@ func (s *Server) captureAgentArtifact(
 		sum := sha256.Sum256(input)
 		inputDigest = hex.EncodeToString(sum[:])
 	}
+	presentation := receipt.Presentation.Clone()
+	if presentation != nil && presentation.MCPAppReference != nil {
+		// Persist only the content-free app receipt. Capture responses hydrate
+		// current, approved HTML after the immutable artifact has been stored.
+		presentation.MCPApp = nil
+	}
 	artifact := store.AgentArtifact{
 		ID: agentArtifactCaptureID(scope, agentUID, owner, req), AgentName: scope.AgentName, AgentUID: agentUID, Owner: owner,
 		RunID: req.RunID, SessionID: req.SessionID, ToolCallID: req.ToolCallID, ToolName: receipt.Tool, Title: title,
 		MediaType: mediaType, Digest: hex.EncodeToString(digestBytes[:]), Size: int64(len(data)), Data: data,
 		Input: input, InputDigest: inputDigest, InputSize: int64(len(input)), Sources: receipt.Sources,
-		Presentation: receipt.Presentation.Clone(), CreatedAt: time.Now().UTC(),
+		Presentation: presentation, CreatedAt: time.Now().UTC(),
 	}
 	if existing, exists, err := s.store.GetAgentArtifact(ctx, scope, agentUID, owner, artifact.ID); err != nil {
 		return store.AgentArtifact{}, err
@@ -359,11 +323,62 @@ func matchingAgentArtifactCapture(existing, expected store.AgentArtifact) (store
 	if existing.AgentName != expected.AgentName || existing.AgentUID != expected.AgentUID || existing.Owner != expected.Owner ||
 		existing.RunID != expected.RunID || existing.SessionID != expected.SessionID || existing.ToolCallID != expected.ToolCallID ||
 		existing.ToolName != expected.ToolName || existing.Digest != expected.Digest || existing.InputDigest != expected.InputDigest ||
-		!reflect.DeepEqual(existing.Sources, expected.Sources) || !reflect.DeepEqual(existing.Presentation, expected.Presentation) ||
+		!reflect.DeepEqual(existing.Sources, expected.Sources) ||
 		string(existing.Data) != string(expected.Data) || string(existing.Input) != string(expected.Input) {
 		return store.AgentArtifact{}, &artifactMCPFailure{code: "Conflict", reason: "ArtifactReceiptChanged", message: "this tool receipt no longer matches its saved artifact; reload the run before capturing again", status: http.StatusConflict}
 	}
 	return existing, nil
+}
+
+func (s *Server) currentMCPAppResource(ctx context.Context, caller identity, ref store.MCPAppReference) (*store.MCPAppResource, bool) {
+	if ref.Validate() != nil || !mcpAppDigestApproved(s.cfg.MCPAppApprovedDigests, ref.Provider, ref.SHA256) || caller.clusterID == "" || caller.token == "" {
+		return nil, false
+	}
+	endpoint := s.aggregateMCPEndpoint(ctx, caller)
+	if endpoint == "" {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	session, err := tools.ConnectHubAggregateMCPEndpoint(ctx, endpoint, caller.token, "agents-artifact", s.cfg.HubInsecure)
+	if err != nil {
+		return nil, false
+	}
+	defer session.Close()
+	app, err := session.ReadHubAggregateMCPAppResource(ctx, ref)
+	if err != nil || app.Validate() != nil || app.ResourceURI != ref.ResourceURI || app.SHA256 != ref.SHA256 {
+		return nil, false
+	}
+	return app, true
+}
+
+func stripMCPAppFromArtifactView(view *agentArtifactView) {
+	if view == nil {
+		return
+	}
+	view.AppIdentity = nil
+	if view.Presentation == nil {
+		return
+	}
+	view.Presentation.MCPAppReference = nil
+	view.Presentation.MCPApp = nil
+	if view.Presentation.Title == "" {
+		view.Presentation = nil
+	}
+}
+
+func retainCurrentMCPApp(ctx context.Context, s *Server, caller identity, artifact store.AgentArtifact, view *agentArtifactView) {
+	if view == nil || view.AppIdentity == nil || artifact.Presentation == nil || artifact.Presentation.MCPAppReference == nil {
+		return
+	}
+	app, ok := s.currentMCPAppResource(ctx, caller, *artifact.Presentation.MCPAppReference)
+	if !ok || app.ResourceURI != artifact.Presentation.MCPAppReference.ResourceURI || app.SHA256 != artifact.Presentation.MCPAppReference.SHA256 {
+		stripMCPAppFromArtifactView(view)
+		return
+	}
+	if view.Presentation != nil {
+		view.Presentation.MCPApp = app
+	}
 }
 
 func isValidUTF8(b []byte) bool { return utf8.Valid(b) }
@@ -480,6 +495,26 @@ func authorizeArtifactResource(ctx context.Context, caller dynamic.Interface, at
 	return allowed, nil
 }
 
+func authorizeArtifactRunRead(ctx context.Context, caller dynamic.Interface, agentName, runID string) error {
+	ctx, cancel := context.WithTimeout(ctx, agentArtifactSourceRevalidationTimeout)
+	defer cancel()
+	allowed, err := authorizeArtifactResource(ctx, caller, dataplane.ResourceAttributes{
+		Group: agentsv1alpha1.GroupName, Version: agentsv1alpha1.Version, Resource: "runs", Name: runID, Verb: "get",
+	})
+	if err != nil || !allowed {
+		return fmt.Errorf("caller run read is unavailable")
+	}
+	object, err := caller.Resource(agentsclient.RunGVR).Get(ctx, runID, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("caller run read is unavailable")
+	}
+	agentRef, found, err := unstructured.NestedString(object.Object, "spec", "agentRef")
+	if err != nil || !found || agentRef != agentName {
+		return fmt.Errorf("caller run identity is unavailable")
+	}
+	return nil
+}
+
 func revalidateAgentArtifactSources(ctx context.Context, caller dynamic.Interface, sources []store.SourceReference) error {
 	ctx, cancel := context.WithTimeout(ctx, agentArtifactSourceRevalidationTimeout)
 	defer cancel()
@@ -547,13 +582,16 @@ func (s *Server) registerAgentArtifactMCPTools(srv *mcp.Server, r *http.Request)
 		if err != nil {
 			return artifactMCPRefused(err)
 		}
-		artifact, err := s.captureAgentArtifact(ctx, caller.scope, string(caller.agent.UID), caller.identity.user, createAgentArtifactRequest{RunID: in.RunID, SessionID: in.SessionID, ToolCallID: in.ToolCallID, Title: in.Title}, func(ctx context.Context, sources []store.SourceReference) error {
+		artifact, err := s.captureAgentArtifact(ctx, caller.scope, string(caller.agent.UID), caller.identity.user, createAgentArtifactRequest{RunID: in.RunID, SessionID: in.SessionID, ToolCallID: in.ToolCallID, Title: in.Title}, func(ctx context.Context, runID string) error {
+			return authorizeArtifactRunRead(ctx, caller.dynamic, caller.agent.Name, runID)
+		}, func(ctx context.Context, sources []store.SourceReference) error {
 			return revalidateAgentArtifactSources(ctx, caller.dynamic, sources)
 		})
 		if err != nil {
 			return artifactMCPRefused(err)
 		}
 		view := agentArtifactViewOf(artifact, true, len(artifact.Sources) > 0)
+		retainCurrentMCPApp(ctx, s, caller.identity, artifact, &view)
 		return artifactMCPAppResult(&view), artifactMCPOutput{Artifact: &view}, nil
 	})
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_agent_artifact", Title: "Open saved result", Description: "Open one saved result. Source-backed data, input, and app HTML are returned only after the caller's current actions and exact source UIDs are revalidated.", Annotations: readOnly}, func(ctx context.Context, _ *mcp.CallToolRequest, in artifactMCPInput) (*mcp.CallToolResult, artifactMCPOutput, error) {
@@ -572,6 +610,7 @@ func (s *Server) registerAgentArtifactMCPTools(srv *mcp.Server, r *http.Request)
 			return artifactMCPRefused(artifactMCPDenied("SourceUnavailable", "source-backed result is unavailable because the caller's current access or exact source identity could not be verified"))
 		}
 		view := agentArtifactViewOf(artifact, true, len(artifact.Sources) > 0)
+		retainCurrentMCPApp(ctx, s, caller.identity, artifact, &view)
 		return artifactMCPAppResult(&view), artifactMCPOutput{Artifact: &view}, nil
 	})
 	mcp.AddTool(srv, &mcp.Tool{Name: "delete_agent_artifact", Title: "Delete saved result", Description: "Delete one saved result and its pinned app resource.", Annotations: deleteAnnotations}, func(ctx context.Context, _ *mcp.CallToolRequest, in artifactMCPInput) (*mcp.CallToolResult, artifactMCPOutput, error) {

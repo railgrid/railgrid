@@ -14,10 +14,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,9 +51,8 @@ func TestCaptureAgentArtifactRequiresCurrentSourceAuthorization(t *testing.T) {
 	htmlDigest := sha256.Sum256([]byte(html))
 	presentation := &store.ProviderPresentation{
 		Version: 1, Title: "Latest report",
-		MCPApp: &store.MCPAppResource{
-			ResourceURI: "ui://railgrid-provider/report/abc", MIMEType: store.MCPAppMIMEType,
-			HTML: html, SHA256: hex.EncodeToString(htmlDigest[:]),
+		MCPAppReference: &store.MCPAppReference{
+			Provider: "reports", ResourceURI: "ui://railgrid-provider/reports/dWk6Ly9yZXBvcnRzL3JlcG9ydA", SHA256: hex.EncodeToString(htmlDigest[:]),
 		},
 	}
 	runID, callID := "run-1", "call-1"
@@ -69,12 +73,18 @@ func TestCaptureAgentArtifactRequiresCurrentSourceAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := createAgentArtifactRequest{RunID: runID, SessionID: "chat", ToolCallID: callID}
-	if _, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "caller", req, nil); err == nil {
-		t.Fatal("source-backed capture succeeded without current source authorization")
+	if _, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "caller", req, nil, nil); err == nil {
+		t.Fatal("source-backed capture succeeded without current run authorization")
 	}
-	called := false
-	artifact, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "caller", req, func(_ context.Context, got []store.SourceReference) error {
-		called = true
+	runReadCalled, sourceReadCalled := false, false
+	artifact, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "caller", req, func(_ context.Context, gotRunID string) error {
+		runReadCalled = true
+		if gotRunID != runID {
+			t.Fatalf("run ID passed for authorization = %q, want %q", gotRunID, runID)
+		}
+		return nil
+	}, func(_ context.Context, got []store.SourceReference) error {
+		sourceReadCalled = true
 		if len(got) != 1 || got[0].Object.UID != source.Object.UID {
 			t.Fatalf("sources passed for revalidation = %+v", got)
 		}
@@ -83,19 +93,205 @@ func TestCaptureAgentArtifactRequiresCurrentSourceAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !called || string(artifact.Data) != string(data) || string(artifact.Input) != input || artifact.Digest == "" || artifact.Presentation == nil || artifact.Presentation.MCPApp == nil {
-		t.Fatalf("captured artifact = %+v, callback called=%t", artifact, called)
+	if !runReadCalled || !sourceReadCalled || string(artifact.Data) != string(data) || string(artifact.Input) != input || artifact.Digest == "" || artifact.Presentation == nil || artifact.Presentation.MCPAppReference == nil || artifact.Presentation.MCPApp != nil {
+		t.Fatalf("capture must retain raw result and content-free app receipt: artifact=%+v, run read callback=%t, source callback=%t", artifact, runReadCalled, sourceReadCalled)
 	}
 	metadata := agentArtifactViewOf(artifact, false, false)
 	if metadata.Data != "" || metadata.Input != "" || metadata.Presentation != nil || metadata.Sources[0].Object.UID != source.Object.UID {
 		t.Fatalf("artifact metadata view leaked payload: %+v", metadata)
 	}
 	opened := agentArtifactViewOf(artifact, true, true)
-	if opened.Data != string(data) || opened.Presentation == nil || opened.Presentation.MCPApp == nil || opened.EvidenceStatus != "source_identity_and_access_revalidated" {
+	if opened.Data != string(data) || opened.Presentation == nil || opened.Presentation.MCPAppReference == nil || opened.Presentation.MCPApp != nil || opened.EvidenceStatus != "source_identity_and_access_revalidated" {
 		t.Fatalf("authorized artifact view = %+v", opened)
 	}
 	if _, found, err := st.GetAgentArtifact(ctx, scope, "agent-uid", "other-caller", artifact.ID); err != nil || found {
 		t.Fatalf("artifact crossed owner boundary: found=%t err=%v", found, err)
+	}
+}
+
+func TestSourceFreeArtifactCaptureStillRequiresExactRunRead(t *testing.T) {
+	ctx := t.Context()
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "analyst"}
+	now := time.Now().UTC()
+	if err := st.SaveRun(ctx, scope, store.Run{ID: "run-plain", AgentName: scope.AgentName, SessionID: "chat", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendToolCall(ctx, scope, store.ToolCall{
+		ID: "audit-plain", AgentName: scope.AgentName, RunID: "run-plain", CallID: "call-plain", SessionID: "chat",
+		Tool: "external__report", Args: `{}`, Result: `plain output`, Outcome: "ok", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendMessage(ctx, scope, store.Message{
+		ID: "message-plain", AgentName: scope.AgentName, RunID: "run-plain", SessionID: "chat", Role: "tool",
+		Content: "plain output", Metadata: map[string]any{historyToolCallIDKey: "call-plain"}, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	req := createAgentArtifactRequest{RunID: "run-plain", SessionID: "chat", ToolCallID: "call-plain"}
+	if _, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "alice", req, nil, nil); err == nil {
+		t.Fatal("source-free capture succeeded without run-read authorization")
+	}
+	called := false
+	artifact, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "alice", req, func(_ context.Context, runID string) error {
+		called = true
+		if runID != "run-plain" {
+			t.Fatalf("authorized run ID = %q", runID)
+		}
+		return nil
+	}, nil)
+	if err != nil || !called || string(artifact.Data) != "plain output" {
+		t.Fatalf("source-free capture = %+v, run-read called=%t, err=%v", artifact, called, err)
+	}
+}
+
+func TestEncryptedToolMessageCannotBeCapturedAsPlainArtifact(t *testing.T) {
+	ctx := t.Context()
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "analyst"}
+	now := time.Now().UTC()
+	if err := st.SaveRun(ctx, scope, store.Run{ID: "run-encrypted", AgentName: scope.AgentName, SessionID: "chat", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendToolCall(ctx, scope, store.ToolCall{
+		ID: "audit-encrypted", AgentName: scope.AgentName, RunID: "run-encrypted", CallID: "call-encrypted", SessionID: "chat",
+		Tool: "external__report", Args: `{}`, Result: "ciphertext", Outcome: "ok", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendMessage(ctx, scope, store.Message{
+		ID: "message-encrypted", AgentName: scope.AgentName, RunID: "run-encrypted", SessionID: "chat", Role: "tool",
+		Content: "ciphertext", ContentEncrypted: true, Metadata: map[string]any{historyToolCallIDKey: "call-encrypted"}, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	_, err := s.captureAgentArtifact(ctx, scope, "agent-uid", "alice", createAgentArtifactRequest{RunID: "run-encrypted", SessionID: "chat", ToolCallID: "call-encrypted"}, func(context.Context, string) error { return nil }, nil)
+	if err == nil {
+		t.Fatal("encrypted tool message was saved as a plaintext artifact")
+	}
+}
+
+func TestArtifactCaptureRehydratesOnlyCurrentApprovedMCPApp(t *testing.T) {
+	ctx := t.Context()
+	const html = "<main>current report</main>"
+	currentHTML := &atomic.Value{}
+	currentHTML.Store(html)
+	digest := sha256.Sum256([]byte(html))
+	pin := hex.EncodeToString(digest[:])
+	resourceURI := "ui://railgrid-provider/reports/dWk6Ly9yZXBvcnRzL3JlcG9ydA"
+	hub := mcp.NewServer(&mcp.Implementation{Name: "aggregate", Version: "1.0.0"}, nil)
+	hub.AddTool(&mcp.Tool{
+		Name: "report", InputSchema: map[string]any{"type": "object"},
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": resourceURI}},
+	}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "report data"}}}, nil
+	})
+	hub.AddResource(&mcp.Resource{URI: resourceURI, Name: "report app", MIMEType: store.MCPAppMIMEType}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: resourceURI, MIMEType: store.MCPAppMIMEType, Text: currentHTML.Load().(string)}}}, nil
+	})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return hub }, nil))
+	t.Cleanup(httpServer.Close)
+
+	st := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "analyst"}
+	now := time.Now().UTC()
+	if err := st.SaveRun(ctx, scope, store.Run{ID: "run-app", AgentName: scope.AgentName, SessionID: "chat", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	source := store.SourceReference{
+		Object: store.SourceObject{Version: "v1", Resource: "reports", Name: "current", UID: "uid-current"},
+		Access: []store.SourceAccess{{Version: "v1", Resource: "reports", Name: "current", Verb: "get"}},
+	}
+	ref := &store.MCPAppReference{Provider: "reports", ResourceURI: resourceURI, SHA256: pin}
+	if err := st.AppendToolCall(ctx, scope, store.ToolCall{
+		ID: "audit-app", AgentName: scope.AgentName, RunID: "run-app", SessionID: "chat", CallID: "call-app",
+		Tool: "edges__report", Args: `{"query":"latest"}`, Result: "report data", Outcome: "ok", Sources: []store.SourceReference{source},
+		Presentation: &store.ProviderPresentation{Version: 1, Title: "Latest report", MCPAppReference: ref}, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendMessage(ctx, scope, store.Message{
+		ID: "message-app", AgentName: scope.AgentName, RunID: "run-app", SessionID: "chat", Role: "tool", Content: "report data",
+		Metadata: map[string]any{historyToolCallIDKey: "call-app"}, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		store: st, callers: &conformance.FakeCallers{Cluster: conformance.ForeignCluster, Token: "caller-token"}, mcpEndpoints: newMCPEndpointCache(),
+		cfg: Config{MCPAppApprovedDigests: map[string][]string{"reports": {pin}}},
+	}
+	s.mcpEndpoints.put(conformance.ForeignCluster, mcpEndpointEntry{url: httpServer.URL})
+	caller := identity{clusterID: conformance.ForeignCluster, token: "caller-token"}
+	req := createAgentArtifactRequest{RunID: "run-app", SessionID: "chat", ToolCallID: "call-app"}
+	capture := func() (store.AgentArtifact, error) {
+		return s.captureAgentArtifact(ctx, scope, "agent-uid", "alice", req,
+			func(context.Context, string) error { return nil },
+			func(context.Context, []store.SourceReference) error { return nil })
+	}
+	responseView := func(artifact store.AgentArtifact) agentArtifactView {
+		view := agentArtifactViewOf(artifact, true, true)
+		retainCurrentMCPApp(ctx, s, caller, artifact, &view)
+		return view
+	}
+	assertHydrated := func(artifact store.AgentArtifact, want bool) {
+		t.Helper()
+		view := responseView(artifact)
+		got := view.Presentation != nil && view.Presentation.MCPApp != nil && view.AppIdentity != nil
+		if got != want {
+			t.Fatalf("current approved app availability = %t, want %t (view=%+v)", got, want, view)
+		}
+		if want && (view.AppIdentity.Provider != "reports" || view.AppIdentity.ResourceURI != resourceURI || view.Presentation.MCPApp.HTML != html) {
+			t.Fatalf("hydrated app identity/resource = %+v / %+v", view.AppIdentity, view.Presentation.MCPApp)
+		}
+	}
+
+	artifact, err := capture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Presentation == nil || artifact.Presentation.MCPAppReference == nil || artifact.Presentation.MCPApp != nil {
+		t.Fatalf("capture persisted executable HTML or lost its pin: %+v", artifact.Presentation)
+	}
+	appView := agentArtifactViewOf(artifact, true, true)
+	retainCurrentMCPApp(ctx, s, caller, artifact, &appView)
+	if appView.Presentation == nil || appView.Presentation.MCPApp == nil || appView.AppIdentity == nil {
+		t.Fatalf("current approved app was not hydrated: %+v", appView)
+	}
+	appResult := artifactMCPAppResult(&appView)
+	if appResult == nil || appView.Presentation == nil || appView.Presentation.MCPApp != nil {
+		t.Fatalf("app response did not separate HTML metadata from structured artifact: result=%+v view=%+v", appResult, appView)
+	}
+	appMeta := appResult.Meta["railgrid"].(map[string]any)["mcpApp"].(*store.MCPAppResource)
+	if appMeta.ResourceURI != resourceURI || appMeta.SHA256 != pin || appMeta.HTML != html || appView.AppIdentity.SHA256 != appMeta.SHA256 {
+		t.Fatalf("app resource and artifact identity do not match: app=%+v identity=%+v", appMeta, appView.AppIdentity)
+	}
+	appJSON, err := json.Marshal(appView)
+	if err != nil || strings.Contains(string(appJSON), html) {
+		t.Fatalf("structured artifact payload contains executable HTML: %s err=%v", appJSON, err)
+	}
+	assertHydrated(artifact, true)
+
+	// Removing a pin suppresses HTML even for an existing capture. A duplicate
+	// capture returns the same immutable content-free receipt, so restoring the
+	// pin later can safely re-resolve the currently installed resource.
+	s.cfg.MCPAppApprovedDigests = map[string][]string{}
+	duplicate, err := capture()
+	if err != nil || duplicate.ID != artifact.ID || duplicate.Presentation == nil || duplicate.Presentation.MCPAppReference == nil || duplicate.Presentation.MCPApp != nil {
+		t.Fatalf("duplicate capture lost its immutable app reference: artifact=%+v err=%v", duplicate, err)
+	}
+	assertHydrated(duplicate, false)
+
+	s.cfg.MCPAppApprovedDigests = map[string][]string{"reports": {pin}}
+	currentHTML.Store("<main>changed report</main>")
+	assertHydrated(duplicate, false)
+	currentHTML.Store(html)
+	assertHydrated(duplicate, true)
+	stored, found, err := st.GetAgentArtifact(ctx, scope, "agent-uid", "alice", artifact.ID)
+	if err != nil || !found || stored.Presentation == nil || stored.Presentation.MCPAppReference == nil || stored.Presentation.MCPApp != nil {
+		t.Fatalf("stored artifact does not retain only its content-free app receipt: found=%t artifact=%+v err=%v", found, stored.Presentation, err)
 	}
 }
 
@@ -123,11 +319,8 @@ func TestAgentArtifactCapturePointerAndSafePresentation(t *testing.T) {
 		Object: store.SourceObject{Version: "v1", Resource: "documents", Name: "report", UID: "uid-1"},
 		Access: []store.SourceAccess{{Version: "v1", Resource: "documents", Name: "report", Verb: "get"}},
 	}}
-	event.Presentation = &store.ProviderPresentation{Version: 1, Title: "Report", MCPApp: &store.MCPAppResource{
-		ResourceURI: "ui://railgrid-provider/report/resource",
-		MIMEType:    store.MCPAppMIMEType,
-		HTML:        html,
-		SHA256:      hex.EncodeToString(htmlDigest[:]),
+	event.Presentation = &store.ProviderPresentation{Version: 1, Title: "Report", MCPAppReference: &store.MCPAppReference{
+		Provider: "reports", ResourceURI: "ui://railgrid-provider/reports/dWk6Ly9yZXBvcnRzL3JlcG9ydA", SHA256: hex.EncodeToString(htmlDigest[:]),
 	}}
 	metadata := persistedToolMetadata(run, event)
 	if metadata["hasMcpApp"] != true {
@@ -138,8 +331,8 @@ func TestAgentArtifactCapturePointerAndSafePresentation(t *testing.T) {
 		t.Fatalf("history metadata saved-capture pointer = %#v", metadata["savedCapture"])
 	}
 	historyPresentation, ok := metadata["presentation"].(*store.ProviderPresentation)
-	if !ok || historyPresentation.MCPApp != nil {
-		t.Fatalf("history metadata did not strip hosted HTML: %#v", metadata["presentation"])
+	if !ok || historyPresentation.MCPApp != nil || historyPresentation.MCPAppReference == nil {
+		t.Fatalf("history metadata did not retain only the content-free hosted-app receipt: %#v", metadata["presentation"])
 	}
 	encodedMetadata, err := json.Marshal(metadata)
 	if err != nil {
@@ -255,6 +448,46 @@ func TestRevalidateAgentArtifactSourcesChecksCurrentActionsAndObjectUID(t *testi
 			t.Fatalf("invalid/empty sources caused %d caller API actions", got)
 		}
 	})
+}
+
+func TestAuthorizeArtifactRunReadChecksExactCurrentCallerRun(t *testing.T) {
+	runObject := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": agentsv1alpha1.GroupName + "/" + agentsv1alpha1.Version, "kind": "Run",
+		"metadata": map[string]any{"name": "run-current", "uid": "run-uid"},
+		"spec":     map[string]any{"agentRef": "analyst"},
+	}}
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), runObject)
+	var review *unstructured.Unstructured
+	dyn.PrependReactor("create", "selfsubjectaccessreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
+		review = action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		return true, selfSubjectAccessReview(true), nil
+	})
+	if err := authorizeArtifactRunRead(t.Context(), dyn, "analyst", "run-current"); err != nil {
+		t.Fatalf("authorize readable exact run: %v", err)
+	}
+	attrs := review.Object["spec"].(map[string]any)["resourceAttributes"].(map[string]any)
+	if attrs["group"] != agentsv1alpha1.GroupName || attrs["version"] != agentsv1alpha1.Version || attrs["resource"] != "runs" || attrs["verb"] != "get" || attrs["name"] != "run-current" {
+		t.Fatalf("run-read SSAR resourceAttributes = %+v", attrs)
+	}
+	if got := len(dyn.Actions()); got != 2 {
+		t.Fatalf("caller API actions = %d, want exact SSAR and GET", got)
+	}
+
+	t.Run("denied SSAR", func(t *testing.T) {
+		denied := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), runObject.DeepCopy())
+		denied.PrependReactor("create", "selfsubjectaccessreviews", func(ktesting.Action) (bool, runtime.Object, error) {
+			return true, selfSubjectAccessReview(false), nil
+		})
+		if err := authorizeArtifactRunRead(t.Context(), denied, "analyst", "run-current"); err == nil {
+			t.Fatal("denied run-read SSAR passed")
+		}
+		if got := len(denied.Actions()); got != 1 {
+			t.Fatalf("denied request made %d API actions, want only SSAR", got)
+		}
+	})
+	if err := authorizeArtifactRunRead(t.Context(), dyn, "other-agent", "run-current"); err == nil {
+		t.Fatal("readable run belonging to another Agent passed identity check")
+	}
 }
 
 func selfSubjectAccessReview(allowed bool) *unstructured.Unstructured {

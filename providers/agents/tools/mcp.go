@@ -9,13 +9,16 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,7 +30,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
-	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/resulttypes"
 )
 
 // githubMCPEndpoint is the hosted GitHub MCP server; a github Connection with
@@ -40,10 +43,13 @@ const githubMCPEndpoint = "https://api.githubcopilot.com/mcp"
 const mcpResultMaxReturn = 64 * 1024
 
 const (
-	mcpAppsExtensionID = "io.modelcontextprotocol/ui"
-	mcpAppMIMEType     = "text/html;profile=mcp-app"
-	mcpRailgridMetaKey = "railgrid"
-	mcpSourcesMaxBytes = 32 * 1024
+	mcpAppsExtensionID        = "io.modelcontextprotocol/ui"
+	mcpAppMIMEType            = "text/html;profile=mcp-app"
+	mcpRailgridMetaKey        = "railgrid"
+	mcpSourcesMaxBytes        = 32 * 1024
+	mcpAppResourceReadTimeout = 10 * time.Second
+	mcpAppResourceRequestPeek = 8 * 1024
+	mcpAppResourceResponseMax = 2 << 20
 )
 
 // MCPSession wraps one live MCP connection's discovered tools. Close after
@@ -55,6 +61,8 @@ type MCPSession struct {
 	// layout). The caller folds it into the agent's system context.
 	Instructions string
 	session      *mcp.ClientSession
+	hubAggregate bool
+	appResources map[string]resulttypes.MCPAppReference
 }
 
 func (s *MCPSession) Close() {
@@ -150,6 +158,15 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 	if httpClient == nil {
 		return nil, fmt.Errorf("connecting to MCP server %q: no HTTP client", prefix)
 	}
+	if hubAggregate {
+		client := *httpClient
+		base := client.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		client.Transport = &mcpAppResourceResponseLimitTransport{base: base}
+		httpClient = &client
+	}
 	var options *mcp.ClientOptions
 	if hubAggregate {
 		options = &mcp.ClientOptions{Capabilities: &mcp.ClientCapabilities{Extensions: map[string]any{
@@ -172,14 +189,19 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 		return nil, fmt.Errorf("listing tools on %q: %w", prefix, err)
 	}
 
-	out := &MCPSession{session: session}
+	out := &MCPSession{session: session, hubAggregate: hubAggregate, appResources: map[string]resulttypes.MCPAppReference{}}
 	if ir := session.InitializeResult(); ir != nil {
 		out.Instructions = strings.TrimSpace(ir.Instructions)
 	}
 	conn := struct{ Name string }{Name: prefix}
 	for _, t := range listed.Tools {
-		if !mcpToolVisibleToAgent(t.Meta) {
+		if hubAggregate && !mcpToolVisibleToAgent(t.Meta) {
 			continue
+		}
+		if hubAggregate {
+			if ref, ok := hubMCPAppIdentity(t.Meta); ok {
+				out.appResources[ref.ResourceURI] = ref
+			}
 		}
 		toolName := t.Name
 		full := conn.Name + "__" + toolName
@@ -196,11 +218,9 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 			// Rich executor: MCP tools can return images (e.g. a UniFi Protect
 			// snapshot), which the engine feeds to vision-capable models.
 			ExecRich: func(ctx context.Context, argsJSON string) (engine.Observation, error) {
-				var args map[string]any
-				if argsJSON != "" {
-					if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-						return engine.Observation{}, fmt.Errorf("invalid arguments: %w", err)
-					}
+				args, err := decodeMCPToolArguments(argsJSON)
+				if err != nil {
+					return engine.Observation{}, fmt.Errorf("invalid arguments: %w", err)
 				}
 				res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: args})
 				if err != nil {
@@ -218,8 +238,8 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 						len(text), mcpResultMaxReturn,
 					)
 				}
-				var sources []store.SourceReference
-				var presentation *store.ProviderPresentation
+				var sources []resulttypes.SourceReference
+				var presentation *resulttypes.ProviderPresentation
 				if hubAggregate {
 					sources, err = mcpResultSources(res.Meta)
 					if err != nil {
@@ -231,12 +251,13 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 				// federated provider resource. A source claim is required so app
 				// HTML stays coupled to later caller revalidation.
 				if hubAggregate && len(sources) > 0 {
-					if uri := hubMCPAppResourceURI(t.Meta); uri != "" {
-						if app := readMCPAppResource(ctx, session, uri); app != nil {
+					if ref, ok := hubMCPAppIdentity(t.Meta); ok {
+						if app, err := out.ReadHubAggregateMCPAppResource(ctx, ref); err == nil {
 							if presentation == nil {
-								presentation = &store.ProviderPresentation{Version: 1}
+								presentation = &resulttypes.ProviderPresentation{Version: 1}
 							}
-							presentation.MCPApp = app
+							ref.SHA256 = app.SHA256
+							presentation.MCPAppReference = &ref
 						}
 					}
 				}
@@ -247,40 +268,118 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 	return out, nil
 }
 
-// hubMCPAppResourceURI accepts only the Hub's provider-namespaced resource
+// ReadHubAggregateMCPAppResource reopens only a resource advertised by the
+// current, explicitly trusted Hub aggregate session. Ordinary MCP connections
+// cannot use this method, and a saved URI is never interpreted as a network
+// destination.
+func (s *MCPSession) ReadHubAggregateMCPAppResource(ctx context.Context, ref resulttypes.MCPAppReference) (*resulttypes.MCPAppResource, error) {
+	if s == nil || s.session == nil || !s.hubAggregate {
+		return nil, fmt.Errorf("trusted Hub aggregate MCP session is unavailable")
+	}
+	current, found := s.appResources[ref.ResourceURI]
+	if !found || current.Provider != ref.Provider {
+		return nil, fmt.Errorf("MCP App is not advertised by a currently reachable provider")
+	}
+	app := readMCPAppResource(ctx, s.session, ref.ResourceURI)
+	if app == nil {
+		return nil, fmt.Errorf("MCP App resource is unavailable")
+	}
+	return app, nil
+}
+
+// mcpAppResourceResponseLimitTransport reads resources/read responses with a
+// hard cap before the MCP SDK can buffer an unbounded body. Other MCP methods
+// retain their existing response behavior.
+type mcpAppResourceResponseLimitTransport struct {
+	base http.RoundTripper
+}
+
+type replayRequestBody struct {
+	io.Reader
+	original io.Closer
+}
+
+func (b *replayRequestBody) Close() error { return b.original.Close() }
+
+func (t *mcpAppResourceResponseLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil || req.Body == nil || req.Method != http.MethodPost {
+		return t.base.RoundTrip(req)
+	}
+	original := req.Body
+	prefix, err := io.ReadAll(io.LimitReader(original, mcpAppResourceRequestPeek))
+	if err != nil {
+		_ = original.Close()
+		return nil, fmt.Errorf("inspect MCP request: %w", err)
+	}
+	req.Body = &replayRequestBody{Reader: io.MultiReader(bytes.NewReader(prefix), original), original: original}
+	var rpc struct {
+		Method string `json:"method"`
+	}
+	bounded := json.Unmarshal(prefix, &rpc) == nil && rpc.Method == "resources/read"
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || !bounded {
+		return resp, err
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, mcpAppResourceResponseMax+1))
+	closeErr := resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read bounded MCP App response: %w", err)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close MCP App response: %w", closeErr)
+	}
+	if len(body) > mcpAppResourceResponseMax {
+		return nil, fmt.Errorf("MCP App resource response exceeds %d bytes", mcpAppResourceResponseMax)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	return resp, nil
+}
+
+// hubMCPAppIdentity accepts only the Hub's provider-namespaced resource
 // identifier. It validates the encoded upstream MCP URI without using it as a
 // destination. The explicit aggregate connector is still required before this
 // helper may be used.
-func hubMCPAppResourceURI(meta mcp.Meta) string {
+func hubMCPAppIdentity(meta mcp.Meta) (resulttypes.MCPAppReference, bool) {
 	ui, ok := meta["ui"].(map[string]any)
 	if !ok {
-		return ""
+		return resulttypes.MCPAppReference{}, false
 	}
 	value, ok := ui["resourceUri"].(string)
 	if !ok || len(value) > 4096 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\x00\r\n\t ") {
-		return ""
+		return resulttypes.MCPAppReference{}, false
 	}
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "ui" || u.Host != "railgrid-provider" || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
-		return ""
+		return resulttypes.MCPAppReference{}, false
 	}
 	parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return ""
+		return resulttypes.MCPAppReference{}, false
 	}
 	provider, err := url.PathUnescape(parts[0])
 	if err != nil || provider != parts[0] || len(validation.IsDNS1123Label(provider)) != 0 {
-		return ""
+		return resulttypes.MCPAppReference{}, false
 	}
 	encoded, err := url.PathUnescape(parts[1])
 	if err != nil || encoded != parts[1] || encoded == "" || strings.ContainsAny(encoded, "/\\%") {
-		return ""
+		return resulttypes.MCPAppReference{}, false
 	}
 	original, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil || base64.RawURLEncoding.EncodeToString(original) != encoded || !validMCPAppSourceURI(string(original)) {
+		return resulttypes.MCPAppReference{}, false
+	}
+	return resulttypes.MCPAppReference{Provider: provider, ResourceURI: value}, true
+}
+
+func hubMCPAppResourceURI(meta mcp.Meta) string {
+	ref, ok := hubMCPAppIdentity(meta)
+	if !ok {
 		return ""
 	}
-	return value
+	return ref.ResourceURI
 }
 
 func validMCPAppSourceURI(value string) bool {
@@ -338,7 +437,7 @@ func mcpRailgridField(meta mcp.Meta, field string) (json.RawMessage, bool, error
 	return encoded, true, nil
 }
 
-func mcpResultSources(meta mcp.Meta) ([]store.SourceReference, error) {
+func mcpResultSources(meta mcp.Meta) ([]resulttypes.SourceReference, error) {
 	raw, found, err := mcpRailgridField(meta, "sources")
 	if err != nil || !found {
 		return nil, err
@@ -346,12 +445,12 @@ func mcpResultSources(meta mcp.Meta) ([]store.SourceReference, error) {
 	if len(raw) > mcpSourcesMaxBytes {
 		return nil, fmt.Errorf("_meta.railgrid.sources exceeds %d bytes", mcpSourcesMaxBytes)
 	}
-	var sources []store.SourceReference
+	var sources []resulttypes.SourceReference
 	if err := json.Unmarshal(raw, &sources); err != nil {
 		return nil, fmt.Errorf("decode _meta.railgrid.sources: %w", err)
 	}
-	if len(sources) > store.MaxAgentArtifactSources {
-		return nil, fmt.Errorf("_meta.railgrid.sources exceeds %d source entries", store.MaxAgentArtifactSources)
+	if len(sources) > resulttypes.MaxAgentArtifactSources {
+		return nil, fmt.Errorf("_meta.railgrid.sources exceeds %d source entries", resulttypes.MaxAgentArtifactSources)
 	}
 	for i, source := range sources {
 		if err := source.Validate(); err != nil {
@@ -361,9 +460,9 @@ func mcpResultSources(meta mcp.Meta) ([]store.SourceReference, error) {
 	return sources, nil
 }
 
-func mcpResultPresentation(meta mcp.Meta) *store.ProviderPresentation {
+func mcpResultPresentation(meta mcp.Meta) *resulttypes.ProviderPresentation {
 	raw, found, err := mcpRailgridField(meta, "presentation")
-	if err != nil || !found || len(raw) > store.MaxProviderPresentationWireBytes {
+	if err != nil || !found || len(raw) > resulttypes.MaxProviderPresentationWireBytes {
 		return nil
 	}
 	var fields map[string]json.RawMessage
@@ -375,15 +474,17 @@ func mcpResultPresentation(meta mcp.Meta) *store.ProviderPresentation {
 	if err != nil {
 		return nil
 	}
-	presentation, err := store.ParseProviderPresentation(withoutApp)
+	presentation, err := resulttypes.ParseProviderPresentation(withoutApp)
 	if err != nil {
 		return nil
 	}
 	return presentation
 }
 
-func readMCPAppResource(ctx context.Context, session *mcp.ClientSession, uri string) *store.MCPAppResource {
-	result, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+func readMCPAppResource(ctx context.Context, session *mcp.ClientSession, uri string) *resulttypes.MCPAppResource {
+	readCtx, cancel := context.WithTimeout(ctx, mcpAppResourceReadTimeout)
+	defer cancel()
+	result, err := session.ReadResource(readCtx, &mcp.ReadResourceParams{URI: uri})
 	if err != nil || result == nil || len(result.Contents) != 1 || result.Contents[0] == nil {
 		return nil
 	}
@@ -400,11 +501,11 @@ func readMCPAppResource(ctx context.Context, session *mcp.ClientSession, uri str
 	default:
 		return nil
 	}
-	if len(html) == 0 || len(html) > store.MaxMCPAppHTMLBytes || !utf8.Valid(html) {
+	if len(html) == 0 || len(html) > resulttypes.MaxMCPAppHTMLBytes || !utf8.Valid(html) {
 		return nil
 	}
 	digest := sha256.Sum256(html)
-	app := &store.MCPAppResource{ResourceURI: uri, MIMEType: mcpAppMIMEType, HTML: string(html), SHA256: hex.EncodeToString(digest[:])}
+	app := &resulttypes.MCPAppResource{ResourceURI: uri, MIMEType: mcpAppMIMEType, HTML: string(html), SHA256: hex.EncodeToString(digest[:])}
 	if app.Validate() != nil {
 		return nil
 	}
@@ -477,6 +578,37 @@ func mcpResultParts(res *mcp.CallToolResult) (string, []engine.ToolImage) {
 		}
 	}
 	return strings.TrimSpace(b.String()), imgs
+}
+
+// decodeMCPToolArguments preserves JSON number spelling while requiring one
+// top-level object. The MCP SDK accepts map arguments; decoding through
+// interface{} without UseNumber would round large integers before the request
+// reaches the server.
+func decodeMCPToolArguments(raw string) (map[string]any, error) {
+	// Preserve the existing no-arguments invocation path.
+	if raw == "" {
+		return map[string]any{}, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+
+	var args map[string]any
+	if err := decoder.Decode(&args); err != nil {
+		return nil, fmt.Errorf("expected one JSON object: %w", err)
+	}
+	if args == nil {
+		return nil, fmt.Errorf("expected one JSON object")
+	}
+
+	var trailing any
+	err := decoder.Decode(&trailing)
+	if !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, fmt.Errorf("expected one JSON object: %w", err)
+		}
+		return nil, fmt.Errorf("expected one JSON object")
+	}
+	return args, nil
 }
 
 // bearerTransport injects the connection token as a Bearer Authorization
