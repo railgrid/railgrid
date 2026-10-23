@@ -209,6 +209,12 @@ type runCheckpoint struct {
 	// resumed run continue its timing without counting approval or recovery idle
 	// time, and does not require a store schema change.
 	WorkedDurationMS int64 `json:"workedDurationMS,omitempty"`
+	// ArtifactOwner and ArtifactRefs preserve only the identity and exact saved
+	// result pointers attached to an attended chat. The result bytes and caller
+	// bearer are never checkpointed; a resume rebuilds the reader from the
+	// current caller and revalidates source-backed results before reopening them.
+	ArtifactOwner string                         `json:"artifactOwner,omitempty"`
+	ArtifactRefs  []store.AgentArtifactReference `json:"artifactRefs,omitempty"`
 }
 
 // backendState is the resume state to hand back across the seam: whichever of
@@ -272,6 +278,10 @@ type runAccess struct {
 	// class (the one route that still carries one), the agent's own minted
 	// identity on a background run, absent on a data-plane verb.
 	HubToken string
+	// CallerUser is the authenticated principal from the current attended
+	// request. It is used only to bind resumed saved-result pointers to the user
+	// who attached them; it is not itself source authorization.
+	CallerUser string
 	// EdgesEndpoint is the hub mcpserver MCP URL ("" → the edges family is
 	// absent, which it is for anything with no caller credential).
 	EdgesEndpoint string
@@ -309,6 +319,7 @@ func (s *Server) callerAccess(ctx context.Context, c *agentsclient.Client, id id
 	return runAccess{
 		Creds: c, CR: clientCR{c},
 		ClusterID:     id.clusterID,
+		CallerUser:    id.user,
 		HubToken:      id.token,
 		EdgesEndpoint: s.aggregateMCPEndpoint(ctx, id),
 		EdgesInsecure: s.cfg.HubInsecure,
@@ -316,6 +327,57 @@ func (s *Server) callerAccess(ctx context.Context, c *agentsclient.Client, id id
 			s.deliverToNotifyChannel(ctx, c, agent, role, prefix, text)
 		},
 	}
+}
+
+// checkpointArtifactReferences returns a defensive, pointer-only copy of the
+// references one attended chat selected. Invalid context is omitted so a
+// malformed in-memory run cannot place bytes, an unbounded list or malformed
+// pointers into a durable checkpoint.
+func checkpointArtifactReferences(run taskRun) (string, []store.AgentArtifactReference) {
+	owner := strings.TrimSpace(run.ArtifactOwner)
+	if owner == "" || len(run.ArtifactRefs) == 0 || len(run.ArtifactRefs) > store.MaxAgentArtifactReferencesPerChat {
+		return "", nil
+	}
+	refs := make([]store.AgentArtifactReference, len(run.ArtifactRefs))
+	seen := make(map[string]struct{}, len(run.ArtifactRefs))
+	for i, ref := range run.ArtifactRefs {
+		if ref.Validate() != nil {
+			return "", nil
+		}
+		if _, duplicate := seen[ref.ArtifactID]; duplicate {
+			return "", nil
+		}
+		seen[ref.ArtifactID] = struct{}{}
+		refs[i] = ref
+	}
+	return owner, refs
+}
+
+// resumeArtifactReferences restores only the attached pointer envelope and
+// requires the same current attended principal. A caller identity mismatch
+// must not turn a checkpointed reference into access to another user's data.
+func resumeArtifactReferences(checkpoint runCheckpoint, callerUser string) (string, []store.AgentArtifactReference, error) {
+	if checkpoint.ArtifactOwner == "" && len(checkpoint.ArtifactRefs) == 0 {
+		return "", nil, nil
+	}
+	owner := strings.TrimSpace(checkpoint.ArtifactOwner)
+	callerUser = strings.TrimSpace(callerUser)
+	if owner == "" || callerUser == "" || callerUser != owner || len(checkpoint.ArtifactRefs) == 0 || len(checkpoint.ArtifactRefs) > store.MaxAgentArtifactReferencesPerChat {
+		return "", nil, errors.New("saved result references require the original attended caller")
+	}
+	refs := make([]store.AgentArtifactReference, len(checkpoint.ArtifactRefs))
+	seen := make(map[string]struct{}, len(checkpoint.ArtifactRefs))
+	for i, ref := range checkpoint.ArtifactRefs {
+		if err := ref.Validate(); err != nil {
+			return "", nil, errors.New("saved result references are unavailable")
+		}
+		if _, duplicate := seen[ref.ArtifactID]; duplicate {
+			return "", nil, errors.New("saved result references are unavailable")
+		}
+		seen[ref.ArtifactID] = struct{}{}
+		refs[i] = ref
+	}
+	return owner, refs, nil
 }
 
 // taskRun bundles everything one agent execution needs: its access (see
@@ -331,11 +393,16 @@ type taskRun struct {
 	// resume). Empty → generated.
 	RunID string
 
-	SessionID   string
-	Task        string
-	Trigger     string
-	SourceName  string // schedule/trigger/connection that fired this run
-	ParentRunID string
+	SessionID string
+	Task      string
+	Trigger   string
+	// ArtifactOwner and ArtifactRefs are attended-chat inputs. Checkpoints retain
+	// only these pointers so a resumed reader can bind them to the same caller and
+	// recheck source authorization; result bytes and credentials stay out.
+	ArtifactOwner string
+	ArtifactRefs  []store.AgentArtifactReference
+	SourceName    string // schedule/trigger/connection that fired this run
+	ParentRunID   string
 
 	// IdempotencyKey is the caller's de-duplication token for an API-invoked run.
 	// Carried here because the lifecycle rewrites the run record from scratch and
@@ -928,6 +995,7 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
 		WorkedDurationMS: tracker.durationMS(),
 	}
+	ck.ArtifactOwner, ck.ArtifactRefs = checkpointArtifactReferences(run)
 	if harnessT != nil {
 		if cfg := run.Agent.Spec.Harness(); cfg != nil {
 			ck.HarnessRunner = &harnessCancelTarget{
@@ -1276,7 +1344,9 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 		persistCtx, cancel := boundedPersistContext(k.ctx)
 		err := k.s.store.AppendToolCall(persistCtx, k.run.Scope, store.ToolCall{
 			ID: uuid.NewString(), AgentName: k.run.Agent.Name, RunID: k.run.RunID, Trigger: k.run.Trigger,
+			CallID: ev.ID, SessionID: k.sessionID,
 			Tool: ev.Name, Args: redactArgs(ev.Args), Result: safeTruncate(ev.Result, maxStoredResult),
+			Sources: ev.Sources, Presentation: ev.Presentation.Clone(),
 			Outcome: outcome, Error: errorText, DurationMS: ev.Duration.Milliseconds(), CreatedAt: time.Now().UTC(),
 		})
 		cancel()
@@ -1284,14 +1354,11 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 			k.run.transcriptWrites.record(fmt.Errorf("persist harness tool audit %q: %w", ev.ID, err))
 		}
 	}
+	metadata := persistedToolMetadata(k.run, ev)
 	if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
 		ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
 		Role: "tool", Content: ev.Result,
-		Metadata: map[string]any{
-			"tool": ev.Name, historyToolNameKey: ev.Name,
-			historyToolCallIDKey: ev.ID, "args": redactHistoryArgs(ev.Args),
-			"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
-		},
+		Metadata:  metadata,
 		CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		k.run.transcriptWrites.record(fmt.Errorf("persist tool result %q: %w", ev.ID, err))
@@ -1300,6 +1367,44 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 	if k.run.OnTool != nil {
 		k.run.OnTool(ev)
 	}
+}
+
+// persistedToolMetadata carries only the safe presentation summary and the
+// exact saved-capture citation pointer needed to rebuild a history row. Hosted
+// App HTML stays on the attended artifact read path.
+func persistedToolMetadata(run taskRun, ev backend.ToolEvent) map[string]any {
+	metadata := map[string]any{
+		"tool": ev.Name, historyToolNameKey: ev.Name,
+		historyToolCallIDKey: ev.ID, "args": redactHistoryArgs(ev.Args),
+		"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
+	}
+	if len(ev.Sources) > 0 {
+		metadata["sources"] = ev.Sources
+	}
+	if presentation := safeToolPresentation(ev.Presentation); presentation != nil {
+		metadata["presentation"] = presentation
+	}
+	if ev.HasMCPApp() {
+		metadata["hasMcpApp"] = true
+	}
+	if savedCapture := savedCaptureForToolEvent(run, ev); savedCapture != nil {
+		metadata["savedCapture"] = savedCapture
+	}
+	return metadata
+}
+
+// safeToolPresentation keeps the bounded native title in transcript/event
+// metadata while keeping hosted HTML on the attended artifact-read path.
+func safeToolPresentation(in *store.ProviderPresentation) *store.ProviderPresentation {
+	if in == nil {
+		return nil
+	}
+	out := in.Clone()
+	out.MCPApp = nil
+	if out.Title == "" {
+		return nil
+	}
+	return out
 }
 
 func (k *turnSink) Checkpoint(state json.RawMessage) { k.record(state) }

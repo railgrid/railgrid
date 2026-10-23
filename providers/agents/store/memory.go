@@ -32,6 +32,7 @@ type MemoryStore struct {
 	harness            map[string]HarnessSession    // key: scope|session
 	idempotencyPrimary map[string]bool              // key: scope|runID; one stable winner per tenant/agent/key
 	artifacts          map[string]runArtifactRow    // key: scope|runID|name
+	agentArtifacts     map[string]AgentArtifact     // key: tenant|agent|artifactID
 	deliveries         map[string][]WebhookDelivery // key: scope|webhookUID, oldest first
 	messageSequence    int64
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
@@ -53,6 +54,7 @@ func NewMemoryStore() *MemoryStore {
 		harness:            map[string]HarnessSession{},
 		idempotencyPrimary: map[string]bool{},
 		artifacts:          map[string]runArtifactRow{},
+		agentArtifacts:     map[string]AgentArtifact{},
 		deliveries:         map[string][]WebhookDelivery{},
 		runScopes:          map[string]Scope{},
 	}
@@ -68,6 +70,8 @@ type runArtifactRow struct {
 func artifactKey(s Scope, runID, name string) string {
 	return tenantKey(s) + "|" + runID + "|" + name
 }
+
+func agentArtifactPrefix(s Scope) string { return tenantKey(s) + "|" + s.AgentName + "|" }
 
 func (m *MemoryStore) FindClusterForScope(_ context.Context, orgUUID, workspaceUUID string) (string, bool, error) {
 	m.mu.Lock()
@@ -570,6 +574,49 @@ func (m *MemoryStore) LoadRecentMessages(_ context.Context, scope Scope, session
 		all = all[len(all)-limit:]
 	}
 	return all, nil
+}
+
+func (m *MemoryStore) GetToolResult(_ context.Context, scope Scope, runID, sessionID, callID string) (Message, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return Message{}, false, err
+	}
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(callID) == "" {
+		return Message{}, false, fmt.Errorf("tool result run, session and call IDs are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	var found *Message
+	for _, message := range m.messages[sessionKey(scope, sessionID)] {
+		if message.Role != "tool" || message.RunID != runID || !toolCallIDMatches(message.Metadata, callID) {
+			continue
+		}
+		if found != nil {
+			return Message{}, false, fmt.Errorf("tool result identity is ambiguous")
+		}
+		copy := message
+		found = &copy
+	}
+	if found == nil {
+		return Message{}, false, nil
+	}
+	if len(found.Content) > MaxAgentArtifactBytes {
+		return Message{}, false, ErrAgentArtifactResultTooLarge
+	}
+	return *found, true, nil
+}
+
+func toolCallIDMatches(metadata map[string]any, callID string) bool {
+	if metadata == nil {
+		return false
+	}
+	for _, key := range []string{"toolCallID", "callID"} {
+		if id, ok := metadata[key].(string); ok && id == callID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MemoryStore) ListSessions(_ context.Context, scope Scope, limit int) ([]Session, error) {
@@ -1135,10 +1182,28 @@ func (m *MemoryStore) AppendToolCall(_ context.Context, scope Scope, tc ToolCall
 	if err := scope.validate(); err != nil {
 		return err
 	}
+	if len(tc.Sources) > MaxAgentArtifactSources {
+		return fmt.Errorf("tool call has more than %d sources", MaxAgentArtifactSources)
+	}
+	for i, source := range tc.Sources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("tool call source %d: %w", i, err)
+		}
+	}
+	if tc.Presentation != nil {
+		if tc.Presentation.MCPApp != nil && len(tc.Sources) == 0 {
+			return fmt.Errorf("MCP App resources require source references")
+		}
+		if err := tc.Presentation.Validate(); err != nil {
+			return err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope)
+	tc.Sources = cloneAgentArtifact(AgentArtifact{Sources: tc.Sources}).Sources
+	tc.Presentation = tc.Presentation.Clone()
 	m.toolCalls[k] = append(m.toolCalls[k], tc)
 	return nil
 }
@@ -1153,6 +1218,8 @@ func (m *MemoryStore) ListToolCalls(_ context.Context, scope Scope, runID string
 	var out []ToolCall
 	for _, tc := range m.toolCalls[tenantKey(scope)] {
 		if tc.RunID == runID {
+			tc.Sources = cloneAgentArtifact(AgentArtifact{Sources: tc.Sources}).Sources
+			tc.Presentation = tc.Presentation.Clone()
 			out = append(out, tc)
 		}
 	}
@@ -1353,6 +1420,11 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 			delete(m.artifacts, k)
 		}
 	}
+	for k, artifact := range m.agentArtifacts {
+		if artifact.AgentName == agentName && hasPrefix(k, tk+"|") {
+			delete(m.agentArtifacts, k)
+		}
+	}
 	for k, mem := range m.memories {
 		if mem.AgentName == agentName && hasPrefix(k, tk+"|") {
 			delete(m.memories, k)
@@ -1449,6 +1521,115 @@ func (m *MemoryStore) GetRunArtifact(_ context.Context, scope Scope, runID, name
 	out := row.artifact
 	out.Data = append([]byte(nil), out.Data...)
 	return out, true, nil
+}
+
+func (m *MemoryStore) SaveAgentArtifact(_ context.Context, scope Scope, artifact AgentArtifact) error {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if err := artifact.validate(); err != nil {
+		return err
+	}
+	if artifact.AgentName != scope.AgentName {
+		return fmt.Errorf("artifact Agent does not match scope Agent")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	prefix := agentArtifactPrefix(scope)
+	key := prefix + artifact.ID
+	if _, exists := m.agentArtifacts[key]; exists {
+		return fmt.Errorf("artifact ID already exists")
+	}
+	count, total := 0, int64(0)
+	for existingKey, existing := range m.agentArtifacts {
+		if !hasPrefix(existingKey, prefix) || existing.AgentUID != artifact.AgentUID {
+			continue
+		}
+		count++
+		total += existing.retainedBytes()
+	}
+	if count >= MaxAgentArtifactsPerAgent || total+artifact.retainedBytes() > MaxAgentArtifactBytesPerAgent {
+		return ErrAgentArtifactLimit
+	}
+	artifact.CreatedAt = artifact.CreatedAt.UTC()
+	m.agentArtifacts[key] = cloneAgentArtifact(artifact)
+	return nil
+}
+
+func (m *MemoryStore) ListAgentArtifacts(_ context.Context, scope Scope, agentUID, owner string, limit int) ([]AgentArtifact, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" {
+		return nil, fmt.Errorf("artifact Agent UID and owner are required")
+	}
+	if limit <= 0 || limit > MaxAgentArtifactsPerAgent {
+		limit = MaxAgentArtifactsPerAgent
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	prefix := agentArtifactPrefix(scope)
+	var out []AgentArtifact
+	for key, artifact := range m.agentArtifacts {
+		if !hasPrefix(key, prefix) || artifact.AgentUID != agentUID || artifact.Owner != owner {
+			continue
+		}
+		metadata := cloneAgentArtifact(artifact)
+		metadata.Data, metadata.Input, metadata.Presentation = nil, nil, nil
+		out = append(out, metadata)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) GetAgentArtifact(_ context.Context, scope Scope, agentUID, owner, id string) (AgentArtifact, bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return AgentArtifact{}, false, err
+	}
+	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" || strings.TrimSpace(id) == "" {
+		return AgentArtifact{}, false, fmt.Errorf("artifact Agent UID, owner and ID are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	artifact, ok := m.agentArtifacts[agentArtifactPrefix(scope)+id]
+	if !ok || artifact.AgentUID != agentUID || artifact.Owner != owner {
+		return AgentArtifact{}, false, nil
+	}
+	return cloneAgentArtifact(artifact), true, nil
+}
+
+func (m *MemoryStore) DeleteAgentArtifact(_ context.Context, scope Scope, agentUID, owner, id string) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" || strings.TrimSpace(id) == "" {
+		return false, fmt.Errorf("artifact Agent UID, owner and ID are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := agentArtifactPrefix(scope) + id
+	artifact, ok := m.agentArtifacts[key]
+	if !ok || artifact.AgentUID != agentUID || artifact.Owner != owner {
+		return false, nil
+	}
+	delete(m.agentArtifacts, key)
+	return true, nil
 }
 
 func hasPrefix(s, prefix string) bool {

@@ -66,6 +66,12 @@ type CheckpointMessage struct {
 	ID         string               `json:"id,omitempty"`
 	Sequence   int64                `json:"sequence,omitempty"`
 	Ephemeral  bool                 `json:"ephemeral,omitempty"`
+	// ResultReference is the bounded adapter reference for a tool result whose
+	// bytes are deliberately omitted from this durable snapshot.
+	ResultReference *backend.ToolResultReference `json:"resultReference,omitempty"`
+	// ResultUnavailable marks a reference-only result that has no reference to
+	// reopen, such as a failed execution.
+	ResultUnavailable bool `json:"resultUnavailable,omitempty"`
 }
 
 // CheckpointToolCall mirrors an assistant message's tool call.
@@ -115,6 +121,18 @@ func checkpointMessagesWithIdentities(in []*schema.Message, identities map[*sche
 			cm.ID = identity.id
 			cm.Sequence = identity.sequence
 			cm.Ephemeral = identity.ephemeral
+			if identity.resultReference != nil {
+				ref := identity.resultReference.Clone()
+				cm.ResultReference = &ref
+			}
+			cm.ResultUnavailable = identity.resultUnavailable
+		}
+		// Metadata is retained only to let the registered adapter reopen the
+		// result after authorization. Never serialize the model-visible bytes.
+		if cm.ResultReference != nil {
+			cm.Content = backend.ToolResultReferencePlaceholder
+		} else if cm.ResultUnavailable {
+			cm.Content = backend.ToolResultUnavailablePlaceholder
 		}
 		out = append(out, cm)
 	}
@@ -145,8 +163,16 @@ func restoreMessagesWithIdentities(in []CheckpointMessage) ([]*schema.Message, m
 				Function: schema.FunctionCall{Name: tc.Name, Arguments: tc.Args},
 			})
 		}
-		if cm.ID != "" || cm.Sequence != 0 || cm.Ephemeral {
-			identities[m] = historyIdentity{id: cm.ID, sequence: cm.Sequence, ephemeral: cm.Ephemeral}
+		if cm.ID != "" || cm.Sequence != 0 || cm.Ephemeral || cm.ResultReference != nil || cm.ResultUnavailable {
+			identity := historyIdentity{
+				id: cm.ID, sequence: cm.Sequence, ephemeral: cm.Ephemeral,
+				resultUnavailable: cm.ResultUnavailable,
+			}
+			if cm.ResultReference != nil {
+				ref := cm.ResultReference.Clone()
+				identity.resultReference = &ref
+			}
+			identities[m] = identity
 		}
 		out = append(out, m)
 	}
