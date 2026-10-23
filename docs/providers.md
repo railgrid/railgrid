@@ -1755,6 +1755,19 @@ CatalogEntry).
   receives; do not render untrusted app code. App-only backend calls are
   unsupported in this read-only profile.
 
+- **MCP App capture approval (Agents backend).** Operators must approve each
+  provider's exact app HTML SHA-256 through the default-deny
+  `RAILGRID_MCP_APP_APPROVED_DIGESTS` setting. Captures retain a content-free
+  provider/resource/digest reference; executable HTML is not persisted. An
+  attended capture or read rechecks the caller's source access and retrieves
+  the exact current resource through the caller's Hub aggregate connection.
+  Only an approved, matching resource can return transient app HTML in UI
+  metadata. Removing approval or changing resource bytes prevents that
+  hydration; otherwise authorized raw captures remain available. A digest
+  detects byte changes but does not prove code review: operator approval is
+  the separate trust decision. This backend policy does not itself create a
+  browser host or sandbox.
+
 - **Auth token forwarding** (backend proxy): the user's bearer token is
   forwarded to the provider backend. Operators MUST trust the providers
   they install. Same trust model as installing any cluster operator.
