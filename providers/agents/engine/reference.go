@@ -20,7 +20,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-agents/backend"
-	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/resulttypes"
 )
 
 // ErrToolResultReferenceUnavailable is returned before model or pending-tool
@@ -166,27 +166,27 @@ func findCallArgs(messages []*schema.Message, callID, toolName string) (string, 
 	return args, found
 }
 
-func validatedSources(in []store.SourceReference) []store.SourceReference {
-	var out []store.SourceReference
+func validatedSources(in []resulttypes.SourceReference) []resulttypes.SourceReference {
+	var out []resulttypes.SourceReference
 	for _, source := range in {
 		if source.Validate() != nil {
 			continue
 		}
 		copy := source
-		copy.Access = append([]store.SourceAccess(nil), source.Access...)
+		copy.Access = append([]resulttypes.SourceAccess(nil), source.Access...)
 		out = append(out, copy)
 	}
 	return out
 }
 
-func cloneSourceReferences(in []store.SourceReference) []store.SourceReference {
+func cloneSourceReferences(in []resulttypes.SourceReference) []resulttypes.SourceReference {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]store.SourceReference, len(in))
+	out := make([]resulttypes.SourceReference, len(in))
 	for i, source := range in {
 		out[i] = source
-		out[i].Access = append([]store.SourceAccess(nil), source.Access...)
+		out[i].Access = append([]resulttypes.SourceAccess(nil), source.Access...)
 	}
 	return out
 }

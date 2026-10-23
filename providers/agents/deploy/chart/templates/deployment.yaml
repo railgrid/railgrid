@@ -109,6 +109,12 @@ spec:
               value: {{ .deliveryRetention | quote }}
             {{- end }}
             {{- end }}
+            {{- with .Values.mcpApps.approvedDigests }}
+            {{- if . }}
+            - name: RAILGRID_MCP_APP_APPROVED_DIGESTS
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.hub.insecure }}
             - name: RAILGRID_HUB_INSECURE
               value: "true"

@@ -234,9 +234,11 @@ An attended chat can save one successful tool result with
 later chat turn. `open_analysis_artifact` rereads only an exact attached
 capture; it does not rerun the source tool. The provider checks the current
 caller's required source actions and the exact source object UIDs before it
-saves or reopens source-backed data, recorded input, or a pinned MCP App HTML
-resource. Captures are immutable and caller-owned; list responses contain
-metadata only.
+saves or reopens source-backed data and recorded input. Artifacts retain only a
+content-free App resource URI and SHA-256 receipt; the provider fetches exact
+HTML transiently for an attended capture or reopen and never writes it to the
+run trace or artifact store. Captures are immutable and caller-owned; list
+responses contain metadata only.
 
 Run checkpoints retain only the attached artifact owner and ID/digest pointers,
 never the caller bearer or captured bytes. If an approval resume needs to reopen
@@ -247,9 +249,16 @@ error. Start a fresh attended chat with the result attached to reopen it.
 MCP App negotiation and resource reads are limited to the explicit trusted Hub
 aggregate connection. Ordinary MCP connections do not advertise Apps or fetch
 their UI resources. An App is available only when its tool result includes
-validated source references, and the UI bytes remain on the attended capture
-read path. This source check applies to saved capture data and App HTML; it does
-not retroactively revoke ordinary historical MCP text, prior assistant
+validated source references and its provider plus exact HTML digest appears in
+the operator's `RAILGRID_MCP_APP_APPROVED_DIGESTS` allowlist (chart value
+`mcpApps.approvedDigests`). The allowlist defaults to empty, which disables
+hosted Apps while preserving ordinary captured result data. Capture and every
+reopen resolve the exact namespaced URI through the current Hub aggregate and
+require the returned HTML digest to match both the saved receipt and an
+operator-approved pin. Removing approval or changing the installed resource
+withholds the App while leaving the saved result available after source
+revalidation. This source check applies to saved capture data and App HTML; it
+does not retroactively revoke ordinary historical MCP text, prior assistant
 answers, or the existing run trace. Hosted App HTML may make its own network
 requests; the provider does not claim to prevent those requests.
 

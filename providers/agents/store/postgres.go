@@ -1476,10 +1476,8 @@ func (p *PostgresStore) AppendToolCall(ctx context.Context, scope Scope, tc Tool
 	if len(tc.Sources) > MaxAgentArtifactSources {
 		return fmt.Errorf("tool call has more than %d sources", MaxAgentArtifactSources)
 	}
+	tc.Presentation = contentFreePresentation(tc.Presentation, tc.Sources)
 	if tc.Presentation != nil {
-		if tc.Presentation.MCPApp != nil && len(tc.Sources) == 0 {
-			return fmt.Errorf("MCP App resources require source references")
-		}
 		if err := tc.Presentation.Validate(); err != nil {
 			return err
 		}
@@ -2323,6 +2321,7 @@ func (p *PostgresStore) SaveAgentArtifact(ctx context.Context, scope Scope, arti
 	if artifact.AgentName != scope.AgentName {
 		return fmt.Errorf("artifact Agent does not match scope Agent")
 	}
+	artifact.Presentation = contentFreePresentation(artifact.Presentation, artifact.Sources)
 	if err := artifact.validate(); err != nil {
 		return err
 	}
@@ -2333,7 +2332,7 @@ func (p *PostgresStore) SaveAgentArtifact(ctx context.Context, scope Scope, arti
 		}
 		mutation.tx, mutation.executor = tx, tx
 	}
-	lockKey := "agents-agent-artifact:" + scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + scope.AgentName + "/" + artifact.AgentUID
+	lockKey := "agents-agent-artifact:" + scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + scope.AgentName + "/" + artifact.AgentUID + "/" + artifact.Owner
 	if _, err := mutation.executor.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
 		return fmt.Errorf("lock Agent artifact retention: %w", err)
 	}
@@ -2353,8 +2352,8 @@ func (p *PostgresStore) SaveAgentArtifact(ctx context.Context, scope Scope, arti
 	if err := mutation.executor.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(size + input_size + COALESCE(octet_length(presentation->'mcpApp'->>'html'), 0)), 0)
 		FROM agents_agent_artifacts
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, artifact.AgentUID).Scan(&count, &retained); err != nil {
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND owner=$5`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, artifact.AgentUID, artifact.Owner).Scan(&count, &retained); err != nil {
 		return err
 	}
 	if count >= MaxAgentArtifactsPerAgent || retained+artifact.retainedBytes() > MaxAgentArtifactBytesPerAgent {

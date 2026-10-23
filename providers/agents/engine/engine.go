@@ -33,7 +33,7 @@ import (
 	"github.com/eino-contrib/jsonschema"
 
 	"github.com/railgrid/provider-agents/backend"
-	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/resulttypes"
 )
 
 // Role constants for engine messages (aligned with Eino's schema roles).
@@ -467,7 +467,7 @@ func (e *Engine) loop(
 			result := observation.Text
 			images := observation.Images
 			sources := validatedSources(observation.Sources)
-			var presentation *store.ProviderPresentation
+			var presentation *resulttypes.ProviderPresentation
 			var resultReference *backend.ToolResultReference
 			unavailable := false
 			if referenceOnly {

@@ -10,7 +10,9 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -171,10 +173,61 @@ func TestTrustedHubAggregateReadsNamespacedMCPAppResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	appDigest := sha256.Sum256([]byte("<main>current report</main>"))
 	if obs.Text != "exact query result" || len(obs.Sources) != 1 || obs.Presentation == nil || obs.Presentation.Title != "Current report" ||
-		obs.Presentation.MCPApp == nil || obs.Presentation.MCPApp.ResourceURI != resourceURI || obs.Presentation.MCPApp.HTML != "<main>current report</main>" {
+		obs.Presentation.MCPApp != nil || obs.Presentation.MCPAppReference == nil || obs.Presentation.MCPAppReference.Provider != "example-provider" ||
+		obs.Presentation.MCPAppReference.ResourceURI != resourceURI || obs.Presentation.MCPAppReference.SHA256 != hex.EncodeToString(appDigest[:]) {
 		t.Fatalf("trusted aggregate observation = %#v", obs)
 	}
+	encodedObservation, err := json.Marshal(obs)
+	if err != nil || strings.Contains(string(encodedObservation), "<main>current report</main>") {
+		t.Fatalf("trusted aggregate observation must not contain fetched app HTML: %s, err=%v", encodedObservation, err)
+	}
+}
+
+func TestMCPToolArgumentsPreserveExactJSONNumbers(t *testing.T) {
+	const raw = `{"large":9007199254740993,"decimal":1.234567890123456789,"nested":{"value":9223372036854775807}}`
+	arguments, err := decodeMCPToolArguments(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, number := range []string{"9007199254740993", "1.234567890123456789", "9223372036854775807"} {
+		if !strings.Contains(string(encoded), number) {
+			t.Fatalf("MCP arguments rounded %s: %s", number, encoded)
+		}
+	}
+	for _, invalid := range []string{`null`, `[]`, `{} {}`} {
+		if _, err := decodeMCPToolArguments(invalid); err == nil {
+			t.Fatalf("invalid MCP argument payload %q was accepted", invalid)
+		}
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestMCPAppResourceTransportBoundsReadResponses(t *testing.T) {
+	request := func(method string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "http://mcp.test/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"`+method+`"}`))
+		return req
+	}
+	largeBody := strings.Repeat("x", mcpAppResourceResponseMax+1)
+	transport := &mcpAppResourceResponseLimitTransport{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(largeBody))}, nil
+	})}
+	if _, err := transport.RoundTrip(request("resources/read")); err == nil {
+		t.Fatal("oversized resources/read response was accepted")
+	}
+	response, err := transport.RoundTrip(request("tools/call"))
+	if err != nil {
+		t.Fatalf("non-resource response was bounded: %v", err)
+	}
+	_ = response.Body.Close()
 }
 
 func TestHubMCPAppResourceURIRequiresCanonicalProviderNamespace(t *testing.T) {
@@ -200,5 +253,12 @@ func TestHubMCPAppResourceURIRequiresCanonicalProviderNamespace(t *testing.T) {
 				t.Fatalf("accepted URI = %q, want accepted=%t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMCPEmptyArgumentsRemainSupported(t *testing.T) {
+	args, err := decodeMCPToolArguments("")
+	if err != nil || args == nil || len(args) != 0 {
+		t.Fatalf("empty invocation changed: %v %v", args, err)
 	}
 }

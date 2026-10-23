@@ -1401,7 +1401,7 @@ func safeToolPresentation(in *store.ProviderPresentation) *store.ProviderPresent
 	}
 	out := in.Clone()
 	out.MCPApp = nil
-	if out.Title == "" {
+	if out.Title == "" && out.MCPAppReference == nil {
 		return nil
 	}
 	return out
