@@ -8,8 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"unicode"
+
 	"net/url"
 	"strings"
+
+	"github.com/go-logr/logr"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -22,8 +27,11 @@ func appResourceURI(t discoveredTool) string {
 		return ""
 	}
 	raw, _ := ui["resourceUri"].(string)
+	if strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return ""
+	}
 	u, err := url.Parse(raw)
-	if err != nil || len(raw) > 2048 || u.Scheme != "ui" || u.Host == "" || u.User != nil || u.Fragment != "" {
+	if err != nil || len(raw) > 2048 || u.Scheme != "ui" || u.Host == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
 		return ""
 	}
 	return raw
@@ -50,7 +58,7 @@ func proxyToolMeta(p ProviderTarget, t discoveredTool) mcp.Meta {
 	return meta
 }
 
-func registerAppResources(srv *mcp.Server, target *providerTools) {
+func registerAppResources(srv *mcp.Server, target *providerTools, log logr.Logger) {
 	seen := map[string]bool{}
 	for _, tool := range target.tools {
 		original := appResourceURI(tool)
@@ -59,14 +67,14 @@ func registerAppResources(srv *mcp.Server, target *providerTools) {
 		}
 		seen[original] = true
 		uri := federatedAppURI(target.provider.Name, original)
-		srv.AddResource(&mcp.Resource{URI: uri, Name: target.provider.Name + " app", MIMEType: "text/html;profile=mcp-app"}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		err := addAppResource(srv, &mcp.Resource{URI: uri, Name: target.provider.Name + " app", MIMEType: providerMCPAppMIMEType}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			params, _ := json.Marshal(map[string]string{"uri": original})
 			// Resource payloads have a separate, smaller bound than tool data.
 			client := *target.client
-			if client.maxResponseBytes <= 0 || client.maxResponseBytes > 8<<20 {
-				client.maxResponseBytes = 8 << 20
+			if client.maxResponseBytes <= 0 || client.maxResponseBytes > providerMCPAppEnvelopeBytes {
+				client.maxResponseBytes = providerMCPAppEnvelopeBytes
 			}
-			body, err := client.rpc(ctx, target.provider.MCPURL, "resources/read", params, target.client.discoveryTimeout)
+			body, err := client.rpc(ctx, target.provider.MCPURL, "resources/read", params, target.client.callTimeout)
 			if err != nil {
 				return nil, fmt.Errorf("provider app resource unavailable: %w", err)
 			}
@@ -81,11 +89,16 @@ func registerAppResources(srv *mcp.Server, target *providerTools) {
 			if !validFederatedAppContent(content) {
 				return nil, fmt.Errorf("provider app resource has unsupported MIME type or size")
 			}
+			// Advertise one canonical MIME spelling to downstream hosts.
+			content.MIMEType = providerMCPAppMIMEType
 			result.Meta = nil
 			content.Meta = appResourceMeta(content.Meta)
 			content.URI = uri
 			return &result, nil
 		})
+		if err != nil {
+			log.Error(err, "provider app resource registration skipped", "provider", target.provider.Name)
+		}
 	}
 }
 
@@ -113,14 +126,28 @@ func appToolModelVisible(t discoveredTool) bool {
 		if v != "model" && v != "app" {
 			return false
 		}
-		visible = visible || strings.EqualFold(v, "model")
+		visible = visible || v == "model"
 	}
 	return visible
 }
 
 func validFederatedAppContent(content *mcp.ResourceContents) bool {
-	return content != nil && content.MIMEType == "text/html;profile=mcp-app" &&
-		(content.Text == "") != (len(content.Blob) == 0) && len(content.Text)+len(content.Blob) <= 1<<20
+	if content == nil {
+		return false
+	}
+	kind, params, err := mime.ParseMediaType(content.MIMEType)
+	return err == nil && kind == "text/html" && params["profile"] == "mcp-app" &&
+		(content.Text == "") != (len(content.Blob) == 0) && len(content.Text)+len(content.Blob) <= providerMCPAppContentBytes
+}
+
+func addAppResource(srv *mcp.Server, resource *mcp.Resource, handler mcp.ResourceHandler) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("invalid provider app resource")
+		}
+	}()
+	srv.AddResource(resource, handler)
+	return nil
 }
 
 // Resource federation forwards the standard UI namespace, not provider-private
@@ -128,6 +155,10 @@ func validFederatedAppContent(content *mcp.ResourceContents) bool {
 func appResourceMeta(meta mcp.Meta) mcp.Meta {
 	ui, ok := meta["ui"].(map[string]any)
 	if !ok {
+		return nil
+	}
+	encoded, err := json.Marshal(ui)
+	if err != nil || len(encoded) > providerMCPAppMetaBytes {
 		return nil
 	}
 	return mcp.Meta{"ui": ui}

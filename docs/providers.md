@@ -1748,6 +1748,22 @@ CatalogEntry).
 
 ## Security considerations
 
+- **MCP Apps read-only host.** Agents supports reviewed installed provider apps,
+  not arbitrary third-party HTML. Operators must explicitly approve each
+  provider's exact app HTML SHA-256 using Agents' default-deny
+  `RAILGRID_MCP_APP_APPROVED_DIGESTS` configuration. The current tenant's Hub
+  aggregate must still expose the provider's declared resource, and captures
+  bind provider identity, resource URI and the exact app digest. App and result
+  hashes detect changes to captured bytes; they do not prove that code was
+  independently reviewed. Operator approval supplies that separate trust
+  decision. Removing approval or changing the resource prevents remounting the app;
+  otherwise authorized raw captures remain available.
+  Provider app code receives the captured result, so that data is readable by
+  the approved app. Opaque frames, CSP and denied SDK capabilities reduce
+  exposure but cannot prevent a scripted app from navigating its own frame
+  and potentially disclosing result data. Do not approve untrusted app code.
+  App-only backend calls are unsupported in this read-only profile.
+
 - **Auth token forwarding** (backend proxy): the user's bearer token is
   forwarded to the provider backend. Operators MUST trust the providers
   they install. Same trust model as installing any cluster operator.

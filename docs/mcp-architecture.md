@@ -160,10 +160,21 @@ A federated tool may advertise a standard `_meta.ui.resourceUri` referencing a
 and registers `resources/read` only for UI resources declared by model-visible
 tools in the current caller's provider set. It forwards reads through the same
 authenticated tenant-scoped provider client; the identifier is never treated as
-an HTTP destination. App-only tools are not exposed as model tools.
+an HTTP destination. This phase supports read-only result apps only: app-only tools and their
+exclusive resources are deliberately unavailable to all callers, not merely
+hidden from the model. Hosts do not grant app tool calls. Supporting those
+calls requires a separate app-authorized dispatch path; do not route them
+through model-callable tools.
+
+Federation currently uses independent stateless POSTs. App linkage must be
+advertised declaratively by `tools/list`; providers requiring session-negotiated
+UI capabilities are unsupported. Instruction-fetch `initialize` does not
+advertise an unrelated UI capability or establish a reusable provider session.
 
 Reads require exactly one matching `text/html;profile=mcp-app` resource, bounded
-to 1 MiB. Resource metadata is limited to the standard `ui` namespace. Tool
+to 1 MiB. Resource metadata is limited to an 8 KiB standard `ui` namespace. Transport
+responses have a separate bound allowing worst-case JSON escaping plus framing,
+and use the tool-call deadline rather than the discovery deadline. Tool
 result forwarding preserves JSON number spellings. This is resource transport,
 not a browser host: sandboxing, supported capabilities, and app trust decisions
 remain the consuming application's responsibility.

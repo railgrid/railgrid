@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestFederationPreservesExactNumericArguments(t *testing.T) {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}`))
 		case "tools/call":
 			forwarded <- req.Params.Arguments
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"received"}]}}`))
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"received"}],"structuredContent":{"id":9007199254740993,"nested":{"decimal":9007199254740993.000000000001},"exponent":1.234567890123456789e+400}}}`))
 		default:
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 		}
@@ -42,9 +43,14 @@ func TestFederationPreservesExactNumericArguments(t *testing.T) {
 	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget {
 		return []ProviderTarget{{Name: "example", MCPURL: provider.URL}}
 	}, Verifier: allowAll})
-	_, code := jsonrpc(t, h, "tools/call", `{"name":"example__echo","arguments":{"id":9007199254740993,"filters":[{"value":9007199254740993.000000000001}],"text":"9007199254740993"}}`)
+	result, code := jsonrpc(t, h, "tools/call", `{"name":"example__echo","arguments":{"id":9007199254740993,"filters":[{"value":9007199254740993.000000000001}],"text":"9007199254740993"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("aggregate call status = %d", code)
+	}
+	for _, token := range []string{"9007199254740993", "9007199254740993.000000000001", "1.234567890123456789e+400"} {
+		if !strings.Contains(string(result), token) {
+			t.Fatalf("result changed numeric token %s: %s", token, result)
+		}
 	}
 	select {
 	case raw := <-forwarded:
