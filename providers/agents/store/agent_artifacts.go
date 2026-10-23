@@ -21,8 +21,8 @@ import (
 
 const (
 	MaxAgentArtifactBytes             = 1 << 20
-	MaxAgentArtifactsPerAgent         = 100
-	MaxAgentArtifactBytesPerAgent     = 16 << 20
+	MaxAgentArtifactsPerOwner         = 100
+	MaxAgentArtifactBytesPerOwner     = 16 << 20
 	MaxAgentArtifactSources           = resulttypes.MaxAgentArtifactSources
 	MaxAgentArtifactSourceActions     = resulttypes.MaxAgentArtifactSourceActions
 	MaxAgentArtifactInputBytes        = 16 << 10
@@ -139,11 +139,7 @@ func (a AgentArtifact) validate() error {
 }
 
 func (a AgentArtifact) retainedBytes() int64 {
-	retained := a.Size + a.InputSize
-	if a.Presentation != nil && a.Presentation.MCPApp != nil {
-		retained += int64(len(a.Presentation.MCPApp.HTML))
-	}
-	return retained
+	return a.Size + a.InputSize
 }
 
 func artifactDigest(data []byte) string {

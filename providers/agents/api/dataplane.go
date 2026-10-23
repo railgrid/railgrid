@@ -119,7 +119,7 @@ func (s *Server) routes() map[string]resourceRoutes {
 			"inbox":         {methods: get, handler: s.listInboxItems, readOnly: true},
 			"inbox-resolve": {methods: post, tail: tailRequired, handler: s.resolveInboxItem},
 			"events":        {methods: get, handler: s.streamEvents, stream: true, readOnly: true},
-			"artifacts":     {methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete}, tail: tailFree, handler: s.agentArtifacts},
+			"artifacts":     {methods: []string{http.MethodGet, http.MethodDelete}, tail: tailFree, handler: s.agentArtifacts},
 		}},
 		// A model credential is an object, so its probes are verbs on IT
 		// rather than on some agent that happens to use it. That is what makes

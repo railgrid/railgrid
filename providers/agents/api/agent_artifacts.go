@@ -126,7 +126,7 @@ func (s *Server) agentArtifacts(w http.ResponseWriter, r *http.Request) {
 	if tail == "" {
 		switch r.Method {
 		case http.MethodGet:
-			items, err := s.store.ListAgentArtifacts(r.Context(), scope, agentUID, id.user, store.MaxAgentArtifactsPerAgent)
+			items, err := s.store.ListAgentArtifacts(r.Context(), scope, agentUID, id.user, store.MaxAgentArtifactsPerOwner)
 			if err != nil {
 				writeStatus(w, http.StatusInternalServerError, "InternalError", "could not list Agent artifacts")
 				return
@@ -136,11 +136,9 @@ func (s *Server) agentArtifacts(w http.ResponseWriter, r *http.Request) {
 				views = append(views, agentArtifactViewOf(item, false, false))
 			}
 			writeList(w, views)
-		case http.MethodPost:
-			s.createAgentArtifactFromDataPlane(w, r, id, scope, agentUID)
 		default:
-			w.Header().Set("Allow", "GET, POST")
-			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "artifact collection answers GET and POST")
+			w.Header().Set("Allow", "GET")
+			writeStatus(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "artifact collection answers GET")
 		}
 		return
 	}
@@ -177,10 +175,6 @@ func (s *Server) agentArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) createAgentArtifactFromDataPlane(w http.ResponseWriter, r *http.Request, id identity, scope store.Scope, agentUID string) {
-	writeStatus(w, http.StatusForbidden, "AttendedTransportRequired", "capturing a tool result requires the caller's current permission to read its exact run; use the caller-attended MCP transport")
-}
-
 type artifactCallReceipt struct {
 	Tool         string
 	Args         string
@@ -203,7 +197,7 @@ func successfulAgentArtifactReceipt(calls []store.ToolCall, agent, runID, sessio
 	if found == nil || found.AgentName != agent || found.Outcome != "ok" || found.Error != "" || strings.TrimSpace(found.Tool) == "" {
 		return artifactCallReceipt{}, artifactMCPNotFound("successful tool receipt is unavailable")
 	}
-	if found.Tool == "open_analysis_artifact" {
+	if found.Tool == openSavedArtifactToolName {
 		return artifactCallReceipt{}, artifactMCPBadRequest("an opened saved artifact is not a new source receipt")
 	}
 	if len(found.Sources) > store.MaxAgentArtifactSources {
@@ -266,7 +260,7 @@ func (s *Server) captureAgentArtifact(
 	}
 	data, input := []byte(message.Content), []byte(receipt.Args)
 	if len(input) > store.MaxAgentArtifactInputBytes || len(data)+len(input) > store.MaxAgentArtifactBytes {
-		return store.AgentArtifact{}, artifactMCPBadRequest("tool output and recorded input exceed the saved artifact size limit")
+		return store.AgentArtifact{}, artifactMCPTooLarge("tool output and recorded input exceed the saved artifact size limit")
 	}
 	if !isValidUTF8(data) || !isValidUTF8(input) {
 		return store.AgentArtifact{}, artifactMCPBadRequest("tool output and recorded input must be UTF-8 text")
@@ -412,6 +406,10 @@ func artifactMCPBadRequest(message string) *artifactMCPFailure {
 	return &artifactMCPFailure{code: "BadRequest", reason: "InvalidArtifactRequest", message: message, status: http.StatusBadRequest}
 }
 
+func artifactMCPTooLarge(message string) *artifactMCPFailure {
+	return &artifactMCPFailure{code: "RequestEntityTooLarge", reason: "ArtifactTooLarge", message: message, status: http.StatusRequestEntityTooLarge}
+}
+
 type artifactMCPError struct {
 	Code       string `json:"code"`
 	Reason     string `json:"reason"`
@@ -428,7 +426,17 @@ type artifactMCPOutput struct {
 
 func artifactMCPRefused(err error) (*mcp.CallToolResult, artifactMCPOutput, error) {
 	var failure *artifactMCPFailure
-	if !errors.As(err, &failure) {
+	switch {
+	case errors.As(err, &failure):
+	case errors.Is(err, store.ErrAgentArtifactLimit):
+		failure = &artifactMCPFailure{
+			code: "Conflict", reason: "ArtifactLimitReached",
+			message: "saved result quota reached; delete an existing saved result before saving another",
+			status:  http.StatusConflict,
+		}
+	case errors.Is(err, store.ErrAgentArtifactResultTooLarge):
+		failure = artifactMCPTooLarge("tool output exceeds the saved artifact size limit")
+	default:
 		failure = &artifactMCPFailure{code: "InternalError", reason: "ArtifactOperationFailed", message: "could not complete the Agent artifact operation", status: http.StatusInternalServerError}
 	}
 	out := artifactMCPOutput{Error: &artifactMCPError{Code: failure.code, Reason: failure.reason, Message: failure.message, HTTPStatus: failure.status}}
@@ -567,7 +575,7 @@ func (s *Server) registerAgentArtifactMCPTools(srv *mcp.Server, r *http.Request)
 		if err != nil {
 			return artifactMCPRefused(err)
 		}
-		items, err := s.store.ListAgentArtifacts(ctx, caller.scope, string(caller.agent.UID), caller.identity.user, store.MaxAgentArtifactsPerAgent)
+		items, err := s.store.ListAgentArtifacts(ctx, caller.scope, string(caller.agent.UID), caller.identity.user, store.MaxAgentArtifactsPerOwner)
 		if err != nil {
 			return artifactMCPRefused(err)
 		}

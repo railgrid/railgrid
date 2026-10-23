@@ -269,6 +269,8 @@ var agentsSchema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS agents_agent_artifacts_owner_idx
 		ON agents_agent_artifacts (org_uuid, workspace_uuid, agent_name, agent_uid, owner, created_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS agents_agent_artifacts_owner_quota_idx
+		ON agents_agent_artifacts (org_uuid, workspace_uuid, owner)`,
 	// The per-trigger delivery log never shipped; the sink moved to the
 	// Webhook (agents_webhook_deliveries). Dropped so a dev database that ran
 	// the interim schema sheds it.
@@ -2332,7 +2334,7 @@ func (p *PostgresStore) SaveAgentArtifact(ctx context.Context, scope Scope, arti
 		}
 		mutation.tx, mutation.executor = tx, tx
 	}
-	lockKey := "agents-agent-artifact:" + scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + scope.AgentName + "/" + artifact.AgentUID + "/" + artifact.Owner
+	lockKey := "agents-agent-artifact-owner:" + scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + artifact.Owner
 	if _, err := mutation.executor.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
 		return fmt.Errorf("lock Agent artifact retention: %w", err)
 	}
@@ -2350,13 +2352,13 @@ func (p *PostgresStore) SaveAgentArtifact(ctx context.Context, scope Scope, arti
 	var count int
 	var retained int64
 	if err := mutation.executor.QueryRowContext(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(size + input_size + COALESCE(octet_length(presentation->'mcpApp'->>'html'), 0)), 0)
+		SELECT COUNT(*), COALESCE(SUM(size + input_size), 0)
 		FROM agents_agent_artifacts
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND owner=$5`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, artifact.AgentUID, artifact.Owner).Scan(&count, &retained); err != nil {
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND owner=$3`,
+		scope.OrgUUID, scope.WorkspaceUUID, artifact.Owner).Scan(&count, &retained); err != nil {
 		return err
 	}
-	if count >= MaxAgentArtifactsPerAgent || retained+artifact.retainedBytes() > MaxAgentArtifactBytesPerAgent {
+	if count >= MaxAgentArtifactsPerOwner || retained+artifact.retainedBytes() > MaxAgentArtifactBytesPerOwner {
 		return ErrAgentArtifactLimit
 	}
 	sources, err := json.Marshal(artifact.Sources)
@@ -2390,8 +2392,8 @@ func (p *PostgresStore) ListAgentArtifacts(ctx context.Context, scope Scope, age
 	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" {
 		return nil, fmt.Errorf("agent UID and artifact owner are required")
 	}
-	if limit <= 0 || limit > MaxAgentArtifactsPerAgent {
-		limit = MaxAgentArtifactsPerAgent
+	if limit <= 0 || limit > MaxAgentArtifactsPerOwner {
+		limit = MaxAgentArtifactsPerOwner
 	}
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT id, agent_name, agent_uid, owner, run_id, session_id, tool_call_id, tool_name, title, media_type,

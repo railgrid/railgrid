@@ -131,7 +131,7 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			if err != nil {
 				return chatRefused(errBadRequest("saved result references could not be encoded"))
 			}
-			message += "\n\nAttached saved result references (pointers only; no result data is included). Use open_analysis_artifact with an exact artifactID and digest to read one: " + string(encoded)
+			message += "\n\nAttached saved result references (pointers only; no result data is included). Use " + openSavedArtifactToolName + " with an exact artifactID and digest to read one: " + string(encoded)
 		}
 		id := s.mcpIdentity(ctx, r)
 		if id.workspaceUUID == "" {

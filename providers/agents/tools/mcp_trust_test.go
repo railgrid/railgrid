@@ -200,7 +200,7 @@ func TestMCPToolArgumentsPreserveExactJSONNumbers(t *testing.T) {
 			t.Fatalf("MCP arguments rounded %s: %s", number, encoded)
 		}
 	}
-	for _, invalid := range []string{`null`, `[]`, `{} {}`} {
+	for _, invalid := range []string{`[]`, `{} {}`, `{} trailing`, `null {}`} {
 		if _, err := decodeMCPToolArguments(invalid); err == nil {
 			t.Fatalf("invalid MCP argument payload %q was accepted", invalid)
 		}
@@ -256,9 +256,11 @@ func TestHubMCPAppResourceURIRequiresCanonicalProviderNamespace(t *testing.T) {
 	}
 }
 
-func TestMCPEmptyArgumentsRemainSupported(t *testing.T) {
-	args, err := decodeMCPToolArguments("")
-	if err != nil || args == nil || len(args) != 0 {
-		t.Fatalf("empty invocation changed: %v %v", args, err)
+func TestMCPNoArgumentInvocationsRemainSupported(t *testing.T) {
+	for _, raw := range []string{"", `null`} {
+		args, err := decodeMCPToolArguments(raw)
+		if err != nil || args == nil || len(args) != 0 {
+			t.Fatalf("no-argument invocation %q changed: %v %v", raw, args, err)
+		}
 	}
 }

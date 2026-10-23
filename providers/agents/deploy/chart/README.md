@@ -74,3 +74,11 @@ helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-prov
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
+
+## Artifact retention
+
+Each caller can retain at most 100 saved tool results and 16 MiB of result
+plus recorded input across all of that caller's Agents in a workspace. MCP App
+HTML is resolved transiently and is not included in stored artifacts or run
+traces. Capturing a result requires caller-attended MCP; source-backed reads
+also recheck current caller access before returning data.

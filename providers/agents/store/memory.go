@@ -73,6 +73,10 @@ func artifactKey(s Scope, runID, name string) string {
 
 func agentArtifactPrefix(s Scope) string { return tenantKey(s) + "|" + s.AgentName + "|" }
 
+// ownerAgentArtifactPrefix scopes a caller's shared retention quota across all
+// Agents in one workspace.
+func ownerAgentArtifactPrefix(s Scope) string { return tenantKey(s) + "|" }
+
 func (m *MemoryStore) FindClusterForScope(_ context.Context, orgUUID, workspaceUUID string) (string, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1541,14 +1545,15 @@ func (m *MemoryStore) SaveAgentArtifact(_ context.Context, scope Scope, artifact
 		return fmt.Errorf("artifact ID already exists")
 	}
 	count, total := 0, int64(0)
+	ownerPrefix := ownerAgentArtifactPrefix(scope)
 	for existingKey, existing := range m.agentArtifacts {
-		if !hasPrefix(existingKey, prefix) || existing.AgentUID != artifact.AgentUID || existing.Owner != artifact.Owner {
+		if !hasPrefix(existingKey, ownerPrefix) || existing.Owner != artifact.Owner {
 			continue
 		}
 		count++
 		total += existing.retainedBytes()
 	}
-	if count >= MaxAgentArtifactsPerAgent || total+artifact.retainedBytes() > MaxAgentArtifactBytesPerAgent {
+	if count >= MaxAgentArtifactsPerOwner || total+artifact.retainedBytes() > MaxAgentArtifactBytesPerOwner {
 		return ErrAgentArtifactLimit
 	}
 	artifact.CreatedAt = artifact.CreatedAt.UTC()
@@ -1564,8 +1569,8 @@ func (m *MemoryStore) ListAgentArtifacts(_ context.Context, scope Scope, agentUI
 	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" {
 		return nil, fmt.Errorf("artifact Agent UID and owner are required")
 	}
-	if limit <= 0 || limit > MaxAgentArtifactsPerAgent {
-		limit = MaxAgentArtifactsPerAgent
+	if limit <= 0 || limit > MaxAgentArtifactsPerOwner {
+		limit = MaxAgentArtifactsPerOwner
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
