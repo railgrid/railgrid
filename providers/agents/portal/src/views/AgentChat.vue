@@ -23,6 +23,9 @@ import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
 import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
+import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
+import { findSavedCaptureReceipt, savedCaptureReceiptIsCurrent } from '../artifactTrust'
+import { InlineAppLoadCoordinator } from '../vue/inline-app-loads'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
 import McpAppViewer from '../components/McpAppViewer.vue'
@@ -32,6 +35,7 @@ const domID = useAgentDOMID()
 const LIVE_RUN_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 const TERMINAL_RUN_PHASES = new Set(['Succeeded', 'Failed', 'Aborted'])
 const MAX_CACHED_ARTIFACT_RECEIPTS = 64
+const inlineAppLoads = new InlineAppLoadCoordinator<AgentArtifact>(2)
 
 interface StartData { runID: string; sessionID: string }
 interface RunStartedData { runID: string; sessionID?: string; status?: string; startedAt?: string }
@@ -73,7 +77,10 @@ watch([() => props.store, () => props.api, () => props.name, () => runtime?.auth
 const artifactPanelOpen = ref(false)
 watch(artifactPanelOpen, open => {
   emit('inspection-open', open)
-  if (open) void nextTick(() => artifactPanelElement.value?.focus())
+  if (open) {
+    inlineAppLoads.abortAll()
+    void nextTick(() => artifactPanelElement.value?.focus())
+  }
 }, { flush: 'sync' })
 const artifactItems = ref<AgentArtifact[]>([])
 const selectedArtifact = shallowRef<AgentArtifact | null>(null)
@@ -458,15 +465,6 @@ function contextIsCurrent(name: string, api: ApiClient): boolean {
   return mounted && props.name === name && props.api === api
 }
 
-function artifactMetadataForRevalidation(artifact: AgentArtifact): AgentArtifact {
-  const metadata = { ...artifact }
-  delete metadata.data
-  delete metadata.input
-  delete metadata.providerPresentation
-  metadata.evidenceStatus = metadata.sources.length ? 'source_revalidation_required' : 'captured_unverified'
-  return metadata
-}
-
 function cacheArtifactMetadata(artifact: AgentArtifact): AgentArtifact {
   const metadata = artifactMetadataForRevalidation(artifact)
   artifactItems.value = [metadata, ...artifactItems.value.filter(item => item.id !== metadata.id)].slice(0, MAX_CACHED_ARTIFACT_RECEIPTS)
@@ -474,6 +472,7 @@ function cacheArtifactMetadata(artifact: AgentArtifact): AgentArtifact {
 }
 
 function clearArtifactState(): void {
+  inlineAppLoads.abortAll()
   artifactDetailSerial += 1
   inlineAppGeneration.value += 1
   artifactPanelOpen.value = false
@@ -487,6 +486,7 @@ function clearArtifactState(): void {
 }
 
 function closeArtifactPanel(): void {
+  inlineAppLoads.abortAll()
   artifactDetailSerial += 1
   artifactPanelOpen.value = false
   selectedArtifact.value = null
@@ -499,10 +499,6 @@ function closeArtifactPanel(): void {
   void nextTick(() => composer.value?.focus())
 }
 
-function sameSavedCapture(left: SavedCaptureCitation, right: SavedCaptureCitation): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
-
 function currentSourceReceipt(receipt: { runID: string; sessionID: string; toolCallID: string }): ToolCall | undefined {
   if (sessionID.value !== receipt.sessionID) return undefined
   const message = messages.value.find(item => item.role === 'assistant' && item.runID === receipt.runID)
@@ -511,13 +507,7 @@ function currentSourceReceipt(receipt: { runID: string; sessionID: string; toolC
 }
 
 function currentSavedCaptureReceipt(detail: { runID: string; sessionID: string; toolCallID: string; savedCapture: SavedCaptureCitation }): boolean {
-  if (sessionID.value !== detail.sessionID) return false
-  const message = messages.value.find(item => item.role === 'assistant' && item.runID === detail.runID)
-  const tool = message?.tools.find(item => item.toolCallID === detail.toolCallID)
-  const savedCapture = tool && !tool.pending && !tool.error && typeof tool.result === 'string' && tool.name === 'open_analysis_artifact'
-    ? parseSavedCaptureCitation(tool.savedCapture)
-    : null
-  return !!savedCapture && sameSavedCapture(savedCapture, detail.savedCapture)
+  return savedCaptureReceiptIsCurrent(messages.value, sessionID.value, detail)
 }
 
 async function loadArtifactDetail(artifact: AgentArtifact, savedCapture?: SavedCaptureCitation): Promise<void> {
@@ -538,14 +528,17 @@ async function loadArtifactDetail(artifact: AgentArtifact, savedCapture?: SavedC
     // artifact receipt may be from another run, so recheck that citation here.
     if (savedCapture && !currentSavedCaptureReceiptForAnyReceipt(savedCapture)) return
     const currentUID = props.store.agent(name)?.metadata.uid
-    if (detail.artifact.id !== metadata.id || detail.artifact.digest !== metadata.digest ||
-        detail.artifact.runID !== metadata.runID || detail.artifact.sessionID !== metadata.sessionID ||
-        detail.artifact.toolCallID !== metadata.toolCallID || detail.artifact.agentUID !== metadata.agentUID ||
-        (currentUID && detail.artifact.agentUID !== currentUID) || detail.artifact.agentName !== name ||
+    if (!artifactIdentityMatches(metadata, detail.artifact) ||
+        (currentUID && detail.artifact.agentUID !== currentUID) ||
         detail.artifact.evidenceStatus !== 'source_identity_and_access_revalidated') {
       artifactDetailError.value = 'The saved result changed identity or access while it was opening. Result bytes remain hidden.'
       return
     }
+    if (!await verifyArtifactContentDigests(detail.artifact)) {
+      artifactDetailError.value = 'The saved result content failed its integrity check. Result bytes remain hidden.'
+      return
+    }
+    if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api)) return
     selectedArtifact.value = detail.artifact
   } catch {
     if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api)) return
@@ -558,20 +551,15 @@ async function loadArtifactDetail(artifact: AgentArtifact, savedCapture?: SavedC
 }
 
 function currentSavedCaptureReceiptForAnyReceipt(savedCapture: SavedCaptureCitation): boolean {
-  return messages.value.some(message => message.role === 'assistant' && message.runID && message.tools.some(tool =>
-    tool.name === 'open_analysis_artifact' && !tool.pending && !tool.error && typeof tool.result === 'string' &&
-    sameSavedCapture(parseSavedCaptureCitation(tool.savedCapture) || { artifactID: '', digest: '' }, savedCapture)))
+  return !!findSavedCaptureReceipt(messages.value, savedCapture)
 }
 
 function retryArtifactDetail(): void {
   if (selectedArtifact.value) void loadArtifactDetail(selectedArtifact.value, selectedSavedCapture.value || undefined)
   else if (selectedSavedCapture.value) {
     const citation = selectedSavedCapture.value
-    const receipt = messages.value.find(message => message.role === 'assistant' && message.runID && message.tools.some(tool =>
-      tool.name === 'open_analysis_artifact' && !tool.pending && !tool.error && typeof tool.result === 'string' &&
-      sameSavedCapture(parseSavedCaptureCitation(tool.savedCapture) || { artifactID: '', digest: '' }, citation)))
-    const tool = receipt?.tools.find(item => item.name === 'open_analysis_artifact' && sameSavedCapture(parseSavedCaptureCitation(item.savedCapture) || { artifactID: '', digest: '' }, citation))
-    if (receipt?.runID && tool?.toolCallID) void loadSavedCaptureDetail({ runID: receipt.runID, sessionID: sessionID.value, toolCallID: tool.toolCallID, savedCapture: citation })
+    const receipt = findSavedCaptureReceipt(messages.value, citation)
+    if (receipt) void loadSavedCaptureDetail({ ...receipt, sessionID: sessionID.value, savedCapture: citation })
   }
 }
 
@@ -589,12 +577,16 @@ async function loadSavedCaptureDetail(detail: { runID: string; sessionID: string
     const result = await api.getAgentArtifact(name, detail.savedCapture.artifactID)
     if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api) || !currentSavedCaptureReceipt(detail)) return
     const currentUID = props.store.agent(name)?.metadata.uid
-    if (result.artifact.id !== detail.savedCapture.artifactID || result.artifact.digest !== detail.savedCapture.digest ||
-        result.artifact.agentName !== name || (currentUID && result.artifact.agentUID !== currentUID) ||
+    if (!artifactIdentityMatches({ id: detail.savedCapture.artifactID, digest: detail.savedCapture.digest, agentName: name, agentUID: currentUID }, result.artifact) ||
         result.artifact.evidenceStatus !== 'source_identity_and_access_revalidated') {
       artifactDetailError.value = 'This saved capture changed identity or access. Result bytes remain hidden.'
       return
     }
+    if (!await verifyArtifactContentDigests(result.artifact)) {
+      artifactDetailError.value = 'This saved capture failed its integrity check. Result bytes remain hidden.'
+      return
+    }
+    if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api) || !currentSavedCaptureReceipt(detail)) return
     selectedArtifact.value = result.artifact
   } catch {
     if (serial === artifactDetailSerial && authorityIsCurrent(authority) && contextIsCurrent(name, api) && currentSavedCaptureReceipt(detail)) {
@@ -633,19 +625,23 @@ async function loadInlineApp(receipt: { runID: string; sessionID: string; toolCa
   const current = () => generation === inlineAppGeneration.value && authorityIsCurrent(authority) && contextIsCurrent(name, api) &&
     !artifactPanelOpen.value && sessionID.value === receipt.sessionID && currentSourceReceipt(receipt)?.hasMcpApp === true
   if (!current()) return null
-  const existing = artifactItems.value.find(item => item.runID === receipt.runID && item.sessionID === receipt.sessionID && item.toolCallID === receipt.toolCallID)
-  const captured = existing || artifactMetadataForRevalidation(await api.captureAgentArtifact({ agent: name, ...receipt }))
-  if (!current()) return null
-  const currentUID = props.store.agent(name)?.metadata.uid
-  if (captured.runID !== receipt.runID || captured.sessionID !== receipt.sessionID || captured.toolCallID !== receipt.toolCallID ||
-      captured.agentName !== name || (currentUID && captured.agentUID !== currentUID)) return null
-  cacheArtifactMetadata(captured)
-  const result = await api.getAgentArtifact(name, captured.id)
-  if (!current() || result.artifact.id !== captured.id || result.artifact.digest !== captured.digest ||
-      result.artifact.runID !== receipt.runID || result.artifact.sessionID !== receipt.sessionID || result.artifact.toolCallID !== receipt.toolCallID ||
-      result.artifact.agentUID !== captured.agentUID || result.artifact.agentName !== name ||
-      result.artifact.evidenceStatus !== 'source_identity_and_access_revalidated' || !result.artifact.providerPresentation?.mcpApp) return null
-  return result.artifact
+  const key = JSON.stringify([name, receipt.runID, receipt.sessionID, receipt.toolCallID])
+  const scopeKey = JSON.stringify([authority.epoch, authority.routeKey, api.tenantKey(), generation])
+  return inlineAppLoads.load(key, scopeKey, current, async signal => {
+    const existing = artifactItems.value.find(item => item.runID === receipt.runID && item.sessionID === receipt.sessionID && item.toolCallID === receipt.toolCallID)
+    const captured = existing || artifactMetadataForRevalidation(await api.captureAgentArtifact({ agent: name, ...receipt }, signal))
+    if (!current()) return null
+    const currentUID = props.store.agent(name)?.metadata.uid
+    if (!artifactIdentityMatches({ agentName: name, agentUID: currentUID, runID: receipt.runID, sessionID: receipt.sessionID, toolCallID: receipt.toolCallID }, captured)) return null
+    cacheArtifactMetadata(captured)
+
+    const result = await api.getAgentArtifact(name, captured.id, signal)
+    if (!current() || !artifactIdentityMatches(captured, result.artifact) ||
+        result.artifact.evidenceStatus !== 'source_identity_and_access_revalidated' ||
+        !result.artifact.providerPresentation?.mcpApp || !mcpAppIdentityMatches(result.artifact.providerPresentation.mcpApp, result.artifact.appIdentity)) return null
+    if (!await verifyArtifactContentDigests(result.artifact) || !current()) return null
+    return result.artifact
+  })
 }
 
 async function saveArtifact(detail: { runID: string; sessionID: string; toolCallID: string; title: string }): Promise<void> {
@@ -2166,9 +2162,10 @@ defineExpose({
             </div>
             <template v-else-if="selectedArtifact?.evidenceStatus === 'source_identity_and_access_revalidated' && typeof selectedArtifact.data === 'string'">
               <McpAppViewer
-                v-if="selectedArtifact.providerPresentation?.mcpApp && !selectedSavedCapture?.selection && !artifactViewerFailed"
+                v-if="selectedArtifact.providerPresentation?.mcpApp && mcpAppIdentityMatches(selectedArtifact.providerPresentation.mcpApp, selectedArtifact.appIdentity) && !selectedSavedCapture?.selection && !artifactViewerFailed"
                 class="agents-artifact-panel__app"
                 :app="selectedArtifact.providerPresentation.mcpApp"
+                :app-identity="selectedArtifact.appIdentity"
                 :result-data="selectedArtifact.data"
                 :input="selectedArtifact.input"
                 @failure="artifactViewerFailed = true"

@@ -4,6 +4,7 @@ import { Maximize2, Plug } from 'lucide-vue-next'
 import McpAppViewer from './McpAppViewer.vue'
 import type { AgentArtifact } from '../types'
 import { mcpAppProviderLabel } from '../mcpAppHost'
+import { mcpAppIdentityMatches } from '../artifactIntegrity'
 
 const props = defineProps<{
   runID: string
@@ -36,11 +37,12 @@ async function load(): Promise<void> {
   try {
     const result = await props.load({ runID: props.runID, sessionID: props.sessionID, toolCallID: props.toolCallID, title: props.title })
     if (!mounted || request !== serial || suspended || props.inspectionOpen) return
-    if (result?.evidenceStatus !== 'source_identity_and_access_revalidated' || !result.providerPresentation?.mcpApp || typeof result.data !== 'string') {
+    if (result?.evidenceStatus !== 'source_identity_and_access_revalidated' || !result.providerPresentation?.mcpApp ||
+        !mcpAppIdentityMatches(result.providerPresentation.mcpApp, result.appIdentity) || typeof result.data !== 'string') {
       error.value = 'This result has no available app view. Open the saved result to inspect its data.'
       return
     }
-    providerLabel.value = mcpAppProviderLabel(result.providerPresentation.mcpApp.resourceUri)
+    providerLabel.value = mcpAppProviderLabel(result.appIdentity!.provider)
     artifact.value = result
     emit('layout')
   } catch {
@@ -101,7 +103,7 @@ onBeforeUnmount(() => { mounted = false; serial += 1; observer?.disconnect(); ar
     </header>
     <p v-if="inspectionOpen" class="agents-inline-app__placeholder" role="status">Result open in details</p>
     <div v-else class="agents-inline-app__body" :aria-busy="loading || undefined">
-      <McpAppViewer v-if="artifact?.providerPresentation?.mcpApp && !viewerFailed" :key="artifact.id" :app="artifact.providerPresentation.mcpApp" :result-data="artifact.data!" :input="artifact.input" inline @failure="fail" @resize="emit('layout')" />
+      <McpAppViewer v-if="artifact?.providerPresentation?.mcpApp && artifact.appIdentity && mcpAppIdentityMatches(artifact.providerPresentation.mcpApp, artifact.appIdentity) && !viewerFailed" :key="artifact.id" :app="artifact.providerPresentation.mcpApp" :app-identity="artifact.appIdentity" :result-data="artifact.data!" :input="artifact.input" inline @failure="fail" @resize="emit('layout')" />
       <div v-else-if="error" class="agents-inline-app__state" role="status"><span>{{ error }}</span><button class="k-btn k-btn--text" type="button" @click="load">Retry</button></div>
       <p v-else class="agents-inline-app__state" role="status">{{ visited ? 'Checking access to this result…' : 'Result app' }}</p>
     </div>

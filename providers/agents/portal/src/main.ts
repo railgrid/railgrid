@@ -6,12 +6,14 @@
 
 import { AgentsDashboardTileElement, AgentsElement } from './element'
 import { ensureRailgridUIStyles } from './portalkit/styles'
+import { configureMcpAppHostBundleURL } from './mcpAppHost'
 import styles from './style.css?raw'
 import activityStyles from './activity.css?raw'
 
 const TAG = 'railgrid-provider-agents'
 const TILE_TAG = 'railgrid-dashboard-tile-agents'
 
+configureMcpAppHostBundleURL((document.currentScript as HTMLScriptElement | null)?.src)
 ensureRailgridUIStyles()
 
 // Hot-reload safety: customElements.define throws on a second registration for

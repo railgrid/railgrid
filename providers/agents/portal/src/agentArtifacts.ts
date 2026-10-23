@@ -1,8 +1,13 @@
-import type { AgentArtifact, AgentArtifactMcpApp, AgentArtifactSource, SavedCaptureCitation } from './types'
+import type { AgentArtifact, AgentArtifactAppIdentity, AgentArtifactMcpApp, AgentArtifactSource, SavedCaptureCitation } from './types'
 
-const MAX_BYTES = 1 << 20
-const MAX_SOURCES = 32
-const MAX_ACTIONS = 8
+export const MAX_AGENT_ARTIFACT_DATA_BYTES = 1 << 20
+export const MAX_AGENT_ARTIFACT_INPUT_BYTES = 16 * 1024
+export const MAX_AGENT_ARTIFACT_HTML_BYTES = 1 << 20
+export const MAX_AGENT_ARTIFACT_SOURCES = 32
+export const MAX_AGENT_ARTIFACT_ACTIONS = 8
+const MAX_SOURCES = MAX_AGENT_ARTIFACT_SOURCES
+const MAX_ACTIONS = MAX_AGENT_ARTIFACT_ACTIONS
+const MAX_BYTES = MAX_AGENT_ARTIFACT_DATA_BYTES
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 const bytes = (value: string): number => new TextEncoder().encode(value).byteLength
 const bounded = (value: unknown, max: number): value is string => typeof value === 'string' && value.length <= max
@@ -69,9 +74,17 @@ export function parseAgentArtifactSources(value: unknown): AgentArtifactSource[]
 export function parseAgentArtifactMcpApp(value: unknown): AgentArtifactMcpApp | null {
   if (!record(value) || !exactKeys(value, ['resourceUri', 'mimeType', 'html', 'sha256'])) return null
   if (typeof value.resourceUri !== 'string' || !/^ui:\/\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{1,512}$/.test(value.resourceUri) || value.resourceUri.includes('..')) return null
-  if (value.mimeType !== 'text/html;profile=mcp-app' || typeof value.html !== 'string' || !value.html.length || bytes(value.html) > MAX_BYTES) return null
+  if (value.mimeType !== 'text/html;profile=mcp-app' || typeof value.html !== 'string' || !value.html.length || bytes(value.html) > MAX_AGENT_ARTIFACT_HTML_BYTES) return null
   if (typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)) return null
   return { resourceUri: value.resourceUri, mimeType: value.mimeType, html: value.html, sha256: value.sha256 }
+}
+
+export function parseAgentArtifactAppIdentity(value: unknown): AgentArtifactAppIdentity | null {
+  if (!record(value) || !exactKeys(value, ['provider', 'resourceUri', 'sha256'])) return null
+  if (typeof value.provider !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.provider)) return null
+  if (typeof value.resourceUri !== 'string' || !/^ui:\/\/railgrid-provider\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\/[A-Za-z0-9_-]{1,512}$/.test(value.resourceUri)) return null
+  if (typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)) return null
+  return { provider: value.provider, resourceUri: value.resourceUri, sha256: value.sha256 }
 }
 
 export function parseAgentArtifact(value: unknown): AgentArtifact | null {
@@ -80,8 +93,12 @@ export function parseAgentArtifact(value: unknown): AgentArtifact | null {
   if (required.some(key => typeof value[key] !== 'string' || (value[key] as string).length > 1024)) return null
   if (!Number.isSafeInteger(value.size) || (value.size as number) < 0 || (value.size as number) > MAX_BYTES) return null
   if (!/^[0-9a-f]{64}$/.test(value.digest as string)) return null
-  if (value.data !== undefined && (typeof value.data !== 'string' || bytes(value.data) > MAX_BYTES)) return null
-  if (value.input !== undefined && (typeof value.input !== 'string' || bytes(value.input) > 16 * 1024)) return null
+  if (value.inputDigest !== undefined && (typeof value.inputDigest !== 'string' || !/^[0-9a-f]{64}$/.test(value.inputDigest))) return null
+  if (value.data !== undefined && (typeof value.data !== 'string' || bytes(value.data) > MAX_AGENT_ARTIFACT_DATA_BYTES)) return null
+  if (value.input !== undefined && (typeof value.input !== 'string' || bytes(value.input) > MAX_AGENT_ARTIFACT_INPUT_BYTES)) return null
+  // A bad or removed app pin disables only the provider view. The trusted
+  // backend may still return an authorized raw result for the native fallback.
+  const appIdentity = value.appIdentity === undefined ? null : parseAgentArtifactAppIdentity(value.appIdentity)
   const sources = value.sources === undefined ? [] : parseAgentArtifactSources(value.sources)
   if (!sources) return null
   return {
@@ -91,5 +108,7 @@ export function parseAgentArtifact(value: unknown): AgentArtifact | null {
     digest: value.digest as string, size: value.size as number, sources, evidenceStatus: value.evidenceStatus as string,
     createdAt: value.createdAt as string, ...(typeof value.data === 'string' ? { data: value.data } : {}),
     ...(typeof value.input === 'string' ? { input: value.input } : {}),
+    ...(typeof value.inputDigest === 'string' ? { inputDigest: value.inputDigest } : {}),
+    ...(appIdentity ? { appIdentity } : {}),
   }
 }

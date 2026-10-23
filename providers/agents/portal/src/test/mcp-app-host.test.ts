@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import type { App } from 'vue'
 import McpAppViewer from '../components/McpAppViewer.vue'
-import { MCP_APP_CSP, boundedMcpAppInlineHeight, constrainMcpAppHTML, createMcpAppProxyDocument, mcpAppProviderLabel, safeMcpAppToolInput } from '../mcpAppHost'
-import type { AgentArtifactMcpApp } from '../types'
+import { MCP_APP_CSP, boundedMcpAppInlineHeight, configureMcpAppHostBundleURL, constrainMcpAppHTML, createMcpAppProxyDocument, mcpAppProxyURL, mcpAppProviderLabel, safeMcpAppToolInput } from '../mcpAppHost'
+import type { AgentArtifactAppIdentity, AgentArtifactMcpApp } from '../types'
 
 const sdk = vi.hoisted(() => ({ bridges: [] as Array<any>, transports: [] as Array<any> }))
+const runtime = vi.hoisted(() => ({ host: { value: null as HTMLElement | null } }))
 
 vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => ({
   AppBridge: class {
@@ -49,21 +50,33 @@ vi.mock('@modelcontextprotocol/ext-apps/app-bridge', () => ({
     async close(): Promise<void> { sdkMessages.push({ kind: 'transport-close' }) }
   },
 }))
+vi.mock('../vue/runtime', () => ({ useAgentsRuntime: () => runtime }))
 
 const sdkMessages: Array<{ kind: string; value?: unknown }> = []
 const apps: App[] = []
 const resultText = '{"amount":9007199254740993.0000000000000001,"rate":1.2300}'
 const appResource: AgentArtifactMcpApp = {
-  resourceUri: 'ui://semantic-ai/v1/query-result', mimeType: 'text/html;profile=mcp-app',
+  resourceUri: 'ui://railgrid-provider/semantic-ai/YmFzZTY0', mimeType: 'text/html;profile=mcp-app',
   html: '<!doctype html><html><head><style>.ok{color:green}</style></head><body><script>window.appReady = true</script></body></html>',
   sha256: 'ab'.repeat(32),
 }
+const appIdentity: AgentArtifactAppIdentity = { provider: 'semantic-ai', resourceUri: appResource.resourceUri, sha256: appResource.sha256 }
 
-function mountViewer(input = '{"query":"select 1","apiKey":"must-not-enter-frame","nested":{"token":"hidden","count":2}}', inline = false) {
+function mountViewer(
+  input = '{"query":"select 1","apiKey":"must-not-enter-frame","nested":{"token":"hidden","count":2}}',
+  inline = false,
+  identity: AgentArtifactAppIdentity | null = appIdentity,
+  scriptURL = `${window.location.origin}/ui/providers/agents/main.js?v=platform`,
+) {
+  configureMcpAppHostBundleURL(scriptURL)
+  const host = document.createElement('railgrid-provider-agents') as HTMLElement & { railgridContext?: { basePath: string } }
+  host.railgridContext = { basePath: '/ui/providers/agents' }
+  document.body.appendChild(host)
+  runtime.host.value = host
   const componentRef = ref<{ teardown?: () => Promise<void> } | null>(null)
   const root = defineComponent({
     setup() {
-      return () => h(McpAppViewer, { ref: componentRef, app: appResource, resultData: resultText, input, inline })
+      return () => h(McpAppViewer, { ref: componentRef, app: appResource, appIdentity: identity || undefined, resultData: resultText, input, inline })
     },
   })
   const element = document.createElement('div')
@@ -84,19 +97,40 @@ afterEach(() => {
   sdk.transports.length = 0
   sdkMessages.length = 0
   vi.unstubAllGlobals()
+  configureMcpAppHostBundleURL(null)
   document.body.replaceChildren()
+  runtime.host.value = null
 })
 
 describe('MCP Apps read-only host boundary', () => {
   it('derives generic provider attribution and bounds inline content height', () => {
-    expect(mcpAppProviderLabel('ui://semantic-ai/v1/query-result')).toBe('Semantic AI')
-    expect(mcpAppProviderLabel('ui://acme-bi/reports')).toBe('Acme BI')
-    expect(mcpAppProviderLabel('ui://railgrid-provider/semantic-ai/base64')).toBe('Semantic AI')
-    expect(mcpAppProviderLabel('ui://railgrid-provider/acme-bi/base64')).toBe('Acme BI')
+    expect(mcpAppProviderLabel('semantic-ai')).toBe('Semantic AI')
+    expect(mcpAppProviderLabel('acme-bi')).toBe('Acme BI')
+    expect(mcpAppProviderLabel('not a validated provider URI')).toBe('Provider')
     expect(boundedMcpAppInlineHeight(32)).toBe(96)
     expect(boundedMcpAppInlineHeight(240)).toBe(240)
     expect(boundedMcpAppInlineHeight(2_000)).toBe(1_600)
     expect(boundedMcpAppInlineHeight(Number.POSITIVE_INFINITY)).toBeNull()
+  })
+
+  it('versions the proxy for the platform bundle and fails closed for grant-bound or ambiguous bundles', async () => {
+    configureMcpAppHostBundleURL(`${window.location.origin}/ui/providers/agents/main.js?v=platform`)
+    const digest = vi.fn(async (_algorithm: string, bytes: Uint8Array) => {
+      expect(new TextDecoder().decode(bytes)).toBe(createMcpAppProxyDocument())
+      return new Uint8Array(32).fill(0x5c).buffer
+    })
+    vi.stubGlobal('crypto', { subtle: { digest } })
+    const url = await mcpAppProxyURL('/ui/providers/agents/')
+    expect(url).toBe(`/ui/providers/agents/mcp-app-sandbox.html?v=${'5c'.repeat(32)}`)
+    expect(url).not.toContain(appResource.sha256)
+    expect(digest).toHaveBeenCalledOnce()
+    expect(await mcpAppProxyURL('/ui/providers/org-agents')).toBeNull()
+    configureMcpAppHostBundleURL(`${window.location.origin}/ui/providers/agents/main.js?v=org&grant=sealed`)
+    expect(await mcpAppProxyURL('/ui/providers/agents')).toBeNull()
+    configureMcpAppHostBundleURL(`${window.location.origin}/ui/providers/agents/main.js?v=platform`)
+    expect(await mcpAppProxyURL(undefined)).toBeNull()
+    configureMcpAppHostBundleURL(null)
+    expect(await mcpAppProxyURL('/ui/providers/agents')).toBeNull()
   })
 
   it('constrains provider HTML and supplies an opaque double-iframe proxy with no network route', () => {
@@ -151,6 +185,22 @@ describe('MCP Apps read-only host boundary', () => {
     expect(await bridge.ondownloadfile?.({ contents: [] })).toMatchObject({ isError: true })
     await expect(Promise.resolve(bridge.handlers['tools/list']?.({}))).rejects.toThrow('not available')
     await expect(Promise.resolve(bridge.onreadresource?.({ uri: 'file:///etc/passwd' }))).rejects.toThrow('not available')
+  })
+
+  it('fails closed when the backend-verified app identity is absent', async () => {
+    vi.stubGlobal('crypto', { subtle: { digest: async () => new Uint8Array(32).fill(0xab).buffer } })
+    const view = mountViewer(undefined, false, null)
+    await settle()
+    expect(sdk.bridges).toHaveLength(0)
+    expect(view.element.querySelector('iframe')).toBeNull()
+  })
+
+  it('does not request the platform sandbox asset from an org-grant bundle', async () => {
+    vi.stubGlobal('crypto', { subtle: { digest: async () => new Uint8Array(32).fill(0xab).buffer } })
+    const view = mountViewer(undefined, false, appIdentity, `${window.location.origin}/ui/providers/agents/main.js?v=org&grant=sealed`)
+    await settle()
+    expect(sdk.bridges).toHaveLength(0)
+    expect(view.element.querySelector('iframe')).toBeNull()
   })
 
   it('reports inline display mode and applies bounded provider resize notifications without feedback', async () => {

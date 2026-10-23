@@ -1,24 +1,29 @@
 import type { AgentArtifactMcpApp } from './types'
+import { sha256Hex } from './artifactIntegrity'
+import { MAX_AGENT_ARTIFACT_HTML_BYTES, MAX_AGENT_ARTIFACT_INPUT_BYTES } from './agentArtifacts'
 
-export const MCP_APP_MAX_HTML_BYTES = 1 << 20
+export const MCP_APP_MAX_HTML_BYTES = MAX_AGENT_ARTIFACT_HTML_BYTES
 export const MCP_APP_INLINE_MIN_HEIGHT = 96
 export const MCP_APP_INLINE_MAX_HEIGHT = 1600
+
+// The provider loader passes org-owned bundle grants as a query parameter on
+// the script URL. Capture only the URL (never its grant value) while the IIFE
+// is executing; the MCP sandbox asset has no grant-aware companion route.
+let hostBundleURL: string | null = null
+
+export function configureMcpAppHostBundleURL(scriptURL: string | null | undefined): void {
+  hostBundleURL = scriptURL || null
+}
 
 export function boundedMcpAppInlineHeight(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
   return Math.max(MCP_APP_INLINE_MIN_HEIGHT, Math.min(MCP_APP_INLINE_MAX_HEIGHT, Math.ceil(value)))
 }
 
-/** Use the validated MCP resource authority as generic provider attribution. */
-export function mcpAppProviderLabel(resourceUri: string): string {
-  let url: URL
-  try { url = new URL(resourceUri) } catch { return 'Provider' }
-  let authority = url.hostname
-  // Federated MCP resource URIs use a platform authority and put the
-  // provider namespace in the first path segment (ui://railgrid-provider/<provider>/...).
-  if (url.protocol === 'ui:' && authority.toLowerCase() === 'railgrid-provider') {
-    authority = url.pathname.split('/').filter(Boolean)[0] || ''
-  }
+/** Humanize only the backend-pinned provider identity, never arbitrary app URI text. */
+export function mcpAppProviderLabel(provider: string): string {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(provider)) return 'Provider'
+  const authority = provider
   const acronyms = new Set(['ai', 'api', 'bi', 'mcp', 'sql', 'ui'])
   const words = authority.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[._-]+/).filter(Boolean)
   if (!words.length) return 'Provider'
@@ -117,9 +122,29 @@ export function createMcpAppProxyDocument(): string {
 </script></body></html>`
 }
 
+/** Hash the proxy and address it only for the ungranted platform Agents bundle. */
+export async function mcpAppProxyURL(basePath: string | undefined): Promise<string | null> {
+  // RailgridContext.basePath is identical for platform and org-owned Agents
+  // UIs, and carries no bundle grant. Identify the active bundle from the
+  // loader's script URL instead of accidentally loading the platform asset
+  // while an org-owned override is active.
+  let bundle: URL
+  try {
+    if (!hostBundleURL) return null
+    bundle = new URL(hostBundleURL, window.location.origin)
+  } catch {
+    return null
+  }
+  if (bundle.origin !== window.location.origin || bundle.pathname !== '/ui/providers/agents/main.js' || bundle.searchParams.has('grant')) return null
+  if (typeof basePath !== 'string' || !/^\/ui\/providers\/agents\/?$/.test(basePath)) return null
+  const digest = await sha256Hex(createMcpAppProxyDocument())
+  if (!digest) return null
+  return `/ui/providers/agents/mcp-app-sandbox.html?v=${digest}`
+}
+
 /** Defense in depth for already-redacted recorded arguments. */
 export function safeMcpAppToolInput(input: string | undefined): Record<string, unknown> | undefined {
-  if (!input || new TextEncoder().encode(input).byteLength > 16 * 1024) return undefined
+  if (!input || new TextEncoder().encode(input).byteLength > MAX_AGENT_ARTIFACT_INPUT_BYTES) return undefined
   let parsed: unknown
   try { parsed = JSON.parse(input) as unknown } catch { return undefined }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
@@ -142,9 +167,7 @@ export function safeMcpAppToolInput(input: string | undefined): Record<string, u
   return clean(parsed, 0) as Record<string, unknown>
 }
 
-export async function verifyMcpAppHTML(app: AgentArtifactMcpApp): Promise<boolean> {
-  if (new TextEncoder().encode(app.html).byteLength > MCP_APP_MAX_HTML_BYTES || !globalThis.crypto?.subtle) return false
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(app.html))
-  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-  return hex === app.sha256
+export async function verifyMcpAppHTML(app: AgentArtifactMcpApp, pinnedSha256: string | undefined): Promise<boolean> {
+  if (!pinnedSha256 || app.sha256 !== pinnedSha256 || new TextEncoder().encode(app.html).byteLength > MAX_AGENT_ARTIFACT_HTML_BYTES) return false
+  return await sha256Hex(app.html) === pinnedSha256
 }
