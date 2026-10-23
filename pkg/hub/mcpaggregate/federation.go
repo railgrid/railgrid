@@ -261,7 +261,7 @@ func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearer
 // fetchInstructions returns a provider's server-level MCP instructions from its
 // `initialize` response, or "" if it has none or the call fails.
 func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string) string {
-	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"railgrid-aggregate","version":"v1"}}`)
+	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}}},"clientInfo":{"name":"railgrid-aggregate","version":"v1"}}`)
 	body, err := c.rpc(ctx, mcpURL, "initialize", params, c.discoveryTimeout)
 	if err != nil {
 		return ""
@@ -284,8 +284,12 @@ func registerProviderTools(srv *mcp.Server, log logr.Logger, found []*providerTo
 		if r == nil || len(r.tools) == 0 {
 			continue
 		}
+		registerAppResources(srv, r)
 		log.V(1).Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
 		for _, t := range r.tools {
+			if !appToolModelVisible(t) {
+				continue
+			}
 			func() {
 				defer func() {
 					if rec := recover(); rec != nil {
@@ -350,14 +354,21 @@ func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTar
 		Description: t.Description,
 		Annotations: t.Annotations,
 		InputSchema: t.InputSchema,
-		Meta:        toolCoordinateMeta(p, t),
+		Meta:        proxyToolMeta(p, t),
 	}
 
 	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
 		if len(req.Params.Arguments) > 0 {
-			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			decoder := json.NewDecoder(bytes.NewReader(req.Params.Arguments))
+			// Arguments are transport data. Passing them through float64
+			// changes large IDs and exact decimal filter values.
+			decoder.UseNumber()
+			if err := decoder.Decode(&args); err != nil {
 				return nil, fmt.Errorf("decode arguments: %w", err)
+			}
+			if err := decoder.Decode(new(any)); err != io.EOF {
+				return nil, fmt.Errorf("decode arguments: expected one JSON object")
 			}
 		}
 		res, err := cli.callTool(ctx, p.MCPURL, t.Name, args)

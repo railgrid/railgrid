@@ -153,6 +153,21 @@ The provider's own MCP handler — e.g.
 [`providers/infrastructure/mcpserver/server.go`](https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
 streamable-HTTP MCP server built fresh per request.
 
+### MCP Apps resources
+
+A federated tool may advertise a standard `_meta.ui.resourceUri` referencing a
+`ui://` resource. The aggregate namespaces that identifier under its provider
+and registers `resources/read` only for UI resources declared by model-visible
+tools in the current caller's provider set. It forwards reads through the same
+authenticated tenant-scoped provider client; the identifier is never treated as
+an HTTP destination. App-only tools are not exposed as model tools.
+
+Reads require exactly one matching `text/html;profile=mcp-app` resource, bounded
+to 1 MiB. Resource metadata is limited to the standard `ui` namespace. Tool
+result forwarding preserves JSON number spellings. This is resource transport,
+not a browser host: sandboxing, supported capabilities, and app trust decisions
+remain the consuming application's responsibility.
+
 ## Capability discovery: `railgrid://providers/capabilities`
 
 `tools/list` answers *"what can I call right now"*. It does not answer *"what
