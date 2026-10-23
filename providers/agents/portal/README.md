@@ -41,6 +41,29 @@ localStorage copy is only a fallback.
 Navigation state lives in `location.hash` (`src/router.ts`), never in the host
 router.
 
+## MCP Apps result views
+
+Successful tool results may include a provider-owned MCP App view. The portal
+keeps the app inside the conversation as a compact card and opens that same
+result in a details pane when requested. The app owns its rich result UI; the
+portal offers raw captured JSON only through an explicit disclosure. Source
+references are attached to a citation only when the exact successful tool
+receipt is present, and source-backed bytes or app HTML are requested again
+through the attended MCP API before either view is mounted. Capture metadata is
+the only artifact state cached by the browser.
+
+This is a read-only host profile. It sends the recorded result text and
+redacted recorded arguments to the iframe. The host grants no tools, resource
+reads, prompts, sampling, downloads, chat messages, host navigation, or model
+context updates, and rejects requests for those capabilities. App HTML must
+match the backend-provided SHA-256 digest. The host inserts a restrictive CSP
+and uses nested frames with opaque origins, scripts-only sandbox flags, no
+referrer, and no host credentials. These controls are defense in depth, not a
+claim that arbitrary HTML is harmless: a sandboxed app can still attempt to
+navigate its own frame, and a later navigated document may make network
+requests. Do not include secrets in app HTML or captured results; review the
+specific provider content and browser policy before enabling a provider app.
+
 ## Layout
 
 ```

@@ -13,9 +13,10 @@ import {
   TerminalSquare,
   X,
 } from 'lucide-vue-next'
-import { attachCodeCopy, sanitizedMarkdown } from '../vue/chat'
+import { attachCodeCopy, sanitizedMarkdown, sanitizedMarkdownWithToolCitations, type InlineToolCitation } from '../vue/chat'
 import type { AIActivityGroup } from '../agentkit/activity'
-import { fmtDuration, fmtTokens, fmtUSD, type ChatMessage, type ToolCall } from '../types'
+import { fmtDuration, fmtTokens, fmtUSD, type AgentArtifact, type ChatMessage, type ToolCall } from '../types'
+import { parseSavedCaptureCitation } from '../agentArtifacts'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import { pendingIsQuestion } from '../types'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
@@ -23,6 +24,7 @@ import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
+import InlineMcpApp from '../components/InlineMcpApp.vue'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AIInterrupt from '../agentkit/AIInterrupt.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
@@ -34,19 +36,55 @@ import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presenta
 
 const props = withDefaults(defineProps<{
   message: ChatMessage
+  sessionID?: string
   announce?: boolean
   approvalBusy?: 'approve' | 'deny' | 'answer'
   /** The parent chooses one stable message per run for navigation metadata. */
   showRunLink?: boolean
+  loadInlineApp?: (receipt: { runID: string; sessionID: string; toolCallID: string; title: string }) => Promise<AgentArtifact | null>
+  inspectedArtifactReceipt?: { runID: string; sessionID: string; toolCallID: string } | null
+  /** Suspend every inline app while a saved citation is being resolved. */
+  inspectionOpen?: boolean
 }>(), { announce: false, approvalBusy: undefined, showRunLink: true })
 const emit = defineEmits<{
   approval: [detail: { inboxID: string; decision: 'approve' | 'deny' | 'answer'; response?: string }]
   'view-run': [runID: string]
   recovery: [target: FailureRecoveryTarget]
+  'inline-layout': []
+  'save-artifact': [detail: { runID: string; sessionID: string; toolCallID: string; title: string }]
+  'open-saved-capture': [detail: { runID: string; sessionID: string; toolCallID: string; savedCapture: NonNullable<ToolCall['savedCapture']> }]
 }>()
 
 const userMessage = computed(() => splitPageContext(props.message.role === 'user' ? props.message.content : ''))
 const visualizations = computed(() => messageVisualizations(props.message))
+const citationTools = computed<InlineToolCitation[]>(() => {
+  if (!props.message.runID || !props.sessionID) return []
+  const tools = [...props.message.tools, ...(props.message.progress?.trace.flatMap(block => block.kind === 'tool' ? [block.tool] : []) || [])]
+  const seen = new Set<string>()
+  return tools.flatMap<InlineToolCitation>(tool => {
+    const callID = tool.toolCallID
+    if (!callID || seen.has(callID) || tool.pending || tool.error || typeof tool.result !== 'string') return []
+    const savedCapture = tool.name === 'open_analysis_artifact' ? parseSavedCaptureCitation(tool.savedCapture) : null
+    if (savedCapture) {
+      seen.add(callID)
+      return [{ toolCallID: callID, label: 'Saved capture', kind: 'saved-capture' as const }]
+    }
+    if (!tool.sources?.length) return []
+    seen.add(callID)
+    return [{ toolCallID: callID, label: formatToolLabel(tool.name), hidden: !!props.loadInlineApp && tool.hasMcpApp === true }]
+  })
+})
+const inlineAppTools = computed(() => {
+  if (!props.loadInlineApp || props.message.role !== 'assistant' || !props.message.runID || !props.sessionID || props.message.streaming) return []
+  if (props.message.progress && props.message.progress.status !== 'completed') return []
+  const tools = [...props.message.tools, ...(props.message.progress?.trace.flatMap(block => block.kind === 'tool' ? [block.tool] : []) || [])]
+  const seen = new Set<string>()
+  return tools.filter(tool => {
+    if (!tool.hasMcpApp || !tool.toolCallID || seen.has(tool.toolCallID) || tool.pending || tool.error || typeof tool.result !== 'string' || !tool.sources?.length) return false
+    seen.add(tool.toolCallID)
+    return true
+  })
+})
 
 // The answer lives with the card that asks for it: one question is on screen at
 // a time, and lifting it into the page would make the page own a field only this
@@ -62,8 +100,27 @@ const root = ref<HTMLElement | null>(null)
 const expanded = ref(new Set<string>())
 const assistantHTML = computed(() => {
   if (props.message.role !== 'assistant') return ''
-  return sanitizedMarkdown(props.message.content)
+  return sanitizedMarkdownWithToolCitations(props.message.content, citationTools.value)
 })
+
+function openToolCitation(event: MouseEvent): void {
+  if (!(event.target instanceof Element) || !props.message.runID || !props.sessionID) return
+  const savedButton = event.target.closest<HTMLButtonElement>('[data-agent-saved-capture-citation]')
+  const savedCallID = savedButton?.dataset.agentSavedCaptureCitation
+  if (savedButton && savedCallID && !savedButton.disabled) {
+    const tool = [...props.message.tools, ...(props.message.progress?.trace.flatMap(block => block.kind === 'tool' ? [block.tool] : []) || [])]
+      .find(item => item.toolCallID === savedCallID && item.name === 'open_analysis_artifact' && typeof item.result === 'string' && !item.pending && !item.error)
+    const savedCapture = parseSavedCaptureCitation(tool?.savedCapture)
+    if (tool && savedCapture) emit('open-saved-capture', { runID: props.message.runID, sessionID: props.sessionID, toolCallID: savedCallID, savedCapture })
+    return
+  }
+  const button = event.target.closest<HTMLButtonElement>('[data-agent-tool-citation]')
+  const callID = button?.dataset.agentToolCitation
+  if (!button || !callID || button.disabled) return
+  const tool = [...props.message.tools, ...(props.message.progress?.trace.flatMap(block => block.kind === 'tool' ? [block.tool] : []) || [])]
+    .find(item => item.toolCallID === callID && item.sources?.length && typeof item.result === 'string' && !item.pending && !item.error)
+  if (tool) emit('save-artifact', { runID: props.message.runID, sessionID: props.sessionID, toolCallID: callID, title: formatToolLabel(tool.name) })
+}
 const messageCreatedAt = computed(() => {
   return props.message.createdAt || null
 })
@@ -392,6 +449,7 @@ onBeforeUnmount(() => { mounted = false })
       v-if="message.role === 'assistant' && assistantHTML"
       class="agents-body k-ai-prose"
       v-html="assistantHTML"
+      @click="openToolCitation"
     ></div>
     <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-user-content">
       <div v-if="userMessage.text" class="agents-body">{{ userMessage.text }}</div>
@@ -405,6 +463,19 @@ onBeforeUnmount(() => { mounted = false })
         <p v-else>Page location shared; page contents weren’t included.</p>
       </details>
     </div>
+
+    <InlineMcpApp
+      v-for="tool in inlineAppTools"
+      :key="`${message.runID}:${tool.toolCallID}`"
+      :run-i-d="message.runID!"
+      :session-i-d="sessionID!"
+      :tool-call-i-d="tool.toolCallID!"
+      :title="formatToolLabel(tool.name)"
+      :load="loadInlineApp!"
+      :inspection-open="inspectionOpen || (inspectedArtifactReceipt?.runID === message.runID && inspectedArtifactReceipt?.sessionID === sessionID && inspectedArtifactReceipt?.toolCallID === tool.toolCallID)"
+      @layout="emit('inline-layout')"
+      @open="emit('save-artifact', { runID: message.runID!, sessionID: sessionID!, toolCallID: tool.toolCallID!, title: formatToolLabel(tool.name) })"
+    />
 
     <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 

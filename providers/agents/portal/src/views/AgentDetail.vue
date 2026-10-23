@@ -87,7 +87,12 @@ function isMobileViewport(): boolean {
 const workbenchExplicitlyOpened = ref(props.tab !== 'chat')
 const workspaceCompact = ref(isMobileViewport())
 const workspaceOpen = ref(!props.compact && (props.tab !== 'chat' || !isMobileViewport()))
+let inspectionActive = false
+let inspectionWorkspaceOpen: boolean | null = null
+let workbenchIntentVersion = 0
+let inspectionIntentVersion = 0
 watch(() => props.compact, compact => {
+  workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = false
   workspaceOpen.value = !compact && !workspaceCompact.value
   if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
@@ -108,6 +113,7 @@ function ensureWorkbenchSurfaceMounted(tab: AgentWorkbenchTabKind): void {
 }
 
 watch(() => props.tab, tab => {
+  if (inspectionActive) workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = tab !== 'chat'
   if (tab !== 'chat') {
     workbench.value = openAgentWorkbenchTab(workbench.value, tab)
@@ -120,7 +126,26 @@ watch(() => props.tab, tab => {
   }
 })
 
+function handleInspectionOpen(open: boolean): void {
+  if (open) {
+    if (inspectionActive) return
+    inspectionActive = true
+    inspectionWorkspaceOpen = workspaceOpen.value
+    inspectionIntentVersion = workbenchIntentVersion
+    if (workspaceOpen.value) workspaceOpen.value = false
+    return
+  }
+  if (!inspectionActive) return
+  inspectionActive = false
+  const shouldRestore = inspectionWorkspaceOpen === true && workbenchIntentVersion === inspectionIntentVersion
+  inspectionWorkspaceOpen = null
+  if (shouldRestore) {
+    workspaceOpen.value = true
+    ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
+  }
+}
 function toggleWorkbench(event: MouseEvent): void {
+  workbenchIntentVersion += 1
   const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   if (workspaceOpen.value) {
     workspace.value?.close()
@@ -137,16 +162,21 @@ function toggleWorkbench(event: MouseEvent): void {
 
 function onWorkspaceCompactChange(compact: boolean): void {
   workspaceCompact.value = compact
-  if (compact && !workbenchExplicitlyOpened.value) workspaceOpen.value = false
+  if (compact && !workbenchExplicitlyOpened.value) {
+    workspaceOpen.value = false
+    if (inspectionActive) workbenchIntentVersion += 1
+  }
 }
 
 function closeWorkbench(): void {
+  workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = false
   workspaceOpen.value = false
   navigate({ kind: 'agent', name: props.name, tab: 'chat' })
 }
 
 function selectWorkbenchTab(tab: WorkbenchTab): void {
+  workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = true
   workbench.value = activateAgentWorkbenchTab(workbench.value, tab)
   workspaceOpen.value = true
@@ -155,6 +185,7 @@ function selectWorkbenchTab(tab: WorkbenchTab): void {
 }
 
 function openWorkbenchLauncherTab(): void {
+  workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = true
   workspace.value?.open()
   workspaceOpen.value = true
@@ -162,6 +193,7 @@ function openWorkbenchLauncherTab(): void {
 }
 
 function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
+  workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = true
   workbench.value = selectAgentWorkbenchLauncherTab(workbench.value, tab)
   workspaceOpen.value = true
@@ -170,6 +202,7 @@ function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
 }
 
 function closeWorkbenchTab(tab: WorkbenchTab): void {
+  workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = true
   const wasActive = workbench.value.activeTabID === tab
   workbench.value = closeAgentWorkbenchTab(workbench.value, tab)
@@ -188,6 +221,7 @@ function reorderWorkbenchTabs(
 }
 
 function handleChildNavigate(route: Route): void {
+  workbenchIntentVersion += 1
   if (route.kind === 'run') {
     navigate({ kind: 'agent', name: props.name, tab: 'runs', runID: route.id })
     return
@@ -262,7 +296,7 @@ async function remove(): Promise<void> {
             @close="closeWorkbench"
           >
             <template #conversation>
-              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :composer-only="composerOnly" :page-context="pageContext" @navigate="handleChildNavigate">
+              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :composer-only="composerOnly" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
                 <template #leading>
                   <ResourceBackLink
                     v-if="!overlay"
