@@ -10,6 +10,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -18,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/store"
 )
 
 // The chat tool: one attended conversation turn on the MCP class.
@@ -45,9 +48,10 @@ import (
 // between agents is run_agent, unattended by design.
 
 type chatInput struct {
-	Agent     string `json:"agent" jsonschema:"Name of the agent to talk to (see list_agents)"`
-	Message   string `json:"message" jsonschema:"The message for this turn of the conversation"`
-	SessionID string `json:"sessionId,omitempty" jsonschema:"Chat thread to continue; omit for the default thread"`
+	Agent        string                         `json:"agent" jsonschema:"Name of the agent to talk to (see list_agents)"`
+	Message      string                         `json:"message" jsonschema:"The message for this turn of the conversation"`
+	SessionID    string                         `json:"sessionId,omitempty" jsonschema:"Chat thread to continue; omit for the default thread"`
+	ArtifactRefs []store.AgentArtifactReference `json:"artifactRefs,omitempty" jsonschema:"Optional user-selected saved result references to attach to this attended turn; pointers only, with no result bytes"`
 }
 
 // chatEventMetaKey is where a progress notification carries the chat event
@@ -109,6 +113,26 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		if sessionID == "" {
 			sessionID = "default"
 		}
+		if len(in.ArtifactRefs) > store.MaxAgentArtifactReferencesPerChat {
+			return chatRefused(errBadRequest(fmt.Sprintf("at most %d saved result references may be attached", store.MaxAgentArtifactReferencesPerChat)))
+		}
+		seenArtifacts := make(map[string]struct{}, len(in.ArtifactRefs))
+		for _, ref := range in.ArtifactRefs {
+			if err := ref.Validate(); err != nil {
+				return chatRefused(errBadRequest(err.Error()))
+			}
+			if _, duplicate := seenArtifacts[ref.ArtifactID]; duplicate {
+				return chatRefused(errBadRequest("saved result references must not repeat an artifact ID"))
+			}
+			seenArtifacts[ref.ArtifactID] = struct{}{}
+		}
+		if len(in.ArtifactRefs) > 0 {
+			encoded, err := json.Marshal(in.ArtifactRefs)
+			if err != nil {
+				return chatRefused(errBadRequest("saved result references could not be encoded"))
+			}
+			message += "\n\nAttached saved result references (pointers only; no result data is included). Use open_analysis_artifact with an exact artifactID and digest to read one: " + string(encoded)
+		}
 		id := s.mcpIdentity(ctx, r)
 		if id.workspaceUUID == "" {
 			return chatRefused(errBadRequest("this workspace is not mapped yet — open the agents UI once, then retry"))
@@ -144,6 +168,7 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			Scope: id.scope(agent.Name), Agent: agent,
 			RunID:     runID,
 			SessionID: sessionID, Task: message, Trigger: agentsv1alpha1.RunTriggerChat,
+			ArtifactOwner: id.user, ArtifactRefs: append([]store.AgentArtifactReference(nil), in.ArtifactRefs...),
 		}
 		// The caller's access: their tenant client, and — this being the route
 		// that carries their bearer — the hub's aggregate MCP endpoint for the

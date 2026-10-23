@@ -554,17 +554,21 @@ type InboxItem struct {
 // redacted, oversized payloads truncated with a marker) so a run's steps can
 // be inspected after the fact.
 type ToolCall struct {
-	ID         string    `json:"id"`
-	AgentName  string    `json:"agentName"`
-	RunID      string    `json:"runID"`
-	Trigger    string    `json:"trigger"`
-	Tool       string    `json:"tool"`
-	Args       string    `json:"args,omitempty"`
-	Result     string    `json:"result,omitempty"`
-	Outcome    string    `json:"outcome"` // ok | error | denied | pending_approval
-	Error      string    `json:"error,omitempty"`
-	DurationMS int64     `json:"durationMS,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID           string                `json:"id"`
+	CallID       string                `json:"callID,omitempty"`
+	AgentName    string                `json:"agentName"`
+	RunID        string                `json:"runID"`
+	SessionID    string                `json:"sessionID,omitempty"`
+	Trigger      string                `json:"trigger"`
+	Tool         string                `json:"tool"`
+	Args         string                `json:"args,omitempty"`
+	Result       string                `json:"result,omitempty"`
+	Sources      []SourceReference     `json:"sources,omitempty"`
+	Presentation *ProviderPresentation `json:"presentation,omitempty"`
+	Outcome      string                `json:"outcome"` // ok | error | denied | pending_approval
+	Error        string                `json:"error,omitempty"`
+	DurationMS   int64                 `json:"durationMS,omitempty"`
+	CreatedAt    time.Time             `json:"createdAt"`
 }
 
 // WebhookDeliveryPreviewBytes is how much of a delivery's body a list row
@@ -821,6 +825,17 @@ type Store interface {
 	// for a name the run never stored.
 	SaveRunArtifact(ctx context.Context, scope Scope, artifact RunArtifact) error
 	GetRunArtifact(ctx context.Context, scope Scope, runID, name string) (RunArtifact, bool, error)
+
+	// Agent artifacts are immutable caller-owned captures of successful tool
+	// results. They survive run cleanup and are isolated by tenant, agent UID,
+	// and owner. Lists omit result bytes and presentation HTML.
+	SaveAgentArtifact(ctx context.Context, scope Scope, artifact AgentArtifact) error
+	ListAgentArtifacts(ctx context.Context, scope Scope, agentUID, owner string, limit int) ([]AgentArtifact, error)
+	GetAgentArtifact(ctx context.Context, scope Scope, agentUID, owner, id string) (AgentArtifact, bool, error)
+	DeleteAgentArtifact(ctx context.Context, scope Scope, agentUID, owner, id string) (bool, error)
+	// GetToolResult reopens the exact transcript result named by run/session/call
+	// identity, rejecting oversized results before loading them into API memory.
+	GetToolResult(ctx context.Context, scope Scope, runID, sessionID, callID string) (Message, bool, error)
 
 	// Long-term memory.
 	PutMemory(ctx context.Context, scope Scope, m Memory) error

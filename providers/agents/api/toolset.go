@@ -180,6 +180,9 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		out = append(out, tools.Visualization()...)
 	}
 	out = append(out, tools.Spawn(deps)...)
+	if interactive && run.Worker == nil && run.ArtifactOwner != "" && len(run.ArtifactRefs) > 0 {
+		out = append(out, s.openAgentArtifactTool(run))
+	}
 
 	// Connection-backed families: dial each granted mcp/github connection and
 	// expose its discovered tools. Failures degrade (logged, family absent)
@@ -219,12 +222,14 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// path the family is absent whatever the class; an MCP-invoked run carries
 	// the caller's bearer while being unattended — so the class is the gate too.
 	if interactive && run.EdgesEndpoint != "" && run.HubToken != "" {
-		sess, err := tools.ConnectMCPEndpoint(ctx, run.EdgesEndpoint, run.HubToken, "edges", run.EdgesInsecure)
+		sess, err := tools.ConnectHubAggregateMCPEndpoint(ctx, run.EdgesEndpoint, run.HubToken, "edges", run.EdgesInsecure)
 		if err != nil {
 			log.Printf("toolset: edges MCP unavailable: %v", err)
 		} else {
 			sessions = append(sessions, sess)
-			out = append(out, sess.Tools...)
+			for _, tool := range sess.Tools {
+				out = append(out, s.revalidateHubAggregateTool(run, tool))
+			}
 		}
 	}
 
@@ -260,6 +265,36 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 		}
 	}
 	return out, strings.Join(mcpInstr, "\n\n"), closer
+}
+
+// revalidateHubAggregateTool binds source-bearing aggregate results to the
+// caller-attended execution that produced them. The connector is an explicit
+// trusted-Hub path; ordinary MCP connections never attach these source claims
+// or hosted app resources. A failed authorization or UID check withholds the
+// result before it reaches the model or the chat event.
+func (s *Server) revalidateHubAggregateTool(run taskRun, tool backend.Tool) backend.Tool {
+	exec := tool.ExecRich
+	if exec == nil {
+		return tool
+	}
+	tool.ExecRich = func(ctx context.Context, argsJSON string) (backend.Observation, error) {
+		observation, err := exec(ctx, argsJSON)
+		if err != nil || len(observation.Sources) == 0 {
+			return observation, err
+		}
+		if s.tenant == nil || run.ClusterID == "" || run.HubToken == "" {
+			return backend.Observation{}, fmt.Errorf("source-backed aggregate output requires an attended caller")
+		}
+		caller, err := s.tenant.For(run.ClusterID, run.HubToken)
+		if err != nil || caller == nil {
+			return backend.Observation{}, fmt.Errorf("source-backed aggregate output is unavailable to this caller")
+		}
+		if err := revalidateAgentArtifactSources(ctx, caller.Dynamic(), observation.Sources); err != nil {
+			return backend.Observation{}, fmt.Errorf("source-backed aggregate output is unavailable to this caller: %w", err)
+		}
+		return observation, nil
+	}
+	return tool
 }
 
 // expandToolsets merges every Toolset referenced by a grant into a copy of that
@@ -340,9 +375,24 @@ func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger 
 		if err != nil {
 			outcome, errText = "error", err.Error()
 		}
+		callID := backend.ToolCallIDFromContext(ctx)
+		storedResult := safeTruncate(obs.Text, maxStoredResult)
+		if t.ResultPolicy == backend.ToolResultReferenceOnly {
+			// Reference-only tools have already persisted the immutable result in
+			// their own bounded capture store. Keep raw bytes out of the trace row.
+			storedResult = backend.ToolResultReferencePlaceholder
+		}
+		var sources []store.SourceReference
+		var presentation *store.ProviderPresentation
+		if err == nil {
+			sources = obs.Sources
+			presentation = obs.Presentation.Clone()
+		}
 		_ = s.store.AppendToolCall(ctx, deps.Scope, store.ToolCall{
 			ID: uuid.NewString(), AgentName: deps.Agent.Name, RunID: deps.RunID, Trigger: trigger,
-			Tool: t.Name, Args: redactArgs(argsJSON), Result: safeTruncate(obs.Text, maxStoredResult),
+			CallID: callID, SessionID: effectiveSessionID(run.SessionID, trigger),
+			Tool: t.Name, Args: redactArgs(argsJSON), Result: storedResult,
+			Sources: sources, Presentation: presentation,
 			Outcome: outcome, Error: safeTruncate(errText, 4000),
 			DurationMS: time.Since(started).Milliseconds(), CreatedAt: time.Now().UTC(),
 		})
