@@ -15,6 +15,8 @@ describe('artifact integrity and trust pins', () => {
     expect(await verifyArtifactContentDigests(valid)).toBe(true)
     expect(await verifyArtifactContentDigests({ ...valid, data: 'changed' })).toBe(false)
     expect(await verifyArtifactContentDigests({ ...valid, input: 'changed' })).toBe(false)
+    expect(await verifyArtifactContentDigests({ data: 'ab', digest: sha256OfAB, input: 'xy' })).toBe(false)
+    expect(await verifyArtifactContentDigests({ data: 'ab', digest: sha256OfAB })).toBe(true)
   })
 
   it('requires an independently pinned canonical provider resource for an app', () => {

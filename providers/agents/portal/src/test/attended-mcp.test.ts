@@ -43,6 +43,25 @@ describe('attended MCP transport', () => {
     await expect(callAttendedMcpTool(options(vi.fn(async () => response)))).resolves.toMatchObject({ output: { artifact: { id: 'sse' } } })
   })
 
+  it('preserves multiline SSE data when CRLF pairs are split across chunks', async () => {
+    const rpc = JSON.stringify({ jsonrpc: '2.0', id: 7, result: { structuredContent: { artifact: { id: 'split-crlf' } } } })
+    const split = rpc.indexOf(',"result"')
+    const chunks = [
+      `event: message\r\nid: 7\r\ndata: ${rpc.slice(0, split)}\r`,
+      `\ndata: ${rpc.slice(split)}\r\n\r`,
+      '\n',
+    ]
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder()
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+        controller.close()
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } })
+    await expect(callAttendedMcpTool(options(vi.fn(async () => response))))
+      .resolves.toMatchObject({ output: { artifact: { id: 'split-crlf' } } })
+  })
+
   it('rejects responses larger than the parser-derived bound', async () => {
     const response = new Response('{}', {
       headers: { 'Content-Type': 'application/json', 'Content-Length': String(MAX_ATTENDED_MCP_RESPONSE_BYTES + 1) },

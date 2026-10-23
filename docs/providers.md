@@ -979,7 +979,7 @@ Both become provider-aware.
 | [portal/src/router/routes.ts](../portal/src/router/routes.ts) | Declare global, organization, and workspace routes using the shared UUID-constrained prefixes. `contextGuard.ts` resolves their authority; `providers.ts` registers the common provider matcher. |
 | [portal/src/components/AppLayout.vue](../portal/src/components/AppLayout.vue) | Replace the static `navItems` array (lines 48-53) with a `computed` that merges static items with `providersStore.enabledNavItems`. Add a static "Providers" entry (catalog browser) before the dynamic block. Render dynamic items with `<img :src="iconURL">` instead of `<component :is="icon">` so providers can use their own icons. |
 | [portal/vite.config.ts](../portal/vite.config.ts) | Add proxy entries so dev-mode shell on `:3000` forwards `/services` and `/ui/providers/*` to the hub at `:9443`. The `/ui/providers/*` rule must take precedence over Vite's own `/ui/` static serving (use `bypass: () => undefined` only for that prefix). |
-| [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | Sets the portal `Content-Security-Policy`: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:`. `script-src 'self'` (no `'unsafe-inline'`) admits provider bundles because they are hub-proxied and therefore same-origin; the portal ships no inline script (the theme pre-paint bootstrap is `portal/public/theme-bootstrap.js`). `frame-src` is for the portal's own iframes (App Studio preview hosts), not for providers. |
+| [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | Sets the portal `Content-Security-Policy`: `default-src 'self'; frame-src 'self' <configured platform frame sources>; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:`. `script-src 'self'` (no `'unsafe-inline'`) admits provider bundles because they are hub-proxied and therefore same-origin; the portal ships no inline script (the theme pre-paint bootstrap is `portal/public/theme-bootstrap.js`). `frame-src` covers App Studio preview hosts and the Agents MCP App proxy asset (`'self'`), as scoped by the exceptions below. |
 
 ### Reactive providers store
 
@@ -1145,7 +1145,7 @@ header contract; see AGENTS.md §5.7.
 **No iframe, no `postMessage` bridge to the host.** The element renders into
 light DOM in the portal's own document; a provider that wraps itself in an
 iframe and talks to the host over `postMessage` is reimplementing the
-contract badly. Exactly **two** exceptions are sanctioned:
+contract badly. Exactly **three** exceptions are sanctioned:
 
 1. **An OAuth popup posting its result to `window.opener`.** The browser
    OAuth routes (Pillar 2 class (d)) open a popup for the identity provider;
@@ -1159,6 +1159,25 @@ contract badly. Exactly **two** exceptions are sanctioned:
    app-studio's preview surface. The iframe renders a document; it is not a
    transport for the provider's own UI, and the host API is still
    `railgridContext` + `providerFetch`.
+
+3. **A nested, opaque-origin MCP App frame in Agents.** The Agents custom
+   element remains the provider UI. Its approved result apps use a
+   `sandbox="allow-scripts"` proxy frame served from
+   `/ui/providers/agents/mcp-app-sandbox.html` and a nested, script-only app
+   frame. The existing hub `frame-src 'self'` permits the proxy asset; the
+   UI proxy serves that asset independently of the portal SPA's script CSP.
+   The MCP Apps SDK speaks a restricted JSON-RPC `postMessage` protocol:
+   verified captured input/results and theme/context flow to the app;
+   lifecycle, sizing and supported display-mode messages flow back. The host
+   grants no tools, resource reads, sampling, navigation, downloads or model
+   context updates, and sends no host credentials. This is a narrow read-only
+   result presentation exception, not an alternative provider integration API.
+   Exact provider/resource/digest identity and explicit operator approval are
+   required before mounting. A scripted app can still navigate its own frame
+   and disclose data it receives, so untrusted app code must not be approved.
+   Grant-bound Agents UI hosting is unsupported until a grant-aware auxiliary
+   asset route exists. See [Agents host contract](../providers/agents/portal/README.md)
+   and [AI evidence contract](design/ai/evidence-and-status.md).
 
 Anything else that reaches for `postMessage` or an iframe is a deviation.
 
@@ -1831,7 +1850,9 @@ CatalogEntry).
 - **CSP**: `script-src 'self'` with no `'unsafe-inline'` — the portal ships no
   inline script and an injected one is refused. `frame-src 'self'` plus
   explicitly configured platform-owned frame sources (App Studio preview
-  hosts) covers the portal's own iframes; providers do not use frames.
+  hosts) covers App Studio previews and the Agents MCP App proxy asset. The
+  three scoped exceptions under §"Portal changes" do not permit replacing a
+  provider's custom-element UI with an iframe.
 - **Follow-up (L)**: a sandboxed iframe with a postMessage bridge and a
   hub-minted per-provider token, if third-party providers written by parties
   the operator does not trust become a product goal.

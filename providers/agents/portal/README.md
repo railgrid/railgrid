@@ -58,10 +58,11 @@ and current resource checks pass. The portal requires that pin to match the app
 metadata and verifies the exact HTML bytes before creating the frame. A missing
 or mismatched pin leaves the authorized raw result available through the
 explicit data disclosure, but never mounts app HTML. Only enable reviewed
-providers whose apps are trusted with the full result and redacted tool input.
+providers whose apps are trusted with the full result and tool input after limited credential-like key-name filtering.
+That filter cannot guarantee removal of secrets from arbitrary values.
 
 This is a read-only host profile. It sends the recorded result text and
-redacted recorded arguments to the iframe. The host grants no tools, resource
+recorded arguments after limited credential-like key-name filtering to the iframe. The host grants no tools, resource
 reads, prompts, sampling, downloads, chat messages, host navigation, or model
 context updates, and rejects requests for those capabilities. App HTML must
 match the independent backend-reviewed SHA-256 pin. The host inserts a restrictive CSP

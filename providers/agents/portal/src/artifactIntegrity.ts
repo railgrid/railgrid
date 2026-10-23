@@ -50,9 +50,11 @@ export async function verifyArtifactContentDigests(
   const requireData = options.requireData ?? true
   if (requireData && typeof artifact.data !== 'string') return false
   if (artifact.data !== undefined && await sha256Hex(artifact.data) !== artifact.digest) return false
-  if (artifact.inputDigest !== undefined) {
-    if (artifact.input === undefined) return !(options.requireInputForDigest ?? true)
+  if (artifact.input !== undefined) {
+    if (artifact.inputDigest === undefined) return false
     if (await sha256Hex(artifact.input) !== artifact.inputDigest) return false
+  } else if (artifact.inputDigest !== undefined && (options.requireInputForDigest ?? true)) {
+    return false
   }
   return true
 }
