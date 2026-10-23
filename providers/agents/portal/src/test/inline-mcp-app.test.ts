@@ -191,6 +191,20 @@ describe('inline provider app journey', () => {
     expect(panel.querySelector('.agents-artifact-panel__app')).toBeNull()
     expect(panel.querySelector('.agents-artifact-panel__data summary')?.textContent).toContain('View captured data')
   })
+  it('shows an error when a captured result does not match the source receipt identity', async () => {
+    const { view, captureAgentArtifact, getAgentArtifact } = await setup({
+      hint: false,
+      capture: { ...base, agentUID: 'different-agent' },
+    })
+    await reveal()
+    const citation = view.element.querySelector<HTMLButtonElement>('.agents-body [data-agent-tool-citation]')!
+    citation.click()
+    await vi.waitFor(() => expect(document.querySelector('.k-toast--error')?.textContent)
+      .toContain('This result is no longer available to the current caller'))
+    expect(captureAgentArtifact).toHaveBeenCalledOnce()
+    expect(getAgentArtifact).not.toHaveBeenCalled()
+    expect(view.element.querySelector('.agents-artifact-panel')).toBeNull()
+  })
   it.each(['run', 'session', 'tool'] as const)('refuses app and source affordances for a mismatched %s receipt', async mismatch => {
     const { view, captureAgentArtifact } = await setup({ mismatch })
     await reveal()

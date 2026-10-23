@@ -655,8 +655,10 @@ async function saveArtifact(detail: { runID: string; sessionID: string; toolCall
     const captured = existing || artifactMetadataForRevalidation(await api.captureAgentArtifact({ agent: name, ...detail }))
     if (!authorityIsCurrent(authority) || !contextIsCurrent(name, api) || !currentSourceReceipt(receipt)) return
     const currentUID = props.store.agent(name)?.metadata.uid
-    if (captured.agentName !== name || captured.runID !== detail.runID || captured.sessionID !== detail.sessionID ||
-        captured.toolCallID !== detail.toolCallID || (currentUID && captured.agentUID !== currentUID)) return
+    if (!artifactIdentityMatches({ agentName: name, agentUID: currentUID, ...receipt }, captured)) {
+      toast('error', 'This result is no longer available to the current caller. Refresh the conversation and try again.')
+      return
+    }
     cacheArtifactMetadata(captured)
     await openArtifact(captured)
   } catch (error) {

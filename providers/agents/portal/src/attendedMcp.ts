@@ -224,25 +224,57 @@ export async function* readSSE(body: ReadableStream<Uint8Array>, signal?: AbortS
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let scanOffset = 0
+  let frameStart = 0
+  let pendingCR = false
   let bytesRead = 0
+
+  const appendNormalized = (text: string, final = false): void => {
+    if (pendingCR && (text.length > 0 || final)) {
+      buffer += '\n'
+      if (text.startsWith('\n')) text = text.slice(1)
+      pendingCR = false
+    }
+    if (!final && text.endsWith('\r')) {
+      text = text.slice(0, -1)
+      pendingCR = true
+    }
+    buffer += text.replace(/\r\n|\r/g, '\n')
+  }
+
+  const drainFrames = (): SSEEvent[] => {
+    const events: SSEEvent[] = []
+    let index: number
+    while ((index = buffer.indexOf('\n\n', scanOffset)) !== -1) {
+      const event = parseSSEFrame(buffer.slice(frameStart, index))
+      if (event) events.push(event)
+      frameStart = index + 2
+      scanOffset = frameStart
+    }
+    if (frameStart > 0) {
+      buffer = buffer.slice(frameStart)
+      frameStart = 0
+    }
+    // Revisit one character next time so a delimiter split across chunks is
+    // found without rescanning the already-processed event text.
+    scanOffset = Math.max(0, buffer.length - 1)
+    return events
+  }
+
   try {
     for (;;) {
       const { done, value } = await readChunk(reader, signal)
       if (done) break
       bytesRead += value.byteLength
       if (bytesRead > maxBytes) throw new ApiError(502, 'The Agents service returned an oversized response.')
-      buffer += decoder.decode(value, { stream: true })
-      buffer = buffer.replace(/\r\n|\r/g, '\n')
-      let index: number
-      while ((index = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, index)
-        buffer = buffer.slice(index + 2)
-        const event = parseSSEFrame(frame)
-        if (event) yield event
-      }
+      appendNormalized(decoder.decode(value, { stream: true }))
+      for (const event of drainFrames()) yield event
       if (signal?.aborted) break
     }
-    buffer += decoder.decode()
+    if (!signal?.aborted) {
+      appendNormalized(decoder.decode(), true)
+      for (const event of drainFrames()) yield event
+    }
   } finally {
     try { void reader.cancel().catch(() => undefined) } catch { /* stream may already be closed */ }
     try { reader.releaseLock() } catch { /* pending reads release the lock on completion */ }

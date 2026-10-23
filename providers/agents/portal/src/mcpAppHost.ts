@@ -7,12 +7,27 @@ export const MCP_APP_INLINE_MIN_HEIGHT = 96
 export const MCP_APP_INLINE_MAX_HEIGHT = 1600
 
 // The provider loader passes org-owned bundle grants as a query parameter on
-// the script URL. Capture only the URL (never its grant value) while the IIFE
-// is executing; the MCP sandbox asset has no grant-aware companion route.
-let hostBundleURL: string | null = null
+// the script URL. Retain only the derived routing facts; the MCP sandbox asset
+// has no grant-aware companion route.
+interface HostBundleFacts {
+  origin: string
+  pathname: string
+  hasGrant: boolean
+}
+
+let hostBundle: HostBundleFacts | null = null
 
 export function configureMcpAppHostBundleURL(scriptURL: string | null | undefined): void {
-  hostBundleURL = scriptURL || null
+  if (!scriptURL) {
+    hostBundle = null
+    return
+  }
+  try {
+    const url = new URL(scriptURL, window.location.origin)
+    hostBundle = { origin: url.origin, pathname: url.pathname, hasGrant: url.searchParams.has('grant') }
+  } catch {
+    hostBundle = null
+  }
 }
 
 export function boundedMcpAppInlineHeight(value: unknown): number | null {
@@ -23,9 +38,8 @@ export function boundedMcpAppInlineHeight(value: unknown): number | null {
 /** Humanize only the backend-pinned provider identity, never arbitrary app URI text. */
 export function mcpAppProviderLabel(provider: string): string {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(provider)) return 'Provider'
-  const authority = provider
   const acronyms = new Set(['ai', 'api', 'bi', 'mcp', 'sql', 'ui'])
-  const words = authority.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/[._-]+/).filter(Boolean)
+  const words = provider.split('-').filter(Boolean)
   if (!words.length) return 'Provider'
   return words.map(word => acronyms.has(word.toLowerCase())
     ? word.toUpperCase()
@@ -128,14 +142,8 @@ export async function mcpAppProxyURL(basePath: string | undefined): Promise<stri
   // UIs, and carries no bundle grant. Identify the active bundle from the
   // loader's script URL instead of accidentally loading the platform asset
   // while an org-owned override is active.
-  let bundle: URL
-  try {
-    if (!hostBundleURL) return null
-    bundle = new URL(hostBundleURL, window.location.origin)
-  } catch {
-    return null
-  }
-  if (bundle.origin !== window.location.origin || bundle.pathname !== '/ui/providers/agents/main.js' || bundle.searchParams.has('grant')) return null
+  const bundle = hostBundle
+  if (!bundle || bundle.origin !== window.location.origin || bundle.pathname !== '/ui/providers/agents/main.js' || bundle.hasGrant) return null
   if (typeof basePath !== 'string' || !/^\/ui\/providers\/agents\/?$/.test(basePath)) return null
   const digest = await sha256Hex(createMcpAppProxyDocument())
   if (!digest) return null
