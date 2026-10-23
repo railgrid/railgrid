@@ -174,7 +174,10 @@ advertise an unrelated UI capability or establish a reusable provider session.
 Reads require exactly one matching `text/html;profile=mcp-app` resource, bounded
 to 1 MiB. Resource metadata is limited to an 8 KiB standard `ui` namespace. Transport
 responses have a separate bound allowing worst-case JSON escaping plus framing,
-and use the tool-call deadline rather than the discovery deadline. Tool
+and use the tool-call deadline rather than the discovery deadline. Each aggregate
+HTTP handler allows at most four concurrent app-resource fetches across its
+requests; waiting for capacity consumes that same deadline and honors caller
+cancellation. Resources and result payloads are never cached by this limiter. Tool
 result forwarding preserves JSON number spellings. This is resource transport,
 not a browser host: sandboxing, supported capabilities, and app trust decisions
 remain the consuming application's responsibility.

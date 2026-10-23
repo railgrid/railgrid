@@ -10,11 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
-
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -207,7 +207,7 @@ func TestAppResourceTransportBoundDeadlineAndSSE(t *testing.T) {
 			})
 			target := &providerTools{provider: ProviderTarget{Name: "example", MCPURL: "http://not-a-network-destination.invalid"}, client: cli, tools: []discoveredTool{{Meta: map[string]any{"ui": map[string]any{"resourceUri": "ui://example/report"}}}}}
 			srv := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-			registerAppResources(srv, target, logr.Discard())
+			registerAppResources(t.Context(), srv, target, logr.Discard(), make(chan struct{}, providerMCPAppConcurrentReads))
 			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 			params, _ := json.Marshal(map[string]string{"uri": federatedAppURI("example", "ui://example/report")})
 			result, rpcError := appRPC(t, handler, "resources/read", string(params))
@@ -262,5 +262,84 @@ func TestMalformedAppRegistrationDoesNotPanic(t *testing.T) {
 	}
 	if err := addAppResource(server, &mcp.Resource{URI: "ui://valid/resource"}, handler); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProxyToolMetaValidatesVisibilityIndependently(t *testing.T) {
+	for _, visibility := range []any{nil, "model", []any{}, []any{"model", 42}, []string{"model", "private"}, map[string]any{"private": "metadata"}} {
+		tool := discoveredTool{Meta: map[string]any{"ui": map[string]any{"resourceUri": "ui://reports/v1", "visibility": visibility}}}
+		if meta := proxyToolMeta(ProviderTarget{Name: "reports"}, tool); meta["ui"] != nil {
+			t.Fatalf("forwarded invalid visibility %#v", visibility)
+		}
+	}
+	values := []string{"app", "model"}
+	tool := discoveredTool{Meta: map[string]any{"ui": map[string]any{"resourceUri": "ui://reports/v1", "visibility": values}}}
+	meta := proxyToolMeta(ProviderTarget{Name: "reports"}, tool)
+	values[0] = "private"
+	encoded, err := json.Marshal(meta["ui"])
+	if err != nil || !strings.Contains(string(encoded), `"visibility":["model","app"]`) {
+		t.Fatalf("visibility was not normalized and copied: %s (%v)", encoded, err)
+	}
+}
+
+func TestAppResourceNamesAndSharedReadCapacity(t *testing.T) {
+	var resourceReads atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Method string               `json:"method"`
+			Params struct{ URI string } `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		var result any = map[string]any{}
+		switch request.Method {
+		case "tools/list":
+			result = map[string]any{"tools": []any{
+				map[string]any{"name": "report", "inputSchema": map[string]string{"type": "object"}, "_meta": map[string]any{"ui": map[string]any{"resourceUri": "ui://reports/v1"}}},
+				map[string]any{"name": "chart", "inputSchema": map[string]string{"type": "object"}, "_meta": map[string]any{"ui": map[string]any{"resourceUri": "ui://reports/chart"}}},
+			}}
+		case "resources/read":
+			resourceReads.Add(1)
+			result = map[string]any{"contents": []any{map[string]any{"uri": request.Params.URI, "mimeType": providerMCPAppMIMEType, "text": "<html>report</html>"}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+	}))
+	defer upstream.Close()
+	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget {
+		return []ProviderTarget{{Name: "reports", MCPURL: upstream.URL}}
+	}, Verifier: allowAll}).(*handler)
+	listing, rpcError := appRPC(t, h, "resources/list", `{}`)
+	if rpcError != "" || !strings.Contains(string(listing), `"name":"reports report app"`) || !strings.Contains(string(listing), `"name":"reports chart app"`) {
+		t.Fatalf("indistinguishable resources: %s (%s)", listing, rpcError)
+	}
+	for range providerMCPAppConcurrentReads {
+		h.appReadSlots <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	params, _ := json.Marshal(map[string]string{"uri": federatedAppURI("reports", "ui://reports/v1")})
+	request := httptest.NewRequest(http.MethodPost, testMCPPath, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":`+string(params)+`}`)).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	recorder := httptest.NewRecorder()
+	started := time.Now()
+	h.ServeHTTP(recorder, request)
+	if time.Since(started) > time.Second {
+		t.Fatal("caller cancellation did not promptly release the waiting read")
+	}
+	if ctx.Err() == nil || resourceReads.Load() != 0 {
+		t.Fatalf("saturated read did not wait for caller cancellation: err=%v reads=%d", ctx.Err(), resourceReads.Load())
+	}
+	<-h.appReadSlots
+	result, rpcError := appRPC(t, h, "resources/read", string(params))
+	if rpcError != "" || !strings.Contains(string(result), "report</html>") {
+		t.Fatalf("read did not recover after capacity returned: %s (%s)", result, rpcError)
+	}
+	if len(h.appReadSlots) != providerMCPAppConcurrentReads-1 {
+		t.Fatal("read did not release its capacity")
 	}
 }

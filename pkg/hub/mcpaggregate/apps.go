@@ -9,13 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
-	"unicode"
-
 	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/go-logr/logr"
-
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -45,20 +43,21 @@ func federatedAppURI(provider, resource string) string {
 // validated against the registry. Provider-specific metadata stays private.
 func proxyToolMeta(p ProviderTarget, t discoveredTool) mcp.Meta {
 	meta := toolCoordinateMeta(p, t)
-	if uri := appResourceURI(t); uri != "" {
+	visibility, valid := appToolVisibility(t)
+	if uri := appResourceURI(t); valid && uri != "" {
 		if meta == nil {
 			meta = mcp.Meta{}
 		}
 		ui := map[string]any{"resourceUri": federatedAppURI(p.Name, uri)}
-		if v, ok := t.Meta["ui"].(map[string]any)["visibility"]; ok {
-			ui["visibility"] = v
+		if visibility != nil {
+			ui["visibility"] = visibility
 		}
 		meta["ui"] = ui
 	}
 	return meta
 }
 
-func registerAppResources(srv *mcp.Server, target *providerTools, log logr.Logger) {
+func registerAppResources(requestCtx context.Context, srv *mcp.Server, target *providerTools, log logr.Logger, readSlots chan struct{}) {
 	seen := map[string]bool{}
 	for _, tool := range target.tools {
 		original := appResourceURI(tool)
@@ -67,7 +66,20 @@ func registerAppResources(srv *mcp.Server, target *providerTools, log logr.Logge
 		}
 		seen[original] = true
 		uri := federatedAppURI(target.provider.Name, original)
-		err := addAppResource(srv, &mcp.Resource{URI: uri, Name: target.provider.Name + " app", MIMEType: providerMCPAppMIMEType}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		name := target.provider.Name + " " + tool.Name + " app"
+		err := addAppResource(srv, &mcp.Resource{URI: uri, Name: name, MIMEType: providerMCPAppMIMEType}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			ctx, cancel := context.WithTimeout(ctx, target.client.callTimeout)
+			defer cancel()
+			stop := context.AfterFunc(requestCtx, cancel)
+			defer stop()
+			// Slots are shared by the long-lived HTTP handler, not the stateless
+			// per-request MCP server. Waiting consumes the same call deadline.
+			select {
+			case readSlots <- struct{}{}:
+				defer func() { <-readSlots }()
+			case <-ctx.Done():
+				return nil, fmt.Errorf("provider app resource read capacity unavailable: %w", ctx.Err())
+			}
 			params, _ := json.Marshal(map[string]string{"uri": original})
 			// Resource payloads have a separate, smaller bound than tool data.
 			client := *target.client
@@ -105,30 +117,72 @@ func registerAppResources(srv *mcp.Server, target *providerTools, log logr.Logge
 // A private app-only tool must not become a model-callable tool merely because
 // it traversed federation. Invalid visibility declarations also fail closed.
 func appToolModelVisible(t discoveredTool) bool {
+	visibility, valid := appToolVisibility(t)
+	if !valid {
+		return false
+	}
+	if visibility == nil {
+		return true
+	}
+	for _, value := range visibility {
+		if value == "model" {
+			return true
+		}
+	}
+	return false
+}
+
+// appToolVisibility validates and copies the standard two-token set without
+// serializing arbitrary provider metadata. Nil means the default visibility.
+func appToolVisibility(t discoveredTool) ([]string, bool) {
 	ui, ok := t.Meta["ui"].(map[string]any)
 	if !ok {
-		return true
+		return nil, true
 	}
 	raw, exists := ui["visibility"]
 	if !exists {
-		return true
+		return nil, true
 	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return false
-	}
-	var visibility []string
-	if json.Unmarshal(encoded, &visibility) != nil || len(visibility) == 0 {
-		return false
-	}
-	visible := false
-	for _, v := range visibility {
-		if v != "model" && v != "app" {
-			return false
+	var values []string
+	switch raw := raw.(type) {
+	case []string:
+		values = raw
+	case []any:
+		if len(raw) > 2 {
+			return nil, false
 		}
-		visible = visible || v == "model"
+		for _, value := range raw {
+			text, ok := value.(string)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, text)
+		}
+	default:
+		return nil, false
 	}
-	return visible
+	if len(values) == 0 || len(values) > 2 {
+		return nil, false
+	}
+	model, app := false, false
+	for _, value := range values {
+		switch value {
+		case "model":
+			model = true
+		case "app":
+			app = true
+		default:
+			return nil, false
+		}
+	}
+	visibility := make([]string, 0, 2)
+	if model {
+		visibility = append(visibility, "model")
+	}
+	if app {
+		visibility = append(visibility, "app")
+	}
+	return visibility, true
 }
 
 func validFederatedAppContent(content *mcp.ResourceContents) bool {

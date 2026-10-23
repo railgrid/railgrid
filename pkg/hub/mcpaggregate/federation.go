@@ -118,10 +118,11 @@ const (
 	// checkout grows by 4/3 when base64-encoded, plus JSON framing), so the
 	// cap is 96 MiB. A response over the cap is a loud error, never a
 	// silently truncated body that later fails to decode.
-	providerMCPMaxResponseBytes int64 = 96 << 20
-	providerMCPAppContentBytes        = 1 << 20
-	providerMCPAppMIMEType            = "text/html;profile=mcp-app"
-	providerMCPAppMetaBytes           = 8 << 10
+	providerMCPMaxResponseBytes   int64 = 96 << 20
+	providerMCPAppConcurrentReads       = 4
+	providerMCPAppContentBytes          = 1 << 20
+	providerMCPAppMIMEType              = "text/html;profile=mcp-app"
+	providerMCPAppMetaBytes             = 8 << 10
 	// JSON may escape each content byte as six bytes (e.g. < as \u003c).
 	// This also covers base64's smaller inflation, metadata and RPC framing.
 	providerMCPAppEnvelopeBytes int64 = 6*providerMCPAppContentBytes + 64<<10
@@ -285,15 +286,16 @@ func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string
 // Registration runs sequentially, in the original provider order, so the
 // aggregate tool list is deterministic across requests. AddTool on a shared
 // server is not guaranteed goroutine-safe, so it stays on one goroutine.
-func registerProviderTools(srv *mcp.Server, log logr.Logger, found []*providerTools) {
+func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger, found []*providerTools, readSlots chan struct{}) {
 	for _, r := range found {
 		if r == nil || len(r.tools) == 0 {
 			continue
 		}
-		registerAppResources(srv, r, log)
+		registerAppResources(ctx, srv, r, log, readSlots)
 		log.V(1).Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
 		for _, t := range r.tools {
 			if !appToolModelVisible(t) {
+				log.V(1).Info("provider federation: skipping app-only or invalid-visibility tool", "provider", r.provider.Name, "tool", t.Name)
 				continue
 			}
 			func() {
