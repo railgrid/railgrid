@@ -174,6 +174,46 @@ func TestEncryptedToolMessageCannotBeCapturedAsPlainArtifact(t *testing.T) {
 	}
 }
 
+func TestArtifactMCPRefusedReportsCaptureLimitsClearly(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		err        error
+		code       string
+		reason     string
+		status     int
+		messageHas string
+	}{
+		{
+			name: "result too large", err: store.ErrAgentArtifactResultTooLarge,
+			code: "RequestEntityTooLarge", reason: "ArtifactTooLarge", status: http.StatusRequestEntityTooLarge,
+			messageHas: "size limit",
+		},
+		{
+			name: "owner quota reached", err: store.ErrAgentArtifactLimit,
+			code: "Conflict", reason: "ArtifactLimitReached", status: http.StatusConflict,
+			messageHas: "delete an existing saved result",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, output, err := artifactMCPRefused(tc.err)
+			if err != nil || result == nil || !result.IsError || output.Error == nil {
+				t.Fatalf("artifact refusal result=%+v output=%+v err=%v", result, output, err)
+			}
+			if output.Error.Code != tc.code || output.Error.Reason != tc.reason || output.Error.HTTPStatus != tc.status || !strings.Contains(output.Error.Message, tc.messageHas) {
+				t.Fatalf("capture limit response = %+v", output.Error)
+			}
+			text, ok := result.Content[0].(*mcp.TextContent)
+			if !ok {
+				t.Fatalf("capture limit response content = %#v", result.Content)
+			}
+			var wire artifactMCPOutput
+			if err := json.Unmarshal([]byte(text.Text), &wire); err != nil || wire.Error == nil || wire.Error.Code != tc.code || wire.Error.HTTPStatus != tc.status {
+				t.Fatalf("wire capture limit response = %s, err=%v", text.Text, err)
+			}
+		})
+	}
+}
+
 func TestArtifactCaptureRehydratesOnlyCurrentApprovedMCPApp(t *testing.T) {
 	ctx := t.Context()
 	const html = "<main>current report</main>"
@@ -298,7 +338,7 @@ func TestArtifactCaptureRehydratesOnlyCurrentApprovedMCPApp(t *testing.T) {
 func TestAgentArtifactCapturePointerAndSafePresentation(t *testing.T) {
 	sum := sha256.Sum256([]byte("saved result"))
 	run := taskRun{ArtifactRefs: []store.AgentArtifactReference{{ArtifactID: "artifact-1", Digest: hex.EncodeToString(sum[:])}}}
-	event := backend.ToolEvent{Name: "open_analysis_artifact", ID: "call-open", Args: `{"artifactID":"artifact-1","digest":"` + run.ArtifactRefs[0].Digest + `"}`}
+	event := backend.ToolEvent{Name: openSavedArtifactToolName, ID: "call-open", Args: `{"artifactID":"artifact-1","digest":"` + run.ArtifactRefs[0].Digest + `"}`}
 	got := savedCaptureForToolEvent(run, event)
 	if got == nil || got.ArtifactID != "artifact-1" || got.Digest != run.ArtifactRefs[0].Digest {
 		t.Fatalf("saved capture pointer = %+v", got)

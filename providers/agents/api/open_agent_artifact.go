@@ -20,6 +20,8 @@ import (
 	"github.com/railgrid/provider-agents/store"
 )
 
+const openSavedArtifactToolName = "open_analysis_artifact"
+
 type openAgentArtifactInput struct {
 	ArtifactID string `json:"artifactID"`
 	Digest     string `json:"digest"`
@@ -34,7 +36,7 @@ type savedAgentArtifactReference struct {
 // of an exact artifact that was attached to this attended turn. It carries no
 // artifact bytes and has no selection claim.
 func savedCaptureForToolEvent(run taskRun, ev backend.ToolEvent) *savedAgentArtifactReference {
-	if ev.Err || ev.Name != "open_analysis_artifact" {
+	if ev.Err || ev.Name != openSavedArtifactToolName {
 		return nil
 	}
 	var input openAgentArtifactInput
@@ -130,7 +132,7 @@ func (s *Server) openAgentArtifactTool(run taskRun) backend.Tool {
 	}
 
 	return backend.Tool{
-		Name: "open_analysis_artifact",
+		Name: openSavedArtifactToolName,
 		Desc: "Open one exact user-attached saved result by artifactID and digest. The provider rereads the immutable capture and rechecks every source permission and exact source UID before returning its text. This is a reference to an existing result, not a new query.",
 		Params: map[string]backend.Param{
 			"artifactID": {Type: "string", Desc: "artifactID from the saved result references attached to this turn", Required: true},

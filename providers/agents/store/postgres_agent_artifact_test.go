@@ -114,22 +114,36 @@ func TestPostgres_AgentArtifactAndSourceReceiptRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPostgres_AgentArtifactRetentionIsPerOwner(t *testing.T) {
+func TestPostgres_AgentArtifactRetentionIsPerOwnerAcrossAgents(t *testing.T) {
 	ctx := context.Background()
 	ps, _ := openLegacyHistorySchema(t)
 	if err := ps.EnsureSchema(ctx); err != nil {
 		t.Fatalf("ensure isolated schema: %v", err)
 	}
 	scope := Scope{OrgUUID: "org-" + uuid.NewString(), WorkspaceUUID: "ws-" + uuid.NewString(), AgentName: "analyst"}
-	for i := 0; i < MaxAgentArtifactsPerAgent; i++ {
+	for i := 0; i < MaxAgentArtifactsPerOwner; i++ {
 		if err := ps.SaveAgentArtifact(ctx, scope, quotaTestArtifact(i, "alice")); err != nil {
 			t.Fatalf("save Alice artifact %d: %v", i, err)
 		}
 	}
-	if err := ps.SaveAgentArtifact(ctx, scope, quotaTestArtifact(MaxAgentArtifactsPerAgent, "alice")); !errors.Is(err, ErrAgentArtifactLimit) {
+	if err := ps.SaveAgentArtifact(ctx, scope, quotaTestArtifact(MaxAgentArtifactsPerOwner, "alice")); !errors.Is(err, ErrAgentArtifactLimit) {
 		t.Fatalf("Alice artifact over quota = %v, want ErrAgentArtifactLimit", err)
 	}
 	if err := ps.SaveAgentArtifact(ctx, scope, quotaTestArtifact(0, "bob")); err != nil {
 		t.Fatalf("Alice's artifacts consumed Bob's quota: %v", err)
+	}
+	otherScope := scope
+	otherScope.AgentName = "reviewer"
+	otherAgentArtifact := quotaTestArtifact(MaxAgentArtifactsPerOwner, "alice")
+	otherAgentArtifact.AgentName = otherScope.AgentName
+	otherAgentArtifact.AgentUID = "agent-uid-reviewer"
+	if err := ps.SaveAgentArtifact(ctx, otherScope, otherAgentArtifact); !errors.Is(err, ErrAgentArtifactLimit) {
+		t.Fatalf("Alice's artifact on another Agent = %v, want ErrAgentArtifactLimit", err)
+	}
+	otherOwnerArtifact := quotaTestArtifact(0, "bob")
+	otherOwnerArtifact.AgentName = otherScope.AgentName
+	otherOwnerArtifact.AgentUID = "agent-uid-reviewer"
+	if err := ps.SaveAgentArtifact(ctx, otherScope, otherOwnerArtifact); err != nil {
+		t.Fatalf("Alice's artifacts consumed Bob's quota across Agents: %v", err)
 	}
 }

@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -50,6 +52,12 @@ const (
 	mcpAppResourceReadTimeout = 10 * time.Second
 	mcpAppResourceRequestPeek = 8 * 1024
 	mcpAppResourceResponseMax = 2 << 20
+)
+
+var (
+	errMCPAppResourceTimeout     = errors.New("MCP App resource read timed out")
+	errMCPAppResourceCanceled    = errors.New("MCP App resource read was canceled")
+	errMCPAppResourceUnavailable = errors.New("MCP App resource is unavailable")
 )
 
 // MCPSession wraps one live MCP connection's discovered tools. Close after
@@ -252,7 +260,11 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 				// HTML stays coupled to later caller revalidation.
 				if hubAggregate && len(sources) > 0 {
 					if ref, ok := hubMCPAppIdentity(t.Meta); ok {
-						if app, err := out.ReadHubAggregateMCPAppResource(ctx, ref); err == nil {
+						if app, err := out.ReadHubAggregateMCPAppResource(ctx, ref); err != nil {
+							// The provider name has already passed hubMCPAppIdentity.
+							// Never log a URI, provider response, or transport error.
+							log.Printf("trusted Hub MCP App pin read failed for provider %q (%s); continuing without rich presentation", ref.Provider, mcpAppReadFailureClass(err))
+						} else {
 							if presentation == nil {
 								presentation = &resulttypes.ProviderPresentation{Version: 1}
 							}
@@ -280,11 +292,22 @@ func (s *MCPSession) ReadHubAggregateMCPAppResource(ctx context.Context, ref res
 	if !found || current.Provider != ref.Provider {
 		return nil, fmt.Errorf("MCP App is not advertised by a currently reachable provider")
 	}
-	app := readMCPAppResource(ctx, s.session, ref.ResourceURI)
-	if app == nil {
-		return nil, fmt.Errorf("MCP App resource is unavailable")
+	app, err := readMCPAppResource(ctx, s.session, ref.ResourceURI)
+	if err != nil {
+		return nil, err
 	}
 	return app, nil
+}
+
+func mcpAppReadFailureClass(err error) string {
+	switch {
+	case errors.Is(err, errMCPAppResourceTimeout):
+		return "timeout"
+	case errors.Is(err, errMCPAppResourceCanceled):
+		return "canceled"
+	default:
+		return "unavailable"
+	}
 }
 
 // mcpAppResourceResponseLimitTransport reads resources/read responses with a
@@ -481,16 +504,30 @@ func mcpResultPresentation(meta mcp.Meta) *resulttypes.ProviderPresentation {
 	return presentation
 }
 
-func readMCPAppResource(ctx context.Context, session *mcp.ClientSession, uri string) *resulttypes.MCPAppResource {
+func readMCPAppResource(ctx context.Context, session *mcp.ClientSession, uri string) (*resulttypes.MCPAppResource, error) {
 	readCtx, cancel := context.WithTimeout(ctx, mcpAppResourceReadTimeout)
 	defer cancel()
 	result, err := session.ReadResource(readCtx, &mcp.ReadResourceParams{URI: uri})
-	if err != nil || result == nil || len(result.Contents) != 1 || result.Contents[0] == nil {
-		return nil
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled) || errors.Is(readCtx.Err(), context.Canceled):
+			return nil, errMCPAppResourceCanceled
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(readCtx.Err(), context.DeadlineExceeded):
+			return nil, errMCPAppResourceTimeout
+		default:
+			var timeoutErr net.Error
+			if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+				return nil, errMCPAppResourceTimeout
+			}
+			return nil, errMCPAppResourceUnavailable
+		}
+	}
+	if result == nil || len(result.Contents) != 1 || result.Contents[0] == nil {
+		return nil, errMCPAppResourceUnavailable
 	}
 	content := result.Contents[0]
 	if content.URI != uri || content.MIMEType != mcpAppMIMEType || !mcpAppResourceSecuritySupported(content.Meta) {
-		return nil
+		return nil, errMCPAppResourceUnavailable
 	}
 	var html []byte
 	switch {
@@ -499,17 +536,17 @@ func readMCPAppResource(ctx context.Context, session *mcp.ClientSession, uri str
 	case content.Text == "" && len(content.Blob) > 0:
 		html = content.Blob
 	default:
-		return nil
+		return nil, errMCPAppResourceUnavailable
 	}
 	if len(html) == 0 || len(html) > resulttypes.MaxMCPAppHTMLBytes || !utf8.Valid(html) {
-		return nil
+		return nil, errMCPAppResourceUnavailable
 	}
 	digest := sha256.Sum256(html)
 	app := &resulttypes.MCPAppResource{ResourceURI: uri, MIMEType: mcpAppMIMEType, HTML: string(html), SHA256: hex.EncodeToString(digest[:])}
 	if app.Validate() != nil {
-		return nil
+		return nil, errMCPAppResourceUnavailable
 	}
-	return app
+	return app, nil
 }
 
 // Only the reviewed zero-origin policy subset is accepted from MCP App
@@ -596,9 +633,6 @@ func decodeMCPToolArguments(raw string) (map[string]any, error) {
 	if err := decoder.Decode(&args); err != nil {
 		return nil, fmt.Errorf("expected one JSON object: %w", err)
 	}
-	if args == nil {
-		return nil, fmt.Errorf("expected one JSON object")
-	}
 
 	var trailing any
 	err := decoder.Decode(&trailing)
@@ -607,6 +641,11 @@ func decodeMCPToolArguments(raw string) (map[string]any, error) {
 			return nil, fmt.Errorf("expected one JSON object: %w", err)
 		}
 		return nil, fmt.Errorf("expected one JSON object")
+	}
+	if args == nil {
+		// encoding/json's previous Unmarshal path treated null as nil map args;
+		// keep that no-argument invocation behavior for ordinary MCP servers.
+		return map[string]any{}, nil
 	}
 	return args, nil
 }

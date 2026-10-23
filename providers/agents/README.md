@@ -232,13 +232,18 @@ context-budget and compaction policy below.
 An attended chat can save one successful tool result with
 `capture_agent_artifact`, then attach its artifact ID and SHA-256 digest to a
 later chat turn. `open_analysis_artifact` rereads only an exact attached
-capture; it does not rerun the source tool. The provider checks the current
-caller's required source actions and the exact source object UIDs before it
-saves or reopens source-backed data and recorded input. Artifacts retain only a
-content-free App resource URI and SHA-256 receipt; the provider fetches exact
-HTML transiently for an attended capture or reopen and never writes it to the
-run trace or artifact store. Captures are immutable and caller-owned; list
-responses contain metadata only.
+capture; it does not rerun the source tool. Capture and source-backed reopen
+require caller-attended MCP so the provider can check current run/source access
+and exact source object UIDs; no data-plane POST capture route is served.
+Source-free detail reads remain available from the Agent artifacts endpoint.
+Each caller can retain at most 100 captures and 16 MiB of result plus recorded
+input across all of that caller's Agents in a workspace. The provider reports
+size-limit and quota failures directly, and the caller can delete an existing
+capture to make room. Artifacts retain only a content-free App resource URI
+and SHA-256 receipt; the provider fetches exact HTML transiently for an
+attended capture or reopen and never writes it to the run trace or artifact
+store. Captures are immutable and caller-owned; list responses contain
+metadata only.
 
 Run checkpoints retain only the attached artifact owner and ID/digest pointers,
 never the caller bearer or captured bytes. If an approval resume needs to reopen
