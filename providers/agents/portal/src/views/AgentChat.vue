@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import AIModelPicker from '../agentkit/AIModelPicker.vue'
@@ -18,23 +18,26 @@ import type { Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
-import { agentHarnessBacked, agentModelCredential, sessionLabel, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import { agentHarnessBacked, agentModelCredential, sessionLabel, type AgentArtifact, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
+import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
+import McpAppViewer from '../components/McpAppViewer.vue'
 
 const domID = useAgentDOMID()
 
 const LIVE_RUN_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 const TERMINAL_RUN_PHASES = new Set(['Succeeded', 'Failed', 'Aborted'])
+const MAX_CACHED_ARTIFACT_RECEIPTS = 64
 
 interface StartData { runID: string; sessionID: string }
 interface RunStartedData { runID: string; sessionID?: string; status?: string; startedAt?: string }
 interface DeltaData { text: string }
 interface ToolStartData { id: string; name: string; args?: string }
-interface ToolEndData extends ToolStartData { result?: string; error?: string; durationMS?: number }
+interface ToolEndData extends ToolStartData { runID?: string; sessionID?: string; toolCallID?: string; result?: string; error?: string; durationMS?: number; sources?: unknown; savedCapture?: unknown; hasMcpApp?: boolean }
 interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; content?: string; status?: string; startedAt?: string; durationMS?: number }
 interface AssistantMessageData { runID: string; phase: 'commentary' | 'final'; content: string; createdAt?: string; segmentDurationMS?: number }
 interface DoneData {
@@ -55,13 +58,32 @@ interface ConversationRailHandle {
 }
 
 const props = defineProps<{ store: AppStore; api: ApiClient; name: string; compact?: boolean; composerOnly?: boolean; pageContext?: string }>()
-const emit = defineEmits<{ navigate: [route: Route] }>()
+const emit = defineEmits<{ navigate: [route: Route]; 'inspection-open': [open: boolean] }>()
 // The standalone chat keeps its Conversation heading. AgentDetail supplies a
 // leading navigation control, compact identity heading, and actions when the
 // chat is embedded in its resource workspace; the header still owns the rail
 // controls in both cases.
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
+const runtime = useAgentsRuntime()
+const inlineAppGeneration = ref(0)
+watch([() => props.store, () => props.api, () => props.name, () => runtime?.authorityEpoch.value], () => {
+  clearArtifactState()
+}, { flush: 'sync' })
+const artifactPanelOpen = ref(false)
+watch(artifactPanelOpen, open => {
+  emit('inspection-open', open)
+  if (open) void nextTick(() => artifactPanelElement.value?.focus())
+}, { flush: 'sync' })
+const artifactItems = ref<AgentArtifact[]>([])
+const selectedArtifact = shallowRef<AgentArtifact | null>(null)
+const inspectedArtifactReceipt = shallowRef<{ runID: string; sessionID: string; toolCallID: string } | null>(null)
+const selectedSavedCapture = shallowRef<SavedCaptureCitation | null>(null)
+const artifactDetailLoading = ref(false)
+const artifactDetailError = ref('')
+const artifactViewerFailed = ref(false)
+const artifactPanelElement = ref<HTMLElement | null>(null)
+let artifactDetailSerial = 0
 
 const messages = ref<ChatMessage[]>([])
 const messagesHasSnapshot = ref(false)
@@ -87,9 +109,12 @@ function resetOlderHistory(): void {
   historyItems = []
   atBottom.value = true
 }
-watch(sessionID, resetOlderHistory, { flush: 'sync' })
+watch(sessionID, () => {
+  resetOlderHistory()
+  clearArtifactState()
+}, { flush: 'sync' })
 const draft = ref('')
-const chatHost = useAgentsRuntime()?.host
+const chatHost = runtime?.host
 const compactThreadsOpen = ref(false)
 const threadQuery = ref('')
 const threadSearch = ref<HTMLInputElement | null>(null)
@@ -431,6 +456,221 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
 
 function contextIsCurrent(name: string, api: ApiClient): boolean {
   return mounted && props.name === name && props.api === api
+}
+
+function artifactMetadataForRevalidation(artifact: AgentArtifact): AgentArtifact {
+  const metadata = { ...artifact }
+  delete metadata.data
+  delete metadata.input
+  delete metadata.providerPresentation
+  metadata.evidenceStatus = metadata.sources.length ? 'source_revalidation_required' : 'captured_unverified'
+  return metadata
+}
+
+function cacheArtifactMetadata(artifact: AgentArtifact): AgentArtifact {
+  const metadata = artifactMetadataForRevalidation(artifact)
+  artifactItems.value = [metadata, ...artifactItems.value.filter(item => item.id !== metadata.id)].slice(0, MAX_CACHED_ARTIFACT_RECEIPTS)
+  return metadata
+}
+
+function clearArtifactState(): void {
+  artifactDetailSerial += 1
+  inlineAppGeneration.value += 1
+  artifactPanelOpen.value = false
+  artifactItems.value = []
+  selectedArtifact.value = null
+  selectedSavedCapture.value = null
+  inspectedArtifactReceipt.value = null
+  artifactDetailLoading.value = false
+  artifactDetailError.value = ''
+  artifactViewerFailed.value = false
+}
+
+function closeArtifactPanel(): void {
+  artifactDetailSerial += 1
+  artifactPanelOpen.value = false
+  selectedArtifact.value = null
+  selectedSavedCapture.value = null
+  inspectedArtifactReceipt.value = null
+  artifactDetailLoading.value = false
+  artifactDetailError.value = ''
+  artifactViewerFailed.value = false
+  inlineAppGeneration.value += 1
+  void nextTick(() => composer.value?.focus())
+}
+
+function sameSavedCapture(left: SavedCaptureCitation, right: SavedCaptureCitation): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function currentSourceReceipt(receipt: { runID: string; sessionID: string; toolCallID: string }): ToolCall | undefined {
+  if (sessionID.value !== receipt.sessionID) return undefined
+  const message = messages.value.find(item => item.role === 'assistant' && item.runID === receipt.runID)
+  const tool = message?.tools.find(item => item.toolCallID === receipt.toolCallID)
+  return tool && !tool.pending && !tool.error && typeof tool.result === 'string' && tool.sources?.length ? tool : undefined
+}
+
+function currentSavedCaptureReceipt(detail: { runID: string; sessionID: string; toolCallID: string; savedCapture: SavedCaptureCitation }): boolean {
+  if (sessionID.value !== detail.sessionID) return false
+  const message = messages.value.find(item => item.role === 'assistant' && item.runID === detail.runID)
+  const tool = message?.tools.find(item => item.toolCallID === detail.toolCallID)
+  const savedCapture = tool && !tool.pending && !tool.error && typeof tool.result === 'string' && tool.name === 'open_analysis_artifact'
+    ? parseSavedCaptureCitation(tool.savedCapture)
+    : null
+  return !!savedCapture && sameSavedCapture(savedCapture, detail.savedCapture)
+}
+
+async function loadArtifactDetail(artifact: AgentArtifact, savedCapture?: SavedCaptureCitation): Promise<void> {
+  const serial = ++artifactDetailSerial
+  const authority = captureAuthority()
+  const name = props.name
+  const api = props.api
+  const metadata = artifactMetadataForRevalidation(artifact)
+  selectedArtifact.value = metadata
+  selectedSavedCapture.value = savedCapture || null
+  artifactViewerFailed.value = false
+  artifactDetailLoading.value = true
+  artifactDetailError.value = ''
+  try {
+    const detail = await api.getAgentArtifact(name, metadata.id)
+    if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api)) return
+    // Saved citations are validated by their originating tool receipt; the
+    // artifact receipt may be from another run, so recheck that citation here.
+    if (savedCapture && !currentSavedCaptureReceiptForAnyReceipt(savedCapture)) return
+    const currentUID = props.store.agent(name)?.metadata.uid
+    if (detail.artifact.id !== metadata.id || detail.artifact.digest !== metadata.digest ||
+        detail.artifact.runID !== metadata.runID || detail.artifact.sessionID !== metadata.sessionID ||
+        detail.artifact.toolCallID !== metadata.toolCallID || detail.artifact.agentUID !== metadata.agentUID ||
+        (currentUID && detail.artifact.agentUID !== currentUID) || detail.artifact.agentName !== name ||
+        detail.artifact.evidenceStatus !== 'source_identity_and_access_revalidated') {
+      artifactDetailError.value = 'The saved result changed identity or access while it was opening. Result bytes remain hidden.'
+      return
+    }
+    selectedArtifact.value = detail.artifact
+  } catch {
+    if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api)) return
+    artifactDetailError.value = metadata.sources.length
+      ? 'Source access could not be checked. Result bytes stay hidden.'
+      : 'The saved result could not be opened. Try again.'
+  } finally {
+    if (serial === artifactDetailSerial && authorityIsCurrent(authority) && contextIsCurrent(name, api)) artifactDetailLoading.value = false
+  }
+}
+
+function currentSavedCaptureReceiptForAnyReceipt(savedCapture: SavedCaptureCitation): boolean {
+  return messages.value.some(message => message.role === 'assistant' && message.runID && message.tools.some(tool =>
+    tool.name === 'open_analysis_artifact' && !tool.pending && !tool.error && typeof tool.result === 'string' &&
+    sameSavedCapture(parseSavedCaptureCitation(tool.savedCapture) || { artifactID: '', digest: '' }, savedCapture)))
+}
+
+function retryArtifactDetail(): void {
+  if (selectedArtifact.value) void loadArtifactDetail(selectedArtifact.value, selectedSavedCapture.value || undefined)
+  else if (selectedSavedCapture.value) {
+    const citation = selectedSavedCapture.value
+    const receipt = messages.value.find(message => message.role === 'assistant' && message.runID && message.tools.some(tool =>
+      tool.name === 'open_analysis_artifact' && !tool.pending && !tool.error && typeof tool.result === 'string' &&
+      sameSavedCapture(parseSavedCaptureCitation(tool.savedCapture) || { artifactID: '', digest: '' }, citation)))
+    const tool = receipt?.tools.find(item => item.name === 'open_analysis_artifact' && sameSavedCapture(parseSavedCaptureCitation(item.savedCapture) || { artifactID: '', digest: '' }, citation))
+    if (receipt?.runID && tool?.toolCallID) void loadSavedCaptureDetail({ runID: receipt.runID, sessionID: sessionID.value, toolCallID: tool.toolCallID, savedCapture: citation })
+  }
+}
+
+async function loadSavedCaptureDetail(detail: { runID: string; sessionID: string; toolCallID: string; savedCapture: SavedCaptureCitation }): Promise<void> {
+  const serial = ++artifactDetailSerial
+  const authority = captureAuthority()
+  const name = props.name
+  const api = props.api
+  selectedArtifact.value = null
+  selectedSavedCapture.value = detail.savedCapture
+  artifactViewerFailed.value = false
+  artifactDetailLoading.value = true
+  artifactDetailError.value = ''
+  try {
+    const result = await api.getAgentArtifact(name, detail.savedCapture.artifactID)
+    if (serial !== artifactDetailSerial || !authorityIsCurrent(authority) || !contextIsCurrent(name, api) || !currentSavedCaptureReceipt(detail)) return
+    const currentUID = props.store.agent(name)?.metadata.uid
+    if (result.artifact.id !== detail.savedCapture.artifactID || result.artifact.digest !== detail.savedCapture.digest ||
+        result.artifact.agentName !== name || (currentUID && result.artifact.agentUID !== currentUID) ||
+        result.artifact.evidenceStatus !== 'source_identity_and_access_revalidated') {
+      artifactDetailError.value = 'This saved capture changed identity or access. Result bytes remain hidden.'
+      return
+    }
+    selectedArtifact.value = result.artifact
+  } catch {
+    if (serial === artifactDetailSerial && authorityIsCurrent(authority) && contextIsCurrent(name, api) && currentSavedCaptureReceipt(detail)) {
+      artifactDetailError.value = 'This saved capture is unavailable to the current caller. Result bytes remain hidden.'
+    }
+  } finally {
+    if (serial === artifactDetailSerial && authorityIsCurrent(authority) && contextIsCurrent(name, api)) artifactDetailLoading.value = false
+  }
+}
+
+async function openArtifact(artifact: AgentArtifact): Promise<void> {
+  artifactPanelOpen.value = true
+  inspectedArtifactReceipt.value = { runID: artifact.runID, sessionID: artifact.sessionID, toolCallID: artifact.toolCallID }
+  inlineAppGeneration.value += 1
+  await loadArtifactDetail(artifact)
+}
+
+async function openSavedCaptureCitation(detail: { runID: string; sessionID: string; toolCallID: string; savedCapture: SavedCaptureCitation }): Promise<void> {
+  const savedCapture = parseSavedCaptureCitation(detail.savedCapture)
+  if (!savedCapture || !currentSavedCaptureReceipt({ ...detail, savedCapture })) return
+  artifactPanelOpen.value = true
+  inlineAppGeneration.value += 1
+  const original = artifactItems.value.find(item => item.id === savedCapture.artifactID && item.digest === savedCapture.digest)
+  inspectedArtifactReceipt.value = original
+    ? { runID: original.runID, sessionID: original.sessionID, toolCallID: original.toolCallID }
+    : null
+  if (original) await loadArtifactDetail(original, savedCapture)
+  else await loadSavedCaptureDetail({ ...detail, savedCapture })
+}
+
+async function loadInlineApp(receipt: { runID: string; sessionID: string; toolCallID: string; title: string }): Promise<AgentArtifact | null> {
+  const authority = captureAuthority()
+  const name = props.name
+  const api = props.api
+  const generation = inlineAppGeneration.value
+  const current = () => generation === inlineAppGeneration.value && authorityIsCurrent(authority) && contextIsCurrent(name, api) &&
+    !artifactPanelOpen.value && sessionID.value === receipt.sessionID && currentSourceReceipt(receipt)?.hasMcpApp === true
+  if (!current()) return null
+  const existing = artifactItems.value.find(item => item.runID === receipt.runID && item.sessionID === receipt.sessionID && item.toolCallID === receipt.toolCallID)
+  const captured = existing || artifactMetadataForRevalidation(await api.captureAgentArtifact({ agent: name, ...receipt }))
+  if (!current()) return null
+  const currentUID = props.store.agent(name)?.metadata.uid
+  if (captured.runID !== receipt.runID || captured.sessionID !== receipt.sessionID || captured.toolCallID !== receipt.toolCallID ||
+      captured.agentName !== name || (currentUID && captured.agentUID !== currentUID)) return null
+  cacheArtifactMetadata(captured)
+  const result = await api.getAgentArtifact(name, captured.id)
+  if (!current() || result.artifact.id !== captured.id || result.artifact.digest !== captured.digest ||
+      result.artifact.runID !== receipt.runID || result.artifact.sessionID !== receipt.sessionID || result.artifact.toolCallID !== receipt.toolCallID ||
+      result.artifact.agentUID !== captured.agentUID || result.artifact.agentName !== name ||
+      result.artifact.evidenceStatus !== 'source_identity_and_access_revalidated' || !result.artifact.providerPresentation?.mcpApp) return null
+  return result.artifact
+}
+
+async function saveArtifact(detail: { runID: string; sessionID: string; toolCallID: string; title: string }): Promise<void> {
+  const receipt = { runID: detail.runID, sessionID: detail.sessionID, toolCallID: detail.toolCallID }
+  if (!currentSourceReceipt(receipt)) return
+  const authority = captureAuthority()
+  const name = props.name
+  const api = props.api
+  try {
+    const existing = artifactItems.value.find(item => item.runID === detail.runID && item.sessionID === detail.sessionID && item.toolCallID === detail.toolCallID)
+    const captured = existing || artifactMetadataForRevalidation(await api.captureAgentArtifact({ agent: name, ...detail }))
+    if (!authorityIsCurrent(authority) || !contextIsCurrent(name, api) || !currentSourceReceipt(receipt)) return
+    const currentUID = props.store.agent(name)?.metadata.uid
+    if (captured.agentName !== name || captured.runID !== detail.runID || captured.sessionID !== detail.sessionID ||
+        captured.toolCallID !== detail.toolCallID || (currentUID && captured.agentUID !== currentUID)) return
+    cacheArtifactMetadata(captured)
+    await openArtifact(captured)
+  } catch (error) {
+    if (authorityIsCurrent(authority) && contextIsCurrent(name, api)) {
+      const status = error instanceof ApiError ? error.status : 0
+      toast('error', status === 403 || status === 404
+        ? 'This result is no longer available to the current caller. Refresh the conversation and try again.'
+        : 'The result could not be opened. Try again after the run completes.')
+    }
+  }
 }
 
 function sessionKey(name: string, api: ApiClient): string {
@@ -1084,12 +1324,34 @@ async function send(): Promise<void> {
         }
         case 'tool_end': {
           const data = event.data as ToolEndData
-          setTool(data.id, { result: data.result, error: data.error, durationMS: data.durationMS, pending: false }, {
+          const current = currentMessage()
+          const started = current?.tools.find(tool => tool.id === data.id && tool.pending)
+          const receiptMatches = !!current?.runID && data.runID === current.runID && data.sessionID === requestSession &&
+            sessionID.value === requestSession && data.toolCallID === data.id && started?.name === data.name
+          const sources = !data.error && receiptMatches && typeof data.result === 'string' ? parseAgentArtifactSources(data.sources) : null
+          const savedCapture = !data.error && receiptMatches && data.name === 'open_analysis_artifact' && started?.name === data.name
+            ? parseSavedCaptureCitation(data.savedCapture)
+            : null
+          const hasMcpApp = data.hasMcpApp === true && !!sources?.length && receiptMatches
+          setTool(data.id, {
+            toolCallID: data.id,
+            result: data.result,
+            error: data.error,
+            sources: sources?.length ? sources : undefined,
+            hasMcpApp,
+            savedCapture: savedCapture || undefined,
+            durationMS: data.durationMS,
+            pending: false,
+          }, {
             id: data.id,
+            toolCallID: data.id,
             name: data.name,
             args: data.args,
             result: data.result,
             error: data.error,
+            ...(sources?.length ? { sources } : {}),
+            hasMcpApp,
+            ...(savedCapture ? { savedCapture } : {}),
             durationMS: data.durationMS,
             pending: false,
           })
@@ -1570,6 +1832,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearArtifactState()
   chatHost?.value?.removeEventListener('railgrid-chat-handoff', offerDraft)
   chatHost?.value?.removeEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
   logResizeObserver?.disconnect()
@@ -1685,6 +1948,8 @@ defineExpose({
         <p v-else>No threads match your search.</p>
       </section>
       <div v-show="!compactThreadsOpen" class="agents-chat-main">
+        <div class="agents-chat-workspace" :class="{ 'agents-chat-workspace--inspection': artifactPanelOpen }">
+          <section class="agents-conversation-column" aria-label="Conversation and composer">
         <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
           <span><AlertCircle aria-hidden="true" /> Could not load conversations: {{ sessionsError }}</span>
           <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
@@ -1765,14 +2030,21 @@ defineExpose({
             </div>
             <ChatMessageView
               v-for="message in messages"
-              :key="message.id"
+              :key="`${message.id}:${inlineAppGeneration}`"
               :message="message"
+              :session-i-d="sessionID"
+              :load-inline-app="loadInlineApp"
+              :inspected-artifact-receipt="inspectedArtifactReceipt"
+              :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
               :announce="message.role === 'assistant' && message.streaming"
               :show-run-link="runLinkMessageIDs.has(message.id)"
               :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
               @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
               @view-run="emit('navigate', { kind: 'run', id: $event })"
               @recovery="navigateForFailure"
+              @inline-layout="scrollToBottom"
+              @save-artifact="saveArtifact"
+              @open-saved-capture="openSavedCaptureCitation"
             />
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
             <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
@@ -1797,7 +2069,7 @@ defineExpose({
           </AITranscript>
         </div>
 
-        <div v-if="!atBottom && messages.length" class="agents-return-latest-anchor">
+        <div v-if="!artifactPanelOpen && !atBottom && messages.length" class="agents-return-latest-anchor">
           <button
             type="button"
             class="k-btn agents-return-latest"
@@ -1870,6 +2142,58 @@ defineExpose({
             </template>
           </AIComposer>
         </form>
+          </section>
+
+          <section
+            v-if="artifactPanelOpen"
+            ref="artifactPanelElement"
+            class="agents-artifact-panel"
+            aria-label="Result details"
+            role="region"
+            tabindex="-1"
+            :aria-busy="artifactDetailLoading ? 'true' : undefined"
+          >
+            <header class="agents-artifact-panel__header">
+              <h2>Result details</h2>
+              <button class="k-btn k-btn--ghost" type="button" aria-label="Back to conversation" title="Back to conversation" @click="closeArtifactPanel">
+                <X :size="16" aria-hidden="true" />
+              </button>
+            </header>
+            <p v-if="artifactDetailLoading" class="agents-artifact-panel__status" role="status">Checking source access before opening the result…</p>
+            <div v-else-if="artifactDetailError" class="agents-artifact-panel__status" role="alert">
+              <p>{{ artifactDetailError }}</p>
+              <button class="k-btn k-btn--ghost secondary" type="button" @click="retryArtifactDetail">Retry</button>
+            </div>
+            <template v-else-if="selectedArtifact?.evidenceStatus === 'source_identity_and_access_revalidated' && typeof selectedArtifact.data === 'string'">
+              <McpAppViewer
+                v-if="selectedArtifact.providerPresentation?.mcpApp && !selectedSavedCapture?.selection && !artifactViewerFailed"
+                class="agents-artifact-panel__app"
+                :app="selectedArtifact.providerPresentation.mcpApp"
+                :result-data="selectedArtifact.data"
+                :input="selectedArtifact.input"
+                @failure="artifactViewerFailed = true"
+              />
+              <p v-else-if="selectedSavedCapture?.selection" class="agents-artifact-panel__status" role="status">
+                This citation references selected rows and fields. This view does not reopen the full captured result.
+              </p>
+              <p v-else-if="artifactViewerFailed" class="agents-artifact-panel__status" role="status">The provider app could not be opened. You can inspect the captured data below.</p>
+              <details v-if="!selectedSavedCapture?.selection" class="agents-artifact-panel__data">
+                <summary>View captured data</summary>
+                <pre>{{ selectedArtifact.data }}</pre>
+              </details>
+              <details class="agents-artifact-panel__evidence">
+                <summary>Access evidence</summary>
+                <p>Current source access was checked before displaying this result.</p>
+                <ul v-if="selectedArtifact.sources.length">
+                  <li v-for="source in selectedArtifact.sources" :key="`${source.object.uid}:${source.object.resource}:${source.object.name}`">
+                    {{ source.label || `${source.object.resource} / ${source.object.name}` }}
+                  </li>
+                </ul>
+              </details>
+            </template>
+            <p v-else class="agents-artifact-panel__status" role="status">No currently verified result data is available. Result bytes stay hidden.</p>
+          </section>
+        </div>
       </div>
     </AIConversationLayout>
   </div>

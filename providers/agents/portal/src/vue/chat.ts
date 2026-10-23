@@ -6,10 +6,14 @@ import DOMPurify from 'dompurify'
 import { Marked } from 'marked'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import type { ChatMessage, ChatProgress, ChatTraceBlock, ToolCall, TranscriptMessage } from '../types'
+import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
 
 const markdown = new Marked({ gfm: true, breaks: true })
 
 DOMPurify.addHook('afterSanitizeAttributes', node => {
+  node.removeAttribute('data-agent-tool-citation')
+  node.removeAttribute('data-agent-saved-capture-citation')
+  node.classList.remove('agents-tool-citation', 'agents-tool-citation-unavailable')
   if (node instanceof HTMLAnchorElement && node.hasAttribute('href')) {
     node.setAttribute('target', '_blank')
     node.setAttribute('rel', 'noopener noreferrer')
@@ -19,6 +23,82 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
 export function sanitizedMarkdown(source: string): string {
   const raw = markdown.parse(source || '', { async: false })
   return DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } })
+}
+
+export interface InlineToolCitation {
+  toolCallID: string
+  label: string
+  kind?: 'source' | 'saved-capture'
+  hidden?: boolean
+}
+
+export function compactToolCitationReference(toolCallID: string): string {
+  return toolCallID.length > 16 && /^[A-Za-z0-9_-]+$/.test(toolCallID) ? `r_${toolCallID.slice(-12)}` : toolCallID
+}
+
+/** Turn source markers into controls only when an exact successful receipt exists. */
+export function sanitizedMarkdownWithToolCitations(source: string, citations: readonly InlineToolCitation[]): string {
+  const sanitized = sanitizedMarkdown(source)
+  if (typeof document === 'undefined') return sanitized
+  const allowed = new Map<string, InlineToolCitation | null>()
+  for (const citation of citations) {
+    for (const reference of new Set([citation.toolCallID, compactToolCitationReference(citation.toolCallID)])) {
+      if (!allowed.has(reference)) allowed.set(reference, citation)
+      else if (allowed.get(reference)?.toolCallID !== citation.toolCallID) allowed.set(reference, null)
+    }
+  }
+  const template = document.createElement('template')
+  template.innerHTML = sanitized
+  const walker = document.createTreeWalker(template.content, 4 /* NodeFilter.SHOW_TEXT */)
+  const nodes: Text[] = []
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text)
+  const token = /\[\[tool:([^\]\r\n]{1,128})\]\]/g
+  for (const node of nodes) {
+    let parent = node.parentElement
+    let excluded = false
+    while (parent) {
+      if (parent.matches('code, pre, a, button, script, style')) { excluded = true; break }
+      parent = parent.parentElement
+    }
+    if (excluded) continue
+    token.lastIndex = 0
+    const fragment = document.createDocumentFragment()
+    let cursor = 0
+    let changed = false
+    for (const match of node.data.matchAll(token)) {
+      const citation = allowed.get(match[1])
+      const start = match.index || 0
+      fragment.append(document.createTextNode(node.data.slice(cursor, start)))
+      if (citation === undefined) {
+        const unavailable = document.createElement('span')
+        unavailable.className = 'agents-tool-citation-unavailable muted'
+        unavailable.setAttribute('role', 'note')
+        unavailable.setAttribute('aria-label', 'Source unavailable. No matching source receipt is available for this reply.')
+        unavailable.textContent = 'Source unavailable'
+        fragment.append(unavailable)
+      } else if (citation && !citation.hidden) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'agents-tool-citation'
+        if (citation.kind === 'saved-capture') {
+          button.dataset.agentSavedCaptureCitation = citation.toolCallID
+          button.textContent = 'Saved capture'
+          button.setAttribute('aria-label', 'Open saved capture')
+        } else {
+          button.dataset.agentToolCitation = citation.toolCallID
+          button.textContent = `Source · ${citation.label}`
+          button.setAttribute('aria-label', `Open source evidence from ${citation.label}`)
+        }
+        fragment.append(button)
+      }
+      cursor = start + match[0].length
+      changed = true
+    }
+    if (!changed) continue
+    fragment.append(document.createTextNode(node.data.slice(cursor)))
+    node.replaceWith(fragment)
+  }
+  return template.innerHTML
 }
 
 // Copy controls are intentionally attached after sanitization rather than
@@ -133,13 +213,24 @@ function appendTool(message: ChatMessage, tool: ToolCall, createdAt?: string): v
 // approval markers stay attached to one turn without guessing from prose.
 export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessage[] {
   const out: ChatMessage[] = []
-  let pending: Array<{ tool: ToolCall; createdAt?: string }> = []
+  let pending: Array<{ tool: ToolCall; createdAt?: string; runID?: string }> = []
   let activeAssistant: ChatMessage | undefined
 
   const flush = (into?: ChatMessage): void => {
     if (!pending.length) return
     if (into) {
-      for (const item of pending) appendTool(into, item.tool, item.createdAt)
+      for (const item of pending) {
+        const sameRun = !!item.runID && !!into.runID && item.runID === into.runID
+        if (sameRun) {
+          appendTool(into, item.tool, item.createdAt)
+        } else {
+          const unattested = { ...item.tool }
+          delete unattested.sources
+          delete unattested.hasMcpApp
+          delete unattested.savedCapture
+          appendTool(into, unattested, item.createdAt)
+        }
+      }
     } else {
       out.push({
         id: `orphan-${pending[0].tool.id}`,
@@ -177,17 +268,26 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
     if (item.role === 'tool') {
       const metadata = item.metadata || {}
       const rawError = metadata.error
+      const hasError = typeof rawError === 'string' ? rawError.length > 0 : Boolean(rawError)
+      const sources = hasError ? null : parseAgentArtifactSources(metadata.sources)
+      const toolName = typeof metadata.tool === 'string' ? metadata.tool : 'tool'
+      const savedCapture = !hasError && toolName === 'open_analysis_artifact' ? parseSavedCaptureCitation(metadata.savedCapture) : null
       pending.push({
         tool: {
           id: `m${item.id}`,
-          name: metadata.tool || 'tool',
+          ...(typeof metadata.toolCallID === 'string' && metadata.toolCallID ? { toolCallID: metadata.toolCallID } : {}),
+          name: toolName,
           args: metadata.args,
           result: item.content,
           error: typeof rawError === 'string' ? rawError : rawError ? 'Tool failed' : undefined,
+          ...(sources?.length ? { sources } : {}),
+          ...(metadata.hasMcpApp === true && sources?.length ? { hasMcpApp: true } : {}),
+          ...(savedCapture ? { savedCapture } : {}),
           durationMS: durationMS(metadata.durationMS),
           pending: false,
         },
         createdAt: item.createdAt,
+        runID: item.runID,
       })
       if (activeAssistant && (!item.runID || !activeAssistant.runID || item.runID === activeAssistant.runID)) {
         flush(activeAssistant)
