@@ -97,15 +97,18 @@ import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } fr
 import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS } from './resources'
 import { presentRequestFailure } from './request-errors'
 import { parseAgentArtifact, parseAgentArtifactMcpApp } from './agentArtifacts'
+import { artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from './artifactIntegrity'
+import { ApiError } from './api-error'
+import { callAttendedMcpTool, readSSE, type SSEEvent } from './attendedMcp'
 
 export type { Tenant }
 export { ResourceError } from './resources'
+export { ApiError } from './api-error'
+export { parseSSEFrame, readSSE } from './attendedMcp'
+export type { SSEEvent } from './attendedMcp'
 
-// SSEEvent is one parsed frame from any of the provider's event streams.
-export interface SSEEvent<T = unknown> {
-  id?: string
-  event: string
-  data: T
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 export interface MessagePage {
@@ -147,195 +150,6 @@ export interface ContextAuthority {
 
 // ApiError carries the HTTP status alongside the message so callers can tell a
 // 404 (agent gone) from a 502 (upstream) without string-matching.
-export class ApiError extends Error {
-  readonly status: number
-  readonly technicalDiagnostic: string
-  readonly reason: string
-  constructor(status: number, message: string, technicalDiagnostic = '', reason = '') {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.technicalDiagnostic = technicalDiagnostic
-    this.reason = reason
-  }
-}
-
-const ATTENDED_TOOL_TIMEOUT_MS = 30_000
-const ATTENDED_TOOL_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-
-type AttendedRPCMessage = {
-  id?: unknown
-  jsonrpc?: unknown
-  error?: unknown
-  result?: {
-    isError?: unknown
-    content?: unknown
-    structuredContent?: unknown
-    _meta?: unknown
-  }
-}
-
-function invalidAttendedResponse(): ApiError {
-  return new ApiError(502, 'The Agents service returned an invalid response.')
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function parseAttendedRPCMessage(value: unknown, expectedID: number): AttendedRPCMessage {
-  if (!isRecord(value) || value.jsonrpc !== '2.0' || value.id !== expectedID) throw invalidAttendedResponse()
-  const message = value as AttendedRPCMessage
-  const hasResult = Object.prototype.hasOwnProperty.call(value, 'result')
-  const hasError = Object.prototype.hasOwnProperty.call(value, 'error')
-  if (hasResult === hasError || (hasResult && !isRecord(message.result)) || (hasError && !isRecord(message.error))) throw invalidAttendedResponse()
-  return message
-}
-
-function attendedResponseError(value: unknown, fallbackStatus: number, fallbackReason: string, fallbackDiagnostic: string): ApiError {
-  const outer = isRecord(value) ? value : {}
-  const nested = isRecord(outer.error) ? outer.error : outer
-  const status = typeof nested.httpStatus === 'number' && Number.isSafeInteger(nested.httpStatus) && nested.httpStatus >= 400 && nested.httpStatus <= 599
-    ? nested.httpStatus : fallbackStatus
-  const reason = typeof nested.reason === 'string' && nested.reason ? nested.reason : fallbackReason
-  const diagnostic = typeof nested.message === 'string' && nested.message ? nested.message
-    : typeof outer.message === 'string' && outer.message ? outer.message : fallbackDiagnostic
-  const failure = presentRequestFailure(status, diagnostic, reason)
-  return new ApiError(status, failure.message, failure.technicalDiagnostic, reason)
-}
-
-async function readAttendedChunk(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal): Promise<ReadableStreamReadResult<Uint8Array>> {
-  if (signal.aborted) throw new DOMException('The attended tool request timed out.', 'AbortError')
-  return new Promise((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener('abort', onAbort)
-    const onAbort = () => {
-      cleanup()
-      reject(new DOMException('The attended tool request timed out.', 'AbortError'))
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    if (signal.aborted) {
-      onAbort()
-      return
-    }
-    reader.read().then(
-      value => { cleanup(); resolve(value) },
-      error => { cleanup(); reject(error) },
-    )
-  })
-}
-
-function waitForAttendedResponse(responsePromise: Promise<Response>, signal: AbortSignal): Promise<Response> {
-  if (signal.aborted) return Promise.reject(new DOMException('The attended tool request timed out.', 'AbortError'))
-  return new Promise((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener('abort', onAbort)
-    const onAbort = () => {
-      cleanup()
-      reject(new DOMException('The attended tool request timed out.', 'AbortError'))
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    if (signal.aborted) {
-      onAbort()
-      return
-    }
-    responsePromise.then(
-      response => {
-        cleanup()
-        if (signal.aborted) {
-          if (response.body) void response.body.cancel().catch(() => undefined)
-          reject(new DOMException('The attended tool request timed out.', 'AbortError'))
-          return
-        }
-        resolve(response)
-      },
-      error => { cleanup(); reject(error) },
-    )
-  })
-}
-
-async function readAttendedJSONBody(response: Response, signal: AbortSignal): Promise<string> {
-  const reader = response.body?.getReader()
-  if (!reader) throw invalidAttendedResponse()
-  const declaredLength = Number(response.headers.get('content-length'))
-  try {
-    if (Number.isFinite(declaredLength) && declaredLength > ATTENDED_TOOL_MAX_RESPONSE_BYTES) {
-      throw new ApiError(502, 'The Agents service returned an oversized response.')
-    }
-    const decoder = new TextDecoder()
-    let text = ''
-    let size = 0
-    for (;;) {
-      const { done, value } = await readAttendedChunk(reader, signal)
-      if (done) break
-      size += value.byteLength
-      if (size > ATTENDED_TOOL_MAX_RESPONSE_BYTES) throw new ApiError(502, 'The Agents service returned an oversized response.')
-      text += decoder.decode(value, { stream: true })
-    }
-    return text + decoder.decode()
-  } finally {
-    cancelAttendedReader(reader)
-  }
-}
-
-function cancelAttendedReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
-  try { void reader.cancel().catch(() => undefined) } catch { /* the stream may already be closed */ }
-  try { reader.releaseLock() } catch { /* a pending read will release the lock when it settles */ }
-}
-
-async function attendedHTTPFailure(response: Response, signal: AbortSignal): Promise<ApiError> {
-  let body: unknown
-  if (response.body) {
-    const text = await readAttendedJSONBody(response, signal)
-    try { body = JSON.parse(text) as unknown } catch { body = text }
-  }
-  const record = isRecord(body) ? body : {}
-  const nested = isRecord(record.error) ? record.error : record
-  const diagnostic = typeof nested.message === 'string' && nested.message ? nested.message
-    : typeof record.message === 'string' && record.message ? record.message
-      : typeof body === 'string' && body ? body : response.statusText || `HTTP ${response.status}`
-  return attendedResponseError(body, response.status, typeof nested.reason === 'string' ? nested.reason : '', diagnostic)
-}
-
-function attendedSSEFrame(buffer: string): { frame: string; consumed: number } | null {
-  const match = /\r\n\r\n|\n\n|\r\r/.exec(buffer)
-  if (!match || match.index === undefined) return null
-  return { frame: buffer.slice(0, match.index), consumed: match.index + match[0].length }
-}
-
-async function readAttendedSSEBody(response: Response, expectedID: number, signal: AbortSignal): Promise<unknown> {
-  const reader = response.body?.getReader()
-  if (!reader) throw invalidAttendedResponse()
-  const declaredLength = Number(response.headers.get('content-length'))
-  try {
-    if (Number.isFinite(declaredLength) && declaredLength > ATTENDED_TOOL_MAX_RESPONSE_BYTES) {
-      throw new ApiError(502, 'The Agents service returned an oversized response.')
-    }
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let size = 0
-    for (;;) {
-      const { done, value } = await readAttendedChunk(reader, signal)
-      if (done) break
-      size += value.byteLength
-      if (size > ATTENDED_TOOL_MAX_RESPONSE_BYTES) throw new ApiError(502, 'The Agents service returned an oversized response.')
-      buffer += decoder.decode(value, { stream: true })
-      let next: { frame: string; consumed: number } | null
-      while ((next = attendedSSEFrame(buffer)) !== null) {
-        buffer = buffer.slice(next.consumed)
-        const event = parseSSEFrame(next.frame.replace(/\r\n|\r/g, '\n'))
-        if (!event) continue
-        const candidate = typeof event.data === 'string' ? (() => {
-          try { return JSON.parse(event.data) as unknown } catch { return null }
-        })() : event.data
-        if (isRecord(candidate) && candidate.id === expectedID) return candidate
-      }
-    }
-    buffer += decoder.decode()
-    throw invalidAttendedResponse()
-  } finally {
-    cancelAttendedReader(reader)
-  }
-}
-
 export class ApiClient {
   private ctx: RailgridContext | null = null
   private nextMCPRequestID = 2
@@ -515,56 +329,21 @@ export class ApiClient {
     return new ApiError(r.status, failure.message, failure.technicalDiagnostic, reason)
   }
 
-  private async callAttendedTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
-    return (await this.callAttendedToolWithMetadata<T>(name, args)).output
+  private async callAttendedTool<T>(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    return (await this.callAttendedToolWithMetadata<T>(name, args, signal)).output
   }
 
-  private async callAttendedToolWithMetadata<T>(name: string, args: Record<string, unknown>): Promise<{ output: T; metadata?: unknown }> {
-    const id = this.nextMCPRequestID++
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), ATTENDED_TOOL_TIMEOUT_MS)
-    try {
-      const response = await waitForAttendedResponse(this.fetch(this.url('/mcp'), {
-        method: 'POST', credentials: 'same-origin',
-        headers: { ...this.headers(true), Accept: 'application/json, text/event-stream' },
-        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }),
-        signal: controller.signal,
-      }), controller.signal)
-      if (!response.ok) throw await attendedHTTPFailure(response, controller.signal)
-      let raw: unknown
-      if ((response.headers.get('content-type') || '').toLowerCase().includes('text/event-stream')) {
-        raw = await readAttendedSSEBody(response, id, controller.signal)
-      } else {
-        try { raw = JSON.parse(await readAttendedJSONBody(response, controller.signal)) as unknown } catch (error) {
-          if (error instanceof ApiError) throw error
-          throw invalidAttendedResponse()
-        }
-      }
-      const message = parseAttendedRPCMessage(raw, id)
-      if (message.error !== undefined) {
-        const error = isRecord(message.error) ? message.error : {}
-        throw attendedResponseError(error.data ?? error, 502, 'UpstreamError', typeof error.message === 'string' ? error.message : 'The Agents service could not complete the request.')
-      }
-      const result = message.result!
-      const content = Array.isArray(result.content) ? result.content : []
-      const text = content.find(item => isRecord(item) && item.type === 'text' && typeof item.text === 'string')
-      const resultText = isRecord(text) && typeof text.text === 'string' ? text.text : undefined
-      let output: unknown = result.structuredContent
-      if (output === undefined && resultText) {
-        try { output = JSON.parse(resultText) as unknown } catch { /* structured result is required below */ }
-      }
-      if (result.isError === true) throw attendedResponseError(output, 403, 'Forbidden', resultText || 'The Agents service refused the request.')
-      if (!isRecord(output)) throw new ApiError(502, 'The Agents service returned an invalid result.')
-      return { output: output as T, ...(isRecord(result._meta) ? { metadata: result._meta } : {}) }
-    } catch (error) {
-      if (controller.signal.aborted) {
-        const failure = presentRequestFailure(504, 'The attended Agents request exceeded its 30-second deadline.')
-        throw new ApiError(504, failure.message, failure.technicalDiagnostic, 'Timeout')
-      }
-      throw error
-    } finally {
-      clearTimeout(timeout)
-    }
+  private async callAttendedToolWithMetadata<T>(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ output: T; metadata?: unknown }> {
+    const requestID = this.nextMCPRequestID++
+    return callAttendedMcpTool<T>({
+      fetcher: (input, init) => this.fetch(input, init),
+      url: this.url('/mcp'),
+      headers: this.headers(true),
+      requestID,
+      name,
+      args,
+      signal,
+    })
   }
 
   // get and send take a hub-proxied path (/oauth/providers) and rewrite it
@@ -885,24 +664,27 @@ export class ApiClient {
   deleteRun = (id: string): Promise<void> => this.resources.deleteRun(id)
 
   /** Capture exact successful tool-result metadata through the attended MCP path. */
-  captureAgentArtifact = async (request: { agent: string; runID: string; sessionID: string; toolCallID: string; title?: string }): Promise<AgentArtifact> => {
-    const result = await this.callAttendedTool<{ artifact?: unknown }>('capture_agent_artifact', request)
+  captureAgentArtifact = async (request: { agent: string; runID: string; sessionID: string; toolCallID: string; title?: string }, signal?: AbortSignal): Promise<AgentArtifact> => {
+    const result = await this.callAttendedTool<{ artifact?: unknown }>('capture_agent_artifact', request, signal)
     const artifact = parseAgentArtifact(result.artifact)
     if (!artifact || artifact.agentName !== request.agent || artifact.runID !== request.runID ||
         artifact.sessionID !== request.sessionID || artifact.toolCallID !== request.toolCallID) {
       throw new ApiError(502, 'The artifact service returned a different result receipt.')
     }
+    if (!await verifyArtifactContentDigests(artifact, { requireData: false, requireInputForDigest: false })) {
+      throw new ApiError(502, 'The artifact service returned content that does not match its digest.')
+    }
     // Capture is metadata-only in the UI. Bytes and app HTML are never cached
     // from the capture response, even if an upstream version includes them.
-    const { data: _data, input: _input, providerPresentation: _presentation, ...metadata } = artifact
-    return { ...metadata, evidenceStatus: artifact.sources.length ? 'source_revalidation_required' : artifact.evidenceStatus }
+    return artifactMetadataForRevalidation(artifact)
   }
 
   /** Reopen one immutable capture with fresh source identity and access checks. */
-  getAgentArtifact = async (agent: string, artifactID: string): Promise<{ artifact: AgentArtifact }> => {
-    const { output, metadata } = await this.callAttendedToolWithMetadata<{ artifact?: unknown }>('get_agent_artifact', { agent, artifactID })
+  getAgentArtifact = async (agent: string, artifactID: string, signal?: AbortSignal): Promise<{ artifact: AgentArtifact }> => {
+    const { output, metadata } = await this.callAttendedToolWithMetadata<{ artifact?: unknown }>('get_agent_artifact', { agent, artifactID }, signal)
     let artifact = parseAgentArtifact(output.artifact)
-    if (!artifact || artifact.id !== artifactID || artifact.agentName !== agent || typeof artifact.data !== 'string') {
+    if (!artifact || artifact.id !== artifactID || artifact.agentName !== agent || typeof artifact.data !== 'string' ||
+        !await verifyArtifactContentDigests(artifact)) {
       throw new ApiError(502, 'The artifact service returned an invalid saved result.')
     }
     if (artifact.sources.length && artifact.evidenceStatus !== 'source_identity_and_access_revalidated') {
@@ -910,7 +692,7 @@ export class ApiClient {
     }
     const rootMeta = isRecord(metadata) && isRecord(metadata.railgrid) ? metadata.railgrid : undefined
     const app: AgentArtifactMcpApp | null = parseAgentArtifactMcpApp(rootMeta?.mcpApp)
-    if (app && artifact.evidenceStatus === 'source_identity_and_access_revalidated') {
+    if (app && artifact.evidenceStatus === 'source_identity_and_access_revalidated' && mcpAppIdentityMatches(app, artifact.appIdentity)) {
       artifact = { ...artifact, providerPresentation: { mcpApp: app } }
     }
     return { artifact }
@@ -1212,61 +994,4 @@ export function chatFrameFromRPC(msg: unknown): SSEEvent | null {
 function chatRefusal(status: number, diagnostic: string, reason: string): ApiError {
   const failure = presentRequestFailure(status, diagnostic, reason)
   return new ApiError(status, failure.message, failure.technicalDiagnostic, reason)
-}
-
-// readSSE turns a byte stream into parsed SSE events.
-//
-// Framing follows the spec rather than the previous implementation's
-// `split('\n\n')` + `data.trim()` concatenation: frames end on a blank line in
-// any newline flavour, and multi-line `data:` fields join with '\n' (a JSON
-// payload pretty-printed across lines would otherwise be silently corrupted).
-export async function* readSSE(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
-  const reader = body.getReader()
-  const dec = new TextDecoder()
-  let buf = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += dec.decode(value, { stream: true })
-      // Normalize CRLF / lone CR so a single split rule covers every flavour.
-      buf = buf.replace(/\r\n|\r/g, '\n')
-      let idx: number
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        const ev = parseSSEFrame(frame)
-        if (ev) yield ev
-      }
-      if (signal?.aborted) break
-    }
-  } finally {
-    reader.cancel().catch(() => undefined)
-  }
-}
-
-// parseSSEFrame parses one frame's field lines. Comment lines (": keepalive")
-// and frames without a data field yield null.
-export function parseSSEFrame(frame: string): SSEEvent | null {
-  let event = 'message'
-  let id: string | undefined
-  const dataLines: string[] = []
-  for (const line of frame.split('\n')) {
-    if (!line || line.startsWith(':')) continue
-    const colon = line.indexOf(':')
-    const field = colon === -1 ? line : line.slice(0, colon)
-    // A single leading space after the colon is part of the framing, not data.
-    let value = colon === -1 ? '' : line.slice(colon + 1)
-    if (value.startsWith(' ')) value = value.slice(1)
-    if (field === 'event') event = value
-    else if (field === 'data') dataLines.push(value)
-    else if (field === 'id') id = value
-  }
-  if (!dataLines.length) return null
-  const raw = dataLines.join('\n')
-  try {
-    return { id, event, data: JSON.parse(raw) }
-  } catch {
-    return { id, event, data: raw }
-  }
 }

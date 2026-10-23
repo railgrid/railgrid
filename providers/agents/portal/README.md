@@ -52,17 +52,34 @@ receipt is present, and source-backed bytes or app HTML are requested again
 through the attended MCP API before either view is mounted. Capture metadata is
 the only artifact state cached by the browser.
 
+Provider apps are default-deny: the attended backend supplies an independent
+provider, resource, and content pin only after its operator-reviewed allowlist
+and current resource checks pass. The portal requires that pin to match the app
+metadata and verifies the exact HTML bytes before creating the frame. A missing
+or mismatched pin leaves the authorized raw result available through the
+explicit data disclosure, but never mounts app HTML. Only enable reviewed
+providers whose apps are trusted with the full result and redacted tool input.
+
 This is a read-only host profile. It sends the recorded result text and
 redacted recorded arguments to the iframe. The host grants no tools, resource
 reads, prompts, sampling, downloads, chat messages, host navigation, or model
 context updates, and rejects requests for those capabilities. App HTML must
-match the backend-provided SHA-256 digest. The host inserts a restrictive CSP
+match the independent backend-reviewed SHA-256 pin. The host inserts a restrictive CSP
 and uses nested frames with opaque origins, scripts-only sandbox flags, no
 referrer, and no host credentials. These controls are defense in depth, not a
 claim that arbitrary HTML is harmless: a sandboxed app can still attempt to
 navigate its own frame, and a later navigated document may make network
-requests. Do not include secrets in app HTML or captured results; review the
-specific provider content and browser policy before enabling a provider app.
+requests. App HTML must therefore be treated as provider-controlled code that
+can see the complete disclosed result. Do not include secrets in app HTML or
+captured results; only enable reviewed providers and account for the residual
+own-frame navigation and network-request risk.
+
+The static sandbox proxy is currently served only from the platform Agents
+bundle path (`/ui/providers/agents`). The host context exposes the same
+`basePath` for platform and org-owned bundles, so the portal checks the actual
+Agents script URL and refuses to load the platform proxy when that URL carries
+the host's `grant` query parameter. Org-owned Agents overrides need a
+grant-aware auxiliary asset URL before MCP App frames can be enabled there.
 
 ## Layout
 

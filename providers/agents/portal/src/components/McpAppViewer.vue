@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge'
-import type { AgentArtifactMcpApp, RailgridContext } from '../types'
-import { boundedMcpAppInlineHeight, constrainMcpAppHTML, safeMcpAppToolInput, verifyMcpAppHTML } from '../mcpAppHost'
+import type { AgentArtifactAppIdentity, AgentArtifactMcpApp, RailgridContext } from '../types'
+import { boundedMcpAppInlineHeight, constrainMcpAppHTML, mcpAppProxyURL, safeMcpAppToolInput, verifyMcpAppHTML } from '../mcpAppHost'
+import { mcpAppIdentityMatches } from '../artifactIntegrity'
 import { useAgentsRuntime } from '../vue/runtime'
 
 const props = defineProps<{
   app: AgentArtifactMcpApp
+  appIdentity?: AgentArtifactAppIdentity
   resultData: string
   input?: string
   inline?: boolean
@@ -135,7 +137,9 @@ async function start(): Promise<void> {
   const frameWindow = frame.value?.contentWindow
   if (!frameWindow) return fail()
   try {
-    if (!await verifyMcpAppHTML(props.app)) return fail()
+    if (!mcpAppIdentityMatches(props.app, props.appIdentity) || !await verifyMcpAppHTML(props.app, props.appIdentity?.sha256)) return fail()
+    const proxyURL = await mcpAppProxyURL(hostElement()?.railgridContext?.basePath)
+    if (!proxyURL || tornDown) return fail()
     const instance = new AppBridge(
       null,
       { name: 'Railgrid Agents', version: '0.1.0' },
@@ -166,7 +170,7 @@ async function start(): Promise<void> {
     transport.onerror = fail
     await instance.connect(transport)
     if (tornDown) return
-    frame.value!.src = `/ui/providers/agents/mcp-app-sandbox.html?v=${props.app.sha256}`
+    frame.value!.src = proxyURL
     timeout = setTimeout(fail, 15_000)
     resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(onResizeObserved)
     if (container.value) resizeObserver?.observe(container.value)
@@ -206,7 +210,7 @@ async function teardown(): Promise<void> {
   return teardownFlight
 }
 
-watch(() => [props.app.sha256, props.resultData, props.input] as const, () => {
+watch(() => [props.app.sha256, props.appIdentity?.provider, props.appIdentity?.resourceUri, props.appIdentity?.sha256, props.resultData, props.input] as const, () => {
   if (!tornDown) fail()
 })
 

@@ -894,13 +894,23 @@ export interface AgentArtifact {
   title: string
   mediaType: string
   digest: string
+  /** SHA-256 of the exact UTF-8 bytes in `input`, when the backend supplies it. */
+  inputDigest?: string
   size: number
   sources: AgentArtifactSource[]
   evidenceStatus: string
   createdAt: string
   data?: string
   input?: string
+  /** Backend-verified provider/app pin, separate from the MCP `_meta` HTML. */
+  appIdentity?: AgentArtifactAppIdentity
   providerPresentation?: { mcpApp?: AgentArtifactMcpApp }
+}
+
+export interface AgentArtifactAppIdentity {
+  provider: string
+  resourceUri: string
+  sha256: string
 }
 
 /** Frozen UI resource returned separately in attended MCP result metadata. */

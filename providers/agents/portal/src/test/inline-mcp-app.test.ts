@@ -11,9 +11,12 @@ vi.mock('../components/McpAppViewer.vue', () => ({ default: defineComponent({ se
 let visible: Array<() => void> = []
 afterEach(() => { unmountVueApps(); vi.unstubAllGlobals(); visible = []; life.unmounts = 0 })
 const source = { label: 'Model', object: { group: 'models.test', version: 'v1', resource: 'models', name: 'sales', uid: 'model-uid' }, access: [{ group: 'models.test', version: 'v1', resource: 'models', name: 'sales', verb: 'get' }] }
-const base: AgentArtifact = { id: 'result-1', agentName: 'scout', agentUID: 'agent-uid', owner: 'alice', runID: 'run-1', sessionID: 'session-1', toolCallID: 'call-1', toolName: 'compile', title: 'SQL preview', mediaType: 'application/json', digest: 'a'.repeat(64), size: 2, sources: [source], createdAt: '2026-10-22T12:00:00Z', evidenceStatus: 'source_revalidation_required' }
-const authorized: AgentArtifact = { ...base, data: '{}', evidenceStatus: 'source_identity_and_access_revalidated', providerPresentation: { mcpApp: { resourceUri: 'ui://provider/result', mimeType: 'text/html;profile=mcp-app', html: '<html>private-app-sentinel</html>', sha256: 'b'.repeat(64) } } }
-const captureWithBytes: AgentArtifact = { ...base, data: 'captured-private-data-sentinel', input: 'captured-private-input-sentinel', evidenceStatus: 'source_identity_and_access_revalidated', providerPresentation: authorized.providerPresentation }
+const resultData = '{"result":{"samples":[{"name":"north","privateFullCapture":"must-not-render"}]}}'
+const appHTML = '<html>private-app-sentinel</html>'
+const appIdentity = { provider: 'semantic-ai', resourceUri: 'ui://railgrid-provider/semantic-ai/YmFzZTY0', sha256: '80cdd03323c1f5bc9fea0d2e54a04000d672e9fc7e9ba2f83b4ae702f38c44d9' }
+const base: AgentArtifact = { id: 'result-1', agentName: 'scout', agentUID: 'agent-uid', owner: 'alice', runID: 'run-1', sessionID: 'session-1', toolCallID: 'call-1', toolName: 'compile', title: 'SQL preview', mediaType: 'application/json', digest: '5b39df269ea6beefb91c564ddba32f2de7d0b65c07b180a3fb9c2e28d42290c0', size: new TextEncoder().encode(resultData).byteLength, sources: [source], createdAt: '2026-10-22T12:00:00Z', evidenceStatus: 'source_revalidation_required', appIdentity }
+const authorized: AgentArtifact = { ...base, data: resultData, evidenceStatus: 'source_identity_and_access_revalidated', providerPresentation: { mcpApp: { resourceUri: appIdentity.resourceUri, mimeType: 'text/html;profile=mcp-app', html: appHTML, sha256: appIdentity.sha256 } } }
+const captureWithBytes: AgentArtifact = { ...base, data: resultData, input: 'captured-private-input-sentinel', inputDigest: '812d1c609f50371ce8b1353e717dc452504c01b0e348d7515540c1acfce5c808', evidenceStatus: 'source_identity_and_access_revalidated', providerPresentation: authorized.providerPresentation }
 async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'run' | 'session' | 'tool'; capture?: AgentArtifact; citation?: SavedCaptureCitation; read?: () => Promise<{ artifact: AgentArtifact }> } = {}) {
   vi.stubGlobal('IntersectionObserver', class { constructor(callback: (entries: unknown[]) => void) { visible.push(() => callback([{ isIntersecting: true }])) } observe() {} disconnect() {} })
   const captureAgentArtifact = vi.fn(async () => options.capture || base)
@@ -26,7 +29,7 @@ async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'r
       runID: options.mismatch === 'run' ? 'run-other' : 'run-1',
       sessionID: options.mismatch === 'session' ? 'session-other' : 'session-1',
       toolCallID: options.mismatch === 'tool' ? 'call-old' : 'call-1',
-      result: '{}', sources: [source], hasMcpApp: options.hint ?? true,
+      result: resultData, sources: [source], hasMcpApp: options.hint ?? true,
     } }
     if (options.citation) {
       yield { event: 'tool_start', data: { id: 'open-call-1', name: 'open_analysis_artifact', args: '{"artifactID":"result-1"}' } }
@@ -40,12 +43,12 @@ async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'r
   ] : [] }), listRuns: async () => ({ items: [] }), chatStream, captureAgentArtifact, getAgentArtifact }) as ApiClient
   const store = makeStore(api); const agent = agentFixture('scout'); agent.metadata.uid = 'agent-uid'; store.agents.data = [agent]; store.agents.loaded = true
   const view = await mountVue(AgentChat, { store, api, name: 'scout', compact: true }); await settleVue(10)
-  if (options.history) return { view, getAgentArtifact, captureAgentArtifact, chatStream }
+  if (options.history) { await settleVue(8, 10); return { view, getAgentArtifact, captureAgentArtifact, chatStream } }
   const input = view.element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!; input.value = 'Compile sales'; input.dispatchEvent(new Event('input')); await settleVue()
   view.element.querySelector('form.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue(12)
   return { view, getAgentArtifact, captureAgentArtifact, chatStream }
 }
-async function reveal() { visible.forEach(callback => callback()); await settleVue(15) }
+async function reveal() { visible.forEach(callback => callback()); await settleVue(15, 10) }
 
 describe('inline provider app journey', () => {
   it('loads an authorized receipt, opens one full viewer beside the conversation, and rechecks on return', async () => {
@@ -54,16 +57,17 @@ describe('inline provider app journey', () => {
     expect(view.element.querySelector('.agents-body .agents-tool-citation-unavailable')).toBeNull()
     expect(view.element.querySelector('.agents-body')?.textContent).not.toContain('[[tool:')
     expect(captureAgentArtifact).not.toHaveBeenCalled(); await reveal()
-    expect(captureAgentArtifact).toHaveBeenCalledExactlyOnceWith({ agent: 'scout', runID: 'run-1', sessionID: 'session-1', toolCallID: 'call-1', title: 'Compile' })
-    expect(getAgentArtifact).toHaveBeenCalledExactlyOnceWith('scout', 'result-1')
+    expect(captureAgentArtifact).toHaveBeenCalledExactlyOnceWith({ agent: 'scout', runID: 'run-1', sessionID: 'session-1', toolCallID: 'call-1', title: 'Compile' }, expect.any(AbortSignal))
+    expect(getAgentArtifact).toHaveBeenCalledExactlyOnceWith('scout', 'result-1', expect.any(AbortSignal))
     expect(view.element.querySelector('.agents-log [data-live-mcp-viewer]')).not.toBeNull()
     expect(view.element.querySelector('.agents-artifact-panel')).toBeNull()
     expect(view.element.querySelector<HTMLFormElement>('.agents-composer')!.style.display).not.toBe('none')
     expect(view.element.querySelector('.agents-inline-app')?.textContent).toContain('Provider')
     const expand = view.element.querySelector<HTMLButtonElement>('.agents-inline-app__open[aria-label="Expand result"]')!
-    expand.click(); await settleVue(15)
+    expand.click(); await settleVue()
     const panel = view.element.querySelector<HTMLElement>('[role="region"][aria-label="Result details"]')!
     expect(panel).not.toBeNull()
+    await vi.waitFor(() => expect(panel.hasAttribute('aria-busy')).toBe(false))
     expect(panel.querySelector('h2')?.textContent).toBe('Result details')
     expect(view.element.querySelector('.agents-inline-app__placeholder')?.textContent).toContain('Result open in details')
     expect(panel.querySelector('.agents-artifact-panel__data summary')?.textContent).toContain('View captured data')
@@ -71,10 +75,10 @@ describe('inline provider app journey', () => {
     expect(panel.textContent).not.toContain('Access checked')
     expect(view.element.querySelectorAll('[data-live-mcp-viewer]')).toHaveLength(1)
     expect(view.element.querySelector<HTMLFormElement>('.agents-composer')).not.toBeNull()
-    panel.querySelector<HTMLElement>('.agents-artifact-panel__data summary')!.click(); await settleVue(8)
-    expect(panel.querySelector('.agents-artifact-panel__data pre')?.textContent).toBe('{}')
+    panel.querySelector<HTMLElement>('.agents-artifact-panel__data summary')!.click(); await settleVue(8, 10)
+    expect(panel.querySelector('.agents-artifact-panel__data pre')?.textContent).toBe(resultData)
     expect(panel.querySelector<HTMLDetailsElement>('.agents-artifact-panel__evidence')?.open).toBe(false)
-    panel.querySelector<HTMLButtonElement>('[aria-label="Back to conversation"]')!.click(); await settleVue(15)
+    panel.querySelector<HTMLButtonElement>('[aria-label="Back to conversation"]')!.click(); await settleVue(15, 10)
     // A newly mounted lazy card gets a fresh observer; simulate it intersecting again.
     await reveal()
     expect(view.element.querySelector('.agents-artifact-panel')).toBeNull()
@@ -83,6 +87,20 @@ describe('inline provider app journey', () => {
     expect(view.element.querySelectorAll('[data-live-mcp-viewer]')).toHaveLength(1)
     expect(chatStream).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(chatStream.mock.calls)).not.toContain('private-app-sentinel')
+  })
+  it('keeps raw data available but never mounts unpinned provider HTML', async () => {
+    const { view } = await setup({ read: async () => ({ artifact: { ...authorized, appIdentity: undefined } }) })
+    await reveal()
+    expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).toBeNull()
+    expect(view.element.querySelector('.agents-inline-app__state')?.textContent).toContain('no available app view')
+    expect(view.element.querySelector<HTMLFormElement>('.agents-composer')).not.toBeNull()
+  })
+  it('does not expose bytes when the reopened result digest is corrupt', async () => {
+    const { view } = await setup({ read: async () => ({ artifact: { ...authorized, data: 'altered result bytes' } }) })
+    await reveal()
+    expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).toBeNull()
+    expect(view.element.querySelector<HTMLFormElement>('.agents-composer')).not.toBeNull()
+    expect(view.element.textContent).not.toContain('altered result bytes')
   })
   it('keeps capture bytes and app HTML hidden when source access is revoked before opening details', async () => {
     let reads = 0
@@ -110,7 +128,7 @@ describe('inline provider app journey', () => {
     expect(panel.textContent).not.toContain('captured-private-input-sentinel')
     expect(view.element.querySelector<HTMLFormElement>('.agents-composer')).not.toBeNull()
     rejectRevokedRead(new Error('source access revoked'))
-    await settleVue(15)
+    await settleVue(15, 10)
     expect(panel.textContent).toContain('Result bytes stay hidden')
     expect(panel.querySelector('[data-live-mcp-viewer]')).toBeNull()
     expect(panel.textContent).not.toContain('private-app-sentinel')
@@ -126,10 +144,7 @@ describe('inline provider app journey', () => {
       digest: base.digest,
       selection: { rowIndices: [0], fields: ['name'] },
     }
-    const selectionArtifact: AgentArtifact = {
-      ...authorized,
-      data: '{"result":{"samples":[{"name":"north","privateFullCapture":"must-not-render"}]}}',
-    }
+    const selectionArtifact: AgentArtifact = { ...authorized }
     const { view, getAgentArtifact } = await setup({
       citation: selection,
       read: async () => ({ artifact: selectionArtifact }),
@@ -137,7 +152,7 @@ describe('inline provider app journey', () => {
     await reveal()
     expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull()
     view.element.querySelector<HTMLButtonElement>('[data-agent-saved-capture-citation="open-call-1"]')!.click()
-    await settleVue(15)
+    await settleVue(15, 10)
 
     const panel = view.element.querySelector<HTMLElement>('[role="region"][aria-label="Result details"]')!
     expect(getAgentArtifact).toHaveBeenCalledTimes(2)
@@ -169,7 +184,7 @@ describe('inline provider app journey', () => {
     expect(view.element.querySelector('.agents-inline-app')).toBeNull(); expect(captureAgentArtifact).not.toHaveBeenCalled()
     const citation = view.element.querySelector<HTMLButtonElement>('.agents-body [data-agent-tool-citation]')!
     expect(citation.textContent).toContain('Source')
-    citation.click(); await settleVue(15)
+    citation.click(); await settleVue(15, 10)
     expect(captureAgentArtifact).toHaveBeenCalledOnce()
     const panel = view.element.querySelector('.agents-artifact-panel')!
     expect(panel).not.toBeNull()
@@ -187,7 +202,7 @@ describe('inline provider app journey', () => {
   it('restores the app from history without another model turn', async () => {
     const { view, chatStream, getAgentArtifact } = await setup({ history: true }); await reveal()
     expect(view.element.querySelector('.agents-log [data-live-mcp-viewer]')).not.toBeNull()
-    expect(getAgentArtifact).toHaveBeenCalledExactlyOnceWith('scout', 'result-1')
+    expect(getAgentArtifact).toHaveBeenCalledExactlyOnceWith('scout', 'result-1', expect.any(AbortSignal))
     expect(chatStream).not.toHaveBeenCalled()
   })
   it('unmounts an open app when API authority changes', async () => {
