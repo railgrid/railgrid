@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ComponentInternalInstance, VNode } from 'vue'
 import AgentDetail from '../views/AgentDetail.vue'
 import { confirmState, resolveConfirm } from '../portalkit/confirm'
 import { agentFixture, makeStore, stubApi } from './helpers'
@@ -20,6 +21,28 @@ function stubViewport(mobile: boolean): () => void {
     })),
   })
   return () => Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia })
+}
+
+function findComponent(instance: ComponentInternalInstance | null, name: string): ComponentInternalInstance | null {
+  if (!instance) return null
+  if ((instance.type as { __name?: string }).__name === name) return instance
+  const visit = (node: VNode | null | undefined): ComponentInternalInstance | null => {
+    if (!node) return null
+    if (node.component) {
+      const found = findComponent(node.component, name)
+      if (found) return found
+    }
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        if (child && typeof child === 'object' && 'type' in child) {
+          const found = visit(child as VNode)
+          if (found) return found
+        }
+      }
+    }
+    return null
+  }
+  return visit(instance.subTree)
 }
 
 describe('agent resource detail conformance', () => {
@@ -138,6 +161,46 @@ describe('agent resource detail conformance', () => {
 
       back.click()
       expect(mounted.navigations.at(-1)).toEqual({ kind: 'menu', menu: 'agents' })
+    } finally {
+      restoreViewport()
+    }
+  })
+
+  it('suspends the default workbench for result inspection and restores only when the user leaves it alone', async () => {
+    const restoreViewport = stubViewport(false)
+    try {
+      const api = stubApi()
+      const store = makeStore(api)
+      store.agents.data = [agentFixture('scout')]
+      Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+      const mounted = await mountVue(AgentDetail, { store, api, name: 'scout', tab: 'chat', authorityEpoch: 1 })
+      const workspace = mounted.element.querySelector<HTMLElement>('[data-k-ai-workspace-workbench]')!
+      const toggle = mounted.element.querySelector<HTMLButtonElement>('[data-agent-workbench-toggle]')!
+      const root = (mounted.app as unknown as { _instance: ComponentInternalInstance })._instance
+      const chat = findComponent(root, 'AgentChat')
+      expect(chat).not.toBeNull()
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(workspace.getAttribute('aria-hidden')).toBeNull()
+
+      chat!.emit('inspection-open', true)
+      await settleVue()
+      expect(toggle.getAttribute('aria-label')).toBe('Show workbench')
+      expect(workspace.getAttribute('aria-hidden')).toBe('true')
+      chat!.emit('inspection-open', false)
+      await settleVue()
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(workspace.getAttribute('aria-hidden')).toBeNull()
+
+      chat!.emit('inspection-open', true)
+      await settleVue()
+      toggle.click()
+      await settleVue()
+      expect(workspace.getAttribute('aria-hidden')).toBeNull()
+      chat!.emit('inspection-open', false)
+      await settleVue()
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(workspace.getAttribute('aria-hidden')).toBeNull()
+      mounted.unmount()
     } finally {
       restoreViewport()
     }

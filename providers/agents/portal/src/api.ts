@@ -46,6 +46,8 @@
 // X-Railgrid-Workspace headers still ride on the few hub-proxied calls.
 
 import type {
+  AgentArtifact,
+  AgentArtifactMcpApp,
   Agent,
   AgentCreate,
   AgentPatch,
@@ -94,15 +96,19 @@ import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
 import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS } from './resources'
 import { presentRequestFailure } from './request-errors'
+import { parseAgentArtifact, parseAgentArtifactMcpApp } from './agentArtifacts'
+import { artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from './artifactIntegrity'
+import { ApiError } from './api-error'
+import { callAttendedMcpTool, readSSE, type SSEEvent } from './attendedMcp'
 
 export type { Tenant }
 export { ResourceError } from './resources'
+export { ApiError } from './api-error'
+export { parseSSEFrame, readSSE } from './attendedMcp'
+export type { SSEEvent } from './attendedMcp'
 
-// SSEEvent is one parsed frame from any of the provider's event streams.
-export interface SSEEvent<T = unknown> {
-  id?: string
-  event: string
-  data: T
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 export interface MessagePage {
@@ -144,21 +150,9 @@ export interface ContextAuthority {
 
 // ApiError carries the HTTP status alongside the message so callers can tell a
 // 404 (agent gone) from a 502 (upstream) without string-matching.
-export class ApiError extends Error {
-  readonly status: number
-  readonly technicalDiagnostic: string
-  readonly reason: string
-  constructor(status: number, message: string, technicalDiagnostic = '', reason = '') {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.technicalDiagnostic = technicalDiagnostic
-    this.reason = reason
-  }
-}
-
 export class ApiClient {
   private ctx: RailgridContext | null = null
+  private nextMCPRequestID = 2
   // The kcp half. It is handed the same context so a workspace switch moves
   // both halves at once.
   private readonly resources = new Resources()
@@ -333,6 +327,23 @@ export class ApiClient {
     const reason = body?.error?.reason || body?.reason || ''
     const failure = presentRequestFailure(r.status, diagnostic, reason)
     return new ApiError(r.status, failure.message, failure.technicalDiagnostic, reason)
+  }
+
+  private async callAttendedTool<T>(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    return (await this.callAttendedToolWithMetadata<T>(name, args, signal)).output
+  }
+
+  private async callAttendedToolWithMetadata<T>(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ output: T; metadata?: unknown }> {
+    const requestID = this.nextMCPRequestID++
+    return callAttendedMcpTool<T>({
+      fetcher: (input, init) => this.fetch(input, init),
+      url: this.url('/mcp'),
+      headers: this.headers(true),
+      requestID,
+      name,
+      args,
+      signal,
+    })
   }
 
   // get and send take a hub-proxied path (/oauth/providers) and rewrite it
@@ -652,6 +663,41 @@ export class ApiClient {
 
   deleteRun = (id: string): Promise<void> => this.resources.deleteRun(id)
 
+  /** Capture exact successful tool-result metadata through the attended MCP path. */
+  captureAgentArtifact = async (request: { agent: string; runID: string; sessionID: string; toolCallID: string; title?: string }, signal?: AbortSignal): Promise<AgentArtifact> => {
+    const result = await this.callAttendedTool<{ artifact?: unknown }>('capture_agent_artifact', request, signal)
+    const artifact = parseAgentArtifact(result.artifact)
+    if (!artifact || artifact.agentName !== request.agent || artifact.runID !== request.runID ||
+        artifact.sessionID !== request.sessionID || artifact.toolCallID !== request.toolCallID) {
+      throw new ApiError(502, 'The artifact service returned a different result receipt.')
+    }
+    if (!await verifyArtifactContentDigests(artifact, { requireData: false, requireInputForDigest: false })) {
+      throw new ApiError(502, 'The artifact service returned content that does not match its digest.')
+    }
+    // Capture is metadata-only in the UI. Bytes and app HTML are never cached
+    // from the capture response, even if an upstream version includes them.
+    return artifactMetadataForRevalidation(artifact)
+  }
+
+  /** Reopen one immutable capture with fresh source identity and access checks. */
+  getAgentArtifact = async (agent: string, artifactID: string, signal?: AbortSignal): Promise<{ artifact: AgentArtifact }> => {
+    const { output, metadata } = await this.callAttendedToolWithMetadata<{ artifact?: unknown }>('get_agent_artifact', { agent, artifactID }, signal)
+    let artifact = parseAgentArtifact(output.artifact)
+    if (!artifact || artifact.id !== artifactID || artifact.agentName !== agent || typeof artifact.data !== 'string' ||
+        !await verifyArtifactContentDigests(artifact)) {
+      throw new ApiError(502, 'The artifact service returned an invalid saved result.')
+    }
+    if (artifact.sources.length && artifact.evidenceStatus !== 'source_identity_and_access_revalidated') {
+      throw new ApiError(403, 'Current access to this result could not be verified.')
+    }
+    const rootMeta = isRecord(metadata) && isRecord(metadata.railgrid) ? metadata.railgrid : undefined
+    const app: AgentArtifactMcpApp | null = parseAgentArtifactMcpApp(rootMeta?.mcpApp)
+    if (app && artifact.evidenceStatus === 'source_identity_and_access_revalidated' && mcpAppIdentityMatches(app, artifact.appIdentity)) {
+      artifact = { ...artifact, providerPresentation: { mcpApp: app } }
+    }
+    return { artifact }
+  }
+
   // ---- streams -------------------------------------------------------------
 
   // chatStream sends one conversation turn and yields the chat events as they
@@ -948,61 +994,4 @@ export function chatFrameFromRPC(msg: unknown): SSEEvent | null {
 function chatRefusal(status: number, diagnostic: string, reason: string): ApiError {
   const failure = presentRequestFailure(status, diagnostic, reason)
   return new ApiError(status, failure.message, failure.technicalDiagnostic, reason)
-}
-
-// readSSE turns a byte stream into parsed SSE events.
-//
-// Framing follows the spec rather than the previous implementation's
-// `split('\n\n')` + `data.trim()` concatenation: frames end on a blank line in
-// any newline flavour, and multi-line `data:` fields join with '\n' (a JSON
-// payload pretty-printed across lines would otherwise be silently corrupted).
-export async function* readSSE(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
-  const reader = body.getReader()
-  const dec = new TextDecoder()
-  let buf = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += dec.decode(value, { stream: true })
-      // Normalize CRLF / lone CR so a single split rule covers every flavour.
-      buf = buf.replace(/\r\n|\r/g, '\n')
-      let idx: number
-      while ((idx = buf.indexOf('\n\n')) !== -1) {
-        const frame = buf.slice(0, idx)
-        buf = buf.slice(idx + 2)
-        const ev = parseSSEFrame(frame)
-        if (ev) yield ev
-      }
-      if (signal?.aborted) break
-    }
-  } finally {
-    reader.cancel().catch(() => undefined)
-  }
-}
-
-// parseSSEFrame parses one frame's field lines. Comment lines (": keepalive")
-// and frames without a data field yield null.
-export function parseSSEFrame(frame: string): SSEEvent | null {
-  let event = 'message'
-  let id: string | undefined
-  const dataLines: string[] = []
-  for (const line of frame.split('\n')) {
-    if (!line || line.startsWith(':')) continue
-    const colon = line.indexOf(':')
-    const field = colon === -1 ? line : line.slice(0, colon)
-    // A single leading space after the colon is part of the framing, not data.
-    let value = colon === -1 ? '' : line.slice(colon + 1)
-    if (value.startsWith(' ')) value = value.slice(1)
-    if (field === 'event') event = value
-    else if (field === 'data') dataLines.push(value)
-    else if (field === 'id') id = value
-  }
-  if (!dataLines.length) return null
-  const raw = dataLines.join('\n')
-  try {
-    return { id, event, data: JSON.parse(raw) }
-  } catch {
-    return { id, event, data: raw }
-  }
 }

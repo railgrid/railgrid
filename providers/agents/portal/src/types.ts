@@ -185,7 +185,7 @@ export interface AgentBackendStatus {
 }
 
 export interface Agent {
-  metadata: { name: string; generation?: number }
+  metadata: { name: string; uid?: string; generation?: number }
   spec: {
     displayName?: string
     description?: string
@@ -760,6 +760,14 @@ export interface ToolCall {
   result?: string
   error?: string
   durationMS?: number
+  /** Exact MCP receipt identity for one readable saved result. */
+  toolCallID?: string
+  /** Backend-attested source references for citation and reauthorization. */
+  sources?: AgentArtifactSource[]
+  /** True only when the tool advertised a validated MCP App resource. */
+  hasMcpApp?: boolean
+  /** Server-attested citation returned by open_analysis_artifact. */
+  savedCapture?: SavedCaptureCitation
   // pending until the matching tool_end arrives.
   pending: boolean
 }
@@ -864,8 +872,80 @@ export interface TranscriptMessage {
     turnError?: string
     /** Structured history row with no user-visible assistant prose. */
     modelOnly?: boolean
+    toolCallID?: string
+    sources?: AgentArtifactSource[]
+    hasMcpApp?: boolean
+    savedCapture?: SavedCaptureCitation
   }
   createdAt?: string
+}
+
+/** Owner-visible capture metadata. Source-bound bytes are returned only by an
+ * attended MCP read that rechecks current access. */
+export interface AgentArtifact {
+  id: string
+  agentName: string
+  agentUID: string
+  owner: string
+  runID: string
+  sessionID: string
+  toolCallID: string
+  toolName: string
+  title: string
+  mediaType: string
+  digest: string
+  /** SHA-256 of the exact UTF-8 bytes in `input`, when the backend supplies it. */
+  inputDigest?: string
+  size: number
+  sources: AgentArtifactSource[]
+  evidenceStatus: string
+  createdAt: string
+  data?: string
+  input?: string
+  /** Backend-verified provider/app pin, separate from the MCP `_meta` HTML. */
+  appIdentity?: AgentArtifactAppIdentity
+  providerPresentation?: { mcpApp?: AgentArtifactMcpApp }
+}
+
+export interface AgentArtifactAppIdentity {
+  provider: string
+  resourceUri: string
+  sha256: string
+}
+
+/** Frozen UI resource returned separately in attended MCP result metadata. */
+export interface AgentArtifactMcpApp {
+  resourceUri: string
+  mimeType: 'text/html;profile=mcp-app'
+  html: string
+  sha256: string
+}
+
+export interface AgentArtifactSource {
+  label?: string
+  object: {
+    group?: string
+    version: string
+    resource: string
+    namespace?: string
+    name: string
+    uid: string
+  }
+  access: Array<{
+    group?: string
+    version: string
+    resource: string
+    subresource?: string
+    namespace?: string
+    name?: string
+    verb: string
+  }>
+}
+
+export interface SavedCaptureCitation {
+  artifactID: string
+  digest: string
+  selection?: { rowIndices: number[]; fields: string[] }
 }
 
 // SessionMeta mirrors the backend store.Session summary for the session picker.
