@@ -51,6 +51,7 @@ import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, tenantHeaders } from './portalkit/tenant'
 import { createKubeClient, isKubeNotFound, kubeVerbPath, type KubeObject, type KubeResourceRef } from './portalkit/kube'
+import { RequestTimeoutError, withRequestTimeout } from './requestTimeout'
 import * as llmRegistry from './llmRegistry'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 import {
@@ -266,28 +267,26 @@ export interface ProjectAssistantThreadItemPage {
 export async function request<T>(ctx: RailgridContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ json: body !== undefined })
   Object.assign(headers, options.headers)
-  const controller = options.timeoutMS ? new AbortController() : null
-  let timedOut = false
-  const timeout = controller ? window.setTimeout(() => {
-    timedOut = true
-    controller.abort()
-  }, options.timeoutMS) : undefined
   let res: Response
   let text: string
   try {
-    res = await providerFetch(ctx)(path, {
-      method,
-      credentials: 'same-origin',
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: controller?.signal,
+    const result = await withRequestTimeout(options.timeoutMS, async (signal) => {
+      const response = await providerFetch(ctx)(path, {
+        method,
+        credentials: 'same-origin',
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
+      })
+      return { response, text: await response.text() }
     })
-    text = await res.text()
+    res = result.response
+    text = result.text
   } catch (error) {
-    if (timedOut) throw new ProjectAPIRequestError(options.timeoutMessage || 'request timed out', 408)
+    if (error instanceof RequestTimeoutError) {
+      throw new ProjectAPIRequestError(options.timeoutMessage || 'request timed out', 408)
+    }
     throw error
-  } finally {
-    if (timeout !== undefined) window.clearTimeout(timeout)
   }
   if (!res.ok) {
     const fallback = text || res.statusText
@@ -1311,13 +1310,17 @@ export const api = {
     return llmRegistry.setDefaultLLMModel(ctx, modelID)
   },
 
-  async getProject(ctx: RailgridContext | null, name: string): Promise<Project> {
-    return request<Project>(ctx, 'GET', `${projectURL(ctx, name, 'view')}`)
+  async getProject(
+    ctx: RailgridContext | null,
+    name: string,
+    options: { timeoutMS?: number; timeoutMessage?: string } = {},
+  ): Promise<Project> {
+    return request<Project>(ctx, 'GET', `${projectURL(ctx, name, 'view')}`, undefined, options)
   },
 
-  async getProjectThumbnail(ctx: RailgridContext | null, name: string, revision = ''): Promise<Blob> {
+  async getProjectThumbnail(ctx: RailgridContext | null, name: string, revision = '', signal?: AbortSignal): Promise<Blob> {
     const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : ''
-    return requestBlob(ctx, `${projectURL(ctx, name, 'thumbnail')}${suffix}`)
+    return requestBlob(ctx, `${projectURL(ctx, name, 'thumbnail')}${suffix}`, signal)
   },
 
   async listProjectIntegrations(ctx: RailgridContext | null, name: string): Promise<ProjectIntegrationsResponse> {

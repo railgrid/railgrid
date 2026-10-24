@@ -196,12 +196,13 @@ func projectWithLiveBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	return next
 }
 
-// projectWithLiveRuntimeBindingStatus refreshes owned runtime resources for
-// assistant startup. Optional integrations retain the controller's status
-// mirror: their prompt inventory comes from spec, and their invocation paths
-// perform fresh scoped reads and authorization. Reading every reference here
-// adds client throttling and cannot observe groups outside our export claims.
-// This projection is never an authorization decision.
+// projectWithLiveRuntimeBindingStatus refreshes App Studio-owned runtime
+// resources in live environments. Optional integrations retain the
+// controller's status mirror: their prompt inventory comes from spec, and
+// their invocation paths perform fresh scoped reads and authorization.
+// Reading every reference here adds client throttling and cannot observe
+// groups outside our export claims. This projection is never an authorization
+// decision.
 func projectWithLiveRuntimeBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) *aiv1alpha1.Project {
 	if c == nil || p == nil {
 		return p
