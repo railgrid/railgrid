@@ -113,10 +113,11 @@ const isAppStudioLandingRoute = computed(() =>
   ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE].includes(providerRoutePath.value),
 )
 const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-studio' && !isAppStudioLandingRoute.value)
+// Full bleed hides the host identity/readiness header and content padding;
+// providers own in-view identity while host readiness and access still gate mounting.
 const isFullBleedProvider = computed(() =>
-  (props.providerName === 'app-studio' &&
-    (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true)) ||
-  (props.providerName === 'agents' && providerFullBleedOverride.value === true),
+  isAppStudioWorkspaceRoute.value ||
+  (providerFullBleedOverride.value === true && accessAllowed.value),
 )
 
 const isBuiltinProvider = computed(() => {
@@ -307,6 +308,7 @@ function clearMountedElement() {
   pageResource.clear(resourceSource)
   routeFocus.clear()
   mountGeneration++
+  providerFullBleedOverride.value = null
   boundMount?.removeEventListener('railgrid-route-ready', onRouteReady)
   boundMount?.removeEventListener('railgrid-navigate', onNavigate)
   boundMount?.removeEventListener('railgrid-layout-change', onLayoutChange)
@@ -326,12 +328,14 @@ function clearMountedElement() {
 function mountElement(name: string, generation?: number): boolean {
   const currentGeneration = generation ?? ++mountGeneration
   if (!mountRef.value || !isCurrentMount(currentGeneration, name)) return false
+  providerFullBleedOverride.value = null
+  elementRef.value = null
   mountRef.value.replaceChildren()
   const el = document.createElement(tagFor(name)) as HTMLElement
-  mountRef.value.appendChild(el)
   elementRef.value = el
-  routeFocus.before(el, props.subPath || '')
   bindMountEvents()
+  mountRef.value.appendChild(el)
+  routeFocus.before(el, props.subPath || '')
   pushContext()
   return true
 }
@@ -486,7 +490,13 @@ function onNavigate(e: Event) {
 }
 
 function onLayoutChange(e: Event) {
-  if (props.providerName !== 'app-studio' && props.providerName !== 'agents') return
+  const element = elementRef.value
+  if (!element || e.target !== element) {
+    if (import.meta.env.DEV) {
+      console.warn('[railgrid] ignored railgrid-layout-change; dispatch it from the provider custom element root.')
+    }
+    return
+  }
   const fullBleed = (e as CustomEvent<{ fullBleed?: unknown }>).detail?.fullBleed
   if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
 }
