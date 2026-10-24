@@ -153,6 +153,35 @@ The provider's own MCP handler — e.g.
 [`providers/infrastructure/mcpserver/server.go`](https://github.com/railgrid/railgrid/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
 streamable-HTTP MCP server built fresh per request.
 
+### MCP Apps resources
+
+A federated tool may advertise a standard `_meta.ui.resourceUri` referencing a
+`ui://` resource. The aggregate namespaces that identifier under its provider
+and registers `resources/read` only for UI resources declared by model-visible
+tools in the current caller's provider set. It forwards reads through the same
+authenticated tenant-scoped provider client; the identifier is never treated as
+an HTTP destination. This phase supports read-only result apps only: app-only tools and their
+exclusive resources are deliberately unavailable to all callers, not merely
+hidden from the model. Hosts do not grant app tool calls. Supporting those
+calls requires a separate app-authorized dispatch path; do not route them
+through model-callable tools.
+
+Federation currently uses independent stateless POSTs. App linkage must be
+advertised declaratively by `tools/list`; providers requiring session-negotiated
+UI capabilities are unsupported. Instruction-fetch `initialize` does not
+advertise an unrelated UI capability or establish a reusable provider session.
+
+Reads require exactly one matching `text/html;profile=mcp-app` resource, bounded
+to 1 MiB. Resource metadata is limited to an 8 KiB standard `ui` namespace. Transport
+responses have a separate bound allowing worst-case JSON escaping plus framing,
+and use the tool-call deadline rather than the discovery deadline. Each aggregate
+HTTP handler allows at most four concurrent app-resource fetches across its
+requests; waiting for capacity consumes that same deadline and honors caller
+cancellation. Resources and result payloads are never cached by this limiter. Tool
+result forwarding preserves JSON number spellings. This is resource transport,
+not a browser host: sandboxing, supported capabilities, and app trust decisions
+remain the consuming application's responsibility.
+
 ## Capability discovery: `railgrid://providers/capabilities`
 
 `tools/list` answers *"what can I call right now"*. It does not answer *"what
