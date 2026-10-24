@@ -173,6 +173,12 @@ func (s *Server) projectViewWithThumbnail(ctx context.Context, view ProjectView,
 	return view
 }
 
+// scheduleProjectThumbnailCapture reports whether the caller should keep the
+// thumbnail refresh visible as pending. A true result means the matching
+// capture is queued or running, or is still cooling down after a failure. If
+// the bounded queue is full, the request is dropped and true asks the caller
+// to retry scheduling on a later project view; false means the request lacked
+// the identity or commit data required to schedule it.
 func (s *Server) scheduleProjectThumbnailCapture(id identity, project *aiv1alpha1.Project, commit projectThumbnailCommit, sourceRevision uint64) bool {
 	if s == nil || project == nil || strings.TrimSpace(commit.SHA) == "" || commit.CreatedAt.IsZero() || strings.TrimSpace(commit.Order) == "" || sourceRevision == 0 {
 		return false
@@ -406,7 +412,7 @@ func projectThumbnailFailureSummary(err error) string {
 	case errors.Is(err, errProjectAssistantRunSandboxConflict):
 		return "workspace or preview source is not current"
 	default:
-		return "capture failed; details are available at debug verbosity"
+		return fmt.Sprintf("capture failed (%T); details are available at debug verbosity", err)
 	}
 }
 

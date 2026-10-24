@@ -138,7 +138,7 @@ test('skips a thumbnail revision that is already committed for the project', asy
   })
 
   assert.equal(thumbnailRequests, 0)
-  assert.equal(result.shouldRetry, false)
+  assert.deepEqual(result.retryNames, [])
 })
 
 test('a timed-out view releases its worker and reports a retryable failure', async () => {
@@ -162,10 +162,10 @@ test('a timed-out view releases its worker and reports a retryable failure', asy
 
   assert.deepEqual(requests, ['slow', 'healthy'])
   assert.equal(result.projects[1].thumbnail.revision, 'healthy-digest')
-  assert.equal(result.shouldRetry, true)
+  assert.deepEqual(result.retryNames, ['slow'])
 })
 
-test('request timeout aborts the mocked transport signal', async () => {
+test('shared request timeout aborts the mocked thumbnail transport signal', async () => {
   const { RequestTimeoutError, withRequestTimeout } = await loadRequestTimeoutModule()
   let observedSignal
   const mockedFetch = (_input, init) => new Promise((resolve, reject) => {
@@ -202,7 +202,124 @@ test('keeps a fast blob failure in retry bookkeeping while another view is still
   await blobFailed
   stalled.resolve(project('slow-view'))
   const result = await hydration
-  assert.equal(result.shouldRetry, true)
+  assert.deepEqual(result.retryNames, ['broken-image'])
+})
+
+test('retry selection excludes healthy cards and reconciles recovery, deletion, and replacement', async () => {
+  const { hydrateProjectThumbnailGallery, selectProjectThumbnailRetryTargets } = await loadHydrationModule()
+  const listed = [
+    project('healthy'),
+    project('retrying'),
+    project('recovered'),
+    project('replaced', { uid: 'replacement-uid' }),
+    project('new'),
+  ]
+  const retryNames = new Set(['retrying', 'recovered', 'deleted'])
+  const knownUIDs = new Map([
+    ['healthy', 'healthy-uid'],
+    ['retrying', 'retrying-uid'],
+    ['recovered', 'recovered-uid'],
+    ['deleted', 'deleted-uid'],
+    ['replaced', 'old-uid'],
+  ])
+
+  const selection = selectProjectThumbnailRetryTargets(listed, retryNames, knownUIDs, true)
+  assert.deepEqual([...selection.targetNames], ['retrying', 'recovered', 'replaced', 'new'])
+  assert.deepEqual(selection.deletedNames, ['deleted'])
+  assert.deepEqual(selection.replacedNames, ['replaced'])
+  assert.equal(selection.targetNames.has('healthy'), false)
+
+  const recovered = await hydrateProjectThumbnailGallery(
+    listed.filter((item) => selection.targetNames.has(item.name)),
+    {
+      getProjectView: async (name) => {
+        const listedProject = listed.find((item) => item.name === name)
+        return project(name, {
+          uid: listedProject.uid,
+          thumbnail: { available: true, revision: `${name}-digest` },
+        })
+      },
+      getThumbnail: async () => new Blob(['recovered thumbnail']),
+      onPublish: () => {},
+    },
+  )
+  assert.deepEqual(recovered.retryNames, [])
+
+  for (const name of selection.deletedNames) knownUIDs.delete(name)
+  for (const item of listed) knownUIDs.set(item.name, item.uid)
+  const nextRetry = selectProjectThumbnailRetryTargets(listed, new Set(recovered.retryNames), knownUIDs, true)
+  assert.deepEqual([...nextRetry.targetNames], [])
+  assert.deepEqual(nextRetry.deletedNames, [])
+})
+
+test('full gallery hydration selects every project regardless of retry state', async () => {
+  const { selectProjectThumbnailRetryTargets } = await loadHydrationModule()
+  const projects = [project('healthy'), project('failed')]
+  const selection = selectProjectThumbnailRetryTargets(
+    projects,
+    new Set(['failed']),
+    new Map(projects.map((item) => [item.name, item.uid])),
+    false,
+  )
+
+  assert.deepEqual([...selection.targetNames], ['healthy', 'failed'])
+})
+
+test('a view identity mismatch remains retryable without fetching or publishing bytes', async () => {
+  const { hydrateProjectThumbnailGallery } = await loadHydrationModule()
+  const listed = project('demo')
+  let thumbnailRequests = 0
+  const result = await hydrateProjectThumbnailGallery([listed], {
+    getProjectView: async () => project('demo', {
+      uid: 'replacement-uid',
+      thumbnail: { available: true, revision: 'replacement-digest' },
+    }),
+    getThumbnail: async () => {
+      thumbnailRequests += 1
+      return new Blob(['must not fetch'])
+    },
+    onPublish: () => assert.fail('a mismatched identity must not publish'),
+  })
+
+  assert.deepEqual(result.retryNames, ['demo'])
+  assert.equal(thumbnailRequests, 0)
+})
+
+test('refreshing metadata preserves the current image until a ready revision arrives', async () => {
+  const { hydrateProjectThumbnailGallery } = await loadHydrationModule()
+  const imageURLs = { healthy: 'blob:healthy', refreshing: 'blob:previous' }
+  let thumbnailRequests = 0
+  const refreshing = await hydrateProjectThumbnailGallery([project('refreshing')], {
+    getProjectView: async () => project('refreshing', {
+      thumbnail: { available: true, refreshing: true, revision: 'previous-digest' },
+    }),
+    shouldLoad: () => false,
+    getThumbnail: async () => {
+      thumbnailRequests += 1
+      return new Blob(['unexpected replacement'])
+    },
+    onPublish: () => assert.fail('the cached revision must not be republished'),
+  })
+
+  assert.deepEqual(refreshing.retryNames, ['refreshing'])
+  assert.equal(thumbnailRequests, 0)
+  assert.deepEqual(imageURLs, { healthy: 'blob:healthy', refreshing: 'blob:previous' })
+
+  const ready = await hydrateProjectThumbnailGallery([project('refreshing')], {
+    getProjectView: async () => project('refreshing', {
+      thumbnail: { available: true, revision: 'ready-digest' },
+    }),
+    shouldLoad: (_item, revision) => revision !== 'previous-digest',
+    getThumbnail: async () => {
+      thumbnailRequests += 1
+      return new Blob(['ready replacement'])
+    },
+    onPublish: (_item, revision) => { imageURLs.refreshing = `blob:${revision}` },
+  })
+
+  assert.deepEqual(ready.retryNames, [])
+  assert.equal(thumbnailRequests, 1)
+  assert.deepEqual(imageURLs, { healthy: 'blob:healthy', refreshing: 'blob:ready-digest' })
 })
 
 test('does not publish a thumbnail blob after its gallery guard becomes stale', async () => {
@@ -256,20 +373,28 @@ test('the gallery obtains thumbnail metadata from per-project views before fetch
 
   assert.match(api, /async listProjects\([\s\S]*projectKubeClient\(ctx\)\.list<ProjectCR>\(projectResource\)/)
   assert.match(api, /async getProject\([\s\S]*projectURL\(ctx, name, 'view'\)/)
-  assert.match(app, /import \{ hydrateProjectThumbnailGallery \} from '\.\/projectThumbnailViews'/)
+  assert.match(app, /import \{[\s\S]*hydrateProjectThumbnailGallery,[\s\S]*selectProjectThumbnailRetryTargets,[\s\S]*\} from '\.\/projectThumbnailViews'/)
   assert.match(galleryHydration, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) return/)
-  assert.match(galleryHydration, /hydrateProjectThumbnailGallery\([\s\S]*projectList,[\s\S]*getProjectView: \(name\) => api\.getProject\(guard\.ctx, name, \{[\s\S]*timeoutMS: PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS/)
+  assert.match(galleryHydration, /hydrateProjectThumbnailGallery\([\s\S]*targetProjects,[\s\S]*getProjectView: \(name\) => api\.getProject\(guard\.ctx, name, \{[\s\S]*timeoutMS: PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS/)
   assert.match(galleryHydration, /getThumbnail: \(project, revision\) => projectThumbnailBlobRequest\(project, revision, guard\)/)
   assert.match(galleryHydration, /onPublish: \(currentProject, publishedRevision, blob\) => \{[\s\S]*URL\.createObjectURL\(blob\)/)
-  assert.match(app, /api\.getProjectThumbnail\(guard\.ctx, project\.name, revision, controller\.signal\)/)
-  assert.match(app, /controller\.abort\(\)/)
+  const blobRequestStart = app.indexOf('function projectThumbnailBlobRequest(')
+  const blobRequestEnd = app.indexOf('\nasync function refreshProjectGalleryThumbnails()', blobRequestStart)
+  const blobRequest = app.slice(blobRequestStart, blobRequestEnd)
   assert.match(api, /async getProject\([\s\S]*timeoutMS\?: number[\s\S]*request<Project>\([\s\S]*undefined, options\)/)
   assert.match(api, /async getProjectThumbnail\([\s\S]*signal\?: AbortSignal[\s\S]*requestBlob\([\s\S]*signal\)/)
+  assert.match(blobRequest, /withRequestTimeout\(\s*PROJECT_THUMBNAIL_BLOB_TIMEOUT_MS,\s*\(signal\) => api\.getProjectThumbnail\(guard\.ctx, project\.name, revision, signal\),\s*\)/)
+  assert.doesNotMatch(blobRequest, /new AbortController|setTimeout/)
   assert.match(api, /withRequestTimeout\(options\.timeoutMS, async \(signal\) => \{[\s\S]*providerFetch\(ctx\)\(path, \{[\s\S]*signal,/)
   assert.match(api, /error instanceof RequestTimeoutError/)
   assert.match(app, /PROJECT_THUMBNAIL_REFRESH_MAX_DELAY_MS = 30_000/)
   assert.match(app, /PROJECT_THUMBNAIL_REFRESH_MAX_WINDOW_MS = 5 \* 60_000/)
   assert.match(app, /hasProjectRequestTransport\(props\.ctx\)/)
   assert.match(app, /projectThumbnailProjectUIDs = new Map<string, string>\(\)/)
-  assert.match(galleryHydration, /cachedUID !== undefined && cachedUID !== uid/)
+  assert.match(galleryHydration, /selectProjectThumbnailRetryTargets\([\s\S]*projectList,[\s\S]*projectThumbnailRetryNames,[\s\S]*projectThumbnailProjectUIDs,[\s\S]*retryOnly/)
+  assert.match(galleryHydration, /for \(const name of cachedNames\)[\s\S]*if \(liveNames\.has\(name\)\) continue[\s\S]*const targetProjects = retryOnly[\s\S]*projectList\.filter\(\(project\) => targetNames\.has\(project\.name\)\)/)
+  assert.match(galleryHydration, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) return\s*\n\s*projectThumbnailRetryNames = new Set\(retryNames\)/)
+  assert.match(galleryHydration, /projectThumbnailRetryNames\.delete\(name\)/)
+  assert.match(galleryHydration, /for \(const name of replacedNames\) removeProjectThumbnail\(name\)/)
+  assert.match(app, /await hydrateProjectThumbnails\(visibleProjectList, guard, true\)/)
 })

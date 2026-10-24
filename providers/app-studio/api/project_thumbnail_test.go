@@ -148,8 +148,12 @@ status:
 
 func TestProjectThumbnailFailureSummaryDoesNotExposeUnderlyingError(t *testing.T) {
 	secret := "https://preview.example/?token=do-not-log"
-	err := fmt.Errorf("preview inspection failed: %s", secret)
-	if got := projectThumbnailFailureSummary(err); strings.Contains(got, "do-not-log") || strings.Contains(got, "preview.example") {
+	err := errors.New("preview inspection failed: " + secret)
+	got := projectThumbnailFailureSummary(err)
+	if wantType := fmt.Sprintf("%T", err); !strings.Contains(got, wantType) {
+		t.Fatalf("failure summary = %q, want error type %q", got, wantType)
+	}
+	if strings.Contains(got, "do-not-log") || strings.Contains(got, "preview.example") || strings.Contains(got, err.Error()) {
 		t.Fatalf("failure summary exposed raw error: %q", got)
 	}
 }
@@ -241,6 +245,112 @@ func TestProjectThumbnailCooldownExpirySchedulesRetry(t *testing.T) {
 	}
 	if _, remains := s.projectThumbnailFailures[key]; remains {
 		t.Fatal("expired failure cooldown was not cleared")
+	}
+}
+
+func TestStopAssistantForDeletedProjectForgetsOnlyMatchingThumbnailState(t *testing.T) {
+	deleted := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("old-uid")}}
+	replacement := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("new-uid")}}
+	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
+	deletedKey := projectThumbnailCaptureKey(id, deleted)
+	replacementKey := projectThumbnailCaptureKey(id, replacement)
+	now := time.Now().UTC()
+	deletedRequest := &projectThumbnailCaptureRequest{
+		id: id, project: deleted, commitSHA: "old-sha", commitCreatedAt: now,
+		commitOrder: "old-commit", sourceRevision: 1,
+	}
+	replacementRequest := &projectThumbnailCaptureRequest{
+		id: id, project: replacement, commitSHA: "new-sha", commitCreatedAt: now,
+		commitOrder: "new-commit", sourceRevision: 2,
+	}
+	s := &Server{
+		store: store.NewMemoryStore(),
+		projectThumbnailCaptures: map[string]*projectThumbnailCaptureRequest{
+			deletedKey: deletedRequest, replacementKey: replacementRequest,
+		},
+		projectThumbnailFailures: map[string]projectThumbnailFailure{
+			deletedKey:     newProjectThumbnailFailure(deletedRequest, now.Add(time.Minute)),
+			replacementKey: newProjectThumbnailFailure(replacementRequest, now.Add(time.Minute)),
+		},
+	}
+
+	if err := s.StopAssistantForDeletedProject(context.Background(), workspace.Scope{
+		OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID,
+		ProjectName: string(deleted.Name), ProjectUID: string(deleted.UID),
+	}); err != nil {
+		t.Fatalf("StopAssistantForDeletedProject: %v", err)
+	}
+	if _, ok := s.projectThumbnailCaptures[deletedKey]; ok {
+		t.Fatal("deleted project's pending thumbnail capture remains")
+	}
+	if _, ok := s.projectThumbnailFailures[deletedKey]; ok {
+		t.Fatal("deleted project's thumbnail failure cooldown remains")
+	}
+	if got := s.projectThumbnailCaptures[replacementKey]; got != replacementRequest {
+		t.Fatalf("replacement thumbnail capture = %#v, want it preserved", got)
+	}
+	if got := s.projectThumbnailFailures[replacementKey]; !got.matches(replacementRequest) {
+		t.Fatalf("replacement thumbnail failure = %#v, want it preserved", got)
+	}
+}
+
+func TestDeletedProjectThumbnailCaptureDoesNotRestoreFailureCooldown(t *testing.T) {
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid")}}
+	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
+	key := projectThumbnailCaptureKey(id, project)
+	now := time.Now().UTC()
+	request := &projectThumbnailCaptureRequest{
+		id: id, project: project, commitSHA: "commit-sha", commitCreatedAt: now,
+		commitOrder: "commit-name", sourceRevision: 7,
+	}
+	currentnessStarted := make(chan struct{})
+	allowFailure := make(chan struct{})
+	s := &Server{
+		store:                    store.NewMemoryStore(),
+		projectThumbnailCaptures: map[string]*projectThumbnailCaptureRequest{key: request},
+		projectThumbnailFailures: map[string]projectThumbnailFailure{
+			key: newProjectThumbnailFailure(request, now.Add(time.Minute)),
+		},
+		projectThumbnailCurrentness: func(context.Context, identity, *aiv1alpha1.Project, uint64) error {
+			close(currentnessStarted)
+			<-allowFailure
+			return errors.New("project was deleted during capture")
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		s.runProjectThumbnailCapture(ctx, key)
+		close(done)
+	}()
+	select {
+	case <-currentnessStarted:
+	case <-time.After(time.Second):
+		t.Fatal("capture did not reach its currentness check")
+	}
+
+	if err := s.StopAssistantForDeletedProject(context.Background(), workspace.Scope{
+		OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID,
+		ProjectName: string(project.Name), ProjectUID: string(project.UID),
+	}); err != nil {
+		t.Fatalf("StopAssistantForDeletedProject: %v", err)
+	}
+	close(allowFailure)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight capture did not finish after deletion cleanup")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.projectThumbnailCaptures[key]; ok {
+		t.Fatal("deleted project's in-flight capture was restored")
+	}
+	if _, ok := s.projectThumbnailFailures[key]; ok {
+		t.Fatal("deleted project's in-flight failure restored a cooldown")
 	}
 }
 

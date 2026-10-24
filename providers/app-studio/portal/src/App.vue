@@ -210,7 +210,11 @@ import {
   type ProjectDeletionContext,
   type ProjectDeletionIdentity,
 } from './projectDeletion'
-import { hydrateProjectThumbnailGallery } from './projectThumbnailViews'
+import {
+  hydrateProjectThumbnailGallery,
+  selectProjectThumbnailRetryTargets,
+} from './projectThumbnailViews'
+import { withRequestTimeout } from './requestTimeout'
 import NewProjectWizard from './NewProjectWizard.vue'
 import FirstTimeSetup from './FirstTimeSetup.vue'
 import GitConnectionSettings from './GitConnectionSettings.vue'
@@ -634,6 +638,7 @@ watch(projectLayout, mode => writeLayoutPreference(PROJECTS_LAYOUT_PREFERENCE_KE
 const projectThumbnailURLs = ref<Record<string, string>>({})
 const projectThumbnailRevisions = new Map<string, string>()
 const projectThumbnailProjectUIDs = new Map<string, string>()
+let projectThumbnailRetryNames = new Set<string>()
 const projectThumbnailBlobRequests = new Map<string, Promise<Blob>>()
 let projectThumbnailRefreshTimer: number | undefined
 let projectThumbnailRefreshDelayMs = PROJECT_THUMBNAIL_REFRESH_INITIAL_DELAY_MS
@@ -2747,6 +2752,7 @@ function clearProjectThumbnailURLs() {
   projectThumbnailURLs.value = {}
   projectThumbnailRevisions.clear()
   projectThumbnailProjectUIDs.clear()
+  projectThumbnailRetryNames = new Set()
 }
 
 function removeProjectThumbnail(projectName: string) {
@@ -2802,22 +2808,35 @@ function projectThumbnailRequestIsCurrent(guard: ProjectThumbnailRequestGuard): 
 async function hydrateProjectThumbnails(
   projectList: Project[],
   guard = beginProjectThumbnailRequest(),
+  retryOnly = false,
 ) {
   if (!projectThumbnailRequestIsCurrent(guard)) return
+  const { targetNames, deletedNames, replacedNames } = selectProjectThumbnailRetryTargets(
+    projectList,
+    projectThumbnailRetryNames,
+    projectThumbnailProjectUIDs,
+    retryOnly,
+  )
   const liveNames = new Set(projectList.map((project) => project.name))
-  for (const name of Object.keys(projectThumbnailURLs.value)) {
+  const cachedNames = new Set([
+    ...Object.keys(projectThumbnailURLs.value),
+    ...projectThumbnailProjectUIDs.keys(),
+  ])
+  for (const name of cachedNames) {
     if (liveNames.has(name)) continue
     removeProjectThumbnail(name)
   }
+  for (const name of deletedNames) projectThumbnailRetryNames.delete(name)
+  for (const name of replacedNames) removeProjectThumbnail(name)
   for (const project of projectList) {
-    const uid = project.uid ?? ''
-    const cachedUID = projectThumbnailProjectUIDs.get(project.name)
-    if (cachedUID !== undefined && cachedUID !== uid) removeProjectThumbnail(project.name)
-    projectThumbnailProjectUIDs.set(project.name, uid)
+    projectThumbnailProjectUIDs.set(project.name, project.uid ?? '')
   }
+  const targetProjects = retryOnly
+    ? projectList.filter((project) => targetNames.has(project.name))
+    : projectList
 
-  const { shouldRetry } = await hydrateProjectThumbnailGallery(
-    projectList,
+  const { retryNames } = await hydrateProjectThumbnailGallery(
+    targetProjects,
     {
       getProjectView: (name) => api.getProject(guard.ctx, name, {
         timeoutMS: PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS,
@@ -2850,7 +2869,8 @@ async function hydrateProjectThumbnails(
   )
   if (!projectThumbnailRequestIsCurrent(guard)) return
 
-  updateProjectThumbnailRefresh(guard, shouldRetry)
+  projectThumbnailRetryNames = new Set(retryNames)
+  updateProjectThumbnailRefresh(guard, retryNames.length > 0)
 }
 
 function projectThumbnailBlobRequest(
@@ -2862,15 +2882,10 @@ function projectThumbnailBlobRequest(
   const requestKey = JSON.stringify([guard.contextFingerprint, project.name, uid, revision])
   let blobRequest = projectThumbnailBlobRequests.get(requestKey)
   if (!blobRequest) {
-    const controller = new AbortController()
-    const timeout = window.setTimeout(() => controller.abort(), PROJECT_THUMBNAIL_BLOB_TIMEOUT_MS)
-    blobRequest = (async () => {
-      try {
-        return await api.getProjectThumbnail(guard.ctx, project.name, revision, controller.signal)
-      } finally {
-        window.clearTimeout(timeout)
-      }
-    })()
+    blobRequest = withRequestTimeout(
+      PROJECT_THUMBNAIL_BLOB_TIMEOUT_MS,
+      (signal) => api.getProjectThumbnail(guard.ctx, project.name, revision, signal),
+    )
     projectThumbnailBlobRequests.set(requestKey, blobRequest)
     void blobRequest.then(
       () => { if (projectThumbnailBlobRequests.get(requestKey) === blobRequest) projectThumbnailBlobRequests.delete(requestKey) },
@@ -2888,7 +2903,7 @@ async function refreshProjectGalleryThumbnails() {
     const projectList = await api.listProjects(guard.ctx)
     if (!projectThumbnailRequestIsCurrent(guard)) return
     const visibleProjectList = applyProjectList(projectList)
-    await hydrateProjectThumbnails(visibleProjectList, guard)
+    await hydrateProjectThumbnails(visibleProjectList, guard, true)
   } catch {
     // Normal page refresh/error handling remains authoritative. Thumbnail
     // reconciliation is deliberately silent and retries on the next load.

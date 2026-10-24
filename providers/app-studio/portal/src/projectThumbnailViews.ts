@@ -28,7 +28,13 @@ export interface ProjectThumbnailGalleryHydrationOptions {
 
 export interface ProjectThumbnailGalleryHydrationResult {
   projects: Project[]
-  shouldRetry: boolean
+  retryNames: string[]
+}
+
+export interface ProjectThumbnailRetryTargetSelection {
+  targetNames: Set<string>
+  deletedNames: string[]
+  replacedNames: string[]
 }
 
 const DEFAULT_CONCURRENCY = 4
@@ -65,28 +71,67 @@ export async function hydrateProjectThumbnailGallery(
   projects: Project[],
   options: ProjectThumbnailGalleryHydrationOptions,
 ): Promise<ProjectThumbnailGalleryHydrationResult> {
-  let requestFailed = false
+  const retryNames = new Set<string>()
   const imageLoads: Promise<void>[] = []
   const isCurrent = options.isCurrent ?? (() => true)
   const hydrated = await hydrateProjectThumbnailViews(projects, options.getProjectView, {
     concurrency: options.concurrency,
     isCurrent,
-    onError: () => { requestFailed = true },
-    onIdentityMismatch: () => { requestFailed = true },
+    onError: (projectName) => { retryNames.add(projectName) },
+    onIdentityMismatch: (projectName) => { retryNames.add(projectName) },
     onView: (project, view) => {
+      if (view.thumbnail?.refreshing) retryNames.add(project.name)
       imageLoads.push(hydrateProjectThumbnailImage(project, view, {
         isCurrent,
         shouldLoad: options.shouldLoad,
         getThumbnail: (revision) => options.getThumbnail(project, revision),
         onPublish: options.onPublish,
-        onError: () => { requestFailed = true },
+        onError: (projectName) => { retryNames.add(projectName) },
       }))
     },
   })
   await Promise.all(imageLoads)
   return {
     projects: hydrated,
-    shouldRetry: requestFailed || hydrated.some((project) => project.thumbnail?.refreshing),
+    retryNames: [...retryNames],
+  }
+}
+
+/**
+ * Pick only unresolved cards during a retry pass. The caller still receives
+ * the full list so it can prune deleted cache entries before applying this
+ * filter. Unknown and replaced identities are always hydrated once.
+ */
+export function selectProjectThumbnailRetryTargets(
+  projects: Project[],
+  retryNames: ReadonlySet<string>,
+  knownProjectUIDs: ReadonlyMap<string, string>,
+  retryOnly: boolean,
+): ProjectThumbnailRetryTargetSelection {
+  const liveNames = new Set(projects.map((project) => project.name))
+  const deletedNames = new Set<string>()
+  for (const name of knownProjectUIDs.keys()) {
+    if (!liveNames.has(name)) deletedNames.add(name)
+  }
+  for (const name of retryNames) {
+    if (!liveNames.has(name)) deletedNames.add(name)
+  }
+
+  const targetNames = new Set<string>()
+  const replacedNames = new Set<string>()
+  for (const project of projects) {
+    const known = knownProjectUIDs.has(project.name)
+    const replaced = known && knownProjectUIDs.get(project.name) !== (project.uid ?? '')
+    if (replaced) replacedNames.add(project.name)
+    if (!retryOnly || retryNames.has(project.name) || !known || replaced) {
+      targetNames.add(project.name)
+    }
+  }
+
+  return {
+    targetNames,
+    deletedNames: [...deletedNames],
+    replacedNames: [...replacedNames],
   }
 }
 
@@ -119,7 +164,7 @@ export async function hydrateProjectThumbnailViews(
       } catch {
         // A failed view read should leave this card in the gallery. The caller
         // can schedule a bounded retry without changing the list projection.
-        options.onError?.(project.name)
+        if (isCurrent()) options.onError?.(project.name)
         continue
       }
 
