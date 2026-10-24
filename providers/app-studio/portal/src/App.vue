@@ -2818,6 +2818,11 @@ async function hydrateProjectThumbnails(
     retryOnly,
   )
   const liveNames = new Set(projectList.map((project) => project.name))
+  for (const name of deletedNames) projectThumbnailRetryNames.delete(name)
+  // Keep every selected project retryable while this batch is in flight. A
+  // newer gallery pass may supersede it after the UID cache has been updated
+  // but before this pass can commit its resolved retry names.
+  for (const name of targetNames) projectThumbnailRetryNames.add(name)
   const cachedNames = new Set([
     ...Object.keys(projectThumbnailURLs.value),
     ...projectThumbnailProjectUIDs.keys(),
@@ -2826,7 +2831,6 @@ async function hydrateProjectThumbnails(
     if (liveNames.has(name)) continue
     removeProjectThumbnail(name)
   }
-  for (const name of deletedNames) projectThumbnailRetryNames.delete(name)
   for (const name of replacedNames) removeProjectThumbnail(name)
   for (const project of projectList) {
     projectThumbnailProjectUIDs.set(project.name, project.uid ?? '')

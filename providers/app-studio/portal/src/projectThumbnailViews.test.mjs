@@ -41,6 +41,41 @@ function loadRequestTimeoutModule() {
   return requestTimeoutModulePromise
 }
 
+async function loadAppThumbnailHydrator(dependencies) {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const start = app.indexOf('async function hydrateProjectThumbnails(')
+  const end = app.indexOf('\nfunction projectThumbnailBlobRequest(', start)
+  const { outputText } = ts.transpileModule(app.slice(start, end), {
+    compilerOptions: {
+      module: ts.ModuleKind.None,
+      target: ts.ScriptTarget.ES2022,
+    },
+  })
+  const buildModule = new Function('dependencies', `
+    const {
+      api,
+      hydrateProjectThumbnailGallery,
+      selectProjectThumbnailRetryTargets,
+      projectThumbnailProjectUIDs,
+      projectThumbnailURLs,
+      projectThumbnailRevisions,
+      projectThumbnailRequestIsCurrent,
+      removeProjectThumbnail,
+      projectThumbnailBlobRequest,
+      projects,
+      updateProjectThumbnailRefresh,
+      PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS,
+    } = dependencies
+    let projectThumbnailRetryNames = dependencies.projectThumbnailRetryNames
+    ${outputText}
+    return {
+      hydrateProjectThumbnails,
+      retryNames: () => projectThumbnailRetryNames,
+    }
+  `)
+  return buildModule(dependencies)
+}
+
 function project(name, overrides = {}) {
   return {
     name,
@@ -250,6 +285,82 @@ test('retry selection excludes healthy cards and reconciles recovery, deletion, 
   const nextRetry = selectProjectThumbnailRetryTargets(listed, new Set(recovered.retryNames), knownUIDs, true)
   assert.deepEqual([...nextRetry.targetNames], [])
   assert.deepEqual(nextRetry.deletedNames, [])
+})
+
+test('a retry pass inherits targets from an overlapping full pass that becomes stale', async () => {
+  const { hydrateProjectThumbnailGallery, selectProjectThumbnailRetryTargets } = await loadHydrationModule()
+  const listed = [
+    project('healthy'),
+    project('replaced', { uid: 'replacement-uid' }),
+    project('new'),
+  ]
+  const identities = new Map(listed.map((item) => [item.name, item.uid]))
+  const passA = new Map(listed.map((item) => [item.name, deferred()]))
+  const passB = new Map(listed.map((item) => [item.name, deferred()]))
+  const requestCounts = new Map()
+  const calls = []
+  const revisions = new Map([['healthy', 'healthy-digest'], ['replaced', 'old-digest']])
+  const imageURLs = { healthy: 'blob:healthy', replaced: 'blob:old' }
+  const thumbnailUIDs = new Map([
+    ['healthy', 'healthy-uid'],
+    ['replaced', 'old-uid'],
+  ])
+  let currentSerial = 1
+  const retryState = new Set()
+  const hydrate = await loadAppThumbnailHydrator({
+    api: {
+      getProject: (_ctx, name) => {
+        calls.push(name)
+        const count = (requestCounts.get(name) ?? 0) + 1
+        requestCounts.set(name, count)
+        return (count === 1 ? passA : passB).get(name).promise
+      },
+    },
+    hydrateProjectThumbnailGallery,
+    selectProjectThumbnailRetryTargets,
+    projectThumbnailProjectUIDs: thumbnailUIDs,
+    projectThumbnailURLs: { value: imageURLs },
+    projectThumbnailRevisions: revisions,
+    projectThumbnailRetryNames: retryState,
+    projectThumbnailRequestIsCurrent: (guard) => guard.serial === currentSerial,
+    removeProjectThumbnail: (name) => {
+      delete imageURLs[name]
+      revisions.delete(name)
+      thumbnailUIDs.delete(name)
+    },
+    projectThumbnailBlobRequest: async () => new Blob(),
+    projects: { value: listed },
+    updateProjectThumbnailRefresh: () => {},
+    PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS: 15_000,
+  })
+
+  const fullPass = hydrate.hydrateProjectThumbnails(listed, { serial: 1, ctx: {} })
+  assert.deepEqual([...hydrate.retryNames()], ['healthy', 'replaced', 'new'])
+  assert.deepEqual(calls, ['healthy', 'replaced', 'new'])
+
+  currentSerial = 2
+  const retryPass = hydrate.hydrateProjectThumbnails(listed, { serial: 2, ctx: {} }, true)
+  assert.deepEqual(calls.slice(3), ['healthy', 'replaced', 'new'])
+
+  for (const item of listed) {
+    const view = project(item.name, {
+      uid: identities.get(item.name),
+      thumbnail: { available: false },
+    })
+    passA.get(item.name).resolve(view)
+  }
+  await fullPass
+  assert.deepEqual([...hydrate.retryNames()], ['healthy', 'replaced', 'new'])
+
+  for (const item of listed) {
+    const view = project(item.name, {
+      uid: identities.get(item.name),
+      thumbnail: { available: false },
+    })
+    passB.get(item.name).resolve(view)
+  }
+  await retryPass
+  assert.deepEqual([...hydrate.retryNames()], [])
 })
 
 test('full gallery hydration selects every project regardless of retry state', async () => {
